@@ -45,6 +45,10 @@ export function credentialId(
   return parts.join('-');
 }
 
+export function hostId(ip: string): string {
+  return `host-${ip.replace(/\./g, '-')}`;
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {

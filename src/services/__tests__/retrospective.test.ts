@@ -293,6 +293,9 @@ describe('Retrospective', () => {
     });
   });
 
+  // =============================================
+  // Report Generation
+  // =============================================
   describe('generateReport', () => {
     it('lists only reusable credentials in the executive summary', () => {
       const input = makeInput({
@@ -321,12 +324,7 @@ describe('Retrospective', () => {
       expect(report).toContain('obtaining 1 reusable credential(s)');
       expect(report).not.toContain('ntlmv2_challenge: jdoe');
     });
-  });
 
-  // =============================================
-  // Report Generation
-  // =============================================
-  describe('generateReport', () => {
     it('produces valid markdown with expected sections', () => {
       const input = makeInput();
       const report = generateReport(input);

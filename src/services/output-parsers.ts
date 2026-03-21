@@ -5,7 +5,7 @@
 
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { credentialId, domainId, splitQualifiedAccount, userId } from './parser-utils.js';
+import { credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
 const NMAP_SERVICE_MAP: Record<string, string> = {
@@ -50,10 +50,10 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
   const hosts = extractNmapHosts(xml);
 
   for (const host of hosts) {
-    const hostId = `host-${host.ip.replace(/\./g, '-')}`;
+    const resolvedHostId = hostId(host.ip);
 
     nodes.push({
-      id: hostId,
+      id: resolvedHostId,
       type: 'host',
       label: host.hostname || host.ip,
       ip: host.ip,
@@ -78,7 +78,7 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
       });
 
       edges.push({
-        source: hostId,
+        source: resolvedHostId,
         target: svcId,
         properties: {
           type: 'RUNS',
@@ -179,11 +179,11 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
     const smbMatch = line.match(/SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(.*?)(?:\s+\[([+-])\])\s*(.*)/i);
     if (smbMatch) {
       const [, ip, port, rest, status, message] = smbMatch;
-      const hostId = `host-${ip.replace(/\./g, '-')}`;
+      const resolvedHostId = hostId(ip);
 
-      if (!seenNodes.has(hostId)) {
-        nodes.push({ id: hostId, type: 'host', label: ip, ip, alive: true });
-        seenNodes.add(hostId);
+      if (!seenNodes.has(resolvedHostId)) {
+        nodes.push({ id: resolvedHostId, type: 'host', label: ip, ip, alive: true });
+        seenNodes.add(resolvedHostId);
       }
 
       // Check for Pwn3d! (admin access)
@@ -198,7 +198,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
           }
           edges.push({
             source: resolvedUserId,
-            target: hostId,
+            target: resolvedHostId,
             properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: agentId },
           });
         }
@@ -216,7 +216,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
           }
           edges.push({
             source: resolvedUserId,
-            target: hostId,
+            target: resolvedHostId,
             properties: { type: 'VALID_ON', confidence: 0.9, discovered_at: new Date().toISOString(), discovered_by: agentId },
           });
         }
@@ -229,12 +229,12 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
     const shareMatch = line.match(/SMB\s+(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+)\s+(READ|WRITE|READ,\s*WRITE)/i);
     if (shareMatch) {
       const [, ip, shareName, perms] = shareMatch;
-      const hostId = `host-${ip.replace(/\./g, '-')}`;
+      const resolvedHostId = hostId(ip);
       const shareId = `share-${ip.replace(/\./g, '-')}-${shareName.toLowerCase()}`;
 
-      if (!seenNodes.has(hostId)) {
-        nodes.push({ id: hostId, type: 'host', label: ip, ip, alive: true });
-        seenNodes.add(hostId);
+      if (!seenNodes.has(resolvedHostId)) {
+        nodes.push({ id: resolvedHostId, type: 'host', label: ip, ip, alive: true });
+        seenNodes.add(resolvedHostId);
       }
       if (!seenNodes.has(shareId)) {
         nodes.push({
@@ -660,13 +660,13 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
     if (!hashMatch) continue;
     const hash = hashMatch[1].trim();
 
-    const hostId = `host-${clientIp.replace(/\./g, '-')}`;
+    const resolvedHostId = hostId(clientIp);
     const resolvedUserId = userId(username, domain);
     const resolvedCredId = credentialId('ntlmv2_challenge', hash, username, domain);
 
-    if (!seenNodes.has(hostId)) {
-      nodes.push({ id: hostId, type: 'host', label: clientIp, ip: clientIp, alive: true });
-      seenNodes.add(hostId);
+    if (!seenNodes.has(resolvedHostId)) {
+      nodes.push({ id: resolvedHostId, type: 'host', label: clientIp, ip: clientIp, alive: true });
+      seenNodes.add(resolvedHostId);
     }
     if (!seenNodes.has(resolvedUserId)) {
       nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
@@ -742,6 +742,7 @@ function parseKerbruteLogin(value: string): { username: string; domain: string; 
   const username = value.slice(0, atIndex);
   const remainder = value.slice(atIndex + 1);
   const colonIndex = remainder.indexOf(':');
+  // colonIndex <= 0: no domain; === length-1: empty password (intentional — Kerbrute won't report empty-password success)
   if (colonIndex <= 0 || colonIndex === remainder.length - 1) return null;
 
   return {

@@ -15,8 +15,7 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
       return 'plaintext_password';
     case 'ntlm':
       return 'ntlm_hash';
-    case 'ntlmv2_response':
-      return 'ntlmv2_challenge';
+    // ntlmv2_response was a legacy cred_type removed in the credential-semantics refactor
     case 'aes256':
       return 'aes256_key';
     case 'kerberos_tgt':
