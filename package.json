@@ -1,0 +1,29 @@
+{
+  "name": "overwatch-mcp-server",
+  "version": "0.1.0",
+  "description": "Offensive security engagement orchestrator - MCP server with graph-based state management",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "graphology": "^0.25.4",
+    "graphology-operators": "^1.6.0",
+    "graphology-shortest-path": "^2.1.0",
+    "graphology-traversal": "^0.3.1",
+    "graphology-types": "^0.24.8",
+    "uuid": "^10.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.0"
+  }
+}
