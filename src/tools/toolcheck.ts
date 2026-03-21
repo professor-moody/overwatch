@@ -33,7 +33,7 @@ john, hashcat, responder, enum4linux-ng, kerbrute.`,
     },
     withErrorBoundary('check_tools', async ({ tool_name }) => {
       if (tool_name) {
-        const result = checkToolByName(tool_name);
+        const result = await checkToolByName(tool_name);
         if (!result) {
           return {
             content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${tool_name}` }, null, 2) }],
@@ -45,7 +45,7 @@ john, hashcat, responder, enum4linux-ng, kerbrute.`,
         };
       }
 
-      const results = checkAllTools();
+      const results = await checkAllTools();
       const installed = results.filter(t => t.installed);
       const missing = results.filter(t => !t.installed);
 

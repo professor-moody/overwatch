@@ -194,7 +194,7 @@ describe('DashboardServer', () => {
 
     const msg = await updatePromise;
     expect(msg.type).toBe('graph_update');
-    expect(msg.data.graph.nodes.length).toBeGreaterThan(0);
+    expect(msg.data.delta.nodes.length).toBeGreaterThan(0);
   });
 
   it('tracks client count', async () => {

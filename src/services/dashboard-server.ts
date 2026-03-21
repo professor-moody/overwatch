@@ -111,15 +111,30 @@ export class DashboardServer {
 
   // Called by GraphEngine after persist()
   onGraphUpdate(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
-    // Short-circuit: skip expensive getState/exportGraph when nobody is listening
+    // Short-circuit: skip expensive work when nobody is listening
     if (this.clients.size === 0) return;
 
+    // Build incremental delta: only the nodes/edges that changed
+    const changedNodeIds = new Set([...(detail.new_nodes || [])]);
+    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.inferred_edges || [])]);
+
+    const fullGraph = this.engine.exportGraph();
+    const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));
+    const deltaEdges = fullGraph.edges.filter(e => {
+      const edgeKey = `${e.source}--${e.properties.type}--${e.target}`;
+      return changedEdgeIds.has(edgeKey);
+    });
+
     const state = this.engine.getState();
-    const graph = this.engine.exportGraph();
+
     this.broadcast({
       type: 'graph_update',
       timestamp: new Date().toISOString(),
-      data: { state, graph, detail },
+      data: {
+        state,
+        detail,
+        delta: { nodes: deltaNodes, edges: deltaEdges },
+      },
     });
   }
 

@@ -32,9 +32,9 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
       expect(result).not.toBeNull();
-      expect(result!.finding.nodes.length).toBe(1);
+      expect(result.finding!.nodes.length).toBe(1);
 
-      const node = result!.finding.nodes[0];
+      const node = result.finding!.nodes[0];
       expect(node.type).toBe('host');
       expect(node.label).toBe('DC01.ACME.LOCAL');
       expect(node.os).toBe('Windows Server 2019');
@@ -66,9 +66,9 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
       expect(result).not.toBeNull();
-      expect(result!.finding.nodes.length).toBe(1);
+      expect(result.finding!.nodes.length).toBe(1);
 
-      const node = result!.finding.nodes[0];
+      const node = result.finding!.nodes[0];
       expect(node.type).toBe('user');
       expect(node.label).toBe('ADMINISTRATOR@ACME.LOCAL');
       expect(node.privileged).toBe(true);
@@ -104,7 +104,7 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
       expect(result).not.toBeNull();
-      const nodes = result!.finding.nodes;
+      const nodes = result.finding!.nodes;
       const admin = nodes.find(n => n.label === 'SVCADMIN@ACME.LOCAL');
       const normal = nodes.find(n => n.label === 'NORMALUSER@ACME.LOCAL');
       // admincount: 1 → privileged: true (boolean, not integer)
@@ -137,11 +137,11 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'groups.json');
       expect(result).not.toBeNull();
-      expect(result!.finding.nodes.length).toBe(1);
-      expect(result!.finding.nodes[0].type).toBe('group');
+      expect(result.finding!.nodes.length).toBe(1);
+      expect(result.finding!.nodes[0].type).toBe('group');
 
       // Should have a MEMBER_OF edge
-      const memberEdges = result!.finding.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      const memberEdges = result.finding!.edges.filter(e => e.properties.type === 'MEMBER_OF');
       expect(memberEdges.length).toBe(1);
     });
 
@@ -173,10 +173,10 @@ describe('BloodHound Ingestion', () => {
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
       expect(result).not.toBeNull();
 
-      const genericAll = result!.finding.edges.filter(e => e.properties.type === 'GENERIC_ALL');
+      const genericAll = result.finding!.edges.filter(e => e.properties.type === 'GENERIC_ALL');
       expect(genericAll.length).toBe(1);
 
-      const writeDacl = result!.finding.edges.filter(e => e.properties.type === 'WRITE_DACL');
+      const writeDacl = result.finding!.edges.filter(e => e.properties.type === 'WRITE_DACL');
       expect(writeDacl.length).toBe(1);
       expect(writeDacl[0].properties.inherited).toBe(true);
     });
@@ -197,7 +197,7 @@ describe('BloodHound Ingestion', () => {
       };
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
-      const sessionEdges = result!.finding.edges.filter(e => e.properties.type === 'HAS_SESSION');
+      const sessionEdges = result.finding!.edges.filter(e => e.properties.type === 'HAS_SESSION');
       expect(sessionEdges.length).toBe(1);
       expect(sessionEdges[0].properties.confidence).toBe(0.9);
     });
@@ -218,7 +218,7 @@ describe('BloodHound Ingestion', () => {
       };
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
-      const adminEdges = result!.finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
+      const adminEdges = result.finding!.edges.filter(e => e.properties.type === 'ADMIN_TO');
       expect(adminEdges.length).toBe(1);
     });
 
@@ -240,32 +240,32 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
 
-      const delegatesTo = result!.finding.edges.filter(e => e.properties.type === 'DELEGATES_TO');
+      const delegatesTo = result.finding!.edges.filter(e => e.properties.type === 'DELEGATES_TO');
       expect(delegatesTo.length).toBe(1);
 
-      const allowedToAct = result!.finding.edges.filter(e => e.properties.type === 'ALLOWED_TO_ACT');
+      const allowedToAct = result.finding!.edges.filter(e => e.properties.type === 'ALLOWED_TO_ACT');
       expect(allowedToAct.length).toBe(1);
     });
 
     it('handles invalid JSON gracefully', () => {
       const result = parseBloodHoundFile('not json', 'bad.json');
       expect(result).not.toBeNull();
-      expect(result!.errors.length).toBeGreaterThan(0);
+      expect(result.errors.length).toBeGreaterThan(0);
     });
 
     it('handles missing data array gracefully', () => {
       const result = parseBloodHoundFile(JSON.stringify({ meta: { type: 'users' } }), 'empty.json');
       expect(result).not.toBeNull();
-      expect(result!.errors.length).toBeGreaterThan(0);
+      expect(result.errors.length).toBeGreaterThan(0);
     });
 
-    it('returns null for empty data arrays', () => {
+    it('returns null finding for empty data arrays', () => {
       const bhData = {
         data: [],
         meta: { type: 'users', count: 0, version: 5 },
       };
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'empty.json');
-      expect(result).toBeNull();
+      expect(result.finding).toBeNull();
     });
 
     it('extracts RDP and PSRemote edges', () => {
@@ -287,10 +287,10 @@ describe('BloodHound Ingestion', () => {
       };
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
-      const rdp = result!.finding.edges.filter(e => e.properties.type === 'CAN_RDPINTO');
+      const rdp = result.finding!.edges.filter(e => e.properties.type === 'CAN_RDPINTO');
       expect(rdp.length).toBe(1);
 
-      const ps = result!.finding.edges.filter(e => e.properties.type === 'CAN_PSREMOTE');
+      const ps = result.finding!.edges.filter(e => e.properties.type === 'CAN_PSREMOTE');
       expect(ps.length).toBe(1);
     });
 
@@ -313,8 +313,8 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
       expect(result).not.toBeNull();
-      expect(result!.finding.nodes[0].type).toBe('domain');
-      expect(result!.finding.nodes[0].functional_level).toBe('2016');
+      expect(result.finding!.nodes[0].type).toBe('domain');
+      expect(result.finding!.nodes[0].functional_level).toBe('2016');
     });
   });
 });

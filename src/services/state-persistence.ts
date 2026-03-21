@@ -6,7 +6,7 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { dirname, basename, join } from 'path';
-import type { EngineContext } from './engine-context.js';
+import type { EngineContext, OverwatchGraph } from './engine-context.js';
 import type { InferenceRule } from '../types.js';
 
 export const MAX_SNAPSHOTS = 5;
@@ -14,9 +14,9 @@ export const MAX_SNAPSHOTS = 5;
 export class StatePersistence {
   private ctx: EngineContext;
   private builtinRuleIds: Set<string>;
-  private createGraph: () => any;
+  private createGraph: () => OverwatchGraph;
 
-  constructor(ctx: EngineContext, builtinRules: InferenceRule[], createGraph: () => any) {
+  constructor(ctx: EngineContext, builtinRules: InferenceRule[], createGraph: () => OverwatchGraph) {
     this.ctx = ctx;
     this.builtinRuleIds = new Set(builtinRules.map(r => r.id));
     this.createGraph = createGraph;
@@ -52,7 +52,7 @@ export class StatePersistence {
       const dir = dirname(this.ctx.stateFilePath);
       const base = basename(this.ctx.stateFilePath, '.json');
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const snapPath = join(dir, `${base}.snap-${ts}.json`);
+      const snapPath = join(dir, `${base}.snap-${ts}-${process.pid}.json`);
       // Copy current state to snapshot
       writeFileSync(snapPath, readFileSync(this.ctx.stateFilePath));
       // Prune old snapshots beyond MAX_SNAPSHOTS

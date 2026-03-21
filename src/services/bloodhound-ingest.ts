@@ -115,18 +115,18 @@ export interface BloodHoundIngestResult {
   errors: string[];
 }
 
-export function parseBloodHoundFile(raw: string, filename: string): { finding: Finding; errors: string[] } | null {
+export function parseBloodHoundFile(raw: string, filename: string): { finding: Finding | null; errors: string[] } {
   const errors: string[] = [];
   let parsed: BHFile;
 
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { finding: null as any, errors: [`Failed to parse ${filename}: ${err instanceof Error ? err.message : String(err)}`] };
+    return { finding: null, errors: [`Failed to parse ${filename}: ${err instanceof Error ? err.message : String(err)}`] };
   }
 
   if (!parsed.data || !Array.isArray(parsed.data)) {
-    return { finding: null as any, errors: [`${filename}: missing or invalid 'data' array`] };
+    return { finding: null, errors: [`${filename}: missing or invalid 'data' array`] };
   }
 
   const metaType = (parsed.meta?.type || filename.replace(/\.json$/i, '')).toLowerCase();
@@ -299,7 +299,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
   }
 
   if (nodes.length === 0 && edges.length === 0) {
-    return null;
+    return { finding: null, errors };
   }
 
   const finding: Finding = {

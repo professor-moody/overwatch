@@ -6,14 +6,21 @@
 // module sees the new graph immediately.
 // ============================================================
 
+import type { AbstractGraph } from 'graphology-types';
 import type {
   EngagementConfig, InferenceRule, AgentTask,
+  NodeProperties, EdgeProperties,
 } from '../types.js';
+
+export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
 export type ActivityLogEntry = {
   timestamp: string;
   description: string;
   agent_id?: string;
+  category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
+  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge';
+  outcome?: 'success' | 'failure' | 'neutral';
 };
 
 export type GraphUpdateCallback = (detail: {
@@ -23,7 +30,7 @@ export type GraphUpdateCallback = (detail: {
 }) => void;
 
 export class EngineContext {
-  graph: any;                      // graphology Graph instance — may be replaced on recovery
+  graph: OverwatchGraph;            // graphology Graph instance — may be replaced on recovery
   config: EngagementConfig;
   inferenceRules: InferenceRule[];
   activityLog: ActivityLogEntry[];
@@ -31,9 +38,9 @@ export class EngineContext {
   stateFilePath: string;
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
-  pathGraphCache: any;             // cached undirected projection for pathfinding
+  pathGraphCache: OverwatchGraph | null;  // cached undirected projection for pathfinding
 
-  constructor(graph: any, config: EngagementConfig, stateFilePath: string) {
+  constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
     this.config = config;
     this.inferenceRules = [];
@@ -45,11 +52,12 @@ export class EngineContext {
     this.pathGraphCache = null;
   }
 
-  log(message: string, agentId?: string): void {
+  log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
     this.activityLog.push({
       timestamp: new Date().toISOString(),
       description: message,
       agent_id: agentId,
+      ...extra,
     });
   }
 

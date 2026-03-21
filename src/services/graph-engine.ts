@@ -7,7 +7,7 @@ import GraphConstructor from 'graphology';
 import { existsSync } from 'fs';
 import { expandCidr, isIpInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
-import type { GraphUpdateCallback } from './engine-context.js';
+import type { GraphUpdateCallback, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
@@ -27,6 +27,9 @@ import type {
 const Graph = (GraphConstructor as any).default || GraphConstructor;
 if (typeof Graph !== 'function') {
   throw new Error('Failed to import graphology Graph constructor — check CJS/ESM interop');
+}
+function createGraph(): OverwatchGraph {
+  return new Graph({ type: 'directed', multi: true, allowSelfLoops: false }) as OverwatchGraph;
 }
 
 // --- Built-in inference rules ---
@@ -127,13 +130,13 @@ export class GraphEngine {
   private frontierComputer: FrontierComputer;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
-    const graph = new Graph({ type: 'directed', multi: true, allowSelfLoops: false });
+    const graph = createGraph();
     const filePath = stateFilePath || `./state-${config.id}.json`;
     this.ctx = new EngineContext(graph, config, filePath);
     this.ctx.inferenceRules = [...BUILTIN_RULES];
     this.persistence = new StatePersistence(
       this.ctx, BUILTIN_RULES,
-      () => new Graph({ type: 'directed', multi: true, allowSelfLoops: false })
+      createGraph,
     );
     this.agentMgr = new AgentManager(this.ctx);
     this.inference = new InferenceEngine(
@@ -248,7 +251,7 @@ export class GraphEngine {
   addNode(props: NodeProperties): string {
     if (this.ctx.graph.hasNode(props.id)) {
       // Merge properties
-      this.ctx.graph.mergeNodeAttributes(props.id, props);
+      this.ctx.graph.mergeNodeAttributes(props.id, props as any);
     } else {
       this.ctx.graph.addNode(props.id, props);
       this.invalidatePathGraph();
@@ -260,15 +263,15 @@ export class GraphEngine {
     // Check for duplicate edge of same type
     const existingEdges = this.ctx.graph.edges(source, target);
     for (const edgeId of existingEdges) {
-      const attrs = this.ctx.graph.getEdgeAttributes(edgeId) as EdgeProperties;
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
       if (attrs.type === props.type) {
         // Detect confirmation of inferred edge
         if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
           props = { ...props, confirmed_at: new Date().toISOString() };
-          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`);
+          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success' });
         }
         // Update existing edge
-        this.ctx.graph.mergeEdgeAttributes(edgeId, props);
+        this.ctx.graph.mergeEdgeAttributes(edgeId, props as any);
         return { id: edgeId, isNew: false };
       }
     }
@@ -286,14 +289,14 @@ export class GraphEngine {
 
   getNode(id: string): NodeProperties | null {
     if (!this.ctx.graph.hasNode(id)) return null;
-    return this.ctx.graph.getNodeAttributes(id) as NodeProperties;
+    return this.ctx.graph.getNodeAttributes(id);
   }
 
   getNodesByType(type: NodeType): NodeProperties[] {
     const results: NodeProperties[] = [];
     this.ctx.graph.forEachNode((id, attrs) => {
-      if ((attrs as NodeProperties).type === type) {
-        results.push(attrs as NodeProperties);
+      if (attrs.type === type) {
+        results.push(attrs);
       }
     });
     return results;
@@ -324,10 +327,10 @@ export class GraphEngine {
       this.addNode(fullProps);
       if (isNew) {
         newNodes.push(node.id);
-        this.log(`New ${node.type} discovered: ${fullProps.label}`, finding.agent_id);
+        this.log(`New ${node.type} discovered: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       } else if (oldProps && this.propertiesChanged(oldProps, fullProps)) {
         updatedNodes.push(node.id);
-        this.log(`Updated ${node.type}: ${fullProps.label}`, finding.agent_id);
+        this.log(`Updated ${node.type}: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       }
     }
 
@@ -343,9 +346,9 @@ export class GraphEngine {
       const { id: edgeId, isNew } = this.addEdge(edge.source, edge.target, fullProps);
       if (isNew) {
         newEdges.push(edgeId);
-        this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id);
+        this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       } else {
-        this.log(`Updated edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id);
+        this.log(`Updated edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'neutral' });
       }
     }
 
@@ -461,9 +464,8 @@ export class GraphEngine {
         const nodeIds = new Set(result.nodes.map(n => n.id));
         this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
           if (nodeIds.has(source) && nodeIds.has(target)) {
-            const ep = attrs as EdgeProperties;
-            if (!query.edge_type || ep.type === query.edge_type) {
-              result.edges.push({ source, target, properties: ep });
+            if (!query.edge_type || attrs.type === query.edge_type) {
+              result.edges.push({ source, target, properties: attrs });
             }
           }
         });
@@ -471,10 +473,9 @@ export class GraphEngine {
         // Filter all nodes
         this.ctx.graph.forEachNode((id, attrs) => {
           if (result.nodes.length >= limit) return;
-          const node = attrs as NodeProperties;
-          if (query.node_type && node.type !== query.node_type) return;
-          if (!this.matchesFilter(node, query.node_filter)) return;
-          result.nodes.push({ id, properties: node });
+          if (query.node_type && attrs.type !== query.node_type) return;
+          if (!this.matchesFilter(attrs, query.node_filter)) return;
+          result.nodes.push({ id, properties: attrs });
         });
       }
     }
@@ -483,10 +484,9 @@ export class GraphEngine {
     if (query.edge_type || query.edge_filter) {
       this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
         if (result.edges.length >= limit) return;
-        const edge = attrs as EdgeProperties;
-        if (query.edge_type && edge.type !== query.edge_type) return;
-        if (!this.matchesFilter(edge, query.edge_filter)) return;
-        result.edges.push({ source, target, properties: edge });
+        if (query.edge_type && attrs.type !== query.edge_type) return;
+        if (!this.matchesFilter(attrs, query.edge_filter)) return;
+        result.edges.push({ source, target, properties: attrs });
       });
     }
 
@@ -565,7 +565,7 @@ export class GraphEngine {
     if (!node) return null;
     if (node.ip) return node.ip;
     // Walk inbound edges to find the parent host (e.g. host --RUNS--> service)
-    for (const edge of this.ctx.graph.inEdges(nodeId)) {
+    for (const edge of this.ctx.graph.inEdges(nodeId) as string[]) {
       const source = this.ctx.graph.source(edge);
       const sourceNode = this.getNode(source);
       if (sourceNode?.type === 'host' && sourceNode.ip) return sourceNode.ip;
@@ -658,13 +658,13 @@ export class GraphEngine {
         // A matching node must also be obtained — either via an access edge
         // (HAS_SESSION, ADMIN_TO, OWNS_CRED) or an explicit obtained flag.
         const obtained = matching.nodes.some(n => {
-          const nodeProps = n.properties as NodeProperties;
+          const nodeProps = n.properties;
           if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
             return false;
           }
           if (n.properties.obtained === true) return true;
           return this.ctx.graph.inEdges(n.id).some((e: string) => {
-            const ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
+            const ep = this.ctx.graph.getEdgeAttributes(e);
             if (ep.type !== 'OWNS_CRED') {
               return ACCESS_EDGE_TYPES.has(ep.type) && ep.confidence >= 0.9;
             }
@@ -674,7 +674,7 @@ export class GraphEngine {
         if (obtained) {
           obj.achieved = true;
           obj.achieved_at = new Date().toISOString();
-          this.log(`OBJECTIVE ACHIEVED: ${obj.description}`);
+          this.log(`OBJECTIVE ACHIEVED: ${obj.description}`, undefined, { category: 'objective', outcome: 'success' });
         }
       }
     }
@@ -753,7 +753,7 @@ export class GraphEngine {
     // Collect all edges between collected nodes
     this.ctx.graph.forEachEdge((_, attrs, source, target) => {
       if (nodeSet.has(source) && nodeSet.has(target)) {
-        result.edges.push({ source, target, properties: attrs as EdgeProperties });
+        result.edges.push({ source, target, properties: attrs });
       }
     });
 
@@ -808,14 +808,12 @@ export class GraphEngine {
     let inferredEdges = 0;
 
     this.ctx.graph.forEachNode((_, attrs) => {
-      const type = (attrs as NodeProperties).type;
-      nodesByType[type] = (nodesByType[type] || 0) + 1;
+      nodesByType[attrs.type] = (nodesByType[attrs.type] || 0) + 1;
     });
 
     this.ctx.graph.forEachEdge((_, attrs) => {
-      const ep = attrs as EdgeProperties;
-      edgesByType[ep.type] = (edgesByType[ep.type] || 0) + 1;
-      if (ep.confidence >= 1.0) confirmedEdges++;
+      edgesByType[attrs.type] = (edgesByType[attrs.type] || 0) + 1;
+      if (attrs.confidence >= 1.0) confirmedEdges++;
       else inferredEdges++;
     });
 
@@ -824,16 +822,15 @@ export class GraphEngine {
     const validCreds: string[] = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
-      const node = attrs as NodeProperties;
-      if (node.type === 'host') {
+      if (attrs.type === 'host') {
         const hasAccess = this.ctx.graph.edges(id).some(e => {
-          const ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
+          const ep = this.ctx.graph.getEdgeAttributes(e);
           return (ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9;
         });
-        if (hasAccess) compromised.push(node.label);
+        if (hasAccess) compromised.push(attrs.label);
       }
-      if (node.type === 'credential' && node.confidence >= 0.9 && isCredentialUsableForAuth(node)) {
-        validCreds.push(`${getCredentialDisplayKind(node)}: ${node.cred_user || node.label}`);
+      if (attrs.type === 'credential' && attrs.confidence >= 0.9 && isCredentialUsableForAuth(attrs)) {
+        validCreds.push(`${getCredentialDisplayKind(attrs)}: ${attrs.cred_user || attrs.label}`);
       }
     });
 
@@ -870,14 +867,14 @@ export class GraphEngine {
       // Must have an OWNS_CRED inbound edge or explicit obtained flag
       if (c.obtained === true) return true;
       return this.ctx.graph.inEdges(c.id).some((e: string) => {
-        const ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
+        const ep = this.ctx.graph.getEdgeAttributes(e);
         return ep.type === 'OWNS_CRED' && ep.confidence >= 0.9;
       });
     });
     if (hasDa) return 'domain_admin';
     // Check for local admin
     const hasAdmin = !!this.ctx.graph.findEdge((_, attrs) =>
-      (attrs as EdgeProperties).type === 'ADMIN_TO' && (attrs as EdgeProperties).confidence >= 0.9
+      attrs.type === 'ADMIN_TO' && attrs.confidence >= 0.9
     );
     if (hasAdmin) return 'local_admin';
     return 'user';
@@ -924,11 +921,11 @@ export class GraphEngine {
     const edges: Array<{ source: string; target: string; properties: EdgeProperties }> = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
-      nodes.push({ id, properties: attrs as NodeProperties });
+      nodes.push({ id, properties: attrs });
     });
 
     this.ctx.graph.forEachEdge((_, attrs, source, target) => {
-      edges.push({ source, target, properties: attrs as EdgeProperties });
+      edges.push({ source, target, properties: attrs });
     });
 
     return { nodes, edges };
@@ -957,11 +954,12 @@ export class GraphEngine {
     }
   }
 
-  private log(message: string, agentId?: string): void {
+  private log(message: string, agentId?: string, extra?: Partial<Pick<import('./engine-context.js').ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
     this.ctx.activityLog.push({
       timestamp: new Date().toISOString(),
       description: message,
-      agent_id: agentId
+      agent_id: agentId,
+      ...extra,
     });
   }
 }

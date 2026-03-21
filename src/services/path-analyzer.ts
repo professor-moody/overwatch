@@ -6,8 +6,8 @@
 
 import GraphConstructor from 'graphology';
 import { dijkstra } from 'graphology-shortest-path';
-import type { EngineContext } from './engine-context.js';
-import type { NodeProperties, EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../types.js';
+import type { EngineContext, OverwatchGraph } from './engine-context.js';
+import type { EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../types.js';
 
 // Handle CJS/ESM interop for graphology
 const Graph = (GraphConstructor as any).default || GraphConstructor;
@@ -31,10 +31,10 @@ export class PathAnalyzer {
    * All other edges keep their original direction only.
    * Cached and invalidated when the graph changes.
    */
-  private buildPathGraph(): any {
+  private buildPathGraph(): OverwatchGraph {
     if (this.ctx.pathGraphCache) return this.ctx.pathGraphCache;
 
-    const pg = new Graph({ type: 'directed', multi: false, allowSelfLoops: false });
+    const pg = new Graph({ type: 'directed', multi: false, allowSelfLoops: false }) as OverwatchGraph;
 
     // Copy all nodes (IDs only)
     this.ctx.graph.forEachNode((id: string) => {
@@ -42,19 +42,18 @@ export class PathAnalyzer {
     });
 
     // Copy edges with directionality semantics
-    this.ctx.graph.forEachEdge((edgeId: string, attrs: any, source: string, target: string) => {
-      const ep = attrs as EdgeProperties;
-      const weight = 1.0 - Math.min(ep.confidence, 0.99);
+    this.ctx.graph.forEachEdge((edgeId: string, attrs, source: string, target: string) => {
+      const weight = 1.0 - Math.min(attrs.confidence, 0.99);
 
-      const fwdKey = `${source}--${ep.type}--${target}`;
+      const fwdKey = `${source}--${attrs.type}--${target}`;
       if (!pg.hasEdge(fwdKey)) {
-        try { pg.addEdgeWithKey(fwdKey, source, target, { weight }); } catch {}
+        try { pg.addEdgeWithKey(fwdKey, source, target, { weight } as any); } catch {}
       }
 
-      if (this.bidirectionalEdgeTypes.has(ep.type)) {
-        const revKey = `${target}--${ep.type}--${source}-rev`;
+      if (this.bidirectionalEdgeTypes.has(attrs.type)) {
+        const revKey = `${target}--${attrs.type}--${source}-rev`;
         if (!pg.hasEdge(revKey)) {
-          try { pg.addEdgeWithKey(revKey, target, source, { weight }); } catch {}
+          try { pg.addEdgeWithKey(revKey, target, source, { weight } as any); } catch {}
         }
       }
     });
@@ -107,11 +106,10 @@ export class PathAnalyzer {
     if (targetNodeIds.length === 0) return paths;
 
     const startNodes: string[] = [];
-    this.ctx.graph.forEachNode((id: string, attrs: any) => {
-      const node = attrs as NodeProperties;
-      if (node.type === 'host') {
+    this.ctx.graph.forEachNode((id: string, attrs) => {
+      if (attrs.type === 'host') {
         const hasAccess = this.ctx.graph.edges(id).some((e: string) => {
-          const ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
+          const ep = this.ctx.graph.getEdgeAttributes(e);
           return (ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9;
         });
         if (hasAccess) startNodes.push(id);
@@ -175,12 +173,12 @@ export class PathAnalyzer {
         const reverseEdges = this.ctx.graph.edges(path[i + 1], path[i]);
         if (reverseEdges.length === 0) { totalConfidence *= 0.1; continue; }
         const bestConfidence = Math.max(
-          ...reverseEdges.map((e: string) => (this.ctx.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
+          ...reverseEdges.map((e: string) => this.ctx.graph.getEdgeAttributes(e).confidence)
         );
         totalConfidence *= bestConfidence;
       } else {
         const bestConfidence = Math.max(
-          ...edges.map((e: string) => (this.ctx.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
+          ...edges.map((e: string) => this.ctx.graph.getEdgeAttributes(e).confidence)
         );
         totalConfidence *= bestConfidence;
       }

@@ -90,7 +90,17 @@ export class SkillIndex {
       .toLowerCase()
       .replace(/[^a-z0-9\-_.]/g, ' ')
       .split(/\s+/)
-      .filter(t => t.length > 2);
+      .filter(t => t.length > 2)
+      .map(t => this.stem(t));
+  }
+
+  private stem(word: string): string {
+    // Lightweight suffix stripping for security/technical terms
+    return word
+      .replace(/ies$/, 'y')
+      .replace(/ation$/, 'ate')
+      .replace(/(ing|ed|ment|ness)$/, '')
+      .replace(/s$/, '');
   }
 
   private computeTF(tokens: string[]): Map<string, number> {

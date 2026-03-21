@@ -5,6 +5,7 @@
 
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
+import { XMLParser } from 'fast-xml-parser';
 import { credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
@@ -99,60 +100,69 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
   };
 }
 
+const nmapXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  allowBooleanAttributes: true,
+  isArray: (name) => ['host', 'address', 'port', 'hostname', 'osmatch'].includes(name),
+  commentPropName: false,
+});
+
 function extractNmapHosts(xml: string): NmapHost[] {
   const hosts: NmapHost[] = [];
+  let parsed: any;
+  try {
+    parsed = nmapXmlParser.parse(xml);
+  } catch {
+    return hosts;
+  }
 
-  // Extract each <host>...</host> block
-  const hostBlocks = xml.match(/<host[^>]*>[\s\S]*?<\/host>/gi) || [];
+  const nmaprun = parsed.nmaprun || parsed;
+  const hostEntries: any[] = nmaprun?.host || [];
 
-  for (const block of hostBlocks) {
-    // IP address
-    const addrMatch = block.match(/<address\s+addr="([^"]+)"\s+addrtype="ipv4"/i);
-    if (!addrMatch) continue;
-    const ip = addrMatch[1];
+  for (const h of hostEntries) {
+    // IP address — find the ipv4 address entry
+    const addresses: any[] = Array.isArray(h.address) ? h.address : h.address ? [h.address] : [];
+    const ipv4 = addresses.find((a: any) => a['@_addrtype'] === 'ipv4');
+    if (!ipv4) continue;
+    const ip = ipv4['@_addr'];
 
     // Status
-    const statusMatch = block.match(/<status\s+state="([^"]+)"/i);
-    const alive = statusMatch ? statusMatch[1] === 'up' : true;
+    const alive = h.status ? h.status['@_state'] === 'up' : true;
 
     // Hostname
-    const hostnameMatch = block.match(/<hostname\s+name="([^"]+)"/i);
-    const hostname = hostnameMatch ? hostnameMatch[1] : undefined;
+    const hostnames = h.hostnames?.hostname;
+    const hostnameEntry = Array.isArray(hostnames) ? hostnames[0] : hostnames;
+    const hostname = hostnameEntry?.['@_name'] || undefined;
 
     // OS
-    const osMatch = block.match(/<osmatch\s+name="([^"]+)"/i);
-    const os = osMatch ? osMatch[1] : undefined;
+    const osmatches = h.os?.osmatch;
+    const osEntry = Array.isArray(osmatches) ? osmatches[0] : osmatches;
+    const os = osEntry?.['@_name'] || undefined;
 
     // Ports
     const ports: NmapHost['ports'] = [];
-    const portBlocks = block.match(/<port[^>]*>[\s\S]*?<\/port>/gi) || [];
-    for (const portBlock of portBlocks) {
-      const portMatch = portBlock.match(/<port\s+protocol="([^"]+)"\s+portid="(\d+)"/i);
-      if (!portMatch) continue;
+    const portEntries: any[] = h.ports?.port || [];
+    const portList = Array.isArray(portEntries) ? portEntries : [portEntries];
 
-      const stateMatch = portBlock.match(/<state\s+state="([^"]+)"/i);
-      const serviceMatch = portBlock.match(/<service\s+([^>]+)/i);
+    for (const p of portList) {
+      if (!p['@_protocol'] || !p['@_portid']) continue;
 
+      const svc = p.service;
       let service: string | undefined;
       let version: string | undefined;
       let banner: string | undefined;
 
-      if (serviceMatch) {
-        const svcAttrs = serviceMatch[1];
-        const nameMatch = svcAttrs.match(/name="([^"]+)"/);
-        const productMatch = svcAttrs.match(/product="([^"]+)"/);
-        const versionMatch = svcAttrs.match(/version="([^"]+)"/);
-        const extrainfoMatch = svcAttrs.match(/extrainfo="([^"]+)"/);
-
-        service = nameMatch ? nameMatch[1] : undefined;
-        version = [productMatch?.[1], versionMatch?.[1]].filter(Boolean).join(' ') || undefined;
-        banner = extrainfoMatch ? extrainfoMatch[1] : undefined;
+      if (svc) {
+        service = svc['@_name'] || undefined;
+        version = [svc['@_product'], svc['@_version']].filter(Boolean).join(' ') || undefined;
+        banner = svc['@_extrainfo'] || undefined;
       }
 
       ports.push({
-        port: parseInt(portMatch[2]),
-        protocol: portMatch[1],
-        state: stateMatch ? stateMatch[1] : 'unknown',
+        port: parseInt(p['@_portid']),
+        protocol: p['@_protocol'],
+        state: p.state?.['@_state'] || 'unknown',
         service,
         version,
         banner,

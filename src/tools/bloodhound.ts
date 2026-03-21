@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join, extname } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
@@ -51,7 +51,7 @@ populate the graph with Active Directory structure.`,
       }
 
       const filesToProcess: Array<{ path: string; name: string }> = [];
-      const stat = await import('fs').then(fs => fs.statSync(resolvedPath));
+      const stat = statSync(resolvedPath);
 
       if (stat.isDirectory()) {
         const entries = readdirSync(resolvedPath)

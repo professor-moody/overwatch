@@ -8,6 +8,7 @@ import type {
   InferenceRule, AgentTask, InferenceRuleSuggestion,
   SkillGapReport, ScoringRecommendation, RLVRTrace, RetrospectiveResult,
 } from '../types.js';
+import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 
 export interface RetrospectiveInput {
@@ -16,7 +17,7 @@ export interface RetrospectiveInput {
     nodes: Array<{ id: string; properties: NodeProperties }>;
     edges: Array<{ source: string; target: string; properties: EdgeProperties }>;
   };
-  history: Array<{ timestamp: string; description: string; agent_id?: string }>;
+  history: ActivityLogEntry[];
   inferenceRules: InferenceRule[];
   agents: AgentTask[];
   skillNames: string[];
@@ -271,27 +272,46 @@ export function analyzeScoring(input: RetrospectiveInput): ScoringRecommendation
   };
 
   // Walk history: actions followed by findings are "successful"
+  // Prefer structured fields (category, frontier_type, outcome) when present;
+  // fall back to text matching for legacy entries without structured fields.
   for (let i = 0; i < input.history.length; i++) {
     const entry = input.history[i];
-    const desc = entry.description.toLowerCase();
 
-    // Detect frontier item executions
-    let frontierType: string | null = null;
-    if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
-      frontierType = 'incomplete_node';
-    } else if (desc.includes('untested') || desc.includes('test')) {
-      frontierType = 'untested_edge';
-    } else if (desc.includes('inferred') || desc.includes('hypothes')) {
-      frontierType = 'inferred_edge';
+    // Detect frontier item executions — structured path
+    let frontierType: string | null = entry.frontier_type || null;
+
+    // Fallback: text-based detection for legacy entries
+    if (!frontierType) {
+      const desc = entry.description.toLowerCase();
+      if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
+        frontierType = 'incomplete_node';
+      } else if (desc.includes('untested') || desc.includes('test')) {
+        frontierType = 'untested_edge';
+      } else if (desc.includes('inferred') || desc.includes('hypothes')) {
+        frontierType = 'inferred_edge';
+      }
     }
 
     if (frontierType && successByType[frontierType]) {
       successByType[frontierType].total++;
 
-      // Check if any of the next 5 entries contain a finding/ingestion
+      // Structured outcome takes priority
+      if (entry.outcome === 'success') {
+        successByType[frontierType].successful++;
+        continue;
+      } else if (entry.outcome === 'failure' || entry.outcome === 'neutral') {
+        continue;
+      }
+
+      // Fallback: check if any of the next 5 entries contain a finding/ingestion
       for (let j = i + 1; j < Math.min(i + 6, input.history.length); j++) {
-        const next = input.history[j].description.toLowerCase();
-        if (next.includes('finding') || next.includes('ingest') || next.includes('discovered') || next.includes('new node')) {
+        const next = input.history[j];
+        if (next.category === 'finding' || next.outcome === 'success') {
+          successByType[frontierType].successful++;
+          break;
+        }
+        const nextDesc = next.description.toLowerCase();
+        if (nextDesc.includes('finding') || nextDesc.includes('ingest') || nextDesc.includes('discovered') || nextDesc.includes('new node')) {
           successByType[frontierType].successful++;
           break;
         }

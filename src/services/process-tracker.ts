@@ -17,6 +17,8 @@ export interface TrackedProcess {
   target_node?: string;
 }
 
+const MAX_COMPLETED = 50;
+
 export class ProcessTracker {
   private processes: Map<string, TrackedProcess> = new Map();
 
@@ -36,8 +38,19 @@ export class ProcessTracker {
     proc.status = status;
     if (status === 'completed' || status === 'failed') {
       proc.completed_at = new Date().toISOString();
+      this.pruneCompleted();
     }
     return true;
+  }
+
+  private pruneCompleted(): void {
+    const completed = Array.from(this.processes.values())
+      .filter(p => p.status === 'completed' || p.status === 'failed')
+      .sort((a, b) => (a.completed_at || '').localeCompare(b.completed_at || ''));
+    while (completed.length > MAX_COMPLETED) {
+      const oldest = completed.shift()!;
+      this.processes.delete(oldest.id);
+    }
   }
 
   get(id: string): TrackedProcess | null {

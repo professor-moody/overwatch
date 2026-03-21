@@ -38,12 +38,11 @@ export class InferenceEngine {
 
   backfillRule(rule: InferenceRule): string[] {
     const inferred: string[] = [];
-    this.ctx.graph.forEachNode((nodeId: string, attrs: any) => {
-      const node = attrs as NodeProperties;
-      if (rule.trigger.node_type && node.type !== rule.trigger.node_type) return;
+    this.ctx.graph.forEachNode((nodeId: string, attrs) => {
+      if (rule.trigger.node_type && attrs.type !== rule.trigger.node_type) return;
       if (rule.trigger.property_match) {
         const matches = Object.entries(rule.trigger.property_match).every(
-          ([key, val]) => node[key] === val
+          ([key, val]) => (attrs as Record<string, unknown>)[key] === val
         );
         if (!matches) return;
       }
@@ -80,8 +79,7 @@ export class InferenceEngine {
 
             const existing = this.ctx.graph.edges(src, tgt);
             const alreadyExists = existing.some((e: string) => {
-              const attrs = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
-              return attrs.type === production.edge_type;
+              return this.ctx.graph.getEdgeAttributes(e).type === production.edge_type;
             });
             if (alreadyExists) continue;
 
@@ -97,7 +95,7 @@ export class InferenceEngine {
             });
 
             inferred.push(edgeId);
-            this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`);
+            this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`, undefined, { category: 'inference' });
           }
         }
       }
@@ -118,8 +116,7 @@ export class InferenceEngine {
           if (!this.ctx.graph.hasNode(src) || !this.ctx.graph.hasNode(tgt)) continue;
           const existing = this.ctx.graph.edges(src, tgt);
           const alreadyExists = existing.some((e: string) => {
-            const attrs = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
-            return attrs.type === production.edge_type;
+            return this.ctx.graph.getEdgeAttributes(e).type === production.edge_type;
           });
           if (alreadyExists) continue;
           const { id: edgeId } = this.addEdge(src, tgt, {
@@ -133,7 +130,7 @@ export class InferenceEngine {
             ...production.properties as Record<string, unknown>
           });
           inferred.push(edgeId);
-          this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`);
+          this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`, undefined, { category: 'inference' });
         }
       }
     }
@@ -151,8 +148,8 @@ export class InferenceEngine {
 
       case 'parent_host': {
         const hosts: string[] = [];
-        this.ctx.graph.forEachInEdge(triggerNodeId, (edge: string, attrs: any, src: string) => {
-          if ((attrs as EdgeProperties).type === 'RUNS') hosts.push(src);
+        this.ctx.graph.forEachInEdge(triggerNodeId, (edge: string, attrs, src: string) => {
+          if (attrs.type === 'RUNS') hosts.push(src);
         });
         if (node.type === 'host') hosts.push(triggerNodeId);
         return hosts.length > 0 ? hosts : [triggerNodeId];
@@ -171,9 +168,8 @@ export class InferenceEngine {
 
       case 'all_compromised': {
         const compromised: Set<string> = new Set();
-        this.ctx.graph.forEachEdge((edge: string, attrs: any) => {
-          const ep = attrs as EdgeProperties;
-          if ((ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9) {
+        this.ctx.graph.forEachEdge((edge: string, attrs) => {
+          if ((attrs.type === 'HAS_SESSION' || attrs.type === 'ADMIN_TO') && attrs.confidence >= 0.9) {
             compromised.add(this.ctx.graph.target(edge));
           }
         });
@@ -201,6 +197,7 @@ export class InferenceEngine {
         return this.getNodesByType('user').map(n => n.id);
 
       default:
+        console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);
         return [];
     }
   }

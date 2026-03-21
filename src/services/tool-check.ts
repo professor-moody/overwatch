@@ -3,7 +3,10 @@
 // Detects installed offensive security tools on the system
 // ============================================================
 
-import { execFileSync } from 'child_process';
+import { execFile as execFileCb } from 'child_process';
+import { promisify } from 'util';
+
+const execFile = promisify(execFileCb);
 
 export interface ToolStatus {
   name: string;
@@ -34,24 +37,23 @@ const TOOL_CHECKS: Array<{ name: string; command: string; versionFlag: string }>
   { name: 'python3', command: 'python3', versionFlag: '--version' },
 ];
 
-function checkTool(tool: { name: string; command: string; versionFlag: string }): ToolStatus {
+async function checkTool(tool: { name: string; command: string; versionFlag: string }): Promise<ToolStatus> {
   try {
     // Check if command exists
-    const whichResult = execFileSync('which', [tool.command], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    if (!whichResult) {
+    const { stdout: whichResult } = await execFile('which', [tool.command], { encoding: 'utf-8', timeout: 5000 });
+    if (!whichResult.trim()) {
       return { name: tool.name, installed: false };
     }
 
     // Try to get version
     let version: string | undefined;
     try {
-      const output = execFileSync(tool.command, [tool.versionFlag], {
+      const { stdout: output } = await execFile(tool.command, [tool.versionFlag], {
         encoding: 'utf-8',
         timeout: 5000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
+      });
       // Extract first line that looks like a version
-      const lines = output.split('\n');
+      const lines = output.trim().split('\n');
       const versionLine = lines.find(l => /\d+\.\d+/.test(l));
       if (versionLine) {
         version = versionLine.slice(0, 120).trim();
@@ -60,17 +62,17 @@ function checkTool(tool: { name: string; command: string; versionFlag: string })
       // Command exists but version flag failed — still installed
     }
 
-    return { name: tool.name, installed: true, version, path: whichResult };
+    return { name: tool.name, installed: true, version, path: whichResult.trim() };
   } catch {
     return { name: tool.name, installed: false };
   }
 }
 
-export function checkAllTools(): ToolStatus[] {
-  return TOOL_CHECKS.map(checkTool);
+export async function checkAllTools(): Promise<ToolStatus[]> {
+  return Promise.all(TOOL_CHECKS.map(checkTool));
 }
 
-export function checkToolByName(name: string): ToolStatus | null {
+export async function checkToolByName(name: string): Promise<ToolStatus | null> {
   const tool = TOOL_CHECKS.find(t => t.name === name);
   if (!tool) return null;
   return checkTool(tool);
