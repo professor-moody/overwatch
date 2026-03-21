@@ -119,7 +119,7 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         const state = engine.getState();
         paths = [];
         for (const obj of state.objectives.filter(o => !o.achieved)) {
-          const objPaths = engine.findPathsToObjective(`obj-${obj.id}`, max_paths);
+          const objPaths = engine.findPathsToObjective(obj.id, max_paths);
           paths.push(...objPaths.map(p => ({ ...p, objective: obj.description })));
         }
       }

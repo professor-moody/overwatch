@@ -381,6 +381,50 @@ describe('GraphEngine', () => {
       expect(result.filtered.length).toBe(1);
       expect(result.filtered[0].reason.toLowerCase()).toContain('out of scope');
     });
+
+    it('filterFrontier excludes service nodes on excluded hosts', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add a service on the excluded host (10.10.10.14)
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-14-445', type: 'service', label: 'SMB on excluded', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-14', target: 'svc-10-10-10-14-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const frontier = [{
+        id: 'frontier-svc-excluded',
+        type: 'incomplete_node' as const,
+        node_id: 'svc-10-10-10-14-445',
+        description: 'Enumerate service on excluded host',
+        graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 1, confidence: 1.0 },
+        opsec_noise: 0.3,
+        staleness_seconds: 0,
+      }];
+      const result = engine.filterFrontier(frontier);
+      expect(result.passed.length).toBe(0);
+      expect(result.filtered.length).toBe(1);
+      expect(result.filtered[0].reason.toLowerCase()).toContain('out of scope');
+    });
+
+    it('validateAction rejects service node on excluded host', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add a service on the excluded host (10.10.10.14)
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-14-445', type: 'service', label: 'SMB on excluded', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-14', target: 'svc-10-10-10-14-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const result = engine.validateAction({ target_node: 'svc-10-10-10-14-445' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
   });
 
   // =============================================
@@ -395,30 +439,41 @@ describe('GraphEngine', () => {
     });
 
     it('findPathsToObjective finds path to real nodes matching objective criteria', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Create a credential node matching the DA objective criteria
+      // Use a separate objective that won't auto-achieve (no access edge on the target)
+      const config = makeConfig({
+        objectives: [{
+          id: 'obj-dc',
+          description: 'Compromise domain controller',
+          target_node_type: 'host' as const,
+          target_criteria: { hostname: 'dc01.test.local' },
+          achieved: false,
+        }],
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+      // Build a path: attacker has session on host-1, host-1 is reachable to dc01
       engine.ingestFinding(makeFinding({
         nodes: [
-          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', alive: true },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
-          { id: 'cred-da', type: 'credential', label: 'DA cred', privileged: true, cred_domain: 'test.local' },
+          { id: 'host-dc01', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local', ip: '10.10.10.5', alive: true },
         ],
         edges: [
           { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
-          { source: 'host-10-10-10-1', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'host-dc01', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
-      // findPathsToObjective should find a path from compromised host to credential node
-      const paths = engine.findPathsToObjective('obj-da');
+      // Objective not yet achieved (no access edge on dc01) — should find path
+      const paths = engine.findPathsToObjective('obj-dc');
       expect(paths.length).toBeGreaterThan(0);
-      expect(paths[0].nodes).toContain('cred-da');
+      expect(paths[0].nodes).toContain('host-dc01');
     });
 
     it('hopsToNearestObjective returns null when objective auto-achieved', () => {
-      // When objective criteria match an ingested node, the objective is auto-achieved
-      // during ingestFinding, so resolveObjectiveTargets skips it (correct behavior —
-      // we don't need to score frontier items toward already-achieved objectives)
+      // When objective criteria match an ingested node AND an access edge exists,
+      // the objective is auto-achieved during ingestFinding, so resolveObjectiveTargets
+      // skips it (correct behavior — no frontier items toward achieved objectives)
       const config = makeConfig({
         objectives: [{
           id: 'obj-dc',
@@ -431,10 +486,12 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
           { id: 'host-dc01', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local', alive: true },
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'host-dc01', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-attacker', target: 'host-dc01', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
@@ -558,15 +615,43 @@ describe('GraphEngine', () => {
   // Objective Tracking
   // =============================================
   describe('objective tracking', () => {
-    it('marks objective achieved when criteria are met', () => {
+    it('marks objective achieved when criteria are met and access edge exists', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
 
-      // Report a privileged credential matching the DA objective criteria
+      // Report a privileged credential matching the DA objective criteria + OWNS_CRED edge
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          {
+            id: 'cred-da',
+            type: 'credential',
+            label: 'DA cred',
+            cred_type: 'ntlm',
+            cred_user: 'admin',
+            cred_domain: 'test.local',
+            privileged: true,
+          },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const state = engine.getState();
+      const daObj = state.objectives.find(o => o.id === 'obj-da');
+      expect(daObj?.achieved).toBe(true);
+      expect(daObj?.achieved_at).toBeDefined();
+    });
+
+    it('does not mark objective achieved when matching node exists but has no access', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      // Report a matching credential without any access edge (e.g. imported from BloodHound)
       engine.ingestFinding(makeFinding({
         nodes: [{
-          id: 'cred-da',
+          id: 'cred-da-imported',
           type: 'credential',
-          label: 'DA cred',
+          label: 'DA cred imported',
           cred_type: 'ntlm',
           cred_user: 'admin',
           cred_domain: 'test.local',
@@ -576,8 +661,28 @@ describe('GraphEngine', () => {
 
       const state = engine.getState();
       const daObj = state.objectives.find(o => o.id === 'obj-da');
+      expect(daObj?.achieved).toBe(false);
+    });
+
+    it('marks objective achieved via obtained flag without access edge', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      engine.ingestFinding(makeFinding({
+        nodes: [{
+          id: 'cred-da-obtained',
+          type: 'credential',
+          label: 'DA cred obtained',
+          cred_type: 'ntlm',
+          cred_user: 'admin',
+          cred_domain: 'test.local',
+          privileged: true,
+          obtained: true,
+        }],
+      }));
+
+      const state = engine.getState();
+      const daObj = state.objectives.find(o => o.id === 'obj-da');
       expect(daObj?.achieved).toBe(true);
-      expect(daObj?.achieved_at).toBeDefined();
     });
 
     it('does not mark objective achieved with non-matching criteria', () => {

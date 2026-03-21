@@ -17,7 +17,7 @@ export function registerParseOutputTools(server: McpServer, engine: GraphEngine)
 
 Supported tools:
 - **nmap** / **nmap-xml**: Nmap XML output → host + service nodes + RUNS edges
-- **crackmapexec** / **cme** / **netexec** / **nxc**: CME/NXC output → user nodes, share nodes, access edges
+- **nxc** / **netexec**: NXC (NetExec) output → user nodes, share nodes, access edges
 - **certipy**: Certipy JSON output → certificate nodes, enrollment edges, ESC edges
 
 The parsed output is automatically ingested into the graph. This reduces LLM token cost
@@ -25,7 +25,7 @@ by handling structured parsing deterministically.
 
 Pass the tool name and the raw output content.`,
       inputSchema: {
-        tool_name: z.string().describe('Name of the tool that produced the output (e.g. nmap, cme, certipy)'),
+        tool_name: z.string().describe('Name of the tool that produced the output (e.g. nmap, nxc, certipy)'),
         output: z.string().describe('Raw tool output to parse'),
         agent_id: z.string().optional().describe('Agent ID to attribute the findings to'),
         ingest: z.boolean().default(true).describe('Automatically ingest parsed findings into the graph'),

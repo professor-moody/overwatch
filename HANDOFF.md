@@ -61,7 +61,7 @@ Overwatch does NOT wrap tools as MCP functions. The LLM executes tools via Claud
 
 ### What We Borrow From HexStrike
 
-- **Tool availability checking** — the server should verify that required tools are installed (nmap, crackmapexec, etc.) and report missing ones. This is a startup health check, not an MCP tool wrapper.
+- **Tool availability checking** — the server should verify that required tools are installed (nmap, nxc, etc.) and report missing ones. This is a startup health check, not an MCP tool wrapper.
 - **Process management** — long-running scans (nmap -p-, feroxbuster) need tracking. The MCP server can track active processes and their status.
 - **Retry/recovery on execution failure** — if a tool fails, the system should suggest alternatives or retry with adjusted parameters. This logic lives in the skills, not in tool wrappers.
 
@@ -376,8 +376,11 @@ overwatch/
 │   │   ├── processes.ts        # track_process, check_processes
 │   │   ├── inference.ts        # suggest_inference_rule
 │   │   └── parse-output.ts     # parse_output
+│   ├── dashboard/
+│   │   └── index.html          # Live dashboard SPA (sigma.js + graphology)
 │   └── services/
 │       ├── graph-engine.ts     # Graph state, inference, frontier, validation
+│       ├── dashboard-server.ts # HTTP + WebSocket server for live dashboard
 │       ├── skill-index.ts      # TF-IDF RAG search over skills
 │       ├── cidr.ts             # CIDR expansion and scope checking
 │       ├── bloodhound-ingest.ts# BloodHound JSON parser
@@ -459,9 +462,9 @@ All items from the original v0.1 roadmap have been implemented except #7:
 6. ~~**Output parsing helpers**~~ — ✅ `parse_output` tool with nmap XML, nxc, and certipy parsers. Nmap service names normalized to match inference rules.
 
 Additional v0.2 work:
-- **29 offensive security skills** — full methodology library with exact commands, OPSEC noise ratings, graph reporting, detection signatures, and sequencing dependencies. All crackmapexec references replaced with nxc.
+- **29 offensive security skills** — full methodology library with exact commands, OPSEC noise ratings, graph reporting, detection signatures, and sequencing dependencies. All commands reference nxc (NetExec).
 - **Bug fixes** — scope guard edge leak, objective pathfinding to real nodes, snapshot rollback inference rule restoration, nmap service name normalization, BloodHound admincount boolean normalization.
-- **112 tests** across 6 test files, all passing.
+- **120 tests** across 7 test files, all passing.
 
 ### Roadmap (v0.3+)
 
@@ -473,7 +476,7 @@ Priority items for the next iteration:
 
 3. **Multi-engagement support** — ability to run multiple engagements simultaneously with isolated graph state. Currently single-engagement per server instance.
 
-4. **Web dashboard** — lightweight real-time view of the engagement graph, objective progress, agent activity, and frontier. Read-only observer for the operator.
+4. ~~**Web dashboard**~~ — ✅ Live real-time dashboard using sigma.js (WebGL) + graphology. Served from same MCP server process on port 8384 (configurable via `OVERWATCH_DASHBOARD_PORT`). Features: force-directed graph layout, node filtering by type, search, objective tracker, frontier panel, agent activity, WebSocket push updates with HTTP poll fallback. Read-only.
 
 5. **Weight presets + tuning** — the scoring layer references weight presets (ctf/pentest/redteam/assumed_breach) in the config but doesn't use them yet. Implement configurable scoring weights that shift frontier priority based on engagement type.
 
@@ -493,9 +496,9 @@ MCP SDK is TS-native and first-class. Claude Code's ecosystem is Node/TS. grapho
 
 Claude Code already has bash execution. The LLM knows how to construct complex command lines with context-specific flags. Wrapping 150+ tools as MCP functions is maintenance burden with no intelligence gain. Our value is in the state/reasoning layer, not in tool abstraction.
 
-### Why nxc (NetExec) over CrackMapExec?
+### Why nxc (NetExec)?
 
-CrackMapExec is abandoned. NetExec (`nxc`) is the maintained fork with active development. All skills and parsers reference `nxc`.
+NetExec (`nxc`) is the actively maintained tool for SMB/LDAP/WinRM enumeration and spraying. All skills and parsers reference `nxc`.
 
 ### Why hybrid scoring instead of pure deterministic?
 

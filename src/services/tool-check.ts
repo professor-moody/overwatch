@@ -14,7 +14,6 @@ export interface ToolStatus {
 
 const TOOL_CHECKS: Array<{ name: string; command: string; versionFlag: string }> = [
   { name: 'nmap', command: 'nmap', versionFlag: '--version' },
-  { name: 'crackmapexec', command: 'crackmapexec', versionFlag: '--version' },
   { name: 'netexec', command: 'nxc', versionFlag: '--version' },
   { name: 'certipy', command: 'certipy', versionFlag: '--version' },
   { name: 'impacket-secretsdump', command: 'impacket-secretsdump', versionFlag: '-h' },

@@ -22,6 +22,7 @@ import { registerProcessTools } from './tools/processes.js';
 import { registerInferenceTools } from './tools/inference.js';
 import { registerParseOutputTools } from './tools/parse-output.js';
 import { ProcessTracker } from './services/process-tracker.js';
+import { DashboardServer } from './services/dashboard-server.js';
 
 // --- Load engagement config ---
 function loadConfig(): EngagementConfig {
@@ -68,12 +69,26 @@ registerInferenceTools(server, engine);
 registerParseOutputTools(server, engine);
 
 // ============================================================
+// Dashboard (HTTP + WebSocket)
+// ============================================================
+const dashboardPort = parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
+const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort) : null;
+
+if (dashboard) {
+  engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
+}
+
+// ============================================================
 // Start Server
 // ============================================================
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Overwatch MCP server running on stdio');
+
+  if (dashboard) {
+    await dashboard.start();
+  }
 }
 
 main().catch(error => {

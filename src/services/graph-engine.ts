@@ -115,6 +115,8 @@ const BUILTIN_RULES: InferenceRule[] = [
   }
 ];
 
+export type GraphUpdateCallback = (detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }) => void;
+
 export class GraphEngine {
   private graph: any;  // graphology Graph instance
   private config: EngagementConfig;
@@ -122,6 +124,7 @@ export class GraphEngine {
   private activityLog: Array<{ timestamp: string; description: string; agent_id?: string }>;
   private agents: Map<string, AgentTask>;
   private stateFilePath: string;
+  private updateCallbacks: GraphUpdateCallback[] = [];
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     this.graph = new Graph({ type: 'directed', multi: true, allowSelfLoops: false });
@@ -130,6 +133,7 @@ export class GraphEngine {
     this.activityLog = [];
     this.agents = new Map();
     this.stateFilePath = stateFilePath || `./state-${config.id}.json`;
+    this.updateCallbacks = [];
 
     // Attempt to load existing state
     if (existsSync(this.stateFilePath)) {
@@ -833,24 +837,25 @@ export class GraphEngine {
 
     for (const item of frontier) {
       // 1. Scope check — node_id, edge_source, and edge_target
+      //    Resolves child nodes (services, shares) to their parent host IP.
       if (item.node_id) {
-        const node = this.getNode(item.node_id);
-        if (node?.ip && this.isExcluded(node.ip)) {
-          filtered.push({ item, reason: `Out of scope: ${node.ip} is excluded` });
+        const excludedIp = this.isNodeExcluded(item.node_id);
+        if (excludedIp) {
+          filtered.push({ item, reason: `Out of scope: ${excludedIp} is excluded` });
           continue;
         }
       }
       if (item.edge_source) {
-        const node = this.getNode(item.edge_source);
-        if (node?.ip && this.isExcluded(node.ip)) {
-          filtered.push({ item, reason: `Out of scope: edge source ${node.ip} is excluded` });
+        const excludedIp = this.isNodeExcluded(item.edge_source);
+        if (excludedIp) {
+          filtered.push({ item, reason: `Out of scope: edge source ${excludedIp} is excluded` });
           continue;
         }
       }
       if (item.edge_target) {
-        const node = this.getNode(item.edge_target);
-        if (node?.ip && this.isExcluded(node.ip)) {
-          filtered.push({ item, reason: `Out of scope: edge target ${node.ip} is excluded` });
+        const excludedIp = this.isNodeExcluded(item.edge_target);
+        if (excludedIp) {
+          filtered.push({ item, reason: `Out of scope: edge target ${excludedIp} is excluded` });
           continue;
         }
       }
@@ -881,6 +886,25 @@ export class GraphEngine {
     return !isIpInScope(ip, this.config.scope.cidrs, this.config.scope.exclusions);
   }
 
+  private resolveHostIp(nodeId: string): string | null {
+    const node = this.getNode(nodeId);
+    if (!node) return null;
+    if (node.ip) return node.ip;
+    // Walk inbound edges to find the parent host (e.g. host --RUNS--> service)
+    for (const edge of this.graph.inEdges(nodeId)) {
+      const source = this.graph.source(edge);
+      const sourceNode = this.getNode(source);
+      if (sourceNode?.type === 'host' && sourceNode.ip) return sourceNode.ip;
+    }
+    return null;
+  }
+
+  private isNodeExcluded(nodeId: string): string | null {
+    const ip = this.resolveHostIp(nodeId);
+    if (ip && this.isExcluded(ip)) return ip;
+    return null;
+  }
+
   // =============================================
   // Validation (Layer 3 — post-LLM sanity check)
   // =============================================
@@ -905,22 +929,23 @@ export class GraphEngine {
     }
 
     // Check scope — target_node, edge_source, and edge_target
+    //    Resolves child nodes (services, shares) to their parent host IP.
     if (action.target_node) {
-      const node = this.getNode(action.target_node);
-      if (node?.ip && this.isExcluded(node.ip)) {
-        errors.push(`Target is out of scope: ${node.ip}`);
+      const excludedIp = this.isNodeExcluded(action.target_node);
+      if (excludedIp) {
+        errors.push(`Target is out of scope: ${excludedIp}`);
       }
     }
     if (action.edge_source) {
-      const node = this.getNode(action.edge_source);
-      if (node?.ip && this.isExcluded(node.ip)) {
-        errors.push(`Edge source is out of scope: ${node.ip}`);
+      const excludedIp = this.isNodeExcluded(action.edge_source);
+      if (excludedIp) {
+        errors.push(`Edge source is out of scope: ${excludedIp}`);
       }
     }
     if (action.edge_target) {
-      const node = this.getNode(action.edge_target);
-      if (node?.ip && this.isExcluded(node.ip)) {
-        errors.push(`Edge target is out of scope: ${node.ip}`);
+      const excludedIp = this.isNodeExcluded(action.edge_target);
+      if (excludedIp) {
+        errors.push(`Edge target is out of scope: ${excludedIp}`);
       }
     }
 
@@ -946,6 +971,8 @@ export class GraphEngine {
   // =============================================
 
   private evaluateObjectives(): void {
+    const ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
+
     for (const obj of this.config.objectives) {
       if (obj.achieved) continue;
       // Check if objective criteria are met in the graph
@@ -954,7 +981,16 @@ export class GraphEngine {
           node_type: obj.target_node_type,
           node_filter: obj.target_criteria
         });
-        if (matching.nodes.length > 0) {
+        // A matching node must also be obtained — either via an access edge
+        // (HAS_SESSION, ADMIN_TO, OWNS_CRED) or an explicit obtained flag.
+        const obtained = matching.nodes.some(n => {
+          if (n.properties.obtained === true) return true;
+          return this.graph.inEdges(n.id).some((e: string) => {
+            const ep = this.graph.getEdgeAttributes(e) as EdgeProperties;
+            return ACCESS_EDGE_TYPES.has(ep.type) && ep.confidence >= 0.9;
+          });
+        });
+        if (obtained) {
           obj.achieved = true;
           obj.achieved_at = new Date().toISOString();
           this.log(`OBJECTIVE ACHIEVED: ${obj.description}`);
@@ -1193,6 +1229,7 @@ export class GraphEngine {
     }
 
     renameSync(tmpPath, this.stateFilePath);
+    this.fireUpdateCallbacks({});
   }
 
   private rotateSnapshot(): void {
@@ -1301,6 +1338,16 @@ export class GraphEngine {
       if (val !== undefined && val !== null && oldProps[key] !== val) return true;
     }
     return false;
+  }
+
+  onUpdate(callback: GraphUpdateCallback): void {
+    this.updateCallbacks.push(callback);
+  }
+
+  private fireUpdateCallbacks(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
+    for (const cb of this.updateCallbacks) {
+      try { cb(detail); } catch { /* dashboard errors must not break engine */ }
+    }
   }
 
   private log(message: string, agentId?: string): void {

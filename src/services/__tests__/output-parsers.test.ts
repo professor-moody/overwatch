@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseCme, parseCertipy, parseOutput, getSupportedParsers } from '../output-parsers.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseOutput, getSupportedParsers } from '../output-parsers.js';
 
 describe('Output Parsers', () => {
 
@@ -94,10 +94,10 @@ describe('Output Parsers', () => {
     });
   });
 
-  describe('parseCme', () => {
+  describe('parseNxc', () => {
     it('extracts admin access from Pwn3d! output', () => {
       const output = `SMB  10.10.10.5  445  ACME\\jdoe  [+]  (Pwn3d!)`;
-      const finding = parseCme(output);
+      const finding = parseNxc(output);
 
       const hosts = finding.nodes.filter(n => n.type === 'host');
       expect(hosts.length).toBe(1);
@@ -113,10 +113,10 @@ describe('Output Parsers', () => {
 
     it('extracts valid auth from + status', () => {
       const output = `SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019`;
-      const finding = parseCme(output);
+      const finding = parseNxc(output);
 
-      const sessionEdges = finding.edges.filter(e => e.properties.type === 'HAS_SESSION');
-      expect(sessionEdges.length).toBe(1);
+      const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
+      expect(validOnEdges.length).toBe(1);
     });
 
     it('handles multi-line output', () => {
@@ -126,19 +126,19 @@ describe('Output Parsers', () => {
         'SMB  10.10.10.7  445  ACME\\admin  [-]  Access denied',
       ].join('\n');
 
-      const finding = parseCme(output);
+      const finding = parseNxc(output);
       const hosts = finding.nodes.filter(n => n.type === 'host');
       expect(hosts.length).toBe(3); // All matched hosts are recorded
 
       // But only successful auth produces edges
       const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
       expect(adminEdges.length).toBe(1); // Only Pwn3d! line
-      const sessionEdges = finding.edges.filter(e => e.properties.type === 'HAS_SESSION');
-      expect(sessionEdges.length).toBe(2); // Both [+] lines produce session edges
+      const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
+      expect(validOnEdges.length).toBe(2); // Both [+] lines produce VALID_ON edges
     });
 
     it('handles empty output', () => {
-      const finding = parseCme('');
+      const finding = parseNxc('');
       expect(finding.nodes.length).toBe(0);
     });
   });
@@ -197,8 +197,8 @@ describe('Output Parsers', () => {
     });
 
     it('supports aliases', () => {
-      expect(parseOutput('cme', '')).not.toBeNull();
       expect(parseOutput('nxc', '')).not.toBeNull();
+      expect(parseOutput('netexec', '')).not.toBeNull();
       expect(parseOutput('nmap-xml', '<nmaprun></nmaprun>')).not.toBeNull();
     });
   });
@@ -207,7 +207,7 @@ describe('Output Parsers', () => {
     it('returns a list of supported parser names', () => {
       const parsers = getSupportedParsers();
       expect(parsers).toContain('nmap');
-      expect(parsers).toContain('cme');
+      expect(parsers).toContain('nxc');
       expect(parsers).toContain('certipy');
       expect(parsers.length).toBeGreaterThan(3);
     });

@@ -17,7 +17,7 @@ export function registerToolCheckTools(server: McpServer): void {
 Returns a list of common pentest tools with their installation status, version, and path.
 Useful for planning what techniques are available without trial-and-error.
 
-Tools checked include: nmap, crackmapexec/netexec, certipy, impacket suite,
+Tools checked include: nmap, nxc/netexec, certipy, impacket suite,
 bloodhound-python, gobuster/feroxbuster, ldapsearch, smbclient, rpcclient,
 john, hashcat, responder, enum4linux-ng, kerbrute.`,
       inputSchema: {

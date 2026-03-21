@@ -164,16 +164,16 @@ function extractNmapHosts(xml: string): NmapHost[] {
   return hosts;
 }
 
-// --- CrackMapExec / NetExec Parser ---
+// --- NetExec (NXC) Parser ---
 
-export function parseCme(output: string, agentId: string = 'cme-parser'): Finding {
+export function parseNxc(output: string, agentId: string = 'nxc-parser'): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const lines = output.split('\n');
   const seenNodes = new Set<string>();
 
   for (const line of lines) {
-    // Match CME/NXC output: PROTOCOL  target:port  domain\user  [+/-] message
+    // Match NXC output: PROTOCOL  target:port  domain\user  [+/-] message
     // Example: SMB  10.10.10.5  445  ACME\jdoe  [+]  (Pwn3d!)
     const smbMatch = line.match(/SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(.*?)(?:\s+\[([+-])\])\s*(.*)/i);
     if (smbMatch) {
@@ -216,7 +216,7 @@ export function parseCme(output: string, agentId: string = 'cme-parser'): Findin
           edges.push({
             source: userId,
             target: hostId,
-            properties: { type: 'HAS_SESSION', confidence: 0.9, discovered_at: new Date().toISOString(), discovered_by: agentId },
+            properties: { type: 'VALID_ON', confidence: 0.9, discovered_at: new Date().toISOString(), discovered_by: agentId },
           });
         }
       }
@@ -371,10 +371,8 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
 const PARSERS: Record<string, (output: string, agentId?: string) => Finding> = {
   'nmap': parseNmapXml,
   'nmap-xml': parseNmapXml,
-  'crackmapexec': parseCme,
-  'cme': parseCme,
-  'netexec': parseCme,
-  'nxc': parseCme,
+  'netexec': parseNxc,
+  'nxc': parseNxc,
   'certipy': parseCertipy,
 };
 
