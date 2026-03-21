@@ -26,12 +26,15 @@ Overwatch inverts the "LLM-as-orchestrator" pattern used by projects like red-ru
 │  │ (graphology)  │ │ Rules Engine │ │ Validation           │ │
 │  └──────┬───────┘ └──────┬───────┘ └──────────┬───────────┘ │
 │         │                │                     │             │
-│  ┌──────▼────────────────▼─────────────────────▼──────────┐ │
-│  │  12 MCP Tools                                          │ │
+│  ┌──────▼────────────────────▼─────────────────────▼──────────┐ │
+│  │  18 MCP Tools                                          │ │
 │  │  get_state · next_task · report_finding ·              │ │
 │  │  validate_action · query_graph · find_paths ·          │ │
 │  │  get_skill · register_agent · get_agent_context ·      │ │
-│  │  update_agent · get_history · export_graph             │ │
+│  │  update_agent · get_history · export_graph ·           │ │
+│  │  ingest_bloodhound · check_tools · parse_output ·     │ │
+│  │  track_process · check_processes ·                     │ │
+│  │  suggest_inference_rule                                │ │
 │  └────────────────────────┬───────────────────────────────┘ │
 └───────────────────────────┼─────────────────────────────────┘
                             │ stdio
@@ -54,7 +57,7 @@ Overwatch's orchestrator is an external persistent process. State lives in a gra
 
 HexStrike wraps 150+ tools as individual MCP functions (nmap_scan(), gobuster_scan(), etc.). The LLM calls these wrappers to execute tools. There's no engagement state, no scoring, no attack path tracking.
 
-Overwatch does NOT wrap tools as MCP functions. The LLM executes tools via Claude Code's native bash — it already knows how to run nmap, crackmapexec, certipy, etc. Overwatch provides the intelligence layer that tells the LLM WHAT to do, WHERE to do it, and validates the plan before execution. Tool output gets reported back to the graph via `report_finding`.
+Overwatch does NOT wrap tools as MCP functions. The LLM executes tools via Claude Code's native bash — it already knows how to run nmap, nxc (netexec), certipy, etc. Overwatch provides the intelligence layer that tells the LLM WHAT to do, WHERE to do it, and validates the plan before execution. Tool output gets reported back to the graph via `report_finding`.
 
 ### What We Borrow From HexStrike
 
@@ -91,8 +94,8 @@ This is the critical flow that connects the orchestrator's intelligence to real-
            service_name: "kerberos" }
        ]
        edges: [
-         { source: "host-10-10-10-1", target: "svc-10-10-10-1-445", type: "RUNS" },
-         { source: "host-10-10-10-1", target: "svc-10-10-10-1-88", type: "RUNS" }
+         { source: "host-10-10-10-1", target: "svc-10.10.10.1-445", type: "RUNS" },
+         { source: "host-10-10-10-1", target: "svc-10.10.10.1-88", type: "RUNS" }
        ]
 
 6. Server ingests finding:
@@ -134,7 +137,8 @@ Sub-Agent (Sonnet):
   1. Calls get_agent_context(task_id="...")  → receives scoped subgraph
   2. Calls get_skill(query="active directory enumeration")
   3. Calls validate_action(target_node="...", technique="ldap_enum")
-  4. Executes: $ crackmapexec smb 10.10.10.1 -u user -p pass --users
+  4. Executes via Claude Code bash:
+   └─→ $ nxc smb 10.10.10.1 -u user -p pass --users
   5. Calls report_finding() with discovered users/groups/edges
   6. Repeats until task complete
 
@@ -293,7 +297,7 @@ LLM calls `get_history()` and `export_graph()` to review the full engagement. Pr
 
 - Node.js 20+
 - Claude Code CLI (`claude` command)
-- Security tools installed on the testing system (nmap, crackmapexec, certipy, impacket, etc.)
+- Security tools installed on the testing system (nmap, nxc/netexec, certipy, impacket, etc.)
 - Authorized testing scope and written permission
 
 ### Install
@@ -349,29 +353,54 @@ Claude Code connects to the MCP server automatically. The `CLAUDE.md` file in th
 
 ```
 overwatch/
-├── .claude/settings.json    # Claude Code MCP server config
-├── CLAUDE.md                # Primary session system prompt
-├── README.md                # Project documentation
-├── engagement.json          # Engagement config (edit this)
+├── .claude/settings.json       # Claude Code MCP server config
+├── AGENTS.md                   # Primary session system prompt
+├── CLAUDE.md                   # Claude Code instructions
+├── README.md                   # Project documentation
+├── engagement.json             # Engagement config (edit this)
 ├── package.json
 ├── tsconfig.json
+├── vitest.config.ts
 ├── src/
-│   ├── index.ts             # MCP server + 12 tool registrations
-│   ├── types.ts             # Full type taxonomy
+│   ├── index.ts                # MCP server entrypoint (~80 lines)
+│   ├── types.ts                # Full type taxonomy + Zod schemas
+│   ├── tools/                  # 10 tool modules
+│   │   ├── state.ts            # get_state, get_history, export_graph
+│   │   ├── findings.ts         # report_finding
+│   │   ├── scoring.ts          # next_task
+│   │   ├── exploration.ts      # query_graph, find_paths, validate_action
+│   │   ├── agents.ts           # register_agent, get_agent_context, update_agent
+│   │   ├── skills.ts           # get_skill
+│   │   ├── bloodhound.ts       # ingest_bloodhound
+│   │   ├── toolcheck.ts        # check_tools
+│   │   ├── processes.ts        # track_process, check_processes
+│   │   ├── inference.ts        # suggest_inference_rule
+│   │   └── parse-output.ts     # parse_output
 │   └── services/
-│       ├── graph-engine.ts  # Graph state, inference, frontier, validation
-│       ├── skill-index.ts   # TF-IDF RAG search over skills
-│       └── cidr.ts          # CIDR expansion and scope checking
-├── skills/                  # Methodology library (markdown)
-│   ├── network-recon.md
-│   ├── ad-discovery.md
-│   ├── smb-relay.md
-│   ├── kerberoasting.md
-│   ├── web-discovery.md
-│   ├── adcs-exploitation.md
-│   ├── privilege-escalation.md
-│   └── lateral-movement.md
-└── dist/                    # Compiled JS (after npm run build)
+│       ├── graph-engine.ts     # Graph state, inference, frontier, validation
+│       ├── skill-index.ts      # TF-IDF RAG search over skills
+│       ├── cidr.ts             # CIDR expansion and scope checking
+│       ├── bloodhound-ingest.ts# BloodHound JSON parser
+│       ├── output-parsers.ts   # nmap XML, nxc, certipy parsers
+│       ├── tool-check.ts       # Tool availability health check
+│       └── process-tracker.ts  # Long-running process tracker
+├── skills/                     # 29 methodology files (markdown)
+│   ├── network-recon.md        ├── smb-enumeration.md
+│   ├── dns-enumeration.md      ├── snmp-enumeration.md
+│   ├── ad-discovery.md         ├── kerberoasting.md
+│   ├── adcs-exploitation.md    ├── smb-relay.md
+│   ├── lateral-movement.md     ├── privilege-escalation.md
+│   ├── credential-dumping.md   ├── password-spraying.md
+│   ├── ad-persistence.md       ├── domain-trust-attacks.md
+│   ├── pivoting.md             ├── web-discovery.md
+│   ├── web-vuln-scanning.md    ├── sql-injection.md
+│   ├── web-app-attacks.md      ├── cms-exploitation.md
+│   ├── linux-enumeration.md    ├── linux-privesc.md
+│   ├── aws-exploitation.md     ├── azure-exploitation.md
+│   ├── gcp-exploitation.md     ├── data-exfiltration.md
+│   ├── persistence.md          ├── sccm-attacks.md
+│   └── exchange-attacks.md
+└── dist/                       # Compiled JS (after npm run build)
 ```
 
 ---
@@ -418,23 +447,39 @@ In `graph-engine.ts`, add to the BUILTIN_RULES array:
 }
 ```
 
-### Planned Additions
+### Completed Additions (v0.2)
+
+All items from the original v0.1 roadmap have been implemented except #7:
+
+1. ~~**BloodHound JSON ingestion**~~ — ✅ `ingest_bloodhound` tool + `bloodhound-ingest.ts` parser. Handles computers, users, groups, domains, GPOs with ACE/session/delegation edge extraction.
+2. ~~**Tool availability health check**~~ — ✅ `check_tools` tool + `tool-check.ts`. Verifies nmap, nxc, certipy, impacket, etc.
+3. ~~**Process tracking**~~ — ✅ `track_process` + `check_processes` tools + `process-tracker.ts`.
+4. ~~**Richer subgraph scoping**~~ — ✅ N-hop BFS, auto-compute from frontier, credential/service enrichment in `get_agent_context`.
+5. ~~**`suggest_inference_rule` tool**~~ — ✅ With `backfillRule` for retroactive application to existing graph.
+6. ~~**Output parsing helpers**~~ — ✅ `parse_output` tool with nmap XML, nxc, and certipy parsers. Nmap service names normalized to match inference rules.
+
+Additional v0.2 work:
+- **29 offensive security skills** — full methodology library with exact commands, OPSEC noise ratings, graph reporting, detection signatures, and sequencing dependencies. All crackmapexec references replaced with nxc.
+- **Bug fixes** — scope guard edge leak, objective pathfinding to real nodes, snapshot rollback inference rule restoration, nmap service name normalization, BloodHound admincount boolean normalization.
+- **112 tests** across 6 test files, all passing.
+
+### Roadmap (v0.3+)
 
 Priority items for the next iteration:
 
-1. **BloodHound JSON ingestion** — parse SharpHound/bloodhound-python output directly into the graph. This gives you hundreds of nodes and edges from a single collection.
+1. **Retrospective tool** — structured post-engagement analysis that reviews the full graph history and produces actionable outputs (new inference rules, skill updates, weight tuning, RLVR training signal).
 
-2. **Tool availability health check** — on server startup, verify that required tools are installed (nmap, crackmapexec, certipy, impacket-*, etc.) and expose a `check_tools` MCP tool that lists what's available and what's missing.
+2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → bash execution → parse_output/report_finding → inference → repeat. This will surface integration gaps that unit tests can't catch.
 
-3. **Process tracking** — for long-running scans, track PID, start time, and status so agents can monitor running tasks and the primary session knows what's active.
+3. **Multi-engagement support** — ability to run multiple engagements simultaneously with isolated graph state. Currently single-engagement per server instance.
 
-4. **Richer subgraph scoping** — `get_agent_context` currently takes explicit node IDs. It should auto-compute the relevant subgraph from a frontier item (the target node + N-hop neighborhood + credential inventory + relevant services).
+4. **Web dashboard** — lightweight real-time view of the engagement graph, objective progress, agent activity, and frontier. Read-only observer for the operator.
 
-5. **`suggest_inference_rule` tool** — let the LLM propose new inference rules mid-engagement when it spots a pattern. The server validates the rule structure and adds it to the active rule set.
+5. **Weight presets + tuning** — the scoring layer references weight presets (ctf/pentest/redteam/assumed_breach) in the config but doesn't use them yet. Implement configurable scoring weights that shift frontier priority based on engagement type.
 
-6. **Output parsing helpers** — common tool outputs (nmap XML, crackmapexec, BloodHound JSON, certipy) could have parsing helpers that produce structured Finding objects, reducing the LLM's work in step 5 of the execution flow.
+6. **RLVR export** — structured engagement traces (state, action, outcome triplets) exportable for reinforcement learning from verifiable rewards. Each graph transition is a natural training signal.
 
-7. **Retrospective tool** — structured post-engagement analysis that reviews the full graph history and produces actionable outputs (new rules, skill updates, weight tuning).
+7. **Additional parsers** — expand `parse_output` with parsers for: BloodHound-python stdout, responder logs, hashcat output, secretsdump, ldapdomaindump, kerbrute.
 
 ---
 
@@ -447,6 +492,10 @@ MCP SDK is TS-native and first-class. Claude Code's ecosystem is Node/TS. grapho
 ### Why not wrap tools as MCP functions (hexstrike approach)?
 
 Claude Code already has bash execution. The LLM knows how to construct complex command lines with context-specific flags. Wrapping 150+ tools as MCP functions is maintenance burden with no intelligence gain. Our value is in the state/reasoning layer, not in tool abstraction.
+
+### Why nxc (NetExec) over CrackMapExec?
+
+CrackMapExec is abandoned. NetExec (`nxc`) is the maintained fork with active development. All skills and parsers reference `nxc`.
 
 ### Why hybrid scoring instead of pure deterministic?
 
