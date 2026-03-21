@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
+import { parseHashcat, parseResponder, parseSecretsdump } from '../output-parsers.js';
 import { unlinkSync, existsSync } from 'fs';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 
@@ -247,6 +248,64 @@ describe('GraphEngine', () => {
           { id: 'cred-jdoe-ntlm', type: 'credential', label: 'jdoe NTLM', cred_type: 'ntlm', cred_user: 'jdoe', cred_domain: 'test.local' },
         ],
       }));
+
+      expect(result.inferred_edges.some(e => e.includes('POTENTIAL_AUTH'))).toBe(true);
+    });
+
+    it('does not infer POTENTIAL_AUTH from responder NTLMv2 captures', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const responderFinding = parseResponder([
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.2',
+        '[SMB] NTLMv2-SSP Username : TEST.LOCAL\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::TEST.LOCAL:1122334455667788:aabbccddee:0101000000',
+      ].join('\n'));
+      const result = engine.ingestFinding(responderFinding);
+
+      expect(result.inferred_edges.some(e => e.includes('POTENTIAL_AUTH'))).toBe(false);
+      expect(engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges.length).toBe(0);
+    });
+
+    it('still infers POTENTIAL_AUTH from secretsdump NT hashes', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const result = engine.ingestFinding(parseSecretsdump([
+        'TEST.LOCAL\\jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      ].join('\n')));
+
+      expect(result.inferred_edges.some(e => e.includes('POTENTIAL_AUTH'))).toBe(true);
+    });
+
+    it('still infers POTENTIAL_AUTH from hashcat cracked passwords', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const result = engine.ingestFinding(parseHashcat([
+        'jdoe::TEST.LOCAL:1122334455667788:aabbccddee:0101000000:OfficePass1',
+      ].join('\n')));
 
       expect(result.inferred_edges.some(e => e.includes('POTENTIAL_AUTH'))).toBe(true);
     });
@@ -868,6 +927,44 @@ describe('GraphEngine', () => {
       }));
       const state = engine.getState();
       expect(state.access_summary.current_access_level).toBe('domain_admin');
+    });
+
+    it('does not report responder captures as valid credentials or compromised hosts', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const responderFinding = parseResponder([
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.2',
+        '[SMB] NTLMv2-SSP Username : TEST.LOCAL\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::TEST.LOCAL:1122334455667788:aabbccddee:0101000000',
+      ].join('\n'));
+
+      engine.ingestFinding(responderFinding);
+
+      const state = engine.getState();
+      expect(state.access_summary.valid_credentials).toEqual([]);
+      expect(state.access_summary.compromised_hosts).toEqual([]);
+      expect(state.access_summary.current_access_level).toBe('none');
+    });
+
+    it('does not satisfy credential objectives with non-reusable responder captures', () => {
+      const config = makeConfig({
+        objectives: [{
+          id: 'obj-passive',
+          description: 'Capture any NTLMv2 response',
+          target_node_type: 'credential' as const,
+          target_criteria: { cred_material_kind: 'ntlmv2_challenge' },
+          achieved: false,
+        }],
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const responderFinding = parseResponder([
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.2',
+        '[SMB] NTLMv2-SSP Username : TEST.LOCAL\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::TEST.LOCAL:1122334455667788:aabbccddee:0101000000',
+      ].join('\n'));
+
+      engine.ingestFinding(responderFinding);
+
+      expect(engine.getState().objectives[0].achieved).toBe(false);
     });
   });
 

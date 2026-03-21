@@ -13,6 +13,7 @@ import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
@@ -657,10 +658,17 @@ export class GraphEngine {
         // A matching node must also be obtained — either via an access edge
         // (HAS_SESSION, ADMIN_TO, OWNS_CRED) or an explicit obtained flag.
         const obtained = matching.nodes.some(n => {
+          const nodeProps = n.properties as NodeProperties;
+          if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
+            return false;
+          }
           if (n.properties.obtained === true) return true;
           return this.ctx.graph.inEdges(n.id).some((e: string) => {
             const ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
-            return ACCESS_EDGE_TYPES.has(ep.type) && ep.confidence >= 0.9;
+            if (ep.type !== 'OWNS_CRED') {
+              return ACCESS_EDGE_TYPES.has(ep.type) && ep.confidence >= 0.9;
+            }
+            return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && ep.confidence >= 0.9;
           });
         });
         if (obtained) {
@@ -824,8 +832,8 @@ export class GraphEngine {
         });
         if (hasAccess) compromised.push(node.label);
       }
-      if (node.type === 'credential' && node.confidence >= 0.9) {
-        validCreds.push(`${node.cred_type}: ${node.cred_user || node.label}`);
+      if (node.type === 'credential' && node.confidence >= 0.9 && isCredentialUsableForAuth(node)) {
+        validCreds.push(`${getCredentialDisplayKind(node)}: ${node.cred_user || node.label}`);
       }
     });
 
@@ -858,7 +866,7 @@ export class GraphEngine {
     if (compromised.length === 0) return 'none';
     // Check for DA — credential must be actually obtained, not just discovered
     const hasDa = this.getNodesByType('credential').some(c => {
-      if (c.privileged !== true || c.confidence < 0.9) return false;
+      if (c.privileged !== true || c.confidence < 0.9 || !isCredentialUsableForAuth(c)) return false;
       // Must have an OWNS_CRED inbound edge or explicit obtained flag
       if (c.obtained === true) return true;
       return this.ctx.graph.inEdges(c.id).some((e: string) => {

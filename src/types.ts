@@ -52,10 +52,14 @@ export interface NodeProperties {
   member_of?: string[];         // group IDs
 
   // Credential
-  cred_type?: 'plaintext' | 'ntlm' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'ntlm' | 'ntlmv2_response' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_value?: string;          // hash or redacted reference
   cred_user?: string;           // associated user node id
   cred_domain?: string;
+  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_usable_for_auth?: boolean;
+  cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
+  observed_from_ip?: string;
 
   // Share
   share_name?: string;

@@ -6,6 +6,7 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, EdgeProperties, NodeType, InferenceRule } from '../types.js';
+import { getCredentialMaterialKind, isCredentialUsableForAuth, isReusableDomainCredential } from './credential-utils.js';
 
 export type AddEdgeFn = (source: string, target: string, props: EdgeProperties) => { id: string; isNew: boolean };
 export type GetNodeFn = (id: string) => NodeProperties | null;
@@ -165,7 +166,7 @@ export class InferenceEngine {
 
       case 'domain_credentials':
         return this.getNodesByType('credential')
-          .filter(c => c.cred_type === 'ntlm' || c.cred_type === 'kerberos_tgt' || c.cred_type === 'aes256')
+          .filter(c => isReusableDomainCredential(c))
           .map(n => n.id);
 
       case 'all_compromised': {
@@ -182,12 +183,15 @@ export class InferenceEngine {
       case 'compatible_services': {
         return this.getNodesByType('service')
           .filter(s => {
-            if (!node.cred_type) return false;
-            if (node.cred_type === 'ntlm' || node.cred_type === 'kerberos_tgt' || node.cred_type === 'aes256') {
+            if (!isCredentialUsableForAuth(node)) return false;
+
+            const materialKind = getCredentialMaterialKind(node);
+            if (materialKind === 'ntlm_hash' || materialKind === 'kerberos_tgt' || materialKind === 'aes256_key') {
               return ['smb', 'ldap', 'mssql', 'winrm', 'rdp', 'http', 'https'].includes(s.service_name || '');
             }
-            if (node.cred_type === 'plaintext') return true;
-            if (node.cred_type === 'ssh_key') return s.service_name === 'ssh';
+            if (materialKind === 'plaintext_password') return true;
+            if (materialKind === 'ssh_key') return s.service_name === 'ssh';
+            if (materialKind === 'certificate') return ['http', 'https'].includes(s.service_name || '');
             return false;
           })
           .map(n => n.id);

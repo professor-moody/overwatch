@@ -8,6 +8,7 @@ import type {
   InferenceRule, AgentTask, InferenceRuleSuggestion,
   SkillGapReport, ScoringRecommendation, RLVRTrace, RetrospectiveResult,
 } from '../types.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 
 export interface RetrospectiveInput {
   config: EngagementConfig;
@@ -381,8 +382,8 @@ export function generateReport(input: RetrospectiveInput): string {
       );
       if (hasAccess) compromisedHosts.push(n.properties.label || n.id);
     }
-    if (n.properties.type === 'credential' && n.properties.confidence >= 0.9) {
-      credentials.push(`${n.properties.cred_type || 'unknown'}: ${n.properties.cred_user || n.properties.label}`);
+    if (n.properties.type === 'credential' && n.properties.confidence >= 0.9 && isCredentialUsableForAuth(n.properties)) {
+      credentials.push(`${getCredentialDisplayKind(n.properties)}: ${n.properties.cred_user || n.properties.label}`);
     }
   }
 
@@ -413,7 +414,7 @@ export function generateReport(input: RetrospectiveInput): string {
   lines.push(`This engagement targeted ${config.scope.cidrs.length} CIDR range(s) and ${config.scope.domains.length} domain(s). ` +
     `${objectivesAchieved.length} of ${config.objectives.length} objective(s) were achieved. ` +
     `The engagement discovered ${graph.nodes.length} nodes and ${graph.edges.length} edges, ` +
-    `compromising ${compromisedHosts.length} host(s) and obtaining ${credentials.length} credential(s).`);
+    `compromising ${compromisedHosts.length} host(s) and obtaining ${credentials.length} reusable credential(s).`);
   lines.push('');
 
   // Scope

@@ -23,7 +23,7 @@ Supported tools:
 - **secretsdump** / **impacket-secretsdump**: SAM/NTDS hashes → credential + user nodes + OWNS_CRED edges
 - **kerbrute**: User enumeration + password spray → user + domain + credential nodes
 - **hashcat**: Cracked hashes (NTLM, Kerberoast, AS-REP, NTLMv2) → credential nodes
-- **responder**: Captured NTLMv2 hashes → credential + user + host nodes + session edges
+- **responder**: Captured NTLMv2 hashes → credential + user + host nodes + capture evidence
 
 The parsed output is automatically ingested into the graph. This reduces LLM token cost
 by handling structured parsing deterministically.

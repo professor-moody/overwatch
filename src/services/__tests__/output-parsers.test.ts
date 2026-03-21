@@ -275,6 +275,20 @@ describe('Output Parsers', () => {
       expect(users.length).toBeGreaterThanOrEqual(3);
     });
 
+    it('supports DOMAIN/user account formatting', () => {
+      const slashSample = [
+        'ACME/jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      ].join('\n');
+      const finding = parseSecretsdump(slashSample);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].id).toBe('user-acme-jdoe');
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].cred_material_kind).toBe('ntlm_hash');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      expect(creds[0].cred_evidence_kind).toBe('dump');
+    });
+
     it('creates OWNS_CRED edges from user to credential', () => {
       const finding = parseSecretsdump(sampleNTDS);
       const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
@@ -350,6 +364,9 @@ describe('Output Parsers', () => {
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.length).toBe(2);
       expect(creds[0].cred_type).toBe('plaintext');
+      expect(creds[0].cred_material_kind).toBe('plaintext_password');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      expect(creds[0].cred_evidence_kind).toBe('spray_success');
     });
 
     it('creates OWNS_CRED edges from spray successes', () => {
@@ -362,6 +379,17 @@ describe('Output Parsers', () => {
       const finding = parseKerbrute('');
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
+    });
+
+    it('handles passwords containing colons', () => {
+      const colonSpray = [
+        '2026/03/21 10:00:01 >  [+] VALID LOGIN:\tjdoe@acme.local:Summer:2026!',
+      ].join('\n');
+      const finding = parseKerbrute(colonSpray);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_value).toBe('Summer:2026!');
+      expect(creds[0].cred_domain).toBe('acme.local');
     });
   });
 
@@ -390,6 +418,9 @@ describe('Output Parsers', () => {
       expect(creds.length).toBe(2);
       expect(creds[0].cred_type).toBe('plaintext');
       expect(creds[0].cred_value).toBe('Password123');
+      expect(creds[0].cred_material_kind).toBe('plaintext_password');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      expect(creds[0].cred_evidence_kind).toBe('crack');
     });
 
     it('extracts username from Kerberoast hash', () => {
@@ -437,7 +468,10 @@ describe('Output Parsers', () => {
       const finding = parseResponder(sampleOutput);
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.length).toBe(2);
-      expect(creds[0].cred_type).toBe('ntlm');
+      expect(creds[0].cred_type).toBeUndefined();
+      expect(creds[0].cred_material_kind).toBe('ntlmv2_challenge');
+      expect(creds[0].cred_usable_for_auth).toBe(false);
+      expect(creds[0].cred_evidence_kind).toBe('capture');
     });
 
     it('extracts user nodes from usernames', () => {
@@ -459,10 +493,56 @@ describe('Output Parsers', () => {
       expect(ownsCred.length).toBe(2);
     });
 
-    it('creates HAS_SESSION edges from user to host', () => {
+    it('does not create HAS_SESSION edges for passive captures', () => {
       const finding = parseResponder(sampleOutput);
       const sessions = finding.edges.filter(e => e.properties.type === 'HAS_SESSION');
-      expect(sessions.length).toBe(2);
+      expect(sessions.length).toBe(0);
+    });
+
+    it('normalizes domain dots to hyphens in user IDs', () => {
+      const domainOutput = [
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.5',
+        '[SMB] NTLMv2-SSP Username : acme.local\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::acme.local:aabb:ccdd:0101',
+      ].join('\n');
+      const finding = parseResponder(domainOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users[0].id).toBe('user-acme-local-jdoe');
+    });
+
+    it('records capture provenance on credential nodes', () => {
+      const finding = parseResponder(sampleOutput);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].observed_from_ip).toBe('10.10.10.5');
+    });
+
+    it('uses canonical user IDs across kerbrute and responder', () => {
+      const kerbruteFinding = parseKerbrute([
+        '2026/03/21 10:00:01 >  [+] VALID USERNAME:\tjdoe@acme.local',
+      ].join('\n'));
+      const responderFinding = parseResponder([
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.5',
+        '[SMB] NTLMv2-SSP Username : ACME.LOCAL\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::ACME.LOCAL:1122334455667788:aabbccddee:0101000000',
+      ].join('\n'));
+
+      const kerbruteUser = kerbruteFinding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      const responderUser = responderFinding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      expect(kerbruteUser?.id).toBe('user-acme-local-jdoe');
+      expect(responderUser?.id).toBe(kerbruteUser?.id);
+    });
+
+    it('uses canonical user IDs across hashcat and kerbrute', () => {
+      const kerbruteFinding = parseKerbrute([
+        '2026/03/21 10:00:01 >  [+] VALID USERNAME:\tjdoe@acme.local',
+      ].join('\n'));
+      const hashcatFinding = parseHashcat([
+        'jdoe::ACME.LOCAL:1122334455667788:aabbccddee:0101000000:OfficePass1',
+      ].join('\n'));
+
+      const kerbruteUser = kerbruteFinding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      const hashcatUser = hashcatFinding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      expect(hashcatUser?.id).toBe(kerbruteUser?.id);
     });
 
     it('handles empty output', () => {

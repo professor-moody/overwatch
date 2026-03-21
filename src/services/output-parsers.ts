@@ -5,6 +5,7 @@
 
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
+import { credentialId, domainId, splitQualifiedAccount, userId } from './parser-utils.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
 const NMAP_SERVICE_MAP: Record<string, string> = {
@@ -190,13 +191,13 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
         const credMatch = rest.match(/([^\\]+)\\([^\s]+)/);
         if (credMatch) {
           const [, domain, username] = credMatch;
-          const userId = `user-${domain.toLowerCase()}-${username.toLowerCase()}`;
-          if (!seenNodes.has(userId)) {
-            nodes.push({ id: userId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain, privileged: true });
-            seenNodes.add(userId);
+          const resolvedUserId = userId(username, domain);
+          if (!seenNodes.has(resolvedUserId)) {
+            nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain, privileged: true });
+            seenNodes.add(resolvedUserId);
           }
           edges.push({
-            source: userId,
+            source: resolvedUserId,
             target: hostId,
             properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: agentId },
           });
@@ -208,13 +209,13 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
         const credMatch = rest.match(/([^\\]+)\\([^\s]+)/);
         if (credMatch) {
           const [, domain, username] = credMatch;
-          const userId = `user-${domain.toLowerCase()}-${username.toLowerCase()}`;
-          if (!seenNodes.has(userId)) {
-            nodes.push({ id: userId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
-            seenNodes.add(userId);
+          const resolvedUserId = userId(username, domain);
+          if (!seenNodes.has(resolvedUserId)) {
+            nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
+            seenNodes.add(resolvedUserId);
           }
           edges.push({
-            source: userId,
+            source: resolvedUserId,
             target: hostId,
             properties: { type: 'VALID_ON', confidence: 0.9, discovered_at: new Date().toISOString(), discovered_by: agentId },
           });
@@ -385,55 +386,48 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
     const [, rawUser, , , nthash] = m;
 
     // Parse DOMAIN\user or plain user
-    let domain: string | undefined;
-    let username: string;
-    if (rawUser.includes('\\')) {
-      const parts = rawUser.split('\\');
-      domain = parts[0];
-      username = parts[1];
-    } else {
-      username = rawUser;
-    }
+    const { domain, username } = splitQualifiedAccount(rawUser);
 
     // Skip machine accounts
     if (username.endsWith('$')) continue;
 
     const userLower = username.toLowerCase();
-    const credId = `cred-ntlm-${userLower}-${nthash.substring(0, 8)}`;
-    const userId = domain
-      ? `user-${domain.toLowerCase()}-${userLower}`
-      : `user-${userLower}`;
+    const resolvedCredId = credentialId('ntlm_hash', nthash, username, domain);
+    const resolvedUserId = userId(username, domain);
     const isPrivileged = PRIVILEGED_ACCOUNTS.has(userLower);
 
-    if (!seenNodes.has(credId)) {
+    if (!seenNodes.has(resolvedCredId)) {
       nodes.push({
-        id: credId,
+        id: resolvedCredId,
         type: 'credential',
         label: `NTLM:${username}`,
         cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_usable_for_auth: true,
+        cred_evidence_kind: 'dump',
         cred_value: nthash,
         cred_user: username,
         cred_domain: domain,
         privileged: isPrivileged || undefined,
       });
-      seenNodes.add(credId);
+      seenNodes.add(resolvedCredId);
     }
 
-    if (!seenNodes.has(userId)) {
+    if (!seenNodes.has(resolvedUserId)) {
       nodes.push({
-        id: userId,
+        id: resolvedUserId,
         type: 'user',
         label: domain ? `${domain}\\${username}` : username,
         username,
         domain_name: domain,
         privileged: isPrivileged || undefined,
       });
-      seenNodes.add(userId);
+      seenNodes.add(resolvedUserId);
     }
 
     edges.push({
-      source: userId,
-      target: credId,
+      source: resolvedUserId,
+      target: resolvedCredId,
       properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
     });
   }
@@ -451,69 +445,72 @@ export function parseKerbrute(output: string, agentId: string = 'kerbrute-parser
 
   for (const line of output.split('\n')) {
     // Valid username: [+] VALID USERNAME:\tuser@domain
-    const enumMatch = line.match(/\[\+\]\s*VALID USERNAME:\s*(\S+)@(\S+)/i);
+    const enumMatch = line.match(/\[\+\]\s*VALID USERNAME:\s*(\S+)/i);
     if (enumMatch) {
-      const [, username, domain] = enumMatch;
-      const userLower = username.toLowerCase();
-      const domainLower = domain.toLowerCase();
-      const userId = `user-${domainLower.replace(/\./g, '-')}-${userLower}`;
-      const domainId = `domain-${domainLower.replace(/\./g, '-')}`;
+      const upn = parseUpn(enumMatch[1]);
+      if (!upn) continue;
+      const { username, domain } = upn;
+      const resolvedUserId = userId(username, domain);
+      const resolvedDomainId = domainId(domain);
 
-      if (!seenNodes.has(userId)) {
-        nodes.push({ id: userId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
-        seenNodes.add(userId);
+      if (!seenNodes.has(resolvedUserId)) {
+        nodes.push({ id: resolvedUserId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
+        seenNodes.add(resolvedUserId);
       }
-      if (!seenNodes.has(domainId)) {
-        nodes.push({ id: domainId, type: 'domain', label: domain, domain_name: domain });
-        seenNodes.add(domainId);
+      if (!seenNodes.has(resolvedDomainId)) {
+        nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+        seenNodes.add(resolvedDomainId);
       }
       edges.push({
-        source: userId,
-        target: domainId,
+        source: resolvedUserId,
+        target: resolvedDomainId,
         properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
       continue;
     }
 
     // Password spray: [+] VALID LOGIN:\tuser@domain:password
-    const sprayMatch = line.match(/\[\+\]\s*VALID LOGIN:\s*(\S+)@(\S+):(.+)/i);
-    if (sprayMatch) {
-      const [, username, domain, password] = sprayMatch;
-      const userLower = username.toLowerCase();
-      const domainLower = domain.toLowerCase();
-      const userId = `user-${domainLower.replace(/\./g, '-')}-${userLower}`;
-      const domainId = `domain-${domainLower.replace(/\./g, '-')}`;
-      const credId = `cred-plaintext-${userLower}-${domainLower.replace(/\./g, '-')}`;
+    const sprayPayloadMatch = line.match(/\[\+\]\s*VALID LOGIN:\s*(.+)$/i);
+    if (sprayPayloadMatch) {
+      const parsed = parseKerbruteLogin(sprayPayloadMatch[1]);
+      if (!parsed) continue;
+      const { username, domain, password } = parsed;
+      const resolvedUserId = userId(username, domain);
+      const resolvedDomainId = domainId(domain);
+      const resolvedCredId = credentialId('plaintext_password', password, username, domain);
 
-      if (!seenNodes.has(userId)) {
-        nodes.push({ id: userId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
-        seenNodes.add(userId);
+      if (!seenNodes.has(resolvedUserId)) {
+        nodes.push({ id: resolvedUserId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
+        seenNodes.add(resolvedUserId);
       }
-      if (!seenNodes.has(domainId)) {
-        nodes.push({ id: domainId, type: 'domain', label: domain, domain_name: domain });
-        seenNodes.add(domainId);
+      if (!seenNodes.has(resolvedDomainId)) {
+        nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+        seenNodes.add(resolvedDomainId);
       }
-      if (!seenNodes.has(credId)) {
+      if (!seenNodes.has(resolvedCredId)) {
         nodes.push({
-          id: credId,
+          id: resolvedCredId,
           type: 'credential',
           label: `${username}:***`,
           cred_type: 'plaintext',
+          cred_material_kind: 'plaintext_password',
+          cred_usable_for_auth: true,
+          cred_evidence_kind: 'spray_success',
           cred_value: password,
           cred_user: username,
           cred_domain: domain,
         });
-        seenNodes.add(credId);
+        seenNodes.add(resolvedCredId);
       }
 
       edges.push({
-        source: userId,
-        target: domainId,
+        source: resolvedUserId,
+        target: resolvedDomainId,
         properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
       edges.push({
-        source: userId,
-        target: credId,
+        source: resolvedUserId,
+        target: resolvedCredId,
         properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
     }
@@ -586,41 +583,46 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser')
 
     if (!plaintext || plaintext.length === 0) continue;
 
-    const credId = `cred-cracked-${hashType}-${(username || hashValue || '').substring(0, 16).toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-    if (seenNodes.has(credId)) continue;
+    const resolvedCredId = credentialId(
+      'plaintext_password',
+      hashValue || plaintext,
+      username,
+      domain,
+    );
+    if (seenNodes.has(resolvedCredId)) continue;
 
     nodes.push({
-      id: credId,
+      id: resolvedCredId,
       type: 'credential',
       label: username ? `${username}:***` : `cracked:${hashType}`,
       cred_type: 'plaintext',
+      cred_material_kind: 'plaintext_password',
+      cred_usable_for_auth: true,
+      cred_evidence_kind: 'crack',
       cred_value: plaintext,
       cred_user: username,
       cred_domain: domain,
       cred_hash: hashValue,
     });
-    seenNodes.add(credId);
+    seenNodes.add(resolvedCredId);
 
     if (username) {
-      const userLower = username.toLowerCase();
-      const userId = domain
-        ? `user-${domain.toLowerCase().replace(/\./g, '-')}-${userLower}`
-        : `user-${userLower}`;
+      const resolvedUserId = userId(username, domain);
 
-      if (!seenNodes.has(userId)) {
+      if (!seenNodes.has(resolvedUserId)) {
         nodes.push({
-          id: userId,
+          id: resolvedUserId,
           type: 'user',
           label: domain ? `${domain}\\${username}` : username,
           username,
           domain_name: domain,
         });
-        seenNodes.add(userId);
+        seenNodes.add(resolvedUserId);
       }
 
       edges.push({
-        source: userId,
-        target: credId,
+        source: resolvedUserId,
+        target: resolvedCredId,
         properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
     }
@@ -658,42 +660,38 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
     if (!hashMatch) continue;
     const hash = hashMatch[1].trim();
 
-    const userLower = username.toLowerCase();
-    const domainLower = domain.toLowerCase();
     const hostId = `host-${clientIp.replace(/\./g, '-')}`;
-    const userId = `user-${domainLower}-${userLower}`;
-    const credId = `cred-ntlmv2-${userLower}-${clientIp.replace(/\./g, '-')}`;
+    const resolvedUserId = userId(username, domain);
+    const resolvedCredId = credentialId('ntlmv2_challenge', hash, username, domain);
 
     if (!seenNodes.has(hostId)) {
       nodes.push({ id: hostId, type: 'host', label: clientIp, ip: clientIp, alive: true });
       seenNodes.add(hostId);
     }
-    if (!seenNodes.has(userId)) {
-      nodes.push({ id: userId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
-      seenNodes.add(userId);
+    if (!seenNodes.has(resolvedUserId)) {
+      nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
+      seenNodes.add(resolvedUserId);
     }
-    if (!seenNodes.has(credId)) {
+    if (!seenNodes.has(resolvedCredId)) {
       nodes.push({
-        id: credId,
+        id: resolvedCredId,
         type: 'credential',
         label: `NTLMv2:${username}`,
-        cred_type: 'ntlm',
+        cred_material_kind: 'ntlmv2_challenge',
+        cred_usable_for_auth: false,
+        cred_evidence_kind: 'capture',
         cred_value: hash,
         cred_user: username,
         cred_domain: domain,
+        observed_from_ip: clientIp,
       });
-      seenNodes.add(credId);
+      seenNodes.add(resolvedCredId);
     }
 
     edges.push({
-      source: userId,
-      target: credId,
+      source: resolvedUserId,
+      target: resolvedCredId,
       properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
-    });
-    edges.push({
-      source: userId,
-      target: hostId,
-      properties: { type: 'HAS_SESSION', confidence: 0.9, discovered_at: now, discovered_by: agentId },
     });
 
     // Skip past the stanza we just consumed
@@ -726,4 +724,29 @@ export function parseOutput(toolName: string, output: string, agentId?: string):
   const parser = PARSERS[toolName.toLowerCase()];
   if (!parser) return null;
   return parser(output, agentId);
+}
+
+function parseUpn(value: string): { username: string; domain: string } | null {
+  const atIndex = value.indexOf('@');
+  if (atIndex <= 0 || atIndex === value.length - 1) return null;
+  return {
+    username: value.slice(0, atIndex),
+    domain: value.slice(atIndex + 1),
+  };
+}
+
+function parseKerbruteLogin(value: string): { username: string; domain: string; password: string } | null {
+  const atIndex = value.indexOf('@');
+  if (atIndex <= 0 || atIndex === value.length - 1) return null;
+
+  const username = value.slice(0, atIndex);
+  const remainder = value.slice(atIndex + 1);
+  const colonIndex = remainder.indexOf(':');
+  if (colonIndex <= 0 || colonIndex === remainder.length - 1) return null;
+
+  return {
+    username,
+    domain: remainder.slice(0, colonIndex),
+    password: remainder.slice(colonIndex + 1),
+  };
 }

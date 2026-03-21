@@ -293,6 +293,36 @@ describe('Retrospective', () => {
     });
   });
 
+  describe('generateReport', () => {
+    it('lists only reusable credentials in the executive summary', () => {
+      const input = makeInput({
+        graph: {
+          nodes: [
+            ...makeInput().graph.nodes,
+            {
+              id: 'cred-passive',
+              properties: {
+                id: 'cred-passive',
+                type: 'credential',
+                label: 'NTLMv2:jdoe',
+                cred_material_kind: 'ntlmv2_challenge',
+                cred_usable_for_auth: false,
+                cred_user: 'jdoe',
+                discovered_at: '2026-01-01T11:00:00Z',
+                confidence: 1.0,
+              } as NodeProperties,
+            },
+          ],
+          edges: makeInput().graph.edges,
+        },
+      });
+
+      const report = generateReport(input);
+      expect(report).toContain('obtaining 1 reusable credential(s)');
+      expect(report).not.toContain('ntlmv2_challenge: jdoe');
+    });
+  });
+
   // =============================================
   // Report Generation
   // =============================================
