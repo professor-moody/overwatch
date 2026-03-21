@@ -290,3 +290,43 @@ export interface GraphQueryResult {
   edges: Array<{ source: string; target: string; properties: EdgeProperties }>;
   paths?: Array<{ nodes: string[]; edges: EdgeType[]; total_confidence: number }>;
 }
+
+// --- Retrospective Types ---
+
+export interface InferenceRuleSuggestion {
+  rule: InferenceRule;
+  evidence: string;
+  occurrences: number;
+}
+
+export interface SkillGapReport {
+  unused_skills: string[];
+  missing_skills: string[];
+  failed_techniques: string[];
+  skill_usage_counts: Record<string, number>;
+}
+
+export interface ScoringRecommendation {
+  current_weights: Record<string, number>;
+  suggested_weights: Record<string, number>;
+  rationale: string[];
+  success_by_frontier_type: Record<string, { total: number; successful: number }>;
+}
+
+export interface RLVRTrace {
+  step: number;
+  timestamp: string;
+  state_summary: { nodes: number; edges: number; access_level: string; objectives_achieved: number };
+  action: { type: string; target?: string; technique?: string; tool?: string };
+  outcome: { new_nodes: number; new_edges: number; objective_achieved: boolean };
+  reward: number;
+}
+
+export interface RetrospectiveResult {
+  inference_suggestions: InferenceRuleSuggestion[];
+  skill_gaps: SkillGapReport;
+  scoring: ScoringRecommendation;
+  report_markdown: string;
+  training_traces: RLVRTrace[];
+  summary: string;
+}

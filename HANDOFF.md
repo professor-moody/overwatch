@@ -27,14 +27,14 @@ Overwatch inverts the "LLM-as-orchestrator" pattern used by projects like red-ru
 │  └──────┬───────┘ └──────┬───────┘ └──────────┬───────────┘ │
 │         │                │                     │             │
 │  ┌──────▼────────────────────▼─────────────────────▼──────────┐ │
-│  │  18 MCP Tools                                          │ │
+│  │  19 MCP Tools                                          │ │
 │  │  get_state · next_task · report_finding ·              │ │
 │  │  validate_action · query_graph · find_paths ·          │ │
 │  │  get_skill · register_agent · get_agent_context ·      │ │
 │  │  update_agent · get_history · export_graph ·           │ │
 │  │  ingest_bloodhound · check_tools · parse_output ·     │ │
 │  │  track_process · check_processes ·                     │ │
-│  │  suggest_inference_rule                                │ │
+│  │  suggest_inference_rule · run_retrospective            │ │
 │  └────────────────────────┬───────────────────────────────┘ │
 └───────────────────────────┼─────────────────────────────────┘
                             │ stdio
@@ -375,12 +375,16 @@ overwatch/
 │   │   ├── toolcheck.ts        # check_tools
 │   │   ├── processes.ts        # track_process, check_processes
 │   │   ├── inference.ts        # suggest_inference_rule
-│   │   └── parse-output.ts     # parse_output
+│   │   ├── parse-output.ts     # parse_output
+│   │   └── retrospective.ts   # run_retrospective
+│   ├── cli/
+│   │   └── retrospective.ts    # npm run retrospective (CLI)
 │   ├── dashboard/
 │   │   └── index.html          # Live dashboard SPA (sigma.js + graphology)
 │   └── services/
 │       ├── graph-engine.ts     # Graph state, inference, frontier, validation
 │       ├── dashboard-server.ts # HTTP + WebSocket server for live dashboard
+│       ├── retrospective.ts   # Post-engagement analysis (5 outputs)
 │       ├── skill-index.ts      # TF-IDF RAG search over skills
 │       ├── cidr.ts             # CIDR expansion and scope checking
 │       ├── bloodhound-ingest.ts# BloodHound JSON parser
@@ -464,13 +468,13 @@ All items from the original v0.1 roadmap have been implemented except #7:
 Additional v0.2 work:
 - **29 offensive security skills** — full methodology library with exact commands, OPSEC noise ratings, graph reporting, detection signatures, and sequencing dependencies. All commands reference nxc (NetExec).
 - **Bug fixes** — scope guard edge leak, objective pathfinding to real nodes, snapshot rollback inference rule restoration, nmap service name normalization, BloodHound admincount boolean normalization.
-- **120 tests** across 7 test files, all passing.
+- **147 tests** across 8 test files, all passing.
 
 ### Roadmap (v0.3+)
 
 Priority items for the next iteration:
 
-1. **Retrospective tool** — structured post-engagement analysis that reviews the full graph history and produces actionable outputs (new inference rules, skill updates, weight tuning, RLVR training signal).
+1. ~~**Retrospective tool**~~ — ✅ `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, scoring weight recommendations, attack path report (markdown), RLVR training traces. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
 
 2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → bash execution → parse_output/report_finding → inference → repeat. This will surface integration gaps that unit tests can't catch.
 

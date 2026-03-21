@@ -1312,6 +1312,18 @@ export class GraphEngine {
     return [...this.activityLog];
   }
 
+  getInferenceRules(): InferenceRule[] {
+    return [...this.inferenceRules];
+  }
+
+  getConfig(): EngagementConfig {
+    return this.config;
+  }
+
+  getAllAgents(): AgentTask[] {
+    return Array.from(this.agents.values());
+  }
+
   exportGraph(): { nodes: Array<{ id: string; properties: NodeProperties }>; edges: Array<{ source: string; target: string; properties: EdgeProperties }> } {
     const nodes: Array<{ id: string; properties: NodeProperties }> = [];
     const edges: Array<{ source: string; target: string; properties: EdgeProperties }> = [];
