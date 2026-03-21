@@ -1,12 +1,12 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
 import { WebSocket } from 'ws';
+import { createServer } from 'http';
 import { unlinkSync, existsSync } from 'fs';
 
 const TEST_STATE_FILE = './state-test-dashboard.json';
-const TEST_PORT = 18384; // High port to avoid conflicts
 
 function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
   return {
@@ -61,11 +61,41 @@ describe('DashboardServer', () => {
     cleanup();
   });
 
-  it('starts and serves HTML on GET /', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
-    await dashboard.start();
+  it('start() returns { started: true } and sets running', async () => {
+    dashboard = new DashboardServer(engine, 0); // ephemeral port
+    const result = await dashboard.start();
+    expect(result.started).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(dashboard.running).toBe(true);
+  });
 
-    const res = await fetch(`http://localhost:${TEST_PORT}/`);
+  it('start() returns { started: false } when port is occupied', async () => {
+    // Occupy a port first
+    const blocker = createServer();
+    const blockerPort = await new Promise<number>((resolve) => {
+      blocker.listen(0, () => {
+        const addr = blocker.address();
+        resolve(typeof addr === 'object' ? addr!.port : 0);
+      });
+    });
+
+    try {
+      dashboard = new DashboardServer(engine, blockerPort);
+      const result = await dashboard.start();
+      expect(result.started).toBe(false);
+      expect(result.error).toBeDefined();
+      expect(dashboard.running).toBe(false);
+    } finally {
+      blocker.close();
+    }
+  });
+
+  it('serves HTML on GET /', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    const result = await dashboard.start();
+    expect(result.started).toBe(true);
+
+    const res = await fetch(`${dashboard.address}/`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     const html = await res.text();
@@ -74,10 +104,10 @@ describe('DashboardServer', () => {
   });
 
   it('serves state JSON on GET /api/state', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
 
-    const res = await fetch(`http://localhost:${TEST_PORT}/api/state`);
+    const res = await fetch(`${dashboard.address}/api/state`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     const data = await res.json();
@@ -89,32 +119,31 @@ describe('DashboardServer', () => {
   });
 
   it('serves graph JSON on GET /api/graph', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
 
-    const res = await fetch(`http://localhost:${TEST_PORT}/api/graph`);
+    const res = await fetch(`${dashboard.address}/api/graph`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.nodes).toBeInstanceOf(Array);
     expect(data.edges).toBeInstanceOf(Array);
-    // Should have nodes from the test config (hosts from CIDR + domain + objective)
     expect(data.nodes.length).toBeGreaterThan(0);
   });
 
   it('returns 404 for unknown paths', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
 
-    const res = await fetch(`http://localhost:${TEST_PORT}/unknown`);
+    const res = await fetch(`${dashboard.address}/unknown`);
     expect(res.status).toBe(404);
   });
 
   it('sends full_state on WebSocket connect', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
 
     const msg = await new Promise<any>((resolve, reject) => {
-      const ws = new WebSocket(`ws://localhost:${TEST_PORT}`);
+      const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
       ws.on('message', (data) => {
         ws.close();
         resolve(JSON.parse(data.toString()));
@@ -130,12 +159,12 @@ describe('DashboardServer', () => {
   });
 
   it('broadcasts graph_update on engine persist', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
     engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
 
     // Connect WS and wait for initial full_state
-    const ws = new WebSocket(`ws://localhost:${TEST_PORT}`);
+    const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
     await new Promise<void>((resolve, reject) => {
       ws.on('message', () => resolve()); // first message = full_state
       ws.on('error', reject);
@@ -169,11 +198,11 @@ describe('DashboardServer', () => {
   });
 
   it('tracks client count', async () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
+    dashboard = new DashboardServer(engine, 0);
     await dashboard.start();
     expect(dashboard.clientCount).toBe(0);
 
-    const ws = new WebSocket(`ws://localhost:${TEST_PORT}`);
+    const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
     await new Promise<void>((resolve) => { ws.on('open', resolve); });
     expect(dashboard.clientCount).toBe(1);
 
@@ -183,8 +212,25 @@ describe('DashboardServer', () => {
     expect(dashboard.clientCount).toBe(0);
   });
 
+  it('onGraphUpdate skips getState/exportGraph with zero clients', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    await dashboard.start();
+
+    const getStateSpy = vi.spyOn(engine, 'getState');
+    const exportGraphSpy = vi.spyOn(engine, 'exportGraph');
+
+    // No WS clients connected — onGraphUpdate should short-circuit
+    dashboard.onGraphUpdate({ new_nodes: ['test-node'] });
+
+    expect(getStateSpy).not.toHaveBeenCalled();
+    expect(exportGraphSpy).not.toHaveBeenCalled();
+
+    getStateSpy.mockRestore();
+    exportGraphSpy.mockRestore();
+  });
+
   it('reports address property', () => {
-    dashboard = new DashboardServer(engine, TEST_PORT);
-    expect(dashboard.address).toBe(`http://localhost:${TEST_PORT}`);
+    dashboard = new DashboardServer(engine, 8384);
+    expect(dashboard.address).toBe('http://localhost:8384');
   });
 });

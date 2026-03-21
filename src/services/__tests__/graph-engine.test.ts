@@ -824,6 +824,259 @@ describe('GraphEngine', () => {
       expect(state.access_summary.compromised_hosts.length).toBe(1);
       expect(state.access_summary.current_access_level).toBe('user');
     });
+
+    it('does not report domain_admin for imported privileged credential without access (Bug 2)', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Establish a session so compromised_hosts > 0 (otherwise access_level is 'none')
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+        ],
+        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      // Import a privileged credential WITHOUT OWNS_CRED edge (e.g. from BloodHound)
+      engine.ingestFinding(makeFinding({
+        nodes: [{
+          id: 'cred-da-imported',
+          type: 'credential',
+          label: 'DA cred imported',
+          cred_type: 'ntlm',
+          cred_user: 'admin',
+          cred_domain: 'test.local',
+          privileged: true,
+        }],
+      }));
+      const state = engine.getState();
+      // Should NOT be domain_admin — the cred is only discovered, not obtained
+      expect(state.access_summary.current_access_level).not.toBe('domain_admin');
+      expect(state.access_summary.current_access_level).toBe('user');
+    });
+
+    it('reports domain_admin when privileged credential is obtained via OWNS_CRED', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA cred', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const state = engine.getState();
+      expect(state.access_summary.current_access_level).toBe('domain_admin');
+    });
+  });
+
+  // =============================================
+  // Edge Overcounting (Bug 4)
+  // =============================================
+  describe('edge overcounting fix', () => {
+    it('ingestFinding returns empty new_edges when re-ingesting the same edge', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add a service and edge
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-overcount', type: 'service', label: 'overcount test' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-overcount', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      // Re-ingest same edge
+      const result = engine.ingestFinding(makeFinding({
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-overcount', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      expect(result.new_edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Persist Delta Detail (Bug 5)
+  // =============================================
+  describe('persist delta callback', () => {
+    it('fires update callback with real delta from ingestFinding', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      let receivedDetail: any = null;
+      engine.onUpdate((detail) => { receivedDetail = detail; });
+
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-delta-test', type: 'service', label: 'delta test' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-delta-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+
+      expect(receivedDetail).not.toBeNull();
+      expect(receivedDetail.new_nodes).toContain('svc-delta-test');
+      expect(receivedDetail.new_edges.length).toBeGreaterThan(0);
+    });
+  });
+
+  // =============================================
+  // Corrupted State Recovery (Bug 6)
+  // =============================================
+  describe('corrupted state recovery', () => {
+    it('recovers from corrupted state file by falling back to seed', () => {
+      // Write a corrupted state file
+      const { writeFileSync: wfs } = require('fs');
+      wfs(TEST_STATE_FILE, '{ corrupted json!!!');
+      // Should not throw — falls back to seedFromConfig
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const state = engine.getState();
+      // Should have re-seeded hosts from CIDR
+      expect(state.graph_summary.nodes_by_type['host']).toBe(14);
+    });
+  });
+
+  // =============================================
+  // Mixed-Direction Path Traversal (P1 fix)
+  // =============================================
+  describe('mixed-direction path traversal', () => {
+    it('hopsToNearestObjective traverses host <-HAS_SESSION- user -ADMIN_TO-> target_host', () => {
+      // Use an objective targeting a host (not a credential) to avoid auto-achievement
+      const config = makeConfig({
+        objectives: [{
+          id: 'obj-dc',
+          description: 'Compromise DC',
+          target_node_type: 'host' as const,
+          target_criteria: { hostname: 'dc01.test.local' },
+          achieved: false,
+        }],
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'host-dc01', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local', ip: '10.10.10.5', alive: true },
+        ],
+        edges: [
+          // HAS_SESSION: user -> host (attacker has session on host-10-10-10-1)
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          // ADMIN_TO: user -> dc01 (but no session, so objective not achieved)
+          { source: 'user-attacker', target: 'host-dc01', properties: { type: 'ADMIN_TO', confidence: 0.8, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // Path: host-10-10-10-1 <-(HAS_SESSION)- user-attacker -(ADMIN_TO)-> host-dc01
+      // Requires traversing HAS_SESSION in reverse
+      const hops = engine.hopsToNearestObjective('host-10-10-10-1');
+      expect(hops).not.toBeNull();
+      expect(hops).toBe(2);
+    });
+
+    it('findPathsToObjective finds path through mixed-direction chain', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'cred-da', type: 'credential', label: 'DA cred', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const paths = engine.findPathsToObjective('obj-da');
+      expect(paths.length).toBeGreaterThan(0);
+      expect(paths[0].nodes).toContain('cred-da');
+    });
+
+    it('findPaths traverses HAS_SESSION in reverse direction', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // host -> user requires traversing HAS_SESSION backwards
+      const paths = engine.findPaths('host-10-10-10-1', 'user-attacker');
+      expect(paths.length).toBe(1);
+      expect(paths[0].nodes).toContain('host-10-10-10-1');
+      expect(paths[0].nodes).toContain('user-attacker');
+    });
+
+    it('inferred edges get inferred_by_rule and inferred_at set', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Ingest a credential to trigger the cred-fanout inference rule
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-smb-test', type: 'service', label: 'SMB on 10.10.10.1', port: 445, service_name: 'smb' },
+          { id: 'cred-test', type: 'credential', label: 'test cred', cred_type: 'ntlm', cred_user: 'testuser', cred_domain: 'test.local' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-smb-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // The cred-fanout rule should have created POTENTIAL_AUTH edges with inferred_by_rule
+      const exported = engine.exportGraph();
+      const inferredEdges = exported.edges.filter((e: any) => e.properties.inferred_by_rule);
+      expect(inferredEdges.length).toBeGreaterThan(0);
+      for (const e of inferredEdges) {
+        expect(e.properties.inferred_by_rule).toBe('rule-cred-fanout');
+        expect(e.properties.inferred_at).toBeDefined();
+      }
+    });
+
+    it('confirming an inferred edge sets confirmed_at', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // First: create an inferred edge via cred-fanout
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-smb-test', type: 'service', label: 'SMB on 10.10.10.1', port: 445, service_name: 'smb' },
+          { id: 'cred-test', type: 'credential', label: 'test cred', cred_type: 'ntlm', cred_user: 'testuser', cred_domain: 'test.local' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-smb-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // Find the inferred POTENTIAL_AUTH edge
+      let exported = engine.exportGraph();
+      const inferredEdge = exported.edges.find((e: any) =>
+        e.properties.type === 'POTENTIAL_AUTH' && e.properties.inferred_by_rule === 'rule-cred-fanout'
+      );
+      expect(inferredEdge).toBeDefined();
+      expect(inferredEdge!.properties.confirmed_at).toBeUndefined();
+
+      // Now confirm it by ingesting a finding with confidence 1.0 on the same edge
+      engine.ingestFinding(makeFinding({
+        nodes: [],
+        edges: [
+          { source: inferredEdge!.source, target: inferredEdge!.target, properties: { type: 'POTENTIAL_AUTH', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // The edge should now have confirmed_at set
+      exported = engine.exportGraph();
+      const confirmedEdge = exported.edges.find((e: any) =>
+        e.source === inferredEdge!.source && e.target === inferredEdge!.target && e.properties.type === 'POTENTIAL_AUTH'
+      );
+      expect(confirmedEdge).toBeDefined();
+      expect(confirmedEdge!.properties.confirmed_at).toBeDefined();
+      expect(confirmedEdge!.properties.confidence).toBe(1.0);
+      // inferred_by_rule should be preserved
+      expect(confirmedEdge!.properties.inferred_by_rule).toBe('rule-cred-fanout');
+    });
+
+    it('RUNS edge is NOT traversable in reverse for pathfinding', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-isolated', type: 'service', label: 'isolated svc', port: 9999, service_name: 'unknown' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-isolated', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // svc -> host requires traversing RUNS backwards — should NOT work
+      const paths = engine.findPaths('svc-isolated', 'host-10-10-10-1');
+      expect(paths.length).toBe(0);
+    });
   });
 });
 

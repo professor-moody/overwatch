@@ -61,8 +61,23 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
     input.inferenceRules.flatMap(r => r.produces.map(p => p.edge_type))
   );
 
+  // Map node types to inference engine selectors
+  const typeToSourceSelector: Record<string, string> = {
+    host: 'parent_host',
+    domain: 'domain_nodes',
+    user: 'domain_users',
+    credential: 'domain_credentials',
+  };
+
   for (const [key, pattern] of edgePatterns) {
     if (pattern.count >= 3 && !coveredEdgeTypes.has(pattern.edgeType)) {
+      // Skip same-type patterns — they'd produce self-loops that the engine drops
+      if (pattern.sourceType === pattern.targetType) continue;
+
+      const sourceSelector = typeToSourceSelector[pattern.sourceType];
+      // Skip if we can't map the source type to a valid selector
+      if (!sourceSelector) continue;
+
       suggestions.push({
         rule: {
           id: `suggested-${pattern.edgeType.toLowerCase()}-${pattern.sourceType}-${pattern.targetType}`,
@@ -71,7 +86,7 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
           trigger: { node_type: pattern.targetType as any },
           produces: [{
             edge_type: pattern.edgeType,
-            source_selector: 'trigger_node',
+            source_selector: sourceSelector,
             target_selector: 'trigger_node',
             confidence: 0.6,
           }],
@@ -83,29 +98,54 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
   }
 
   // 2. Check which inferred edges were confirmed (validates existing rules)
-  const inferredEdges = input.graph.edges.filter(e => e.properties.confidence < 1.0);
-  const confirmedAfterInference = inferredEdges.filter(e => {
-    // Look for a confirmed edge between the same nodes with the same type
-    return input.graph.edges.some(other =>
-      other.source === e.source && other.target === e.target &&
-      other.properties.type === e.properties.type &&
-      other.properties.confidence >= 1.0 && other !== e
-    );
-  });
+  //    Uses edge properties: inferred_by_rule (set when inference creates an edge)
+  //    and confirmed_at (set when a confirmed finding merges into the inferred edge).
+  const inferredEdges = input.graph.edges.filter(e => e.properties.inferred_by_rule);
+  const confirmedEdges = inferredEdges.filter(e => e.properties.confirmed_at);
 
-  // Add a meta-suggestion about rule accuracy if we have data
-  if (inferredEdges.length > 0) {
-    const confirmRate = confirmedAfterInference.length / inferredEdges.length;
-    if (confirmRate < 0.1 && inferredEdges.length >= 5) {
+  // Per-rule confirmation rates
+  const ruleStats = new Map<string, { total: number; confirmed: number }>();
+  for (const e of inferredEdges) {
+    const ruleId = e.properties.inferred_by_rule!;
+    const stats = ruleStats.get(ruleId) || { total: 0, confirmed: 0 };
+    stats.total++;
+    if (e.properties.confirmed_at) stats.confirmed++;
+    ruleStats.set(ruleId, stats);
+  }
+
+  // Flag individual low-performing rules
+  for (const [ruleId, stats] of ruleStats) {
+    if (stats.total >= 3) {
+      const rate = stats.confirmed / stats.total;
+      if (rate < 0.1) {
+        suggestions.push({
+          rule: {
+            id: `suggested-review-${ruleId}`,
+            name: `Review low-performing rule: ${ruleId}`,
+            description: `Only ${(rate * 100).toFixed(0)}% of edges from rule '${ruleId}' were confirmed (${stats.confirmed}/${stats.total}). Consider raising its confidence threshold or removing it.`,
+            trigger: {},
+            produces: [],
+          },
+          evidence: `${stats.confirmed}/${stats.total} inferred edges confirmed for rule ${ruleId}`,
+          occurrences: stats.total,
+        });
+      }
+    }
+  }
+
+  // Global meta-suggestion if overall confirmation is low
+  if (inferredEdges.length >= 5) {
+    const globalRate = confirmedEdges.length / inferredEdges.length;
+    if (globalRate < 0.1) {
       suggestions.push({
         rule: {
           id: 'suggested-review-low-confidence',
           name: 'Review low-performing inference rules',
-          description: `Only ${(confirmRate * 100).toFixed(0)}% of inferred edges were confirmed. Consider raising confidence thresholds or removing noisy rules.`,
+          description: `Only ${(globalRate * 100).toFixed(0)}% of inferred edges were confirmed overall. Consider raising confidence thresholds or removing noisy rules.`,
           trigger: {},
           produces: [],
         },
-        evidence: `${confirmedAfterInference.length}/${inferredEdges.length} inferred edges confirmed`,
+        evidence: `${confirmedEdges.length}/${inferredEdges.length} inferred edges confirmed`,
         occurrences: inferredEdges.length,
       });
     }

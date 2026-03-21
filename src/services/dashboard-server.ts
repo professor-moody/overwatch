@@ -13,6 +13,11 @@ import type { GraphEngine } from './graph-engine.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+export interface DashboardStartResult {
+  started: boolean;
+  error?: string;
+}
+
 export interface DashboardEvent {
   type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state';
   timestamp: string;
@@ -26,6 +31,7 @@ export class DashboardServer {
   private port: number;
   private clients: Set<WebSocket> = new Set();
   private dashboardHtml: string | null = null;
+  private _running: boolean = false;
 
   constructor(engine: GraphEngine, port: number = 8384) {
     this.engine = engine;
@@ -33,6 +39,11 @@ export class DashboardServer {
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
+
+    this.wss.on('error', () => {
+      // Absorb WSS errors (e.g. from underlying HTTP server EADDRINUSE)
+      // — handled by httpServer 'error' listener in start()
+    });
 
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
@@ -55,25 +66,29 @@ export class DashboardServer {
     });
   }
 
-  start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  start(): Promise<DashboardStartResult> {
+    return new Promise((resolve) => {
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
-        if (err.code === 'EADDRINUSE') {
-          console.error(`Dashboard port ${this.port} in use, skipping dashboard`);
-          resolve();
-        } else {
-          reject(err);
-        }
+        console.error(`Dashboard failed on port ${this.port}: ${err.code || err.message}`);
+        this._running = false;
+        resolve({ started: false, error: err.code || err.message });
       });
 
       this.httpServer.listen(this.port, () => {
+        // Read the actual port (supports port 0 for ephemeral)
+        const addr = this.httpServer.address();
+        if (addr && typeof addr === 'object') {
+          this.port = addr.port;
+        }
+        this._running = true;
         console.error(`Dashboard running at http://localhost:${this.port}`);
-        resolve();
+        resolve({ started: true });
       });
     });
   }
 
   stop(): Promise<void> {
+    this._running = false;
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
@@ -96,6 +111,9 @@ export class DashboardServer {
 
   // Called by GraphEngine after persist()
   onGraphUpdate(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
+    // Short-circuit: skip expensive getState/exportGraph when nobody is listening
+    if (this.clients.size === 0) return;
+
     const state = this.engine.getState();
     const graph = this.engine.exportGraph();
     this.broadcast({
@@ -158,6 +176,10 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
+  }
+
+  get running(): boolean {
+    return this._running;
   }
 
   get address(): string {

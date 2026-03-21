@@ -3,7 +3,7 @@
 // Detects installed offensive security tools on the system
 // ============================================================
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 export interface ToolStatus {
   name: string;
@@ -37,7 +37,7 @@ const TOOL_CHECKS: Array<{ name: string; command: string; versionFlag: string }>
 function checkTool(tool: { name: string; command: string; versionFlag: string }): ToolStatus {
   try {
     // Check if command exists
-    const whichResult = execSync(`which ${tool.command} 2>/dev/null`, { encoding: 'utf-8', timeout: 5000 }).trim();
+    const whichResult = execFileSync('which', [tool.command], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     if (!whichResult) {
       return { name: tool.name, installed: false };
     }
@@ -45,9 +45,10 @@ function checkTool(tool: { name: string; command: string; versionFlag: string })
     // Try to get version
     let version: string | undefined;
     try {
-      const output = execSync(`${tool.command} ${tool.versionFlag} 2>&1`, {
+      const output = execFileSync(tool.command, [tool.versionFlag], {
         encoding: 'utf-8',
         timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
       }).trim();
       // Extract first line that looks like a version
       const lines = output.split('\n');

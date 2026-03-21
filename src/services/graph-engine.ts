@@ -115,6 +115,17 @@ const BUILTIN_RULES: InferenceRule[] = [
   }
 ];
 
+// --- Edge types traversable in both directions for attack-path planning ---
+// These represent relationships where the attacker can logically move in either
+// direction (e.g., HAS_SESSION means user has access to host, traversable from
+// either end). All other edge types remain strictly directional.
+const BIDIRECTIONAL_EDGE_TYPES: Set<EdgeType> = new Set([
+  'HAS_SESSION', 'ADMIN_TO', 'CAN_RDPINTO', 'CAN_PSREMOTE',
+  'OWNS_CRED', 'VALID_ON',
+  'MEMBER_OF', 'MEMBER_OF_DOMAIN',
+  'RELATED', 'SAME_DOMAIN', 'TRUSTS',
+]);
+
 export type GraphUpdateCallback = (detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }) => void;
 
 export class GraphEngine {
@@ -125,6 +136,8 @@ export class GraphEngine {
   private agents: Map<string, AgentTask>;
   private stateFilePath: string;
   private updateCallbacks: GraphUpdateCallback[] = [];
+  private lastSnapshotTime: number = 0;
+  private pathGraphCache: any = null;  // cached undirected projection for pathfinding
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     this.graph = new Graph({ type: 'directed', multi: true, allowSelfLoops: false });
@@ -137,8 +150,21 @@ export class GraphEngine {
 
     // Attempt to load existing state
     if (existsSync(this.stateFilePath)) {
-      this.loadState();
-      this.log('Resumed engagement from persisted state');
+      try {
+        this.loadState();
+        this.log('Resumed engagement from persisted state');
+      } catch (err) {
+        console.error(`Failed to load state file: ${err instanceof Error ? err.message : String(err)}`);
+        // Attempt recovery from most recent snapshot
+        const recovered = this.recoverFromSnapshot();
+        if (recovered) {
+          this.log('Recovered engagement from snapshot after corrupted state file');
+        } else {
+          console.error('No valid snapshot found, re-seeding from config');
+          this.seedFromConfig();
+          this.log('Engagement re-initialized from config after corrupted state');
+        }
+      }
     } else {
       this.seedFromConfig();
       this.log('Engagement initialized from config');
@@ -222,29 +248,36 @@ export class GraphEngine {
       this.graph.mergeNodeAttributes(props.id, props);
     } else {
       this.graph.addNode(props.id, props);
+      this.invalidatePathGraph();
     }
     return props.id;
   }
 
-  addEdge(source: string, target: string, props: EdgeProperties): string {
+  addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean } {
     // Check for duplicate edge of same type
     const existingEdges = this.graph.edges(source, target);
     for (const edgeId of existingEdges) {
       const attrs = this.graph.getEdgeAttributes(edgeId) as EdgeProperties;
       if (attrs.type === props.type) {
+        // Detect confirmation of inferred edge
+        if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
+          props = { ...props, confirmed_at: new Date().toISOString() };
+          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`);
+        }
         // Update existing edge
         this.graph.mergeEdgeAttributes(edgeId, props);
-        return edgeId;
+        return { id: edgeId, isNew: false };
       }
     }
     // New edge
+    this.invalidatePathGraph();
     const edgeId = `${source}--${props.type}--${target}`;
     try {
-      return this.graph.addEdgeWithKey(edgeId, source, target, props);
+      return { id: this.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
     } catch {
       // Edge key might already exist for a different source/target pair
       const fallbackId = `${edgeId}-${Date.now()}`;
-      return this.graph.addEdgeWithKey(fallbackId, source, target, props);
+      return { id: this.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
     }
   }
 
@@ -304,9 +337,13 @@ export class GraphEngine {
         ...edge.properties,
         discovered_by: finding.agent_id
       };
-      const edgeId = this.addEdge(edge.source, edge.target, fullProps);
-      newEdges.push(edgeId);
-      this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id);
+      const { id: edgeId, isNew } = this.addEdge(edge.source, edge.target, fullProps);
+      if (isNew) {
+        newEdges.push(edgeId);
+        this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id);
+      } else {
+        this.log(`Updated edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id);
+      }
     }
 
     // Run inference rules against new and updated nodes
@@ -318,10 +355,11 @@ export class GraphEngine {
     // Check objectives
     this.evaluateObjectives();
 
-    // Persist
-    this.persist();
+    // Persist with real delta detail for dashboard callbacks
+    const result = { new_nodes: newNodes, new_edges: newEdges, inferred_edges: inferredEdges };
+    this.persist(result);
 
-    return { new_nodes: newNodes, new_edges: newEdges, inferred_edges: inferredEdges };
+    return result;
   }
 
   // =============================================
@@ -370,12 +408,14 @@ export class GraphEngine {
             return attrs.type === production.edge_type;
           });
           if (alreadyExists) continue;
-          const edgeId = this.addEdge(src, tgt, {
+          const { id: edgeId } = this.addEdge(src, tgt, {
             type: production.edge_type,
             confidence: production.confidence,
             discovered_at: now,
             discovered_by: `inference:${rule.id}`,
             tested: false,
+            inferred_by_rule: rule.id,
+            inferred_at: now,
             ...production.properties as Record<string, unknown>
           });
           inferred.push(edgeId);
@@ -422,12 +462,14 @@ export class GraphEngine {
             });
             if (alreadyExists) continue;
 
-            const edgeId = this.addEdge(src, tgt, {
+            const { id: edgeId } = this.addEdge(src, tgt, {
               type: production.edge_type,
               confidence: production.confidence,
               discovered_at: now,
               discovered_by: `inference:${rule.id}`,
               tested: false,
+              inferred_by_rule: rule.id,
+              inferred_at: now,
               ...production.properties as Record<string, unknown>
             });
 
@@ -619,6 +661,60 @@ export class GraphEngine {
   // Path Analysis
   // =============================================
 
+  /**
+   * Build an undirected projection of the graph for pathfinding.
+   * Edges in BIDIRECTIONAL_EDGE_TYPES are added as undirected (both directions).
+   * All other edges keep their original direction only.
+   * Cached and invalidated when the graph changes.
+   */
+  private buildPathGraph(): any {
+    if (this.pathGraphCache) return this.pathGraphCache;
+
+    const pg = new Graph({ type: 'directed', multi: false, allowSelfLoops: false });
+
+    // Copy all nodes (IDs only)
+    this.graph.forEachNode((id: string) => {
+      pg.addNode(id);
+    });
+
+    // Copy edges with directionality semantics
+    this.graph.forEachEdge((edgeId: string, attrs: any, source: string, target: string) => {
+      const ep = attrs as EdgeProperties;
+      const weight = 1.0 - Math.min(ep.confidence, 0.99); // lower weight = better path
+
+      // Add forward direction (always)
+      const fwdKey = `${source}--${ep.type}--${target}`;
+      if (!pg.hasEdge(fwdKey)) {
+        try { pg.addEdgeWithKey(fwdKey, source, target, { weight }); } catch {}
+      }
+
+      // Add reverse direction for bidirectional edge types
+      if (BIDIRECTIONAL_EDGE_TYPES.has(ep.type)) {
+        const revKey = `${target}--${ep.type}--${source}-rev`;
+        if (!pg.hasEdge(revKey)) {
+          try { pg.addEdgeWithKey(revKey, target, source, { weight }); } catch {}
+        }
+      }
+    });
+
+    this.pathGraphCache = pg;
+    return pg;
+  }
+
+  private invalidatePathGraph(): void {
+    this.pathGraphCache = null;
+  }
+
+  private findShortestPath(fromNode: string, toNode: string): string[] | null {
+    const pg = this.buildPathGraph();
+    if (!pg.hasNode(fromNode) || !pg.hasNode(toNode)) return null;
+    try {
+      return dijkstra.bidirectional(pg, fromNode, toNode, 'weight');
+    } catch {
+      return null;
+    }
+  }
+
   hopsToNearestObjective(fromNodeId: string): number | null {
     if (!this.graph.hasNode(fromNodeId)) return null;
 
@@ -631,7 +727,7 @@ export class GraphEngine {
     for (const targetId of targetNodeIds) {
       if (targetId === fromNodeId) return 0;
       try {
-        const path = dijkstra.bidirectional(this.graph, fromNodeId, targetId);
+        const path = this.findShortestPath(fromNodeId, targetId);
         if (path && (minHops === null || path.length - 1 < minHops)) {
           minHops = path.length - 1;
         }
@@ -654,12 +750,13 @@ export class GraphEngine {
 
     if (targetNodeIds.length === 0) return paths;
 
-    // Find all compromised hosts as potential starting points
+    // Find all nodes where we have access as potential starting points
     const startNodes: string[] = [];
-    this.graph.forEachNode((id, attrs) => {
+    this.graph.forEachNode((id: string, attrs: any) => {
       const node = attrs as NodeProperties;
       if (node.type === 'host') {
-        const hasAccess = this.graph.edges(id).some(e => {
+        // Host is a start if it has HAS_SESSION or ADMIN_TO edges (in either direction)
+        const hasAccess = this.graph.edges(id).some((e: string) => {
           const ep = this.graph.getEdgeAttributes(e) as EdgeProperties;
           return (ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9;
         });
@@ -670,7 +767,7 @@ export class GraphEngine {
     for (const start of startNodes) {
       for (const targetId of targetNodeIds) {
         try {
-          const path = dijkstra.bidirectional(this.graph, start, targetId);
+          const path = this.findShortestPath(start, targetId);
           if (path) {
             paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
           }
@@ -705,7 +802,7 @@ export class GraphEngine {
 
     const paths: Array<{ nodes: string[]; total_confidence: number }> = [];
     try {
-      const path = dijkstra.bidirectional(this.graph, fromNode, toNode);
+      const path = this.findShortestPath(fromNode, toNode);
       if (path) {
         paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
       }
@@ -721,16 +818,16 @@ export class GraphEngine {
     for (let i = 0; i < path.length - 1; i++) {
       const edges = this.graph.edges(path[i], path[i + 1]);
       if (edges.length === 0) {
-        // Check reverse direction for undirected traversal
+        // Check reverse direction for bidirectional traversal
         const reverseEdges = this.graph.edges(path[i + 1], path[i]);
         if (reverseEdges.length === 0) { totalConfidence *= 0.1; continue; }
         const bestConfidence = Math.max(
-          ...reverseEdges.map(e => (this.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
+          ...reverseEdges.map((e: string) => (this.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
         );
         totalConfidence *= bestConfidence;
       } else {
         const bestConfidence = Math.max(
-          ...edges.map(e => (this.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
+          ...edges.map((e: string) => (this.graph.getEdgeAttributes(e) as EdgeProperties).confidence)
         );
         totalConfidence *= bestConfidence;
       }
@@ -1190,10 +1287,16 @@ export class GraphEngine {
 
   private computeAccessLevel(compromised: string[]): string {
     if (compromised.length === 0) return 'none';
-    // Check for DA
-    const hasDa = this.getNodesByType('credential').some(c =>
-      c.privileged === true && c.confidence >= 0.9
-    );
+    // Check for DA — credential must be actually obtained, not just discovered
+    const hasDa = this.getNodesByType('credential').some(c => {
+      if (c.privileged !== true || c.confidence < 0.9) return false;
+      // Must have an OWNS_CRED inbound edge or explicit obtained flag
+      if (c.obtained === true) return true;
+      return this.graph.inEdges(c.id).some((e: string) => {
+        const ep = this.graph.getEdgeAttributes(e) as EdgeProperties;
+        return ep.type === 'OWNS_CRED' && ep.confidence >= 0.9;
+      });
+    });
     if (hasDa) return 'domain_admin';
     // Check for local admin
     const hasAdmin = !!this.graph.findEdge((_, attrs) =>
@@ -1209,7 +1312,7 @@ export class GraphEngine {
 
   private static readonly MAX_SNAPSHOTS = 5;
 
-  persist(): void {
+  persist(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] } = {}): void {
     const data = {
       config: this.config,
       graph: this.graph.export(),
@@ -1223,13 +1326,15 @@ export class GraphEngine {
     const tmpPath = this.stateFilePath + '.tmp';
     writeFileSync(tmpPath, json);
 
-    // Rotate snapshot before overwriting
-    if (existsSync(this.stateFilePath)) {
+    // Rotate snapshot before overwriting (throttled to once per 30s)
+    const now = Date.now();
+    if (existsSync(this.stateFilePath) && (now - this.lastSnapshotTime >= 30000)) {
       this.rotateSnapshot();
+      this.lastSnapshotTime = now;
     }
 
     renameSync(tmpPath, this.stateFilePath);
-    this.fireUpdateCallbacks({});
+    this.fireUpdateCallbacks(detail);
   }
 
   private rotateSnapshot(): void {
@@ -1302,6 +1407,34 @@ export class GraphEngine {
         this.inferenceRules.push(rule);
       }
     }
+  }
+
+  private recoverFromSnapshot(): boolean {
+    const snapshots = this.listSnapshots().reverse(); // newest first
+    for (const snap of snapshots) {
+      try {
+        const dir = dirname(this.stateFilePath);
+        const raw = readFileSync(join(dir, snap), 'utf-8');
+        const data = JSON.parse(raw);
+        this.graph = new Graph({ type: 'directed', multi: true, allowSelfLoops: false });
+        this.config = data.config;
+        this.graph.import(data.graph);
+        this.activityLog = data.activityLog || [];
+        this.agents = new Map(data.agents || []);
+        this.inferenceRules = [...BUILTIN_RULES];
+        if (data.inferenceRules) {
+          for (const rule of data.inferenceRules) {
+            this.inferenceRules.push(rule);
+          }
+        }
+        // Overwrite corrupted state file with valid snapshot data
+        this.persist();
+        return true;
+      } catch {
+        continue;
+      }
+    }
+    return false;
   }
 
   // =============================================

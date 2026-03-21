@@ -117,6 +117,10 @@ export interface EdgeProperties {
   test_result?: 'success' | 'failure' | 'partial' | 'error';
   opsec_noise?: number;         // 0.0 (silent) to 1.0 (extremely loud)
   notes?: string;
+  // Inference lifecycle tracking
+  inferred_by_rule?: string;    // rule ID that created this edge
+  inferred_at?: string;         // ISO timestamp when inferred
+  confirmed_at?: string;        // ISO timestamp when confidence raised to 1.0
   [key: string]: unknown;
 }
 

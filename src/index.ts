@@ -76,10 +76,6 @@ registerRetrospectiveTools(server, engine, skills);
 const dashboardPort = parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
 const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort) : null;
 
-if (dashboard) {
-  engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
-}
-
 // ============================================================
 // Start Server
 // ============================================================
@@ -88,10 +84,27 @@ async function main(): Promise<void> {
   await server.connect(transport);
   console.error('Overwatch MCP server running on stdio');
 
+  // Dashboard starts fire-and-forget — never blocks MCP transport
+  // Only register the graph-update callback if the server actually binds
   if (dashboard) {
-    await dashboard.start();
+    const result = await dashboard.start();
+    if (result.started) {
+      engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
+    }
   }
 }
+
+// Graceful shutdown
+function shutdown() {
+  console.error('Shutting down Overwatch...');
+  if (dashboard) {
+    dashboard.stop().catch(() => {});
+  }
+  engine.persist();
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 main().catch(error => {
   console.error('Server error:', error);

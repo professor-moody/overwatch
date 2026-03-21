@@ -132,6 +132,29 @@ describe('Retrospective', () => {
       const runsSuggestion = suggestions.find(s => s.rule.id.includes('runs'));
       expect(runsSuggestion).toBeDefined();
       expect(runsSuggestion!.occurrences).toBeGreaterThanOrEqual(3);
+      // Bug 3: source_selector and target_selector must differ to avoid self-loops
+      const prod = runsSuggestion!.rule.produces[0];
+      expect(prod.source_selector).not.toBe(prod.target_selector);
+      expect(prod.source_selector).toBe('parent_host');
+      expect(prod.target_selector).toBe('trigger_node');
+    });
+
+    it('skips same-type patterns that would produce self-loops (Bug 3)', () => {
+      const input = makeInput();
+      // Add 3+ host→host REACHABLE edges (same type on both sides)
+      input.graph.nodes.push({
+        id: 'host-10-10-10-3',
+        properties: { id: 'host-10-10-10-3', type: 'host', label: '10.10.10.3', ip: '10.10.10.3', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties,
+      });
+      input.graph.edges.push(
+        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-01-01T07:00:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-2', target: 'host-10-10-10-1', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-01-01T07:01:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-1', target: 'host-10-10-10-3', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-01-01T07:02:00Z' } as EdgeProperties },
+      );
+      const suggestions = analyzeInferenceGaps(input);
+      // Same-type (host→host) patterns should be excluded to avoid self-loops
+      const reachableSuggestion = suggestions.find(s => s.rule.id.includes('reachable'));
+      expect(reachableSuggestion).toBeUndefined();
     });
 
     it('does not suggest rules for patterns covered by existing rules', () => {
@@ -148,6 +171,58 @@ describe('Retrospective', () => {
       input.graph.edges = [];
       const suggestions = analyzeInferenceGaps(input);
       expect(suggestions).toEqual([]);
+    });
+
+    it('counts confirmed inferred edges using inferred_by_rule + confirmed_at', () => {
+      const input = makeInput();
+      // Replace edges with 6 inferred edges: 3 confirmed, 3 not
+      input.graph.edges = [
+        { source: 'cred-da', target: 'svc-smb-1', properties: { type: 'POTENTIAL_AUTH', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-cred-fanout', inferred_at: '2026-01-01T10:00:00Z', confirmed_at: '2026-01-01T11:00:00Z' } as EdgeProperties },
+        { source: 'cred-da', target: 'svc-smb-2', properties: { type: 'POTENTIAL_AUTH', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-cred-fanout', inferred_at: '2026-01-01T10:00:00Z', confirmed_at: '2026-01-01T11:05:00Z' } as EdgeProperties },
+        { source: 'user-jdoe', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: '2026-01-01T05:00:00Z', inferred_by_rule: 'rule-session', inferred_at: '2026-01-01T04:00:00Z', confirmed_at: '2026-01-01T05:00:00Z' } as EdgeProperties },
+        // These 3 are inferred but NOT confirmed
+        { source: 'user-jdoe', target: 'host-10-10-10-2', properties: { type: 'ADMIN_TO', confidence: 0.7, discovered_at: '2026-01-01T06:00:00Z', inferred_by_rule: 'rule-cred-fanout', inferred_at: '2026-01-01T06:00:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-1', target: 'svc-smb-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-2', target: 'svc-smb-2', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties },
+      ];
+
+      const suggestions = analyzeInferenceGaps(input);
+      // With 4 inferred edges (3 confirmed, 1 not), global rate is 75% — no low-confidence warning
+      const lowConfSuggestion = suggestions.find(s => s.rule.id === 'suggested-review-low-confidence');
+      expect(lowConfSuggestion).toBeUndefined();
+    });
+
+    it('flags low-performing rules by per-rule confirmation rate', () => {
+      const input = makeInput();
+      // 5 inferred edges from rule-bad, 0 confirmed
+      input.graph.edges = [];
+      for (let i = 0; i < 5; i++) {
+        input.graph.edges.push({
+          source: `cred-da`, target: `svc-smb-${i % 2 + 1}`,
+          properties: { type: 'POTENTIAL_AUTH', confidence: 0.6, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-bad', inferred_at: '2026-01-01T10:00:00Z' } as EdgeProperties,
+        });
+      }
+
+      const suggestions = analyzeInferenceGaps(input);
+      // Should have a per-rule suggestion for rule-bad
+      const ruleBadSuggestion = suggestions.find(s => s.rule.id === 'suggested-review-rule-bad');
+      expect(ruleBadSuggestion).toBeDefined();
+      expect(ruleBadSuggestion!.evidence).toContain('0/5');
+      // Should also have the global low-confidence suggestion
+      const globalSuggestion = suggestions.find(s => s.rule.id === 'suggested-review-low-confidence');
+      expect(globalSuggestion).toBeDefined();
+    });
+
+    it('does not flag rules with insufficient data (<3 edges)', () => {
+      const input = makeInput();
+      input.graph.edges = [
+        { source: 'cred-da', target: 'svc-smb-1', properties: { type: 'POTENTIAL_AUTH', confidence: 0.6, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-few', inferred_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+        { source: 'cred-da', target: 'svc-smb-2', properties: { type: 'POTENTIAL_AUTH', confidence: 0.6, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-few', inferred_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ];
+
+      const suggestions = analyzeInferenceGaps(input);
+      const ruleFewSuggestion = suggestions.find(s => s.rule.id.includes('rule-few'));
+      expect(ruleFewSuggestion).toBeUndefined();
     });
   });
 
