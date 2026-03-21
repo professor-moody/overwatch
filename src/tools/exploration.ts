@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import type { NodeType, EdgeType } from '../types.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerExplorationTools(server: McpServer, engine: GraphEngine): void {
 
@@ -54,7 +55,7 @@ filter edges by type, or combine these. Results include full properties.`,
         openWorldHint: false
       }
     },
-    async (params) => {
+    withErrorBoundary('query_graph', async (params) => {
       const result = engine.queryGraph({
         node_type: params.node_type as NodeType | undefined,
         node_filter: params.node_filter,
@@ -76,7 +77,7 @@ filter edges by type, or combine these. Results include full properties.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -108,7 +109,7 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         openWorldHint: false
       }
     },
-    async ({ objective_id, from_node, to_node, max_paths }) => {
+    withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths }) => {
       let paths;
       if (objective_id) {
         paths = engine.findPathsToObjective(objective_id, max_paths);
@@ -130,6 +131,6 @@ Returns paths with per-hop confidence scores and total path confidence.`,
           text: JSON.stringify({ paths_found: paths.length, paths }, null, 2)
         }]
       };
-    }
+    })
   );
 }

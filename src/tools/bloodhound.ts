@@ -4,6 +4,7 @@ import { resolve, join, extname } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { parseBloodHoundFile } from '../services/bloodhound-ingest.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerBloodHoundTools(server: McpServer, engine: GraphEngine): void {
 
@@ -39,7 +40,7 @@ populate the graph with Active Directory structure.`,
         openWorldHint: false
       }
     },
-    async ({ path: inputPath, max_files }) => {
+    withErrorBoundary('ingest_bloodhound', async ({ path: inputPath, max_files }) => {
       const resolvedPath = resolve(inputPath);
 
       if (!existsSync(resolvedPath)) {
@@ -119,6 +120,6 @@ populate the graph with Active Directory structure.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

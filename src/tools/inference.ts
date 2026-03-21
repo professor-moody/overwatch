@@ -4,6 +4,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import { NODE_TYPES, EDGE_TYPES } from '../types.js';
 import type { InferenceRule } from '../types.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerInferenceTools(server: McpServer, engine: GraphEngine): void {
 
@@ -57,7 +58,7 @@ Valid selectors for source/target:
         openWorldHint: false
       }
     },
-    async ({ name, description, trigger_node_type, trigger_properties, produces, backfill }) => {
+    withErrorBoundary('suggest_inference_rule', async ({ name, description, trigger_node_type, trigger_properties, produces, backfill }) => {
       // Validate selectors
       const validSelectors = new Set([
         'trigger_node', 'parent_host', 'domain_nodes', 'domain_credentials',
@@ -124,6 +125,6 @@ Valid selectors for source/target:
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

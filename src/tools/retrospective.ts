@@ -6,6 +6,7 @@ import { runRetrospective } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerRetrospectiveTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
 
@@ -47,7 +48,7 @@ Optionally write all outputs to disk for archival.`,
         openWorldHint: false
       }
     },
-    async ({ write_to_disk, output_dir }) => {
+    withErrorBoundary('run_retrospective', async ({ write_to_disk, output_dir }) => {
       const config = engine.getConfig();
       const graph = engine.exportGraph();
       const history = engine.getFullHistory();
@@ -93,6 +94,6 @@ Optionally write all outputs to disk for archival.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

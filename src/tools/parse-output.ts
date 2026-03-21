@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { parseOutput, getSupportedParsers } from '../services/output-parsers.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerParseOutputTools(server: McpServer, engine: GraphEngine): void {
 
@@ -19,6 +20,10 @@ Supported tools:
 - **nmap** / **nmap-xml**: Nmap XML output → host + service nodes + RUNS edges
 - **nxc** / **netexec**: NXC (NetExec) output → user nodes, share nodes, access edges
 - **certipy**: Certipy JSON output → certificate nodes, enrollment edges, ESC edges
+- **secretsdump** / **impacket-secretsdump**: SAM/NTDS hashes → credential + user nodes + OWNS_CRED edges
+- **kerbrute**: User enumeration + password spray → user + domain + credential nodes
+- **hashcat**: Cracked hashes (NTLM, Kerberoast, AS-REP, NTLMv2) → credential nodes
+- **responder**: Captured NTLMv2 hashes → credential + user + host nodes + session edges
 
 The parsed output is automatically ingested into the graph. This reduces LLM token cost
 by handling structured parsing deterministically.
@@ -38,7 +43,7 @@ Pass the tool name and the raw output content.`,
         openWorldHint: false
       }
     },
-    async ({ tool_name, output, agent_id, ingest, list_parsers }) => {
+    withErrorBoundary('parse_output', async ({ tool_name, output, agent_id, ingest, list_parsers }) => {
       if (list_parsers) {
         return {
           content: [{
@@ -101,6 +106,6 @@ Pass the tool name and the raw output content.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

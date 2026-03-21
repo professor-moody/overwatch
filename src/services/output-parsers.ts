@@ -366,6 +366,343 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
   };
 }
 
+// --- Secretsdump Parser (impacket-secretsdump) ---
+
+// Matches: username:rid:lmhash:nthash:::
+const SECRETSDUMP_LINE = /^([^:*\s][^:]*):(\d+):([a-f0-9]{32}):([a-f0-9]{32}):::$/i;
+const PRIVILEGED_ACCOUNTS = new Set(['krbtgt', 'administrator']);
+
+export function parseSecretsdump(output: string, agentId: string = 'secretsdump-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  for (const line of output.split('\n')) {
+    const m = line.trim().match(SECRETSDUMP_LINE);
+    if (!m) continue;
+
+    const [, rawUser, , , nthash] = m;
+
+    // Parse DOMAIN\user or plain user
+    let domain: string | undefined;
+    let username: string;
+    if (rawUser.includes('\\')) {
+      const parts = rawUser.split('\\');
+      domain = parts[0];
+      username = parts[1];
+    } else {
+      username = rawUser;
+    }
+
+    // Skip machine accounts
+    if (username.endsWith('$')) continue;
+
+    const userLower = username.toLowerCase();
+    const credId = `cred-ntlm-${userLower}-${nthash.substring(0, 8)}`;
+    const userId = domain
+      ? `user-${domain.toLowerCase()}-${userLower}`
+      : `user-${userLower}`;
+    const isPrivileged = PRIVILEGED_ACCOUNTS.has(userLower);
+
+    if (!seenNodes.has(credId)) {
+      nodes.push({
+        id: credId,
+        type: 'credential',
+        label: `NTLM:${username}`,
+        cred_type: 'ntlm',
+        cred_value: nthash,
+        cred_user: username,
+        cred_domain: domain,
+        privileged: isPrivileged || undefined,
+      });
+      seenNodes.add(credId);
+    }
+
+    if (!seenNodes.has(userId)) {
+      nodes.push({
+        id: userId,
+        type: 'user',
+        label: domain ? `${domain}\\${username}` : username,
+        username,
+        domain_name: domain,
+        privileged: isPrivileged || undefined,
+      });
+      seenNodes.add(userId);
+    }
+
+    edges.push({
+      source: userId,
+      target: credId,
+      properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+    });
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// --- Kerbrute Parser ---
+
+export function parseKerbrute(output: string, agentId: string = 'kerbrute-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  for (const line of output.split('\n')) {
+    // Valid username: [+] VALID USERNAME:\tuser@domain
+    const enumMatch = line.match(/\[\+\]\s*VALID USERNAME:\s*(\S+)@(\S+)/i);
+    if (enumMatch) {
+      const [, username, domain] = enumMatch;
+      const userLower = username.toLowerCase();
+      const domainLower = domain.toLowerCase();
+      const userId = `user-${domainLower.replace(/\./g, '-')}-${userLower}`;
+      const domainId = `domain-${domainLower.replace(/\./g, '-')}`;
+
+      if (!seenNodes.has(userId)) {
+        nodes.push({ id: userId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
+        seenNodes.add(userId);
+      }
+      if (!seenNodes.has(domainId)) {
+        nodes.push({ id: domainId, type: 'domain', label: domain, domain_name: domain });
+        seenNodes.add(domainId);
+      }
+      edges.push({
+        source: userId,
+        target: domainId,
+        properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+      continue;
+    }
+
+    // Password spray: [+] VALID LOGIN:\tuser@domain:password
+    const sprayMatch = line.match(/\[\+\]\s*VALID LOGIN:\s*(\S+)@(\S+):(.+)/i);
+    if (sprayMatch) {
+      const [, username, domain, password] = sprayMatch;
+      const userLower = username.toLowerCase();
+      const domainLower = domain.toLowerCase();
+      const userId = `user-${domainLower.replace(/\./g, '-')}-${userLower}`;
+      const domainId = `domain-${domainLower.replace(/\./g, '-')}`;
+      const credId = `cred-plaintext-${userLower}-${domainLower.replace(/\./g, '-')}`;
+
+      if (!seenNodes.has(userId)) {
+        nodes.push({ id: userId, type: 'user', label: `${username}@${domain}`, username, domain_name: domain });
+        seenNodes.add(userId);
+      }
+      if (!seenNodes.has(domainId)) {
+        nodes.push({ id: domainId, type: 'domain', label: domain, domain_name: domain });
+        seenNodes.add(domainId);
+      }
+      if (!seenNodes.has(credId)) {
+        nodes.push({
+          id: credId,
+          type: 'credential',
+          label: `${username}:***`,
+          cred_type: 'plaintext',
+          cred_value: password,
+          cred_user: username,
+          cred_domain: domain,
+        });
+        seenNodes.add(credId);
+      }
+
+      edges.push({
+        source: userId,
+        target: domainId,
+        properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+      edges.push({
+        source: userId,
+        target: credId,
+        properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// --- Hashcat Parser (--show / potfile) ---
+
+export function parseHashcat(output: string, agentId: string = 'hashcat-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    let username: string | undefined;
+    let domain: string | undefined;
+    let plaintext: string | undefined;
+    let hashValue: string | undefined;
+    let hashType: string = 'unknown';
+
+    // Kerberoast: $krb5tgs$23$*user$REALM$spn*$...:plaintext
+    const krbMatch = line.match(/^(\$krb5tgs\$\d+\$\*([^$*]+)\$([^$*]+)\$[^:]+):(.+)$/);
+    if (krbMatch) {
+      hashValue = krbMatch[1];
+      username = krbMatch[2];
+      domain = krbMatch[3];
+      plaintext = krbMatch[4];
+      hashType = 'kerberoast';
+    }
+
+    // AS-REP: $krb5asrep$23$user@REALM:...:plaintext
+    if (!plaintext) {
+      const asrepMatch = line.match(/^(\$krb5asrep\$\d+\$([^@:]+)@([^:]+)[^:]*):(.+)$/);
+      if (asrepMatch) {
+        hashValue = asrepMatch[1];
+        username = asrepMatch[2];
+        domain = asrepMatch[3];
+        plaintext = asrepMatch[4];
+        hashType = 'asrep';
+      }
+    }
+
+    // NTLMv2: user::DOMAIN:challenge:response:blob:plaintext
+    if (!plaintext) {
+      const v2Match = line.match(/^([^:]+)::([^:]+):([^:]+):([^:]+):([^:]+):(.+)$/);
+      if (v2Match) {
+        username = v2Match[1];
+        domain = v2Match[2];
+        hashValue = `${v2Match[1]}::${v2Match[2]}:${v2Match[3]}:${v2Match[4]}:${v2Match[5]}`;
+        plaintext = v2Match[6];
+        hashType = 'ntlmv2';
+      }
+    }
+
+    // Plain NTLM (32 hex chars): hash:plaintext
+    if (!plaintext) {
+      const ntlmMatch = line.match(/^([a-f0-9]{32}):(.+)$/i);
+      if (ntlmMatch) {
+        hashValue = ntlmMatch[1];
+        plaintext = ntlmMatch[2];
+        hashType = 'ntlm';
+      }
+    }
+
+    if (!plaintext || plaintext.length === 0) continue;
+
+    const credId = `cred-cracked-${hashType}-${(username || hashValue || '').substring(0, 16).toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+    if (seenNodes.has(credId)) continue;
+
+    nodes.push({
+      id: credId,
+      type: 'credential',
+      label: username ? `${username}:***` : `cracked:${hashType}`,
+      cred_type: 'plaintext',
+      cred_value: plaintext,
+      cred_user: username,
+      cred_domain: domain,
+      cred_hash: hashValue,
+    });
+    seenNodes.add(credId);
+
+    if (username) {
+      const userLower = username.toLowerCase();
+      const userId = domain
+        ? `user-${domain.toLowerCase().replace(/\./g, '-')}-${userLower}`
+        : `user-${userLower}`;
+
+      if (!seenNodes.has(userId)) {
+        nodes.push({
+          id: userId,
+          type: 'user',
+          label: domain ? `${domain}\\${username}` : username,
+          username,
+          domain_name: domain,
+        });
+        seenNodes.add(userId);
+      }
+
+      edges.push({
+        source: userId,
+        target: credId,
+        properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// --- Responder Parser ---
+
+export function parseResponder(output: string, agentId: string = 'responder-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  const lines = output.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    // Look for NTLMv2-SSP Client line as stanza start
+    const clientMatch = lines[i].match(/NTLMv2-SSP Client\s*:\s*(\d+\.\d+\.\d+\.\d+)/);
+    if (!clientMatch) continue;
+    const clientIp = clientMatch[1];
+
+    // Next line should be Username
+    const userLine = lines[i + 1] || '';
+    const userMatch = userLine.match(/NTLMv2-SSP Username\s*:\s*([^\\]+)\\(.+)/);
+    if (!userMatch) continue;
+    const domain = userMatch[1].trim();
+    const username = userMatch[2].trim();
+
+    // Next line should be Hash
+    const hashLine = lines[i + 2] || '';
+    const hashMatch = hashLine.match(/NTLMv2-SSP Hash\s*:\s*(.+)/);
+    if (!hashMatch) continue;
+    const hash = hashMatch[1].trim();
+
+    const userLower = username.toLowerCase();
+    const domainLower = domain.toLowerCase();
+    const hostId = `host-${clientIp.replace(/\./g, '-')}`;
+    const userId = `user-${domainLower}-${userLower}`;
+    const credId = `cred-ntlmv2-${userLower}-${clientIp.replace(/\./g, '-')}`;
+
+    if (!seenNodes.has(hostId)) {
+      nodes.push({ id: hostId, type: 'host', label: clientIp, ip: clientIp, alive: true });
+      seenNodes.add(hostId);
+    }
+    if (!seenNodes.has(userId)) {
+      nodes.push({ id: userId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
+      seenNodes.add(userId);
+    }
+    if (!seenNodes.has(credId)) {
+      nodes.push({
+        id: credId,
+        type: 'credential',
+        label: `NTLMv2:${username}`,
+        cred_type: 'ntlm',
+        cred_value: hash,
+        cred_user: username,
+        cred_domain: domain,
+      });
+      seenNodes.add(credId);
+    }
+
+    edges.push({
+      source: userId,
+      target: credId,
+      properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+    });
+    edges.push({
+      source: userId,
+      target: hostId,
+      properties: { type: 'HAS_SESSION', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+    });
+
+    // Skip past the stanza we just consumed
+    i += 2;
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
 // --- Registry ---
 
 const PARSERS: Record<string, (output: string, agentId?: string) => Finding> = {
@@ -374,6 +711,11 @@ const PARSERS: Record<string, (output: string, agentId?: string) => Finding> = {
   'netexec': parseNxc,
   'nxc': parseNxc,
   'certipy': parseCertipy,
+  'secretsdump': parseSecretsdump,
+  'impacket-secretsdump': parseSecretsdump,
+  'kerbrute': parseKerbrute,
+  'hashcat': parseHashcat,
+  'responder': parseResponder,
 };
 
 export function getSupportedParsers(): string[] {

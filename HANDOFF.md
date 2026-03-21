@@ -364,7 +364,8 @@ overwatch/
 ├── src/
 │   ├── index.ts                # MCP server entrypoint (~80 lines)
 │   ├── types.ts                # Full type taxonomy + Zod schemas
-│   ├── tools/                  # 10 tool modules
+│   ├── tools/                  # 12 tool modules + error boundary
+│   │   ├── error-boundary.ts   # withErrorBoundary wrapper for all handlers
 │   │   ├── state.ts            # get_state, get_history, export_graph
 │   │   ├── findings.ts         # report_finding
 │   │   ├── scoring.ts          # next_task
@@ -382,7 +383,13 @@ overwatch/
 │   ├── dashboard/
 │   │   └── index.html          # Live dashboard SPA (sigma.js + graphology)
 │   └── services/
-│       ├── graph-engine.ts     # Graph state, inference, frontier, validation
+│       ├── graph-engine.ts     # Graph orchestrator (thin facade over modules)
+│       ├── engine-context.ts   # Shared mutable state for all engine modules
+│       ├── state-persistence.ts# Persist, snapshot rotation, load, recovery
+│       ├── agent-manager.ts    # Agent task CRUD lifecycle
+│       ├── inference-engine.ts # Rule matching, edge production, selectors
+│       ├── path-analyzer.ts    # Shortest-path, objective resolution
+│       ├── frontier.ts         # Frontier computation (incomplete nodes, untested edges)
 │       ├── dashboard-server.ts # HTTP + WebSocket server for live dashboard
 │       ├── retrospective.ts   # Post-engagement analysis (5 outputs)
 │       ├── skill-index.ts      # TF-IDF RAG search over skills
@@ -470,7 +477,21 @@ Additional v0.2 work:
 - **Bug fixes** — scope guard edge leak, objective pathfinding to real nodes, snapshot rollback inference rule restoration, nmap service name normalization, BloodHound admincount boolean normalization.
 - **147 tests** across 8 test files, all passing.
 
-### Roadmap (v0.3+)
+### Completed Additions (v0.3)
+
+1. **Error boundaries** — All 20 async MCP tool handlers wrapped with `withErrorBoundary(toolName, handler)` in `src/tools/error-boundary.ts`. Catches thrown errors, logs tool name + stack trace, returns structured `{ error, tool, isError: true }` response. Prevents MCP server crashes from individual tool failures. Bootstrap/startup errors are NOT caught (intentional).
+
+2. **GraphEngine modular split** — The monolithic 1500-line `graph-engine.ts` has been decomposed into 6 focused modules sharing a single `EngineContext` mutable state object. All modules hold a reference to `ctx` (not individual fields), so when `recoverFromSnapshot()` replaces `ctx.graph`, every module sees the new graph immediately. Public API unchanged — `GraphEngine` is now a thin facade:
+   - `engine-context.ts` — shared mutable state (graph, config, rules, agents, activity log, callbacks)
+   - `state-persistence.ts` — persist, snapshot rotation, load, recovery
+   - `agent-manager.ts` — agent task CRUD
+   - `inference-engine.ts` — rule matching, edge production, selector resolution
+   - `path-analyzer.ts` — shortest-path, objective resolution, path confidence
+   - `frontier.ts` — frontier computation (incomplete nodes, untested inferred edges)
+
+3. **193 tests** across 9 test files, all passing.
+
+### Roadmap (v0.4+)
 
 Priority items for the next iteration:
 
@@ -486,7 +507,7 @@ Priority items for the next iteration:
 
 6. **RLVR export** — structured engagement traces (state, action, outcome triplets) exportable for reinforcement learning from verifiable rewards. Each graph transition is a natural training signal.
 
-7. **Additional parsers** — expand `parse_output` with parsers for: BloodHound-python stdout, responder logs, hashcat output, secretsdump, ldapdomaindump, kerbrute.
+7. ~~**Additional parsers**~~ — ✅ Added 4 parsers to `parse_output`: `secretsdump` (SAM/NTDS hash extraction → credential + user nodes), `kerbrute` (user enumeration + password spray → user + domain + credential nodes), `hashcat` (cracked NTLM/Kerberoast/AS-REP/NTLMv2 → credential nodes), `responder` (captured NTLMv2 hashes → credential + user + host nodes + session edges). BloodHound-python stdout and ldapdomaindump deferred (already covered by `ingest_bloodhound` JSON parser).
 
 ---
 

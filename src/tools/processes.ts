@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ProcessTracker } from '../services/process-tracker.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerProcessTools(server: McpServer, tracker: ProcessTracker): void {
 
@@ -34,7 +35,7 @@ attempting to parse output.`,
         openWorldHint: false
       }
     },
-    async ({ pid, command, description, agent_id, target_node }) => {
+    withErrorBoundary('track_process', async ({ pid, command, description, agent_id, target_node }) => {
       const proc = tracker.register({
         id: uuidv4(),
         pid,
@@ -55,7 +56,7 @@ attempting to parse output.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -81,7 +82,7 @@ Use this to see if scans have completed before parsing their output.`,
         openWorldHint: false
       }
     },
-    async ({ active_only, process_id }) => {
+    withErrorBoundary('check_processes', async ({ active_only, process_id }) => {
       if (process_id) {
         const proc = tracker.get(process_id);
         if (!proc) {
@@ -111,6 +112,6 @@ Use this to see if scans have completed before parsing their output.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

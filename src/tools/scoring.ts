@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerScoringTools(server: McpServer, engine: GraphEngine): void {
 
@@ -46,7 +47,7 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
         openWorldHint: false
       }
     },
-    async ({ max_items, include_filtered }) => {
+    withErrorBoundary('next_task', async ({ max_items, include_filtered }) => {
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
@@ -63,7 +64,7 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -97,7 +98,7 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    async ({ target_node, edge_source, edge_target, technique, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, edge_source, edge_target, technique, description }) => {
       const result = engine.validateAction({ target_node, edge_source, edge_target, technique });
       return {
         content: [{
@@ -108,6 +109,6 @@ Call this before every significant action. Returns valid/invalid with specific e
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }

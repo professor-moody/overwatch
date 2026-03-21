@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerStateTools(server: McpServer, engine: GraphEngine): void {
 
@@ -42,7 +43,7 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         openWorldHint: false
       }
     },
-    async ({ include_full_frontier, activity_count }) => {
+    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count }) => {
       const state = engine.getState();
       if (!include_full_frontier) {
         state.frontier = state.frontier.slice(0, 10);
@@ -51,7 +52,7 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
       return {
         content: [{ type: 'text', text: JSON.stringify(state, null, 2) }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -76,7 +77,7 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
         openWorldHint: false
       }
     },
-    async ({ limit, agent_id }) => {
+    withErrorBoundary('get_history', async ({ limit, agent_id }) => {
       let history = engine.getFullHistory();
       if (agent_id) {
         history = history.filter(h => h.agent_id === agent_id);
@@ -90,7 +91,7 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
           }, null, 2)
         }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -110,7 +111,7 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
         openWorldHint: false
       }
     },
-    async () => {
+    withErrorBoundary('export_graph', async () => {
       const graph = engine.exportGraph();
       return {
         content: [{
@@ -118,6 +119,6 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
           text: JSON.stringify(graph, null, 2)
         }]
       };
-    }
+    })
   );
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { checkAllTools, checkToolByName } from '../services/tool-check.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerToolCheckTools(server: McpServer): void {
 
@@ -30,7 +31,7 @@ john, hashcat, responder, enum4linux-ng, kerbrute.`,
         openWorldHint: true
       }
     },
-    async ({ tool_name }) => {
+    withErrorBoundary('check_tools', async ({ tool_name }) => {
       if (tool_name) {
         const result = checkToolByName(tool_name);
         if (!result) {
@@ -59,6 +60,6 @@ john, hashcat, responder, enum4linux-ng, kerbrute.`,
           }, null, 2)
         }],
       };
-    }
+    })
   );
 }

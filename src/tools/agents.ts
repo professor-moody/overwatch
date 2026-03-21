@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
 
@@ -30,7 +31,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         openWorldHint: false
       }
     },
-    async ({ agent_id, frontier_item_id, subgraph_node_ids, skill }) => {
+    withErrorBoundary('register_agent', async ({ agent_id, frontier_item_id, subgraph_node_ids, skill }) => {
       const task = {
         id: uuidv4(),
         agent_id,
@@ -53,7 +54,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
           }, null, 2)
         }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -84,7 +85,7 @@ auto-computed from the frontier item's target node(s).`,
         openWorldHint: false
       }
     },
-    async ({ task_id, hops }) => {
+    withErrorBoundary('get_agent_context', async ({ task_id, hops }) => {
       const task = engine.getTask(task_id);
       if (!task) {
         return {
@@ -116,7 +117,7 @@ auto-computed from the frontier item's target node(s).`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 
   // ============================================================
@@ -140,7 +141,7 @@ auto-computed from the frontier item's target node(s).`,
         openWorldHint: false
       }
     },
-    async ({ task_id, status, summary }) => {
+    withErrorBoundary('update_agent', async ({ task_id, status, summary }) => {
       const updated = engine.updateAgentStatus(task_id, status, summary);
       if (!updated) {
         return {
@@ -157,6 +158,6 @@ auto-computed from the frontier item's target node(s).`,
           text: JSON.stringify({ task_id, status, summary, updated: true }, null, 2)
         }]
       };
-    }
+    })
   );
 }

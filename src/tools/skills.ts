@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SkillIndex } from '../services/skill-index.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerSkillTools(server: McpServer, skills: SkillIndex): void {
 
@@ -34,7 +35,7 @@ You can also list all available skills or retrieve a specific skill by ID.`,
         openWorldHint: false
       }
     },
-    async ({ query, skill_id, list_all, max_results }) => {
+    withErrorBoundary('get_skill', async ({ query, skill_id, list_all, max_results }) => {
       if (list_all) {
         const allSkills = skills.listSkills();
         return {
@@ -76,6 +77,6 @@ You can also list all available skills or retrieve a specific skill by ID.`,
       }
 
       return { content: [{ type: 'text', text: 'Provide a query, skill_id, or set list_all=true' }] };
-    }
+    })
   );
 }

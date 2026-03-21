@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseOutput, getSupportedParsers } from '../output-parsers.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseOutput, getSupportedParsers } from '../output-parsers.js';
 
 describe('Output Parsers', () => {
 
@@ -200,6 +200,7 @@ describe('Output Parsers', () => {
       expect(parseOutput('nxc', '')).not.toBeNull();
       expect(parseOutput('netexec', '')).not.toBeNull();
       expect(parseOutput('nmap-xml', '<nmaprun></nmaprun>')).not.toBeNull();
+      expect(parseOutput('impacket-secretsdump', '')).not.toBeNull();
     });
   });
 
@@ -209,7 +210,265 @@ describe('Output Parsers', () => {
       expect(parsers).toContain('nmap');
       expect(parsers).toContain('nxc');
       expect(parsers).toContain('certipy');
-      expect(parsers.length).toBeGreaterThan(3);
+      expect(parsers).toContain('secretsdump');
+      expect(parsers).toContain('kerbrute');
+      expect(parsers).toContain('hashcat');
+      expect(parsers).toContain('responder');
+      expect(parsers.length).toBeGreaterThanOrEqual(10);
+    });
+  });
+
+  // =============================================
+  // Secretsdump Parser
+  // =============================================
+  describe('parseSecretsdump', () => {
+    const sampleSAM = [
+      'Impacket v0.11.0 - Copyright 2023 Fortra',
+      '',
+      '[*] Target system bootKey: 0x1234abcd...',
+      '[*] Dumping local SAM hashes (uid:rid:lmhash:nthash)',
+      'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+      'Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+      'DefaultAccount:503:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+      '[*] Dumping cached domain logon information (domain/username:hash)',
+      '[*] Cleaning up...',
+    ].join('\n');
+
+    const sampleNTDS = [
+      'Impacket v0.11.0 - Copyright 2023 Fortra',
+      '',
+      '[*] Using the DRSUAPI method to get NTDS.DIT secrets',
+      '[*] Dumping Domain Credentials (domain\\uid:rid:lmhash:nthash)',
+      'Administrator:500:aad3b435b51404eeaad3b435b51404ee:fc525c9683e8fe067095ba2ddc971889:::',
+      'krbtgt:502:aad3b435b51404eeaad3b435b51404ee:aabbccdd11223344aabbccdd11223344:::',
+      'ACME\\jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      'DC01$:1000:aad3b435b51404eeaad3b435b51404ee:1111111111111111111111111111111a:::',
+      '[*] Kerberos keys grabbed',
+      '[*] Cleaning up...',
+    ].join('\n');
+
+    it('extracts SAM hashes as credential nodes', () => {
+      const finding = parseSecretsdump(sampleSAM);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(3);
+      expect(creds[0].cred_type).toBe('ntlm');
+      expect(creds[0].cred_user).toBe('Administrator');
+    });
+
+    it('extracts NTDS domain credentials', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      // 3 user accounts (Administrator, krbtgt, jdoe) — machine account DC01$ skipped
+      expect(creds.length).toBe(3);
+    });
+
+    it('skips machine accounts ($ suffix)', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      const machineAcct = creds.find(c => String(c.cred_user).includes('$'));
+      expect(machineAcct).toBeUndefined();
+    });
+
+    it('creates user nodes for domain accounts', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('creates OWNS_CRED edges from user to credential', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred.length).toBe(3);
+    });
+
+    it('flags krbtgt as privileged', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const krbtgt = finding.nodes.find(n => n.type === 'credential' && n.cred_user === 'krbtgt');
+      expect(krbtgt).toBeDefined();
+      expect(krbtgt!.privileged).toBe(true);
+    });
+
+    it('handles empty output', () => {
+      const finding = parseSecretsdump('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Kerbrute Parser
+  // =============================================
+  describe('parseKerbrute', () => {
+    const sampleUserenum = [
+      '    __             __               __',
+      '   / /_____  _____/ /_  _______  __/ /____',
+      '  / //_/ _ \\/ ___/ __ \\/ ___/ / / / __/ _ \\',
+      ' / ,< /  __/ /  / /_/ / /  / /_/ / /_/  __/',
+      '/_/|_|\\___/_/  /_.___/_/   \\__,_/\\__/\\___/',
+      '',
+      'Version: v1.0.3',
+      '',
+      '2026/03/21 10:00:00 >  Using KDC(s):',
+      '2026/03/21 10:00:00 >   dc01.acme.local:88',
+      '',
+      '2026/03/21 10:00:01 >  [+] VALID USERNAME:\tjdoe@acme.local',
+      '2026/03/21 10:00:01 >  [+] VALID USERNAME:\tadmin@acme.local',
+      '2026/03/21 10:00:01 >  [+] VALID USERNAME:\tsvc_sql@acme.local',
+      '2026/03/21 10:00:02 >  Done! Tested 500 usernames, 3 valid.',
+    ].join('\n');
+
+    const sampleSpray = [
+      '2026/03/21 10:00:00 >  Using KDC(s):',
+      '2026/03/21 10:00:00 >   dc01.acme.local:88',
+      '2026/03/21 10:00:01 >  [+] VALID LOGIN:\tjdoe@acme.local:Summer2026!',
+      '2026/03/21 10:00:02 >  [+] VALID LOGIN:\tsvc_sql@acme.local:Summer2026!',
+      '2026/03/21 10:00:03 >  Done! Tested 100 logins, 2 successes.',
+    ].join('\n');
+
+    it('extracts valid usernames from userenum', () => {
+      const finding = parseKerbrute(sampleUserenum);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(3);
+      expect(users.map(u => u.username).sort()).toEqual(['admin', 'jdoe', 'svc_sql']);
+    });
+
+    it('creates MEMBER_OF_DOMAIN edges from userenum', () => {
+      const finding = parseKerbrute(sampleUserenum);
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(3);
+    });
+
+    it('creates domain node from UPN domain', () => {
+      const finding = parseKerbrute(sampleUserenum);
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains.length).toBe(1);
+      expect(domains[0].domain_name).toBe('acme.local');
+    });
+
+    it('extracts credentials from password spray', () => {
+      const finding = parseKerbrute(sampleSpray);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_type).toBe('plaintext');
+    });
+
+    it('creates OWNS_CRED edges from spray successes', () => {
+      const finding = parseKerbrute(sampleSpray);
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred.length).toBe(2);
+    });
+
+    it('handles empty output', () => {
+      const finding = parseKerbrute('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Hashcat Parser
+  // =============================================
+  describe('parseHashcat', () => {
+    const sampleNTLM = [
+      'fc525c9683e8fe067095ba2ddc971889:Password123',
+      '31d6cfe0d16ae931b73c59d7e0c089c0:',
+      'abcdef0123456789abcdef0123456789:Welcome1!',
+    ].join('\n');
+
+    const sampleKerberoast = [
+      '$krb5tgs$23$*svc_sql$ACME.LOCAL$acme.local/svc_sql*$aabbccdd...:SqlPass123',
+    ].join('\n');
+
+    const sampleNTLMv2 = [
+      'jdoe::ACME:1122334455667788:aabbccddee:0101000000:OfficePass1',
+    ].join('\n');
+
+    it('extracts cracked NTLM hashes', () => {
+      const finding = parseHashcat(sampleNTLM);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      // 2 cracked (skip empty plaintext)
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_type).toBe('plaintext');
+      expect(creds[0].cred_value).toBe('Password123');
+    });
+
+    it('extracts username from Kerberoast hash', () => {
+      const finding = parseHashcat(sampleKerberoast);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_user).toBe('svc_sql');
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred.length).toBe(1);
+    });
+
+    it('extracts username from NTLMv2 hash', () => {
+      const finding = parseHashcat(sampleNTLMv2);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].username).toBe('jdoe');
+    });
+
+    it('handles empty output', () => {
+      const finding = parseHashcat('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Responder Parser
+  // =============================================
+  describe('parseResponder', () => {
+    const sampleOutput = [
+      '[*] [LLMNR]  Poisoned answer sent to 10.10.10.5 for name fileserv',
+      '[SMB] NTLMv2-SSP Client   : 10.10.10.5',
+      '[SMB] NTLMv2-SSP Username : ACME\\jdoe',
+      '[SMB] NTLMv2-SSP Hash     : jdoe::ACME:1122334455667788:aabbccddee:0101000000',
+      '',
+      '[*] [LLMNR]  Poisoned answer sent to 10.10.10.6 for name printer',
+      '[SMB] NTLMv2-SSP Client   : 10.10.10.6',
+      '[SMB] NTLMv2-SSP Username : ACME\\svc_backup',
+      '[SMB] NTLMv2-SSP Hash     : svc_backup::ACME:aabbccdd11223344:eeff0011:0202000000',
+    ].join('\n');
+
+    it('extracts credential nodes from captured hashes', () => {
+      const finding = parseResponder(sampleOutput);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_type).toBe('ntlm');
+    });
+
+    it('extracts user nodes from usernames', () => {
+      const finding = parseResponder(sampleOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+      expect(users.map(u => u.username).sort()).toEqual(['jdoe', 'svc_backup']);
+    });
+
+    it('extracts host nodes from client IPs', () => {
+      const finding = parseResponder(sampleOutput);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(2);
+    });
+
+    it('creates OWNS_CRED edges from user to credential', () => {
+      const finding = parseResponder(sampleOutput);
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred.length).toBe(2);
+    });
+
+    it('creates HAS_SESSION edges from user to host', () => {
+      const finding = parseResponder(sampleOutput);
+      const sessions = finding.edges.filter(e => e.properties.type === 'HAS_SESSION');
+      expect(sessions.length).toBe(2);
+    });
+
+    it('handles empty output', () => {
+      const finding = parseResponder('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
     });
   });
 });

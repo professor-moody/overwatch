@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import type { Finding, NodeType, EdgeType } from '../types.js';
+import { withErrorBoundary } from './error-boundary.js';
 
 export function registerFindingTools(server: McpServer, engine: GraphEngine): void {
 
@@ -57,7 +58,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         openWorldHint: false
       }
     },
-    async ({ agent_id, nodes, edges, evidence, raw_output }) => {
+    withErrorBoundary('report_finding', async ({ agent_id, nodes, edges, evidence, raw_output }) => {
       const finding: Finding = {
         id: uuidv4(),
         agent_id,
@@ -95,6 +96,6 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
           }, null, 2)
         }]
       };
-    }
+    })
   );
 }
