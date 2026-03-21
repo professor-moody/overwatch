@@ -74,6 +74,19 @@ describe('Output Parsers', () => {
       expect(httpSvc!.banner).toBe('Ubuntu');
     });
 
+    it('normalizes nmap service names to match inference rules', () => {
+      const finding = parseNmapXml(sampleNmap);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      const svcNames = services.map(s => s.service_name);
+      // Raw nmap names should be normalized
+      expect(svcNames).toContain('smb');         // was microsoft-ds
+      expect(svcNames).toContain('kerberos');     // was kerberos-sec
+      expect(svcNames).toContain('rdp');          // was ms-wbt-server
+      expect(svcNames).not.toContain('microsoft-ds');
+      expect(svcNames).not.toContain('kerberos-sec');
+      expect(svcNames).not.toContain('ms-wbt-server');
+    });
+
     it('handles empty XML gracefully', () => {
       const finding = parseNmapXml('<nmaprun></nmaprun>');
       expect(finding.nodes.length).toBe(0);

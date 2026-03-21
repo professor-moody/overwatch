@@ -6,6 +6,26 @@
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 
+// Nmap uses verbose service names; normalize to short names matching inference rules
+const NMAP_SERVICE_MAP: Record<string, string> = {
+  'kerberos-sec': 'kerberos',
+  'microsoft-ds': 'smb',
+  'netbios-ssn': 'smb',
+  'ms-wbt-server': 'rdp',
+  'ms-sql-s': 'mssql',
+  'ms-sql-m': 'mssql',
+  'domain': 'dns',
+  'msrpc': 'rpc',
+  'http-proxy': 'http',
+  'ssl/http': 'https',
+  'ssl/https': 'https',
+};
+
+function normalizeServiceName(raw?: string): string | undefined {
+  if (!raw) return raw;
+  return NMAP_SERVICE_MAP[raw] ?? raw;
+}
+
 // --- Nmap XML Parser ---
 
 interface NmapHost {
@@ -51,7 +71,7 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
         label: `${port.service || 'unknown'}/${port.port}`,
         port: port.port,
         protocol: port.protocol,
-        service_name: port.service,
+        service_name: normalizeServiceName(port.service),
         version: port.version,
         banner: port.banner,
       });

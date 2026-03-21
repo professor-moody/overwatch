@@ -75,6 +75,46 @@ describe('BloodHound Ingestion', () => {
       expect(node.enabled).toBe(true);
     });
 
+    it('normalizes admincount integer to boolean', () => {
+      const bhData = {
+        data: [
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1234',
+            Properties: {
+              name: 'SVCADMIN@ACME.LOCAL',
+              admincount: 1,
+              sid: 'S-1-5-21-1234-5678-9012-1234',
+              domain: 'acme.local',
+            },
+            Aces: [],
+          },
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1235',
+            Properties: {
+              name: 'NORMALUSER@ACME.LOCAL',
+              admincount: 0,
+              sid: 'S-1-5-21-1234-5678-9012-1235',
+              domain: 'acme.local',
+            },
+            Aces: [],
+          },
+        ],
+        meta: { type: 'users', count: 2, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(result).not.toBeNull();
+      const nodes = result!.finding.nodes;
+      const admin = nodes.find(n => n.label === 'SVCADMIN@ACME.LOCAL');
+      const normal = nodes.find(n => n.label === 'NORMALUSER@ACME.LOCAL');
+      // admincount: 1 → privileged: true (boolean, not integer)
+      expect(admin!.privileged).toBe(true);
+      expect(typeof admin!.privileged).toBe('boolean');
+      // admincount: 0 → privileged: false (boolean)
+      expect(normal!.privileged).toBe(false);
+      expect(typeof normal!.privileged).toBe('boolean');
+    });
+
     it('parses groups.json into group nodes', () => {
       const bhData = {
         data: [

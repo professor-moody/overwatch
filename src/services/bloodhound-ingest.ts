@@ -349,7 +349,7 @@ function extractNodeProperties(
 
     case 'user':
       if (props.displayname) result.display_name = props.displayname;
-      if (props.admincount) result.privileged = props.admincount;
+      if (props.admincount !== undefined) result.privileged = !!props.admincount;
       if (props.hasspn) result.has_spn = props.hasspn;
       if (props.sensitive) result.sensitive = props.sensitive;
       if (props.dontreqpreauth) result.asrep_roastable = props.dontreqpreauth;
@@ -357,7 +357,7 @@ function extractNodeProperties(
       break;
 
     case 'group':
-      if (props.admincount) result.privileged = props.admincount;
+      if (props.admincount !== undefined) result.privileged = !!props.admincount;
       if (props.sid) result.sid = props.sid;
       break;
 

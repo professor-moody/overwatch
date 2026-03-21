@@ -618,22 +618,21 @@ export class GraphEngine {
   hopsToNearestObjective(fromNodeId: string): number | null {
     if (!this.graph.hasNode(fromNodeId)) return null;
 
-    const objectiveNodes = this.getNodesByType('objective')
-      .filter(o => !o.objective_achieved)
-      .map(o => o.id);
-
-    if (objectiveNodes.length === 0) return null;
+    // Resolve unachieved objectives to real graph nodes via their criteria
+    const targetNodeIds = this.resolveObjectiveTargets();
+    if (targetNodeIds.length === 0) return null;
 
     let minHops: number | null = null;
 
-    for (const objId of objectiveNodes) {
+    for (const targetId of targetNodeIds) {
+      if (targetId === fromNodeId) return 0;
       try {
-        const path = dijkstra.bidirectional(this.graph, fromNodeId, objId);
+        const path = dijkstra.bidirectional(this.graph, fromNodeId, targetId);
         if (path && (minHops === null || path.length - 1 < minHops)) {
           minHops = path.length - 1;
         }
       } catch (err) {
-        this.log(`Path analysis error (${fromNodeId} → ${objId}): ${err instanceof Error ? err.message : String(err)}`);
+        this.log(`Path analysis error (${fromNodeId} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -642,6 +641,14 @@ export class GraphEngine {
 
   findPathsToObjective(objectiveId: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
     const paths: Array<{ nodes: string[]; total_confidence: number }> = [];
+
+    // Resolve objective criteria to real graph nodes
+    const obj = this.config.objectives.find(o => o.id === objectiveId);
+    const targetNodeIds = obj?.target_criteria
+      ? this.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria }).nodes.map(n => n.id)
+      : [];
+
+    if (targetNodeIds.length === 0) return paths;
 
     // Find all compromised hosts as potential starting points
     const startNodes: string[] = [];
@@ -657,19 +664,36 @@ export class GraphEngine {
     });
 
     for (const start of startNodes) {
-      try {
-        const path = dijkstra.bidirectional(this.graph, start, objectiveId);
-        if (path) {
-          paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
+      for (const targetId of targetNodeIds) {
+        try {
+          const path = dijkstra.bidirectional(this.graph, start, targetId);
+          if (path) {
+            paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
+          }
+        } catch (err) {
+          this.log(`Path analysis error (${start} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`);
         }
-      } catch (err) {
-        this.log(`Path analysis error (${start} → ${objectiveId}): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
     return paths
       .sort((a, b) => b.total_confidence - a.total_confidence)
       .slice(0, maxPaths);
+  }
+
+  private resolveObjectiveTargets(): string[] {
+    const targetIds = new Set<string>();
+    for (const obj of this.config.objectives) {
+      if (obj.achieved) continue;
+      if (obj.target_criteria) {
+        const matching = this.queryGraph({
+          node_type: obj.target_node_type,
+          node_filter: obj.target_criteria,
+        });
+        for (const n of matching.nodes) targetIds.add(n.id);
+      }
+    }
+    return Array.from(targetIds);
   }
 
   findPaths(fromNode: string, toNode: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
@@ -808,11 +832,25 @@ export class GraphEngine {
     const filtered: Array<{ item: FrontierItem; reason: string }> = [];
 
     for (const item of frontier) {
-      // 1. Scope check
+      // 1. Scope check — node_id, edge_source, and edge_target
       if (item.node_id) {
         const node = this.getNode(item.node_id);
         if (node?.ip && this.isExcluded(node.ip)) {
           filtered.push({ item, reason: `Out of scope: ${node.ip} is excluded` });
+          continue;
+        }
+      }
+      if (item.edge_source) {
+        const node = this.getNode(item.edge_source);
+        if (node?.ip && this.isExcluded(node.ip)) {
+          filtered.push({ item, reason: `Out of scope: edge source ${node.ip} is excluded` });
+          continue;
+        }
+      }
+      if (item.edge_target) {
+        const node = this.getNode(item.edge_target);
+        if (node?.ip && this.isExcluded(node.ip)) {
+          filtered.push({ item, reason: `Out of scope: edge target ${node.ip} is excluded` });
           continue;
         }
       }
@@ -866,11 +904,23 @@ export class GraphEngine {
       errors.push(`Target node does not exist: ${action.edge_target}`);
     }
 
-    // Check scope
+    // Check scope — target_node, edge_source, and edge_target
     if (action.target_node) {
       const node = this.getNode(action.target_node);
       if (node?.ip && this.isExcluded(node.ip)) {
         errors.push(`Target is out of scope: ${node.ip}`);
+      }
+    }
+    if (action.edge_source) {
+      const node = this.getNode(action.edge_source);
+      if (node?.ip && this.isExcluded(node.ip)) {
+        errors.push(`Edge source is out of scope: ${node.ip}`);
+      }
+    }
+    if (action.edge_target) {
+      const node = this.getNode(action.edge_target);
+      if (node?.ip && this.isExcluded(node.ip)) {
+        errors.push(`Edge target is out of scope: ${node.ip}`);
       }
     }
 
@@ -1191,6 +1241,13 @@ export class GraphEngine {
     this.graph.import(data.graph);
     this.activityLog = data.activityLog || [];
     this.agents = new Map(data.agents || []);
+    // Restore inference rules: builtins + any custom rules from the snapshot
+    this.inferenceRules = [...BUILTIN_RULES];
+    if (data.inferenceRules) {
+      for (const rule of data.inferenceRules) {
+        this.inferenceRules.push(rule);
+      }
+    }
     this.log('Rolled back to snapshot: ' + snapshotName);
     this.persist();
     return true;
