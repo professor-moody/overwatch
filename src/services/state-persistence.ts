@@ -6,7 +6,7 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { dirname, basename, join } from 'path';
-import type { EngineContext, OverwatchGraph } from './engine-context.js';
+import type { EngineContext, OverwatchGraph, GraphUpdateDetail } from './engine-context.js';
 import type { InferenceRule } from '../types.js';
 
 export const MAX_SNAPSHOTS = 5;
@@ -22,7 +22,7 @@ export class StatePersistence {
     this.createGraph = createGraph;
   }
 
-  persist(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] } = {}): void {
+  persist(detail: GraphUpdateDetail = {}): void {
     const data = {
       config: this.ctx.config,
       graph: this.ctx.graph.export(),

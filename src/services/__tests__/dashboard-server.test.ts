@@ -229,6 +229,104 @@ describe('DashboardServer', () => {
     exportGraphSpy.mockRestore();
   });
 
+  it('full_state payload has data.graph with nodes and edges', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    await dashboard.start();
+
+    const msg = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(JSON.parse(data.toString()));
+      });
+      ws.on('error', reject);
+      setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+    });
+
+    expect(msg.type).toBe('full_state');
+    expect(msg.data.graph).toBeDefined();
+    expect(msg.data.graph.nodes).toBeInstanceOf(Array);
+    expect(msg.data.graph.edges).toBeInstanceOf(Array);
+    expect(msg.data.graph.nodes.length).toBeGreaterThan(0);
+  });
+
+  it('graph_update payload has data.delta with nodes and edges arrays', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    await dashboard.start();
+    engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
+
+    const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
+    await new Promise<void>((resolve, reject) => {
+      ws.on('message', () => resolve());
+      ws.on('error', reject);
+      setTimeout(() => reject(new Error('timeout')), 3000);
+    });
+
+    const updatePromise = new Promise<any>((resolve, reject) => {
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(JSON.parse(data.toString()));
+      });
+      setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+    });
+
+    engine.ingestFinding({
+      id: 'finding-contract-1',
+      timestamp: new Date().toISOString(),
+      agent_id: 'test-agent',
+      nodes: [
+        { id: 'svc-contract-1', type: 'service', label: 'Contract test', port: 80, service_name: 'http' },
+      ],
+      edges: [
+        { source: 'host-10-10-10-1', target: 'svc-contract-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+      ],
+    });
+
+    const msg = await updatePromise;
+    expect(msg.type).toBe('graph_update');
+    expect(msg.data.delta).toBeDefined();
+    expect(msg.data.delta.nodes).toBeInstanceOf(Array);
+    expect(msg.data.delta.edges).toBeInstanceOf(Array);
+    expect(msg.data.state).toBeDefined();
+  });
+
+  it('graph_update delta includes updated nodes when properties change', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    await dashboard.start();
+    engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
+
+    const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
+    await new Promise<void>((resolve, reject) => {
+      ws.on('message', () => resolve());
+      ws.on('error', reject);
+      setTimeout(() => reject(new Error('timeout')), 3000);
+    });
+
+    const updatePromise = new Promise<any>((resolve, reject) => {
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(JSON.parse(data.toString()));
+      });
+      setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+    });
+
+    // Update existing host with OS info — should appear in delta
+    engine.ingestFinding({
+      id: 'finding-update-1',
+      timestamp: new Date().toISOString(),
+      agent_id: 'test-agent',
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true, os: 'Windows Server 2022' },
+      ],
+      edges: [],
+    });
+
+    const msg = await updatePromise;
+    expect(msg.type).toBe('graph_update');
+    const deltaNodeIds = msg.data.delta.nodes.map((n: any) => n.id);
+    expect(deltaNodeIds).toContain('host-10-10-10-1');
+  });
+
   it('reports address property', () => {
     dashboard = new DashboardServer(engine, 8384);
     expect(dashboard.address).toBe('http://localhost:8384');

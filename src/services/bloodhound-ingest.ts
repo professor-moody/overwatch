@@ -303,7 +303,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
   }
 
   const finding: Finding = {
-    id: `bh-${metaType}-${Date.now()}`,
+    id: `bh-${metaType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     agent_id: 'bloodhound-ingest',
     timestamp: new Date().toISOString(),
     nodes,

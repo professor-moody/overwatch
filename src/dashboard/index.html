@@ -578,6 +578,77 @@ function loadGraphData(graphData) {
   buildFilterButtons();
 }
 
+function mergeGraphDelta(delta) {
+  if (!delta) return;
+  let added = false;
+
+  // Upsert nodes
+  if (delta.nodes) {
+    delta.nodes.forEach((n) => {
+      const props = n.properties || {};
+      const nodeType = props.type || 'host';
+      if (graph.hasNode(n.id)) {
+        // Update existing node attributes (preserve position)
+        graph.mergeNodeAttributes(n.id, {
+          label: props.label || n.id,
+          size: NODE_SIZES[nodeType] || 5,
+          color: NODE_COLORS[nodeType] || '#888',
+          nodeType: nodeType,
+          _props: props,
+        });
+      } else {
+        // Add new node with random position near center
+        const angle = Math.random() * 2 * Math.PI;
+        const radius = 3 + Math.random() * 3;
+        graph.addNode(n.id, {
+          label: props.label || n.id,
+          x: radius * Math.cos(angle),
+          y: radius * Math.sin(angle),
+          size: NODE_SIZES[nodeType] || 5,
+          color: NODE_COLORS[nodeType] || '#888',
+          nodeType: nodeType,
+          _props: props,
+        });
+        added = true;
+      }
+    });
+  }
+
+  // Upsert edges
+  if (delta.edges) {
+    delta.edges.forEach((e) => {
+      if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) return;
+      const props = e.properties || {};
+      const confidence = props.confidence || 1.0;
+      const edgeKey = e.source + '--' + (props.type || '') + '--' + e.target;
+      const attrs = {
+        color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
+        size: confidence >= 1.0 ? 1 : 0.5,
+        type: 'arrow',
+        confidence: confidence,
+        edgeType: props.type || '',
+        label: props.type || '',
+      };
+      // Try to find existing edge with same key
+      if (graph.hasEdge(edgeKey)) {
+        graph.mergeEdgeAttributes(edgeKey, attrs);
+      } else {
+        try {
+          graph.addEdgeWithKey(edgeKey, e.source, e.target, attrs);
+          added = true;
+        } catch { /* skip duplicate */ }
+      }
+    });
+  }
+
+  // Only re-run layout if new nodes/edges were added
+  if (added) {
+    runLayout();
+    buildFilterButtons();
+  }
+  if (renderer) renderer.refresh();
+}
+
 function runLayout() {
   if (graph.order === 0) return;
   try {
@@ -609,7 +680,7 @@ function zoomToFit() {
 // UI Updates
 // ============================================================
 
-function updateUI(state, graphData) {
+function updateUI(state) {
   lastState = state;
 
   // Header
@@ -839,9 +910,12 @@ function connectWS() {
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'full_state' || msg.type === 'graph_update') {
+      if (msg.type === 'full_state') {
         loadGraphData(msg.data.graph);
-        updateUI(msg.data.state, msg.data.graph);
+        updateUI(msg.data.state);
+      } else if (msg.type === 'graph_update') {
+        mergeGraphDelta(msg.data.delta);
+        updateUI(msg.data.state);
       }
     } catch (err) {
       console.error('WS message parse error:', err);
@@ -870,7 +944,7 @@ async function pollState() {
     if (res.ok) {
       const data = await res.json();
       loadGraphData(data.graph);
-      updateUI(data.state, data.graph);
+      updateUI(data.state);
     }
   } catch { /* silent */ }
 }

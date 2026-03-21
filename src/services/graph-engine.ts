@@ -7,7 +7,7 @@ import GraphConstructor from 'graphology';
 import { existsSync } from 'fs';
 import { expandCidr, isIpInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
-import type { GraphUpdateCallback, OverwatchGraph } from './engine-context.js';
+import type { GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
@@ -306,13 +306,12 @@ export class GraphEngine {
   // Finding Ingestion
   // =============================================
 
-  ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; inferred_edges: string[] } {
+  ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[] } {
     const newNodes: string[] = [];
     const newEdges: string[] = [];
-    const inferredEdges: string[] = [];
-
-    // Add/update nodes — track both new and updated for inference
     const updatedNodes: string[] = [];
+    const updatedEdges: string[] = [];
+    const inferredEdges: string[] = [];
     for (const node of finding.nodes) {
       const isNew = !this.ctx.graph.hasNode(node.id);
       const existingNode = isNew ? null : this.getNode(node.id);
@@ -348,6 +347,7 @@ export class GraphEngine {
         newEdges.push(edgeId);
         this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       } else {
+        updatedEdges.push(edgeId);
         this.log(`Updated edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'neutral' });
       }
     }
@@ -362,7 +362,7 @@ export class GraphEngine {
     this.evaluateObjectives();
 
     // Persist with real delta detail for dashboard callbacks
-    const result = { new_nodes: newNodes, new_edges: newEdges, inferred_edges: inferredEdges };
+    const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
     this.persist(result);
 
     return result;
@@ -884,7 +884,7 @@ export class GraphEngine {
   // Persistence (delegated to StatePersistence)
   // =============================================
 
-  persist(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] } = {}): void {
+  persist(detail: GraphUpdateDetail = {}): void {
     this.persistence.persist(detail);
   }
 
@@ -948,7 +948,7 @@ export class GraphEngine {
     this.ctx.updateCallbacks.push(callback);
   }
 
-  private fireUpdateCallbacks(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
+  private fireUpdateCallbacks(detail: GraphUpdateDetail): void {
     for (const cb of this.ctx.updateCallbacks) {
       try { cb(detail); } catch { /* dashboard errors must not break engine */ }
     }

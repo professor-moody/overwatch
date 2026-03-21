@@ -1005,6 +1005,53 @@ describe('GraphEngine', () => {
       expect(receivedDetail.new_nodes).toContain('svc-delta-test');
       expect(receivedDetail.new_edges.length).toBeGreaterThan(0);
     });
+
+    it('ingestFinding result includes updated_nodes when merging properties', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // host-10-10-10-1 already exists from seeding
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true, os: 'Windows Server 2022' }],
+      }));
+      expect(result.updated_nodes).toContain('host-10-10-10-1');
+      expect(result.new_nodes).not.toContain('host-10-10-10-1');
+    });
+
+    it('ingestFinding result includes updated_edges when re-ingesting edge', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add a service and edge
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-edge-upd', type: 'service', label: 'edge update test' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-edge-upd', properties: { type: 'RUNS', confidence: 0.5, discovered_at: new Date().toISOString() } }],
+      }));
+      // Re-ingest same edge with updated confidence
+      const result = engine.ingestFinding(makeFinding({
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-edge-upd', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      expect(result.updated_edges.length).toBe(1);
+      expect(result.new_edges.length).toBe(0);
+    });
+
+    it('delta callback includes updated_nodes and updated_edges', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // First: create the service and edge
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-cb-upd', type: 'service', label: 'callback update test' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-cb-upd', properties: { type: 'RUNS', confidence: 0.5, discovered_at: new Date().toISOString() } }],
+      }));
+
+      let receivedDetail: any = null;
+      engine.onUpdate((detail) => { receivedDetail = detail; });
+
+      // Now update the host and re-ingest the edge
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', os: 'Linux' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-cb-upd', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+
+      expect(receivedDetail).not.toBeNull();
+      expect(receivedDetail.updated_nodes).toContain('host-10-10-10-1');
+      expect(receivedDetail.updated_edges.length).toBe(1);
+    });
   });
 
   // =============================================

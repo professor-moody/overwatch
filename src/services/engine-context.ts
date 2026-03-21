@@ -23,11 +23,15 @@ export type ActivityLogEntry = {
   outcome?: 'success' | 'failure' | 'neutral';
 };
 
-export type GraphUpdateCallback = (detail: {
+export type GraphUpdateDetail = {
   new_nodes?: string[];
   new_edges?: string[];
+  updated_nodes?: string[];
+  updated_edges?: string[];
   inferred_edges?: string[];
-}) => void;
+};
+
+export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;
 
 export class EngineContext {
   graph: OverwatchGraph;            // graphology Graph instance — may be replaced on recovery
@@ -65,7 +69,7 @@ export class EngineContext {
     this.pathGraphCache = null;
   }
 
-  fireUpdateCallbacks(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
+  fireUpdateCallbacks(detail: GraphUpdateDetail): void {
     for (const cb of this.updateCallbacks) {
       try { cb(detail); } catch { /* dashboard errors must not break engine */ }
     }

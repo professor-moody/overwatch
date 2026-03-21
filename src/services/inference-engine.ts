@@ -32,6 +32,13 @@ export class InferenceEngine {
 
   addRule(rule: InferenceRule): void {
     if (this.ctx.inferenceRules.some(r => r.id === rule.id)) return;
+    // Deduplicate by name — prevent retries from creating duplicate rules
+    const existingByName = this.ctx.inferenceRules.findIndex(r => r.name === rule.name);
+    if (existingByName !== -1) {
+      this.ctx.inferenceRules[existingByName] = rule;
+      this.ctx.log(`Custom inference rule updated (dedup by name): ${rule.name}`);
+      return;
+    }
     this.ctx.inferenceRules.push(rule);
     this.ctx.log(`Custom inference rule added: ${rule.name}`);
   }

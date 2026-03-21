@@ -9,6 +9,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import type { GraphEngine } from './graph-engine.js';
+import type { GraphUpdateDetail } from './engine-context.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -110,13 +111,13 @@ export class DashboardServer {
   }
 
   // Called by GraphEngine after persist()
-  onGraphUpdate(detail: { new_nodes?: string[]; new_edges?: string[]; inferred_edges?: string[] }): void {
+  onGraphUpdate(detail: GraphUpdateDetail): void {
     // Short-circuit: skip expensive work when nobody is listening
     if (this.clients.size === 0) return;
 
     // Build incremental delta: only the nodes/edges that changed
-    const changedNodeIds = new Set([...(detail.new_nodes || [])]);
-    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.inferred_edges || [])]);
+    const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
+    const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
 
     const fullGraph = this.engine.exportGraph();
     const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));

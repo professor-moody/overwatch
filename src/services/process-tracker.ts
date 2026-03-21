@@ -3,8 +3,6 @@
 // Track long-running scans: PID, start time, command, status
 // ============================================================
 
-import { execSync } from 'child_process';
-
 export interface TrackedProcess {
   id: string;
   pid: number;
@@ -69,13 +67,16 @@ export class ProcessTracker {
    * Check if tracked PIDs are still alive and update status accordingly.
    */
   refreshStatuses(): void {
+    let anyTransitioned = false;
     for (const proc of this.processes.values()) {
       if (proc.status !== 'running') continue;
       if (!this.isPidAlive(proc.pid)) {
         proc.status = 'completed';
         proc.completed_at = new Date().toISOString();
+        anyTransitioned = true;
       }
     }
+    if (anyTransitioned) this.pruneCompleted();
   }
 
   private isPidAlive(pid: number): boolean {
