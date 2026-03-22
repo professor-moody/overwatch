@@ -4,32 +4,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 
 ## System Diagram
 
-```
-┌──────────────┐
-│   Operator    │  scope, objectives, OPSEC profile
-└──────┬───────┘
-       │
-┌──────▼────────────────────────────────────────────────┐
-│              MCP Orchestrator Server                   │
-│                                                        │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ Graph Engine │  │ Scoring /    │  │  OPSEC       │  │
-│  │ (graphology) │  │ Frontier     │  │  Policy      │  │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘  │
-│         │                │                  │          │
-│  ┌──────▼────────────────▼──────────────────▼───────┐  │
-│  │              MCP Tool Interface                   │  │
-│  │  get_state · next_task · validate_action ·        │  │
-│  │  log_action_event · parse_output ·                │  │
-│  │  report_finding · query_graph · find_paths · ...  │  │
-│  └──────────────────────┬────────────────────────────┘  │
-└─────────────────────────┼──────────────────────────────┘
-                          │ stdio
-       ┌──────────────────▼──────────────────┐
-       │        Claude Code (Opus)            │
-       │     Primary Session + Sub-Agents     │
-       └──────────────────────────────────────┘
-```
+![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
 
 ## Design Decisions
 

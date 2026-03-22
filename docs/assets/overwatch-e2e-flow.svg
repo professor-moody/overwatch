@@ -1,0 +1,231 @@
+<svg width="100%" viewBox="0 0 720 1520" xmlns="http://www.w3.org/2000/svg" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
+
+  <style>
+    .title { font-size: 16px; font-weight: 600; fill: #1a1a1a; }
+    .heading { font-size: 13px; font-weight: 600; fill: #1a1a1a; }
+    .label { font-size: 12px; font-weight: 500; }
+    .sub { font-size: 11px; font-weight: 400; }
+    .note { font-size: 10.5px; font-weight: 400; fill: #666; }
+    .arr { stroke-width: 1.2; }
+    .container { fill-opacity: 0.06; stroke-width: 0.8; }
+  </style>
+
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <text class="title" x="360" y="28" text-anchor="middle">Overwatch — E2E engagement flow</text>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 0 — Config                           -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="210" y="48" width="300" height="50" rx="6" fill="#F1EFE8" stroke="#888780" stroke-width="0.8"/>
+  <text class="heading" x="360" y="68" text-anchor="middle">Phase 0 — Config</text>
+  <text class="sub" x="360" y="84" text-anchor="middle" fill="#5F5E5A">engagement.json → scope, objectives, OPSEC → seed graph</text>
+
+  <line x1="360" y1="98" x2="360" y2="120" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 1 — Bootstrap                        -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="140" y="120" width="440" height="50" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+  <text class="heading" x="360" y="140" text-anchor="middle" fill="#085041">Phase 1 — Bootstrap (cold start)</text>
+  <text class="sub" x="360" y="156" text-anchor="middle" fill="#0F6E56">get_state → get_skill → ping/scan → report_finding</text>
+
+  <line x1="360" y1="170" x2="360" y2="196" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 2 — Scoring loop                     -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="60" y="196" width="600" height="236" rx="10" fill="#EEEDFE" class="container" stroke="#534AB7"/>
+  <text class="heading" x="360" y="218" text-anchor="middle" fill="#3C3489">Phase 2 — Scoring loop</text>
+
+  <!-- L1 -->
+  <rect x="90" y="234" width="250" height="40" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.6"/>
+  <text class="label" x="215" y="258" text-anchor="middle" fill="#3C3489">L1: Deterministic filter</text>
+  <text class="note" x="215" y="286" text-anchor="middle">Scope, dedup, OPSEC ceiling, dead hosts</text>
+
+  <line x1="340" y1="254" x2="380" y2="254" stroke="#534AB7" class="arr" marker-end="url(#ah)"/>
+
+  <!-- L2 -->
+  <rect x="380" y="234" width="250" height="40" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.6"/>
+  <text class="label" x="505" y="258" text-anchor="middle" fill="#3C3489">L2: LLM reasoning (Opus)</text>
+  <text class="note" x="505" y="286" text-anchor="middle">Attack chains, sequencing, risk/reward</text>
+
+  <line x1="505" y1="296" x2="505" y2="316" stroke="#534AB7" class="arr" marker-end="url(#ah)"/>
+
+  <!-- L3 -->
+  <rect x="370" y="316" width="260" height="40" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.6"/>
+  <text class="label" x="500" y="340" text-anchor="middle" fill="#3C3489">L3: validate_action</text>
+
+  <line x1="500" y1="356" x2="500" y2="376" stroke="#534AB7" class="arr" marker-end="url(#ah)"/>
+
+  <!-- L4 -->
+  <rect x="370" y="376" width="260" height="40" rx="5" fill="#F1EFE8" stroke="#888780" stroke-width="0.6"/>
+  <text class="label" x="500" y="400" text-anchor="middle" fill="#444441">L4: Operator review</text>
+
+  <!-- query_graph -->
+  <rect x="90" y="316" width="240" height="40" rx="5" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.6"/>
+  <text class="label" x="210" y="340" text-anchor="middle" fill="#085041">query_graph (unrestricted)</text>
+  <text class="note" x="210" y="370" text-anchor="middle">Full graph access for creative paths</text>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 3 — Agent dispatch + execution        -->
+  <!-- ═══════════════════════════════════════════ -->
+  <line x1="360" y1="432" x2="360" y2="462" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <rect x="60" y="462" width="600" height="380" rx="10" fill="#E6F1FB" class="container" stroke="#185FA5"/>
+  <text class="heading" x="360" y="484" text-anchor="middle" fill="#0C447C">Phase 3 — Agent dispatch + execution</text>
+
+  <!-- Primary dispatches -->
+  <rect x="190" y="500" width="340" height="36" rx="5" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.6"/>
+  <text class="label" x="360" y="522" text-anchor="middle" fill="#0C447C">Primary (Opus) — register_agent per surface</text>
+
+  <!-- Fork lines -->
+  <line x1="260" y1="536" x2="260" y2="564" stroke="#185FA5" class="arr" marker-end="url(#ah)"/>
+  <line x1="460" y1="536" x2="460" y2="564" stroke="#185FA5" class="arr" marker-end="url(#ah)"/>
+
+  <!-- Agent A -->
+  <rect x="80" y="564" width="260" height="146" rx="6" fill="#fff" stroke="#185FA5" stroke-width="0.8"/>
+  <text class="label" x="210" y="584" text-anchor="middle" fill="#0C447C">Sub-agent A (Sonnet)</text>
+
+  <rect x="96" y="596" width="228" height="26" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="sub" x="210" y="613" text-anchor="middle" fill="#085041">get_agent_context → scoped subgraph</text>
+
+  <rect x="96" y="628" width="228" height="26" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="sub" x="210" y="645" text-anchor="middle" fill="#085041">get_skill → methodology</text>
+
+  <rect x="96" y="660" width="228" height="26" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text class="sub" x="210" y="677" text-anchor="middle" fill="#712B13">validate → bash → parse → report</text>
+
+  <rect x="96" y="692" width="228" height="12" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.4"/>
+  <text style="font-size:9px; fill:#854F0B" x="210" y="702" text-anchor="middle">log started → log completed/failed</text>
+
+  <!-- Agent B -->
+  <rect x="380" y="564" width="260" height="146" rx="6" fill="#fff" stroke="#185FA5" stroke-width="0.8"/>
+  <text class="label" x="510" y="584" text-anchor="middle" fill="#0C447C">Sub-agent B (Sonnet)</text>
+
+  <rect x="396" y="596" width="228" height="26" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="sub" x="510" y="613" text-anchor="middle" fill="#085041">get_agent_context → scoped subgraph</text>
+
+  <rect x="396" y="628" width="228" height="26" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text class="sub" x="510" y="645" text-anchor="middle" fill="#085041">get_skill → methodology</text>
+
+  <rect x="396" y="660" width="228" height="26" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text class="sub" x="510" y="677" text-anchor="middle" fill="#712B13">validate → bash → parse → report</text>
+
+  <rect x="396" y="692" width="228" height="12" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.4"/>
+  <text style="font-size:9px; fill:#854F0B" x="510" y="702" text-anchor="middle">log started → log completed/failed</text>
+
+  <!-- Converge -->
+  <line x1="210" y1="710" x2="210" y2="734" stroke="#993C1D" class="arr" marker-end="url(#ah)"/>
+  <line x1="510" y1="710" x2="510" y2="734" stroke="#993C1D" class="arr" marker-end="url(#ah)"/>
+
+  <rect x="120" y="734" width="480" height="40" rx="5" fill="#FAECE7" stroke="#993C1D" stroke-width="0.6"/>
+  <text class="label" x="360" y="750" text-anchor="middle" fill="#712B13">report_finding → inference rules fire → frontier recomputed</text>
+  <text class="sub" x="360" y="764" text-anchor="middle" fill="#993C1D">Both agents write to same graph, real-time</text>
+
+  <!-- Primary monitors -->
+  <rect x="120" y="786" width="480" height="30" rx="5" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="sub" x="360" y="805" text-anchor="middle" fill="#0C447C">Primary polls get_state → new frontier from agent findings → dispatch more agents</text>
+
+  <!-- Main loop arrow -->
+  <path d="M60 680L38 680L38 340L58 340" fill="none" stroke="#534AB7" stroke-width="1.2" marker-end="url(#ah)"/>
+  <text class="note" x="28" y="520" text-anchor="middle" style="writing-mode:vertical-lr; text-orientation:mixed; letter-spacing:1.5px; fill:#534AB7">Main loop</text>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 4 — Compaction                        -->
+  <!-- ═══════════════════════════════════════════ -->
+  <line x1="360" y1="842" x2="360" y2="870" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <rect x="160" y="870" width="400" height="50" rx="6" fill="#F1EFE8" stroke="#888780" stroke-width="0.8"/>
+  <text class="heading" x="360" y="890" text-anchor="middle" fill="#444441">Phase 4 — Compaction / recovery</text>
+  <text class="sub" x="360" y="906" text-anchor="middle" fill="#5F5E5A">get_state rebuilds full briefing from graph — zero loss</text>
+
+  <line x1="360" y1="920" x2="360" y2="948" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 5 — Objectives                        -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="160" y="948" width="400" height="50" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/>
+  <text class="heading" x="360" y="968" text-anchor="middle" fill="#085041">Phase 5 — Objective tracking</text>
+  <text class="sub" x="360" y="984" text-anchor="middle" fill="#0F6E56">Confirmed path to objective node → mark achieved</text>
+
+  <line x1="360" y1="998" x2="360" y2="1026" stroke="#888780" class="arr" marker-end="url(#ah)"/>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Phase 6 — Retrospective                     -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="60" y="1026" width="600" height="186" rx="10" fill="#EEEDFE" class="container" stroke="#534AB7"/>
+  <text class="heading" x="360" y="1048" text-anchor="middle" fill="#3C3489">Phase 6 — Retrospective (run_retrospective)</text>
+
+  <!-- Row 1 -->
+  <rect x="80" y="1064" width="170" height="36" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="sub" x="165" y="1086" text-anchor="middle" fill="#3C3489">Context improvements</text>
+
+  <rect x="270" y="1064" width="170" height="36" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="sub" x="355" y="1086" text-anchor="middle" fill="#3C3489">Inference suggestions</text>
+
+  <rect x="460" y="1064" width="170" height="36" rx="5" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="sub" x="545" y="1086" text-anchor="middle" fill="#3C3489">Skill gaps</text>
+
+  <!-- Row 2 -->
+  <rect x="80" y="1112" width="170" height="36" rx="5" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+  <text class="sub" x="165" y="1134" text-anchor="middle" fill="#633806">Logging quality</text>
+
+  <rect x="270" y="1112" width="170" height="36" rx="5" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text class="sub" x="355" y="1134" text-anchor="middle" fill="#712B13">Heuristic RLVR traces</text>
+
+  <rect x="460" y="1112" width="170" height="36" rx="5" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+  <text class="sub" x="545" y="1134" text-anchor="middle" fill="#444441">Attack path report</text>
+
+  <text class="note" x="360" y="1196" text-anchor="middle" style="font-style: italic">Improves context and guidance — no numeric weight tuning</text>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Graph is memory callout                     -->
+  <!-- ═══════════════════════════════════════════ -->
+  <rect x="140" y="1246" width="440" height="56" rx="8" fill="none" stroke="#888780" stroke-width="0.8" stroke-dasharray="5 3"/>
+  <text class="heading" x="360" y="1268" text-anchor="middle" fill="#444441">The graph is the memory</text>
+  <text class="note" x="360" y="1286" text-anchor="middle">Survives compaction, agent boundaries, session restarts, operator handoffs</text>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Legend                                      -->
+  <!-- ═══════════════════════════════════════════ -->
+  <line x1="60" y1="1330" x2="660" y2="1330" stroke="#ddd" stroke-width="0.5"/>
+
+  <rect x="60"  y="1348" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.6"/>
+  <text class="note" x="78" y="1359">Read-only MCP</text>
+
+  <rect x="180" y="1348" width="12" height="12" rx="2" fill="#FAECE7" stroke="#993C1D" stroke-width="0.6"/>
+  <text class="note" x="198" y="1359">Write MCP</text>
+
+  <rect x="280" y="1348" width="12" height="12" rx="2" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.6"/>
+  <text class="note" x="298" y="1359">Agent dispatch</text>
+
+  <rect x="400" y="1348" width="12" height="12" rx="2" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.6"/>
+  <text class="note" x="418" y="1359">Structured logging</text>
+
+  <rect x="540" y="1348" width="12" height="12" rx="2" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.6"/>
+  <text class="note" x="558" y="1359">Analysis</text>
+
+  <!-- Tool callouts -->
+  <text class="note" x="360" y="1390" text-anchor="middle">Each agent runs real offensive tools via bash: nmap, nxc, certipy, impacket, bloodhound, kerbrute, hashcat...</text>
+  <text class="note" x="360" y="1406" text-anchor="middle">MCP server never executes tools — LLM constructs commands, parses output, reports structured findings</text>
+
+  <!-- MCP tool inventory -->
+  <text class="note" x="360" y="1434" text-anchor="middle" style="font-style: italic">
+    21 MCP tools: get_state · next_task · report_finding · validate_action · query_graph · find_paths · get_skill
+  </text>
+  <text class="note" x="360" y="1450" text-anchor="middle" style="font-style: italic">
+    register_agent · get_agent_context · update_agent · get_history · export_graph · run_graph_health
+  </text>
+  <text class="note" x="360" y="1466" text-anchor="middle" style="font-style: italic">
+    ingest_bloodhound · check_tools · parse_output · track_process · check_processes · suggest_inference_rule · run_retrospective
+  </text>
+
+  <!-- Version -->
+  <text style="font-size: 9px; fill: #aaa" x="660" y="1500" text-anchor="end">v3 — March 2026</text>
+
+</svg>

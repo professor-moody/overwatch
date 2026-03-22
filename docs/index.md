@@ -48,32 +48,7 @@ Then just run `claude` — see the full [Getting Started](getting-started.md) gu
 
 ## Architecture at a Glance
 
-```
-┌──────────────┐
-│   Operator    │  scope, objectives, OPSEC profile
-└──────┬───────┘
-       │
-┌──────▼────────────────────────────────────────────────┐
-│              MCP Orchestrator Server                   │
-│                                                        │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ Graph Engine │  │ Scoring /    │  │  OPSEC       │  │
-│  │ (graphology) │  │ Frontier     │  │  Policy      │  │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘  │
-│         │                │                  │          │
-│  ┌──────▼────────────────▼──────────────────▼───────┐  │
-│  │              MCP Tool Interface                   │  │
-│  │  get_state · next_task · validate_action ·        │  │
-│  │  log_action_event · parse_output ·                │  │
-│  │  report_finding · query_graph · find_paths · ...  │  │
-│  └──────────────────────┬────────────────────────────┘  │
-└─────────────────────────┼──────────────────────────────┘
-                          │ stdio
-       ┌──────────────────▼──────────────────┐
-       │        Claude Code (Opus)            │
-       │     Primary Session + Sub-Agents     │
-       └──────────────────────────────────────┘
-```
+![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
 
 Learn more in [Architecture](architecture.md) or jump to the [Tool Reference](tools/index.md).
 
