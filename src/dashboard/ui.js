@@ -70,6 +70,14 @@ function initCollapsiblePanels() {
 // ============================================================
 
 let lastState = null;
+const FRONTIER_SECTION_DEFAULT_LIMIT = 5;
+const FRONTIER_SECTION_PRIORITY_LIMIT = 6;
+const frontierSectionState = {
+  priority: { collapsed: false, expanded: false },
+  incomplete_node: { collapsed: false, expanded: false },
+  untested_edge: { collapsed: false, expanded: false },
+  inferred_edge: { collapsed: false, expanded: false },
+};
 
 function updateUI(state) {
   lastState = state;
@@ -117,21 +125,23 @@ function updateStats(state) {
   const confirmed = state.graph_summary?.confirmed_edges || 0;
   const inferred = state.graph_summary?.inferred_edges || 0;
   const colors = G().NODE_COLORS;
+  const clickableTypes = new Set(['host', 'domain', 'objective', 'credential', 'service', 'share', 'user']);
 
   let html = '';
   const types = Object.entries(nodesByType).sort((a, b) => b[1] - a[1]);
   for (const [type, count] of types) {
     const color = colors[type] || '#888';
-    html += `<div class="stat-item" style="border-left-color:${color}">
+    const clickable = clickableTypes.has(type);
+    html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${color}">
       <div class="stat-value" style="color:${color}">${count}</div>
       <div class="stat-label">${type}s</div>
-    </div>`;
+    </button>`;
   }
-  html += `<div class="stat-item" style="border-left-color:var(--accent)">
+  html += `<div class="stat-item telemetry" style="border-left-color:var(--accent)">
     <div class="stat-value" style="color:var(--accent)">${confirmed}</div>
     <div class="stat-label">Confirmed</div>
   </div>`;
-  html += `<div class="stat-item" style="border-left-color:var(--purple)">
+  html += `<div class="stat-item telemetry" style="border-left-color:var(--purple)">
     <div class="stat-value" style="color:var(--purple)">${inferred}</div>
     <div class="stat-label">Inferred</div>
   </div>`;
@@ -177,10 +187,28 @@ function getFrontierPrimaryLabel(frontierItem) {
   const targetNodeIds = getFrontierTargetNodeIds(frontierItem);
   for (const nodeId of targetNodeIds) {
     if (graph?.hasNode(nodeId)) {
-      return graph.getNodeAttribute(nodeId, 'label') || nodeId;
+      const label = graph.getNodeAttribute(nodeId, 'label');
+      if (label) return label;
+      const attrs = graph.getNodeAttributes(nodeId) || {};
+      const props = attrs._props || {};
+      if (props.label) return props.label;
+      if (props.hostname) return props.hostname;
+      if (props.ip) return props.ip;
+      return nodeId;
     }
   }
-  return frontierItem.description || frontierItem.id;
+
+  if (frontierItem.node_id) return frontierItem.node_id;
+
+  const quotedMatch = /"([^"]+)"/.exec(frontierItem.description || '');
+  if (quotedMatch?.[1]) return quotedMatch[1];
+
+  if (frontierItem.edge_source && frontierItem.edge_target) {
+    return `${frontierItem.edge_source} -> ${frontierItem.edge_target}`;
+  }
+
+  if (frontierItem.description) return frontierItem.description;
+  return frontierItem.id;
 }
 
 function renderFrontierChips(frontierItem) {
@@ -196,51 +224,102 @@ function renderFrontierChips(frontierItem) {
   return chips.join('');
 }
 
+function getFrontierSectionLabel(type) {
+  switch (type) {
+    case 'incomplete_node': return 'Incomplete Nodes';
+    case 'untested_edge': return 'Untested Edges';
+    case 'inferred_edge': return 'Inferred Opportunities';
+    default: return type;
+  }
+}
+
+function getFrontierSectionItems(frontier) {
+  const topPriority = frontier.slice(0, FRONTIER_SECTION_PRIORITY_LIMIT);
+  const topIds = new Set(topPriority.map((item) => item.id));
+  return [
+    { key: 'priority', title: 'Top Priority', items: topPriority, total: frontier.length === 0 ? 0 : topPriority.length },
+    ...['incomplete_node', 'untested_edge', 'inferred_edge'].map((type) => {
+      const items = frontier.filter((item) => item.type === type && !topIds.has(item.id));
+      return {
+        key: type,
+        title: getFrontierSectionLabel(type),
+        items,
+        total: frontier.filter((item) => item.type === type).length,
+      };
+    }),
+  ].filter((section) => section.total > 0);
+}
+
+function renderFrontierItem(f, idx) {
+  const typeClass = f.type === 'incomplete_node' ? 'incomplete'
+    : f.type === 'untested_edge' ? 'untested' : 'inferred';
+  const typeLabel = f.type === 'incomplete_node' ? 'node'
+    : f.type === 'untested_edge' ? 'test' : 'infer';
+  const noise = f.opsec_noise !== undefined ? f.opsec_noise : 0;
+  const noisePercent = Math.round(noise * 100);
+  const noiseColor = getNoiseColor(noise);
+  const nodeIds = getFrontierTargetNodeIds(f).join(',');
+  const hops = getFrontierMetric(f, 'hops_to_objective');
+  const fanOut = getFrontierMetric(f, 'fan_out_estimate');
+  const confidence = Number(getFrontierMetric(f, 'confidence', 0)).toFixed(1);
+  const label = getFrontierPrimaryLabel(f);
+  const chips = renderFrontierChips(f);
+  const support = f.description && f.description !== label ? escapeHtml(f.description) : '';
+
+  return `<div class="frontier-item" data-idx="${idx}" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierExpand(this, event)">
+    <div class="fi-header">
+      <span class="fi-type ${typeClass}">${typeLabel}</span>
+      <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
+      <div class="fi-actions">
+        <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
+        <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
+      </div>
+    </div>
+    <div class="frontier-item-chips">${chips}</div>
+    ${support ? `<div class="fi-support">${support}</div>` : ''}
+    <div class="frontier-item-detail">
+      <span class="fi-noise" aria-hidden="true"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
+      <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
+      <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
+      <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
+      <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
+    </div>
+  </div>`;
+}
+
+function renderFrontierSection(section, offset = 0) {
+  const sectionState = frontierSectionState[section.key] || { collapsed: false, expanded: false };
+  const limit = section.key === 'priority' ? FRONTIER_SECTION_PRIORITY_LIMIT : FRONTIER_SECTION_DEFAULT_LIMIT;
+  const visibleItems = sectionState.expanded ? section.items : section.items.slice(0, limit);
+  const hasMore = section.items.length > limit;
+
+  return `<div class="frontier-section ${sectionState.collapsed ? 'collapsed' : ''}" data-section="${section.key}">
+    <button class="frontier-section-header" type="button" onclick="toggleFrontierSection('${section.key}', event)">
+      <span class="frontier-section-title">${escapeHtml(section.title)}</span>
+      <span class="frontier-section-count">${section.total}</span>
+    </button>
+    <div class="frontier-section-body">
+      ${visibleItems.map((item, idx) => renderFrontierItem(item, offset + idx)).join('')}
+      ${hasMore ? `<button class="frontier-section-more" type="button" onclick="toggleFrontierSectionExpanded('${section.key}', event)">${sectionState.expanded ? 'Show Less' : `Show ${section.items.length - visibleItems.length} More`}</button>` : ''}
+    </div>
+  </div>`;
+}
+
 function updateFrontier(state) {
   const list = document.getElementById('frontier-list');
   const frontier = state.frontier || [];
   document.getElementById('frontier-count').textContent = `(${frontier.length})`;
 
-  const top20 = frontier.slice(0, 20);
-  if (top20.length === 0) {
+  if (frontier.length === 0) {
     list.innerHTML = '<div class="empty-state">Frontier empty — ingest data to generate candidates</div>';
     return;
   }
-  list.innerHTML = top20.map((f, idx) => {
-    const typeClass = f.type === 'incomplete_node' ? 'incomplete'
-      : f.type === 'untested_edge' ? 'untested' : 'inferred';
-    const typeLabel = f.type === 'incomplete_node' ? 'node'
-      : f.type === 'untested_edge' ? 'test' : 'infer';
-    const noise = f.opsec_noise !== undefined ? f.opsec_noise : 0;
-    const noisePercent = Math.round(noise * 100);
-    const noiseColor = getNoiseColor(noise);
-    const nodeIds = getFrontierTargetNodeIds(f).join(',');
-    const hops = getFrontierMetric(f, 'hops_to_objective');
-    const fanOut = getFrontierMetric(f, 'fan_out_estimate');
-    const confidence = Number(getFrontierMetric(f, 'confidence', 0)).toFixed(1);
-    const label = getFrontierPrimaryLabel(f);
-    const chips = renderFrontierChips(f);
-    const support = f.description && f.description !== label ? escapeHtml(f.description) : '';
-
-    return `<div class="frontier-item" data-idx="${idx}" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierExpand(this, event)">
-      <div class="fi-header">
-        <span class="fi-type ${typeClass}">${typeLabel}</span>
-        <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
-        <div class="fi-actions">
-          <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
-          <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
-        </div>
-      </div>
-      <div class="frontier-item-chips">${chips}</div>
-      ${support ? `<div class="fi-support">${support}</div>` : ''}
-      <div class="frontier-item-detail">
-        <span class="fi-noise" aria-hidden="true"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
-        <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
-        <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
-        <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
-        <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
-      </div>
-    </div>`;
+  const sections = getFrontierSectionItems(frontier);
+  let offset = 0;
+  list.innerHTML = sections.map((section) => {
+    const html = renderFrontierSection(section, offset);
+    offset += section.items.length;
+    return html;
   }).join('');
 }
 
@@ -279,6 +358,22 @@ function handleFrontierFocus(btn, event) {
       return;
     }
   }
+}
+
+function toggleFrontierSection(sectionKey, event) {
+  event?.stopPropagation?.();
+  const sectionState = frontierSectionState[sectionKey];
+  if (!sectionState) return;
+  sectionState.collapsed = !sectionState.collapsed;
+  if (lastState) updateFrontier(lastState);
+}
+
+function toggleFrontierSectionExpanded(sectionKey, event) {
+  event?.stopPropagation?.();
+  const sectionState = frontierSectionState[sectionKey];
+  if (!sectionState) return;
+  sectionState.expanded = !sectionState.expanded;
+  if (lastState) updateFrontier(lastState);
 }
 
 // ============================================================
@@ -399,6 +494,12 @@ function showNodeDetail(nodeId) {
 
 function hideDetail() {
   document.getElementById('node-detail').classList.remove('visible');
+}
+
+function handleGraphSummaryCardClick(nodeType) {
+  const g = G();
+  if (!nodeType || typeof g.focusNodeType !== 'function') return;
+  g.focusNodeType(nodeType);
 }
 
 function navigateToNode(nodeId, options = {}) {
@@ -712,6 +813,9 @@ window.OverwatchUI = {
   navigateToNode,
   handleFrontierClick,
   handleFrontierFocus,
+  handleGraphSummaryCardClick,
+  toggleFrontierSection,
+  toggleFrontierSectionExpanded,
   toggleShortcutsOverlay,
   setShortcutsOverlayVisible,
 };
@@ -724,3 +828,6 @@ window.handleFrontierClick = handleFrontierClick;
 window.handleFrontierExpand = handleFrontierExpand;
 window.handleFrontierZoom = handleFrontierZoom;
 window.handleFrontierFocus = handleFrontierFocus;
+window.handleGraphSummaryCardClick = handleGraphSummaryCardClick;
+window.toggleFrontierSection = toggleFrontierSection;
+window.toggleFrontierSectionExpanded = toggleFrontierSectionExpanded;

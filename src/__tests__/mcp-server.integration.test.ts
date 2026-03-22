@@ -38,9 +38,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 24 tools', async () => {
+  it('lists all 25 tools', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(24);
+    expect(result.tools.length).toBe(25);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -49,6 +49,7 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('query_graph');
     expect(toolNames).toContain('find_paths');
     expect(toolNames).toContain('register_agent');
+    expect(toolNames).toContain('dispatch_agents');
     expect(toolNames).toContain('get_agent_context');
     expect(toolNames).toContain('update_agent');
     expect(toolNames).toContain('get_history');

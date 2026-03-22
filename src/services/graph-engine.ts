@@ -971,6 +971,10 @@ export class GraphEngine {
     this.persist();
   }
 
+  getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
+    return this.agentMgr.getRunningTaskForFrontierItem(frontierItemId);
+  }
+
   getTask(taskId: string): AgentTask | null {
     return this.agentMgr.getTask(taskId);
   }

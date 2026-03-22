@@ -80,6 +80,7 @@ describe('dashboard ui frontier helpers', () => {
           },
         },
         focusNodeContext: vi.fn(),
+        focusNodeType: vi.fn(),
         getVisibleNodeIds() { return ['host-1', 'svc-1']; },
         graphMode: 'overview',
         selectNode() {},
@@ -170,6 +171,45 @@ describe('dashboard ui frontier helpers', () => {
     expect(list.innerHTML).toContain('services');
     expect(list.innerHTML).toContain('Zoom');
     expect(list.innerHTML).toContain('Focus');
+    expect(list.innerHTML).toContain('Top Priority');
+    expect(list.innerHTML).toContain('Incomplete Nodes');
+  });
+
+  it('falls back to node ids or quoted descriptions when graph labels are unavailable', async () => {
+    const ui = await loadUiModule();
+    const list = (globalThis as any).document.getElementById('frontier-list');
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [
+        {
+          id: 'frontier-node-host-2',
+          type: 'incomplete_node',
+          node_id: 'host-10-3-10-22',
+          description: 'host "braavos.essos.local" missing: os',
+          graph_metrics: { node_degree: 8, confidence: 1.0 },
+          opsec_noise: 0.3,
+        },
+        {
+          id: 'frontier-edge-test-1',
+          type: 'untested_edge',
+          edge_source: 'user-rickon',
+          edge_target: 'domain-north',
+          description: 'Validate relationship between rickon and north.local',
+          graph_metrics: { confidence: 0.8 },
+          opsec_noise: 0.2,
+        },
+      ],
+    });
+
+    expect(list.innerHTML).toContain('host-10-3-10-22');
+    expect(list.innerHTML).toContain('user-rickon -&gt; domain-north');
   });
 
   it('navigates through graph context instead of hard-coding a camera jump', async () => {
@@ -194,6 +234,15 @@ describe('dashboard ui frontier helpers', () => {
     expect(props.innerHTML).toContain('Outgoing');
     expect(props.innerHTML).toContain('RUNS');
     expect(props.innerHTML).toContain('ldap/389');
+  });
+
+  it('routes graph summary card clicks through type-focused graph navigation', async () => {
+    const ui = await loadUiModule();
+    const graphApi = (globalThis as any).window.OverwatchGraph;
+
+    ui.handleGraphSummaryCardClick('service');
+
+    expect(graphApi.focusNodeType).toHaveBeenCalledWith('service');
   });
 
   it('does not reference Google Fonts in dashboard html', () => {

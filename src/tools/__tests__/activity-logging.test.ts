@@ -311,4 +311,53 @@ describe('structured activity logging tools', () => {
 
     expect(payload.subgraph.nodes.some((node: { id: string }) => node.id === 'host-10-10-10-1')).toBe(true);
   });
+
+  it('register_agent skips duplicate running tasks for the same frontier item', async () => {
+    const first = await handlers.register_agent({
+      agent_id: 'agent-one',
+      frontier_item_id: 'frontier-node-host-10-10-10-1',
+      subgraph_node_ids: ['host-10-10-10-1'],
+    });
+    const firstPayload = JSON.parse(first.content[0].text);
+
+    const second = await handlers.register_agent({
+      agent_id: 'agent-two',
+      frontier_item_id: 'frontier-node-host-10-10-10-1',
+      subgraph_node_ids: ['host-10-10-10-1'],
+    });
+    const secondPayload = JSON.parse(second.content[0].text);
+
+    expect(secondPayload.skipped_existing).toBe(true);
+    expect(secondPayload.task_id).toBe(firstPayload.task_id);
+    expect(secondPayload.agent_id).toBe('agent-one');
+  });
+
+  it('dispatch_agents batch-registers frontier tasks and skips existing assignments', async () => {
+    const first = await handlers.dispatch_agents({
+      count: 2,
+      strategy: 'top_priority',
+      types: ['incomplete_node'],
+      hops: 1,
+    });
+    const firstPayload = JSON.parse(first.content[0].text);
+
+    expect(firstPayload.dispatched).toHaveLength(2);
+    expect(firstPayload.skipped_existing).toEqual([]);
+    expect(firstPayload.dispatched.every((task: { frontier_type: string }) => task.frontier_type === 'incomplete_node')).toBe(true);
+
+    const second = await handlers.dispatch_agents({
+      count: 2,
+      strategy: 'top_priority',
+      types: ['incomplete_node'],
+      hops: 1,
+    });
+    const secondPayload = JSON.parse(second.content[0].text);
+
+    expect(secondPayload.skipped_existing.length).toBeGreaterThan(0);
+    expect(secondPayload.dispatched.length).toBeLessThanOrEqual(2);
+    const firstFrontierIds = new Set(firstPayload.dispatched.map((task: { frontier_item_id: string }) => task.frontier_item_id));
+    expect(
+      secondPayload.dispatched.every((task: { frontier_item_id: string }) => !firstFrontierIds.has(task.frontier_item_id)),
+    ).toBe(true);
+  });
 });

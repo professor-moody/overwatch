@@ -31,6 +31,15 @@ export class AgentManager {
     });
   }
 
+  getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
+    for (const task of this.ctx.agents.values()) {
+      if (task.frontier_item_id === frontierItemId && task.status === 'running') {
+        return task;
+      }
+    }
+    return null;
+  }
+
   getTask(taskId: string): AgentTask | null {
     return this.ctx.agents.get(taskId) || null;
   }

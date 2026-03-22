@@ -83,6 +83,7 @@ let selectedNeighborhood = null;
 let inspectedEdgeIds = new Set();
 let graphMode = 'overview';
 let labelDensity = 'balanced';
+let emphasizedNodeTypes = new Set();
 
 const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'subnet']);
 const DETAIL_NODE_TYPES = new Set(['service', 'share']);
@@ -101,6 +102,20 @@ let focusNeighborhood = null; // Set of visible node IDs when focused
 const ZOOM_REVEAL_THRESHOLDS = {
   detail: 0.24,
   supporting: 0.12,
+};
+
+const FILTER_PRESETS = {
+  host: ['host', 'domain', 'objective', 'credential', 'certificate'],
+  domain: ['domain', 'host', 'objective', 'credential', 'certificate', 'user'],
+  objective: ['objective', 'host', 'domain', 'credential'],
+  credential: ['credential', 'user', 'host', 'domain', 'objective', 'certificate'],
+  certificate: ['certificate', 'credential', 'host', 'domain', 'objective'],
+  service: ['service', 'host', 'domain', 'objective', 'share'],
+  share: ['share', 'host', 'domain', 'objective', 'service'],
+  user: ['user', 'credential', 'domain', 'host', 'objective', 'group'],
+  group: ['group', 'user', 'domain', 'host', 'objective'],
+  ou: ['ou', 'domain', 'group', 'user'],
+  gpo: ['gpo', 'ou', 'domain', 'host', 'user'],
 };
 
 // New node animation
@@ -169,6 +184,10 @@ function isNodeVisible(node, attrs = null) {
     return HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType);
   }
 
+  if (emphasizedNodeTypes.has(nodeAttrs.nodeType)) {
+    return true;
+  }
+
   if (HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType)) {
     return true;
   }
@@ -225,6 +244,9 @@ function shouldShowLabel(node, nodeAttrs) {
   if (node === selectedNode || node === hoveredNode || pathNodes.has(node)) return true;
   if (focusNeighborhood?.has(node)) return true;
   if (selectedNeighborhood?.has(node)) return true;
+  if (emphasizedNodeTypes.has(nodeAttrs.nodeType)) {
+    return getCurrentCameraRatio() <= 0.18 || nodeAttrs.nodeType === 'host' || nodeAttrs.nodeType === 'domain';
+  }
 
   const ratio = getCurrentCameraRatio();
   const type = nodeAttrs.nodeType;
@@ -524,6 +546,69 @@ function showSelection() {
     return;
   }
   zoomToFit();
+}
+
+function getNodeIdsByType(nodeType) {
+  const ids = [];
+  if (!graph) return ids;
+  graph.forEachNode((id, attrs) => {
+    if (attrs.nodeType === nodeType) ids.push(id);
+  });
+  return ids;
+}
+
+function getNodeTypeContext(nodeType) {
+  const seedIds = getNodeIdsByType(nodeType);
+  const visible = new Set(seedIds);
+  for (const nodeId of seedIds) {
+    for (const neighbor of graph.neighbors(nodeId)) {
+      const neighborType = graph.getNodeAttribute(neighbor, 'nodeType');
+      if (neighborType === nodeType || HIGH_SIGNAL_NODE_TYPES.has(neighborType)) {
+        visible.add(neighbor);
+      }
+    }
+  }
+  return visible;
+}
+
+function fitVisibleGraph(preferredNodeIds = null, options = {}) {
+  const preferred = preferredNodeIds
+    ? new Set([...preferredNodeIds].filter((nodeId) => graph.hasNode(nodeId) && isNodeVisible(nodeId)))
+    : null;
+
+  if (preferred && preferred.size > 0) {
+    zoomToNodes(preferred, { paddingFactor: 1.7, minRatio: 0.08, maxRatio: 2.5, ...options });
+    return;
+  }
+
+  const visibleNodes = new Set(getVisibleNodeIds());
+  if (visibleNodes.size > 0) {
+    zoomToNodes(visibleNodes, { paddingFactor: 1.6, minRatio: 0.08, maxRatio: 2.5, ...options });
+    return;
+  }
+
+  if (renderer) renderer.getCamera().animatedReset({ duration: options.duration || 300 });
+}
+
+function focusNodeType(nodeType) {
+  emphasizedNodeTypes = new Set([nodeType]);
+  clearPathHighlight();
+  focusNode = null;
+  focusNeighborhood = null;
+  selectedNode = null;
+  selectedNeighborhood = null;
+  inspectedEdgeIds.clear();
+  graphMode = 'overview';
+
+  const graphModeSelect = document.getElementById('graph-mode-select');
+  if (graphModeSelect) graphModeSelect.value = 'overview';
+
+  const preset = FILTER_PRESETS[nodeType] || [nodeType];
+  activeFilters = new Set(preset.filter((type) => NODE_COLORS[type]));
+  buildFilterButtons();
+  if (renderer) renderer.refresh();
+  fitVisibleGraph(getNodeTypeContext(nodeType));
+  updateMinimap();
 }
 
 function focusNodeContext(node, options = {}) {
@@ -950,6 +1035,8 @@ function reconcileInteractionState() {
   } else if (hoveredNeighbors) {
     hoveredNeighbors = new Set([...hoveredNeighbors].filter(nodeId => graph.hasNode(nodeId)));
   }
+
+  emphasizedNodeTypes = new Set([...emphasizedNodeTypes].filter((type) => [...graph.nodes()].some((nodeId) => graph.getNodeAttribute(nodeId, 'nodeType') === type)));
 }
 
 function syncGraphData(graphData, options = {}) {
@@ -1397,12 +1484,21 @@ function setActiveFilters(filterTypes) {
 }
 
 function resetFilters() {
+  emphasizedNodeTypes.clear();
   activeFilters = new Set(Object.keys(NODE_COLORS));
   buildFilterButtons();
   clearPathHighlight();
-  exitNeighborhoodFocus();
+  focusNode = null;
+  focusNeighborhood = null;
+  const banner = document.getElementById('focus-banner');
+  if (banner) banner.classList.remove('visible');
   clearSelection();
+  graphMode = 'overview';
+  const graphModeSelect = document.getElementById('graph-mode-select');
+  if (graphModeSelect) graphModeSelect.value = 'overview';
   if (renderer) renderer.refresh();
+  fitVisibleGraph();
+  updateMinimap();
 }
 
 function setGraphMode(mode) {
@@ -1430,12 +1526,7 @@ function setLabelDensity(mode) {
 // ============================================================
 
 function zoomToFit() {
-  const visibleNodes = new Set(getVisibleNodeIds());
-  if (visibleNodes.size > 0) {
-    zoomToNodes(visibleNodes, { paddingFactor: 1.6, minRatio: 0.08, maxRatio: 2.5 });
-    return;
-  }
-  if (renderer) renderer.getCamera().animatedReset({ duration: 300 });
+  fitVisibleGraph();
 }
 
 function zoomIn() {
@@ -1655,9 +1746,11 @@ window.OverwatchGraph = {
   zoomIn,
   zoomOut,
   resetFilters,
+  fitVisibleGraph,
   clearPathHighlight,
   exitNeighborhoodFocus,
   enterNeighborhoodFocus,
+  focusNodeType,
   setActiveFilters,
   exportScreenshot,
   updateMinimap,

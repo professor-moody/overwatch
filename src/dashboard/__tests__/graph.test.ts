@@ -188,4 +188,20 @@ describe('dashboard graph helpers', () => {
 
     expect(graphModule.getVisibleNodeIds().sort()).toEqual(['domain-a', 'user-a']);
   });
+
+  it('focuses graph summary node types by revealing that type and its local context in overview mode', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: 'Host A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('service-a', { label: 'ldap/389', nodeType: 'service', color: '#fff', x: 1, y: 0, _props: { type: 'service' } });
+    graph.addNode('domain-a', { label: 'north.local', nodeType: 'domain', color: '#fff', x: 0, y: -1, _props: { type: 'domain' } });
+    graph.addEdgeWithKey('host-a--RUNS--service-a', 'host-a', 'service-a', { edgeType: 'RUNS' });
+    graph.addEdgeWithKey('host-a--MEMBER_OF_DOMAIN--domain-a', 'host-a', 'domain-a', { edgeType: 'MEMBER_OF_DOMAIN' });
+
+    graphModule.focusNodeType('service');
+
+    expect(graphModule.graphMode).toBe('overview');
+    expect(graphModule.getVisibleNodeIds().sort()).toEqual(['domain-a', 'host-a', 'service-a']);
+  });
 });
