@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { readFileSync } from 'fs';
@@ -79,6 +79,9 @@ describe('dashboard ui frontier helpers', () => {
             return { animate() {} };
           },
         },
+        focusNodeContext: vi.fn(),
+        getVisibleNodeIds() { return ['host-1', 'svc-1']; },
+        graphMode: 'overview',
         selectNode() {},
         highlightEdges() {},
         enterNeighborhoodFocus() {},
@@ -165,6 +168,21 @@ describe('dashboard ui frontier helpers', () => {
     expect(list.innerHTML).toContain('15');
     expect(list.innerHTML).toContain('0.9');
     expect(list.innerHTML).toContain('services');
+    expect(list.innerHTML).toContain('Zoom');
+    expect(list.innerHTML).toContain('Focus');
+  });
+
+  it('navigates through graph context instead of hard-coding a camera jump', async () => {
+    const ui = await loadUiModule();
+    const graphApi = (globalThis as any).window.OverwatchGraph;
+
+    ui.navigateToNode('svc-1', { edgeIds: ['edge-1'], hops: 1 });
+
+    expect(graphApi.focusNodeContext).toHaveBeenCalledWith('svc-1', expect.objectContaining({
+      edgeIds: ['edge-1'],
+      hops: 1,
+      persistent: false,
+    }));
   });
 
   it('renders directional connection rows in the node drawer', async () => {

@@ -186,13 +186,13 @@ function getFrontierPrimaryLabel(frontierItem) {
 function renderFrontierChips(frontierItem) {
   const chips = [];
   if (frontierItem.missing_properties?.length) {
-    chips.push(...frontierItem.missing_properties.map(prop => `<span class="fi-chip">${escapeHtml(prop)}</span>`));
+    chips.push(...frontierItem.missing_properties.map(prop => `<span class="fi-chip fi-chip-warning">${escapeHtml(prop)}</span>`));
   }
   if (frontierItem.edge_type) {
-    chips.push(`<span class="fi-chip">${escapeHtml(frontierItem.edge_type)}</span>`);
+    chips.push(`<span class="fi-chip fi-chip-edge">${escapeHtml(frontierItem.edge_type)}</span>`);
   }
   const degree = getFrontierMetric(frontierItem, 'node_degree', null);
-  if (degree !== null) chips.push(`<span class="fi-chip">deg ${degree}</span>`);
+  if (degree !== null) chips.push(`<span class="fi-chip fi-chip-neutral">deg ${degree}</span>`);
   return chips.join('');
 }
 
@@ -220,33 +220,39 @@ function updateFrontier(state) {
     const confidence = Number(getFrontierMetric(f, 'confidence', 0)).toFixed(1);
     const label = getFrontierPrimaryLabel(f);
     const chips = renderFrontierChips(f);
+    const support = f.description && f.description !== label ? escapeHtml(f.description) : '';
 
     return `<div class="frontier-item" data-idx="${idx}" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierExpand(this, event)">
-      <span class="fi-type ${typeClass}">${typeLabel}</span>
-      <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
-      <span class="fi-noise"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
+      <div class="fi-header">
+        <span class="fi-type ${typeClass}">${typeLabel}</span>
+        <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
+        <div class="fi-actions">
+          <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
+          <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
+        </div>
+      </div>
       <div class="frontier-item-chips">${chips}</div>
+      ${support ? `<div class="fi-support">${support}</div>` : ''}
       <div class="frontier-item-detail">
+        <span class="fi-noise" aria-hidden="true"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
         <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
-        <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
-        <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
       </div>
     </div>`;
   }).join('');
 }
 
 function handleFrontierExpand(el, event) {
-  // Don't expand if clicking zoom button
+  // Don't navigate if clicking the action buttons
   if (event.target.closest('.fi-zoom-btn')) return;
-  el.classList.toggle('expanded');
+  handleFrontierZoom(el, event);
 }
 
 function handleFrontierZoom(btn, event) {
   event.stopPropagation();
-  const item = btn.closest('.frontier-item');
+  const item = btn.closest ? btn.closest('.frontier-item') : btn;
   if (!item) return;
   const nodeIds = (item.dataset.nodeIds || '').split(',').filter(Boolean);
   if (nodeIds.length === 0) return;
@@ -255,7 +261,7 @@ function handleFrontierZoom(btn, event) {
   const graph = g.graph;
   for (const nodeId of nodeIds) {
     if (graph && graph.hasNode(nodeId)) {
-      navigateToNode(nodeId);
+      navigateToNode(nodeId, { hops: 1 });
       return;
     }
   }
@@ -269,8 +275,7 @@ function handleFrontierFocus(btn, event) {
   const g = G();
   for (const nodeId of nodeIds) {
     if (g.graph?.hasNode(nodeId)) {
-      g.enterNeighborhoodFocus(nodeId, 1);
-      navigateToNode(nodeId);
+      navigateToNode(nodeId, { hops: 1, persistent: true });
       return;
     }
   }
@@ -365,20 +370,27 @@ function showNodeDetail(nodeId) {
 
   // Properties
   const skip = new Set(['label', 'type']);
-  let html = '';
+  let propsHtml = '';
   const entries = Object.entries(props).filter(([k]) => !skip.has(k));
   for (const [key, val] of entries) {
     if (val === undefined || val === null) continue;
     const display = typeof val === 'object' ? JSON.stringify(val) : String(val);
-    html += `<div class="prop-row">
+    propsHtml += `<div class="prop-row">
       <span class="prop-key">${escapeHtml(key)}</span>
       <span class="prop-val" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
     </div>`;
   }
 
+  let html = '';
   html += buildServiceSummary(nodeId, graph);
   html += buildConnectionSection(nodeId, graph, 'out');
   html += buildConnectionSection(nodeId, graph, 'in');
+  if (propsHtml) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Properties</div>
+      ${propsHtml}
+    </div>`;
+  }
 
   document.getElementById('detail-props').innerHTML = html;
   attachConnectionHandlers();
@@ -389,17 +401,16 @@ function hideDetail() {
   document.getElementById('node-detail').classList.remove('visible');
 }
 
-function navigateToNode(nodeId) {
+function navigateToNode(nodeId, options = {}) {
   const g = G();
   if (!g.graph || !g.graph.hasNode(nodeId)) return;
-  g.selectNode(nodeId);
+  const edgeIds = Array.isArray(options.edgeIds) ? options.edgeIds : [];
+  g.focusNodeContext(nodeId, {
+    hops: options.hops || 1,
+    persistent: options.persistent === true,
+    edgeIds,
+  });
   showNodeDetail(nodeId);
-  // Zoom camera to node
-  const attrs = g.graph.getNodeAttributes(nodeId);
-  g.renderer.getCamera().animate(
-    { x: attrs.x, y: attrs.y, ratio: 0.15 },
-    { duration: 300 }
-  );
 }
 
 // ============================================================
@@ -482,6 +493,7 @@ function buildConnectionSection(nodeId, graph, direction) {
       edgeType: edgeAttrs.edgeType || '?',
       counterpartLabel: counterpartAttrs?.label || counterpartProps.label || counterpartId,
       counterpartType: counterpartAttrs?.nodeType || counterpartProps.type || '?',
+      counterpartIdLabel: counterpartId,
       meta: confidence === '1.0' ? 'confirmed' : `conf ${confidence}`,
     };
   }).sort((a, b) => a.edgeType.localeCompare(b.edgeType) || a.counterpartLabel.localeCompare(b.counterpartLabel));
@@ -497,7 +509,10 @@ function buildConnectionSection(nodeId, graph, direction) {
         <div class="connection-row" data-node-id="${escapeHtml(row.counterpartId)}" data-edge-id="${escapeHtml(row.edgeId)}">
           <span class="connection-direction">${dirLabel}</span>
           <span class="connection-type">${escapeHtml(row.edgeType)}</span>
-          <span class="connection-target">${escapeHtml(row.counterpartLabel)} · ${escapeHtml(row.counterpartType)}</span>
+          <span class="connection-target-wrap">
+            <span class="connection-target">${escapeHtml(row.counterpartLabel)}</span>
+            <span class="connection-node-type">${escapeHtml(row.counterpartType)}</span>
+          </span>
           <span class="connection-meta">${escapeHtml(row.meta)}</span>
         </div>
       `).join('')}
@@ -514,9 +529,10 @@ function attachConnectionHandlers() {
       const edgeId = row.getAttribute('data-edge-id');
       if (!nodeId || !edgeId) return;
       const g = G();
+      body.querySelectorAll('.connection-row.active').forEach((activeRow) => activeRow.classList.remove('active'));
+      row.classList.add('active');
       g.highlightEdges([edgeId]);
-      navigateToNode(nodeId);
-      g.highlightEdges([edgeId]);
+      navigateToNode(nodeId, { edgeIds: [edgeId], hops: 1, persistent: g.graphMode === 'focused' });
     });
   });
 }
@@ -640,10 +656,14 @@ function initMinimapClick() {
     const clickX = (e.clientX - rect.left) / rect.width;
     const clickY = (e.clientY - rect.top) / rect.height;
 
-    // Get graph bounds
+    // Get visible graph bounds so the minimap matches the current view mode
+    const visibleNodeIds = g.getVisibleNodeIds ? g.getVisibleNodeIds() : [];
+    if (visibleNodeIds.length === 0) return;
+
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
-    g.graph.forEachNode((id, attrs) => {
+    visibleNodeIds.forEach((id) => {
+      const attrs = g.graph.getNodeAttributes(id);
       minX = Math.min(minX, attrs.x);
       maxX = Math.max(maxX, attrs.x);
       minY = Math.min(minY, attrs.y);

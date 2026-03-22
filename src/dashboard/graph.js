@@ -98,6 +98,11 @@ let pathNodes = new Set();
 let focusNode = null;
 let focusNeighborhood = null; // Set of visible node IDs when focused
 
+const ZOOM_REVEAL_THRESHOLDS = {
+  detail: 0.24,
+  supporting: 0.12,
+};
+
 // New node animation
 let newNodeIds = new Set();
 let newNodeTimer = null;
@@ -143,6 +148,10 @@ function isNodeVisible(node, attrs = null) {
   const nodeAttrs = attrs || graph.getNodeAttributes(node);
   if (!nodeAttrs) return false;
 
+  if (isNodeContextuallyRelevant(node)) {
+    return true;
+  }
+
   if (!activeFilters.has(nodeAttrs.nodeType)) {
     return false;
   }
@@ -153,10 +162,6 @@ function isNodeVisible(node, attrs = null) {
 
   if (focusNeighborhood && !focusNeighborhood.has(node)) {
     return false;
-  }
-
-  if (isNodeContextuallyRelevant(node)) {
-    return true;
   }
 
   if (graphMode === 'focused') {
@@ -203,8 +208,8 @@ function getCurrentCameraRatio() {
 
 function shouldRevealDetailNodeAtCurrentZoom(nodeAttrs) {
   const ratio = getCurrentCameraRatio();
-  if (DETAIL_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= 0.12;
-  if (SUPPORTING_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= 0.05;
+  if (DETAIL_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= ZOOM_REVEAL_THRESHOLDS.detail;
+  if (SUPPORTING_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= ZOOM_REVEAL_THRESHOLDS.supporting;
   return true;
 }
 
@@ -219,6 +224,7 @@ function isNodeContextuallyRelevant(node) {
 function shouldShowLabel(node, nodeAttrs) {
   if (node === selectedNode || node === hoveredNode || pathNodes.has(node)) return true;
   if (focusNeighborhood?.has(node)) return true;
+  if (selectedNeighborhood?.has(node)) return true;
 
   const ratio = getCurrentCameraRatio();
   const type = nodeAttrs.nodeType;
@@ -467,10 +473,7 @@ function selectNode(node) {
     return;
   }
 
-  selectedNeighborhood = new Set([node]);
-  for (const neighbor of graph.neighbors(node)) {
-    selectedNeighborhood.add(neighbor);
-  }
+  selectedNeighborhood = getNeighborhood(node, 1);
   graph.edges(node).forEach((edgeId) => inspectedEdgeIds.add(edgeId));
   if (renderer) renderer.refresh();
   updateMinimap();
@@ -490,6 +493,64 @@ function highlightEdges(edgeIds = []) {
   updateMinimap();
 }
 
+function getNeighborhood(node, hops = 1) {
+  if (!graph || !node || !graph.hasNode(node)) return new Set();
+
+  const visited = new Set([node]);
+  let frontier = [node];
+  for (let depth = 0; depth < hops; depth++) {
+    const next = [];
+    for (const current of frontier) {
+      for (const neighbor of graph.neighbors(current)) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          next.push(neighbor);
+        }
+      }
+    }
+    frontier = next;
+    if (frontier.length === 0) break;
+  }
+  return visited;
+}
+
+function showSelection() {
+  if (focusNeighborhood?.size) {
+    zoomToNodes(focusNeighborhood, { paddingFactor: 1.9, minRatio: 0.08, maxRatio: 1.6 });
+    return;
+  }
+  if (selectedNeighborhood?.size) {
+    zoomToNodes(selectedNeighborhood, { paddingFactor: 1.8, minRatio: 0.08, maxRatio: 1.4 });
+    return;
+  }
+  zoomToFit();
+}
+
+function focusNodeContext(node, options = {}) {
+  if (!graph || !graph.hasNode(node)) return new Set();
+
+  const hops = Math.max(1, options.hops || 1);
+  const edgeIds = Array.isArray(options.edgeIds) ? options.edgeIds : [];
+  const persistent = options.persistent === true || graphMode === 'focused';
+
+  if (persistent) {
+    enterNeighborhoodFocus(node, hops);
+  } else {
+    selectNode(node);
+    zoomToNodes(getNeighborhood(node, hops), {
+      paddingFactor: options.paddingFactor || 1.9,
+      minRatio: options.minRatio || 0.08,
+      maxRatio: options.maxRatio || 1.4,
+    });
+  }
+
+  if (edgeIds.length > 0) {
+    highlightEdges(edgeIds);
+  }
+
+  return persistent ? new Set(focusNeighborhood || []) : new Set(selectedNeighborhood || []);
+}
+
 function setupClick() {
   renderer.on('clickNode', ({ node, event }) => {
     // Suppress click that fires after a drag release
@@ -504,6 +565,11 @@ function setupClick() {
     }
     // Regular click: show detail
     if (typeof showNodeDetail === 'function') {
+      if (node === selectedNode) {
+        showSelection();
+        showNodeDetail(node);
+        return;
+      }
       selectNode(node);
       showNodeDetail(node);
     }
@@ -636,22 +702,7 @@ function clearPathHighlight() {
 function enterNeighborhoodFocus(node, hops) {
   selectNode(node);
   focusNode = node;
-  focusNeighborhood = new Set([node]);
-
-  // BFS N-hop neighborhood
-  let frontier = [node];
-  for (let i = 0; i < hops; i++) {
-    const next = [];
-    for (const n of frontier) {
-      for (const neighbor of graph.neighbors(n)) {
-        if (!focusNeighborhood.has(neighbor)) {
-          focusNeighborhood.add(neighbor);
-          next.push(neighbor);
-        }
-      }
-    }
-    frontier = next;
-  }
+  focusNeighborhood = getNeighborhood(node, hops);
 
   // Show banner
   const banner = document.getElementById('focus-banner');
@@ -664,7 +715,7 @@ function enterNeighborhoodFocus(node, hops) {
   if (renderer) renderer.refresh();
 
   // Zoom to fit the focused neighborhood
-  zoomToNodes(focusNeighborhood);
+  zoomToNodes(focusNeighborhood, { paddingFactor: 2, minRatio: 0.08, maxRatio: 1.6 });
 }
 
 function exitNeighborhoodFocus() {
@@ -678,7 +729,7 @@ function exitNeighborhoodFocus() {
   if (graphMode === 'focused') {
     zoomToNodes(selectedNeighborhood || new Set(getVisibleNodeIds()));
   } else {
-    zoomToFit();
+    showSelection();
   }
 }
 
@@ -1082,30 +1133,92 @@ function groupInitialPositions(nodes, edges = []) {
     });
   });
 
-  function relatedAnchor(nodeId) {
-    const edge = edges.find(edge => edge.source === nodeId || edge.target === nodeId);
-    if (!edge) return null;
-    const counterpartId = edge.source === nodeId ? edge.target : edge.source;
-    return hostAnchors.get(counterpartId) || domainAnchors.get(counterpartId) || positions[counterpartId] || null;
+  const preferredAnchorTypes = {
+    service: new Set(['host']),
+    share: new Set(['host']),
+    credential: new Set(['host', 'domain']),
+    certificate: new Set(['host', 'domain']),
+    user: new Set(['domain', 'host']),
+    group: new Set(['domain']),
+    ou: new Set(['domain']),
+    gpo: new Set(['domain']),
+  };
+
+  function hashId(value) {
+    let hash = 0;
+    for (let i = 0; i < value.length; i++) {
+      hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+    }
+    return hash;
   }
 
-  nodes.forEach((node, idx) => {
+  function findAnchorId(nodeId, type) {
+    const preferred = preferredAnchorTypes[type] || new Set(['host', 'domain', 'objective']);
+    const related = edges
+      .filter(edge => edge.source === nodeId || edge.target === nodeId)
+      .map(edge => edge.source === nodeId ? edge.target : edge.source)
+      .filter(counterpartId => positions[counterpartId]);
+
+    const preferredMatch = related.find(counterpartId => preferred.has((nodeMap.get(counterpartId)?.properties || {}).type));
+    return preferredMatch || related[0] || null;
+  }
+
+  function getOrbitRadius(type) {
+    if (type === 'service') return 4.5;
+    if (type === 'share') return 5.2;
+    if (type === 'credential' || type === 'certificate') return 5.8;
+    if (type === 'user') return 6.6;
+    if (type === 'group' || type === 'ou' || type === 'gpo') return 8.2;
+    return 6;
+  }
+
+  function getOrbitalPosition(anchor, nodeId, type, index, total) {
+    const baseRadius = getOrbitRadius(type);
+    const hash = hashId(nodeId);
+    const radius = baseRadius + ((hash % 5) - 2) * 0.18;
+    const isHostSatellite = type === 'service' || type === 'share';
+    const start = isHostSatellite ? -Math.PI * 0.9 : -Math.PI;
+    const sweep = isHostSatellite ? Math.PI * 1.8 : Math.PI * 2;
+    const slotRatio = total <= 1 ? (hash % 360) / 360 : index / Math.max(total - 1, 1);
+    const angle = start + sweep * slotRatio + (((hash >> 3) % 13) - 6) * 0.012;
+    return {
+      x: anchor.x + radius * Math.cos(angle),
+      y: anchor.y + radius * Math.sin(angle),
+    };
+  }
+
+  const buckets = new Map();
+  const unanchored = [];
+
+  nodes.forEach((node) => {
     if (positions[node.id]) return;
     const type = (node.properties || {}).type || 'host';
-    const anchor = relatedAnchor(node.id);
-    if (anchor) {
-      const angle = (idx % 10) * (Math.PI / 5);
-      const radius = DETAIL_NODE_TYPES.has(type) ? 3 : 5;
-      positions[node.id] = {
-        x: anchor.x + radius * Math.cos(angle),
-        y: anchor.y + radius * Math.sin(angle),
-      };
+    const anchorId = findAnchorId(node.id, type);
+    if (!anchorId) {
+      unanchored.push(node);
       return;
     }
+    const bucketKey = `${anchorId}::${type}`;
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, { anchorId, type, nodes: [] });
+    }
+    buckets.get(bucketKey).nodes.push(node);
+  });
 
+  buckets.forEach((bucket) => {
+    const anchor = positions[bucket.anchorId];
+    if (!anchor) return;
+    bucket.nodes
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .forEach((node, idx) => {
+        positions[node.id] = getOrbitalPosition(anchor, node.id, bucket.type, idx, bucket.nodes.length);
+      });
+  });
+
+  unanchored.forEach((node, idx) => {
     positions[node.id] = {
-      x: (idx % 6) * 4 - 10,
-      y: 4 + Math.floor(idx / 6) * 4,
+      x: (idx % 6) * 5 - 12,
+      y: 6 + Math.floor(idx / 6) * 5,
     };
   });
 
@@ -1145,8 +1258,19 @@ function mergeGraphDelta(delta) {
         const anchorPos = anchorId && graph.hasNode(anchorId)
           ? graph.getNodeAttributes(anchorId)
           : null;
-        const angle = Math.random() * 2 * Math.PI;
-        const radius = 3 + Math.random() * 3;
+        const siblingCount = anchorId
+          ? graph.edges(anchorId).filter((edgeId) => {
+              const oppositeId = graph.opposite(anchorId, edgeId);
+              return graph.hasNode(oppositeId) && graph.getNodeAttribute(oppositeId, 'nodeType') === nodeType;
+            }).length
+          : 0;
+        const hash = n.id.split('').reduce((acc, ch) => ((acc * 31) + ch.charCodeAt(0)) >>> 0, 0);
+        const baseRadius = DETAIL_NODE_TYPES.has(nodeType) ? 4.5 : SUPPORTING_NODE_TYPES.has(nodeType) ? 6.4 : 5.4;
+        const radius = baseRadius + ((hash % 5) - 2) * 0.18;
+        const angleSpread = DETAIL_NODE_TYPES.has(nodeType) ? Math.PI * 1.7 : Math.PI * 2;
+        const angleStart = DETAIL_NODE_TYPES.has(nodeType) ? -Math.PI * 0.85 : -Math.PI;
+        const slotRatio = siblingCount === 0 ? (hash % 360) / 360 : siblingCount / (siblingCount + 1);
+        const angle = angleStart + angleSpread * slotRatio;
         graph.addNode(n.id, {
           label: props.label || n.id,
           x: anchorPos ? anchorPos.x + radius * Math.cos(angle) : radius * Math.cos(angle),
@@ -1306,9 +1430,12 @@ function setLabelDensity(mode) {
 // ============================================================
 
 function zoomToFit() {
-  if (renderer) {
-    renderer.getCamera().animatedReset({ duration: 300 });
+  const visibleNodes = new Set(getVisibleNodeIds());
+  if (visibleNodes.size > 0) {
+    zoomToNodes(visibleNodes, { paddingFactor: 1.6, minRatio: 0.08, maxRatio: 2.5 });
+    return;
   }
+  if (renderer) renderer.getCamera().animatedReset({ duration: 300 });
 }
 
 function zoomIn() {
@@ -1325,7 +1452,7 @@ function zoomOut() {
   }
 }
 
-function zoomToNodes(nodeSet) {
+function zoomToNodes(nodeSet, options = {}) {
   if (!renderer || nodeSet.size === 0) return;
 
   let minX = Infinity, maxX = -Infinity;
@@ -1349,11 +1476,15 @@ function zoomToNodes(nodeSet) {
   const container = document.getElementById('sigma-container');
   const aspectGraph = dx / dy;
   const aspectView = container.clientWidth / container.clientHeight;
-  const ratio = aspectGraph > aspectView
+  const rawRatio = aspectGraph > aspectView
     ? dx / (container.clientWidth * 0.0015)
     : dy / (container.clientHeight * 0.0015);
+  const paddingFactor = options.paddingFactor || 1.5;
+  const minRatio = options.minRatio || 0.05;
+  const maxRatio = options.maxRatio || 2.5;
+  const ratio = Math.min(Math.max(rawRatio * paddingFactor, minRatio), maxRatio);
 
-  renderer.getCamera().animate({ x: cx, y: cy, ratio: Math.max(ratio, 0.05) }, { duration: 400 });
+  renderer.getCamera().animate({ x: cx, y: cy, ratio }, { duration: options.duration || 400 });
 }
 
 // ============================================================
@@ -1427,9 +1558,6 @@ function updateMinimap() {
   // Camera state: x, y (graph coords), ratio
   const halfW = (viewW * state.ratio) / (2 * scale) * 0.8;
   const halfH = (viewH * state.ratio) / (2 * scale) * 0.8;
-  const vpX = ox + (state.x - minX) * scale - halfW * scale;
-  const vpY = oy + (state.y - minY) * scale - halfH * scale;
-
   ctx.strokeStyle = '#6e9eff';
   ctx.lineWidth = 2;
   ctx.strokeRect(
@@ -1539,11 +1667,14 @@ window.OverwatchGraph = {
   selectNode,
   clearSelection,
   highlightEdges,
+  focusNodeContext,
+  showSelection,
   setGraphMode,
   setLabelDensity,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },
+  get graphMode() { return graphMode; },
   NODE_COLORS,
   NODE_BASE_SIZES,
 };

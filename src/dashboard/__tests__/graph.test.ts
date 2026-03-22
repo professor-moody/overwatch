@@ -173,4 +173,19 @@ describe('dashboard graph helpers', () => {
     graphModule.enterNeighborhoodFocus('host-a', 1);
     expect(graphModule.getVisibleNodeIds().sort()).toEqual(['host-a', 'service-a']);
   });
+
+  it('keeps a selected low-signal node visible in overview mode even if its type is filtered out', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('domain-a', { label: 'north.local', nodeType: 'domain', color: '#fff', x: 0, y: 0, _props: { type: 'domain' } });
+    graph.addNode('user-a', { label: 'rickon.stark', nodeType: 'user', color: '#fff', x: 1, y: 0, _props: { type: 'user' } });
+    graph.addEdgeWithKey('user-a--MEMBER_OF_DOMAIN--domain-a', 'user-a', 'domain-a', { edgeType: 'MEMBER_OF_DOMAIN' });
+
+    graphModule.setGraphMode('overview');
+    graphModule.setActiveFilters(['domain']);
+    graphModule.selectNode('user-a');
+
+    expect(graphModule.getVisibleNodeIds().sort()).toEqual(['domain-a', 'user-a']);
+  });
 });

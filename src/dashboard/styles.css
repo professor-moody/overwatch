@@ -511,19 +511,29 @@ body {
 
 .frontier-item {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
   border-radius: var(--radius-sm);
-  margin-bottom: 2px;
+  margin-bottom: 6px;
   background: var(--bg-elevated);
   font-size: 11px;
   cursor: pointer;
-  transition: background var(--transition-fast);
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
 }
 
 .frontier-item:hover {
   background: var(--bg-hover);
+  border-color: var(--border-default);
+  transform: translateY(-1px);
+}
+
+.fi-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .frontier-item .fi-type {
@@ -542,17 +552,25 @@ body {
 
 .frontier-item .fi-desc {
   flex: 1;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fi-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .frontier-item .fi-noise {
   flex-shrink: 0;
-  width: 36px;
-  height: 4px;
+  width: 44px;
+  height: 5px;
   background: var(--bg-active);
   border-radius: 2px;
   overflow: hidden;
@@ -565,41 +583,53 @@ body {
 }
 
 .frontier-item-chips {
-  width: 100%;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-height: 20px;
 }
 
 .fi-chip {
   font-size: 9px;
   font-weight: 600;
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  background: rgba(255,255,255,0.04);
   border-radius: 999px;
-  padding: 2px 6px;
+  padding: 2px 7px;
 }
 
-/* Expanded frontier card */
-.frontier-item.expanded {
-  flex-wrap: wrap;
-  background: var(--bg-hover);
+.fi-chip-warning {
+  color: var(--amber);
+  background: var(--amber-dim);
+  border-color: rgba(234,179,8,0.18);
+}
+
+.fi-chip-edge {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: rgba(91,141,239,0.22);
+}
+
+.fi-chip-neutral {
+  color: var(--text-muted);
+}
+
+.fi-support {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .frontier-item-detail {
   width: 100%;
-  display: none;
-  padding-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 7px;
   border-top: 1px solid var(--border-subtle);
-  margin-top: 4px;
   font-size: 10px;
   color: var(--text-muted);
-}
-
-.frontier-item.expanded .frontier-item-detail {
-  display: flex;
-  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -613,15 +643,14 @@ body {
 .fi-metric-value { color: var(--text-secondary); font-family: var(--font-mono); font-weight: 500; }
 
 .fi-zoom-btn {
-  margin-left: auto;
   background: var(--accent-dim);
-  border: none;
+  border: 1px solid transparent;
   color: var(--accent);
-  padding: 2px 8px;
-  border-radius: 3px;
+  padding: 4px 8px;
+  border-radius: 6px;
   cursor: pointer;
   font: 500 10px var(--font);
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
 }
 
 .fi-focus-btn {
@@ -629,8 +658,15 @@ body {
   color: var(--purple);
 }
 
-.fi-zoom-btn:hover { background: rgba(91,141,239,0.25); }
-.fi-focus-btn:hover { background: rgba(167,139,250,0.2); }
+.fi-zoom-btn:hover {
+  background: rgba(91,141,239,0.25);
+  border-color: rgba(91,141,239,0.18);
+}
+
+.fi-focus-btn:hover {
+  background: rgba(167,139,250,0.2);
+  border-color: rgba(167,139,250,0.18);
+}
 
 /* ============================================================
    Agent Cards
@@ -1149,10 +1185,10 @@ body {
   grid-template-columns: auto auto 1fr auto;
   gap: 6px;
   align-items: center;
-  padding: 6px 8px;
+  padding: 7px 8px;
   border-radius: var(--radius-sm);
-  background: rgba(255,255,255,0.02);
-  border: 1px solid transparent;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.03);
 }
 
 .connection-row {
@@ -1163,6 +1199,11 @@ body {
 .connection-row:hover {
   background: var(--bg-hover);
   border-color: var(--border-default);
+}
+
+.connection-row.active {
+  border-color: rgba(91,141,239,0.22);
+  background: rgba(91,141,239,0.08);
 }
 
 .connection-direction {
@@ -1191,6 +1232,22 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.connection-target-wrap {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-node-type {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
 }
 
 .connection-meta,
