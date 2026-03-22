@@ -23,6 +23,7 @@ import { registerToolCheckTools } from './tools/toolcheck.js';
 import { registerProcessTools } from './tools/processes.js';
 import { registerInferenceTools } from './tools/inference.js';
 import { registerParseOutputTools } from './tools/parse-output.js';
+import { registerLoggingTools } from './tools/logging.js';
 import { ProcessTracker } from './services/process-tracker.js';
 import { DashboardServer } from './services/dashboard-server.js';
 import { registerRetrospectiveTools } from './tools/retrospective.js';
@@ -92,6 +93,7 @@ registerToolCheckTools(server);
 registerProcessTools(server, processTracker, engine);
 registerInferenceTools(server, engine);
 registerParseOutputTools(server, engine);
+registerLoggingTools(server, engine);
 registerRetrospectiveTools(server, engine, skills);
 
 // ============================================================

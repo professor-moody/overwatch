@@ -284,11 +284,35 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     inferred_edge: { total: 0, successful: 0 },
   };
 
+  const groupedActions = groupHistoryByActionId(input.history);
+  const actionIdsWithStructuredAttribution = new Set<string>();
+
+  for (const [actionId, entries] of groupedActions) {
+    const frontierType = entries.find(entry => !!entry.frontier_type)?.frontier_type;
+    if (!frontierType || !successByType[frontierType]) continue;
+
+    actionIdsWithStructuredAttribution.add(actionId);
+    successByType[frontierType].total++;
+
+    const hasSuccessfulLifecycle = entries.some(entry =>
+      entry.event_type === 'action_completed' && (entry.result_classification === 'success' || entry.result_classification === 'partial'),
+    );
+    const hasLinkedFinding = entries.some(entry =>
+      entry.event_type === 'finding_ingested' &&
+      ((entry.linked_finding_ids && entry.linked_finding_ids.length > 0) || entry.result_classification === 'success'),
+    );
+    const hasObjective = entries.some(entry => entry.event_type === 'objective_achieved');
+    if (hasSuccessfulLifecycle || hasLinkedFinding || hasObjective) {
+      successByType[frontierType].successful++;
+    }
+  }
+
   // Walk history: actions followed by findings are "successful"
   // Prefer structured fields (category, frontier_type, outcome) when present;
   // fall back to text matching for legacy entries without structured fields.
   for (let i = 0; i < input.history.length; i++) {
     const entry = input.history[i];
+    if (entry.action_id && actionIdsWithStructuredAttribution.has(entry.action_id)) continue;
 
     // Detect frontier item executions — structured path
     let frontierType: string | null = entry.frontier_type || null;
@@ -335,25 +359,58 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
   return successByType;
 }
 
+function groupHistoryByActionId(history: ActivityLogEntry[]): Map<string, ActivityLogEntry[]> {
+  const grouped = new Map<string, ActivityLogEntry[]>();
+  for (const entry of history) {
+    if (!entry.action_id) continue;
+    const existing = grouped.get(entry.action_id) || [];
+    existing.push(entry);
+    grouped.set(entry.action_id, existing);
+  }
+  return grouped;
+}
+
 export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQualityReport {
   const total = input.history.length;
   if (total === 0) {
     return {
       status: 'weak',
       issues: ['No activity history is available, so retrospective attribution is almost entirely unavailable.'],
-      recommendation: 'Record structured activity entries with category, frontier_type, and outcome during each run.',
+      recommendation: 'Record structured activity entries with action_id, event_type, category, frontier_type, and outcome during each run.',
     };
   }
 
   const withCategory = input.history.filter(entry => !!entry.category).length;
   const withFrontierType = input.history.filter(entry => !!entry.frontier_type).length;
   const withOutcome = input.history.filter(entry => !!entry.outcome).length;
+  const actionEvents = input.history.filter(entry => !!entry.event_type && entry.event_type.startsWith('action_'));
+  const actionIdRate = actionEvents.length > 0
+    ? actionEvents.filter(entry => !!entry.action_id).length / actionEvents.length
+    : 0;
+  const validatedActions = input.history.filter(entry => entry.event_type === 'action_validated');
+  const validatedLinkedRate = validatedActions.length > 0
+    ? validatedActions.filter(entry =>
+      !!entry.action_id &&
+      input.history.some(candidate =>
+        candidate.action_id === entry.action_id &&
+        (candidate.event_type === 'finding_reported' || candidate.event_type === 'finding_ingested' || candidate.event_type === 'action_completed' || candidate.event_type === 'action_failed'),
+      )
+    ).length / validatedActions.length
+    : 0;
+  const findingEvents = input.history.filter(entry => entry.event_type === 'finding_reported' || entry.event_type === 'finding_ingested');
+  const findingLinkedRate = findingEvents.length > 0
+    ? findingEvents.filter(entry => !!entry.action_id || (entry.linked_finding_ids && entry.linked_finding_ids.length > 0)).length / findingEvents.length
+    : 0;
+  const terminalActions = input.history.filter(entry => entry.event_type === 'action_completed' || entry.event_type === 'action_failed');
+  const terminalResultRate = terminalActions.length > 0
+    ? terminalActions.filter(entry => !!entry.result_classification).length / terminalActions.length
+    : 0;
 
   let heuristicCount = 0;
   let ambiguousWindows = 0;
   for (let i = 0; i < input.history.length; i++) {
     const entry = input.history[i];
-    if (!entry.category || !entry.frontier_type || !entry.outcome) {
+    if (!entry.category || !entry.frontier_type || !entry.outcome || !entry.event_type || !entry.action_id) {
       heuristicCount++;
     }
 
@@ -375,20 +432,24 @@ export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQuality
   if (categoryRate < 0.6) issues.push(`Only ${(categoryRate * 100).toFixed(0)}% of history entries include a category.`);
   if (frontierRate < 0.4) issues.push(`Only ${(frontierRate * 100).toFixed(0)}% of history entries include a frontier type.`);
   if (outcomeRate < 0.5) issues.push(`Only ${(outcomeRate * 100).toFixed(0)}% of history entries include an explicit outcome.`);
+  if (actionEvents.length > 0 && actionIdRate < 0.8) issues.push(`Only ${(actionIdRate * 100).toFixed(0)}% of action events carry a stable action_id.`);
+  if (validatedActions.length > 0 && validatedLinkedRate < 0.6) issues.push(`Only ${(validatedLinkedRate * 100).toFixed(0)}% of validated actions link cleanly to later findings or terminal action results.`);
+  if (findingEvents.length > 0 && findingLinkedRate < 0.8) issues.push(`Only ${(findingLinkedRate * 100).toFixed(0)}% of finding events link back to an action or finding ID.`);
+  if (terminalActions.length > 0 && terminalResultRate < 1.0) issues.push(`Only ${(terminalResultRate * 100).toFixed(0)}% of completed/failed actions include explicit result classification.`);
   if (heuristicRate > 0.5) issues.push(`About ${(heuristicRate * 100).toFixed(0)}% of retrospective judgments depend on text heuristics.`);
   if (ambiguousRate > 0.2) issues.push('Nearby multi-agent findings make action/result attribution ambiguous in several windows.');
 
   const status = issues.length === 0
     ? 'good'
-    : (categoryRate < 0.35 || frontierRate < 0.2 || outcomeRate < 0.25 || heuristicRate > 0.75)
+    : (categoryRate < 0.35 || frontierRate < 0.2 || outcomeRate < 0.25 || heuristicRate > 0.75 || (actionEvents.length > 0 && actionIdRate < 0.5))
       ? 'weak'
       : 'mixed';
 
   const recommendation = status === 'good'
     ? 'Continue recording structured activity entries; the current history quality supports iterative improvement.'
     : status === 'mixed'
-      ? 'Increase structured logging on frontier execution and validation outcomes so retrospective guidance relies less on text heuristics.'
-      : 'Prioritize instrumentation: record category, frontier_type, and outcome for key actions before relying heavily on retrospective guidance.';
+      ? 'Increase structured logging on action validation, execution, and finding correlation so retrospective guidance relies less on text heuristics.'
+      : 'Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance.';
 
   return { status, issues, recommendation };
 }
@@ -480,7 +541,11 @@ export function analyzeContextImprovements(input: RetrospectiveInput): ContextIm
     }
   }
 
-  const deniedOrFailed = input.history.filter(entry => /fail|denied|error/i.test(entry.description));
+  const deniedOrFailed = input.history.filter(entry =>
+    entry.result_classification === 'failure' ||
+    entry.validation_result === 'invalid' ||
+    /fail|denied|error/i.test(entry.description)
+  );
   if (deniedOrFailed.length > 0) {
     contextGaps.push({
       area: 'validation-warning improvement',
@@ -505,6 +570,7 @@ export function analyzeContextImprovements(input: RetrospectiveInput): ContextIm
 
   if (input.config.opsec.max_noise <= 0.3) {
     const noisyPatterns = input.history.filter(entry =>
+      ['nmap', 'nxc', 'netexec', 'responder', 'impacket-secretsdump'].includes(entry.tool_name || '') ||
       /nmap|scan|secretsdump|responder|spray|brute/i.test(entry.description)
     );
     if (noisyPatterns.length > 0) {
@@ -828,9 +894,88 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     }
   }
 
+  const groupedActions = groupHistoryByActionId(history);
+  const processedActionIds = new Set<string>();
   let step = 0;
   for (let i = 0; i < history.length; i++) {
     const entry = history[i];
+    if (entry.action_id && processedActionIds.has(entry.action_id)) {
+      continue;
+    }
+
+    if (entry.action_id && groupedActions.has(entry.action_id)) {
+      const entries = groupedActions.get(entry.action_id)!;
+      processedActionIds.add(entry.action_id);
+
+      const first = entries[0];
+      const target = first.target_node_ids?.[0] || first.target_edge?.target;
+      const tool = first.tool_name;
+      const technique = first.technique;
+      const terminal = [...entries].reverse().find(candidate =>
+        candidate.event_type === 'action_completed' || candidate.event_type === 'action_failed'
+      );
+      const findingEvents = entries.filter(candidate => candidate.event_type === 'finding_ingested');
+      const actionType = terminal?.event_type === 'action_failed'
+        ? 'action_failed'
+        : first.event_type || 'action';
+      const newNodes = findingEvents.reduce((sum, candidate) => sum + asNumber(candidate.details?.new_nodes), 0);
+      const newEdges = findingEvents.reduce((sum, candidate) => sum + asNumber(candidate.details?.new_edges), 0);
+      const objAchieved = entries.some(candidate => candidate.event_type === 'objective_achieved');
+
+      nodeCount += newNodes;
+      edgeCount += newEdges;
+      if (objAchieved) objectivesAchieved++;
+      if (entries.some(candidate => /admin|session/i.test(candidate.description))) accessLevel = 'user';
+      if (entries.some(candidate => /domain admin|da /i.test(candidate.description))) accessLevel = 'domain_admin';
+
+      let reward = 0;
+      reward += newNodes * 0.5;
+      reward += newEdges * 0.3;
+      if (objAchieved) reward += 5.0;
+      if (entries.some(candidate => candidate.result_classification === 'success')) reward += 1.0;
+      if (entries.some(candidate => candidate.result_classification === 'failure')) reward -= 0.1;
+
+      const hasStructuredLifecycle = entries.some(candidate => candidate.event_type === 'action_validated')
+        && !!terminal;
+      const hasFindingLinkage = findingEvents.some(candidate => (candidate.linked_finding_ids?.length || 0) > 0);
+      const derived_from: RLVRTrace['derived_from'] = hasStructuredLifecycle && hasFindingLinkage
+        ? 'structured'
+        : (hasStructuredLifecycle || hasFindingLinkage)
+          ? 'mixed'
+          : 'text_heuristic';
+      const confidence: RLVRTrace['confidence'] = derived_from === 'structured'
+        ? 'high'
+        : derived_from === 'mixed'
+          ? 'medium'
+          : 'low';
+
+      if (derived_from === 'structured') structuredCount++;
+      else if (derived_from === 'mixed') mixedCount++;
+      else heuristicCount++;
+
+      traces.push({
+        step,
+        timestamp: first.timestamp,
+        state_summary: {
+          nodes: nodeCount,
+          edges: edgeCount,
+          access_level: accessLevel,
+          objectives_achieved: objectivesAchieved,
+        },
+        action: { type: actionType, target, technique, tool },
+        outcome: {
+          new_nodes: newNodes,
+          new_edges: newEdges,
+          objective_achieved: objAchieved,
+        },
+        reward,
+        confidence,
+        derived_from,
+      });
+      step++;
+      continue;
+    }
+
     const desc = entry.description.toLowerCase();
 
     // Parse action type from log entry
@@ -900,7 +1045,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     if (desc.includes('owns_cred')) reward += 1.0;
     if (desc.includes('fail') || desc.includes('denied')) reward -= 0.1;
 
-    const hasStructuredAction = !!entry.category || !!entry.frontier_type || !!entry.outcome;
+    const hasStructuredAction = !!entry.category || !!entry.frontier_type || !!entry.outcome || !!entry.event_type;
     const derived_from: RLVRTrace['derived_from'] = hasStructuredAction && usedStructuredOutcome
       ? 'structured'
       : (hasStructuredAction || usedStructuredOutcome)
@@ -944,6 +1089,10 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
   }
   if (mixedCount > structuredCount) {
     issues.push('Most traces depend on mixed structured + heuristic attribution instead of explicit causal linkage.');
+  }
+  const actionEvents = history.filter(entry => !!entry.action_id);
+  if (actionEvents.length > 0 && structuredCount === 0) {
+    issues.push('Action IDs are present, but explicit finding/result linkage is still too weak for high-confidence traces.');
   }
   if (input.history.length > 0 && input.history.filter(entry => !!entry.frontier_type).length === 0) {
     issues.push('History contains no explicit frontier_type fields, which weakens causal analysis.');
@@ -1015,4 +1164,8 @@ function formatTimestamp(ts: string): string {
   } catch {
     return ts;
   }
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }

@@ -38,9 +38,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 21 tools', async () => {
+  it('lists all 22 tools', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(21);
+    expect(result.tools.length).toBe(22);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -62,6 +62,7 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('check_processes');
     expect(toolNames).toContain('suggest_inference_rule');
     expect(toolNames).toContain('parse_output');
+    expect(toolNames).toContain('log_action_event');
     expect(toolNames).toContain('run_retrospective');
   });
 
@@ -140,6 +141,124 @@ describe('MCP Server Integration', () => {
     const body = JSON.parse(content[0].text);
     expect(body.valid).toBe(false);
     expect(body.errors.length).toBeGreaterThan(0);
+    expect(body.action_id).toBeDefined();
+  });
+
+  it('links validate_action and report_finding via action_id in get_history', async () => {
+    const validation = await client.callTool({
+      name: 'validate_action',
+      arguments: {
+        target_node: 'host-10-10-10-1',
+        tool_name: 'nmap',
+        technique: 'portscan',
+        description: 'Validate an nmap scan against host-10-10-10-1',
+      },
+    });
+    const validationBody = JSON.parse((validation.content as Array<{ type: string; text: string }>)[0].text);
+    const actionId = validationBody.action_id;
+
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: 'test-agent',
+        action_id: actionId,
+        tool_name: 'nmap',
+        target_node_ids: ['host-10-10-10-1'],
+        nodes: [
+          { id: `svc-http-${Date.now()}`, type: 'service', label: 'HTTP integration test', properties: { port: 80, service_name: 'http' } },
+        ],
+        edges: [],
+      },
+    });
+
+    const historyResult = await client.callTool({ name: 'get_history', arguments: { limit: 50 } });
+    const historyBody = JSON.parse((historyResult.content as Array<{ type: string; text: string }>)[0].text);
+    const linkedEntries = historyBody.entries.filter((entry: any) => entry.action_id === actionId);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'action_validated')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_reported')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_ingested')).toBe(true);
+  });
+
+  it('supports validate_action to log_action_event to report_finding as one coherent action lifecycle', async () => {
+    const validation = await client.callTool({
+      name: 'validate_action',
+      arguments: {
+        target_node: 'host-10-10-10-2',
+        tool_name: 'nxc',
+        technique: 'smb-enum',
+        description: 'Validate SMB enumeration against host-10-10-10-2',
+      },
+    });
+    const validationBody = JSON.parse((validation.content as Array<{ type: string; text: string }>)[0].text);
+    const actionId = validationBody.action_id;
+
+    await client.callTool({
+      name: 'log_action_event',
+      arguments: {
+        action_id: actionId,
+        event_type: 'action_started',
+        description: 'Started SMB enumeration on host-10-10-10-2',
+        tool_name: 'nxc',
+        target_node_ids: ['host-10-10-10-2'],
+      },
+    });
+
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: 'test-agent',
+        action_id: actionId,
+        tool_name: 'nxc',
+        target_node_ids: ['host-10-10-10-2'],
+        nodes: [
+          { id: `svc-smb-${Date.now()}`, type: 'service', label: 'SMB integration lifecycle', properties: { port: 445, service_name: 'smb' } },
+        ],
+        edges: [],
+      },
+    });
+
+    await client.callTool({
+      name: 'log_action_event',
+      arguments: {
+        action_id: actionId,
+        event_type: 'action_completed',
+        description: 'Completed SMB enumeration on host-10-10-10-2',
+        tool_name: 'nxc',
+        target_node_ids: ['host-10-10-10-2'],
+        result_classification: 'success',
+      },
+    });
+
+    const historyResult = await client.callTool({ name: 'get_history', arguments: { limit: 100 } });
+    const historyBody = JSON.parse((historyResult.content as Array<{ type: string; text: string }>)[0].text);
+    const linkedEntries = historyBody.entries.filter((entry: any) => entry.action_id === actionId);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'action_validated')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'action_started')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_ingested')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'action_completed')).toBe(true);
+  });
+
+  it('direct report_finding without prior validation still generates linked structured events', async () => {
+    const result = await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: 'test-agent',
+        tool_name: 'manual',
+        nodes: [
+          { id: `host-direct-${Date.now()}`, type: 'host', label: 'direct manual host', properties: { ip: '10.10.10.77' } },
+        ],
+        edges: [],
+      },
+    });
+
+    const body = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+    expect(body.action_id).toBeDefined();
+
+    const historyResult = await client.callTool({ name: 'get_history', arguments: { limit: 100 } });
+    const historyBody = JSON.parse((historyResult.content as Array<{ type: string; text: string }>)[0].text);
+    const linkedEntries = historyBody.entries.filter((entry: any) => entry.action_id === body.action_id);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_reported')).toBe(true);
+    expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_ingested')).toBe(true);
   });
 
   it('get_skill returns skill content', async () => {

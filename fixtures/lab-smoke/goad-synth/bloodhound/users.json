@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-500",
+      "Properties": {
+        "name": "ADMINISTRATOR@ACME.LOCAL",
+        "samaccountname": "Administrator",
+        "displayname": "Built-in Administrator",
+        "enabled": true,
+        "admincount": true,
+        "domain": "acme.local",
+        "sid": "S-1-5-21-1111-2222-3333-500"
+      },
+      "Aces": []
+    },
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-1101",
+      "Properties": {
+        "name": "SVC_BACKUP@ACME.LOCAL",
+        "samaccountname": "svc_backup",
+        "displayname": "Backup Service",
+        "enabled": true,
+        "admincount": false,
+        "hasspn": true,
+        "domain": "acme.local",
+        "sid": "S-1-5-21-1111-2222-3333-1101"
+      },
+      "Aces": []
+    },
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-1102",
+      "Properties": {
+        "name": "JDOE@ACME.LOCAL",
+        "samaccountname": "jdoe",
+        "displayname": "John Doe",
+        "enabled": true,
+        "admincount": false,
+        "domain": "acme.local",
+        "sid": "S-1-5-21-1111-2222-3333-1102"
+      },
+      "Aces": []
+    }
+  ],
+  "meta": {
+    "type": "users",
+    "count": 3,
+    "version": 5
+  }
+}

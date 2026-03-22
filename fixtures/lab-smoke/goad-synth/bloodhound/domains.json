@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333",
+      "Properties": {
+        "name": "ACME.LOCAL",
+        "domain": "acme.local",
+        "functionallevel": "2016"
+      },
+      "Aces": []
+    }
+  ],
+  "meta": {
+    "type": "domains",
+    "count": 1,
+    "version": 5
+  }
+}

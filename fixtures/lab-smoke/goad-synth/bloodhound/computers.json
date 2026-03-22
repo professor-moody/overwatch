@@ -1,0 +1,82 @@
+{
+  "data": [
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-1001",
+      "Properties": {
+        "name": "DC01.ACME.LOCAL",
+        "dnshostname": "dc01.acme.local",
+        "samaccountname": "DC01$",
+        "operatingsystem": "Windows Server 2019",
+        "enabled": true,
+        "domain": "acme.local",
+        "ip": "10.10.10.10"
+      },
+      "Status": { "Connectable": true },
+      "Aces": [],
+      "Sessions": [],
+      "LocalAdmins": [],
+      "RemoteDesktopUsers": [],
+      "PSRemoteUsers": [],
+      "DcomUsers": [],
+      "AllowedToDelegate": [],
+      "AllowedToAct": []
+    },
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-1002",
+      "Properties": {
+        "name": "DC02.ACME.LOCAL",
+        "dnshostname": "dc02.acme.local",
+        "samaccountname": "DC02$",
+        "operatingsystem": "Windows Server 2022",
+        "enabled": true,
+        "domain": "acme.local",
+        "ip": "10.10.10.11"
+      },
+      "Status": { "Connectable": true },
+      "Aces": [],
+      "Sessions": [],
+      "LocalAdmins": [],
+      "RemoteDesktopUsers": [],
+      "PSRemoteUsers": [],
+      "DcomUsers": [],
+      "AllowedToDelegate": [],
+      "AllowedToAct": []
+    },
+    {
+      "ObjectIdentifier": "S-1-5-21-1111-2222-3333-1003",
+      "Properties": {
+        "name": "SRV01.ACME.LOCAL",
+        "dnshostname": "srv01.acme.local",
+        "samaccountname": "SRV01$",
+        "operatingsystem": "Windows Server 2022",
+        "enabled": true,
+        "domain": "acme.local",
+        "ip": "10.10.10.20"
+      },
+      "Status": { "Connectable": true },
+      "Aces": [],
+      "Sessions": [
+        {
+          "UserSID": "S-1-5-21-1111-2222-3333-1101",
+          "ComputerSID": "S-1-5-21-1111-2222-3333-1003"
+        }
+      ],
+      "LocalAdmins": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111-2222-3333-512",
+          "ObjectType": "Group"
+        }
+      ],
+      "RemoteDesktopUsers": [],
+      "PSRemoteUsers": [],
+      "DcomUsers": [],
+      "AllowedToDelegate": [],
+      "AllowedToAct": []
+    }
+  ],
+  "meta": {
+    "type": "computers",
+    "count": 3,
+    "version": 5
+  }
+}

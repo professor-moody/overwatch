@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun>
+  <host>
+    <status state="up" />
+    <address addr="10.10.10.10" addrtype="ipv4" />
+    <hostnames>
+      <hostname name="dc01.acme.local" type="user" />
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="88">
+        <state state="open" />
+        <service name="kerberos-sec" product="Microsoft Windows Kerberos" version="5" />
+      </port>
+      <port protocol="tcp" portid="445">
+        <state state="open" />
+        <service name="microsoft-ds" product="Windows Server 2019 Standard 17763 microsoft-ds" />
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up" />
+    <address addr="10.10.10.11" addrtype="ipv4" />
+    <hostnames>
+      <hostname name="dc02.acme.local" type="user" />
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="88">
+        <state state="open" />
+        <service name="kerberos-sec" product="Microsoft Windows Kerberos" version="5" />
+      </port>
+      <port protocol="tcp" portid="445">
+        <state state="open" />
+        <service name="microsoft-ds" product="Windows Server 2022 Standard 20348 microsoft-ds" />
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up" />
+    <address addr="10.10.10.20" addrtype="ipv4" />
+    <hostnames>
+      <hostname name="srv01.acme.local" type="user" />
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="445">
+        <state state="open" />
+        <service name="microsoft-ds" product="Windows Server 2022 Standard 20348 microsoft-ds" />
+      </port>
+      <port protocol="tcp" portid="1433">
+        <state state="open" />
+        <service name="ms-sql-s" product="Microsoft SQL Server" version="15.0" />
+      </port>
+    </ports>
+  </host>
+</nmaprun>

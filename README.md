@@ -21,9 +21,9 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 │         │                │                  │          │
 │  ┌──────▼────────────────▼──────────────────▼───────┐  │
 │  │              MCP Tool Interface                   │  │
-│  │  get_state · next_task · report_finding ·         │  │
-│  │  validate_action · query_graph · find_paths ·     │  │
-│  │  get_skill · register_agent · ...                 │  │
+│  │  get_state · next_task · validate_action ·        │  │
+│  │  log_action_event · parse_output ·                │  │
+│  │  report_finding · query_graph · find_paths · ...  │  │
 │  └──────────────────────┬────────────────────────────┘  │
 └─────────────────────────┼──────────────────────────────┘
                           │ stdio
@@ -150,8 +150,8 @@ Use this order for a first real lab run:
 For a smaller single-target workflow:
 
 1. Run `run_lab_preflight` with `profile: "single_host"`.
-2. Parse and ingest Nmap XML.
-3. Report at least one manual or parsed finding.
+2. Parse and ingest Nmap XML with `parse_output`.
+3. Report at least one manual or parsed finding. Prefer `parse_output` for supported tools; use `report_finding` for manual observations or unsupported output.
 4. Check `get_state`, `next_task`, and `run_graph_health`.
 5. Verify a restart/load round-trip before relying on the workflow for longer sessions.
 
@@ -162,8 +162,10 @@ For a smaller single-target workflow:
 | `get_state` | Full engagement briefing from graph | ✓ |
 | `run_lab_preflight` | Aggregate lab-readiness checks for GOAD or single-host testing | ✓ |
 | `next_task` | Filtered frontier candidates for scoring | ✓ |
+| `validate_action` | Pre-execution sanity check and `action_id` issuance | ✗ |
+| `log_action_event` | Record explicit action lifecycle around tool execution | ✗ |
+| `parse_output` | Parse supported tool output into findings | ✗ |
 | `report_finding` | Submit new nodes/edges to the graph | ✗ |
-| `validate_action` | Pre-execution sanity check | ✓ |
 | `query_graph` | Open-ended graph exploration | ✓ |
 | `find_paths` | Shortest paths to objectives | ✓ |
 | `get_skill` | RAG search over skill library | ✓ |
@@ -178,8 +180,13 @@ For a smaller single-target workflow:
 | `track_process` | Register a long-running scan or collection | ✗ |
 | `check_processes` | Inspect tracked process state | ✓ |
 | `suggest_inference_rule` | Add a custom inference rule | ✗ |
-| `parse_output` | Parse common tool output into findings | ✗ |
 | `run_retrospective` | Generate retrospective and skill-gap analysis | ✓ |
+
+### `parse_output` vs `report_finding`
+
+Use `parse_output` when the raw output comes from a supported parser such as Nmap XML, NXC/NetExec, Certipy, Secretsdump, Kerbrute, Hashcat, or Responder. This keeps parsing deterministic and reduces LLM token cost.
+
+Use `report_finding` when you are reporting manual observations, unsupported-tool output, analyst judgment, or already-structured nodes and edges.
 
 ## Graph Model
 
@@ -257,8 +264,8 @@ Tags improve search ranking — use specific terms the LLM might search for.
 
 1. **Init** — Operator writes config. Server starts, seeds graph with scope nodes.
 2. **Bootstrap** — Primary session discovers live hosts, enumerates services, inference rules fire.
-3. **Main Loop** — Deterministic filter → LLM scoring → validation → operator approval → agent dispatch.
-4. **Agent Execution** — Sub-agents work scoped tasks, report findings in real time.
+3. **Main Loop** — Deterministic filter → LLM scoring → validation (`action_id` issued) → execution logging → operator approval/dispatch.
+4. **Agent Execution** — Sub-agents work scoped tasks, log action start, execute, use `parse_output` for supported raw output, fall back to `report_finding` for manual findings, then log completion or failure.
 5. **Recovery** — After compaction, `get_state()` rebuilds context from graph. Zero loss.
 6. **Objective Tracking** — Graph path analysis detects when objectives are achieved.
 7. **Retrospective** — Full history review produces skill updates, new inference rules, context-improvement recommendations, and heuristic trace telemetry.

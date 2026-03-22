@@ -161,22 +161,22 @@ export class GraphEngine {
     if (existsSync(this.ctx.stateFilePath)) {
       try {
         this.persistence.loadState();
-        this.log('Resumed engagement from persisted state', undefined, { category: 'system' });
+        this.log('Resumed engagement from persisted state', undefined, { category: 'system', event_type: 'system' });
       } catch (err) {
         console.error(`Failed to load state file: ${err instanceof Error ? err.message : String(err)}`);
         // Attempt recovery from most recent snapshot
         const recovered = this.persistence.recoverFromSnapshot(BUILTIN_RULES);
         if (recovered) {
-          this.log('Recovered engagement from snapshot after corrupted state file', undefined, { category: 'system' });
+          this.log('Recovered engagement from snapshot after corrupted state file', undefined, { category: 'system', event_type: 'system' });
         } else {
           console.error('No valid snapshot found, re-seeding from config');
           this.seedFromConfig();
-          this.log('Engagement re-initialized from config after corrupted state', undefined, { category: 'system' });
+          this.log('Engagement re-initialized from config after corrupted state', undefined, { category: 'system', event_type: 'system' });
         }
       }
     } else {
       this.seedFromConfig();
-      this.log('Engagement initialized from config', undefined, { category: 'system' });
+      this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
     }
   }
 
@@ -279,7 +279,7 @@ export class GraphEngine {
         // Detect confirmation of inferred edge
         if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
           props = { ...props, confirmed_at: new Date().toISOString() };
-          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success' });
+          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
         }
         // Update existing edge
         this.ctx.graph.mergeEdgeAttributes(edgeId, props as any);
@@ -398,6 +398,27 @@ export class GraphEngine {
 
     // Check objectives
     this.evaluateObjectives();
+
+    this.logActionEvent({
+      description: `Finding ingested: ${newNodes.length} new nodes, ${newEdges.length} new edges, ${inferredEdges.length} inferred edges`,
+      agent_id: finding.agent_id,
+      action_id: finding.action_id,
+      event_type: 'finding_ingested',
+      category: 'finding',
+      tool_name: finding.tool_name,
+      target_node_ids: finding.target_node_ids,
+      frontier_item_id: finding.frontier_item_id,
+      linked_finding_ids: [finding.id],
+      result_classification: newNodes.length > 0 || newEdges.length > 0 || inferredEdges.length > 0 ? 'success' : 'neutral',
+      details: {
+        finding_id: finding.id,
+        new_nodes: newNodes.length,
+        new_edges: newEdges.length,
+        updated_nodes: updatedNodes.length,
+        updated_edges: updatedEdges.length,
+        inferred_edges: inferredEdges.length,
+      },
+    });
 
     // Persist with real delta detail for dashboard callbacks
     const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
@@ -712,7 +733,7 @@ export class GraphEngine {
         if (obtained) {
           obj.achieved = true;
           obj.achieved_at = new Date().toISOString();
-          this.log(`OBJECTIVE ACHIEVED: ${obj.description}`, undefined, { category: 'objective', outcome: 'success' });
+          this.log(`OBJECTIVE ACHIEVED: ${obj.description}`, undefined, { category: 'objective', outcome: 'success', event_type: 'objective_achieved' });
         }
       }
     }
@@ -934,7 +955,7 @@ export class GraphEngine {
   // Evidence
   // =============================================
 
-  getFullHistory(): Array<{ timestamp: string; description: string; agent_id?: string }> {
+  getFullHistory(): ActivityLogEntry[] {
     return [...this.ctx.activityLog];
   }
 
@@ -956,6 +977,14 @@ export class GraphEngine {
 
   getHealthReport(): HealthReport {
     return this.runHealthChecks();
+  }
+
+  getFrontierItem(frontierItemId: string): FrontierItem | null {
+    return this.computeFrontier().find(item => item.id === frontierItemId) || null;
+  }
+
+  logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
+    return this.ctx.logEvent(event);
   }
 
   getStateFilePath(): string {
@@ -1048,7 +1077,11 @@ export class GraphEngine {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
-  private log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
-    this.ctx.log(message, agentId, extra);
+  private log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void {
+    this.ctx.logEvent({
+      description: message,
+      agent_id: agentId,
+      ...extra,
+    });
   }
 }

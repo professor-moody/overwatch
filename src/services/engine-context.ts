@@ -7,6 +7,7 @@
 // ============================================================
 
 import type { AbstractGraph } from 'graphology-types';
+import { v4 as uuidv4 } from 'uuid';
 import type {
   EngagementConfig, InferenceRule, AgentTask,
   NodeProperties, EdgeProperties,
@@ -15,13 +16,41 @@ import type { TrackedProcess } from './process-tracker.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
+export type ActivityEventType =
+  | 'action_planned'
+  | 'action_validated'
+  | 'action_started'
+  | 'action_completed'
+  | 'action_failed'
+  | 'finding_reported'
+  | 'finding_ingested'
+  | 'parse_output'
+  | 'agent_registered'
+  | 'agent_updated'
+  | 'inference_generated'
+  | 'objective_achieved'
+  | 'system';
+
 export type ActivityLogEntry = {
+  event_id: string;
   timestamp: string;
   description: string;
   agent_id?: string;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
   frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge';
   outcome?: 'success' | 'failure' | 'neutral';
+  action_id?: string;
+  event_type?: ActivityEventType;
+  tool_name?: string;
+  technique?: string;
+  target_node_ids?: string[];
+  target_edge?: { source: string; target: string; type?: string };
+  frontier_item_id?: string;
+  validation_result?: 'valid' | 'invalid' | 'warning_only';
+  result_classification?: 'success' | 'failure' | 'partial' | 'neutral';
+  linked_finding_ids?: string[];
+  linked_agent_task_id?: string;
+  details?: Record<string, unknown>;
 };
 
 export type GraphUpdateDetail = {
@@ -61,15 +90,25 @@ export class EngineContext {
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
-    this.activityLog.push({
-      timestamp: new Date().toISOString(),
+    this.logEvent({
       description: message,
       agent_id: agentId,
       ...extra,
     });
+  }
+
+  logEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
+    const entry = normalizeActivityLogEntry({
+      ...event,
+      timestamp: new Date().toISOString(),
+    });
+    this.activityLog.push({
+      ...entry,
+    });
     if (this.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
       this.activityLog.splice(0, this.activityLog.length - MAX_ACTIVITY_LOG_ENTRIES);
     }
+    return entry;
   }
 
   invalidatePathGraph(): void {
@@ -81,4 +120,46 @@ export class EngineContext {
       try { cb(detail); } catch { /* dashboard errors must not break engine */ }
     }
   }
+}
+
+export function normalizeActivityLogEntry(
+  entry: Partial<ActivityLogEntry> & { description: string; timestamp?: string },
+): ActivityLogEntry {
+  const normalizedOutcome = entry.outcome || normalizeOutcome(entry.result_classification, entry.validation_result);
+  return {
+    event_id: entry.event_id || uuidv4(),
+    timestamp: entry.timestamp || new Date().toISOString(),
+    description: entry.description,
+    agent_id: entry.agent_id,
+    category: entry.category,
+    frontier_type: entry.frontier_type,
+    outcome: normalizedOutcome,
+    action_id: entry.action_id,
+    event_type: entry.event_type,
+    tool_name: entry.tool_name,
+    technique: entry.technique,
+    target_node_ids: entry.target_node_ids,
+    target_edge: entry.target_edge,
+    frontier_item_id: entry.frontier_item_id,
+    validation_result: entry.validation_result,
+    result_classification: entry.result_classification,
+    linked_finding_ids: entry.linked_finding_ids,
+    linked_agent_task_id: entry.linked_agent_task_id,
+    details: entry.details,
+  };
+}
+
+function normalizeOutcome(
+  resultClassification?: ActivityLogEntry['result_classification'],
+  validationResult?: ActivityLogEntry['validation_result'],
+): ActivityLogEntry['outcome'] | undefined {
+  if (resultClassification === 'success') return 'success';
+  if (resultClassification === 'failure') return 'failure';
+  if (resultClassification === 'partial' || resultClassification === 'neutral') return 'neutral';
+
+  if (validationResult === 'invalid') return 'failure';
+  if (validationResult === 'warning_only') return 'neutral';
+  if (validationResult === 'valid') return 'success';
+
+  return undefined;
 }

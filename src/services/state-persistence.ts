@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail } from './engine-context.js';
+import { normalizeActivityLogEntry } from './engine-context.js';
 import type { InferenceRule } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 
@@ -95,7 +96,7 @@ export class StatePersistence {
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
     this.ctx.invalidatePathGraph();
-    this.ctx.activityLog = data.activityLog || [];
+    this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     // Restore inference rules: builtins + any custom rules from the snapshot
@@ -116,7 +117,7 @@ export class StatePersistence {
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
-    this.ctx.activityLog = data.activityLog || [];
+    this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     if (data.inferenceRules) {
@@ -138,7 +139,7 @@ export class StatePersistence {
         this.ctx.graph.import(data.graph);
         this.normalizeLoadedNodeProvenance();
         this.ctx.invalidatePathGraph();
-        this.ctx.activityLog = data.activityLog || [];
+        this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
         this.ctx.agents = new Map(data.agents || []);
         this.ctx.trackedProcesses = data.trackedProcesses || [];
         this.ctx.inferenceRules = [...builtinRules];

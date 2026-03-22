@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
@@ -41,9 +42,9 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
           .describe('Also return items that were filtered out, with reasons')
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false
       }
     },
@@ -89,22 +90,56 @@ Call this before every significant action. Returns valid/invalid with specific e
         edge_source: z.string().optional().describe('Source node of the edge being tested'),
         edge_target: z.string().optional().describe('Target node of the edge being tested'),
         technique: z.string().optional().describe('Technique name (e.g. kerberoast, ntlmrelay, portscan)'),
+        action_id: z.string().optional().describe('Stable action ID to correlate validation with execution and findings'),
+        tool_name: z.string().optional().describe('Tool expected to be used for this action'),
+        frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
         description: z.string().describe('Human-readable description of the planned action')
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, edge_source, edge_target, technique, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, edge_source, edge_target, technique, action_id, tool_name, frontier_item_id, description }) => {
+      const normalizedActionId = action_id || uuidv4();
       const result = engine.validateAction({ target_node, edge_source, edge_target, technique });
+      const validationResult = !result.valid
+        ? 'invalid'
+        : result.warnings.length > 0
+          ? 'warning_only'
+          : 'valid';
+      const targetNodeIds = [target_node, edge_source, edge_target].filter((value): value is string => !!value);
+      const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
+
+      engine.logActionEvent({
+        description,
+        action_id: normalizedActionId,
+        event_type: 'action_validated',
+        category: 'frontier',
+        frontier_type: frontierType,
+        tool_name,
+        technique,
+        target_node_ids: targetNodeIds.length > 0 ? [...new Set(targetNodeIds)] : undefined,
+        target_edge: edge_source && edge_target ? { source: edge_source, target: edge_target } : undefined,
+        frontier_item_id,
+        validation_result: validationResult,
+        result_classification: !result.valid ? 'failure' : result.warnings.length > 0 ? 'partial' : 'success',
+        details: {
+          errors: result.errors,
+          warnings: result.warnings,
+        },
+      });
+      engine.persist();
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
+            action_id: normalizedActionId,
             action: description,
+            validation_result: validationResult,
             ...result
           }, null, 2)
         }]

@@ -10,8 +10,13 @@ import {
 } from '../retrospective.js';
 import type { RetrospectiveInput } from '../retrospective.js';
 import type { EngagementConfig, NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
+import type { ActivityLogEntry } from '../engine-context.js';
 
-function makeInput(overrides?: Partial<RetrospectiveInput>): RetrospectiveInput {
+type TestHistoryEntry = Partial<ActivityLogEntry> & Pick<ActivityLogEntry, 'timestamp' | 'description'>;
+
+function makeInput(
+  overrides?: Omit<Partial<RetrospectiveInput>, 'history'> & { history?: TestHistoryEntry[] },
+): RetrospectiveInput {
   const config: EngagementConfig = {
     id: 'test-retro',
     name: 'Retro Test Engagement',
@@ -63,7 +68,7 @@ function makeInput(overrides?: Partial<RetrospectiveInput>): RetrospectiveInput 
     ],
   };
 
-  const history = [
+  const defaultHistory: TestHistoryEntry[] = [
     { timestamp: '2026-01-01T00:00:00Z', description: 'Engagement initialized from config' },
     { timestamp: '2026-01-01T01:00:00Z', description: 'nmap scan completed on 10.10.10.0/30', agent_id: 'agent-1' },
     { timestamp: '2026-01-01T01:01:00Z', description: 'Finding ingested: 2 new nodes, 2 new edges' },
@@ -75,6 +80,10 @@ function makeInput(overrides?: Partial<RetrospectiveInput>): RetrospectiveInput 
     { timestamp: '2026-01-01T10:00:00Z', description: 'secretsdump - Finding ingested: credential discovered', agent_id: 'agent-2' },
     { timestamp: '2026-01-01T12:00:00Z', description: 'OBJECTIVE ACHIEVED: Get domain admin' },
   ];
+  const history = (overrides?.history || defaultHistory).map((entry, index) => ({
+    event_id: entry.event_id || `evt-${index + 1}`,
+    ...entry,
+  })) as ActivityLogEntry[];
 
   const inferenceRules: InferenceRule[] = [
     {
@@ -103,7 +112,7 @@ function makeInput(overrides?: Partial<RetrospectiveInput>): RetrospectiveInput 
     'data-exfiltration', 'persistence', 'sccm-attacks', 'exchange-attacks',
   ];
 
-  return { config, graph, history, inferenceRules, agents, skillNames, ...overrides };
+  return { config, graph, inferenceRules, agents, skillNames, ...overrides, history };
 }
 
 describe('Retrospective', () => {
@@ -347,9 +356,9 @@ describe('Retrospective', () => {
     it('reports better confidence when structured activity fields are present', () => {
       const input = makeInput({
         history: [
-          { timestamp: '2026-01-01T01:00:00Z', description: 'frontier follow-up', category: 'frontier', frontier_type: 'incomplete_node', outcome: 'success' },
-          { timestamp: '2026-01-01T01:05:00Z', description: 'finding confirmed', category: 'finding', outcome: 'success' },
-          { timestamp: '2026-01-01T01:10:00Z', description: 'objective achieved', category: 'objective', outcome: 'success' },
+          { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', action_id: 'action-1', event_type: 'action_validated', description: 'frontier follow-up', category: 'frontier', frontier_type: 'incomplete_node', outcome: 'success', validation_result: 'valid' },
+          { timestamp: '2026-01-01T01:05:00Z', event_id: 'evt-2', action_id: 'action-1', event_type: 'finding_ingested', description: 'finding confirmed', category: 'finding', outcome: 'success', linked_finding_ids: ['finding-1'], result_classification: 'success', details: { new_nodes: 2, new_edges: 1 } },
+          { timestamp: '2026-01-01T01:10:00Z', event_id: 'evt-3', action_id: 'action-1', event_type: 'action_completed', description: 'objective achieved', category: 'objective', outcome: 'success', result_classification: 'success' },
         ],
       });
       const quality = analyzeLoggingQuality(input);
@@ -486,6 +495,21 @@ describe('Retrospective', () => {
       expect(traces[0].confidence).toBe('low');
       expect(traces[0].derived_from).toBe('text_heuristic');
       expect(trace_quality.status).not.toBe('good');
+    });
+
+    it('produces higher-confidence traces when actions and findings are explicitly linked', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', action_id: 'action-1', event_type: 'action_planned', description: 'Plan SMB enumeration', category: 'frontier', frontier_type: 'incomplete_node' },
+          { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', action_id: 'action-1', event_type: 'action_validated', description: 'Validate SMB enumeration', category: 'frontier', frontier_type: 'incomplete_node', validation_result: 'valid', outcome: 'success' },
+          { timestamp: '2026-01-01T01:02:00Z', event_id: 'evt-3', action_id: 'action-1', event_type: 'finding_ingested', description: 'Finding ingested: 1 new node, 1 new edge', category: 'finding', linked_finding_ids: ['finding-1'], result_classification: 'success', details: { new_nodes: 1, new_edges: 1 } },
+          { timestamp: '2026-01-01T01:03:00Z', event_id: 'evt-4', action_id: 'action-1', event_type: 'action_completed', description: 'SMB enumeration completed', category: 'frontier', frontier_type: 'incomplete_node', result_classification: 'success', outcome: 'success' },
+        ],
+      });
+      const { traces, trace_quality } = exportTrainingTraces(input);
+      expect(traces[0].confidence).toBe('high');
+      expect(traces[0].derived_from).toBe('structured');
+      expect(trace_quality.status).toBe('good');
     });
 
     it('returns empty traces for empty history', () => {

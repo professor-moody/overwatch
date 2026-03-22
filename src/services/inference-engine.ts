@@ -36,11 +36,11 @@ export class InferenceEngine {
     const existingByName = this.ctx.inferenceRules.findIndex(r => r.name === rule.name);
     if (existingByName !== -1) {
       this.ctx.inferenceRules[existingByName] = rule;
-      this.ctx.log(`Custom inference rule updated (dedup by name): ${rule.name}`, undefined, { category: 'inference' });
+      this.ctx.logEvent({ description: `Custom inference rule updated (dedup by name): ${rule.name}`, category: 'inference', event_type: 'inference_generated', result_classification: 'neutral' });
       return;
     }
     this.ctx.inferenceRules.push(rule);
-    this.ctx.log(`Custom inference rule added: ${rule.name}`, undefined, { category: 'inference' });
+    this.ctx.logEvent({ description: `Custom inference rule added: ${rule.name}`, category: 'inference', event_type: 'inference_generated', result_classification: 'neutral' });
   }
 
   backfillRule(rule: InferenceRule): string[] {
@@ -109,7 +109,14 @@ export class InferenceEngine {
             ...production.properties as Record<string, unknown>
           });
           inferred.push(edgeId);
-          this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`, undefined, { category: 'inference' });
+          this.ctx.logEvent({
+            description: `Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`,
+            category: 'inference',
+            event_type: 'inference_generated',
+            result_classification: 'success',
+            target_node_ids: [src, tgt],
+            details: { rule_id: rule.id, edge_type: production.edge_type },
+          });
         }
       }
     }

@@ -21,7 +21,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
       inputSchema: {
         agent_id: z.string().describe('Unique identifier for the agent'),
         frontier_item_id: z.string().describe('ID of the frontier item this agent should work on'),
-        subgraph_node_ids: z.array(z.string()).describe('Node IDs relevant to this agent\'s task'),
+        subgraph_node_ids: z.array(z.string()).default([]).describe('Optional node IDs relevant to this agent\'s task. Leave empty to auto-compute from the frontier item.'),
         skill: z.string().optional().describe('Skill/methodology to apply')
       },
       annotations: {
@@ -38,7 +38,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         assigned_at: new Date().toISOString(),
         status: 'running' as const,
         frontier_item_id,
-        subgraph_node_ids,
+        subgraph_node_ids: subgraph_node_ids || [],
         skill
       };
       engine.registerAgent(task);
@@ -137,7 +137,7 @@ auto-computed from the frontier item's target node(s).`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false
       }
     },

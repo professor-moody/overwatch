@@ -31,6 +31,10 @@ reactive re-planning by the primary session.
 Returns: Summary of what was added/updated and any new inferred edges.`,
       inputSchema: {
         agent_id: z.string().describe('ID of the reporting agent'),
+        action_id: z.string().optional().describe('Stable action ID linking this finding to a validated/executed action'),
+        tool_name: z.string().optional().describe('Tool or command family that produced this finding'),
+        target_node_ids: z.array(z.string()).default([]).describe('Primary graph node IDs this finding came from'),
+        frontier_item_id: z.string().optional().describe('Frontier item this finding came from'),
         nodes: z.array(z.object({
           id: z.string().describe('Unique node ID, e.g. host-10-10-10-5, svc-10-10-10-5-445'),
           type: nodeTypeSchema,
@@ -58,11 +62,16 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('report_finding', async ({ agent_id, nodes, edges, evidence, raw_output }) => {
+    withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output }) => {
+      const normalizedActionId = action_id || uuidv4();
       const finding: Finding = {
         id: uuidv4(),
         agent_id,
         timestamp: new Date().toISOString(),
+        action_id: normalizedActionId,
+        tool_name,
+        frontier_item_id,
+        target_node_ids,
         nodes: nodes.map(n => ({
           id: n.id,
           type: n.type as NodeType,
@@ -82,12 +91,33 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         raw_output
       };
 
+      const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
+      engine.logActionEvent({
+        description: `Finding reported: ${finding.nodes.length} nodes, ${finding.edges.length} edges`,
+        agent_id,
+        action_id: normalizedActionId,
+        event_type: 'finding_reported',
+        category: 'finding',
+        frontier_type: frontierType,
+        tool_name,
+        target_node_ids: target_node_ids.length > 0 ? target_node_ids : undefined,
+        frontier_item_id,
+        linked_finding_ids: [finding.id],
+        result_classification: 'success',
+        details: {
+          node_count: finding.nodes.length,
+          edge_count: finding.edges.length,
+          evidence_type: evidence?.type,
+        },
+      });
+
       const result = engine.ingestFinding(finding);
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
+            action_id: normalizedActionId,
             finding_id: finding.id,
             new_nodes: result.new_nodes,
             new_edges: result.new_edges,

@@ -27,12 +27,13 @@ Overwatch inverts the "LLM-as-orchestrator" pattern used by projects like red-ru
 │  └──────┬───────┘ └──────┬───────┘ └──────────┬───────────┘ │
 │         │                │                     │             │
 │  ┌──────▼────────────────────▼─────────────────────▼──────────┐ │
-│  │  19 MCP Tools                                          │ │
-│  │  get_state · next_task · report_finding ·              │ │
-│  │  validate_action · query_graph · find_paths ·          │ │
+│  │  22 MCP Tools                                          │ │
+│  │  get_state · next_task · validate_action ·             │ │
+│  │  log_action_event · parse_output · report_finding ·    │ │
+│  │  query_graph · find_paths ·                            │ │
 │  │  get_skill · register_agent · get_agent_context ·      │ │
 │  │  update_agent · get_history · export_graph ·           │ │
-│  │  ingest_bloodhound · check_tools · parse_output ·     │ │
+│  │  ingest_bloodhound · check_tools ·                     │ │
 │  │  track_process · check_processes ·                     │ │
 │  │  suggest_inference_rule · run_retrospective            │ │
 │  └────────────────────────┬───────────────────────────────┘ │
@@ -57,7 +58,7 @@ Overwatch's orchestrator is an external persistent process. State lives in a gra
 
 HexStrike wraps 150+ tools as individual MCP functions (nmap_scan(), gobuster_scan(), etc.). The LLM calls these wrappers to execute tools. There's no engagement state, no scoring, no attack path tracking.
 
-Overwatch does NOT wrap tools as MCP functions. The LLM executes tools via Claude Code's native bash — it already knows how to run nmap, nxc (netexec), certipy, etc. Overwatch provides the intelligence layer that tells the LLM WHAT to do, WHERE to do it, and validates the plan before execution. Tool output gets reported back to the graph via `report_finding`.
+Overwatch does NOT wrap offensive tools as MCP execution functions. The LLM executes tools via Claude Code's native bash — it already knows how to run nmap, nxc (netexec), certipy, etc. Overwatch provides the intelligence layer that tells the LLM WHAT to do, WHERE to do it, validates the plan before execution, and now records explicit action lifecycle events around that execution. Tool output flows back into the graph via `parse_output` for supported raw output or `report_finding` for manual/unsupported findings.
 
 ### What We Borrow From HexStrike
 
@@ -81,12 +82,14 @@ This is the critical flow that connects the orchestrator's intelligence to real-
    └─→ Server returns: network-recon.md methodology
 
 3. LLM calls validate_action(target_node="host-10-10-10-1", technique="portscan")
-   └─→ Server returns: { valid: true, warnings: [] }
+   └─→ Server returns: { valid: true, warnings: [], action_id: "..." }
 
-4. LLM executes via Claude Code bash:
+4. LLM calls log_action_event(event_type="action_started", action_id="...")
+
+5. LLM executes via Claude Code bash:
    └─→ $ nmap -sS -sV --top-ports 1000 10.10.10.1
 
-5. LLM parses nmap output and calls report_finding():
+6. LLM parses nmap output with parse_output() or reports manual findings directly:
    └─→ nodes: [
          { id: "svc-10.10.10.1-445", type: "service", port: 445,
            service_name: "smb", smb_signing: false },
@@ -98,14 +101,16 @@ This is the critical flow that connects the orchestrator's intelligence to real-
          { source: "host-10-10-10-1", target: "svc-10.10.10.1-88", type: "RUNS" }
        ]
 
-6. Server ingests finding:
+7. Server ingests finding:
    └─→ Inference rules fire automatically:
        - Kerberos found → MEMBER_OF_DOMAIN edge inferred
        - SMB signing disabled → RELAY_TARGET edge inferred
    └─→ Frontier recomputed with new items
    └─→ State persisted to disk
 
-7. LLM calls next_task() again
+8. LLM calls log_action_event(event_type="action_completed" | "action_failed", action_id="...")
+
+9. LLM calls next_task() again
    └─→ New frontier includes: "Test relay to 10.10.10.1 (signing disabled)"
    └─→ Loop continues
 ```
@@ -137,10 +142,12 @@ Sub-Agent (Sonnet):
   1. Calls get_agent_context(task_id="...")  → receives scoped subgraph
   2. Calls get_skill(query="active directory enumeration")
   3. Calls validate_action(target_node="...", technique="ldap_enum")
-  4. Executes via Claude Code bash:
+  4. Calls log_action_event(event_type="action_started", action_id="...")
+  5. Executes via Claude Code bash:
    └─→ $ nxc smb 10.10.10.1 -u user -p pass --users
-  5. Calls report_finding() with discovered users/groups/edges
-  6. Repeats until task complete
+  6. Calls parse_output() for supported raw output, otherwise report_finding()
+  7. Calls log_action_event(event_type="action_completed" | "action_failed", action_id="...")
+  8. Repeats until task complete
 
 Primary (Opus):
   Periodically calls get_state() — sees new findings from agent
@@ -157,7 +164,7 @@ Operator creates `engagement.json`:
 - Target scope (CIDRs, domains, exclusions)
 - Objectives (domain admin, file access, etc.) with criteria
 - OPSEC profile (noise ceiling, time windows, blacklisted techniques)
-- Weight preset selection (ctf/pentest/redteam/assumed_breach)
+- Engagement context/profile selection (ctf/pentest/redteam/assumed_breach) as operator guidance, not deterministic ranking logic
 
 Server starts, seeds graph with bare scope nodes. No edges exist yet.
 
@@ -207,12 +214,12 @@ This runs continuously:
 When frontier diverges (e.g., both AD and web attack surfaces), primary session spawns sub-agents. Each agent:
 - Connects to same MCP server
 - Receives scoped subgraph view (only relevant nodes/edges)
-- Follows validate → execute → report loop
+- Follows validate → log start → execute → parse/report → log completion loop
 - Reports findings in real time (not batched)
 
 Primary session monitors via periodic `get_state()` calls, sees new frontier items from agent discoveries, dispatches follow-up agents immediately.
 
-Inference rules fire on every `report_finding()`:
+Inference rules fire on every ingest path (`report_finding()` or `parse_output()` when ingesting):
 - New credential → POTENTIAL_AUTH edges to all compatible services
 - SMB signing disabled → RELAY_TARGET edges
 - Kerberos service → MEMBER_OF_DOMAIN edges
@@ -242,9 +249,9 @@ When an objective is achieved, it's marked complete. Scoring shifts to remaining
 LLM calls `get_history()` and `export_graph()` to review the full engagement. Produces:
 - New inference rules (patterns the deterministic layer should recognize)
 - Skill library updates (methodology gaps discovered during execution)
-- Weight preset tuning (if scoring consistently misjudged priorities)
+- Context-improvement recommendations (logging, validation, parser, and workflow gaps)
 - Full attack path graph for client reporting
-- Structured engagement traces (future RLVR training signal)
+- Heuristic structured engagement traces with explicit confidence
 
 ---
 
@@ -497,17 +504,17 @@ Priority items for the next iteration:
 
 1. ~~**Retrospective tool**~~ — ✅ `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, context-improvement recommendations, attack path report (markdown), and heuristic RLVR trace telemetry. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
 
-2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → bash execution → parse_output/report_finding → inference → repeat. This will surface integration gaps that unit tests can't catch.
+2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → log_action_event(started) → bash execution → parse_output/report_finding → log_action_event(completed|failed) → inference → repeat. This will surface integration gaps that unit tests can't catch.
 
 3. **Multi-engagement support** — ability to run multiple engagements simultaneously with isolated graph state. Currently single-engagement per server instance.
 
 4. ~~**Web dashboard**~~ — ✅ Live real-time dashboard using sigma.js (WebGL) + graphology. Served from same MCP server process on port 8384 (configurable via `OVERWATCH_DASHBOARD_PORT`). Features: force-directed graph layout, node filtering by type, search, objective tracker, frontier panel, agent activity, WebSocket push updates with HTTP poll fallback. Read-only.
 
-5. **Weight presets + tuning** — the scoring layer references weight presets (ctf/pentest/redteam/assumed_breach) in the config but doesn't use them yet. Implement configurable scoring weights that shift frontier priority based on engagement type.
+5. **Operator-selected engagement presets** — if presets remain, use them as operator-facing contextual guardrails or display defaults by engagement type, not as retrospective-tuned frontier-ranking weights.
 
 6. **RLVR export** — structured engagement traces (state, action, outcome triplets) exportable for reinforcement learning from verifiable rewards. Each graph transition is a natural training signal.
 
-7. ~~**Additional parsers**~~ — ✅ Added 4 parsers to `parse_output`: `secretsdump` (SAM/NTDS hash extraction → credential + user nodes), `kerbrute` (user enumeration + password spray → user + domain + credential nodes), `hashcat` (cracked NTLM/Kerberoast/AS-REP/NTLMv2 → credential nodes), `responder` (captured NTLMv2 hashes → credential + user + host nodes + session edges). BloodHound-python stdout and ldapdomaindump deferred (already covered by `ingest_bloodhound` JSON parser).
+7. ~~**Additional parsers**~~ — ✅ Added 4 parsers to `parse_output`: `secretsdump` (SAM/NTDS hash extraction → credential + user nodes), `kerbrute` (user enumeration + password spray → user + domain + credential nodes), `hashcat` (cracked NTLM/Kerberoast/AS-REP/NTLMv2 → credential nodes), `responder` (captured NTLMv2 hashes → credential + user + host capture evidence). BloodHound-python stdout and ldapdomaindump deferred (already covered by `ingest_bloodhound` JSON parser).
 
 ---
 

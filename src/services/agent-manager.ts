@@ -16,7 +16,19 @@ export class AgentManager {
 
   register(task: AgentTask): void {
     this.ctx.agents.set(task.id, task);
-    this.ctx.log(`Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`, task.agent_id, { category: 'agent' });
+    this.ctx.logEvent({
+      description: `Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`,
+      agent_id: task.agent_id,
+      category: 'agent',
+      event_type: 'agent_registered',
+      frontier_item_id: task.frontier_item_id,
+      linked_agent_task_id: task.id,
+      result_classification: 'neutral',
+      details: {
+        skill: task.skill,
+        subgraph_node_ids: task.subgraph_node_ids,
+      },
+    });
   }
 
   getTask(taskId: string): AgentTask | null {
@@ -31,6 +43,19 @@ export class AgentManager {
     if (status === 'completed' || status === 'failed') {
       task.completed_at = new Date().toISOString();
     }
+    this.ctx.logEvent({
+      description: `Agent ${task.agent_id} ${status}${summary ? `: ${summary}` : ''}`,
+      agent_id: task.agent_id,
+      category: 'agent',
+      event_type: 'agent_updated',
+      frontier_item_id: task.frontier_item_id,
+      linked_agent_task_id: task.id,
+      result_classification: status === 'completed' ? 'success' : status === 'failed' ? 'failure' : 'neutral',
+      details: {
+        status,
+        summary,
+      },
+    });
     return true;
   }
 

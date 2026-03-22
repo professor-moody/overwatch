@@ -271,6 +271,10 @@ export interface Finding {
   id: string;
   agent_id: string;
   timestamp: string;
+  action_id?: string;
+  tool_name?: string;
+  frontier_item_id?: string;
+  target_node_ids?: string[];
   nodes: Array<Partial<NodeProperties> & { id: string; type: NodeType }>;
   edges: Array<{
     source: string;
@@ -301,9 +305,14 @@ export interface EngagementState {
   frontier: FrontierItem[];
   active_agents: AgentTask[];
   recent_activity: Array<{
+    event_id: string;
     timestamp: string;
     description: string;
     agent_id?: string;
+    action_id?: string;
+    event_type?: string;
+    tool_name?: string;
+    result_classification?: string;
   }>;
   access_summary: {
     compromised_hosts: string[];
