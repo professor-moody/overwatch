@@ -310,6 +310,18 @@ function updateFrontier(state) {
   const frontier = state.frontier || [];
   document.getElementById('frontier-count').textContent = `(${frontier.length})`;
 
+  const currentSectionTotals = {
+    priority: Math.min(frontier.length, FRONTIER_SECTION_PRIORITY_LIMIT),
+    incomplete_node: frontier.filter((item) => item.type === 'incomplete_node').length,
+    untested_edge: frontier.filter((item) => item.type === 'untested_edge').length,
+    inferred_edge: frontier.filter((item) => item.type === 'inferred_edge').length,
+  };
+  Object.entries(frontierSectionState).forEach(([key, sectionState]) => {
+    if ((currentSectionTotals[key] || 0) === 0) {
+      sectionState.expanded = false;
+    }
+  });
+
   if (frontier.length === 0) {
     list.innerHTML = '<div class="empty-state">Frontier empty — ingest data to generate candidates</div>';
     return;

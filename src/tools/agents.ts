@@ -108,17 +108,21 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
     withErrorBoundary('dispatch_agents', async ({ count, strategy, types, skill, hops }) => {
       const frontier = engine.computeFrontier();
       const { passed } = engine.filterFrontier(frontier);
-      const allowedTypes = new Set(types && types.length > 0 ? types : FRONTIER_TYPES);
+      const typeOrder = types && types.length > 0 ? types : [...FRONTIER_TYPES];
+      const allowedTypes = new Set(typeOrder);
 
       let candidates = passed.filter((item) => allowedTypes.has(item.type as typeof FRONTIER_TYPES[number]));
       if (strategy === 'by_type') {
+        const queues = new Map(typeOrder.map((type) => [type, candidates.filter((item) => item.type === type)]));
         const ordered: typeof candidates = [];
-        const seen = new Set<string>();
-        for (const type of allowedTypes) {
-          for (const item of candidates) {
-            if (item.type === type && !seen.has(item.id)) {
-              ordered.push(item);
-              seen.add(item.id);
+        let madeProgress = true;
+        while (madeProgress) {
+          madeProgress = false;
+          for (const type of typeOrder) {
+            const queue = queues.get(type);
+            if (queue && queue.length > 0) {
+              ordered.push(queue.shift()!);
+              madeProgress = true;
             }
           }
         }
@@ -169,7 +173,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
           text: JSON.stringify({
             requested: count,
             strategy,
-            types: [...allowedTypes],
+            types: [...typeOrder],
             dispatched,
             skipped_existing,
             skipped_unscoped,

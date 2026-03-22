@@ -212,6 +212,60 @@ describe('dashboard ui frontier helpers', () => {
     expect(list.innerHTML).toContain('user-rickon -&gt; domain-north');
   });
 
+  it('resets transient frontier expanded state after a section disappears', async () => {
+    const ui = await loadUiModule();
+    const list = (globalThis as any).document.getElementById('frontier-list');
+
+    const expandedFrontier = Array.from({ length: 12 }, (_, idx) => ({
+      id: `frontier-node-host-${idx}`,
+      type: 'incomplete_node',
+      node_id: 'host-1',
+      description: `host "host-1" missing: field-${idx}`,
+      missing_properties: [`field-${idx}`],
+      graph_metrics: { node_degree: 4, confidence: 0.9 },
+      opsec_noise: 0.3,
+    }));
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: expandedFrontier,
+    });
+
+    ui.toggleFrontierSectionExpanded('incomplete_node');
+    expect(list.innerHTML).toContain('Show Less');
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [],
+    });
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: expandedFrontier,
+    });
+
+    expect(list.innerHTML).toContain('Show 1 More');
+    expect(list.innerHTML).not.toContain('Show Less');
+  });
+
   it('navigates through graph context instead of hard-coding a camera jump', async () => {
     const ui = await loadUiModule();
     const graphApi = (globalThis as any).window.OverwatchGraph;

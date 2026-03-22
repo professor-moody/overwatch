@@ -803,12 +803,16 @@ function enterNeighborhoodFocus(node, hops) {
   zoomToNodes(focusNeighborhood, { paddingFactor: 2, minRatio: 0.08, maxRatio: 1.6 });
 }
 
-function exitNeighborhoodFocus() {
+function clearFocusState() {
   focusNode = null;
   focusNeighborhood = null;
 
   const banner = document.getElementById('focus-banner');
   if (banner) banner.classList.remove('visible');
+}
+
+function exitNeighborhoodFocus() {
+  clearFocusState();
 
   if (renderer) renderer.refresh();
   if (graphMode === 'focused') {
@@ -1035,8 +1039,6 @@ function reconcileInteractionState() {
   } else if (hoveredNeighbors) {
     hoveredNeighbors = new Set([...hoveredNeighbors].filter(nodeId => graph.hasNode(nodeId)));
   }
-
-  emphasizedNodeTypes = new Set([...emphasizedNodeTypes].filter((type) => [...graph.nodes()].some((nodeId) => graph.getNodeAttribute(nodeId, 'nodeType') === type)));
 }
 
 function syncGraphData(graphData, options = {}) {
@@ -1488,10 +1490,7 @@ function resetFilters() {
   activeFilters = new Set(Object.keys(NODE_COLORS));
   buildFilterButtons();
   clearPathHighlight();
-  focusNode = null;
-  focusNeighborhood = null;
-  const banner = document.getElementById('focus-banner');
-  if (banner) banner.classList.remove('visible');
+  clearFocusState();
   clearSelection();
   graphMode = 'overview';
   const graphModeSelect = document.getElementById('graph-mode-select');
@@ -1507,10 +1506,7 @@ function setGraphMode(mode) {
     enterNeighborhoodFocus(selectedNode, 1);
   }
   if (graphMode !== 'focused' && focusNeighborhood) {
-    focusNode = null;
-    focusNeighborhood = null;
-    const banner = document.getElementById('focus-banner');
-    if (banner) banner.classList.remove('visible');
+    clearFocusState();
   }
   if (renderer) renderer.refresh();
   updateMinimap();

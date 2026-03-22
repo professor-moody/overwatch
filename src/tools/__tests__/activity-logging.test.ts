@@ -360,4 +360,55 @@ describe('structured activity logging tools', () => {
       secondPayload.dispatched.every((task: { frontier_item_id: string }) => !firstFrontierIds.has(task.frontier_item_id)),
     ).toBe(true);
   });
+
+  it('dispatch_agents interleaves types in round-robin order for by_type strategy', async () => {
+    engine.addNode({
+      id: 'svc-10-10-10-1-ldap',
+      type: 'service',
+      label: 'ldap/389',
+      service_name: 'ldap',
+      port: 389,
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 1.0,
+    });
+    engine.addNode({
+      id: 'svc-10-10-10-2-smb',
+      type: 'service',
+      label: 'smb/445',
+      service_name: 'smb',
+      port: 445,
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 1.0,
+    });
+    engine.addEdge('host-10-10-10-1', 'svc-10-10-10-1-ldap', {
+      type: 'RUNS',
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 0.6,
+    });
+    engine.addEdge('host-10-10-10-2', 'svc-10-10-10-2-smb', {
+      type: 'RUNS',
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 0.6,
+    });
+
+    const result = await handlers.dispatch_agents({
+      count: 4,
+      strategy: 'by_type',
+      types: ['incomplete_node', 'inferred_edge'],
+      hops: 1,
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.dispatched).toHaveLength(4);
+    expect(payload.dispatched.map((task: { frontier_type: string }) => task.frontier_type)).toEqual([
+      'incomplete_node',
+      'inferred_edge',
+      'incomplete_node',
+      'inferred_edge',
+    ]);
+  });
 });
