@@ -1,6 +1,6 @@
 /* ============================================================
    Overwatch Dashboard — Design System v2
-   Split Workspace · Inter + JetBrains Mono
+   Split Workspace · system-safe typography
    ============================================================ */
 
 :root {
@@ -37,8 +37,8 @@
   --coral-dim: rgba(239,68,68,0.10);
 
   /* Typography */
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Liberation Mono", Menlo, monospace;
 
   /* Radii */
   --radius-sm: 4px;

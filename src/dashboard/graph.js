@@ -77,6 +77,7 @@ let hoveredNode = null;
 let hoveredNeighbors = null;
 let draggedNode = null;
 let isDragging = false;
+const DRAG_THRESHOLD_PX = 6;
 
 // Path highlighting
 let pathSource = null;
@@ -279,9 +280,9 @@ function setupDrag() {
     hasMoved = false;
     draggedNode = e.node;
     // Record start position for move detection
-    const pos = renderer.viewportToGraph(e);
-    dragStartX = pos.x;
-    dragStartY = pos.y;
+    const pointer = getPointerPosition(e);
+    dragStartX = pointer.x;
+    dragStartY = pointer.y;
     // Mark node as fixed so layout preserves its position
     graph.setNodeAttribute(draggedNode, 'fixed', true);
     // Disable sigma camera drag while we're dragging a node
@@ -296,7 +297,8 @@ function setupDrag() {
     const pos = renderer.viewportToGraph(e);
     graph.setNodeAttribute(draggedNode, 'x', pos.x);
     graph.setNodeAttribute(draggedNode, 'y', pos.y);
-    hasMoved = true;
+    const pointer = getPointerPosition(e);
+    hasMoved = hasMoved || exceededDragThreshold(dragStartX, dragStartY, pointer.x, pointer.y);
 
     // Prevent hover from interfering during drag
     hoveredNode = null;
@@ -1251,6 +1253,24 @@ function dimColor(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+function getPointerPosition(eventLike) {
+  const source = eventLike?.event || eventLike;
+  if (typeof source?.x === 'number' && typeof source?.y === 'number') {
+    return { x: source.x, y: source.y };
+  }
+  const pos = renderer?.viewportToGraph ? renderer.viewportToGraph(eventLike) : { x: 0, y: 0 };
+  return { x: pos.x, y: pos.y };
+}
+
+function exceededDragThreshold(startX, startY, currentX, currentY) {
+  if ([startX, startY, currentX, currentY].some(v => typeof v !== 'number' || Number.isNaN(v))) {
+    return false;
+  }
+  const dx = currentX - startX;
+  const dy = currentY - startY;
+  return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
+}
+
 // ============================================================
 // Exports (global)
 // ============================================================
@@ -1276,6 +1296,7 @@ window.OverwatchGraph = {
   updateMinimap,
   getVisibleNodeIds,
   getVisibleEdgeIds,
+  exceededDragThreshold,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },

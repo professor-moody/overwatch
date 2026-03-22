@@ -151,4 +151,11 @@ describe('dashboard graph helpers', () => {
     expect(graphModule.graph.getNodeAttribute('host-a', 'y')).toBe(24);
     expect(graphModule.graph.getNodeAttribute('host-a', 'label')).toBe('Host A Updated');
   });
+
+  it('only suppresses click after movement exceeds the drag threshold', async () => {
+    const graphModule = await loadGraphModule();
+
+    expect(graphModule.exceededDragThreshold(10, 10, 13, 13)).toBe(false);
+    expect(graphModule.exceededDragThreshold(10, 10, 20, 20)).toBe(true);
+  });
 });

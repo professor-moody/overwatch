@@ -23,7 +23,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-out').addEventListener('click', () => G.zoomOut());
   document.getElementById('btn-export').addEventListener('click', () => G.exportScreenshot());
   document.getElementById('btn-shortcuts').addEventListener('click', () => {
-    document.getElementById('shortcuts-overlay').classList.toggle('visible');
+    UI.toggleShortcutsOverlay();
   });
 
   // Focus banner "Show All" button

@@ -460,8 +460,6 @@ function initSearch() {
 // Keyboard Shortcuts
 // ============================================================
 
-let shortcutsVisible = false;
-
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
     // Don't capture when typing in an input
@@ -513,11 +511,17 @@ function toggleSidebar() {
   if (toggle) toggle.click();
 }
 
+function setShortcutsOverlayVisible(visible) {
+  const overlay = document.getElementById('shortcuts-overlay');
+  if (!overlay) return;
+  overlay.classList.toggle('visible', visible);
+}
+
 function toggleShortcutsOverlay() {
   const overlay = document.getElementById('shortcuts-overlay');
   if (!overlay) return;
-  shortcutsVisible = !shortcutsVisible;
-  overlay.classList.toggle('visible', shortcutsVisible);
+  const isVisible = overlay.classList.contains('visible');
+  setShortcutsOverlayVisible(!isVisible);
 }
 
 // ============================================================
@@ -588,6 +592,8 @@ window.OverwatchUI = {
   hideDetail,
   navigateToNode,
   handleFrontierClick,
+  toggleShortcutsOverlay,
+  setShortcutsOverlayVisible,
 };
 
 // Global functions referenced in HTML onclick
