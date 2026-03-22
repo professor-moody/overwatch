@@ -166,6 +166,36 @@ function getNoiseColor(noise) {
   return 'var(--red)';
 }
 
+function getFrontierMetric(frontierItem, key, fallback = '—') {
+  const value = frontierItem?.graph_metrics?.[key];
+  return value !== undefined && value !== null ? value : fallback;
+}
+
+function getFrontierPrimaryLabel(frontierItem) {
+  const g = G();
+  const graph = g.graph;
+  const targetNodeIds = getFrontierTargetNodeIds(frontierItem);
+  for (const nodeId of targetNodeIds) {
+    if (graph?.hasNode(nodeId)) {
+      return graph.getNodeAttribute(nodeId, 'label') || nodeId;
+    }
+  }
+  return frontierItem.description || frontierItem.id;
+}
+
+function renderFrontierChips(frontierItem) {
+  const chips = [];
+  if (frontierItem.missing_properties?.length) {
+    chips.push(...frontierItem.missing_properties.map(prop => `<span class="fi-chip">${escapeHtml(prop)}</span>`));
+  }
+  if (frontierItem.edge_type) {
+    chips.push(`<span class="fi-chip">${escapeHtml(frontierItem.edge_type)}</span>`);
+  }
+  const degree = getFrontierMetric(frontierItem, 'node_degree', null);
+  if (degree !== null) chips.push(`<span class="fi-chip">deg ${degree}</span>`);
+  return chips.join('');
+}
+
 function updateFrontier(state) {
   const list = document.getElementById('frontier-list');
   const frontier = state.frontier || [];
@@ -185,20 +215,24 @@ function updateFrontier(state) {
     const noisePercent = Math.round(noise * 100);
     const noiseColor = getNoiseColor(noise);
     const nodeIds = getFrontierTargetNodeIds(f).join(',');
-    const hops = f.hops_to_objective !== undefined ? f.hops_to_objective : '—';
-    const fanOut = f.fan_out !== undefined ? f.fan_out : '—';
-    const confidence = f.confidence !== undefined ? f.confidence.toFixed(1) : '—';
+    const hops = getFrontierMetric(f, 'hops_to_objective');
+    const fanOut = getFrontierMetric(f, 'fan_out_estimate');
+    const confidence = Number(getFrontierMetric(f, 'confidence', 0)).toFixed(1);
+    const label = getFrontierPrimaryLabel(f);
+    const chips = renderFrontierChips(f);
 
     return `<div class="frontier-item" data-idx="${idx}" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierExpand(this, event)">
       <span class="fi-type ${typeClass}">${typeLabel}</span>
-      <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(f.description || f.id)}</span>
+      <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
       <span class="fi-noise"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
+      <div class="frontier-item-chips">${chips}</div>
       <div class="frontier-item-detail">
         <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
         <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
         <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
+        <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
       </div>
     </div>`;
   }).join('');
@@ -221,6 +255,21 @@ function handleFrontierZoom(btn, event) {
   const graph = g.graph;
   for (const nodeId of nodeIds) {
     if (graph && graph.hasNode(nodeId)) {
+      navigateToNode(nodeId);
+      return;
+    }
+  }
+}
+
+function handleFrontierFocus(btn, event) {
+  event.stopPropagation();
+  const item = btn.closest('.frontier-item');
+  if (!item) return;
+  const nodeIds = (item.dataset.nodeIds || '').split(',').filter(Boolean);
+  const g = G();
+  for (const nodeId of nodeIds) {
+    if (g.graph?.hasNode(nodeId)) {
+      g.enterNeighborhoodFocus(nodeId, 1);
       navigateToNode(nodeId);
       return;
     }
@@ -301,6 +350,10 @@ function showNodeDetail(nodeId) {
   const drawer = document.getElementById('node-detail');
 
   document.getElementById('detail-title').textContent = props.label || nodeId;
+  const outEdges = graph.outEdges(nodeId);
+  const inEdges = graph.inEdges(nodeId);
+  document.getElementById('detail-subtitle').textContent =
+    `${graph.degree(nodeId)} connections · ${outEdges.length} out · ${inEdges.length} in`;
 
   // Type badge
   const typeBadge = document.getElementById('detail-type-badge');
@@ -323,55 +376,12 @@ function showNodeDetail(nodeId) {
     </div>`;
   }
 
-  // Connections
-  const degree = graph.degree(nodeId);
-  html += `<div class="prop-row">
-    <span class="prop-key">connections</span>
-    <span class="prop-val">${degree}</span>
-  </div>`;
-
-  // Neighbor list
-  const neighbors = graph.neighbors(nodeId);
-  if (neighbors.length > 0) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Neighbors (${neighbors.length})</div>`;
-    const displayed = neighbors.slice(0, 15);
-    for (const nid of displayed) {
-      const nAttrs = graph.getNodeAttributes(nid);
-      const nType = nAttrs.nodeType || '?';
-      const nColor = g.NODE_COLORS[nType] || '#888';
-      const nLabel = nAttrs.label || nid;
-      html += `<div class="neighbor-item" onclick="navigateToNode('${escapeHtml(nid)}')" title="${escapeHtml(nid)}">
-        <span style="color:${nColor}">●</span> ${escapeHtml(nLabel)}
-      </div>`;
-    }
-    if (neighbors.length > 15) {
-      html += `<div class="neighbor-item" style="color:var(--text-muted)">… and ${neighbors.length - 15} more</div>`;
-    }
-    html += '</div>';
-  }
-
-  // Edge details
-  const edgeEntries = graph.edges(nodeId);
-  if (edgeEntries.length > 0) {
-    const edgeTypes = {};
-    for (const eid of edgeEntries) {
-      const eAttrs = graph.getEdgeAttributes(eid);
-      const eType = eAttrs.edgeType || '?';
-      edgeTypes[eType] = (edgeTypes[eType] || 0) + 1;
-    }
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Edge Types</div>`;
-    for (const [eType, count] of Object.entries(edgeTypes).sort((a, b) => b[1] - a[1])) {
-      html += `<div class="prop-row">
-        <span class="prop-key">${escapeHtml(eType)}</span>
-        <span class="prop-val">${count}</span>
-      </div>`;
-    }
-    html += '</div>';
-  }
+  html += buildServiceSummary(nodeId, graph);
+  html += buildConnectionSection(nodeId, graph, 'out');
+  html += buildConnectionSection(nodeId, graph, 'in');
 
   document.getElementById('detail-props').innerHTML = html;
+  attachConnectionHandlers();
   drawer.classList.add('visible');
 }
 
@@ -382,6 +392,7 @@ function hideDetail() {
 function navigateToNode(nodeId) {
   const g = G();
   if (!g.graph || !g.graph.hasNode(nodeId)) return;
+  g.selectNode(nodeId);
   showNodeDetail(nodeId);
   // Zoom camera to node
   const attrs = g.graph.getNodeAttributes(nodeId);
@@ -420,6 +431,94 @@ function handleFrontierClick(el) {
       return;
     }
   }
+}
+
+function buildServiceSummary(nodeId, graph) {
+  const attrs = graph.getNodeAttributes(nodeId);
+  if (attrs.nodeType !== 'host') return '';
+
+  const serviceRows = graph.outEdges(nodeId)
+    .map(edgeId => ({ edgeId, targetId: graph.target(edgeId), edgeAttrs: graph.getEdgeAttributes(edgeId) }))
+    .filter(entry => entry.edgeAttrs.edgeType === 'RUNS' && graph.hasNode(entry.targetId))
+    .map(entry => {
+      const serviceAttrs = graph.getNodeAttributes(entry.targetId);
+      const props = serviceAttrs._props || {};
+      return {
+        type: props.service_name || serviceAttrs.label || 'service',
+        target: serviceAttrs.label || entry.targetId,
+        meta: props.version || `port ${props.port || '?'}`,
+      };
+    })
+    .sort((a, b) => a.target.localeCompare(b.target));
+
+  if (serviceRows.length === 0) return '';
+
+  return `<div class="detail-section">
+    <div class="detail-section-title">Open Services (${serviceRows.length})</div>
+    <div class="service-summary-list">
+      ${serviceRows.map(service => `
+        <div class="service-summary-item">
+          <span class="connection-direction">SVC</span>
+          <span class="service-summary-type">${escapeHtml(service.type)}</span>
+          <span class="service-summary-target">${escapeHtml(service.target)}</span>
+          <span class="service-summary-meta">${escapeHtml(service.meta)}</span>
+        </div>
+      `).join('')}
+    </div>
+  </div>`;
+}
+
+function buildConnectionSection(nodeId, graph, direction) {
+  const edgeIds = direction === 'out' ? graph.outEdges(nodeId) : graph.inEdges(nodeId);
+  const rows = edgeIds.map(edgeId => {
+    const edgeAttrs = graph.getEdgeAttributes(edgeId);
+    const counterpartId = direction === 'out' ? graph.target(edgeId) : graph.source(edgeId);
+    const counterpartAttrs = graph.getNodeAttributes(counterpartId);
+    const counterpartProps = counterpartAttrs?._props || {};
+    const confidence = edgeAttrs.confidence !== undefined ? Number(edgeAttrs.confidence).toFixed(1) : '1.0';
+    return {
+      edgeId,
+      counterpartId,
+      edgeType: edgeAttrs.edgeType || '?',
+      counterpartLabel: counterpartAttrs?.label || counterpartProps.label || counterpartId,
+      counterpartType: counterpartAttrs?.nodeType || counterpartProps.type || '?',
+      meta: confidence === '1.0' ? 'confirmed' : `conf ${confidence}`,
+    };
+  }).sort((a, b) => a.edgeType.localeCompare(b.edgeType) || a.counterpartLabel.localeCompare(b.counterpartLabel));
+
+  if (rows.length === 0) return '';
+
+  const title = direction === 'out' ? `Outgoing (${rows.length})` : `Incoming (${rows.length})`;
+  const dirLabel = direction.toUpperCase();
+  return `<div class="detail-section">
+    <div class="detail-section-title">${title}</div>
+    <div class="connection-list">
+      ${rows.map(row => `
+        <div class="connection-row" data-node-id="${escapeHtml(row.counterpartId)}" data-edge-id="${escapeHtml(row.edgeId)}">
+          <span class="connection-direction">${dirLabel}</span>
+          <span class="connection-type">${escapeHtml(row.edgeType)}</span>
+          <span class="connection-target">${escapeHtml(row.counterpartLabel)} · ${escapeHtml(row.counterpartType)}</span>
+          <span class="connection-meta">${escapeHtml(row.meta)}</span>
+        </div>
+      `).join('')}
+    </div>
+  </div>`;
+}
+
+function attachConnectionHandlers() {
+  const body = document.getElementById('detail-props');
+  if (!body) return;
+  body.querySelectorAll('.connection-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const nodeId = row.getAttribute('data-node-id');
+      const edgeId = row.getAttribute('data-edge-id');
+      if (!nodeId || !edgeId) return;
+      const g = G();
+      g.highlightEdges([edgeId]);
+      navigateToNode(nodeId);
+      g.highlightEdges([edgeId]);
+    });
+  });
 }
 
 // ============================================================
@@ -592,6 +691,7 @@ window.OverwatchUI = {
   hideDetail,
   navigateToNode,
   handleFrontierClick,
+  handleFrontierFocus,
   toggleShortcutsOverlay,
   setShortcutsOverlayVisible,
 };
@@ -603,3 +703,4 @@ window.navigateToNode = navigateToNode;
 window.handleFrontierClick = handleFrontierClick;
 window.handleFrontierExpand = handleFrontierExpand;
 window.handleFrontierZoom = handleFrontierZoom;
+window.handleFrontierFocus = handleFrontierFocus;

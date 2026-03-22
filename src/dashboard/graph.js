@@ -78,6 +78,15 @@ let hoveredNeighbors = null;
 let draggedNode = null;
 let isDragging = false;
 const DRAG_THRESHOLD_PX = 6;
+let selectedNode = null;
+let selectedNeighborhood = null;
+let inspectedEdgeIds = new Set();
+let graphMode = 'overview';
+let labelDensity = 'balanced';
+
+const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'subnet']);
+const DETAIL_NODE_TYPES = new Set(['service', 'share']);
+const SUPPORTING_NODE_TYPES = new Set(['user', 'group', 'ou', 'gpo']);
 
 // Path highlighting
 let pathSource = null;
@@ -138,11 +147,28 @@ function isNodeVisible(node, attrs = null) {
     return false;
   }
 
+  if (graphMode === 'raw') {
+    return true;
+  }
+
   if (focusNeighborhood && !focusNeighborhood.has(node)) {
     return false;
   }
 
-  return true;
+  if (isNodeContextuallyRelevant(node)) {
+    return true;
+  }
+
+  if (graphMode === 'focused') {
+    if (selectedNeighborhood) return selectedNeighborhood.has(node);
+    return HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType);
+  }
+
+  if (HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType)) {
+    return true;
+  }
+
+  return shouldRevealDetailNodeAtCurrentZoom(nodeAttrs);
 }
 
 function isEdgeVisible(edge) {
@@ -171,6 +197,45 @@ function getVisibleEdgeIds() {
   return visible;
 }
 
+function getCurrentCameraRatio() {
+  return renderer?.getCamera ? renderer.getCamera().getState().ratio : 1;
+}
+
+function shouldRevealDetailNodeAtCurrentZoom(nodeAttrs) {
+  const ratio = getCurrentCameraRatio();
+  if (DETAIL_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= 0.12;
+  if (SUPPORTING_NODE_TYPES.has(nodeAttrs.nodeType)) return ratio <= 0.05;
+  return true;
+}
+
+function isNodeContextuallyRelevant(node) {
+  if (node === selectedNode) return true;
+  if (pathNodes.has(node)) return true;
+  if (focusNeighborhood?.has(node)) return true;
+  if (selectedNeighborhood?.has(node)) return true;
+  return false;
+}
+
+function shouldShowLabel(node, nodeAttrs) {
+  if (node === selectedNode || node === hoveredNode || pathNodes.has(node)) return true;
+  if (focusNeighborhood?.has(node)) return true;
+
+  const ratio = getCurrentCameraRatio();
+  const type = nodeAttrs.nodeType;
+  if (labelDensity === 'minimal') {
+    return HIGH_SIGNAL_NODE_TYPES.has(type) && ratio <= 0.18;
+  }
+  if (labelDensity === 'verbose') {
+    if (DETAIL_NODE_TYPES.has(type)) return ratio <= 0.18;
+    if (SUPPORTING_NODE_TYPES.has(type)) return ratio <= 0.08;
+    return true;
+  }
+
+  if (DETAIL_NODE_TYPES.has(type)) return ratio <= 0.08;
+  if (SUPPORTING_NODE_TYPES.has(type)) return ratio <= 0.04;
+  return HIGH_SIGNAL_NODE_TYPES.has(type) && ratio <= 0.28;
+}
+
 // ============================================================
 // Reducers — control node/edge appearance per frame
 // ============================================================
@@ -180,6 +245,15 @@ function nodeReducer(node, data) {
   if (!isNodeVisible(node, data)) {
     res.hidden = true;
     return res;
+  }
+
+  if (!shouldShowLabel(node, data)) {
+    res.label = '';
+  } else if (graphMode === 'overview' && data.nodeType === 'host') {
+    const serviceCount = graph.outEdges(node).filter((edgeId) => graph.getEdgeAttributes(edgeId).edgeType === 'RUNS').length;
+    if (serviceCount > 0) {
+      res.label = `${data.label} · svc:${serviceCount}`;
+    }
   }
 
   // Path highlighting
@@ -203,6 +277,19 @@ function nodeReducer(node, data) {
       res.zIndex = 1;
     } else {
       res.color = dimColor(data.color, 0.12);
+      res.label = '';
+      res.zIndex = 0;
+    }
+  }
+
+  if (selectedNode && !hoveredNode && !pathNodes.size) {
+    if (node === selectedNode) {
+      res.highlighted = true;
+      res.zIndex = 3;
+    } else if (selectedNeighborhood?.has(node)) {
+      res.zIndex = 2;
+    } else {
+      res.color = dimColor(data.color, 0.1);
       res.label = '';
       res.zIndex = 0;
     }
@@ -259,6 +346,27 @@ function edgeReducer(edge, data) {
     } else {
       res.color = 'rgba(255,255,255,0.03)';
       res.size = 0.3;
+      res.zIndex = 0;
+    }
+  }
+
+  if (selectedNode && !hoveredNode && !pathEdges.size) {
+    const src = graph.source(edge);
+    const tgt = graph.target(edge);
+    if (inspectedEdgeIds.has(edge)) {
+      res.size = 3;
+      res.zIndex = 3;
+      res.color = '#f0b54a';
+    } else if (src === selectedNode || tgt === selectedNode) {
+      res.size = 1.8;
+      res.zIndex = 2;
+    } else if (selectedNeighborhood?.has(src) && selectedNeighborhood?.has(tgt)) {
+      res.size = 1.1;
+      res.zIndex = 1;
+      res.color = dimColor(data.color || DEFAULT_EDGE_COLOR, 0.6);
+    } else {
+      res.color = 'rgba(255,255,255,0.02)';
+      res.size = 0.25;
       res.zIndex = 0;
     }
   }
@@ -350,6 +458,38 @@ function setupHover() {
 
 let suppressNextClick = false;
 
+function selectNode(node) {
+  selectedNode = node;
+  inspectedEdgeIds.clear();
+  if (!node || !graph.hasNode(node)) {
+    selectedNeighborhood = null;
+    if (renderer) renderer.refresh();
+    return;
+  }
+
+  selectedNeighborhood = new Set([node]);
+  for (const neighbor of graph.neighbors(node)) {
+    selectedNeighborhood.add(neighbor);
+  }
+  graph.edges(node).forEach((edgeId) => inspectedEdgeIds.add(edgeId));
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearSelection() {
+  selectedNode = null;
+  selectedNeighborhood = null;
+  inspectedEdgeIds.clear();
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function highlightEdges(edgeIds = []) {
+  inspectedEdgeIds = new Set(edgeIds.filter((edgeId) => graph.hasEdge(edgeId)));
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
 function setupClick() {
   renderer.on('clickNode', ({ node, event }) => {
     // Suppress click that fires after a drag release
@@ -364,6 +504,7 @@ function setupClick() {
     }
     // Regular click: show detail
     if (typeof showNodeDetail === 'function') {
+      selectNode(node);
       showNodeDetail(node);
     }
   });
@@ -373,6 +514,7 @@ function setupClick() {
   });
 
   renderer.on('clickStage', () => {
+    clearSelection();
     if (typeof hideDetail === 'function') hideDetail();
   });
 
@@ -492,6 +634,7 @@ function clearPathHighlight() {
 // ============================================================
 
 function enterNeighborhoodFocus(node, hops) {
+  selectNode(node);
   focusNode = node;
   focusNeighborhood = new Set([node]);
 
@@ -532,7 +675,11 @@ function exitNeighborhoodFocus() {
   if (banner) banner.classList.remove('visible');
 
   if (renderer) renderer.refresh();
-  zoomToFit();
+  if (graphMode === 'focused') {
+    zoomToNodes(selectedNeighborhood || new Set(getVisibleNodeIds()));
+  } else {
+    zoomToFit();
+  }
 }
 
 // ============================================================
@@ -723,6 +870,12 @@ function getNodePosition(nodeId, fallbackPosition, preservePositions) {
 }
 
 function reconcileInteractionState() {
+  if (selectedNode && !graph.hasNode(selectedNode)) {
+    clearSelection();
+  } else if (selectedNeighborhood) {
+    selectedNeighborhood = new Set([...selectedNeighborhood].filter(nodeId => graph.hasNode(nodeId)));
+  }
+
   if (focusNode && !graph.hasNode(focusNode)) {
     exitNeighborhoodFocus();
   } else if (focusNeighborhood) {
@@ -765,7 +918,7 @@ function syncGraphData(graphData, options = {}) {
     hideTooltip();
   }
 
-  const positions = groupInitialPositions(graphData.nodes);
+  const positions = groupInitialPositions(graphData.nodes, graphData.edges || []);
   const nextNodeIds = new Set(graphData.nodes.map((node) => node.id));
   const nextEdgeKeys = new Set((graphData.edges || []).map((edge) => getEdgeKey(edge)));
 
@@ -874,32 +1027,86 @@ function computeNodeSize(nodeType, degree) {
   return base + Math.log2(degree + 1) * 1.5;
 }
 
-function groupInitialPositions(nodes) {
-  // Group nodes by type for better initial layout
-  const groups = {};
-  nodes.forEach((n, i) => {
-    const type = (n.properties || {}).type || 'host';
-    if (!groups[type]) groups[type] = [];
-    groups[type].push(n);
+function groupInitialPositions(nodes, edges = []) {
+  const positions = {};
+  const nodeMap = new Map(nodes.map(node => [node.id, node]));
+  const domains = nodes.filter(node => (node.properties || {}).type === 'domain');
+  const hosts = nodes.filter(node => (node.properties || {}).type === 'host');
+  const objectives = nodes.filter(node => (node.properties || {}).type === 'objective');
+  const hostAnchors = new Map();
+  const domainAnchors = new Map();
+
+  domains.forEach((domainNode, idx) => {
+    const x = (idx - (domains.length - 1) / 2) * 12;
+    const y = -12;
+    positions[domainNode.id] = { x, y };
+    domainAnchors.set(domainNode.id, { x, y });
   });
 
-  const typeKeys = Object.keys(groups);
-  const positions = {};
+  objectives.forEach((objectiveNode, idx) => {
+    positions[objectiveNode.id] = { x: 18 + idx * 5, y: 12 + idx * 3 };
+  });
 
-  typeKeys.forEach((type, groupIdx) => {
-    const groupAngle = (2 * Math.PI * groupIdx) / typeKeys.length;
-    const groupRadius = 10;
-    const cx = groupRadius * Math.cos(groupAngle);
-    const cy = groupRadius * Math.sin(groupAngle);
+  const domainHostBuckets = new Map();
+  const domainLabels = domains.map(domainNode => ({
+    id: domainNode.id,
+    label: ((domainNode.properties || {}).label || '').toLowerCase(),
+  }));
 
-    groups[type].forEach((n, i) => {
-      const nodeAngle = (2 * Math.PI * i) / groups[type].length;
-      const nodeRadius = 2 + Math.random() * 3;
-      positions[n.id] = {
-        x: cx + nodeRadius * Math.cos(nodeAngle),
-        y: cy + nodeRadius * Math.sin(nodeAngle),
-      };
+  function resolveDomainAnchorForHost(hostNode, hostIndex) {
+    const props = hostNode.properties || {};
+    const hostLabel = `${props.hostname || ''} ${props.label || ''}`.toLowerCase();
+    let match = domainLabels.find(domain => domain.label && hostLabel.includes(domain.label));
+    if (!match && domainLabels.length > 0) {
+      match = domainLabels[hostIndex % domainLabels.length];
+    }
+    return match?.id;
+  }
+
+  hosts.forEach((hostNode, hostIndex) => {
+    const domainId = resolveDomainAnchorForHost(hostNode, hostIndex) || 'ungrouped';
+    const bucket = domainHostBuckets.get(domainId) || [];
+    bucket.push(hostNode);
+    domainHostBuckets.set(domainId, bucket);
+  });
+
+  [...domainHostBuckets.entries()].forEach(([domainId, bucket], bucketIndex) => {
+    const anchor = domainAnchors.get(domainId) || { x: (bucketIndex - (domainHostBuckets.size - 1) / 2) * 12, y: -12 };
+    bucket.forEach((hostNode, idx) => {
+      const column = idx % 3;
+      const row = Math.floor(idx / 3);
+      const x = anchor.x + (column - 1) * 7;
+      const y = anchor.y + 8 + row * 7;
+      positions[hostNode.id] = { x, y };
+      hostAnchors.set(hostNode.id, { x, y });
     });
+  });
+
+  function relatedAnchor(nodeId) {
+    const edge = edges.find(edge => edge.source === nodeId || edge.target === nodeId);
+    if (!edge) return null;
+    const counterpartId = edge.source === nodeId ? edge.target : edge.source;
+    return hostAnchors.get(counterpartId) || domainAnchors.get(counterpartId) || positions[counterpartId] || null;
+  }
+
+  nodes.forEach((node, idx) => {
+    if (positions[node.id]) return;
+    const type = (node.properties || {}).type || 'host';
+    const anchor = relatedAnchor(node.id);
+    if (anchor) {
+      const angle = (idx % 10) * (Math.PI / 5);
+      const radius = DETAIL_NODE_TYPES.has(type) ? 3 : 5;
+      positions[node.id] = {
+        x: anchor.x + radius * Math.cos(angle),
+        y: anchor.y + radius * Math.sin(angle),
+      };
+      return;
+    }
+
+    positions[node.id] = {
+      x: (idx % 6) * 4 - 10,
+      y: 4 + Math.floor(idx / 6) * 4,
+    };
   });
 
   return positions;
@@ -913,6 +1120,7 @@ function mergeGraphDelta(delta) {
   if (!delta) return;
   let added = false;
   const addedNodeIds = [];
+  const deltaEdges = delta.edges || [];
 
   // Upsert nodes
   if (delta.nodes) {
@@ -927,12 +1135,22 @@ function mergeGraphDelta(delta) {
           _props: props,
         });
       } else {
+        const anchorEdge = deltaEdges.find((edge) =>
+          (edge.source === n.id && graph.hasNode(edge.target)) ||
+          (edge.target === n.id && graph.hasNode(edge.source))
+        );
+        const anchorId = anchorEdge
+          ? (anchorEdge.source === n.id ? anchorEdge.target : anchorEdge.source)
+          : null;
+        const anchorPos = anchorId && graph.hasNode(anchorId)
+          ? graph.getNodeAttributes(anchorId)
+          : null;
         const angle = Math.random() * 2 * Math.PI;
         const radius = 3 + Math.random() * 3;
         graph.addNode(n.id, {
           label: props.label || n.id,
-          x: radius * Math.cos(angle),
-          y: radius * Math.sin(angle),
+          x: anchorPos ? anchorPos.x + radius * Math.cos(angle) : radius * Math.cos(angle),
+          y: anchorPos ? anchorPos.y + radius * Math.sin(angle) : radius * Math.sin(angle),
           size: NODE_BASE_SIZES[nodeType] || 5,
           color: NODE_COLORS[nodeType] || '#888',
           nodeType: nodeType,
@@ -1059,6 +1277,27 @@ function resetFilters() {
   buildFilterButtons();
   clearPathHighlight();
   exitNeighborhoodFocus();
+  clearSelection();
+  if (renderer) renderer.refresh();
+}
+
+function setGraphMode(mode) {
+  graphMode = ['overview', 'focused', 'raw'].includes(mode) ? mode : 'overview';
+  if (graphMode === 'focused' && selectedNode && !focusNeighborhood) {
+    enterNeighborhoodFocus(selectedNode, 1);
+  }
+  if (graphMode !== 'focused' && focusNeighborhood) {
+    focusNode = null;
+    focusNeighborhood = null;
+    const banner = document.getElementById('focus-banner');
+    if (banner) banner.classList.remove('visible');
+  }
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function setLabelDensity(mode) {
+  labelDensity = ['minimal', 'balanced', 'verbose'].includes(mode) ? mode : 'balanced';
   if (renderer) renderer.refresh();
 }
 
@@ -1297,6 +1536,11 @@ window.OverwatchGraph = {
   getVisibleNodeIds,
   getVisibleEdgeIds,
   exceededDragThreshold,
+  selectNode,
+  clearSelection,
+  highlightEdges,
+  setGraphMode,
+  setLabelDensity,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },

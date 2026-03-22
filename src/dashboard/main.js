@@ -25,6 +25,13 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-shortcuts').addEventListener('click', () => {
     UI.toggleShortcutsOverlay();
   });
+  document.getElementById('graph-mode-select')?.addEventListener('change', (event) => {
+    G.setGraphMode(event.target.value);
+    G.updateMinimap();
+  });
+  document.getElementById('label-density-select')?.addEventListener('change', (event) => {
+    G.setLabelDensity(event.target.value);
+  });
 
   // Focus banner "Show All" button
   const focusShowAll = document.getElementById('focus-show-all');

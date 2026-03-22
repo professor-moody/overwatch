@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerLoggingTools } from '../logging.js';
@@ -10,6 +10,7 @@ import { registerAgentTools } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-activity-log.json';
+const TEST_NMAP_FILE = './test-nmap.xml';
 
 function makeConfig(): EngagementConfig {
   return {
@@ -29,6 +30,9 @@ function makeConfig(): EngagementConfig {
 function cleanup(): void {
   try {
     if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+  } catch {}
+  try {
+    if (existsSync(TEST_NMAP_FILE)) unlinkSync(TEST_NMAP_FILE);
   } catch {}
 }
 
@@ -232,6 +236,40 @@ describe('structured activity logging tools', () => {
     const payload = JSON.parse(result.content[0].text);
     expect(payload.warnings[0]).toContain('without prior action context');
     expect(engine.getFullHistory().some(candidate => candidate.event_type === 'instrumentation_warning')).toBe(true);
+  });
+
+  it('parse_output supports file_path for large artifacts', async () => {
+    writeFileSync(
+      TEST_NMAP_FILE,
+      '<nmaprun><host><status state="up"/><address addr="10.10.10.2" addrtype="ipv4"/><ports><port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port></ports></host></nmaprun>',
+      'utf8',
+    );
+
+    const result = await handlers.parse_output({
+      tool_name: 'nmap',
+      file_path: TEST_NMAP_FILE,
+      ingest: true,
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.parsed).toBe(true);
+    expect(payload.parsed_from).toBe('file_path');
+    expect(engine.getNode('host-10-10-10-2')).toBeTruthy();
+  });
+
+  it('parse_output rejects calls that provide both output and file_path', async () => {
+    writeFileSync(TEST_NMAP_FILE, '<nmaprun></nmaprun>', 'utf8');
+
+    const result = await handlers.parse_output({
+      tool_name: 'nmap',
+      output: '<nmaprun></nmaprun>',
+      file_path: TEST_NMAP_FILE,
+      ingest: true,
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain('exactly one');
   });
 
   it('register_agent and update_agent create structured agent lifecycle events', async () => {

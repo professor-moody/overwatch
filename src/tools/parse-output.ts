@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { parseOutput, getSupportedParsers } from '../services/output-parsers.js';
@@ -30,10 +31,11 @@ Supported tools:
 The parsed output is automatically ingested into the graph. This reduces LLM token cost
 by handling structured parsing deterministically.
 
-Pass the tool name and the raw output content.`,
+Pass either the raw output content or a local file path for large artifacts.`,
       inputSchema: {
         tool_name: z.string().describe('Name of the tool that produced the output (e.g. nmap, nxc, certipy)'),
-        output: z.string().describe('Raw tool output to parse'),
+        output: z.string().optional().describe('Raw tool output to parse'),
+        file_path: z.string().optional().describe('Local file path to a saved text artifact to parse'),
         agent_id: z.string().optional().describe('Agent ID to attribute the findings to'),
         action_id: z.string().optional().describe('Stable action ID linking this parse to a validated/executed action'),
         frontier_item_id: z.string().optional().describe('Frontier item this parse came from'),
@@ -47,7 +49,7 @@ Pass the tool name and the raw output content.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('parse_output', async ({ tool_name, output, agent_id, action_id, frontier_item_id, ingest, list_parsers }) => {
+    withErrorBoundary('parse_output', async ({ tool_name, output, file_path, agent_id, action_id, frontier_item_id, ingest, list_parsers }) => {
       const normalizedActionId = action_id || uuidv4();
       const warnings: string[] = [];
       if (list_parsers) {
@@ -59,7 +61,41 @@ Pass the tool name and the raw output content.`,
         };
       }
 
-      const finding = parseOutput(tool_name, output, agent_id);
+      const outputProvided = output !== undefined;
+      const filePathProvided = file_path !== undefined;
+      if (Number(outputProvided) + Number(filePathProvided) !== 1) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'Provide exactly one of "output" or "file_path".',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
+      let outputText: string;
+      if (filePathProvided) {
+        try {
+          outputText = readFileSync(file_path!, 'utf8');
+        } catch (error) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Failed to read parser input from file_path: ${file_path}`,
+                details: error instanceof Error ? error.message : String(error),
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+      } else {
+        outputText = output!;
+      }
+
+      const finding = parseOutput(tool_name, outputText, agent_id);
       if (!finding) {
         engine.logActionEvent({
           description: `Output parse failed: no parser for ${tool_name}`,
@@ -157,6 +193,7 @@ Pass the tool name and the raw output content.`,
               tool: tool_name,
               action_id: normalizedActionId,
               finding_id: finding.id,
+              parsed_from: filePathProvided ? 'file_path' : 'output',
               validation_errors: prepared.errors,
               warnings: warnings.length > 0 ? warnings : undefined,
             }, null, 2),
@@ -202,6 +239,7 @@ Pass the tool name and the raw output content.`,
             tool: tool_name,
             action_id: normalizedActionId,
             finding_id: finding.id,
+            parsed_from: filePathProvided ? 'file_path' : 'output',
             nodes_parsed: finding.nodes.length,
             edges_parsed: finding.edges.length,
             warnings: warnings.length > 0 ? warnings : undefined,

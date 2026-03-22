@@ -158,4 +158,19 @@ describe('dashboard graph helpers', () => {
     expect(graphModule.exceededDragThreshold(10, 10, 13, 13)).toBe(false);
     expect(graphModule.exceededDragThreshold(10, 10, 20, 20)).toBe(true);
   });
+
+  it('uses overview mode to hide low-signal service nodes until focus reveals them', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: 'Host A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('service-a', { label: 'ldap/389', nodeType: 'service', color: '#fff', x: 1, y: 0, _props: { type: 'service' } });
+    graph.addEdgeWithKey('host-a--RUNS--service-a', 'host-a', 'service-a', { edgeType: 'RUNS' });
+
+    graphModule.setGraphMode('overview');
+    expect(graphModule.getVisibleNodeIds()).toEqual(['host-a']);
+
+    graphModule.enterNeighborhoodFocus('host-a', 1);
+    expect(graphModule.getVisibleNodeIds().sort()).toEqual(['host-a', 'service-a']);
+  });
 });
