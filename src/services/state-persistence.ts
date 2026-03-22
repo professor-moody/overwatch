@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdi
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail } from './engine-context.js';
 import type { InferenceRule } from '../types.js';
+import { normalizeNodeProvenance } from './provenance-utils.js';
 
 export const MAX_SNAPSHOTS = 5;
 
@@ -92,6 +93,7 @@ export class StatePersistence {
     this.ctx.graph.clear();
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
+    this.normalizeLoadedNodeProvenance();
     this.ctx.invalidatePathGraph();
     this.ctx.activityLog = data.activityLog || [];
     this.ctx.agents = new Map(data.agents || []);
@@ -113,6 +115,7 @@ export class StatePersistence {
     const data = JSON.parse(raw);
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
+    this.normalizeLoadedNodeProvenance();
     this.ctx.activityLog = data.activityLog || [];
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
@@ -133,6 +136,7 @@ export class StatePersistence {
         this.ctx.graph = this.createGraph();
         this.ctx.config = data.config;
         this.ctx.graph.import(data.graph);
+        this.normalizeLoadedNodeProvenance();
         this.ctx.invalidatePathGraph();
         this.ctx.activityLog = data.activityLog || [];
         this.ctx.agents = new Map(data.agents || []);
@@ -151,5 +155,11 @@ export class StatePersistence {
       }
     }
     return false;
+  }
+
+  private normalizeLoadedNodeProvenance(): void {
+    this.ctx.graph.forEachNode((nodeId, attrs) => {
+      this.ctx.graph.mergeNodeAttributes(nodeId, normalizeNodeProvenance(attrs) as any);
+    });
   }
 }

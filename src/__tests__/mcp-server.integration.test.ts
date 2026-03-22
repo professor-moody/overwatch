@@ -38,9 +38,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 19 tools', async () => {
+  it('lists all 20 tools', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(19);
+    expect(result.tools.length).toBe(20);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -54,6 +54,7 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('get_history');
     expect(toolNames).toContain('get_skill');
     expect(toolNames).toContain('export_graph');
+    expect(toolNames).toContain('run_graph_health');
     expect(toolNames).toContain('ingest_bloodhound');
     expect(toolNames).toContain('check_tools');
     expect(toolNames).toContain('track_process');
@@ -75,6 +76,16 @@ describe('MCP Server Integration', () => {
     expect(state.frontier).toBeDefined();
     expect(state.objectives).toBeDefined();
     expect(state.access_summary).toBeDefined();
+    expect(state.warnings).toBeDefined();
+  });
+
+  it('run_graph_health returns a health report', async () => {
+    const result = await client.callTool({ name: 'run_graph_health', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.status).toBeDefined();
+    expect(body.counts_by_severity).toBeDefined();
+    expect(body.issues).toBeInstanceOf(Array);
   });
 
   it('report_finding ingests a node and returns results', async () => {

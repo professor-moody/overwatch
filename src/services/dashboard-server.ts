@@ -10,6 +10,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
+import { DeltaAccumulator } from './delta-accumulator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,7 +34,7 @@ export class DashboardServer {
   private clients: Set<WebSocket> = new Set();
   private dashboardHtml: string | null = null;
   private _running: boolean = false;
-  private pendingDetail: GraphUpdateDetail | null = null;
+  private accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
 
@@ -97,7 +98,7 @@ export class DashboardServer {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    this.pendingDetail = null;
+    this.accumulator.drain();
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
@@ -123,15 +124,7 @@ export class DashboardServer {
     // Short-circuit: skip expensive work when nobody is listening
     if (this.clients.size === 0) return;
 
-    // Accumulate detail into pending batch
-    if (!this.pendingDetail) {
-      this.pendingDetail = { new_nodes: [], new_edges: [], updated_nodes: [], updated_edges: [], inferred_edges: [] };
-    }
-    for (const key of ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges'] as const) {
-      if (detail[key]) {
-        this.pendingDetail[key]!.push(...detail[key]!);
-      }
-    }
+    this.accumulator.push(detail);
 
     // Reset debounce timer
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
@@ -147,8 +140,7 @@ export class DashboardServer {
   }
 
   private flushPendingUpdate(): void {
-    const detail = this.pendingDetail;
-    this.pendingDetail = null;
+    const detail = this.accumulator.drain();
     this.debounceTimer = null;
     if (!detail || this.clients.size === 0) return;
 

@@ -14,11 +14,13 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
+import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
+import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
-  AgentTask, ExportedGraph
+  AgentTask, ExportedGraph, HealthReport
 } from '../types.js';
 
 // Handle CJS/ESM interop for graphology — graphology publishes CJS with a
@@ -194,6 +196,8 @@ export class GraphEngine {
           label: ip,
           ip,
           discovered_at: now,
+          first_seen_at: now,
+          last_seen_at: now,
           confidence: 1.0
         });
       }
@@ -210,6 +214,8 @@ export class GraphEngine {
             label: host,
             hostname: host,
             discovered_at: now,
+            first_seen_at: now,
+            last_seen_at: now,
             confidence: 1.0
           });
         }
@@ -224,6 +230,8 @@ export class GraphEngine {
         label: domain,
         domain_name: domain,
         discovered_at: now,
+        first_seen_at: now,
+        last_seen_at: now,
         confidence: 1.0
       });
     }
@@ -237,6 +245,8 @@ export class GraphEngine {
         objective_description: obj.description,
         objective_achieved: false,
         discovered_at: now,
+        first_seen_at: now,
+        last_seen_at: now,
         confidence: 1.0
       });
     }
@@ -316,17 +326,40 @@ export class GraphEngine {
       const isNew = !this.ctx.graph.hasNode(node.id);
       const existingNode = isNew ? null : this.getNode(node.id);
       const oldProps = existingNode ? { ...existingNode } : null;
-      const fullProps: NodeProperties = {
+      const baseProps: NodeProperties = {
         discovered_at: finding.timestamp,
         confidence: 1.0,
         label: node.id,
         ...node,
         discovered_by: finding.agent_id
       };
-      // Preserve original discovered_at for existing nodes
-      if (!isNew && existingNode?.discovered_at) {
-        fullProps.discovered_at = existingNode.discovered_at;
+
+      const existingSources = existingNode ? getNodeSources(existingNode) : [];
+      const sources = finding.agent_id && !existingSources.includes(finding.agent_id)
+        ? [...existingSources, finding.agent_id]
+        : existingSources;
+      const firstSeenAt = existingNode ? getNodeFirstSeenAt(existingNode) || finding.timestamp : finding.timestamp;
+      const fullProps: NodeProperties = {
+        ...baseProps,
+        ...normalizeNodeProvenance(baseProps),
+        first_seen_at: firstSeenAt,
+        last_seen_at: finding.timestamp,
+        sources: sources.length > 0 ? sources : undefined,
+        discovered_at: existingNode?.discovered_at || finding.timestamp,
+        discovered_by: existingNode?.discovered_by || finding.agent_id,
+      };
+      if (baseProps.confidence >= 1.0) {
+        if (isNew) {
+          fullProps.confirmed_at = finding.timestamp;
+        } else if (!existingNode?.confirmed_at && (existingNode?.confidence ?? 0) < 1.0) {
+          fullProps.confirmed_at = finding.timestamp;
+        } else if (existingNode?.confirmed_at) {
+          fullProps.confirmed_at = existingNode.confirmed_at;
+        }
+      } else if (existingNode?.confirmed_at) {
+        fullProps.confirmed_at = existingNode.confirmed_at;
       }
+
       this.addNode(fullProps);
       if (isNew) {
         newNodes.push(node.id);
@@ -832,6 +865,7 @@ export class GraphEngine {
 
     const frontier = this.computeFrontier();
     const { passed } = this.filterFrontier(frontier);
+    const healthReport = this.runHealthChecks();
 
     return {
       config: this.ctx.config,
@@ -851,7 +885,8 @@ export class GraphEngine {
         compromised_hosts: compromised,
         valid_credentials: validCreds,
         current_access_level: this.computeAccessLevel(compromised)
-      }
+      },
+      warnings: summarizeHealthReport(healthReport),
     };
   }
 
@@ -916,6 +951,10 @@ export class GraphEngine {
     return this.ctx.trackedProcesses;
   }
 
+  getHealthReport(): HealthReport {
+    return this.runHealthChecks();
+  }
+
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {
     this.ctx.trackedProcesses = processes;
   }
@@ -933,6 +972,10 @@ export class GraphEngine {
     });
 
     return { nodes, edges };
+  }
+
+  private runHealthChecks(): HealthReport {
+    return runHealthChecks(this.ctx.graph);
   }
 
   // =============================================

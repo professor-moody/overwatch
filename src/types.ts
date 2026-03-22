@@ -21,6 +21,10 @@ export interface NodeProperties {
   label: string;
   discovered_by?: string;       // agent id that found this
   discovered_at: string;        // ISO timestamp
+  first_seen_at?: string;       // first direct observation time
+  last_seen_at?: string;        // most recent direct observation time
+  confirmed_at?: string;        // node-level direct confirmation time
+  sources?: string[];           // unique agents that contributed to this node
   confidence: number;           // 0.0 - 1.0
   notes?: string;
 
@@ -306,6 +310,31 @@ export interface EngagementState {
     valid_credentials: string[];
     current_access_level: string;
   };
+  warnings: HealthSummary;
+}
+
+export type HealthSeverity = 'warning' | 'critical';
+export type HealthStatus = 'healthy' | 'warning' | 'critical';
+
+export interface HealthIssue {
+  severity: HealthSeverity;
+  check: string;
+  message: string;
+  node_ids?: string[];
+  edge_ids?: string[];
+  details?: Record<string, unknown>;
+}
+
+export interface HealthReport {
+  status: HealthStatus;
+  counts_by_severity: Record<HealthSeverity, number>;
+  issues: HealthIssue[];
+}
+
+export interface HealthSummary {
+  status: HealthStatus;
+  counts_by_severity: Record<HealthSeverity, number>;
+  top_issues: HealthIssue[];
 }
 
 // --- Inference Rule ---

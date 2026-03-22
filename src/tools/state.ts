@@ -26,7 +26,7 @@ Use this as your first call in any new or compacted session to understand:
 The frontier items are pre-filtered by the deterministic layer (scope, dedup, hard OPSEC vetoes)
 but NOT scored — that is your job. You have full access to reason about priorities.
 
-Returns: EngagementState object with graph_summary, objectives, frontier, active_agents, recent_activity, access_summary.`,
+Returns: EngagementState object with graph_summary, objectives, frontier, active_agents, recent_activity, access_summary, and structured warnings from graph health checks.`,
       inputSchema: {
         include_full_frontier: z.boolean()
           .default(true)
@@ -51,6 +51,39 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
       state.recent_activity = state.recent_activity.slice(-activity_count);
       return {
         content: [{ type: 'text', text: JSON.stringify(state, null, 2) }]
+      };
+    })
+  );
+
+  // ============================================================
+  // Tool: run_graph_health
+  // Full graph integrity report
+  // ============================================================
+  server.registerTool(
+    'run_graph_health',
+    {
+      title: 'Run Graph Health Checks',
+      description: `Run read-only graph integrity checks across the current engagement graph.
+
+Returns categorized issues such as:
+- split host identities across multiple node IDs
+- unresolved BloodHound fallback identities
+- edge type/source/target violations
+- stale inferred edges whose trigger conditions no longer hold
+
+Use this when you want the full health report instead of the summarized warnings included in get_state.`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    withErrorBoundary('run_graph_health', async () => {
+      const report = engine.getHealthReport();
+      return {
+        content: [{ type: 'text', text: JSON.stringify(report, null, 2) }]
       };
     })
   );

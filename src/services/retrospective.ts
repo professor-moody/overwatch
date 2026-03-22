@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
+import { getNodeFirstSeenAt } from './provenance-utils.js';
 
 export interface RetrospectiveInput {
   config: EngagementConfig;
@@ -588,7 +589,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
 
   // Count initial graph (from seed)
   for (const n of input.graph.nodes) {
-    if (n.properties.discovered_at === input.config.created_at) {
+    if (getNodeFirstSeenAt(n.properties) === input.config.created_at) {
       nodeCount++;
     }
   }

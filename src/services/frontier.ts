@@ -6,6 +6,7 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, EdgeProperties, FrontierItem } from '../types.js';
+import { getNodeLastSeenAt } from './provenance-utils.js';
 
 // --- Fan-out estimates by service type ---
 const FAN_OUT_ESTIMATES: Record<string, number> = {
@@ -55,7 +56,7 @@ export class FrontierComputer {
           confidence: attrs.confidence
         },
         opsec_noise: this.estimateNoiseForNode(attrs, missing),
-        staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000
+        staleness_seconds: (now - new Date(getNodeLastSeenAt(attrs) || attrs.discovered_at).getTime()) / 1000
       });
     });
 

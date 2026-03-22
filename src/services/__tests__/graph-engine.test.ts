@@ -1202,6 +1202,75 @@ describe('GraphEngine', () => {
       const node = graph.nodes.find(n => n.id === 'svc-ts-new');
       expect(node!.properties.discovered_at).toBe(ts);
     });
+
+    it('tracks first_seen_at, last_seen_at, and sources on new and updated nodes', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding({
+        id: 'prov-1',
+        timestamp: '2026-03-21T10:00:00.000Z',
+        agent_id: 'agent-a',
+        nodes: [{ id: 'host-prov', type: 'host', label: 'host-prov', ip: '10.10.10.50', alive: true, confidence: 0.5 }],
+        edges: [],
+      });
+
+      engine.ingestFinding({
+        id: 'prov-2',
+        timestamp: '2026-03-21T11:00:00.000Z',
+        agent_id: 'agent-b',
+        nodes: [{ id: 'host-prov', type: 'host', label: 'host-prov', ip: '10.10.10.50', alive: true }],
+        edges: [],
+      });
+
+      const graph = engine.exportGraph();
+      const node = graph.nodes.find(n => n.id === 'host-prov');
+      expect(node!.properties.first_seen_at).toBe('2026-03-21T10:00:00.000Z');
+      expect(node!.properties.last_seen_at).toBe('2026-03-21T11:00:00.000Z');
+      expect(node!.properties.discovered_at).toBe('2026-03-21T10:00:00.000Z');
+      expect(node!.properties.sources).toEqual(['agent-a', 'agent-b']);
+      expect(node!.properties.confirmed_at).toBe('2026-03-21T11:00:00.000Z');
+    });
+
+    it('does not duplicate repeated provenance sources', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding({
+        id: 'prov-repeat-1',
+        timestamp: '2026-03-21T10:00:00.000Z',
+        agent_id: 'agent-a',
+        nodes: [{ id: 'user-prov', type: 'user', label: 'user-prov' }],
+        edges: [],
+      });
+
+      engine.ingestFinding({
+        id: 'prov-repeat-2',
+        timestamp: '2026-03-21T10:30:00.000Z',
+        agent_id: 'agent-a',
+        nodes: [{ id: 'user-prov', type: 'user', label: 'user-prov', privileged: false }],
+        edges: [],
+      });
+
+      const graph = engine.exportGraph();
+      const node = graph.nodes.find(n => n.id === 'user-prov');
+      expect(node!.properties.sources).toEqual(['agent-a']);
+    });
+
+    it('includes graph health warnings in getState()', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding({
+        id: 'warning-1',
+        timestamp: '2026-03-21T12:00:00.000Z',
+        agent_id: 'agent-a',
+        nodes: [
+          { id: 'host-warning-a', type: 'host', label: 'warning-a', ip: '10.10.10.77', alive: true },
+          { id: 'host-warning-b', type: 'host', label: 'warning-b', ip: '10.10.10.77', alive: true },
+        ],
+        edges: [],
+      });
+
+      const state = engine.getState();
+      expect(state.warnings.status).toBe('critical');
+      expect(state.warnings.counts_by_severity.critical).toBeGreaterThan(0);
+      expect(state.warnings.top_issues.length).toBeGreaterThan(0);
+    });
   });
 
   // =============================================
@@ -1449,7 +1518,7 @@ describe('GraphEngine', () => {
       expect(subgraph).toContain('svc-http-test');
     });
 
-    it('does not flag identical array content as an updated node', () => {
+    it('preserves identical array content while only updating provenance metadata', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1463,7 +1532,10 @@ describe('GraphEngine', () => {
         ],
       }));
 
-      expect(result.updated_nodes).toHaveLength(0);
+      expect(result.updated_nodes).toContain('user-array-test');
+      const graph = engine.exportGraph();
+      const node = graph.nodes.find((candidate) => candidate.id === 'user-array-test');
+      expect(node!.properties.member_of).toEqual(['group-a', 'group-b']);
     });
 
     it('flags real array content changes as updates', () => {
