@@ -271,19 +271,21 @@ function renderFrontierItem(f, idx) {
     <div class="fi-header">
       <span class="fi-type ${typeClass}">${typeLabel}</span>
       <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(label)}</span>
+    </div>
+    <div class="frontier-item-chips">${chips}</div>
+    ${support ? `<div class="fi-support">${support}</div>` : ''}
+    <div class="fi-footer">
+      <div class="frontier-item-detail">
+        <span class="fi-noise" aria-hidden="true"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
+        <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
+      </div>
       <div class="fi-actions">
         <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
         <button class="fi-zoom-btn fi-focus-btn" onclick="handleFrontierFocus(this, event)">Focus</button>
       </div>
-    </div>
-    <div class="frontier-item-chips">${chips}</div>
-    ${support ? `<div class="fi-support">${support}</div>` : ''}
-    <div class="frontier-item-detail">
-      <span class="fi-noise" aria-hidden="true"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
-      <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
-      <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
-      <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
-      <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
     </div>
   </div>`;
 }
@@ -514,28 +516,46 @@ function showNodeDetail(nodeId) {
     typeBadge.textContent = nodeType;
   }
 
-  // Properties
+  // Properties — split into identity and metadata groups
   const skip = new Set(['label', 'type']);
-  let propsHtml = '';
   const entries = Object.entries(props).filter(([k]) => !skip.has(k));
+  const identityRows = [];
+  const metadataRows = [];
   for (const [key, val] of entries) {
-    if (val === undefined || val === null) continue;
-    const display = typeof val === 'object' ? JSON.stringify(val) : String(val);
-    propsHtml += `<div class="prop-row">
+    const display = formatPropValue(key, val);
+    if (display === null) continue;
+    const raw = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    const isTs = TIMESTAMP_PROPS.has(key);
+    const isIdentity = IDENTITY_PROPS.has(key);
+    const valClass = isIdentity ? ' prop-val-highlight' : isTs ? ' prop-val-ts' : '';
+    const row = `<div class="prop-row">
       <span class="prop-key">${escapeHtml(key)}</span>
-      <span class="prop-val" title="${escapeHtml(display)}">${escapeHtml(display)}</span>
+      <span class="prop-val${valClass}" title="${escapeHtml(raw)}">${escapeHtml(display)}</span>
     </div>`;
+    if (isIdentity) identityRows.push(row);
+    else metadataRows.push(row);
   }
 
   let html = '';
   html += buildServiceSummary(nodeId, graph);
   html += buildConnectionSection(nodeId, graph, 'out');
   html += buildConnectionSection(nodeId, graph, 'in');
-  if (propsHtml) {
+  if (identityRows.length || metadataRows.length) {
     html += `<div class="detail-section">
-      <div class="detail-section-title">Properties</div>
-      ${propsHtml}
-    </div>`;
+      <div class="detail-section-title">Properties</div>`;
+    if (identityRows.length) {
+      html += `<div class="prop-group">
+        <div class="prop-group-title">Identity</div>
+        ${identityRows.join('')}
+      </div>`;
+    }
+    if (metadataRows.length) {
+      html += `<div class="prop-group">
+        <div class="prop-group-title">Metadata</div>
+        ${metadataRows.join('')}
+      </div>`;
+    }
+    html += `</div>`;
   }
 
   document.getElementById('detail-props').innerHTML = html;
@@ -855,6 +875,32 @@ function initMinimapClick() {
 // ============================================================
 // Utilities
 // ============================================================
+
+const IDENTITY_PROPS = new Set([
+  'id', 'username', 'hostname', 'ip', 'service_name', 'port', 'protocol',
+  'domain', 'fqdn', 'os', 'description', 'hash', 'hash_type', 'password',
+  'cn', 'dn', 'sam_account_name', 'template_name', 'ca_name',
+]);
+const TIMESTAMP_PROPS = new Set([
+  'discovered_at', 'first_seen_at', 'last_seen_at', 'confirmed_at',
+]);
+
+function formatPropValue(key, val) {
+  if (val === undefined || val === null) return null;
+  if (Array.isArray(val)) return val.join(', ');
+  const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+  if (TIMESTAMP_PROPS.has(key) && /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+    try {
+      const d = new Date(str);
+      const mon = d.toLocaleString('en', { month: 'short' });
+      const day = d.getDate();
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      return `${mon} ${day} · ${h}:${m}`;
+    } catch { return str; }
+  }
+  return str;
+}
 
 function escapeHtml(str) {
   if (!str) return '';
