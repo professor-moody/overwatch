@@ -76,3 +76,4 @@ Then just run `claude` — see the full [Getting Started](getting-started.md) gu
 ```
 
 Learn more in [Architecture](architecture.md) or jump to the [Tool Reference](tools/index.md).
+
