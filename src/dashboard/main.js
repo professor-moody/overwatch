@@ -22,6 +22,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-in').addEventListener('click', () => G.zoomIn());
   document.getElementById('btn-zoom-out').addEventListener('click', () => G.zoomOut());
   document.getElementById('btn-export').addEventListener('click', () => G.exportScreenshot());
+  document.getElementById('btn-shortcuts').addEventListener('click', () => {
+    document.getElementById('shortcuts-overlay').classList.toggle('visible');
+  });
 
   // Focus banner "Show All" button
   const focusShowAll = document.getElementById('focus-show-all');

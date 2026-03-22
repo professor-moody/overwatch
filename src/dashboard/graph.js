@@ -271,14 +271,20 @@ function edgeReducer(edge, data) {
 
 function setupDrag() {
   const container = document.getElementById('sigma-container');
-  let startX, startY;
+  let dragStartX, dragStartY;
+  let hasMoved = false;
 
   renderer.on('downNode', (e) => {
     isDragging = true;
+    hasMoved = false;
     draggedNode = e.node;
-    // Pause layout for this node
+    // Record start position for move detection
+    const pos = renderer.viewportToGraph(e);
+    dragStartX = pos.x;
+    dragStartY = pos.y;
+    // Mark node as fixed so layout preserves its position
     graph.setNodeAttribute(draggedNode, 'fixed', true);
-    // Disable sigma camera drag
+    // Disable sigma camera drag while we're dragging a node
     renderer.getCamera().disable();
     container.classList.add('dragging');
   });
@@ -290,15 +296,25 @@ function setupDrag() {
     const pos = renderer.viewportToGraph(e);
     graph.setNodeAttribute(draggedNode, 'x', pos.x);
     graph.setNodeAttribute(draggedNode, 'y', pos.y);
+    hasMoved = true;
+
+    // Prevent hover from interfering during drag
+    hoveredNode = null;
+    hoveredNeighbors = null;
+    hideTooltip();
   });
 
   const endDrag = () => {
     if (isDragging && draggedNode) {
-      // Keep node fixed so layout doesn't move it
       container.classList.remove('dragging');
+      // Suppress the click event that fires after drag
+      if (hasMoved) {
+        suppressNextClick = true;
+      }
     }
     isDragging = false;
     draggedNode = null;
+    hasMoved = false;
     renderer.getCamera().enable();
   };
 
@@ -330,8 +346,15 @@ function setupHover() {
 // Click
 // ============================================================
 
+let suppressNextClick = false;
+
 function setupClick() {
   renderer.on('clickNode', ({ node, event }) => {
+    // Suppress click that fires after a drag release
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      return;
+    }
     // Shift+click: path highlighting
     if (event.original.shiftKey) {
       handlePathClick(node);
@@ -595,9 +618,23 @@ function startLayout() {
   function frame() {
     if (!layoutRunning) return;
 
+    // Save positions of fixed nodes (FA2 doesn't respect 'fixed')
+    const fixedPositions = new Map();
+    graph.forEachNode((id, attrs) => {
+      if (attrs.fixed) {
+        fixedPositions.set(id, { x: attrs.x, y: attrs.y });
+      }
+    });
+
     // Run a few iterations per frame
     fa2.assign(graph, { iterations: LAYOUT_ITERS_PER_FRAME, settings });
     layoutIterationCount += LAYOUT_ITERS_PER_FRAME;
+
+    // Restore fixed node positions
+    for (const [id, pos] of fixedPositions) {
+      graph.setNodeAttribute(id, 'x', pos.x);
+      graph.setNodeAttribute(id, 'y', pos.y);
+    }
 
     if (renderer) renderer.refresh();
     updateMinimap();
@@ -1179,14 +1216,14 @@ function exportScreenshot() {
   }
 
   // Create a combined canvas
-  const container = document.getElementById('sigma-container');
+  const sigmaContainer = document.getElementById('sigma-container');
   const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = container.clientWidth * 2;
-  exportCanvas.height = container.clientHeight * 2;
+  exportCanvas.width = sigmaContainer.clientWidth * 2;
+  exportCanvas.height = sigmaContainer.clientHeight * 2;
   const ctx = exportCanvas.getContext('2d');
 
   // Dark background
-  ctx.fillStyle = '#0f1117';
+  ctx.fillStyle = '#080a0f';
   ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
 
   // Draw each sigma layer

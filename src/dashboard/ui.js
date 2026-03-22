@@ -1,9 +1,40 @@
 // ============================================================
-// Overwatch Dashboard — UI Module
-// Sidebar panels, detail overlay, keyboard shortcuts, search
+// Overwatch Dashboard — UI Module v2
+// Sidebar toggle, panels, drawer, frontier expand, activity colors
 // ============================================================
 
 const G = () => window.OverwatchGraph;
+
+// ============================================================
+// Sidebar Toggle
+// ============================================================
+
+let sidebarOpen = true;
+
+function initSidebarToggle() {
+  const toggle = document.getElementById('sidebar-toggle');
+  const layout = document.getElementById('app-layout');
+  if (!toggle || !layout) return;
+
+  // Restore from localStorage
+  const saved = localStorage.getItem('sidebar-open');
+  if (saved === '0') {
+    sidebarOpen = false;
+    layout.classList.add('sidebar-collapsed');
+  }
+
+  toggle.addEventListener('click', () => {
+    sidebarOpen = !sidebarOpen;
+    layout.classList.toggle('sidebar-collapsed', !sidebarOpen);
+    localStorage.setItem('sidebar-open', sidebarOpen ? '1' : '0');
+
+    // Give sigma time to recalculate container size
+    setTimeout(() => {
+      const g = G();
+      if (g.renderer) g.renderer.refresh();
+    }, 300);
+  });
+}
 
 // ============================================================
 // Sidebar Panel Collapse
@@ -68,11 +99,11 @@ function updateReadiness(state) {
   const readiness = state.lab_readiness || { status: 'ready', top_issues: [] };
 
   badge.className = `readiness-badge ${readiness.status || 'ready'}`;
-  badge.textContent = readiness.status || 'ready';
+  badge.textContent = (readiness.status || 'ready').toUpperCase();
 
   const topIssues = readiness.top_issues || [];
   if (topIssues.length === 0) {
-    issues.innerHTML = '<div class="empty-state">No immediate readiness issues</div>';
+    issues.innerHTML = '<div class="empty-state">No issues detected</div>';
     return;
   }
   issues.innerHTML = topIssues.map(issue =>
@@ -91,18 +122,18 @@ function updateStats(state) {
   const types = Object.entries(nodesByType).sort((a, b) => b[1] - a[1]);
   for (const [type, count] of types) {
     const color = colors[type] || '#888';
-    html += `<div class="stat-item">
+    html += `<div class="stat-item" style="border-left-color:${color}">
       <div class="stat-value" style="color:${color}">${count}</div>
       <div class="stat-label">${type}s</div>
     </div>`;
   }
-  html += `<div class="stat-item">
+  html += `<div class="stat-item" style="border-left-color:var(--accent)">
     <div class="stat-value" style="color:var(--accent)">${confirmed}</div>
-    <div class="stat-label">Confirmed edges</div>
+    <div class="stat-label">Confirmed</div>
   </div>`;
-  html += `<div class="stat-item">
+  html += `<div class="stat-item" style="border-left-color:var(--purple)">
     <div class="stat-value" style="color:var(--purple)">${inferred}</div>
-    <div class="stat-label">Inferred edges</div>
+    <div class="stat-label">Inferred</div>
   </div>`;
   grid.innerHTML = html;
 }
@@ -125,27 +156,80 @@ function updateObjectives(state) {
   `).join('');
 }
 
+// ============================================================
+// Frontier — Compact with Expand
+// ============================================================
+
+function getNoiseColor(noise) {
+  if (noise <= 0.3) return 'var(--green)';
+  if (noise <= 0.6) return 'var(--amber)';
+  return 'var(--red)';
+}
+
 function updateFrontier(state) {
   const list = document.getElementById('frontier-list');
   const frontier = state.frontier || [];
   document.getElementById('frontier-count').textContent = `(${frontier.length})`;
 
-  const top15 = frontier.slice(0, 15);
-  if (top15.length === 0) {
-    list.innerHTML = '<div class="empty-state">Frontier empty</div>';
+  const top20 = frontier.slice(0, 20);
+  if (top20.length === 0) {
+    list.innerHTML = '<div class="empty-state">Frontier empty — ingest data to generate candidates</div>';
     return;
   }
-  list.innerHTML = top15.map((f, idx) => {
-    const typeClass = f.type === 'incomplete_node' ? 'incomplete' : 'inferred';
-    const noise = f.opsec_noise !== undefined ? f.opsec_noise.toFixed(1) : '—';
+  list.innerHTML = top20.map((f, idx) => {
+    const typeClass = f.type === 'incomplete_node' ? 'incomplete'
+      : f.type === 'untested_edge' ? 'untested' : 'inferred';
+    const typeLabel = f.type === 'incomplete_node' ? 'node'
+      : f.type === 'untested_edge' ? 'test' : 'infer';
+    const noise = f.opsec_noise !== undefined ? f.opsec_noise : 0;
+    const noisePercent = Math.round(noise * 100);
+    const noiseColor = getNoiseColor(noise);
     const nodeIds = getFrontierTargetNodeIds(f).join(',');
-    return `<div class="frontier-item" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierClick(this)">
-      <span class="fi-type ${typeClass}">${f.type === 'incomplete_node' ? 'node' : 'edge'}</span>
+    const hops = f.hops_to_objective !== undefined ? f.hops_to_objective : '—';
+    const fanOut = f.fan_out !== undefined ? f.fan_out : '—';
+    const confidence = f.confidence !== undefined ? f.confidence.toFixed(1) : '—';
+
+    return `<div class="frontier-item" data-idx="${idx}" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierExpand(this, event)">
+      <span class="fi-type ${typeClass}">${typeLabel}</span>
       <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(f.description || f.id)}</span>
-      <span class="fi-noise">${noise}</span>
+      <span class="fi-noise"><span class="fi-noise-fill" style="width:${noisePercent}%;background:${noiseColor}"></span></span>
+      <div class="frontier-item-detail">
+        <span class="fi-metric"><span class="fi-metric-label">noise</span> <span class="fi-metric-value">${noise.toFixed(1)}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">hops</span> <span class="fi-metric-value">${hops}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">fan</span> <span class="fi-metric-value">${fanOut}</span></span>
+        <span class="fi-metric"><span class="fi-metric-label">conf</span> <span class="fi-metric-value">${confidence}</span></span>
+        <button class="fi-zoom-btn" onclick="handleFrontierZoom(this, event)">Zoom</button>
+      </div>
     </div>`;
   }).join('');
 }
+
+function handleFrontierExpand(el, event) {
+  // Don't expand if clicking zoom button
+  if (event.target.closest('.fi-zoom-btn')) return;
+  el.classList.toggle('expanded');
+}
+
+function handleFrontierZoom(btn, event) {
+  event.stopPropagation();
+  const item = btn.closest('.frontier-item');
+  if (!item) return;
+  const nodeIds = (item.dataset.nodeIds || '').split(',').filter(Boolean);
+  if (nodeIds.length === 0) return;
+
+  const g = G();
+  const graph = g.graph;
+  for (const nodeId of nodeIds) {
+    if (graph && graph.hasNode(nodeId)) {
+      navigateToNode(nodeId);
+      return;
+    }
+  }
+}
+
+// ============================================================
+// Agents
+// ============================================================
 
 function updateAgents(state) {
   const list = document.getElementById('agents-list');
@@ -164,10 +248,25 @@ function updateAgents(state) {
   `).join('');
 }
 
+// ============================================================
+// Activity Feed — Color-coded
+// ============================================================
+
+function getActivityColorClass(entry) {
+  const desc = (entry.description || '').toLowerCase();
+  const type = (entry.event_type || entry.type || '').toLowerCase();
+
+  if (type.includes('started') || desc.includes('started')) return 'started';
+  if (type.includes('completed') || desc.includes('completed')) return 'completed';
+  if (type.includes('failed') || desc.includes('failed')) return 'failed';
+  if (type.includes('finding') || desc.includes('finding') || desc.includes('reported') || desc.includes('parsed')) return 'finding';
+  return 'default';
+}
+
 function updateActivity(state) {
   const list = document.getElementById('activity-list');
   const history = state.recent_activity || [];
-  const recent = history.slice(-20).reverse();
+  const recent = history.slice(-25).reverse();
 
   if (recent.length === 0) {
     list.innerHTML = '<div class="empty-state">No activity yet</div>';
@@ -175,15 +274,19 @@ function updateActivity(state) {
   }
   list.innerHTML = recent.map(a => {
     const time = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : '';
+    const colorClass = getActivityColorClass(a);
     return `<div class="activity-item">
-      <span class="act-time">${time}</span>
-      <span class="act-msg">${escapeHtml(a.description || '')}</span>
+      <div class="act-color-bar ${colorClass}"></div>
+      <div class="act-content">
+        <span class="act-time">${time}</span>
+        <span class="act-msg">${escapeHtml(a.description || '')}</span>
+      </div>
     </div>`;
   }).join('');
 }
 
 // ============================================================
-// Node Detail Panel
+// Node Detail Drawer (right side)
 // ============================================================
 
 function showNodeDetail(nodeId) {
@@ -195,7 +298,7 @@ function showNodeDetail(nodeId) {
   const props = attrs._props || {};
   const nodeType = attrs.nodeType || 'unknown';
   const color = g.NODE_COLORS[nodeType] || '#888';
-  const panel = document.getElementById('node-detail');
+  const drawer = document.getElementById('node-detail');
 
   document.getElementById('detail-title').textContent = props.label || nodeId;
 
@@ -248,8 +351,28 @@ function showNodeDetail(nodeId) {
     html += '</div>';
   }
 
+  // Edge details
+  const edgeEntries = graph.edges(nodeId);
+  if (edgeEntries.length > 0) {
+    const edgeTypes = {};
+    for (const eid of edgeEntries) {
+      const eAttrs = graph.getEdgeAttributes(eid);
+      const eType = eAttrs.edgeType || '?';
+      edgeTypes[eType] = (edgeTypes[eType] || 0) + 1;
+    }
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Edge Types</div>`;
+    for (const [eType, count] of Object.entries(edgeTypes).sort((a, b) => b[1] - a[1])) {
+      html += `<div class="prop-row">
+        <span class="prop-key">${escapeHtml(eType)}</span>
+        <span class="prop-val">${count}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
   document.getElementById('detail-props').innerHTML = html;
-  panel.classList.add('visible');
+  drawer.classList.add('visible');
 }
 
 function hideDetail() {
@@ -291,7 +414,6 @@ function handleFrontierClick(el) {
 
   const g = G();
   const graph = g.graph;
-  // Find the first node that exists in the graph
   for (const nodeId of nodeIds) {
     if (graph && graph.hasNode(nodeId)) {
       navigateToNode(nodeId);
@@ -378,8 +500,17 @@ function initKeyboardShortcuts() {
         e.preventDefault();
         toggleShortcutsOverlay();
         break;
+      case 'b':
+        e.preventDefault();
+        toggleSidebar();
+        break;
     }
   });
+}
+
+function toggleSidebar() {
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle) toggle.click();
 }
 
 function toggleShortcutsOverlay() {
@@ -445,6 +576,7 @@ function escapeHtml(str) {
 
 window.OverwatchUI = {
   init() {
+    initSidebarToggle();
     initCollapsiblePanels();
     initSearch();
     initKeyboardShortcuts();
@@ -463,3 +595,5 @@ window.showNodeDetail = showNodeDetail;
 window.hideDetail = hideDetail;
 window.navigateToNode = navigateToNode;
 window.handleFrontierClick = handleFrontierClick;
+window.handleFrontierExpand = handleFrontierExpand;
+window.handleFrontierZoom = handleFrontierZoom;
