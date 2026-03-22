@@ -12,6 +12,7 @@ export const NODE_TYPES = [
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
+const nonEmptyString = z.string().min(1);
 
 export interface NodeProperties {
   // Common
@@ -52,8 +53,9 @@ export interface NodeProperties {
   member_of?: string[];         // group IDs
 
   // Credential
-  cred_type?: 'plaintext' | 'ntlm' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'ntlm' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_value?: string;          // hash or redacted reference
+  cred_hash?: string;           // normalized hash material for cracked/captured creds
   cred_user?: string;           // associated user node id
   cred_domain?: string;
   cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
@@ -162,6 +164,57 @@ export interface EngagementConfig {
   };
   objectives: EngagementObjective[];
   opsec: OpsecProfile;
+}
+
+export const engagementObjectiveSchema = z.object({
+  id: nonEmptyString,
+  description: nonEmptyString,
+  target_node_type: nodeTypeSchema.optional(),
+  target_criteria: z.record(z.unknown()).optional(),
+  achieved: z.boolean(),
+  achieved_at: z.string().optional(),
+});
+
+export const opsecProfileSchema = z.object({
+  name: nonEmptyString,
+  max_noise: z.number().min(0).max(1),
+  time_window: z.object({
+    start_hour: z.number().int().min(0).max(23),
+    end_hour: z.number().int().min(0).max(23),
+  }).optional(),
+  blacklisted_techniques: z.array(z.string()).optional(),
+  notes: z.string().optional(),
+});
+
+export const engagementConfigSchema = z.object({
+  id: nonEmptyString,
+  name: nonEmptyString,
+  created_at: nonEmptyString,
+  scope: z.object({
+    cidrs: z.array(z.string()),
+    domains: z.array(z.string()),
+    exclusions: z.array(z.string()),
+    hosts: z.array(z.string()).optional(),
+  }),
+  objectives: z.array(engagementObjectiveSchema),
+  opsec: opsecProfileSchema,
+});
+
+export interface ExportedGraphNode {
+  id: string;
+  properties: NodeProperties;
+}
+
+export interface ExportedGraphEdge {
+  id?: string;
+  source: string;
+  target: string;
+  properties: EdgeProperties;
+}
+
+export interface ExportedGraph {
+  nodes: ExportedGraphNode[];
+  edges: ExportedGraphEdge[];
 }
 
 // --- Frontier + Scoring ---

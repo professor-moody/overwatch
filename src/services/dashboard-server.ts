@@ -158,10 +158,7 @@ export class DashboardServer {
 
     const fullGraph = this.engine.exportGraph();
     const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));
-    const deltaEdges = fullGraph.edges.filter(e => {
-      const edgeKey = `${e.source}--${e.properties.type}--${e.target}`;
-      return changedEdgeIds.has(edgeKey);
-    });
+    const deltaEdges = fullGraph.edges.filter(e => e.id !== undefined && changedEdgeIds.has(e.id));
 
     const state = this.engine.getState();
 

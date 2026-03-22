@@ -528,6 +528,24 @@ function initRenderer() {
 // Graph Data
 // ============================================================
 
+function getEdgeKey(edge) {
+  if (edge && edge.id) return edge.id;
+  const props = edge?.properties || {};
+  return edge.source + '--' + (props.type || '') + '--' + edge.target;
+}
+
+function buildEdgeAttributes(props) {
+  const confidence = props.confidence || 1.0;
+  return {
+    color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
+    size: confidence >= 1.0 ? 1 : 0.5,
+    type: 'arrow',
+    confidence: confidence,
+    edgeType: props.type || '',
+    label: props.type || '',
+  };
+}
+
 function loadGraphData(graphData) {
   graph.clear();
 
@@ -553,22 +571,14 @@ function loadGraphData(graphData) {
     });
   });
 
-  // Add edges (keyed by source--type--target to match delta merge path)
+  // Add edges using the server-provided edge id when available.
   if (graphData.edges) {
-    graphData.edges.forEach((e, i) => {
+    graphData.edges.forEach((e) => {
       if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
         const props = e.properties || {};
-        const confidence = props.confidence || 1.0;
-        const edgeKey = e.source + '--' + (props.type || '') + '--' + e.target;
+        const edgeKey = getEdgeKey(e);
         try {
-          graph.addEdgeWithKey(edgeKey, e.source, e.target, {
-            color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
-            size: confidence >= 1.0 ? 1 : 0.5,
-            type: 'arrow',
-            confidence: confidence,
-            edgeType: props.type || '',
-            label: props.type || '',
-          });
+          graph.addEdgeWithKey(edgeKey, e.source, e.target, buildEdgeAttributes(props));
         } catch { /* skip duplicate edges in multi-graph edge cases */ }
       }
     });
@@ -620,17 +630,8 @@ function mergeGraphDelta(delta) {
     delta.edges.forEach((e) => {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) return;
       const props = e.properties || {};
-      const confidence = props.confidence || 1.0;
-      const edgeKey = e.source + '--' + (props.type || '') + '--' + e.target;
-      const attrs = {
-        color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
-        size: confidence >= 1.0 ? 1 : 0.5,
-        type: 'arrow',
-        confidence: confidence,
-        edgeType: props.type || '',
-        label: props.type || '',
-      };
-      // Try to find existing edge with same key
+      const edgeKey = getEdgeKey(e);
+      const attrs = buildEdgeAttributes(props);
       if (graph.hasEdge(edgeKey)) {
         graph.mergeEdgeAttributes(edgeKey, attrs);
       } else {

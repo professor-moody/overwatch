@@ -63,8 +63,6 @@ export class InferenceEngine {
     if (!node) return [];
 
     const inferred: string[] = [];
-    const now = new Date().toISOString();
-
     for (const rule of this.ctx.inferenceRules) {
       if (rule.trigger.node_type && node.type !== rule.trigger.node_type) continue;
 
@@ -75,43 +73,17 @@ export class InferenceEngine {
         if (!matches) continue;
       }
 
-      for (const production of rule.produces) {
-        const sources = this.resolveSelector(production.source_selector, triggerNodeId);
-        const targets = this.resolveSelector(production.target_selector, triggerNodeId);
-
-        for (const src of sources) {
-          for (const tgt of targets) {
-            if (src === tgt) continue;
-            if (!this.ctx.graph.hasNode(src) || !this.ctx.graph.hasNode(tgt)) continue;
-
-            const existing = this.ctx.graph.edges(src, tgt);
-            const alreadyExists = existing.some((e: string) => {
-              return this.ctx.graph.getEdgeAttributes(e).type === production.edge_type;
-            });
-            if (alreadyExists) continue;
-
-            const { id: edgeId } = this.addEdge(src, tgt, {
-              type: production.edge_type,
-              confidence: production.confidence,
-              discovered_at: now,
-              discovered_by: `inference:${rule.id}`,
-              tested: false,
-              inferred_by_rule: rule.id,
-              inferred_at: now,
-              ...production.properties as Record<string, unknown>
-            });
-
-            inferred.push(edgeId);
-            this.ctx.log(`Inferred edge [${rule.name}]: ${src} --[${production.edge_type}]--> ${tgt}`, undefined, { category: 'inference' });
-          }
-        }
-      }
+      inferred.push(...this.applyRuleProductions(rule, triggerNodeId));
     }
 
     return inferred;
   }
 
   private runRulesForRule(rule: InferenceRule, triggerNodeId: string): string[] {
+    return this.applyRuleProductions(rule, triggerNodeId);
+  }
+
+  private applyRuleProductions(rule: InferenceRule, triggerNodeId: string): string[] {
     const inferred: string[] = [];
     const now = new Date().toISOString();
     for (const production of rule.produces) {

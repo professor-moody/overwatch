@@ -1,10 +1,15 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { GraphEngine } from '../services/graph-engine.js';
 import type { ProcessTracker } from '../services/process-tracker.js';
 import { withErrorBoundary } from './error-boundary.js';
 
-export function registerProcessTools(server: McpServer, tracker: ProcessTracker): void {
+export function registerProcessTools(server: McpServer, tracker: ProcessTracker, engine: GraphEngine): void {
+  const persistProcesses = (): void => {
+    engine.setTrackedProcesses(tracker.serialize());
+    engine.persist();
+  };
 
   // ============================================================
   // Tool: track_process
@@ -44,6 +49,7 @@ attempting to parse output.`,
         agent_id,
         target_node,
       });
+      persistProcesses();
 
       return {
         content: [{
@@ -91,13 +97,21 @@ Use this to see if scans have completed before parsing their output.`,
             isError: true,
           };
         }
-        tracker.refreshStatuses();
+        const changed = tracker.refreshStatuses();
+        if (changed) persistProcesses();
         return {
-          content: [{ type: 'text', text: JSON.stringify(proc, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(tracker.get(process_id) || proc, null, 2) }],
         };
       }
 
-      const summary = tracker.toSummary();
+      const changed = tracker.refreshStatuses();
+      if (changed) persistProcesses();
+      const all = tracker.listAll();
+      const summary = {
+        active: all.filter(p => p.status === 'running').length,
+        completed: all.filter(p => p.status !== 'running').length,
+        processes: all,
+      };
       const processes = active_only
         ? summary.processes.filter(p => p.status === 'running')
         : summary.processes;

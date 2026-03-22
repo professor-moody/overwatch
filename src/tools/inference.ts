@@ -2,7 +2,6 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
-import { NODE_TYPES, EDGE_TYPES } from '../types.js';
 import type { InferenceRule } from '../types.js';
 import { withErrorBoundary } from './error-boundary.js';
 

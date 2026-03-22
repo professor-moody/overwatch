@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { parseHashcat, parseResponder, parseSecretsdump } from '../output-parsers.js';
-import { unlinkSync, existsSync } from 'fs';
+import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../output-parsers.js';
+import { unlinkSync, existsSync, readFileSync } from 'fs';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-eng.json';
@@ -145,6 +145,17 @@ describe('GraphEngine', () => {
 
       const after = engine.getState();
       expect(after.graph_summary.total_edges).toBe(edgesBefore);
+    });
+
+    it('does not leave NXC-only hosts marked as missing services', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const finding = parseNxc('SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019');
+
+      engine.ingestFinding(finding);
+
+      const state = engine.getState();
+      const hostFrontier = state.frontier.find((item) => item.node_id === 'host-10-10-10-5');
+      expect(hostFrontier?.missing_properties).not.toContain('services');
     });
   });
 
@@ -466,6 +477,37 @@ describe('GraphEngine', () => {
       expect(result.passed.length).toBe(0);
       expect(result.filtered.length).toBe(1);
       expect(result.filtered[0].reason.toLowerCase()).toContain('out of scope');
+    });
+
+    it('allows IP-backed frontier items in domain-only engagements', () => {
+      const engine = new GraphEngine(makeConfig({
+        scope: {
+          cidrs: [],
+          domains: ['test.local'],
+          exclusions: [],
+        },
+      }), TEST_STATE_FILE);
+
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-172-16-1-10', type: 'host', label: '172.16.1.10', ip: '172.16.1.10', alive: true },
+        ],
+        edges: [],
+      }));
+
+      const frontier = [{
+        id: 'frontier-node-host-172-16-1-10',
+        type: 'incomplete_node' as const,
+        node_id: 'host-172-16-1-10',
+        description: 'Enumerate host',
+        graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 0, confidence: 1.0 },
+        opsec_noise: 0.1,
+        staleness_seconds: 0,
+      }];
+
+      const result = engine.filterFrontier(frontier);
+      expect(result.filtered).toHaveLength(0);
+      expect(result.passed).toHaveLength(1);
     });
 
     it('validateAction rejects service node on excluded host', () => {
@@ -816,6 +858,59 @@ describe('GraphEngine', () => {
       expect(task).not.toBeNull();
       expect(task!.agent_id).toBe('agent-ap');
     });
+
+    it('persists tracked processes across reloads', () => {
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.setTrackedProcesses([{
+        id: 'proc-1',
+        pid: 12345,
+        command: 'nmap -sV',
+        description: 'scan',
+        started_at: '2026-03-21T00:00:00.000Z',
+        status: 'running',
+      }]);
+      engine1.persist();
+
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      expect(engine2.getTrackedProcesses()).toHaveLength(1);
+      expect(engine2.getTrackedProcesses()[0].id).toBe('proc-1');
+    });
+
+    it('rollback restores tracked processes from snapshot', () => {
+      const procA = {
+        id: 'proc-a',
+        pid: 1001,
+        command: 'bloodhound-python',
+        description: 'bh run',
+        started_at: '2026-03-21T00:00:00.000Z',
+        status: 'running' as const,
+      };
+      const procB = {
+        id: 'proc-b',
+        pid: 1002,
+        command: 'nmap',
+        description: 'nmap run',
+        started_at: '2026-03-21T00:05:00.000Z',
+        status: 'completed' as const,
+        completed_at: '2026-03-21T00:10:00.000Z',
+      };
+
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.setTrackedProcesses([procA]);
+      engine1.persist();
+
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine2.setTrackedProcesses([procB]);
+      engine2.persist();
+
+      const snapshots = engine2.listSnapshots();
+      expect(snapshots.length).toBeGreaterThan(0);
+      expect(engine2.rollbackToSnapshot(snapshots[snapshots.length - 1])).toBe(true);
+
+      const engine3 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      expect(engine3.getTrackedProcesses()).toHaveLength(1);
+      expect(engine3.getTrackedProcesses()[0].id).toBe('proc-a');
+    });
   });
 
   // =============================================
@@ -1123,6 +1218,40 @@ describe('GraphEngine', () => {
       // Should have re-seeded hosts from CIDR
       expect(state.graph_summary.nodes_by_type['host']).toBe(14);
     });
+
+    it('recovers tracked processes from snapshot after state corruption', () => {
+      const procA = {
+        id: 'proc-recover-a',
+        pid: 2001,
+        command: 'certipy find',
+        description: 'cert scan',
+        started_at: '2026-03-21T01:00:00.000Z',
+        status: 'running' as const,
+      };
+      const procB = {
+        id: 'proc-recover-b',
+        pid: 2002,
+        command: 'responder',
+        description: 'listen',
+        started_at: '2026-03-21T01:05:00.000Z',
+        status: 'running' as const,
+      };
+
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.setTrackedProcesses([procA]);
+      engine1.persist();
+
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine2.setTrackedProcesses([procB]);
+      engine2.persist();
+
+      const { writeFileSync: wfs } = require('fs');
+      wfs(TEST_STATE_FILE, '{ corrupted json!!!');
+
+      const engine3 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      expect(engine3.getTrackedProcesses()).toHaveLength(1);
+      expect(engine3.getTrackedProcesses()[0].id).toBe('proc-recover-a');
+    });
   });
 
   // =============================================
@@ -1215,6 +1344,7 @@ describe('GraphEngine', () => {
       const inferredEdges = exported.edges.filter((e: any) => e.properties.inferred_by_rule);
       expect(inferredEdges.length).toBeGreaterThan(0);
       for (const e of inferredEdges) {
+        expect(e.id).toBeDefined();
         expect(e.properties.inferred_by_rule).toBe('rule-cred-fanout');
         expect(e.properties.inferred_at).toBeDefined();
       }
@@ -1275,6 +1405,109 @@ describe('GraphEngine', () => {
       // svc -> host requires traversing RUNS backwards — should NOT work
       const paths = engine.findPaths('svc-isolated', 'host-10-10-10-1');
       expect(paths.length).toBe(0);
+    });
+  });
+
+  describe('helper behaviors', () => {
+    it('computeSubgraphNodeIds resolves standard frontier node IDs without recomputing frontier', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-http-test', type: 'service', label: 'HTTP', port: 80, service_name: 'http' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-http-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      engine.computeFrontier = (() => {
+        throw new Error('computeFrontier should not be called for standard node frontier IDs');
+      }) as any;
+
+      const subgraph = engine.computeSubgraphNodeIds('frontier-node-host-10-10-10-1');
+      expect(subgraph).toContain('host-10-10-10-1');
+      expect(subgraph).toContain('svc-http-test');
+    });
+
+    it('computeSubgraphNodeIds resolves standard frontier edge IDs without recomputing frontier', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-http-test', type: 'service', label: 'HTTP', port: 80, service_name: 'http' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-http-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      engine.computeFrontier = (() => {
+        throw new Error('computeFrontier should not be called for standard edge frontier IDs');
+      }) as any;
+
+      const subgraph = engine.computeSubgraphNodeIds('frontier-edge-host-10-10-10-1--RUNS--svc-http-test');
+      expect(subgraph).toContain('host-10-10-10-1');
+      expect(subgraph).toContain('svc-http-test');
+    });
+
+    it('does not flag identical array content as an updated node', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
+        ],
+      }));
+
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
+        ],
+      }));
+
+      expect(result.updated_nodes).toHaveLength(0);
+    });
+
+    it('flags real array content changes as updates', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
+        ],
+      }));
+
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-c'] },
+        ],
+      }));
+
+      expect(result.updated_nodes).toContain('user-array-test');
+    });
+
+    it('caps activity log history at 5000 entries', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      for (let i = 0; i < 5005; i++) {
+        (engine as any).log(`activity-${i}`);
+      }
+
+      const history = engine.getFullHistory();
+      expect(history).toHaveLength(5000);
+      expect(history[0].description).toBe('activity-5');
+      expect(history.at(-1)?.description).toBe('activity-5004');
+    });
+
+    it('persists only the bounded activity log history', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      for (let i = 0; i < 5005; i++) {
+        (engine as any).log(`persisted-activity-${i}`);
+      }
+      engine.persist();
+
+      const saved = JSON.parse(readFileSync(TEST_STATE_FILE, 'utf-8'));
+      expect(saved.activityLog).toHaveLength(5000);
+      expect(saved.activityLog[0].description).toBe('persisted-activity-5');
+      expect(saved.activityLog.at(-1).description).toBe('persisted-activity-5004');
     });
   });
 });

@@ -107,6 +107,14 @@ describe('Output Parsers', () => {
       expect(users.length).toBe(1);
       expect(users[0].username).toBe('jdoe');
 
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services).toHaveLength(1);
+      expect(services[0].service_name).toBe('smb');
+      expect(services[0].port).toBe(445);
+
+      const runsEdges = finding.edges.filter(e => e.properties.type === 'RUNS');
+      expect(runsEdges).toHaveLength(1);
+
       const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
       expect(adminEdges.length).toBe(1);
     });
@@ -117,6 +125,7 @@ describe('Output Parsers', () => {
 
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
       expect(validOnEdges.length).toBe(1);
+      expect(finding.nodes.some(n => n.type === 'service' && n.service_name === 'smb')).toBe(true);
     });
 
     it('handles multi-line output', () => {
@@ -135,6 +144,39 @@ describe('Output Parsers', () => {
       expect(adminEdges.length).toBe(1); // Only Pwn3d! line
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
       expect(validOnEdges.length).toBe(2); // Both [+] lines produce VALID_ON edges
+    });
+
+    it('connects enumerated shares back to the host and SMB service', () => {
+      const output = `SMB  10.10.10.5  445  IPC$  READ, WRITE`;
+      const finding = parseNxc(output);
+
+      const services = finding.nodes.filter(n => n.type === 'service');
+      const shares = finding.nodes.filter(n => n.type === 'share');
+      expect(services).toHaveLength(1);
+      expect(shares).toHaveLength(1);
+
+      const runsEdges = finding.edges.filter(e => e.properties.type === 'RUNS');
+      const relatedEdges = finding.edges.filter(e => e.properties.type === 'RELATED');
+      expect(runsEdges).toHaveLength(1);
+      expect(relatedEdges).toHaveLength(1);
+      expect(relatedEdges[0].target).toBe(shares[0].id);
+    });
+
+    it('deduplicates repeated host, service, and share discoveries', () => {
+      const output = [
+        'SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019',
+        'SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019',
+        'SMB  10.10.10.5  445  IPC$  READ',
+        'SMB  10.10.10.5  445  IPC$  READ',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      expect(finding.nodes.filter(n => n.type === 'host')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'service')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'share')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'RUNS')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'VALID_ON')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'RELATED')).toHaveLength(1);
     });
 
     it('handles empty output', () => {
@@ -468,7 +510,7 @@ describe('Output Parsers', () => {
       const finding = parseResponder(sampleOutput);
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.length).toBe(2);
-      expect(creds[0].cred_type).toBeUndefined();
+      expect(creds[0].cred_type).toBe('ntlmv2_challenge');
       expect(creds[0].cred_material_kind).toBe('ntlmv2_challenge');
       expect(creds[0].cred_usable_for_auth).toBe(false);
       expect(creds[0].cred_evidence_kind).toBe('capture');

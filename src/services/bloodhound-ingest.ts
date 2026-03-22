@@ -116,32 +116,54 @@ export interface BloodHoundIngestResult {
   errors: string[];
 }
 
-export function parseBloodHoundFile(raw: string, filename: string): { finding: Finding | null; errors: string[] } {
+export interface BloodHoundParseOptions {
+  sidMap?: ReadonlyMap<string, string>;
+}
+
+interface ParsedBloodHoundDocument {
+  parsed: BHFile | null;
+  nodeType?: NodeType;
+  errors: string[];
+}
+
+export function buildBloodHoundSidMap(files: Array<{ raw: string; filename: string }>): { sidMap: Map<string, string>; errors: string[] } {
+  const sidMap = new Map<string, string>();
   const errors: string[] = [];
-  let parsed: BHFile;
 
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return { finding: null, errors: [`Failed to parse ${filename}: ${err instanceof Error ? err.message : String(err)}`] };
+  for (const file of files) {
+    const document = parseBloodHoundDocument(file.raw, file.filename);
+    errors.push(...document.errors);
+    if (!document.parsed || !document.nodeType) continue;
+
+    for (const obj of document.parsed.data) {
+      const sid = obj.ObjectIdentifier;
+      if (!sid) continue;
+      sidMap.set(sid, resolveCanonicalId(sid, document.nodeType, obj.Properties || {}));
+    }
   }
 
-  if (!parsed.data || !Array.isArray(parsed.data)) {
-    return { finding: null, errors: [`${filename}: missing or invalid 'data' array`] };
-  }
+  return { sidMap, errors };
+}
 
+export function parseBloodHoundFile(
+  raw: string,
+  filename: string,
+  options: BloodHoundParseOptions = {},
+): { finding: Finding | null; errors: string[] } {
+  const document = parseBloodHoundDocument(raw, filename);
+  const errors: string[] = [];
+  errors.push(...document.errors);
+  if (!document.parsed) return { finding: null, errors };
+
+  const parsed = document.parsed;
+  const nodeType = document.nodeType;
   const metaType = (parsed.meta?.type || filename.replace(/\.json$/i, '')).toLowerCase();
-  const nodeType = BH_NODE_TYPE_MAP[metaType];
-
-  if (!nodeType) {
-    errors.push(`${filename}: unknown BloodHound type '${metaType}', skipping node creation`);
-  }
 
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
 
-  // Build SID → canonical ID lookup for nodes in this file
-  const sidMap = new Map<string, string>();
+  // Build SID -> ID lookup for nodes in this file and merge with any external directory-wide map.
+  const sidMap = new Map<string, string>(options.sidMap ? Array.from(options.sidMap.entries()) : []);
 
   for (const obj of parsed.data) {
     const sid = obj.ObjectIdentifier;
@@ -152,13 +174,15 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
       ? resolveCanonicalId(sid, nodeType, props)
       : makeNodeId(sid, 'user');
 
-    sidMap.set(sid, nodeId);
+    if (!sidMap.has(sid)) {
+      sidMap.set(sid, nodeId);
+    }
 
     // Create node
     if (nodeType) {
       const nodeProps = extractNodeProperties(props, nodeType, obj);
       nodes.push({
-        id: nodeId,
+        id: sidMap.get(sid)!,
         type: nodeType,
         label: (props.name as string) || (props.displayname as string) || sid,
         bh_sid: sid,
@@ -335,6 +359,34 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
 }
 
 // --- Helpers ---
+
+function parseBloodHoundDocument(raw: string, filename: string): ParsedBloodHoundDocument {
+  let parsed: BHFile;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return {
+      parsed: null,
+      errors: [`Failed to parse ${filename}: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+
+  if (!parsed.data || !Array.isArray(parsed.data)) {
+    return {
+      parsed: null,
+      errors: [`${filename}: missing or invalid 'data' array`],
+    };
+  }
+
+  const metaType = (parsed.meta?.type || filename.replace(/\.json$/i, '')).toLowerCase();
+  const nodeType = BH_NODE_TYPE_MAP[metaType];
+  const errors = nodeType
+    ? []
+    : [`${filename}: unknown BloodHound type '${metaType}', skipping node creation`];
+
+  return { parsed, nodeType, errors };
+}
 
 function makeNodeId(sid: string, nodeType: NodeType): string {
   // Fallback SID-based ID for objects without identity fields

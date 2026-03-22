@@ -33,6 +33,7 @@ export type GraphUpdateDetail = {
 };
 
 export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;
+export const MAX_ACTIVITY_LOG_ENTRIES = 5000;
 
 export class EngineContext {
   graph: OverwatchGraph;            // graphology Graph instance — may be replaced on recovery
@@ -66,6 +67,9 @@ export class EngineContext {
       agent_id: agentId,
       ...extra,
     });
+    if (this.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
+      this.activityLog.splice(0, this.activityLog.length - MAX_ACTIVITY_LOG_ENTRIES);
+    }
   }
 
   invalidatePathGraph(): void {

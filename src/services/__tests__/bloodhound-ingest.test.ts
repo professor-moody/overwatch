@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseBloodHoundFile } from '../bloodhound-ingest.js';
+import { buildBloodHoundSidMap, parseBloodHoundFile } from '../bloodhound-ingest.js';
 
 describe('BloodHound Ingestion', () => {
 
@@ -406,6 +406,77 @@ describe('BloodHound Ingestion', () => {
         expect(node.bh_sid).toBeDefined();
         expect(typeof node.bh_sid).toBe('string');
       }
+    });
+
+    it('uses a shared SID map to resolve cross-file references to canonical IDs', () => {
+      const users = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105',
+          Properties: {
+            name: 'JSMITH@CORP.LOCAL',
+            samaccountname: 'jsmith',
+            domain: 'corp.local',
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 5 },
+      });
+      const computers = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+          Properties: { name: 'WS01.CORP.LOCAL', domain: 'corp.local' },
+          Sessions: [
+            { UserSID: 'S-1-5-21-1234-5678-9012-1105', ComputerSID: 'S-1-5-21-1234-5678-9012-1001' },
+          ],
+          Aces: [],
+        }],
+        meta: { type: 'computers', count: 1, version: 5 },
+      });
+
+      const { sidMap } = buildBloodHoundSidMap([
+        { raw: computers, filename: 'computers.json' },
+        { raw: users, filename: 'users.json' },
+      ]);
+      const result = parseBloodHoundFile(computers, 'computers.json', { sidMap });
+      const sessionEdge = result.finding!.edges.find(e => e.properties.type === 'HAS_SESSION');
+
+      expect(sessionEdge).toBeDefined();
+      expect(sessionEdge!.source).toBe('user-corp-local-jsmith');
+      expect(sessionEdge!.target).toBe('host-ws01-corp-local');
+    });
+
+    it('builds the same SID map regardless of file order', () => {
+      const users = {
+        raw: JSON.stringify({
+          data: [{
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105',
+            Properties: {
+              name: 'JSMITH@CORP.LOCAL',
+              samaccountname: 'jsmith',
+              domain: 'corp.local',
+            },
+            Aces: [],
+          }],
+          meta: { type: 'users', count: 1, version: 5 },
+        }),
+        filename: 'users.json',
+      };
+      const computers = {
+        raw: JSON.stringify({
+          data: [{
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+            Properties: { name: 'WS01.CORP.LOCAL', domain: 'corp.local' },
+            Aces: [],
+          }],
+          meta: { type: 'computers', count: 1, version: 5 },
+        }),
+        filename: 'computers.json',
+      };
+
+      const forward = buildBloodHoundSidMap([users, computers]).sidMap;
+      const reverse = buildBloodHoundSidMap([computers, users]).sidMap;
+
+      expect(Object.fromEntries(forward)).toEqual(Object.fromEntries(reverse));
     });
   });
 });

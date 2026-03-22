@@ -60,6 +60,7 @@ export function isIpInScope(ip: string, cidrs: string[], exclusions: string[]): 
       if (ip === excl) return false;
     }
   }
+  if (cidrs.length === 0) return true;
   // Check inclusion
   for (const cidr of cidrs) {
     if (cidr.includes('/')) {

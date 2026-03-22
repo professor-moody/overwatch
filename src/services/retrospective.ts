@@ -4,7 +4,7 @@
 // ============================================================
 
 import type {
-  EngagementConfig, NodeProperties, EdgeProperties, EdgeType,
+  EngagementConfig, NodeProperties, EdgeProperties, EdgeType, ExportedGraph,
   InferenceRule, AgentTask, InferenceRuleSuggestion,
   SkillGapReport, ScoringRecommendation, RLVRTrace, RetrospectiveResult,
 } from '../types.js';
@@ -13,10 +13,7 @@ import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credentia
 
 export interface RetrospectiveInput {
   config: EngagementConfig;
-  graph: {
-    nodes: Array<{ id: string; properties: NodeProperties }>;
-    edges: Array<{ source: string; target: string; properties: EdgeProperties }>;
-  };
+  graph: ExportedGraph;
   history: ActivityLogEntry[];
   inferenceRules: InferenceRule[];
   agents: AgentTask[];
@@ -164,6 +161,7 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
 export function analyzeSkillGaps(input: RetrospectiveInput): SkillGapReport {
   const usageCounts: Record<string, number> = {};
   const mentionedTechniques = new Set<string>();
+  const normalizeToken = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, '-');
 
   // Tool-name keywords (not techniques — these are executables that won't appear in skill tags)
   const TOOL_KEYWORDS = [
@@ -226,21 +224,23 @@ export function analyzeSkillGaps(input: RetrospectiveInput): SkillGapReport {
 
   // Normalize skill names for comparison (strip extension, lowercase, replace spaces with hyphens)
   const normalizedSkillNames = new Set(
-    input.skillNames.map(s => s.replace(/\.md$/, '').toLowerCase().replace(/\s+/g, '-'))
+    input.skillNames.map(s => normalizeToken(s.replace(/\.md$/, '')))
   );
+  const normalizedSkillTags = new Set((input.skillTags || []).map(normalizeToken));
 
   // Skills in library but never referenced
   const unusedSkills = input.skillNames
     .filter(s => {
-      const normalized = s.replace(/\.md$/, '').toLowerCase().replace(/\s+/g, '-');
+      const normalized = normalizeToken(s.replace(/\.md$/, ''));
       return !usageCounts[normalized] && !usageCounts[s];
     });
 
   // Techniques mentioned in engagement but no matching skill
   const missingSkills: string[] = [];
   for (const technique of mentionedTechniques) {
-    const matchesSkill = [...normalizedSkillNames].some(s =>
-      s.includes(technique) || technique.includes(s)
+    const normalizedTechnique = normalizeToken(technique);
+    const matchesSkill = [...normalizedSkillNames, ...normalizedSkillTags].some(s =>
+      s.includes(normalizedTechnique) || normalizedTechnique.includes(s)
     );
     if (!matchesSkill) {
       missingSkills.push(technique);

@@ -55,6 +55,7 @@ describe('DashboardServer', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (dashboard) {
       await dashboard.stop();
     }
@@ -249,6 +250,9 @@ describe('DashboardServer', () => {
     expect(msg.data.graph.nodes).toBeInstanceOf(Array);
     expect(msg.data.graph.edges).toBeInstanceOf(Array);
     expect(msg.data.graph.nodes.length).toBeGreaterThan(0);
+    for (const edge of msg.data.graph.edges) {
+      expect(edge.id).toBeDefined();
+    }
   });
 
   it('graph_update payload has data.delta with nodes and edges arrays', async () => {
@@ -289,6 +293,9 @@ describe('DashboardServer', () => {
     expect(msg.data.delta).toBeDefined();
     expect(msg.data.delta.nodes).toBeInstanceOf(Array);
     expect(msg.data.delta.edges).toBeInstanceOf(Array);
+    for (const edge of msg.data.delta.edges) {
+      expect(edge.id).toBeDefined();
+    }
     expect(msg.data.state).toBeDefined();
   });
 
@@ -328,6 +335,57 @@ describe('DashboardServer', () => {
     expect(msg.type).toBe('graph_update');
     const deltaNodeIds = msg.data.delta.nodes.map((n: any) => n.id);
     expect(deltaNodeIds).toContain('host-10-10-10-1');
+  });
+
+  it('matches delta edges by explicit edge id, including non-canonical ids', async () => {
+    dashboard = new DashboardServer(engine, 0);
+    await dashboard.start();
+
+    const originalExportGraph = engine.exportGraph.bind(engine);
+    engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
+
+    const ws = new WebSocket(dashboard.address.replace('http', 'ws'));
+    await new Promise<void>((resolve, reject) => {
+      ws.on('message', () => resolve());
+      ws.on('error', reject);
+      setTimeout(() => reject(new Error('timeout')), 3000);
+    });
+
+    const updatePromise = new Promise<any>((resolve, reject) => {
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(JSON.parse(data.toString()));
+      });
+      setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+    });
+
+    vi.spyOn(engine, 'exportGraph').mockImplementation(() => {
+      const fullGraph = originalExportGraph();
+      return {
+        ...fullGraph,
+        edges: [
+          ...fullGraph.edges,
+          {
+            id: 'custom-edge-key-1',
+            source: 'host-10-10-10-1',
+            target: 'host-10-10-10-2',
+            properties: {
+              type: 'RELATED',
+              confidence: 1.0,
+              discovered_at: new Date().toISOString(),
+            },
+          },
+        ],
+      };
+    });
+
+    dashboard.onGraphUpdate({ new_edges: ['custom-edge-key-1'] });
+    dashboard.flush();
+
+    const msg = await updatePromise;
+    expect(msg.type).toBe('graph_update');
+    expect(msg.data.delta.edges).toHaveLength(1);
+    expect(msg.data.delta.edges[0].id).toBe('custom-edge-key-1');
   });
 
   it('reports address property', () => {

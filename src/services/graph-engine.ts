@@ -7,7 +7,7 @@ import GraphConstructor from 'graphology';
 import { existsSync } from 'fs';
 import { expandCidr, isIpInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
-import type { GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
+import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
@@ -18,7 +18,7 @@ import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
-  AgentTask
+  AgentTask, ExportedGraph
 } from '../types.js';
 
 // Handle CJS/ESM interop for graphology — graphology publishes CJS with a
@@ -769,15 +769,7 @@ export class GraphEngine {
    * Returns node IDs for the N-hop neighborhood.
    */
   computeSubgraphNodeIds(frontierItemId: string, hops: number = 2): string[] {
-    // Find frontier item to get target nodes
-    const frontier = this.computeFrontier();
-    const item = frontier.find(f => f.id === frontierItemId);
-    if (!item) return [];
-
-    const seeds: string[] = [];
-    if (item.node_id && this.ctx.graph.hasNode(item.node_id)) seeds.push(item.node_id);
-    if (item.edge_source && this.ctx.graph.hasNode(item.edge_source)) seeds.push(item.edge_source);
-    if (item.edge_target && this.ctx.graph.hasNode(item.edge_target)) seeds.push(item.edge_target);
+    const seeds = this.resolveFrontierSeeds(frontierItemId);
 
     if (seeds.length === 0) return [];
 
@@ -928,16 +920,16 @@ export class GraphEngine {
     this.ctx.trackedProcesses = processes;
   }
 
-  exportGraph(): { nodes: Array<{ id: string; properties: NodeProperties }>; edges: Array<{ source: string; target: string; properties: EdgeProperties }> } {
-    const nodes: Array<{ id: string; properties: NodeProperties }> = [];
-    const edges: Array<{ source: string; target: string; properties: EdgeProperties }> = [];
+  exportGraph(): ExportedGraph {
+    const nodes: ExportedGraph['nodes'] = [];
+    const edges: ExportedGraph['edges'] = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
       nodes.push({ id, properties: attrs });
     });
 
-    this.ctx.graph.forEachEdge((_, attrs, source, target) => {
-      edges.push({ source, target, properties: attrs });
+    this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
+      edges.push({ id: edgeId, source, target, properties: attrs });
     });
 
     return { nodes, edges };
@@ -951,7 +943,7 @@ export class GraphEngine {
     const ignoreKeys = new Set(['discovered_at', 'discovered_by']);
     for (const [key, val] of Object.entries(newProps)) {
       if (ignoreKeys.has(key)) continue;
-      if (val !== undefined && val !== null && oldProps[key] !== val) return true;
+      if (val !== undefined && val !== null && !this.valuesEqual(oldProps[key], val)) return true;
     }
     return false;
   }
@@ -960,18 +952,53 @@ export class GraphEngine {
     this.ctx.updateCallbacks.push(callback);
   }
 
-  private fireUpdateCallbacks(detail: GraphUpdateDetail): void {
-    for (const cb of this.ctx.updateCallbacks) {
-      try { cb(detail); } catch { /* dashboard errors must not break engine */ }
+  private resolveFrontierSeeds(frontierItemId: string): string[] {
+    if (frontierItemId.startsWith('frontier-node-')) {
+      const nodeId = frontierItemId.slice('frontier-node-'.length);
+      return this.ctx.graph.hasNode(nodeId) ? [nodeId] : [];
     }
+
+    if (frontierItemId.startsWith('frontier-edge-')) {
+      const edgeId = frontierItemId.slice('frontier-edge-'.length);
+      if (this.ctx.graph.hasEdge(edgeId)) {
+        const seeds = [this.ctx.graph.source(edgeId), this.ctx.graph.target(edgeId)];
+        return seeds.filter((id, index) => seeds.indexOf(id) === index);
+      }
+      return [];
+    }
+
+    const frontier = this.computeFrontier();
+    const item = frontier.find(f => f.id === frontierItemId);
+    if (!item) return [];
+
+    const seeds: string[] = [];
+    if (item.node_id && this.ctx.graph.hasNode(item.node_id)) seeds.push(item.node_id);
+    if (item.edge_source && this.ctx.graph.hasNode(item.edge_source)) seeds.push(item.edge_source);
+    if (item.edge_target && this.ctx.graph.hasNode(item.edge_target)) seeds.push(item.edge_target);
+    return seeds;
   }
 
-  private log(message: string, agentId?: string, extra?: Partial<Pick<import('./engine-context.js').ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
-    this.ctx.activityLog.push({
-      timestamp: new Date().toISOString(),
-      description: message,
-      agent_id: agentId,
-      ...extra,
-    });
+  private valuesEqual(left: unknown, right: unknown): boolean {
+    if (Array.isArray(left) && Array.isArray(right)) {
+      if (left.length !== right.length) return false;
+      return left.every((value, index) => this.valuesEqual(value, right[index]));
+    }
+
+    if (this.isPlainObject(left) && this.isPlainObject(right)) {
+      const leftKeys = Object.keys(left);
+      const rightKeys = Object.keys(right);
+      if (leftKeys.length !== rightKeys.length) return false;
+      return leftKeys.every((key) => this.valuesEqual(left[key], right[key]));
+    }
+
+    return Object.is(left, right);
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
+    this.ctx.log(message, agentId, extra);
   }
 }

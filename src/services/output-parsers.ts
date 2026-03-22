@@ -182,6 +182,44 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
   const edges: Finding['edges'] = [];
   const lines = output.split('\n');
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
+  const now = new Date().toISOString();
+
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+    const edgeKey = `${source}--${type}--${target}`;
+    if (seenEdges.has(edgeKey)) return;
+    edges.push({
+      source,
+      target,
+      properties: { type, confidence, discovered_at: now, discovered_by: agentId },
+    });
+    seenEdges.add(edgeKey);
+  }
+
+  function ensureSmbContext(ip: string): { hostNodeId: string; serviceNodeId: string } {
+    const resolvedHostId = hostId(ip);
+    const serviceNodeId = `svc-${ip.replace(/\./g, '-')}-445`;
+
+    if (!seenNodes.has(resolvedHostId)) {
+      nodes.push({ id: resolvedHostId, type: 'host', label: ip, ip, alive: true });
+      seenNodes.add(resolvedHostId);
+    }
+
+    if (!seenNodes.has(serviceNodeId)) {
+      nodes.push({
+        id: serviceNodeId,
+        type: 'service',
+        label: 'smb/445',
+        port: 445,
+        protocol: 'tcp',
+        service_name: 'smb',
+      });
+      seenNodes.add(serviceNodeId);
+    }
+
+    addEdgeOnce(resolvedHostId, serviceNodeId, 'RUNS', 1.0);
+    return { hostNodeId: resolvedHostId, serviceNodeId };
+  }
 
   for (const line of lines) {
     // Match NXC output: PROTOCOL  target:port  domain\user  [+/-] message
@@ -189,12 +227,8 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
     const smbMatch = line.match(/SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(.*?)(?:\s+\[([+-])\])\s*(.*)/i);
     if (smbMatch) {
       const [, ip, port, rest, status, message] = smbMatch;
-      const resolvedHostId = hostId(ip);
-
-      if (!seenNodes.has(resolvedHostId)) {
-        nodes.push({ id: resolvedHostId, type: 'host', label: ip, ip, alive: true });
-        seenNodes.add(resolvedHostId);
-      }
+      if (port !== '445') continue;
+      const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
 
       // Check for Pwn3d! (admin access)
       if (message.includes('Pwn3d!')) {
@@ -206,11 +240,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
             nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain, privileged: true });
             seenNodes.add(resolvedUserId);
           }
-          edges.push({
-            source: resolvedUserId,
-            target: resolvedHostId,
-            properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString(), discovered_by: agentId },
-          });
+          addEdgeOnce(resolvedUserId, resolvedHostId, 'ADMIN_TO', 1.0);
         }
       }
 
@@ -224,11 +254,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
             nodes.push({ id: resolvedUserId, type: 'user', label: `${domain}\\${username}`, username, domain_name: domain });
             seenNodes.add(resolvedUserId);
           }
-          edges.push({
-            source: resolvedUserId,
-            target: resolvedHostId,
-            properties: { type: 'VALID_ON', confidence: 0.9, discovered_at: new Date().toISOString(), discovered_by: agentId },
-          });
+          addEdgeOnce(resolvedUserId, resolvedHostId, 'VALID_ON', 0.9);
         }
       }
 
@@ -239,13 +265,9 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
     const shareMatch = line.match(/SMB\s+(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+)\s+(READ|WRITE|READ,\s*WRITE)/i);
     if (shareMatch) {
       const [, ip, shareName, perms] = shareMatch;
-      const resolvedHostId = hostId(ip);
+      const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
       const shareId = `share-${ip.replace(/\./g, '-')}-${shareName.toLowerCase()}`;
 
-      if (!seenNodes.has(resolvedHostId)) {
-        nodes.push({ id: resolvedHostId, type: 'host', label: ip, ip, alive: true });
-        seenNodes.add(resolvedHostId);
-      }
       if (!seenNodes.has(shareId)) {
         nodes.push({
           id: shareId,
@@ -257,6 +279,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
         });
         seenNodes.add(shareId);
       }
+      addEdgeOnce(resolvedHostId, shareId, 'RELATED', 1.0);
     }
   }
 
@@ -301,9 +324,6 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
       for (const [templateName, templateData] of Object.entries(data['Certificate Templates'] as Record<string, any>)) {
         const tmplId = `cert-${templateName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`;
         const tmpl = templateData as Record<string, any>;
-
-        const enrolleeSuppliesSubject = tmpl['Enrollee Supplies Subject'] === true ||
-          tmpl['Client Authentication'] === true;
 
         if (!seenNodes.has(tmplId)) {
           nodes.push({
@@ -687,6 +707,7 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
         id: resolvedCredId,
         type: 'credential',
         label: `NTLMv2:${username}`,
+        cred_type: 'ntlmv2_challenge',
         cred_material_kind: 'ntlmv2_challenge',
         cred_usable_for_auth: false,
         cred_evidence_kind: 'capture',

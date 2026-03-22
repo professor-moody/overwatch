@@ -95,6 +95,7 @@ export class StatePersistence {
     this.ctx.invalidatePathGraph();
     this.ctx.activityLog = data.activityLog || [];
     this.ctx.agents = new Map(data.agents || []);
+    this.ctx.trackedProcesses = data.trackedProcesses || [];
     // Restore inference rules: builtins + any custom rules from the snapshot
     this.ctx.inferenceRules = [...builtinRules];
     if (data.inferenceRules) {
@@ -135,6 +136,7 @@ export class StatePersistence {
         this.ctx.invalidatePathGraph();
         this.ctx.activityLog = data.activityLog || [];
         this.ctx.agents = new Map(data.agents || []);
+        this.ctx.trackedProcesses = data.trackedProcesses || [];
         this.ctx.inferenceRules = [...builtinRules];
         if (data.inferenceRules) {
           for (const rule of data.inferenceRules) {

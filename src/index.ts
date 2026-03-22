@@ -9,6 +9,8 @@ import { readFileSync, existsSync } from 'fs';
 import { GraphEngine } from './services/graph-engine.js';
 import { SkillIndex } from './services/skill-index.js';
 import type { EngagementConfig } from './types.js';
+import { engagementConfigSchema } from './types.js';
+import { formatConfigError, parseEngagementConfig } from './config.js';
 
 import { registerStateTools } from './tools/state.js';
 import { registerFindingTools } from './tools/findings.js';
@@ -30,20 +32,26 @@ function loadConfig(): EngagementConfig {
   const configPath = process.env.OVERWATCH_CONFIG || './engagement.json';
   if (!existsSync(configPath)) {
     console.error(`Config not found at ${configPath}. Creating default config.`);
-    return {
+    return engagementConfigSchema.parse({
       id: uuidv4(),
       name: 'default-engagement',
       created_at: new Date().toISOString(),
       scope: { cidrs: [], domains: [], exclusions: [] },
       objectives: [],
       opsec: { name: 'pentest', max_noise: 0.7 }
-    };
+    });
   }
-  return JSON.parse(readFileSync(configPath, 'utf-8'));
+  return parseEngagementConfig(readFileSync(configPath, 'utf-8'));
 }
 
 // --- Initialize ---
-const config = loadConfig();
+let config: EngagementConfig;
+try {
+  config = loadConfig();
+} catch (error) {
+  console.error(formatConfigError(error, process.env.OVERWATCH_CONFIG || './engagement.json'));
+  process.exit(1);
+}
 const engine = new GraphEngine(config);
 const skillDir = process.env.OVERWATCH_SKILLS || './skills';
 const skills = new SkillIndex(skillDir);
@@ -69,7 +77,7 @@ registerAgentTools(server, engine);
 registerSkillTools(server, skills);
 registerBloodHoundTools(server, engine);
 registerToolCheckTools(server);
-registerProcessTools(server, processTracker);
+registerProcessTools(server, processTracker, engine);
 registerInferenceTools(server, engine);
 registerParseOutputTools(server, engine);
 registerRetrospectiveTools(server, engine, skills);
@@ -87,11 +95,6 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Overwatch MCP server running on stdio');
-
-  // Sync ProcessTracker state into engine on every graph update (persist cycle)
-  engine.onUpdate(() => {
-    engine.setTrackedProcesses(processTracker.serialize());
-  });
 
   // Dashboard starts fire-and-forget — never blocks MCP transport
   // Only register the graph-update callback if the server actually binds

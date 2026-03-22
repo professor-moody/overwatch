@@ -18,7 +18,7 @@ export function registerParseOutputTools(server: McpServer, engine: GraphEngine)
 
 Supported tools:
 - **nmap** / **nmap-xml**: Nmap XML output → host + service nodes + RUNS edges
-- **nxc** / **netexec**: NXC (NetExec) output → user nodes, share nodes, access edges
+- **nxc** / **netexec**: NXC (NetExec) output → host + SMB service nodes, connected share nodes, access edges
 - **certipy**: Certipy JSON output → certificate nodes, enrollment edges, ESC edges
 - **secretsdump** / **impacket-secretsdump**: SAM/NTDS hashes → credential + user nodes + OWNS_CRED edges
 - **kerbrute**: User enumeration + password spray → user + domain + credential nodes

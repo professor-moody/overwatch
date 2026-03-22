@@ -37,6 +37,10 @@ describe('Credential Utilities', () => {
       expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'ntlm' }))).toBe('ntlm_hash');
     });
 
+    it('falls back to cred_type: ntlmv2_challenge → ntlmv2_challenge', () => {
+      expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'ntlmv2_challenge' }))).toBe('ntlmv2_challenge');
+    });
+
     it('falls back to cred_type: aes256 → aes256_key', () => {
       expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'aes256' }))).toBe('aes256_key');
     });
@@ -115,6 +119,10 @@ describe('Credential Utilities', () => {
 
     it('uses legacy cred_type fallback to infer usability', () => {
       expect(isCredentialUsableForAuth(makeCredNode({ cred_type: 'ntlm' }))).toBe(true);
+    });
+
+    it('keeps ntlmv2_challenge non-usable when inferred from legacy cred_type fallback', () => {
+      expect(isCredentialUsableForAuth(makeCredNode({ cred_type: 'ntlmv2_challenge' }))).toBe(false);
     });
   });
 

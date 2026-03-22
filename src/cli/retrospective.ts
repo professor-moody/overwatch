@@ -4,13 +4,14 @@
 // Usage: npm run retrospective [-- --config path --output dir]
 // ============================================================
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { GraphEngine } from '../services/graph-engine.js';
 import { SkillIndex } from '../services/skill-index.js';
 import { runRetrospective } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
 import type { EngagementConfig } from '../types.js';
+import { formatConfigError, loadEngagementConfigFile } from '../config.js';
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -30,7 +31,13 @@ if (!existsSync(configPath)) {
   process.exit(1);
 }
 
-const config: EngagementConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+let config: EngagementConfig;
+try {
+  config = loadEngagementConfigFile(configPath);
+} catch (error) {
+  console.error(formatConfigError(error, configPath));
+  process.exit(1);
+}
 console.log(`Loading engagement: ${config.name} (${config.id})`);
 
 // --- Load engine (reads persisted state) ---

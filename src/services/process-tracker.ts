@@ -66,7 +66,7 @@ export class ProcessTracker {
   /**
    * Check if tracked PIDs are still alive and update status accordingly.
    */
-  refreshStatuses(): void {
+  refreshStatuses(): boolean {
     let anyTransitioned = false;
     for (const proc of this.processes.values()) {
       if (proc.status !== 'running') continue;
@@ -77,6 +77,7 @@ export class ProcessTracker {
       }
     }
     if (anyTransitioned) this.pruneCompleted();
+    return anyTransitioned;
   }
 
   private isPidAlive(pid: number): boolean {

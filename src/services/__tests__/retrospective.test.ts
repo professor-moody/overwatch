@@ -275,6 +275,20 @@ describe('Retrospective', () => {
       expect(gaps.mentioned_techniques).toContain('custom-technique');
       expect(gaps.mentioned_techniques).toContain('silver-ticket');
     });
+
+    it('treats skill tags as coverage when computing missing skills', () => {
+      const input = makeInput({
+        skillNames: ['network-recon'],
+        skillTags: ['silver-ticket'],
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'silver-ticket forged successfully' },
+        ],
+      });
+      const gaps = analyzeSkillGaps(input);
+
+      expect(gaps.mentioned_techniques).toContain('silver-ticket');
+      expect(gaps.missing_skills).not.toContain('silver-ticket');
+    });
   });
 
   // =============================================

@@ -3,7 +3,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join, extname } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
-import { parseBloodHoundFile } from '../services/bloodhound-ingest.js';
+import { buildBloodHoundSidMap, parseBloodHoundFile } from '../services/bloodhound-ingest.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerBloodHoundTools(server: McpServer, engine: GraphEngine): void {
@@ -50,12 +50,13 @@ populate the graph with Active Directory structure.`,
         };
       }
 
-      const filesToProcess: Array<{ path: string; name: string }> = [];
+      const filesToProcess: Array<{ path: string; name: string; raw?: string }> = [];
       const stat = statSync(resolvedPath);
 
       if (stat.isDirectory()) {
         const entries = readdirSync(resolvedPath)
           .filter(f => extname(f).toLowerCase() === '.json')
+          .sort()
           .slice(0, max_files);
         for (const entry of entries) {
           filesToProcess.push({ path: join(resolvedPath, entry), name: entry });
@@ -76,16 +77,25 @@ populate the graph with Active Directory structure.`,
       let totalInferred = 0;
       const allErrors: string[] = [];
       const fileResults: Array<{ file: string; nodes: number; edges: number; inferred: number }> = [];
+      const filePayloads: Array<{ raw: string; filename: string }> = [];
 
       for (const file of filesToProcess) {
         try {
           const raw = readFileSync(file.path, 'utf-8');
-          const result = parseBloodHoundFile(raw, file.name);
+          file.raw = raw;
+          filePayloads.push({ raw, filename: file.name });
+        } catch (err) {
+          allErrors.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
-          if (!result) {
-            allErrors.push(`${file.name}: no data extracted`);
-            continue;
-          }
+      const { sidMap, errors: sidMapErrors } = buildBloodHoundSidMap(filePayloads);
+      allErrors.push(...sidMapErrors);
+
+      for (const file of filesToProcess) {
+        try {
+          if (file.raw === undefined) continue;
+          const result = parseBloodHoundFile(file.raw, file.name, { sidMap });
 
           if (result.errors.length > 0) {
             allErrors.push(...result.errors);
