@@ -5,8 +5,8 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync } from 'fs';
+import { join, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
@@ -32,7 +32,6 @@ export class DashboardServer {
   private engine: GraphEngine;
   private port: number;
   private clients: Set<WebSocket> = new Set();
-  private dashboardHtml: string | null = null;
   private _running: boolean = false;
   private accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -165,6 +164,35 @@ export class DashboardServer {
     });
   }
 
+  private static readonly MIME_TYPES: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8',
+    '.css':  'text/css; charset=utf-8',
+    '.js':   'application/javascript; charset=utf-8',
+    '.json': 'application/json',
+    '.png':  'image/png',
+    '.svg':  'image/svg+xml',
+  };
+
+  private dashboardDir: string | null = null;
+  private fileCache: Map<string, string> = new Map();
+
+  private resolveDashboardDir(): string {
+    if (this.dashboardDir) return this.dashboardDir;
+    // dist/services/ → dist/dashboard/
+    const distPath = join(__dirname, '..', 'dashboard');
+    if (existsSync(join(distPath, 'index.html'))) {
+      this.dashboardDir = distPath;
+      return distPath;
+    }
+    // Fallback: source path
+    const srcPath = join(__dirname, '..', '..', 'src', 'dashboard');
+    if (existsSync(join(srcPath, 'index.html'))) {
+      this.dashboardDir = srcPath;
+      return srcPath;
+    }
+    throw new Error('Dashboard directory not found');
+  }
+
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = req.url || '/';
 
@@ -172,39 +200,56 @@ export class DashboardServer {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-    if (url === '/' || url === '/index.html') {
-      this.serveHtml(res);
-    } else if (url === '/api/state') {
+    if (url === '/api/state') {
       this.serveState(res);
     } else if (url === '/api/graph') {
       this.serveGraph(res);
     } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
+      this.serveStaticFile(url, res);
     }
   }
 
-  private serveHtml(res: ServerResponse): void {
-    if (!this.dashboardHtml) {
-      try {
-        // In compiled output, dashboard HTML is at dist/dashboard/index.html
-        // relative to this file at dist/services/dashboard-server.js
-        const htmlPath = join(__dirname, '..', 'dashboard', 'index.html');
-        this.dashboardHtml = readFileSync(htmlPath, 'utf-8');
-      } catch {
-        // Fallback: try source path
-        try {
-          const htmlPath = join(__dirname, '..', '..', 'src', 'dashboard', 'index.html');
-          this.dashboardHtml = readFileSync(htmlPath, 'utf-8');
-        } catch {
-          res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Dashboard HTML not found');
-          return;
-        }
-      }
+  private serveStaticFile(url: string, res: ServerResponse): void {
+    let filePath = url === '/' ? '/index.html' : url;
+
+    // Security: prevent directory traversal
+    if (filePath.includes('..')) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
     }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(this.dashboardHtml);
+
+    // Strip leading slash and query string
+    const cleanPath = filePath.replace(/^\//, '').split('?')[0];
+    const ext = extname(cleanPath);
+    const mime = DashboardServer.MIME_TYPES[ext] || 'application/octet-stream';
+
+    // Check cache
+    if (this.fileCache.has(cleanPath)) {
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(this.fileCache.get(cleanPath));
+      return;
+    }
+
+    try {
+      const dashDir = this.resolveDashboardDir();
+      const fullPath = join(dashDir, cleanPath);
+
+      // Security: ensure resolved path is within dashboard dir
+      if (!fullPath.startsWith(dashDir)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+      }
+
+      const content = readFileSync(fullPath, 'utf-8');
+      this.fileCache.set(cleanPath, content);
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(content);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
   }
 
   private serveState(res: ServerResponse): void {

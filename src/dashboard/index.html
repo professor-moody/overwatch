@@ -4,390 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Overwatch — Live Dashboard</title>
+<link rel="stylesheet" href="styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js"></script>
-<style>
-:root {
-  --bg-primary: #0f1117;
-  --bg-secondary: #1a1d27;
-  --bg-tertiary: #242836;
-  --bg-card: #1e2230;
-  --text-primary: #e8e6df;
-  --text-secondary: #9b99a3;
-  --text-muted: #6b6977;
-  --border: rgba(255,255,255,0.08);
-  --border-active: rgba(255,255,255,0.15);
-  --accent: #6e9eff;
-  --accent-dim: rgba(110,158,255,0.15);
-  --green: #5dcaa5;
-  --green-dim: rgba(93,202,165,0.15);
-  --amber: #f0b54a;
-  --amber-dim: rgba(240,181,74,0.15);
-  --coral: #f07b6e;
-  --coral-dim: rgba(240,123,110,0.15);
-  --purple: #afa9ec;
-  --purple-dim: rgba(175,169,236,0.15);
-  --pink: #ed93b1;
-  --teal: #5dcaa5;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font);
-  font-size: 13px;
-  height: 100vh;
-  overflow: hidden;
-}
-.layout {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  grid-template-rows: 48px 1fr;
-  height: 100vh;
-}
-
-/* Header */
-.header {
-  grid-column: 1 / -1;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 16px;
-}
-.header h1 {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  color: var(--text-primary);
-}
-.header .logo {
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 14px;
-}
-.status-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 12px;
-  background: var(--green-dim);
-  color: var(--green);
-}
-.status-badge.disconnected {
-  background: var(--coral-dim);
-  color: var(--coral);
-}
-.status-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.header-stats {
-  margin-left: auto;
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.header-stats span { color: var(--text-primary); font-weight: 500; }
-
-/* Graph container */
-.graph-container {
-  position: relative;
-  background: var(--bg-primary);
-  overflow: hidden;
-}
-#sigma-container {
-  width: 100%;
-  height: 100%;
-}
-.graph-controls {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  display: flex;
-  gap: 4px;
-}
-.graph-controls button {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  padding: 6px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font: 400 11px var(--font);
-}
-.graph-controls button:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-.node-filters {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.node-filters button {
-  font: 400 11px var(--font);
-  padding: 4px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.node-filters button.active {
-  border-color: var(--border-active);
-  color: var(--text-primary);
-}
-.node-filters button .dot {
-  display: inline-block;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: middle;
-}
-.search-box {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 200px;
-}
-.search-box input {
-  width: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  padding: 6px 10px;
-  border-radius: 6px;
-  font: 400 12px var(--font);
-  outline: none;
-}
-.search-box input::placeholder { color: var(--text-muted); }
-.search-box input:focus { border-color: var(--accent); }
-
-/* Sidebar */
-.sidebar {
-  background: var(--bg-secondary);
-  border-left: 1px solid var(--border);
-  overflow-y: auto;
-  padding: 0;
-}
-.panel {
-  border-bottom: 1px solid var(--border);
-  padding: 12px 14px;
-}
-.panel-header {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text-muted);
-  margin-bottom: 10px;
-}
-.panel-header .count {
-  color: var(--text-secondary);
-  font-weight: 400;
-}
-
-/* Objective cards */
-.objective-card {
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 6px;
-}
-.objective-card .obj-name {
-  font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-.objective-card .obj-status {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.objective-card.achieved { border-left: 3px solid var(--green); }
-.objective-card.pending { border-left: 3px solid var(--amber); }
-
-/* Stat row */
-.stat-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-.stat-item {
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-  padding: 8px 10px;
-}
-.stat-item .stat-value {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.stat-item .stat-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.readiness-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.readiness-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-}
-.readiness-badge.ready { color: var(--green); }
-.readiness-badge.warning { color: var(--amber); }
-.readiness-badge.blocked { color: var(--red); }
-.readiness-issues {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.readiness-issue {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  padding-left: 10px;
-  border-left: 2px solid rgba(255,255,255,0.08);
-}
-
-/* Frontier items */
-.frontier-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  margin-bottom: 4px;
-  background: var(--bg-tertiary);
-  font-size: 11px;
-}
-.frontier-item .fi-type {
-  font-size: 9px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  flex-shrink: 0;
-}
-.frontier-item .fi-type.incomplete { background: var(--amber-dim); color: var(--amber); }
-.frontier-item .fi-type.inferred { background: var(--purple-dim); color: var(--purple); }
-.frontier-item .fi-desc {
-  flex: 1;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.frontier-item .fi-noise {
-  font-size: 10px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-}
-
-/* Agents */
-.agent-card {
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 6px;
-}
-.agent-card .agent-id {
-  font-size: 11px;
-  font-weight: 500;
-  font-family: var(--font-mono);
-}
-.agent-card .agent-status {
-  font-size: 10px;
-  margin-top: 2px;
-}
-.agent-card .agent-status.running { color: var(--green); }
-.agent-card .agent-status.completed { color: var(--text-muted); }
-.agent-card .agent-status.failed { color: var(--coral); }
-
-/* Activity feed */
-.activity-item {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-}
-.activity-item:last-child { border-bottom: none; }
-.activity-item .act-time {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-right: 6px;
-}
-.activity-item .act-msg {
-  color: var(--text-secondary);
-}
-
-/* Node detail overlay */
-.node-detail {
-  position: absolute;
-  bottom: 16px;
-  right: 16px;
-  width: 280px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-active);
-  border-radius: 8px;
-  padding: 12px 14px;
-  display: none;
-  max-height: 300px;
-  overflow-y: auto;
-  z-index: 10;
-}
-.node-detail.visible { display: block; }
-.node-detail h3 {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-.node-detail .prop-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 2px 0;
-  font-size: 11px;
-}
-.node-detail .prop-key { color: var(--text-muted); }
-.node-detail .prop-val { color: var(--text-secondary); font-family: var(--font-mono); }
-.node-detail .close-btn {
-  position: absolute;
-  top: 8px; right: 10px;
-  background: none; border: none;
-  color: var(--text-muted); cursor: pointer;
-  font-size: 14px;
-}
-
-/* Empty state */
-.empty-state {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-style: italic;
-  padding: 4px 0;
-}
-</style>
 </head>
 <body>
 
@@ -419,14 +39,59 @@ body {
       <input type="text" id="search-input" placeholder="Search nodes…">
     </div>
 
-    <div class="graph-controls">
-      <button onclick="zoomToFit()">Fit</button>
-      <button onclick="runLayout()">Layout</button>
-      <button onclick="resetFilters()">Reset</button>
+    <!-- Hover tooltip -->
+    <div class="graph-tooltip" id="graph-tooltip"></div>
+
+    <!-- Path info bar -->
+    <div class="path-info-bar" id="path-info-bar">
+      <span class="path-label"></span>
+      <span class="path-edges"></span>
+      <button class="path-close" id="path-close">✕</button>
     </div>
 
+    <!-- Neighborhood focus banner -->
+    <div class="focus-banner" id="focus-banner">
+      <span class="focus-label"></span>
+      <button id="focus-show-all">Show All</button>
+    </div>
+
+    <!-- Graph controls -->
+    <div class="graph-controls">
+      <button id="btn-zoom-in">+</button>
+      <button id="btn-zoom-out">−</button>
+      <button id="btn-fit">Fit</button>
+      <div class="separator"></div>
+      <button id="btn-layout">▶ Layout</button>
+      <button id="btn-reset">Reset</button>
+      <div class="separator"></div>
+      <button id="btn-export">Export</button>
+      <button id="btn-shortcuts" onclick="document.getElementById('shortcuts-overlay').classList.toggle('visible')">?</button>
+    </div>
+
+    <!-- Keyboard shortcuts overlay -->
+    <div class="shortcuts-overlay" id="shortcuts-overlay">
+      <kbd>F</kbd> Fit to screen<br>
+      <kbd>Space</kbd> Toggle layout<br>
+      <kbd>Esc</kbd> Clear selection<br>
+      <kbd>R</kbd> Reset filters<br>
+      <kbd>+</kbd> / <kbd>−</kbd> Zoom<br>
+      <kbd>?</kbd> Toggle this help<br>
+      <br>
+      <strong>Interactions</strong><br>
+      <kbd>Drag</kbd> Move nodes<br>
+      <kbd>Shift+Click</kbd> Path highlight<br>
+      <kbd>Double-Click</kbd> Neighborhood focus
+    </div>
+
+    <!-- Minimap -->
+    <div class="minimap" id="minimap">
+      <canvas id="minimap-canvas"></canvas>
+    </div>
+
+    <!-- Node detail overlay -->
     <div class="node-detail" id="node-detail">
-      <button class="close-btn" onclick="hideDetail()">✕</button>
+      <button class="close-btn" id="detail-close">✕</button>
+      <div class="detail-type" id="detail-type-badge"></div>
       <h3 id="detail-title">—</h3>
       <div id="detail-props"></div>
     </div>
@@ -434,598 +99,80 @@ body {
 
   <!-- Sidebar -->
   <div class="sidebar">
+    <!-- Lab Readiness -->
     <div class="panel">
-      <div class="panel-header">Lab Readiness</div>
-      <div class="readiness-panel">
-        <div class="readiness-badge" id="readiness-status">—</div>
-        <div class="readiness-issues" id="readiness-issues"></div>
+      <div class="panel-header" data-panel="readiness-body">
+        Lab Readiness
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="readiness-body">
+        <div class="readiness-panel">
+          <div class="readiness-badge" id="readiness-status">—</div>
+          <div class="readiness-issues" id="readiness-issues"></div>
+        </div>
       </div>
     </div>
 
     <!-- Graph Stats -->
     <div class="panel">
-      <div class="panel-header">Graph Summary</div>
-      <div class="stat-grid" id="stat-grid"></div>
+      <div class="panel-header" data-panel="stats-body">
+        Graph Summary
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="stats-body">
+        <div class="stat-grid" id="stat-grid"></div>
+      </div>
     </div>
 
     <!-- Objectives -->
     <div class="panel">
-      <div class="panel-header">Objectives <span class="count" id="obj-count"></span></div>
-      <div id="objectives-list"></div>
+      <div class="panel-header" data-panel="objectives-body">
+        Objectives <span class="count" id="obj-count"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="objectives-body">
+        <div id="objectives-list"></div>
+      </div>
     </div>
 
     <!-- Frontier -->
     <div class="panel">
-      <div class="panel-header">Frontier <span class="count" id="frontier-count"></span></div>
-      <div id="frontier-list"></div>
+      <div class="panel-header" data-panel="frontier-body">
+        Frontier <span class="count" id="frontier-count"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="frontier-body">
+        <div id="frontier-list"></div>
+      </div>
     </div>
 
     <!-- Agents -->
     <div class="panel">
-      <div class="panel-header">Agents <span class="count" id="agent-count"></span></div>
-      <div id="agents-list"></div>
+      <div class="panel-header" data-panel="agents-body">
+        Agents <span class="count" id="agent-count"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="agents-body">
+        <div id="agents-list"></div>
+      </div>
     </div>
 
     <!-- Activity -->
     <div class="panel">
-      <div class="panel-header">Recent Activity</div>
-      <div id="activity-list"></div>
+      <div class="panel-header" data-panel="activity-body">
+        Recent Activity
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="activity-body">
+        <div id="activity-list"></div>
+      </div>
     </div>
   </div>
 </div>
 
-<script>
-// ============================================================
-// Overwatch Dashboard — Client
-// ============================================================
-
-const NODE_COLORS = {
-  host:        '#6e9eff',
-  service:     '#5dcaa5',
-  credential:  '#f0b54a',
-  user:        '#afa9ec',
-  group:       '#ed93b1',
-  domain:      '#97c459',
-  objective:   '#f07b6e',
-  certificate: '#85b7eb',
-  share:       '#e0a86e',
-  gpo:         '#b0b0b0',
-  ou:          '#b0b0b0',
-  subnet:      '#b0b0b0',
-};
-
-const NODE_SIZES = {
-  host: 8,
-  service: 5,
-  credential: 7,
-  user: 6,
-  group: 7,
-  domain: 12,
-  objective: 10,
-  certificate: 6,
-  share: 5,
-  gpo: 5,
-  ou: 5,
-  subnet: 5,
-};
-
-// State
-let graph = new graphology.Graph({ type: 'directed', multi: true, allowSelfLoops: false });
-let renderer = null;
-let ws = null;
-let reconnectTimer = null;
-let activeFilters = new Set(Object.keys(NODE_COLORS));
-let lastState = null;
-
-// ============================================================
-// Sigma.js Setup
-// ============================================================
-
-function initRenderer() {
-  const container = document.getElementById('sigma-container');
-  renderer = new Sigma(graph, container, {
-    renderLabels: true,
-    labelFont: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    labelSize: 10,
-    labelColor: { color: '#9b99a3' },
-    labelDensity: 0.5,
-    labelGridCellSize: 100,
-    labelRenderedSizeThreshold: 4,
-    edgeReducer: (edge, data) => {
-      const res = { ...data };
-      if (data.confidence !== undefined && data.confidence < 1.0) {
-        res.type = 'line';
-        res.color = res.color || '#444';
-      }
-      return res;
-    },
-    nodeReducer: (node, data) => {
-      const res = { ...data };
-      const nodeType = data.nodeType;
-      if (!activeFilters.has(nodeType)) {
-        res.hidden = true;
-      }
-      return res;
-    },
-    defaultEdgeColor: '#333',
-    defaultEdgeType: 'arrow',
-  });
-
-  // Click node → show detail
-  renderer.on('clickNode', ({ node }) => {
-    showNodeDetail(node);
-  });
-
-  renderer.on('clickStage', () => {
-    hideDetail();
-  });
-}
-
-// ============================================================
-// Graph Data
-// ============================================================
-
-function getEdgeKey(edge) {
-  if (edge && edge.id) return edge.id;
-  const props = edge?.properties || {};
-  return edge.source + '--' + (props.type || '') + '--' + edge.target;
-}
-
-function buildEdgeAttributes(props) {
-  const confidence = props.confidence || 1.0;
-  return {
-    color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
-    size: confidence >= 1.0 ? 1 : 0.5,
-    type: 'arrow',
-    confidence: confidence,
-    edgeType: props.type || '',
-    label: props.type || '',
-  };
-}
-
-function loadGraphData(graphData) {
-  graph.clear();
-
-  if (!graphData || !graphData.nodes) return;
-
-  // Add nodes with positions
-  const count = graphData.nodes.length;
-  graphData.nodes.forEach((n, i) => {
-    const props = n.properties || {};
-    const nodeType = props.type || 'host';
-    const angle = (2 * Math.PI * i) / count;
-    const radius = 5 + Math.random() * 5;
-
-    graph.addNode(n.id, {
-      label: props.label || n.id,
-      x: radius * Math.cos(angle),
-      y: radius * Math.sin(angle),
-      size: NODE_SIZES[nodeType] || 5,
-      color: NODE_COLORS[nodeType] || '#888',
-      nodeType: nodeType,
-      // Store all props for detail panel
-      _props: props,
-    });
-  });
-
-  // Add edges using the server-provided edge id when available.
-  if (graphData.edges) {
-    graphData.edges.forEach((e) => {
-      if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
-        const props = e.properties || {};
-        const edgeKey = getEdgeKey(e);
-        try {
-          graph.addEdgeWithKey(edgeKey, e.source, e.target, buildEdgeAttributes(props));
-        } catch { /* skip duplicate edges in multi-graph edge cases */ }
-      }
-    });
-  }
-
-  // Run ForceAtlas2 layout
-  runLayout();
-  buildFilterButtons();
-}
-
-function mergeGraphDelta(delta) {
-  if (!delta) return;
-  let added = false;
-
-  // Upsert nodes
-  if (delta.nodes) {
-    delta.nodes.forEach((n) => {
-      const props = n.properties || {};
-      const nodeType = props.type || 'host';
-      if (graph.hasNode(n.id)) {
-        // Update existing node attributes (preserve position)
-        graph.mergeNodeAttributes(n.id, {
-          label: props.label || n.id,
-          size: NODE_SIZES[nodeType] || 5,
-          color: NODE_COLORS[nodeType] || '#888',
-          nodeType: nodeType,
-          _props: props,
-        });
-      } else {
-        // Add new node with random position near center
-        const angle = Math.random() * 2 * Math.PI;
-        const radius = 3 + Math.random() * 3;
-        graph.addNode(n.id, {
-          label: props.label || n.id,
-          x: radius * Math.cos(angle),
-          y: radius * Math.sin(angle),
-          size: NODE_SIZES[nodeType] || 5,
-          color: NODE_COLORS[nodeType] || '#888',
-          nodeType: nodeType,
-          _props: props,
-        });
-        added = true;
-      }
-    });
-  }
-
-  // Upsert edges
-  if (delta.edges) {
-    delta.edges.forEach((e) => {
-      if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) return;
-      const props = e.properties || {};
-      const edgeKey = getEdgeKey(e);
-      const attrs = buildEdgeAttributes(props);
-      if (graph.hasEdge(edgeKey)) {
-        graph.mergeEdgeAttributes(edgeKey, attrs);
-      } else {
-        try {
-          graph.addEdgeWithKey(edgeKey, e.source, e.target, attrs);
-          added = true;
-        } catch { /* skip duplicate */ }
-      }
-    });
-  }
-
-  // Only re-run layout if new nodes/edges were added
-  if (added) {
-    runLayout();
-    buildFilterButtons();
-  }
-  if (renderer) renderer.refresh();
-}
-
-function runLayout() {
-  if (graph.order === 0) return;
-  try {
-    const fa2Layout = graphologyLayoutForceAtlas2 || window.graphologyLayoutForceAtlas2;
-    if (fa2Layout && fa2Layout.assign) {
-      fa2Layout.assign(graph, {
-        iterations: 100,
-        settings: {
-          gravity: 1,
-          scalingRatio: 10,
-          barnesHutOptimize: graph.order > 100,
-          slowDown: 5,
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('ForceAtlas2 not available, using circular layout');
-  }
-  if (renderer) renderer.refresh();
-}
-
-function zoomToFit() {
-  if (renderer) {
-    renderer.getCamera().animatedReset({ duration: 300 });
-  }
-}
-
-// ============================================================
-// UI Updates
-// ============================================================
-
-function updateUI(state) {
-  lastState = state;
-
-  // Header
-  document.getElementById('engagement-name').textContent = state.engagement?.name || state.config?.name || '—';
-  document.getElementById('stat-nodes').textContent = state.graph_summary?.total_nodes || 0;
-  document.getElementById('stat-edges').textContent = state.graph_summary?.total_edges || 0;
-  document.getElementById('stat-access').textContent = state.access_summary?.current_access_level || 'none';
-
-  // Graph stats
-  updateStats(state);
-
-  // Lab readiness
-  updateReadiness(state);
-
-  // Objectives
-  updateObjectives(state);
-
-  // Frontier
-  updateFrontier(state);
-
-  // Agents
-  updateAgents(state);
-
-  // Activity
-  updateActivity(state);
-}
-
-function updateReadiness(state) {
-  const badge = document.getElementById('readiness-status');
-  const issues = document.getElementById('readiness-issues');
-  const readiness = state.lab_readiness || { status: 'ready', top_issues: [] };
-
-  badge.className = `readiness-badge ${readiness.status || 'ready'}`;
-  badge.textContent = readiness.status || 'ready';
-
-  const topIssues = readiness.top_issues || [];
-  if (topIssues.length === 0) {
-    issues.innerHTML = '<div class="empty-state">No immediate readiness issues</div>';
-    return;
-  }
-
-  issues.innerHTML = topIssues.map(issue => `<div class="readiness-issue">${issue}</div>`).join('');
-}
-
-function updateStats(state) {
-  const grid = document.getElementById('stat-grid');
-  const nodesByType = state.graph_summary?.nodes_by_type || {};
-  const edgesByType = state.graph_summary?.edges_by_type || {};
-  const confirmed = state.graph_summary?.confirmed_edges || 0;
-  const inferred = state.graph_summary?.inferred_edges || 0;
-
-  let html = '';
-  const types = Object.entries(nodesByType).sort((a, b) => b[1] - a[1]);
-  for (const [type, count] of types) {
-    const color = NODE_COLORS[type] || '#888';
-    html += `<div class="stat-item">
-      <div class="stat-value" style="color:${color}">${count}</div>
-      <div class="stat-label">${type}s</div>
-    </div>`;
-  }
-  html += `<div class="stat-item">
-    <div class="stat-value" style="color:var(--accent)">${confirmed}</div>
-    <div class="stat-label">Confirmed edges</div>
-  </div>`;
-  html += `<div class="stat-item">
-    <div class="stat-value" style="color:var(--purple)">${inferred}</div>
-    <div class="stat-label">Inferred edges</div>
-  </div>`;
-  grid.innerHTML = html;
-}
-
-function updateObjectives(state) {
-  const list = document.getElementById('objectives-list');
-  const objectives = state.objectives || [];
-  document.getElementById('obj-count').textContent = `(${objectives.filter(o => o.achieved).length}/${objectives.length})`;
-
-  if (objectives.length === 0) {
-    list.innerHTML = '<div class="empty-state">No objectives defined</div>';
-    return;
-  }
-  list.innerHTML = objectives.map(o => `
-    <div class="objective-card ${o.achieved ? 'achieved' : 'pending'}">
-      <div class="obj-name">${o.description}</div>
-      <div class="obj-status">${o.achieved ? '✓ Achieved' : '○ In progress'}</div>
-    </div>
-  `).join('');
-}
-
-function updateFrontier(state) {
-  const list = document.getElementById('frontier-list');
-  const frontier = state.frontier || [];
-  document.getElementById('frontier-count').textContent = `(${frontier.length})`;
-
-  const top10 = frontier.slice(0, 10);
-  if (top10.length === 0) {
-    list.innerHTML = '<div class="empty-state">Frontier empty</div>';
-    return;
-  }
-  list.innerHTML = top10.map(f => {
-    const typeClass = f.type === 'incomplete_node' ? 'incomplete' : 'inferred';
-    const noise = f.opsec_noise !== undefined ? f.opsec_noise.toFixed(1) : '—';
-    return `<div class="frontier-item">
-      <span class="fi-type ${typeClass}">${f.type === 'incomplete_node' ? 'node' : 'edge'}</span>
-      <span class="fi-desc" title="${f.description || ''}">${f.description || f.id}</span>
-      <span class="fi-noise">${noise}</span>
-    </div>`;
-  }).join('');
-}
-
-function updateAgents(state) {
-  const list = document.getElementById('agents-list');
-  const agents = state.active_agents || [];
-  document.getElementById('agent-count').textContent = `(${agents.length})`;
-
-  if (agents.length === 0) {
-    list.innerHTML = '<div class="empty-state">No active agents</div>';
-    return;
-  }
-  list.innerHTML = agents.map(a => `
-    <div class="agent-card">
-      <div class="agent-id">${a.agent_id || a.id}</div>
-      <div class="agent-status ${a.status}">${a.status}${a.skill ? ' · ' + a.skill : ''}</div>
-    </div>
-  `).join('');
-}
-
-function updateActivity(state) {
-  const list = document.getElementById('activity-list');
-  const history = state.recent_activity || [];
-  const recent = history.slice(-20).reverse();
-
-  if (recent.length === 0) {
-    list.innerHTML = '<div class="empty-state">No activity yet</div>';
-    return;
-  }
-  list.innerHTML = recent.map(a => {
-    const time = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : '';
-    return `<div class="activity-item">
-      <span class="act-time">${time}</span>
-      <span class="act-msg">${a.description || ''}</span>
-    </div>`;
-  }).join('');
-}
-
-// ============================================================
-// Node Detail
-// ============================================================
-
-function showNodeDetail(nodeId) {
-  const attrs = graph.getNodeAttributes(nodeId);
-  const props = attrs._props || {};
-  const panel = document.getElementById('node-detail');
-  document.getElementById('detail-title').textContent = props.label || nodeId;
-
-  const skip = new Set(['label', 'x', 'y', 'size', 'color', 'nodeType', '_props']);
-  let html = '';
-  const entries = Object.entries(props).filter(([k]) => !skip.has(k));
-  for (const [key, val] of entries) {
-    if (val === undefined || val === null) continue;
-    html += `<div class="prop-row">
-      <span class="prop-key">${key}</span>
-      <span class="prop-val">${typeof val === 'object' ? JSON.stringify(val) : val}</span>
-    </div>`;
-  }
-
-  // Show connections
-  const degree = graph.degree(nodeId);
-  html += `<div class="prop-row"><span class="prop-key">connections</span><span class="prop-val">${degree}</span></div>`;
-
-  document.getElementById('detail-props').innerHTML = html;
-  panel.classList.add('visible');
-}
-
-function hideDetail() {
-  document.getElementById('node-detail').classList.remove('visible');
-}
-
-// ============================================================
-// Filters
-// ============================================================
-
-function buildFilterButtons() {
-  const container = document.getElementById('node-filters');
-  const types = new Set();
-  graph.forEachNode((id, attrs) => types.add(attrs.nodeType));
-
-  container.innerHTML = '';
-  for (const type of types) {
-    const color = NODE_COLORS[type] || '#888';
-    const btn = document.createElement('button');
-    btn.className = activeFilters.has(type) ? 'active' : '';
-    btn.innerHTML = `<span class="dot" style="background:${color}"></span>${type}`;
-    btn.onclick = () => toggleFilter(type, btn);
-    container.appendChild(btn);
-  }
-}
-
-function toggleFilter(type, btn) {
-  if (activeFilters.has(type)) {
-    activeFilters.delete(type);
-    btn.classList.remove('active');
-  } else {
-    activeFilters.add(type);
-    btn.classList.add('active');
-  }
-  if (renderer) renderer.refresh();
-}
-
-function resetFilters() {
-  activeFilters = new Set(Object.keys(NODE_COLORS));
-  buildFilterButtons();
-  if (renderer) renderer.refresh();
-}
-
-// Search
-document.getElementById('search-input').addEventListener('input', (e) => {
-  const query = e.target.value.toLowerCase().trim();
-  if (!query) {
-    if (renderer) renderer.refresh();
-    return;
-  }
-  // Highlight matching nodes
-  graph.forEachNode((id, attrs) => {
-    const label = (attrs.label || '').toLowerCase();
-    const ip = (attrs._props?.ip || '').toLowerCase();
-    const match = label.includes(query) || ip.includes(query) || id.toLowerCase().includes(query);
-    graph.setNodeAttribute(id, 'highlighted', match);
-  });
-  if (renderer) renderer.refresh();
-});
-
-// ============================================================
-// WebSocket
-// ============================================================
-
-function connectWS() {
-  const wsUrl = `ws://${window.location.host}/ws`;
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    const badge = document.getElementById('ws-status');
-    badge.className = 'status-badge';
-    badge.innerHTML = '<span class="status-dot"></span><span>Live</span>';
-    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-  };
-
-  ws.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'full_state') {
-        loadGraphData(msg.data.graph);
-        updateUI(msg.data.state);
-      } else if (msg.type === 'graph_update') {
-        mergeGraphDelta(msg.data.delta);
-        updateUI(msg.data.state);
-      }
-    } catch (err) {
-      console.error('WS message parse error:', err);
-    }
-  };
-
-  ws.onclose = () => {
-    const badge = document.getElementById('ws-status');
-    badge.className = 'status-badge disconnected';
-    badge.innerHTML = '<span class="status-dot"></span><span>Disconnected</span>';
-    // Reconnect after 3s
-    if (!reconnectTimer) {
-      reconnectTimer = setInterval(() => connectWS(), 3000);
-    }
-  };
-
-  ws.onerror = () => {
-    ws.close();
-  };
-}
-
-// Fallback: poll if WS unavailable
-async function pollState() {
-  try {
-    const res = await fetch('/api/state');
-    if (res.ok) {
-      const data = await res.json();
-      loadGraphData(data.graph);
-      updateUI(data.state);
-    }
-  } catch { /* silent */ }
-}
-
-// ============================================================
-// Init
-// ============================================================
-
-window.addEventListener('DOMContentLoaded', () => {
-  initRenderer();
-  connectWS();
-
-  // Fallback polling every 5s if WS fails
-  setInterval(() => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      pollState();
-    }
-  }, 5000);
-
-  // Initial load via HTTP
-  pollState();
-});
-</script>
+<script src="graph.js"></script>
+<script src="ui.js"></script>
+<script src="ws.js"></script>
+<script src="main.js"></script>
 </body>
 </html>
