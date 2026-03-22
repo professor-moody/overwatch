@@ -92,6 +92,8 @@ describe('dashboard ui frontier helpers', () => {
       getElementById(id: string) {
         return elements.get(id) || null;
       },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
     };
   });
 

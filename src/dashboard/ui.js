@@ -70,6 +70,7 @@ function initCollapsiblePanels() {
 // ============================================================
 
 let lastState = null;
+let frontierTypeFilter = null;
 const FRONTIER_SECTION_DEFAULT_LIMIT = 5;
 const FRONTIER_SECTION_PRIORITY_LIMIT = 6;
 const frontierSectionState = {
@@ -305,10 +306,43 @@ function renderFrontierSection(section, offset = 0) {
   </div>`;
 }
 
+function matchesFrontierTypeFilter(item, graph) {
+  if (!frontierTypeFilter) return true;
+  if (item.type === 'incomplete_node' && item.node_id) {
+    if (graph?.hasNode(item.node_id)) {
+      return graph.getNodeAttribute(item.node_id, 'nodeType') === frontierTypeFilter;
+    }
+  }
+  const targets = [item.edge_source, item.edge_target].filter(Boolean);
+  for (const nodeId of targets) {
+    if (graph?.hasNode(nodeId) && graph.getNodeAttribute(nodeId, 'nodeType') === frontierTypeFilter) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderFrontierFilterBadge() {
+  if (!frontierTypeFilter) return '';
+  const colors = G().NODE_COLORS;
+  const color = colors[frontierTypeFilter] || '#888';
+  return `<div class="frontier-filter-badge" style="border-color:${color}">
+    <span>Showing: <strong>${frontierTypeFilter}s</strong></span>
+    <button onclick="clearFrontierTypeFilter()" title="Clear filter">&times;</button>
+  </div>`;
+}
+
 function updateFrontier(state) {
   const list = document.getElementById('frontier-list');
-  const frontier = state.frontier || [];
-  document.getElementById('frontier-count').textContent = `(${frontier.length})`;
+  const allFrontier = state.frontier || [];
+  const graph = G().graph;
+  const frontier = frontierTypeFilter
+    ? allFrontier.filter((item) => matchesFrontierTypeFilter(item, graph))
+    : allFrontier;
+  const countLabel = frontierTypeFilter
+    ? `(${frontier.length}/${allFrontier.length})`
+    : `(${allFrontier.length})`;
+  document.getElementById('frontier-count').textContent = countLabel;
 
   const currentSectionTotals = {
     priority: Math.min(frontier.length, FRONTIER_SECTION_PRIORITY_LIMIT),
@@ -322,13 +356,18 @@ function updateFrontier(state) {
     }
   });
 
+  const badgeHtml = renderFrontierFilterBadge();
+
   if (frontier.length === 0) {
-    list.innerHTML = '<div class="empty-state">Frontier empty — ingest data to generate candidates</div>';
+    const emptyMsg = frontierTypeFilter
+      ? `No frontier items for <strong>${frontierTypeFilter}s</strong>`
+      : 'Frontier empty — ingest data to generate candidates';
+    list.innerHTML = badgeHtml + `<div class="empty-state">${emptyMsg}</div>`;
     return;
   }
   const sections = getFrontierSectionItems(frontier);
   let offset = 0;
-  list.innerHTML = sections.map((section) => {
+  list.innerHTML = badgeHtml + sections.map((section) => {
     const html = renderFrontierSection(section, offset);
     offset += section.items.length;
     return html;
@@ -512,6 +551,26 @@ function handleGraphSummaryCardClick(nodeType) {
   const g = G();
   if (!nodeType || typeof g.focusNodeType !== 'function') return;
   g.focusNodeType(nodeType);
+  setFrontierTypeFilter(nodeType);
+}
+
+function setFrontierTypeFilter(nodeType) {
+  frontierTypeFilter = nodeType || null;
+  if (lastState) updateFrontier(lastState);
+  if (frontierTypeFilter) {
+    const frontierBody = document.getElementById('frontier-body');
+    if (frontierBody?.classList.contains('collapsed')) {
+      const header = document.querySelector('[data-panel="frontier-body"]');
+      if (header) header.click();
+    }
+    const panel = document.querySelector('[data-panel="frontier-body"]');
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function clearFrontierTypeFilter() {
+  frontierTypeFilter = null;
+  if (lastState) updateFrontier(lastState);
 }
 
 function navigateToNode(nodeId, options = {}) {
@@ -830,6 +889,8 @@ window.OverwatchUI = {
   toggleFrontierSectionExpanded,
   toggleShortcutsOverlay,
   setShortcutsOverlayVisible,
+  setFrontierTypeFilter,
+  clearFrontierTypeFilter,
 };
 
 // Global functions referenced in HTML onclick
@@ -843,3 +904,5 @@ window.handleFrontierFocus = handleFrontierFocus;
 window.handleGraphSummaryCardClick = handleGraphSummaryCardClick;
 window.toggleFrontierSection = toggleFrontierSection;
 window.toggleFrontierSectionExpanded = toggleFrontierSectionExpanded;
+window.clearFrontierTypeFilter = clearFrontierTypeFilter;
+window.setFrontierTypeFilter = setFrontierTypeFilter;

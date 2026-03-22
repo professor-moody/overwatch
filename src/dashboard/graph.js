@@ -1491,10 +1491,16 @@ function resetFilters() {
   buildFilterButtons();
   clearPathHighlight();
   clearFocusState();
-  clearSelection();
+  selectedNode = null;
+  selectedNeighborhood = null;
+  inspectedEdgeIds.clear();
   graphMode = 'overview';
+  labelDensity = 'balanced';
   const graphModeSelect = document.getElementById('graph-mode-select');
   if (graphModeSelect) graphModeSelect.value = 'overview';
+  const labelDensitySelect = document.getElementById('label-density-select');
+  if (labelDensitySelect) labelDensitySelect.value = 'balanced';
+  if (typeof clearFrontierTypeFilter === 'function') clearFrontierTypeFilter();
   if (renderer) renderer.refresh();
   fitVisibleGraph();
   updateMinimap();
