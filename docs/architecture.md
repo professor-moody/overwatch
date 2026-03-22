@@ -6,6 +6,31 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 
 ![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
 
+## Data Flow Example
+
+Here's a concrete walkthrough of how data flows through the system during a typical engagement step:
+
+```
+1. Operator runs nmap against 10.10.10.0/24
+2. LLM calls parse_output(tool_name="nmap", output="<xml>...")
+3. Output parser extracts 5 hosts, 12 services
+4. Engine ingests nodes: host-10-10-10-5, svc-10-10-10-5-445, ...
+5. Inference rules fire:
+   └─ SMB service with smb_signing: false → RELAY_TARGET edges created
+   └─ Kerberos service detected → MEMBER_OF_DOMAIN edge to domain node
+6. Frontier recomputed:
+   └─ "Enumerate SMB shares on 10.10.10.5" (incomplete_node)
+   └─ "Test relay to 10.10.10.5:445" (inferred_edge, confidence: 0.6)
+7. State persisted to disk (atomic write-rename)
+8. Dashboard broadcast:
+   └─ WebSocket delta with 5 new nodes, 12 edges, 2 inferred edges
+   └─ UI panels update: frontier, graph summary, activity
+9. LLM calls next_task → sees new frontier items
+10. LLM dispatches sub-agent to enumerate SMB shares
+```
+
+Every step is traceable: `action_id` links `validate_action` → `log_action_event` → `parse_output` → `report_finding`. The activity log records the full causal chain.
+
 ## Design Decisions
 
 ### Graph, Not Database
@@ -45,8 +70,11 @@ When findings are reported, deterministic rules fire automatically to generate h
 | SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` edges from compromised hosts |
 | Credential Fanout | New credential node | `POTENTIAL_AUTH` to all compatible services |
 | ADCS ESC1 | Certificate with enrollee-supplied subject | `ESC1` from enrollable users |
+| Kerberos → Domain | Service with `service_name: kerberos` | `MEMBER_OF_DOMAIN` edge to domain nodes |
+| MSSQL + Domain | MSSQL on domain host | `POTENTIAL_AUTH` from domain credentials |
+| Unconstrained Delegation | Host with unconstrained delegation | `DELEGATES_TO` from domain users |
 
-These become frontier items for the LLM to evaluate. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md).
+These become frontier items for the LLM to evaluate. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Concepts](concepts.md#inference-rules) for how the rule lifecycle works.
 
 ### Full Graph Access
 
@@ -54,27 +82,105 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 
 ## Component Overview
 
+### Core
+
 | Component | File | Purpose |
 |-----------|------|---------|
 | **Entrypoint** | `src/index.ts` | Config loading, server init, tool registration |
-| **Graph Engine** | `src/services/graph-engine.ts` | Core graph operations, frontier computation, inference, persistence |
+| **Config** | `src/config.ts` | Engagement config parsing and validation |
+| **Types** | `src/types.ts` | Shared types + Zod schemas |
+
+### Services
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **Graph Engine** | `src/services/graph-engine.ts` | Core graph operations, state coordination |
+| **Engine Context** | `src/services/engine-context.ts` | Mutable state container, update callbacks |
 | **Frontier** | `src/services/frontier.ts` | Frontier item generation and filtering |
-| **Inference Engine** | `src/services/inference-engine.ts` | Rule matching and edge generation |
+| **Inference Engine** | `src/services/inference-engine.ts` | Rule matching and hypothesis edge generation |
 | **Path Analyzer** | `src/services/path-analyzer.ts` | Shortest-path and objective reachability |
+| **Graph Schema** | `src/services/graph-schema.ts` | Node/edge type validation |
+| **Graph Health** | `src/services/graph-health.ts` | Integrity checks and diagnostics |
+| **Finding Validation** | `src/services/finding-validation.ts` | Input validation for reported findings |
+| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/output-parsers.ts` | Deterministic parsing for nmap, nxc, certipy, etc. |
+| **Output Parsers** | `src/services/output-parsers.ts` | Deterministic parsing: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder |
+| **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers |
+| **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization and dedup |
+| **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |
 | **BloodHound Ingest** | `src/services/bloodhound-ingest.ts` | SharpHound/bloodhound-python JSON → graph |
 | **Dashboard Server** | `src/services/dashboard-server.ts` | HTTP + WebSocket for live visualization |
-| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
+| **Delta Accumulator** | `src/services/delta-accumulator.ts` | Debounced graph change tracking for broadcasts |
+| **Agent Manager** | `src/services/agent-manager.ts` | Sub-agent task lifecycle |
 | **Retrospective** | `src/services/retrospective.ts` | Post-engagement analysis and RLVR traces |
-| **Tool Modules** | `src/tools/*.ts` | MCP tool registration (one module per domain) |
-| **Types** | `src/types.ts` | Shared types + Zod schemas |
+| **CIDR** | `src/services/cidr.ts` | CIDR parsing, expansion, and scope matching |
+| **Tool Check** | `src/services/tool-check.ts` | Offensive tool availability detection |
+| **Process Tracker** | `src/services/process-tracker.ts` | PID tracking for long-running scans |
+| **Lab Preflight** | `src/services/lab-preflight.ts` | Lab readiness validation |
+
+### Tools
+
+| Module | File | Tools |
+|--------|------|-------|
+| **State** | `src/tools/state.ts` | `get_state`, `run_lab_preflight`, `run_graph_health`, `get_history`, `export_graph` |
+| **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
+| **Findings** | `src/tools/findings.ts` | `report_finding` |
+| **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
+| **Agents** | `src/tools/agents.ts` | `register_agent`, `get_agent_context`, `update_agent` |
+| **Skills** | `src/tools/skills.ts` | `get_skill` |
+| **Logging** | `src/tools/logging.ts` | `log_action_event` |
+| **Parse Output** | `src/tools/parse-output.ts` | `parse_output` |
+| **Inference** | `src/tools/inference.ts` | `suggest_inference_rule` |
+| **BloodHound** | `src/tools/bloodhound.ts` | `ingest_bloodhound` |
+| **Tool Check** | `src/tools/toolcheck.ts` | `check_tools` |
+| **Processes** | `src/tools/processes.ts` | `track_process`, `check_processes` |
+| **Retrospective** | `src/tools/retrospective.ts` | `run_retrospective` |
+
+### Dashboard
+
+| File | Purpose |
+|------|---------|
+| `src/dashboard/index.html` | Slim HTML shell loading CDN deps + local scripts |
+| `src/dashboard/styles.css` | Dark theme, animations, responsive layout |
+| `src/dashboard/graph.js` | Sigma.js, ForceAtlas2, drag, hover, path/neighborhood highlight, minimap |
+| `src/dashboard/ui.js` | Sidebar panels, node detail, search, keyboard shortcuts |
+| `src/dashboard/ws.js` | WebSocket connection, reconnect, HTTP polling |
+| `src/dashboard/main.js` | Entry point wiring modules together |
 
 ## State Persistence
 
-Graph state is persisted to `state-<engagement-id>.json` after every finding using atomic write-rename. Features:
+Graph state is persisted to `state-<engagement-id>.json` after every finding using atomic write-rename:
+
+```
+1. Serialize graph + metadata to JSON
+2. Write to temporary file (state-<id>.json.tmp)
+3. Atomic rename over the real file
+4. Previous version moved to snapshot rotation
+```
+
+Features:
 
 - **Snapshot rotation** — keeps recent snapshots for rollback
-- **Crash recovery** — incomplete writes never corrupt state
+- **Crash recovery** — incomplete writes never corrupt state (temp file is discarded)
 - **Resume anywhere** — restart Claude Code, restart the server, come back days later
 - **Post-engagement analysis** — persisted state feeds retrospective analysis
+
+## Broadcast Pipeline
+
+When the graph changes, updates flow to the dashboard in real time:
+
+```
+GraphEngine.persist()
+  → onUpdate callback fires
+  → DeltaAccumulator collects changes (debounced)
+  → DashboardServer broadcasts via WebSocket:
+      - New connections: full_state message (complete graph + engagement state)
+      - Existing connections: graph_update message (delta only)
+  → Browser receives:
+      - graph.js merges delta into graphology instance
+      - ui.js updates sidebar panels
+      - New nodes pulse for 2 seconds
+      - Minimap redraws
+```
+
+The dashboard also polls `/api/state` every 5 seconds as a fallback when WebSocket is disconnected.

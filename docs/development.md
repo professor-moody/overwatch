@@ -32,33 +32,40 @@ overwatch/
 │   │   ├── logging.ts        # log_action_event
 │   │   ├── retrospective.ts  # run_retrospective
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic
-│   │   ├── graph-engine.ts   # Graph operations, frontier, inference, persistence
+│   ├── services/             # Core business logic (23 modules)
+│   │   ├── graph-engine.ts   # Graph operations, state coordination
+│   │   ├── engine-context.ts # Mutable state container, update callbacks
 │   │   ├── frontier.ts       # Frontier item generation and filtering
 │   │   ├── inference-engine.ts # Rule matching and edge generation
 │   │   ├── path-analyzer.ts  # Shortest-path and objective reachability
+│   │   ├── graph-schema.ts   # Node/edge type validation
+│   │   ├── graph-health.ts   # Integrity checks and diagnostics
+│   │   ├── finding-validation.ts # Input validation for findings
+│   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── output-parsers.ts # Parsers for nmap, nxc, certipy, secretsdump, etc.
+│   │   ├── output-parsers.ts # Parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
+│   │   ├── parser-utils.ts   # Shared parsing helpers
+│   │   ├── credential-utils.ts # Credential normalization and dedup
+│   │   ├── provenance-utils.ts # Source attribution tracking
 │   │   ├── bloodhound-ingest.ts # BloodHound JSON → graph
-│   │   ├── dashboard-server.ts  # HTTP + WebSocket server
-│   │   ├── state-persistence.ts # Atomic write-rename + snapshots
-│   │   ├── graph-health.ts   # Integrity checks
-│   │   ├── lab-preflight.ts  # Lab readiness validation
-│   │   ├── retrospective.ts  # Post-engagement analysis
-│   │   ├── cidr.ts           # CIDR parsing and matching
+│   │   ├── dashboard-server.ts  # HTTP + WebSocket server (static file serving)
+│   │   ├── delta-accumulator.ts # Debounced graph change tracking
+│   │   ├── agent-manager.ts  # Agent task lifecycle
+│   │   ├── retrospective.ts  # Post-engagement analysis + RLVR traces
+│   │   ├── cidr.ts           # CIDR parsing, expansion, scope matching
 │   │   ├── tool-check.ts     # Offensive tool detection
 │   │   ├── process-tracker.ts # PID tracking for long-running scans
-│   │   ├── agent-manager.ts  # Agent task lifecycle
-│   │   ├── credential-utils.ts # Credential normalization
-│   │   ├── parser-utils.ts   # Shared parsing helpers
-│   │   ├── provenance-utils.ts # Source attribution
-│   │   ├── delta-accumulator.ts # Graph change tracking
-│   │   └── engine-context.ts # Engine dependency injection
+│   │   └── lab-preflight.ts  # Lab readiness validation
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke
-│   ├── dashboard/
-│   │   └── index.html        # Self-contained SPA
+│   ├── dashboard/            # Interactive graph visualization (6 files)
+│   │   ├── index.html        # Slim HTML shell (~180 lines)
+│   │   ├── styles.css        # Dark theme, animations (~580 lines)
+│   │   ├── graph.js          # Sigma.js, FA2, drag, hover, path highlight, minimap
+│   │   ├── ui.js             # Sidebar, detail panel, search, keyboard shortcuts
+│   │   ├── ws.js             # WebSocket + HTTP polling, reconnect
+│   │   └── main.js           # Entry point wiring modules
 │   └── __tests__/
 │       └── mcp-server.integration.test.ts
 ├── skills/                   # 29 offensive methodology guides
@@ -69,7 +76,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). Run the full suite:
+Tests use [Vitest](https://vitest.dev/). **342 tests across 19 files**, all passing. Run the full suite:
 
 ```bash
 npm test

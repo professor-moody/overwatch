@@ -2,26 +2,44 @@
 
 **An offensive security engagement orchestrator built as an MCP server.**
 
-Overwatch is the persistent state layer and reasoning substrate for LLM-powered penetration testing. It inverts the typical "LLM-as-orchestrator" pattern — instead of stuffing engagement state into a prompt, Overwatch is a **Model Context Protocol server** that the LLM calls into. The graph holds every discovery, relationship, and hypothesis. The LLM proposes actions. The server validates them.
+LLM-powered penetration testing has a fundamental problem: the context window is finite, but engagements are not. Every discovery, credential, and relationship matters — and stuffing it into a prompt doesn't scale. Overwatch solves this by inverting the pattern. Instead of the LLM holding state, a **persistent MCP server** holds the engagement graph. The LLM proposes actions. The server validates them. The graph survives compaction, restarts, and session handoffs with zero information loss.
 
 ---
 
+## Why Overwatch
+
+| Problem | Overwatch Solution |
+|---------|-------------------|
+| Context window overflow loses engagement state | Graph lives outside the context window; `get_state()` reconstructs everything |
+| No structured way to track discoveries | Directed property graph — traversable attack paths, not rows in a table |
+| LLM can't enforce scope/OPSEC consistently | Deterministic layer handles hard constraints; LLM handles reasoning |
+| Manual note-taking across sessions | Automatic persistence with atomic writes and snapshot rollback |
+| No way to parallelize work | Sub-agent dispatch with scoped subgraph views |
+
 ## Key Features
 
-- **Graph-based state** — Engagements are directed property graphs (hosts, services, credentials, relationships). Traversable attack paths, not rows in a table.
-- **Survives compaction** — The orchestrator lives outside the context window. After compaction, `get_state()` reconstructs a complete briefing. Zero information loss.
-- **Hybrid scoring** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
-- **Inference rules** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
-- **Full graph access** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
-- **22 MCP tools** — From state management to BloodHound ingestion to structured output parsing.
-- **29 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
-- **Live dashboard** — Real-time WebGL graph visualization with sigma.js.
-- **Retrospective analysis** — Post-engagement skill gaps, inference suggestions, and RLVR training traces.
+- **[Graph-based state](graph-model.md)** — Engagements are directed property graphs: hosts, services, credentials, users, and the relationships between them. Every attack path is a traversable route.
+- **Survives compaction** — The orchestrator lives outside the context window. After compaction, [`get_state()`](tools/get-state.md) reconstructs a complete briefing. Zero information loss.
+- **[Hybrid scoring](architecture.md#hybrid-scoring)** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
+- **[Inference rules](architecture.md#inference-rules)** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
+- **[Full graph access](tools/query-graph.md)** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
+- **[22 MCP tools](tools/index.md)** — From state management to BloodHound ingestion to structured output parsing.
+- **[29 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
+- **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
+- **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, and RLVR training traces.
+
+### By the Numbers
+
+| | |
+|---|---|
+| **22** MCP tools | **29** offensive skills |
+| **7** output parsers (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder) | **6** built-in inference rules |
+| **342** tests across 19 files | **12** node types, **30+** edge types |
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/keys/overwatch.git
+git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
 npm run build
@@ -44,11 +62,11 @@ Configure your engagement in `engagement.json`, then add Overwatch to your Claud
 }
 ```
 
-Then just run `claude` — see the full [Getting Started](getting-started.md) guide.
+Then just run `claude` — see the full [Getting Started](getting-started.md) guide, or jump to a [lab workflow](playbook/index.md).
 
 ## Architecture at a Glance
 
 ![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
 
-Learn more in [Architecture](architecture.md) or jump to the [Tool Reference](tools/index.md).
+Learn more in [Architecture](architecture.md), explore [Key Concepts](concepts.md), or jump to the [Tool Reference](tools/index.md).
 

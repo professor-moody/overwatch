@@ -1,8 +1,8 @@
 site_name: Overwatch
 site_description: Offensive security engagement orchestrator — MCP server with graph-based state management
-site_url: https://keys.github.io/overwatch/
-repo_url: https://github.com/keys/overwatch
-repo_name: keys/overwatch
+site_url: https://professor-moody.github.io/overwatch/
+repo_url: https://github.com/professor-moody/overwatch
+repo_name: professor-moody/overwatch
 
 theme:
   name: material
@@ -62,6 +62,7 @@ nav:
     - Dashboard: dashboard.md
   - Architecture:
     - Overview: architecture.md
+    - Key Concepts: concepts.md
     - Graph Model: graph-model.md
   - Tool Reference:
     - tools/index.md
@@ -98,13 +99,16 @@ nav:
       - run_retrospective: tools/run-retrospective.md
   - Skills:
     - skills/index.md
+    - "Featured: Kerberoasting": skills/featured.md
   - Operator Playbook:
     - playbook/index.md
+    - End-to-End Walkthrough: playbook/walkthrough.md
     - GOAD AD Lab: playbook/goad-lab.md
     - HTB / Single Host: playbook/htb-single.md
     - Session Instructions: playbook/session-instructions.md
     - parse_output vs report_finding: playbook/parse-vs-report.md
     - Retrospectives: playbook/retrospective.md
+  - FAQ: faq.md
   - Development:
     - development.md
     - Contributing: contributing.md

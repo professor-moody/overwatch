@@ -1,14 +1,10 @@
 # Live Dashboard
 
-Overwatch includes a real-time graph visualization dashboard built with [sigma.js](https://www.sigmajs.org/) (WebGL) and [graphology](https://graphology.github.io/).
-
-## Overview
-
-The dashboard runs in the same process as the MCP server — no additional setup required. It provides a read-only view of the engagement graph with live updates via WebSocket.
+Overwatch includes a real-time graph visualization dashboard built with [sigma.js](https://www.sigmajs.org/) (WebGL) and [graphology](https://graphology.github.io/). The dashboard provides an interactive, read-only view of the engagement graph with live updates as findings are ingested.
 
 ## Access
 
-The dashboard starts automatically on port **8384** (configurable via `OVERWATCH_DASHBOARD_PORT`).
+The dashboard starts automatically on port **8384** (configurable via `OVERWATCH_DASHBOARD_PORT`). No additional setup required — it runs in the same process as the MCP server.
 
 ```
 http://localhost:8384
@@ -20,35 +16,165 @@ To disable the dashboard, set the port to `0`:
 OVERWATCH_DASHBOARD_PORT=0
 ```
 
-## Features
+## Graph Interactions
 
-- **Force-directed graph layout** — nodes arrange themselves based on relationships
-- **Node type filtering** — toggle visibility by type (hosts, services, credentials, etc.)
-- **Search** — find nodes by label, IP, hostname, or any property
-- **Dark theme** — designed for extended use during engagements
-- **Live updates** — graph changes broadcast via WebSocket as findings are ingested
-- **Side panels** — objectives, frontier items, active agents, and recent activity
+### Node Dragging
+
+Click and drag any node to reposition it. Dragged nodes become **fixed** — they stay in place while the layout algorithm continues to arrange the rest of the graph. This lets you pin important nodes (like domain controllers or compromised hosts) where you want them.
+
+### Animated ForceAtlas2 Layout
+
+The graph uses an animated ForceAtlas2 layout that runs continuously in the background:
+
+- Nodes repel each other and cluster by connectivity
+- `linLogMode` and `adjustSizes` produce better separation between clusters
+- New nodes are initially grouped by type before the layout takes over
+- The layout auto-stops after ~10 seconds of stability
+- Toggle on/off with the **Layout** button or press **Space**
+
+### Hover Highlighting
+
+Hovering over a node dims all unrelated nodes and edges to 12% opacity, making the neighborhood structure immediately visible. A **tooltip** appears showing:
+
+- Node type (color-coded badge)
+- Label and key properties (IP, hostname)
+- Connection count
+
+### Edge Coloring
+
+Edges are color-coded by category for quick visual identification:
+
+| Category | Color | Edge Types |
+|----------|-------|------------|
+| Network | Blue | `REACHABLE`, `RUNS`, `SAME_DOMAIN` |
+| Access | Green | `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE` |
+| Credential | Amber | `VALID_ON`, `OWNS_CRED`, `POTENTIAL_AUTH` |
+| Attack | Red | `CAN_DCSYNC`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, etc. |
+| ADCS | Purple | `CAN_ENROLL`, `ESC1`–`ESC8` |
+| Lateral | Pink | `RELAY_TARGET`, `NULL_SESSION` |
+
+### Path Highlighting
+
+**Shift+click** two nodes to highlight the shortest path between them. The path is drawn in amber with a thicker line weight. An info bar shows the path length and node sequence. Press **Esc** or click the close button to clear.
+
+### Neighborhood Focus
+
+**Double-click** a node to isolate its 2-hop neighborhood. All other nodes are hidden. A "Show All" banner appears at the top — click it or press **Esc** to exit focus mode.
+
+### Node Sizing
+
+Nodes are sized dynamically by degree (connection count): `base + log2(degree + 1) * 1.5`. Highly connected nodes like domain controllers and relay targets appear larger.
+
+### New Node Pulse
+
+When new nodes arrive via WebSocket (from `report_finding` or `parse_output`), they briefly glow with a pulse animation for 2 seconds. This makes it easy to spot new discoveries in real time.
+
+### Search
+
+The search box (top-right of the graph) matches against node labels, IPs, hostnames, and IDs. Matching nodes are highlighted; non-matching nodes dim.
+
+### Node Detail Panel
+
+Click any node to open the detail panel (bottom-right). It shows:
+
+- Node type badge with color
+- All properties as key-value pairs
+- Connection count
+- Clickable neighbor list (click a neighbor to navigate to it)
+
+### Frontier Item Navigation
+
+Click any frontier item in the sidebar to zoom the camera to its corresponding graph node.
+
+## Sidebar Panels
+
+The sidebar contains six collapsible panels:
+
+| Panel | Content |
+|-------|---------|
+| **Lab Readiness** | Current readiness status and top issues |
+| **Graph Summary** | Node counts by type, confirmed vs inferred edges |
+| **Objectives** | Engagement objectives with achievement status |
+| **Frontier** | Top 15 frontier items (click to zoom to node) |
+| **Agents** | Active sub-agents with status |
+| **Recent Activity** | Last 20 activity entries with timestamps |
+
+Click any panel header to collapse/expand it. Panel state is persisted in `localStorage`.
+
+## Controls
+
+### Buttons
+
+| Button | Action |
+|--------|--------|
+| **+** / **−** | Zoom in / out |
+| **Fit** | Reset camera to fit all nodes |
+| **Layout** | Toggle ForceAtlas2 layout on/off |
+| **Reset** | Clear all filters, restore all node types |
+| **Export** | Download a PNG screenshot of the current view |
+| **?** | Toggle keyboard shortcuts overlay |
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `F` | Fit to screen |
+| `Space` | Toggle layout |
+| `Esc` | Clear selection / exit focus / close detail |
+| `R` | Reset filters |
+| `+` / `-` | Zoom in / out |
+| `?` | Toggle shortcuts help |
+
+### Mouse Interactions
+
+| Action | Effect |
+|--------|--------|
+| **Click node** | Open detail panel |
+| **Drag node** | Reposition (becomes fixed) |
+| **Hover node** | Highlight neighborhood + show tooltip |
+| **Shift+Click** | Path highlight (click two nodes) |
+| **Double-click** | Neighborhood focus (2-hop isolation) |
+| **Click stage** | Close detail panel |
+
+## Minimap
+
+A 160×110px minimap in the bottom-right corner shows the full graph at a glance with a viewport rectangle indicating the current camera position. Click anywhere on the minimap to navigate.
 
 ## Architecture
 
 ```
 Browser ◄──── WebSocket ────► DashboardServer
-                                    │
-                              onUpdate callback
-                                    │
-                              GraphEngine.persist()
+  │                                 │
+  ├─ graph.js (sigma + FA2)   onUpdate callback
+  ├─ ui.js (sidebar + detail)      │
+  ├─ ws.js (reconnect logic)  GraphEngine.persist()
+  └─ main.js (wiring)
 ```
 
-- **HTTP** serves the self-contained SPA (`index.html`)
-- **WebSocket** broadcasts full graph state on every `persist()` call
+- **HTTP** serves static files from the `dashboard/` directory with MIME types and file caching
+- **WebSocket** broadcasts graph deltas on every `persist()` call; full state on connect
+- **HTTP polling** fallback every 5 seconds if WebSocket disconnects
+- **Auto-reconnect** attempts every 3 seconds on WebSocket close
 - **Read-only** — no mutations from the browser
-- **GraphEngine** fires `onUpdate()` after every graph change
+
+### File Structure
+
+| File | Purpose |
+|------|---------|
+| `index.html` | Slim HTML shell (~180 lines) loading CDN deps + local scripts |
+| `styles.css` | All CSS (~580 lines) including dark theme, animations, and responsive elements |
+| `graph.js` | Sigma.js init, ForceAtlas2 layout, node drag, hover, path/neighborhood highlight, minimap |
+| `ui.js` | Sidebar panels, node detail, search, keyboard shortcuts, frontier click |
+| `ws.js` | WebSocket connection, reconnect logic, HTTP polling fallback |
+| `main.js` | Entry point wiring all modules together |
 
 ## Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Dashboard SPA |
+| `/` | GET | Dashboard SPA (index.html) |
+| `/styles.css` | GET | Dashboard stylesheet |
+| `/graph.js`, `/ui.js`, `/ws.js`, `/main.js` | GET | Dashboard scripts |
 | `/api/state` | GET | Current engagement state (JSON) |
 | `/api/graph` | GET | Full graph export (JSON) |
 | `ws://` | WebSocket | Live graph delta stream |
@@ -57,11 +183,13 @@ Browser ◄──── WebSocket ────► DashboardServer
 
 Use [`run_lab_preflight`](tools/run-lab-preflight.md) to check dashboard readiness:
 
-```
-dashboard: {
-  enabled: true,
-  running: true,
-  address: "http://localhost:8384"
+```json
+{
+  "dashboard": {
+    "enabled": true,
+    "running": true,
+    "address": "http://localhost:8384"
+  }
 }
 ```
 
