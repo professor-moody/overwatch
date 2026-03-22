@@ -130,11 +130,37 @@ claude
 
 Claude Code will connect to the Overwatch MCP server automatically. The `CLAUDE.md` file in the project root provides the primary session instructions. Claude will call `get_state()` first to load the engagement briefing, then enter the main scoring loop.
 
+## First Lab Workflow
+
+### GOAD / Proxmox AD Lab
+
+Use this order for a first real lab run:
+
+1. Start the MCP server and confirm Claude can call `get_state`.
+2. Run `run_lab_preflight` with `profile: "goad_ad"` to check tool availability, graph health, persistence, and dashboard readiness.
+3. Ingest BloodHound data with `ingest_bloodhound`.
+4. Parse and ingest Nmap XML with `parse_output`.
+5. Parse and ingest NXC output with `parse_output`.
+6. Re-run `get_state` and `run_graph_health` to confirm the graph stayed healthy.
+7. Inspect the dashboard for frontier, health, and readiness context.
+8. Restart the server once and verify the engagement resumes cleanly from persisted state.
+
+### HTB / Single-Host VM
+
+For a smaller single-target workflow:
+
+1. Run `run_lab_preflight` with `profile: "single_host"`.
+2. Parse and ingest Nmap XML.
+3. Report at least one manual or parsed finding.
+4. Check `get_state`, `next_task`, and `run_graph_health`.
+5. Verify a restart/load round-trip before relying on the workflow for longer sessions.
+
 ## MCP Tools
 
 | Tool | Purpose | Read-only |
 |------|---------|-----------|
 | `get_state` | Full engagement briefing from graph | ✓ |
+| `run_lab_preflight` | Aggregate lab-readiness checks for GOAD or single-host testing | ✓ |
 | `next_task` | Filtered frontier candidates for scoring | ✓ |
 | `report_finding` | Submit new nodes/edges to the graph | ✗ |
 | `validate_action` | Pre-execution sanity check | ✓ |
@@ -146,6 +172,14 @@ Claude Code will connect to the Overwatch MCP server automatically. The `CLAUDE.
 | `update_agent` | Mark agent task complete/failed | ✗ |
 | `get_history` | Full activity log | ✓ |
 | `export_graph` | Complete graph dump | ✓ |
+| `run_graph_health` | Full graph integrity report | ✓ |
+| `ingest_bloodhound` | Import BloodHound JSON collections | ✗ |
+| `check_tools` | Inspect installed offensive tooling | ✓ |
+| `track_process` | Register a long-running scan or collection | ✗ |
+| `check_processes` | Inspect tracked process state | ✓ |
+| `suggest_inference_rule` | Add a custom inference rule | ✗ |
+| `parse_output` | Parse common tool output into findings | ✗ |
+| `run_retrospective` | Generate retrospective and skill-gap analysis | ✓ |
 
 ## Graph Model
 
@@ -227,7 +261,7 @@ Tags improve search ranking — use specific terms the LLM might search for.
 4. **Agent Execution** — Sub-agents work scoped tasks, report findings in real time.
 5. **Recovery** — After compaction, `get_state()` rebuilds context from graph. Zero loss.
 6. **Objective Tracking** — Graph path analysis detects when objectives are achieved.
-7. **Retrospective** — Full history review produces skill updates, new inference rules, weight tuning.
+7. **Retrospective** — Full history review produces skill updates, new inference rules, context-improvement recommendations, and heuristic trace telemetry.
 
 ## State Persistence
 

@@ -1,9 +1,15 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import { checkAllTools } from '../services/tool-check.js';
+import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
 
-export function registerStateTools(server: McpServer, engine: GraphEngine): void {
+type StateToolOptions = {
+  getDashboardStatus?: () => { enabled: boolean; running: boolean; address?: string };
+};
+
+export function registerStateTools(server: McpServer, engine: GraphEngine, options: StateToolOptions = {}): void {
 
   // ============================================================
   // Tool: get_state
@@ -51,6 +57,55 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
       state.recent_activity = state.recent_activity.slice(-activity_count);
       return {
         content: [{ type: 'text', text: JSON.stringify(state, null, 2) }]
+      };
+    })
+  );
+
+  // ============================================================
+  // Tool: run_lab_preflight
+  // Aggregate lab-readiness checks for GOAD/HTB-style workflows
+  // ============================================================
+  server.registerTool(
+    'run_lab_preflight',
+    {
+      title: 'Run Lab Preflight',
+      description: `Run a read-only lab-readiness check for the current engagement.
+
+This aggregates:
+- engagement config validity and scope shape
+- offensive tool availability for the selected profile
+- graph health summary
+- persistence and restart-safety checks
+- dashboard readiness
+- current graph stage (empty, seeded, or mid-run)
+
+Profiles:
+- **goad_ad**: GOAD-style multi-host AD lab validation
+- **single_host**: HTB-style or standalone host validation
+
+Use this before your first lab run, after major ingestion, or after restart to confirm the environment is trustworthy enough for operator testing.`,
+      inputSchema: {
+        profile: z.enum(['goad_ad', 'single_host'])
+          .default('goad_ad')
+          .describe('Lab profile to validate against.'),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      }
+    },
+    withErrorBoundary('run_lab_preflight', async ({ profile }) => {
+      const toolStatuses = await checkAllTools();
+      const report = runLabPreflight(engine, {
+        profile,
+        toolStatuses,
+        dashboard: options.getDashboardStatus?.(),
+      });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(report, null, 2) }]
       };
     })
   );

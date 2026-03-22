@@ -241,6 +241,35 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+.readiness-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.readiness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+.readiness-badge.ready { color: var(--green); }
+.readiness-badge.warning { color: var(--amber); }
+.readiness-badge.blocked { color: var(--red); }
+.readiness-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.readiness-issue {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  padding-left: 10px;
+  border-left: 2px solid rgba(255,255,255,0.08);
+}
 
 /* Frontier items */
 .frontier-item {
@@ -405,6 +434,14 @@ body {
 
   <!-- Sidebar -->
   <div class="sidebar">
+    <div class="panel">
+      <div class="panel-header">Lab Readiness</div>
+      <div class="readiness-panel">
+        <div class="readiness-badge" id="readiness-status">—</div>
+        <div class="readiness-issues" id="readiness-issues"></div>
+      </div>
+    </div>
+
     <!-- Graph Stats -->
     <div class="panel">
       <div class="panel-header">Graph Summary</div>
@@ -694,6 +731,9 @@ function updateUI(state) {
   // Graph stats
   updateStats(state);
 
+  // Lab readiness
+  updateReadiness(state);
+
   // Objectives
   updateObjectives(state);
 
@@ -705,6 +745,23 @@ function updateUI(state) {
 
   // Activity
   updateActivity(state);
+}
+
+function updateReadiness(state) {
+  const badge = document.getElementById('readiness-status');
+  const issues = document.getElementById('readiness-issues');
+  const readiness = state.lab_readiness || { status: 'ready', top_issues: [] };
+
+  badge.className = `readiness-badge ${readiness.status || 'ready'}`;
+  badge.textContent = readiness.status || 'ready';
+
+  const topIssues = readiness.top_issues || [];
+  if (topIssues.length === 0) {
+    issues.innerHTML = '<div class="empty-state">No immediate readiness issues</div>';
+    return;
+  }
+
+  issues.innerHTML = topIssues.map(issue => `<div class="readiness-issue">${issue}</div>`).join('');
 }
 
 function updateStats(state) {

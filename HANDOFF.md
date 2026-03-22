@@ -495,7 +495,7 @@ Additional v0.2 work:
 
 Priority items for the next iteration:
 
-1. ~~**Retrospective tool**~~ — ✅ `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, scoring weight recommendations, attack path report (markdown), RLVR training traces. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
+1. ~~**Retrospective tool**~~ — ✅ `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, context-improvement recommendations, attack path report (markdown), and heuristic RLVR trace telemetry. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
 
 2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → bash execution → parse_output/report_finding → inference → repeat. This will surface integration gaps that unit tests can't catch.
 

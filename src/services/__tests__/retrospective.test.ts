@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   analyzeInferenceGaps,
   analyzeSkillGaps,
-  analyzeScoring,
+  analyzeContextImprovements,
+  analyzeLoggingQuality,
   generateReport,
   exportTrainingTraces,
   runRetrospective,
@@ -292,32 +293,67 @@ describe('Retrospective', () => {
   });
 
   // =============================================
-  // Scoring Analysis
+  // Context Improvement Analysis
   // =============================================
-  describe('analyzeScoring', () => {
-    it('returns current and suggested weights', () => {
+  describe('analyzeContextImprovements', () => {
+    it('returns structured context-improvement output', () => {
       const input = makeInput();
-      const scoring = analyzeScoring(input);
-      expect(scoring.current_weights).toBeDefined();
-      expect(scoring.suggested_weights).toBeDefined();
-      expect(scoring.rationale.length).toBeGreaterThan(0);
+      const improvements = analyzeContextImprovements(input);
+      expect(improvements.frontier_observations).toBeInstanceOf(Array);
+      expect(improvements.context_gaps).toBeInstanceOf(Array);
+      expect(improvements.opsec_observations).toBeInstanceOf(Array);
+      expect(improvements.logging_quality).toBeDefined();
+      expect(improvements.recommendations).toBeInstanceOf(Array);
     });
 
-    it('tracks success by frontier type', () => {
+    it('tracks success by frontier type as observational telemetry only', () => {
       const input = makeInput();
-      const scoring = analyzeScoring(input);
-      expect(scoring.success_by_frontier_type).toHaveProperty('incomplete_node');
-      expect(scoring.success_by_frontier_type).toHaveProperty('untested_edge');
-      expect(scoring.success_by_frontier_type).toHaveProperty('inferred_edge');
+      const improvements = analyzeContextImprovements(input);
+      expect(improvements.success_by_frontier_type).toHaveProperty('incomplete_node');
+      expect(improvements.success_by_frontier_type).toHaveProperty('untested_edge');
+      expect(improvements.success_by_frontier_type).toHaveProperty('inferred_edge');
     });
 
-    it('suggests increased hops_to_objective weight when objectives unachieved', () => {
-      const input = makeInput();
-      // obj-dc is not achieved
-      const scoring = analyzeScoring(input);
-      expect(scoring.suggested_weights.hops_to_objective).toBeGreaterThanOrEqual(scoring.current_weights.hops_to_objective);
-      const objRationale = scoring.rationale.find(r => r.includes('objective'));
-      expect(objRationale).toBeDefined();
+    it('turns low-yield inferred edges into a context observation, not a weight change', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'inferred path reviewed', frontier_type: 'inferred_edge', outcome: 'failure', category: 'frontier' },
+          { timestamp: '2026-01-01T01:05:00Z', description: 'inferred path reviewed again', frontier_type: 'inferred_edge', outcome: 'failure', category: 'frontier' },
+          { timestamp: '2026-01-01T01:10:00Z', description: 'inferred path reviewed a third time', frontier_type: 'inferred_edge', outcome: 'failure', category: 'frontier' },
+        ],
+      });
+      const improvements = analyzeContextImprovements(input);
+      const inferredObservation = improvements.frontier_observations.find(obs => obs.area === 'inferred_edge');
+      expect(inferredObservation).toBeDefined();
+      expect(inferredObservation!.observation).toContain('low apparent yield');
+      expect((improvements as any).suggested_weights).toBeUndefined();
+    });
+  });
+
+  describe('analyzeLoggingQuality', () => {
+    it('reports weak logging quality when history relies mostly on text heuristics', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'nmap scan completed' },
+          { timestamp: '2026-01-01T01:05:00Z', description: 'Finding ingested: 2 new nodes' },
+          { timestamp: '2026-01-01T01:10:00Z', description: 'admin access denied' },
+        ],
+      });
+      const quality = analyzeLoggingQuality(input);
+      expect(quality.status).toBe('weak');
+      expect(quality.issues.length).toBeGreaterThan(0);
+    });
+
+    it('reports better confidence when structured activity fields are present', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'frontier follow-up', category: 'frontier', frontier_type: 'incomplete_node', outcome: 'success' },
+          { timestamp: '2026-01-01T01:05:00Z', description: 'finding confirmed', category: 'finding', outcome: 'success' },
+          { timestamp: '2026-01-01T01:10:00Z', description: 'objective achieved', category: 'objective', outcome: 'success' },
+        ],
+      });
+      const quality = analyzeLoggingQuality(input);
+      expect(quality.status).not.toBe('weak');
     });
   });
 
@@ -401,13 +437,13 @@ describe('Retrospective', () => {
   describe('exportTrainingTraces', () => {
     it('produces traces from activity log', () => {
       const input = makeInput();
-      const traces = exportTrainingTraces(input);
+      const { traces } = exportTrainingTraces(input);
       expect(traces.length).toBe(input.history.length);
     });
 
     it('each trace has required fields', () => {
       const input = makeInput();
-      const traces = exportTrainingTraces(input);
+      const { traces } = exportTrainingTraces(input);
       for (const t of traces) {
         expect(t).toHaveProperty('step');
         expect(t).toHaveProperty('timestamp');
@@ -415,6 +451,8 @@ describe('Retrospective', () => {
         expect(t).toHaveProperty('action');
         expect(t).toHaveProperty('outcome');
         expect(t).toHaveProperty('reward');
+        expect(t).toHaveProperty('confidence');
+        expect(t).toHaveProperty('derived_from');
         expect(t.state_summary).toHaveProperty('nodes');
         expect(t.state_summary).toHaveProperty('edges');
         expect(t.state_summary).toHaveProperty('access_level');
@@ -424,7 +462,7 @@ describe('Retrospective', () => {
 
     it('assigns positive reward for findings', () => {
       const input = makeInput();
-      const traces = exportTrainingTraces(input);
+      const { traces } = exportTrainingTraces(input);
       // The "Finding ingested: 2 new nodes" entry should have positive reward
       const findingTrace = traces.find(t => t.action.type === 'report_finding');
       expect(findingTrace).toBeDefined();
@@ -432,15 +470,28 @@ describe('Retrospective', () => {
 
     it('assigns high reward for objective achievement', () => {
       const input = makeInput();
-      const traces = exportTrainingTraces(input);
+      const { traces } = exportTrainingTraces(input);
       const objTrace = traces.find(t => t.action.type === 'objective_achieved');
       expect(objTrace).toBeDefined();
+    });
+
+    it('classifies text-derived traces as low confidence', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'nmap scan completed on 10.10.10.0/30' },
+          { timestamp: '2026-01-01T01:01:00Z', description: 'Finding ingested: 2 new nodes, 2 new edges' },
+        ],
+      });
+      const { traces, trace_quality } = exportTrainingTraces(input);
+      expect(traces[0].confidence).toBe('low');
+      expect(traces[0].derived_from).toBe('text_heuristic');
+      expect(trace_quality.status).not.toBe('good');
     });
 
     it('returns empty traces for empty history', () => {
       const input = makeInput();
       input.history = [];
-      const traces = exportTrainingTraces(input);
+      const { traces } = exportTrainingTraces(input);
       expect(traces).toEqual([]);
     });
   });
@@ -449,16 +500,18 @@ describe('Retrospective', () => {
   // Full Retrospective
   // =============================================
   describe('runRetrospective', () => {
-    it('produces all five outputs', () => {
+    it('produces all retrospective outputs with context improvements', () => {
       const input = makeInput();
       const result = runRetrospective(input);
       expect(result.inference_suggestions).toBeInstanceOf(Array);
       expect(result.skill_gaps).toBeDefined();
       expect(result.skill_gaps.unused_skills).toBeInstanceOf(Array);
-      expect(result.scoring).toBeDefined();
-      expect(result.scoring.rationale).toBeInstanceOf(Array);
+      expect(result.context_improvements).toBeDefined();
+      expect(result.context_improvements.recommendations).toBeInstanceOf(Array);
       expect(result.report_markdown).toContain('# Engagement Report');
+      expect(result.report_markdown).toContain('## Retrospective Findings');
       expect(result.training_traces).toBeInstanceOf(Array);
+      expect(result.trace_quality).toBeDefined();
       expect(result.summary).toContain('Retro Test Engagement');
     });
 
@@ -481,6 +534,21 @@ describe('Retrospective', () => {
       expect(result.training_traces).toEqual([]);
       expect(result.report_markdown).toContain('# Engagement Report');
       expect(result.summary).toContain('0 nodes');
+    });
+
+    it('surfaces opsec observations for restrictive engagements with noisy activity', () => {
+      const input = makeInput({
+        config: {
+          ...makeInput().config,
+          opsec: { name: 'redteam', max_noise: 0.3 },
+        },
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'nmap scan completed on 10.10.10.0/30' },
+          { timestamp: '2026-01-01T01:05:00Z', description: 'secretsdump attempt failed - access denied' },
+        ],
+      });
+      const result = runRetrospective(input);
+      expect(result.context_improvements.opsec_observations.length).toBeGreaterThan(0);
     });
   });
 });

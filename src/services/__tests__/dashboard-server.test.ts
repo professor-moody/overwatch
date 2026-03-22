@@ -101,6 +101,7 @@ describe('DashboardServer', () => {
     expect(mockClient.send).toHaveBeenCalledTimes(1);
     const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
     expect(payload.type).toBe('graph_update');
+    expect(payload.data.state.lab_readiness).toBeDefined();
     expect(payload.data.delta.nodes.map((node: any) => node.id).sort()).toEqual([
       'host-10-10-10-1',
       'svc-10-10-10-1-445',

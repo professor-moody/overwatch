@@ -1521,12 +1521,14 @@ describe('GraphEngine', () => {
     it('preserves identical array content while only updating provenance metadata', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
+        timestamp: '2026-03-21T10:00:00Z',
         nodes: [
           { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
         ],
       }));
 
       const result = engine.ingestFinding(makeFinding({
+        timestamp: '2026-03-21T10:05:00Z',
         nodes: [
           { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
         ],
@@ -1597,8 +1599,8 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
 
   return {
     id: 'finding-' + Math.random().toString(36).slice(2),
-    agent_id: 'test-agent',
-    timestamp: new Date().toISOString(),
+    agent_id: overrides.agent_id || 'test-agent',
+    timestamp: overrides.timestamp || new Date().toISOString(),
     nodes: enrichedNodes,
     edges: overrides.edges || [],
   };

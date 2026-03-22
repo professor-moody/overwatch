@@ -15,6 +15,7 @@ import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
+import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -866,6 +867,7 @@ export class GraphEngine {
     const frontier = this.computeFrontier();
     const { passed } = this.filterFrontier(frontier);
     const healthReport = this.runHealthChecks();
+    const labReadiness = summarizeInlineLabReadiness(this);
 
     return {
       config: this.ctx.config,
@@ -887,6 +889,7 @@ export class GraphEngine {
         current_access_level: this.computeAccessLevel(compromised)
       },
       warnings: summarizeHealthReport(healthReport),
+      lab_readiness: labReadiness,
     };
   }
 
@@ -953,6 +956,10 @@ export class GraphEngine {
 
   getHealthReport(): HealthReport {
     return this.runHealthChecks();
+  }
+
+  getStateFilePath(): string {
+    return this.ctx.stateFilePath;
   }
 
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {

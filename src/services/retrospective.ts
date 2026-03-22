@@ -6,7 +6,8 @@
 import type {
   EngagementConfig, NodeProperties, EdgeProperties, EdgeType, ExportedGraph,
   InferenceRule, AgentTask, InferenceRuleSuggestion,
-  SkillGapReport, ScoringRecommendation, RLVRTrace, RetrospectiveResult,
+  SkillGapReport, ContextImprovementReport, RLVRTrace, RetrospectiveResult,
+  LoggingQualityReport, TraceQualityReport, AnalysisConfidence,
 } from '../types.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
@@ -271,19 +272,12 @@ export function analyzeSkillGaps(input: RetrospectiveInput): SkillGapReport {
 }
 
 // ============================================================
-// Scoring Analysis
+// Context Improvement Analysis
 // ============================================================
 
-export function analyzeScoring(input: RetrospectiveInput): ScoringRecommendation {
-  // Default weights (what the system currently uses implicitly)
-  const currentWeights: Record<string, number> = {
-    hops_to_objective: 0.25,
-    fan_out_estimate: 0.25,
-    confidence: 0.25,
-    opsec_noise_penalty: 0.25,
-  };
+type FrontierSuccessStats = Record<string, { total: number; successful: number }>;
 
-  // Analyze which activity log entries correspond to findings vs dead ends
+function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccessStats {
   const successByType: Record<string, { total: number; successful: number }> = {
     incomplete_node: { total: 0, successful: 0 },
     untested_edge: { total: 0, successful: 0 },
@@ -338,51 +332,226 @@ export function analyzeScoring(input: RetrospectiveInput): ScoringRecommendation
     }
   }
 
-  // Compute suggested weights based on success rates
-  const suggestedWeights = { ...currentWeights };
-  const rationale: string[] = [];
+  return successByType;
+}
 
-  // If inferred edges have high confirmation rate, boost confidence weight
-  const inferredStats = successByType['inferred_edge'];
-  if (inferredStats.total > 0) {
-    const rate = inferredStats.successful / inferredStats.total;
-    if (rate > 0.5) {
-      suggestedWeights.confidence = 0.35;
-      suggestedWeights.fan_out_estimate = 0.20;
-      rationale.push(`Inferred edges had ${(rate * 100).toFixed(0)}% success rate — boost confidence weight`);
-    } else if (rate < 0.2) {
-      suggestedWeights.confidence = 0.15;
-      suggestedWeights.hops_to_objective = 0.30;
-      rationale.push(`Inferred edges had only ${(rate * 100).toFixed(0)}% success rate — reduce confidence weight, prioritize objective proximity`);
+export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQualityReport {
+  const total = input.history.length;
+  if (total === 0) {
+    return {
+      status: 'weak',
+      issues: ['No activity history is available, so retrospective attribution is almost entirely unavailable.'],
+      recommendation: 'Record structured activity entries with category, frontier_type, and outcome during each run.',
+    };
+  }
+
+  const withCategory = input.history.filter(entry => !!entry.category).length;
+  const withFrontierType = input.history.filter(entry => !!entry.frontier_type).length;
+  const withOutcome = input.history.filter(entry => !!entry.outcome).length;
+
+  let heuristicCount = 0;
+  let ambiguousWindows = 0;
+  for (let i = 0; i < input.history.length; i++) {
+    const entry = input.history[i];
+    if (!entry.category || !entry.frontier_type || !entry.outcome) {
+      heuristicCount++;
+    }
+
+    const window = input.history.slice(Math.max(0, i - 2), Math.min(input.history.length, i + 3));
+    const agents = new Set(window.map(candidate => candidate.agent_id).filter((value): value is string => !!value));
+    const hasFinding = window.some(candidate => candidate.category === 'finding' || /finding|ingest|discovered/i.test(candidate.description));
+    if (agents.size > 1 && hasFinding) {
+      ambiguousWindows++;
     }
   }
 
-  // If incomplete_node exploration was very productive, boost fan_out
-  const incompleteStats = successByType['incomplete_node'];
-  if (incompleteStats.total > 0) {
-    const rate = incompleteStats.successful / incompleteStats.total;
-    if (rate > 0.6) {
-      suggestedWeights.fan_out_estimate = 0.30;
-      rationale.push(`Node enumeration had ${(rate * 100).toFixed(0)}% yield — increase fan_out weight`);
+  const categoryRate = withCategory / total;
+  const frontierRate = withFrontierType / total;
+  const outcomeRate = withOutcome / total;
+  const heuristicRate = heuristicCount / total;
+  const ambiguousRate = ambiguousWindows / total;
+
+  const issues: string[] = [];
+  if (categoryRate < 0.6) issues.push(`Only ${(categoryRate * 100).toFixed(0)}% of history entries include a category.`);
+  if (frontierRate < 0.4) issues.push(`Only ${(frontierRate * 100).toFixed(0)}% of history entries include a frontier type.`);
+  if (outcomeRate < 0.5) issues.push(`Only ${(outcomeRate * 100).toFixed(0)}% of history entries include an explicit outcome.`);
+  if (heuristicRate > 0.5) issues.push(`About ${(heuristicRate * 100).toFixed(0)}% of retrospective judgments depend on text heuristics.`);
+  if (ambiguousRate > 0.2) issues.push('Nearby multi-agent findings make action/result attribution ambiguous in several windows.');
+
+  const status = issues.length === 0
+    ? 'good'
+    : (categoryRate < 0.35 || frontierRate < 0.2 || outcomeRate < 0.25 || heuristicRate > 0.75)
+      ? 'weak'
+      : 'mixed';
+
+  const recommendation = status === 'good'
+    ? 'Continue recording structured activity entries; the current history quality supports iterative improvement.'
+    : status === 'mixed'
+      ? 'Increase structured logging on frontier execution and validation outcomes so retrospective guidance relies less on text heuristics.'
+      : 'Prioritize instrumentation: record category, frontier_type, and outcome for key actions before relying heavily on retrospective guidance.';
+
+  return { status, issues, recommendation };
+}
+
+export function analyzeContextImprovements(input: RetrospectiveInput): ContextImprovementReport {
+  const successByType = collectFrontierSuccessStats(input);
+  const loggingQuality = analyzeLoggingQuality(input);
+  const frontierObservations: ContextImprovementReport['frontier_observations'] = [];
+  const contextGaps: ContextImprovementReport['context_gaps'] = [];
+  const opsecObservations: ContextImprovementReport['opsec_observations'] = [];
+  const recommendations = new Set<string>();
+
+  for (const [frontierType, stats] of Object.entries(successByType)) {
+    if (stats.total === 0) {
+      frontierObservations.push({
+        area: frontierType,
+        observation: `${frontierType} was underrepresented in the engagement, so conclusions about its yield are weak.`,
+        evidence_count: 0,
+        confidence: loggingQuality.status === 'good' ? 'medium' : 'low',
+      });
+      continue;
+    }
+
+    const rate = stats.successful / stats.total;
+    const confidence: AnalysisConfidence =
+      loggingQuality.status === 'good' && stats.total >= 3 ? 'high'
+        : loggingQuality.status === 'weak' ? 'low'
+          : 'medium';
+
+    let observation = `${frontierType} produced ${(rate * 100).toFixed(0)}% apparent yield across ${stats.total} observed follow-ups.`;
+    if (frontierType === 'incomplete_node' && rate >= 0.6) {
+      observation = `Incomplete-node exploration produced strong yield and likely benefited from richer host/service context.`;
+    } else if (frontierType === 'inferred_edge' && rate < 0.3) {
+      observation = `Inferred-edge follow-up had low apparent yield, which suggests the model needs better supporting context before acting on hypotheses.`;
+    } else if (frontierType === 'untested_edge' && stats.total < 2) {
+      observation = 'Untested-edge follow-up was sparse, so the retrospective has limited evidence about whether those leads are being explored effectively.';
+    }
+
+    frontierObservations.push({
+      area: frontierType,
+      observation,
+      evidence_count: stats.total,
+      confidence,
+    });
+  }
+
+  const hostNodes = input.graph.nodes.filter(node => node.properties.type === 'host');
+  const aliveHosts = hostNodes.filter(node => node.properties.alive !== false);
+  const hostsMissingOs = aliveHosts.filter(node => !node.properties.os);
+  if (hostsMissingOs.length >= 2) {
+    contextGaps.push({
+      area: 'parser improvement',
+      gap: `${hostsMissingOs.length} live host nodes still lack operating-system enrichment.`,
+      recommendation: 'Improve parser or manual enrichment coverage so hosts carry OS context before follow-on reasoning.',
+      severity: 'warning',
+      confidence: 'medium',
+    });
+    recommendations.add('Improve parser or manual enrichment coverage for host operating-system context.');
+  }
+
+  const servicesMissingDetail = input.graph.nodes.filter(node =>
+    node.properties.type === 'service' &&
+    !node.properties.version &&
+    !node.properties.banner &&
+    !node.properties.protocol,
+  );
+  if (servicesMissingDetail.length >= 2) {
+    contextGaps.push({
+      area: 'parser improvement',
+      gap: `${servicesMissingDetail.length} service nodes lack banner, version, or protocol enrichment.`,
+      recommendation: 'Improve service parsing so Claude gets richer service context instead of making decisions from bare open ports.',
+      severity: 'warning',
+      confidence: 'medium',
+    });
+    recommendations.add('Improve service parsing so frontier reasoning includes richer service details.');
+  }
+
+  if (input.skillNames.length > 0) {
+    const skillGaps = analyzeSkillGaps(input);
+    if (skillGaps.missing_skills.length > 0) {
+      contextGaps.push({
+        area: 'skill-library improvement',
+        gap: `Techniques were attempted without matching skill coverage: ${skillGaps.missing_skills.slice(0, 3).join(', ')}${skillGaps.missing_skills.length > 3 ? ', ...' : ''}.`,
+        recommendation: 'Add or improve skills for the techniques repeatedly attempted during the engagement.',
+        severity: 'warning',
+        confidence: 'medium',
+      });
+      recommendations.add('Add or update skills for techniques that appeared in the engagement without matching coverage.');
     }
   }
 
-  // Check objective achievement timing
-  const objectivesAchieved = input.config.objectives.filter(o => o.achieved).length;
-  const totalObjectives = input.config.objectives.length;
-  if (totalObjectives > 0 && objectivesAchieved < totalObjectives) {
-    suggestedWeights.hops_to_objective = Math.min(0.35, suggestedWeights.hops_to_objective + 0.05);
-    rationale.push(`${totalObjectives - objectivesAchieved}/${totalObjectives} objectives unachieved — increase hops_to_objective weight`);
+  const deniedOrFailed = input.history.filter(entry => /fail|denied|error/i.test(entry.description));
+  if (deniedOrFailed.length > 0) {
+    contextGaps.push({
+      area: 'validation-warning improvement',
+      gap: `${deniedOrFailed.length} history entries indicate failures or access denial, which may mean validation warnings were too weak or too generic.`,
+      recommendation: 'Strengthen validate_action guidance for recurring failure patterns so Claude gets clearer pre-execution context.',
+      severity: loggingQuality.status === 'weak' ? 'warning' : 'critical',
+      confidence: loggingQuality.status === 'good' ? 'medium' : 'low',
+    });
+    recommendations.add('Strengthen validation warnings for recurring failure patterns observed in the history.');
   }
 
-  if (rationale.length === 0) {
-    rationale.push('Insufficient data to recommend weight changes — using defaults');
+  if (loggingQuality.status !== 'good') {
+    contextGaps.push({
+      area: 'logging/instrumentation improvement',
+      gap: 'Structured activity logging is not strong enough to support high-confidence iterative improvements.',
+      recommendation: loggingQuality.recommendation,
+      severity: loggingQuality.status === 'weak' ? 'critical' : 'warning',
+      confidence: 'high',
+    });
+    recommendations.add(loggingQuality.recommendation);
+  }
+
+  if (input.config.opsec.max_noise <= 0.3) {
+    const noisyPatterns = input.history.filter(entry =>
+      /nmap|scan|secretsdump|responder|spray|brute/i.test(entry.description)
+    );
+    if (noisyPatterns.length > 0) {
+      opsecObservations.push({
+        observation: `${noisyPatterns.length} history entries look noisy for a restrictive OPSEC profile (${input.config.opsec.name}, max noise ${input.config.opsec.max_noise}).`,
+        recommendation: 'Surface stronger OPSEC context and warnings before noisy actions instead of trying to numerically suppress them afterward.',
+        confidence: loggingQuality.status === 'good' ? 'medium' : 'low',
+      });
+      recommendations.add('Improve OPSEC-facing validation and context for noisy actions in restrictive engagements.');
+    }
+  }
+
+  const blacklistedHits = (input.config.opsec.blacklisted_techniques || []).filter(technique =>
+    input.history.some(entry => entry.description.toLowerCase().includes(technique.toLowerCase()))
+  );
+  if (blacklistedHits.length > 0) {
+    opsecObservations.push({
+      observation: `Blacklisted technique references appeared in history: ${blacklistedHits.join(', ')}.`,
+      recommendation: 'Review validation and prompt guidance to ensure blacklisted techniques are vetoed before execution.',
+      confidence: 'high',
+    });
+    recommendations.add('Ensure validation and prompting clearly veto blacklisted techniques before execution.');
+  }
+
+  const inferredEdges = input.graph.edges.filter(edge => edge.properties.inferred_by_rule);
+  const unconfirmedInferred = inferredEdges.filter(edge => !edge.properties.confirmed_at);
+  if (inferredEdges.length >= 3 && unconfirmedInferred.length / inferredEdges.length > 0.6) {
+    contextGaps.push({
+      area: 'inference-rule improvement',
+      gap: `${unconfirmedInferred.length}/${inferredEdges.length} inferred edges remained unconfirmed.`,
+      recommendation: 'Improve inference rules or enrich supporting node context so hypotheses arrive with better evidence.',
+      severity: 'warning',
+      confidence: 'medium',
+    });
+    recommendations.add('Improve inference support context rather than trying to compensate with ranking formulas.');
+  }
+
+  if (recommendations.size === 0) {
+    recommendations.add('No dominant context gap stood out; continue collecting richer structured activity and enrichment data.');
   }
 
   return {
-    current_weights: currentWeights,
-    suggested_weights: suggestedWeights,
-    rationale,
+    frontier_observations: frontierObservations,
+    context_gaps: contextGaps,
+    opsec_observations: opsecObservations,
+    logging_quality: loggingQuality,
+    recommendations: [...recommendations],
     success_by_frontier_type: successByType,
   };
 }
@@ -391,7 +560,10 @@ export function analyzeScoring(input: RetrospectiveInput): ScoringRecommendation
 // Attack Path Report (Markdown)
 // ============================================================
 
-export function generateReport(input: RetrospectiveInput): string {
+export function generateReport(
+  input: RetrospectiveInput,
+  retrospective?: Partial<Pick<RetrospectiveResult, 'inference_suggestions' | 'skill_gaps' | 'context_improvements' | 'trace_quality'>>
+): string {
   const config = input.config;
   const graph = input.graph;
   const history = input.history;
@@ -437,6 +609,10 @@ export function generateReport(input: RetrospectiveInput): string {
   // Agent summary
   const completedAgents = input.agents.filter(a => a.status === 'completed');
   const failedAgents = input.agents.filter(a => a.status === 'failed');
+  const inferenceSuggestions = retrospective?.inference_suggestions || [];
+  const skillGaps = retrospective?.skill_gaps;
+  const contextImprovements = retrospective?.context_improvements;
+  const traceQuality = retrospective?.trace_quality;
 
   // Build markdown
   const lines: string[] = [];
@@ -535,6 +711,61 @@ export function generateReport(input: RetrospectiveInput): string {
     lines.push('');
   }
 
+  if (contextImprovements || inferenceSuggestions.length > 0 || skillGaps || traceQuality) {
+    lines.push('## Retrospective Findings');
+    lines.push('');
+
+    if (contextImprovements) {
+      lines.push('### Context Improvements');
+      lines.push('');
+      for (const observation of contextImprovements.frontier_observations.slice(0, 3)) {
+        lines.push(`- **${observation.area}:** ${observation.observation} (${observation.confidence} confidence)`);
+      }
+      for (const gap of contextImprovements.context_gaps.slice(0, 3)) {
+        lines.push(`- **${gap.area}:** ${gap.gap} Recommendation: ${gap.recommendation} (${gap.confidence} confidence)`);
+      }
+      for (const opsec of contextImprovements.opsec_observations.slice(0, 2)) {
+        lines.push(`- **OPSEC:** ${opsec.observation} Recommendation: ${opsec.recommendation} (${opsec.confidence} confidence)`);
+      }
+      lines.push(`- **Logging quality:** ${contextImprovements.logging_quality.status}. ${contextImprovements.logging_quality.recommendation}`);
+      lines.push('');
+    }
+
+    if (inferenceSuggestions.length > 0) {
+      lines.push('### Inference Opportunities');
+      lines.push('');
+      for (const suggestion of inferenceSuggestions.slice(0, 3)) {
+        lines.push(`- ${suggestion.rule.name}: ${suggestion.evidence}`);
+      }
+      lines.push('');
+    }
+
+    if (skillGaps) {
+      lines.push('### Skill Gaps');
+      lines.push('');
+      if (skillGaps.missing_skills.length > 0) {
+        lines.push(`- Missing coverage: ${skillGaps.missing_skills.slice(0, 5).join(', ')}`);
+      }
+      if (skillGaps.failed_techniques.length > 0) {
+        lines.push(`- Failed techniques observed: ${skillGaps.failed_techniques.slice(0, 5).join(', ')}`);
+      }
+      if (skillGaps.missing_skills.length === 0 && skillGaps.failed_techniques.length === 0) {
+        lines.push('- No major skill gaps stood out in this run.');
+      }
+      lines.push('');
+    }
+
+    if (traceQuality) {
+      lines.push('### Trace Quality');
+      lines.push('');
+      lines.push(`- Trace quality is **${traceQuality.status}**.`);
+      for (const issue of traceQuality.issues.slice(0, 3)) {
+        lines.push(`- ${issue}`);
+      }
+      lines.push('');
+    }
+  }
+
   // Timeline (last 50 events)
   lines.push('## Activity Timeline');
   lines.push('');
@@ -577,9 +808,12 @@ export function generateReport(input: RetrospectiveInput): string {
 // RLVR Training Traces
 // ============================================================
 
-export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
+export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRTrace[]; trace_quality: TraceQualityReport } {
   const traces: RLVRTrace[] = [];
   const history = input.history;
+  let structuredCount = 0;
+  let mixedCount = 0;
+  let heuristicCount = 0;
 
   // Track running state as we walk the history
   let nodeCount = 0;
@@ -630,14 +864,23 @@ export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
     let newNodes = 0;
     let newEdges = 0;
     let objAchieved = false;
+    let usedStructuredOutcome = false;
+    let usedHeuristicOutcome = false;
 
     // Parse node/edge counts from the next few entries
     for (let j = i + 1; j < Math.min(i + 3, history.length); j++) {
-      const next = history[j].description.toLowerCase();
+      const nextEntry = history[j];
+      const next = nextEntry.description.toLowerCase();
       const nodeMatch = next.match(/(\d+)\s*new\s*node/);
       const edgeMatch = next.match(/(\d+)\s*new\s*edge/);
       if (nodeMatch) newNodes += parseInt(nodeMatch[1]);
       if (edgeMatch) newEdges += parseInt(edgeMatch[1]);
+      if (nextEntry.category === 'finding' || nextEntry.outcome === 'success') {
+        usedStructuredOutcome = true;
+      }
+      if (nodeMatch || edgeMatch || next.includes('objective achieved')) {
+        usedHeuristicOutcome = true;
+      }
       if (next.includes('objective achieved')) objAchieved = true;
     }
 
@@ -657,6 +900,22 @@ export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
     if (desc.includes('owns_cred')) reward += 1.0;
     if (desc.includes('fail') || desc.includes('denied')) reward -= 0.1;
 
+    const hasStructuredAction = !!entry.category || !!entry.frontier_type || !!entry.outcome;
+    const derived_from: RLVRTrace['derived_from'] = hasStructuredAction && usedStructuredOutcome
+      ? 'structured'
+      : (hasStructuredAction || usedStructuredOutcome)
+        ? 'mixed'
+        : 'text_heuristic';
+    const confidence: RLVRTrace['confidence'] = derived_from === 'structured'
+      ? 'high'
+      : derived_from === 'mixed'
+        ? 'medium'
+        : 'low';
+
+    if (derived_from === 'structured') structuredCount++;
+    else if (derived_from === 'mixed') mixedCount++;
+    else heuristicCount++;
+
     traces.push({
       step,
       timestamp: entry.timestamp,
@@ -673,11 +932,33 @@ export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
         objective_achieved: objAchieved,
       },
       reward,
+      confidence,
+      derived_from,
     });
     step++;
   }
 
-  return traces;
+  const issues: string[] = [];
+  if (heuristicCount > 0) {
+    issues.push(`${heuristicCount}/${traces.length || 1} traces rely mostly on text heuristics rather than structured action/result linkage.`);
+  }
+  if (mixedCount > structuredCount) {
+    issues.push('Most traces depend on mixed structured + heuristic attribution instead of explicit causal linkage.');
+  }
+  if (input.history.length > 0 && input.history.filter(entry => !!entry.frontier_type).length === 0) {
+    issues.push('History contains no explicit frontier_type fields, which weakens causal analysis.');
+  }
+
+  const trace_quality: TraceQualityReport = {
+    status: heuristicCount === 0
+      ? 'good'
+      : heuristicCount > structuredCount
+        ? 'weak'
+        : 'mixed',
+    issues,
+  };
+
+  return { traces, trace_quality };
 }
 
 // ============================================================
@@ -687,9 +968,14 @@ export function exportTrainingTraces(input: RetrospectiveInput): RLVRTrace[] {
 export function runRetrospective(input: RetrospectiveInput): RetrospectiveResult {
   const inferenceSuggestions = analyzeInferenceGaps(input);
   const skillGaps = analyzeSkillGaps(input);
-  const scoring = analyzeScoring(input);
-  const reportMarkdown = generateReport(input);
-  const trainingTraces = exportTrainingTraces(input);
+  const contextImprovements = analyzeContextImprovements(input);
+  const { traces: trainingTraces, trace_quality: traceQuality } = exportTrainingTraces(input);
+  const reportMarkdown = generateReport(input, {
+    inference_suggestions: inferenceSuggestions,
+    skill_gaps: skillGaps,
+    context_improvements: contextImprovements,
+    trace_quality: traceQuality,
+  });
 
   // Build summary
   const config = input.config;
@@ -703,16 +989,17 @@ export function runRetrospective(input: RetrospectiveInput): RetrospectiveResult
     `---`,
     `Inference suggestions: ${inferenceSuggestions.length}`,
     `Skill gaps: ${skillGaps.missing_skills.length} missing, ${skillGaps.unused_skills.length} unused`,
-    `Scoring recommendations: ${scoring.rationale.length} suggestions`,
-    `Training traces: ${trainingTraces.length} steps`,
+    `Context improvements: ${contextImprovements.recommendations.length} recommendations`,
+    `Training traces: ${trainingTraces.length} steps (${traceQuality.status} quality)`,
   ];
 
   return {
     inference_suggestions: inferenceSuggestions,
     skill_gaps: skillGaps,
-    scoring,
+    context_improvements: contextImprovements,
     report_markdown: reportMarkdown,
     training_traces: trainingTraces,
+    trace_quality: traceQuality,
     summary: summaryLines.join('\n'),
   };
 }

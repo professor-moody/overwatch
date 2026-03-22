@@ -80,8 +80,9 @@ if (!existsSync(dir)) {
 writeFileSync(join(dir, 'report.md'), result.report_markdown);
 writeFileSync(join(dir, 'inference-suggestions.json'), JSON.stringify(result.inference_suggestions, null, 2));
 writeFileSync(join(dir, 'skill-gaps.json'), JSON.stringify(result.skill_gaps, null, 2));
-writeFileSync(join(dir, 'scoring-recommendations.json'), JSON.stringify(result.scoring, null, 2));
+writeFileSync(join(dir, 'context-improvements.json'), JSON.stringify(result.context_improvements, null, 2));
 writeFileSync(join(dir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
+writeFileSync(join(dir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
 writeFileSync(join(dir, 'summary.txt'), result.summary);
 
 console.log(`Output written to ${dir}/`);
@@ -90,8 +91,9 @@ console.log('Files:');
 console.log(`  report.md                    — attack path report`);
 console.log(`  inference-suggestions.json   — ${result.inference_suggestions.length} rule suggestions`);
 console.log(`  skill-gaps.json              — ${result.skill_gaps.missing_skills.length} missing, ${result.skill_gaps.unused_skills.length} unused`);
-console.log(`  scoring-recommendations.json — ${result.scoring.rationale.length} recommendations`);
-console.log(`  training-traces.json         — ${result.training_traces.length} RLVR traces`);
+console.log(`  context-improvements.json    — ${result.context_improvements.recommendations.length} recommendations`);
+console.log(`  training-traces.json         — ${result.training_traces.length} heuristic RLVR traces`);
+console.log(`  trace-quality.json           — ${result.trace_quality.status} trace quality`);
 console.log(`  summary.txt                  — overview`);
 console.log('');
 console.log('=== Summary ===');

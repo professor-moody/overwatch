@@ -311,6 +311,37 @@ export interface EngagementState {
     current_access_level: string;
   };
   warnings: HealthSummary;
+  lab_readiness: LabReadinessSummary;
+}
+
+export type LabProfile = 'goad_ad' | 'single_host';
+export type LabReadinessStatus = 'ready' | 'warning' | 'blocked';
+
+export interface LabReadinessCheck {
+  name: string;
+  status: 'pass' | 'warning' | 'fail';
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface LabReadinessSummary {
+  status: LabReadinessStatus;
+  top_issues: string[];
+}
+
+export interface LabPreflightReport {
+  profile: LabProfile;
+  status: LabReadinessStatus;
+  graph_stage: 'empty' | 'seeded' | 'mid_run';
+  checks: LabReadinessCheck[];
+  missing_required_tools: string[];
+  warnings: string[];
+  recommended_next_steps: string[];
+  dashboard: {
+    enabled: boolean;
+    running: boolean;
+    address?: string;
+  };
 }
 
 export type HealthSeverity = 'warning' | 'critical';
@@ -397,10 +428,41 @@ export interface SkillGapReport {
   skill_usage_counts: Record<string, number>;
 }
 
-export interface ScoringRecommendation {
-  current_weights: Record<string, number>;
-  suggested_weights: Record<string, number>;
-  rationale: string[];
+export type AnalysisConfidence = 'low' | 'medium' | 'high';
+
+export interface FrontierObservation {
+  area: string;
+  observation: string;
+  evidence_count: number;
+  confidence: AnalysisConfidence;
+}
+
+export interface ContextGap {
+  area: string;
+  gap: string;
+  recommendation: string;
+  severity: 'warning' | 'critical';
+  confidence: AnalysisConfidence;
+}
+
+export interface OpsecObservation {
+  observation: string;
+  recommendation: string;
+  confidence: AnalysisConfidence;
+}
+
+export interface LoggingQualityReport {
+  status: 'good' | 'mixed' | 'weak';
+  issues: string[];
+  recommendation: string;
+}
+
+export interface ContextImprovementReport {
+  frontier_observations: FrontierObservation[];
+  context_gaps: ContextGap[];
+  opsec_observations: OpsecObservation[];
+  logging_quality: LoggingQualityReport;
+  recommendations: string[];
   success_by_frontier_type: Record<string, { total: number; successful: number }>;
 }
 
@@ -411,13 +473,21 @@ export interface RLVRTrace {
   action: { type: string; target?: string; technique?: string; tool?: string };
   outcome: { new_nodes: number; new_edges: number; objective_achieved: boolean };
   reward: number;
+  confidence: AnalysisConfidence;
+  derived_from: 'structured' | 'text_heuristic' | 'mixed';
+}
+
+export interface TraceQualityReport {
+  status: 'good' | 'mixed' | 'weak';
+  issues: string[];
 }
 
 export interface RetrospectiveResult {
   inference_suggestions: InferenceRuleSuggestion[];
   skill_gaps: SkillGapReport;
-  scoring: ScoringRecommendation;
+  context_improvements: ContextImprovementReport;
   report_markdown: string;
   training_traces: RLVRTrace[];
+  trace_quality: TraceQualityReport;
   summary: string;
 }

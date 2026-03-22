@@ -68,8 +68,20 @@ const server = new McpServer({
   version: '0.1.0'
 });
 
+// ============================================================
+// Dashboard (HTTP + WebSocket)
+// ============================================================
+const dashboardPort = parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
+const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort) : null;
+
 // --- Register all tools ---
-registerStateTools(server, engine);
+registerStateTools(server, engine, {
+  getDashboardStatus: () => ({
+    enabled: dashboard !== null,
+    running: dashboard?.running ?? false,
+    address: dashboard?.address,
+  }),
+});
 registerFindingTools(server, engine);
 registerScoringTools(server, engine);
 registerExplorationTools(server, engine);
@@ -81,12 +93,6 @@ registerProcessTools(server, processTracker, engine);
 registerInferenceTools(server, engine);
 registerParseOutputTools(server, engine);
 registerRetrospectiveTools(server, engine, skills);
-
-// ============================================================
-// Dashboard (HTTP + WebSocket)
-// ============================================================
-const dashboardPort = parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
-const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort) : null;
 
 // ============================================================
 // Start Server

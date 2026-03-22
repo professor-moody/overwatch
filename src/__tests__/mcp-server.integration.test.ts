@@ -38,9 +38,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 20 tools', async () => {
+  it('lists all 21 tools', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(20);
+    expect(result.tools.length).toBe(21);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -54,6 +54,7 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('get_history');
     expect(toolNames).toContain('get_skill');
     expect(toolNames).toContain('export_graph');
+    expect(toolNames).toContain('run_lab_preflight');
     expect(toolNames).toContain('run_graph_health');
     expect(toolNames).toContain('ingest_bloodhound');
     expect(toolNames).toContain('check_tools');
@@ -77,6 +78,19 @@ describe('MCP Server Integration', () => {
     expect(state.objectives).toBeDefined();
     expect(state.access_summary).toBeDefined();
     expect(state.warnings).toBeDefined();
+    expect(state.lab_readiness).toBeDefined();
+  });
+
+  it('run_lab_preflight returns a readiness report', async () => {
+    const result = await client.callTool({
+      name: 'run_lab_preflight',
+      arguments: { profile: 'single_host' },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.status).toBeDefined();
+    expect(body.checks).toBeInstanceOf(Array);
+    expect(body.recommended_next_steps).toBeInstanceOf(Array);
   });
 
   it('run_graph_health returns a health report', async () => {
@@ -162,5 +176,15 @@ describe('MCP Server Integration', () => {
     expect(body.nodes).toBeDefined();
     expect(body.edges).toBeDefined();
     expect(body.nodes.length).toBeGreaterThan(0);
+  });
+
+  it('run_retrospective returns context improvements and trace quality', async () => {
+    const result = await client.callTool({ name: 'run_retrospective', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.context_improvements).toBeDefined();
+    expect(body.context_improvements.recommendations).toBeInstanceOf(Array);
+    expect(body.trace_quality).toBeDefined();
+    expect(body.scoring).toBeUndefined();
   });
 });

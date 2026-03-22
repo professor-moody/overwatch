@@ -23,16 +23,16 @@ export function registerRetrospectiveTools(server: McpServer, engine: GraphEngin
 Produces five outputs:
 1. **Inference rule suggestions** — patterns the graph shows that existing rules missed
 2. **Skill gap analysis** — skills unused vs. techniques attempted without skills
-3. **Scoring weight recommendations** — which frontier metrics correlated with success
+3. **Context-improvement recommendations** — where context, logging, validation, and coverage should improve
 4. **Attack path report** — client-deliverable markdown (timeline, findings, recommendations)
-5. **RLVR training traces** — state→action→outcome triplets with reward signals
+5. **Heuristic RLVR traces** — state→action→outcome triplets with explicit confidence and trace quality
 
 Use this at the end of an engagement or after significant progress to:
 - Identify patterns that should become inference rules
 - Find methodology gaps in the skill library
-- Tune scoring weights for future engagements
+- Improve context, evidence quality, validation guidance, and logging for future runs
 - Generate a structured report
-- Export training data for model improvement
+- Export heuristic training telemetry for model improvement
 
 Optionally write all outputs to disk for archival.`,
       inputSchema: {
@@ -78,8 +78,9 @@ Optionally write all outputs to disk for archival.`,
         writeFileSync(join(dir, 'report.md'), result.report_markdown);
         writeFileSync(join(dir, 'inference-suggestions.json'), JSON.stringify(result.inference_suggestions, null, 2));
         writeFileSync(join(dir, 'skill-gaps.json'), JSON.stringify(result.skill_gaps, null, 2));
-        writeFileSync(join(dir, 'scoring-recommendations.json'), JSON.stringify(result.scoring, null, 2));
+        writeFileSync(join(dir, 'context-improvements.json'), JSON.stringify(result.context_improvements, null, 2));
         writeFileSync(join(dir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
+        writeFileSync(join(dir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
         writeFileSync(join(dir, 'summary.txt'), result.summary);
       }
 
@@ -90,8 +91,9 @@ Optionally write all outputs to disk for archival.`,
             summary: result.summary,
             inference_suggestions: result.inference_suggestions,
             skill_gaps: result.skill_gaps,
-            scoring: result.scoring,
+            context_improvements: result.context_improvements,
             training_traces_count: result.training_traces.length,
+            trace_quality: result.trace_quality,
             report_preview: result.report_markdown.slice(0, 500) + '...',
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
           }, null, 2)
