@@ -113,4 +113,25 @@ describe('ProcessTracker', () => {
       expect(summary.processes.length).toBe(1);
     });
   });
+
+  describe('serialize / deserialize', () => {
+    it('round-trips all processes', () => {
+      tracker.register({ id: 'p1', pid: 1, command: 'nmap', description: 'scan' });
+      tracker.register({ id: 'p2', pid: 2, command: 'responder', description: 'relay' });
+      tracker.update('p1', 'completed');
+
+      const serialized = tracker.serialize();
+      const restored = ProcessTracker.deserialize(serialized);
+
+      expect(restored.listAll().length).toBe(2);
+      expect(restored.get('p1')!.status).toBe('completed');
+      expect(restored.get('p1')!.completed_at).toBeDefined();
+      expect(restored.get('p2')!.status).toBe('running');
+    });
+
+    it('deserialize with empty array creates empty tracker', () => {
+      const restored = ProcessTracker.deserialize([]);
+      expect(restored.listAll().length).toBe(0);
+    });
+  });
 });

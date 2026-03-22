@@ -101,4 +101,16 @@ export class ProcessTracker {
       processes: all,
     };
   }
+
+  serialize(): TrackedProcess[] {
+    return this.listAll();
+  }
+
+  static deserialize(data: TrackedProcess[]): ProcessTracker {
+    const tracker = new ProcessTracker();
+    for (const proc of data) {
+      tracker.processes.set(proc.id, { ...proc });
+    }
+    return tracker;
+  }
 }

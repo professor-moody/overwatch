@@ -88,7 +88,7 @@ export class PathAnalyzer {
           minHops = path.length - 1;
         }
       } catch (err) {
-        this.ctx.log(`Path analysis error (${fromNodeId} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`);
+        this.ctx.log(`Path analysis error (${fromNodeId} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
       }
     }
 
@@ -124,7 +124,7 @@ export class PathAnalyzer {
             paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
           }
         } catch (err) {
-          this.ctx.log(`Path analysis error (${start} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`);
+          this.ctx.log(`Path analysis error (${start} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
         }
       }
     }
@@ -144,7 +144,7 @@ export class PathAnalyzer {
         paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
       }
     } catch (err) {
-      this.ctx.log(`Path analysis error (${fromNode} → ${toNode}): ${err instanceof Error ? err.message : String(err)}`);
+      this.ctx.log(`Path analysis error (${fromNode} → ${toNode}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
     }
 
     return paths.slice(0, maxPaths);

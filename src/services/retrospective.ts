@@ -21,6 +21,7 @@ export interface RetrospectiveInput {
   inferenceRules: InferenceRule[];
   agents: AgentTask[];
   skillNames: string[];
+  skillTags?: string[];
 }
 
 // ============================================================
@@ -164,22 +165,38 @@ export function analyzeSkillGaps(input: RetrospectiveInput): SkillGapReport {
   const usageCounts: Record<string, number> = {};
   const mentionedTechniques = new Set<string>();
 
-  // Common tool/technique keywords to look for in activity log
-  const TECHNIQUE_KEYWORDS = [
+  // Tool-name keywords (not techniques — these are executables that won't appear in skill tags)
+  const TOOL_KEYWORDS = [
     'nmap', 'nxc', 'netexec', 'certipy', 'impacket', 'secretsdump',
-    'kerberoast', 'asreproast', 'bloodhound', 'responder', 'relay',
-    'smb', 'ldap', 'rdp', 'winrm', 'psremote', 'dcsync',
     'mimikatz', 'rubeus', 'seatbelt', 'snaffler', 'hashcat', 'john',
-    'gobuster', 'feroxbuster', 'sql injection', 'sqli', 'xss',
-    'privesc', 'privilege escalation', 'lateral movement',
-    'password spray', 'brute force', 'credential dump',
-    'adcs', 'esc1', 'esc2', 'esc3', 'esc4', 'esc6', 'esc8',
-    'delegation', 'unconstrained', 'constrained',
-    'pivoting', 'port forward', 'tunnel', 'socks',
-    'dns', 'snmp', 'exchange', 'sccm',
-    'aws', 'azure', 'gcp', 'cloud',
-    'persistence', 'exfiltration',
+    'gobuster', 'feroxbuster', 'responder', 'bloodhound',
   ];
+
+  // Build keyword set: skill tags (dynamic) + tool names (static fallback)
+  const TECHNIQUE_KEYWORDS: string[] = [...TOOL_KEYWORDS];
+  if (input.skillTags && input.skillTags.length > 0) {
+    for (const tag of input.skillTags) {
+      const t = tag.trim().toLowerCase();
+      if (t.length > 2 && !TECHNIQUE_KEYWORDS.includes(t)) {
+        TECHNIQUE_KEYWORDS.push(t);
+      }
+    }
+  } else {
+    // Fallback: hard-coded technique terms when no skill tags are provided
+    TECHNIQUE_KEYWORDS.push(
+      'kerberoast', 'asreproast', 'relay',
+      'smb', 'ldap', 'rdp', 'winrm', 'psremote', 'dcsync',
+      'sql injection', 'sqli', 'xss',
+      'privesc', 'privilege escalation', 'lateral movement',
+      'password spray', 'brute force', 'credential dump',
+      'adcs', 'esc1', 'esc2', 'esc3', 'esc4', 'esc6', 'esc8',
+      'delegation', 'unconstrained', 'constrained',
+      'pivoting', 'port forward', 'tunnel', 'socks',
+      'dns', 'snmp', 'exchange', 'sccm',
+      'aws', 'azure', 'gcp', 'cloud',
+      'persistence', 'exfiltration',
+    );
+  }
 
   // Parse history for skill/technique mentions
   for (const entry of input.history) {
@@ -247,6 +264,7 @@ export function analyzeSkillGaps(input: RetrospectiveInput): SkillGapReport {
     unused_skills: unusedSkills,
     missing_skills: missingSkills,
     failed_techniques: failedTechniques,
+    mentioned_techniques: [...mentionedTechniques],
     skill_usage_counts: usageCounts,
   };
 }

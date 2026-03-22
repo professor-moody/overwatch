@@ -1055,6 +1055,61 @@ describe('GraphEngine', () => {
   });
 
   // =============================================
+  // Timestamp Preservation (P3 fix)
+  // =============================================
+  describe('discovered_at preservation', () => {
+    it('preserves original discovered_at when re-ingesting existing node', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const originalTimestamp = '2024-01-01T00:00:00.000Z';
+
+      // First ingest with a known timestamp
+      engine.ingestFinding({
+        id: 'f-ts-1',
+        timestamp: originalTimestamp,
+        agent_id: 'agent-1',
+        nodes: [{ id: 'svc-ts-test', type: 'service', label: 'TS test', port: 80 }],
+        edges: [],
+      });
+
+      // Verify initial discovered_at
+      const graph = engine.exportGraph();
+      const node1 = graph.nodes.find(n => n.id === 'svc-ts-test');
+      expect(node1!.properties.discovered_at).toBe(originalTimestamp);
+
+      // Re-ingest same node with a later timestamp and new properties
+      engine.ingestFinding({
+        id: 'f-ts-2',
+        timestamp: '2025-06-01T12:00:00.000Z',
+        agent_id: 'agent-2',
+        nodes: [{ id: 'svc-ts-test', type: 'service', label: 'TS test updated', port: 80, service_name: 'http' }],
+        edges: [],
+      });
+
+      // discovered_at should still be the original timestamp
+      const graph2 = engine.exportGraph();
+      const node2 = graph2.nodes.find(n => n.id === 'svc-ts-test');
+      expect(node2!.properties.discovered_at).toBe(originalTimestamp);
+      // But other properties should be updated
+      expect(node2!.properties.service_name).toBe('http');
+    });
+
+    it('sets discovered_at for new nodes', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const ts = '2025-03-21T00:00:00.000Z';
+      engine.ingestFinding({
+        id: 'f-ts-new',
+        timestamp: ts,
+        agent_id: 'agent-1',
+        nodes: [{ id: 'svc-ts-new', type: 'service', label: 'new svc' }],
+        edges: [],
+      });
+      const graph = engine.exportGraph();
+      const node = graph.nodes.find(n => n.id === 'svc-ts-new');
+      expect(node!.properties.discovered_at).toBe(ts);
+    });
+  });
+
+  // =============================================
   // Corrupted State Recovery (Bug 6)
   // =============================================
   describe('corrupted state recovery', () => {

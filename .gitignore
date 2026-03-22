@@ -4,3 +4,6 @@ state-*.json
 *.js.map
 .DS_Store
 tmp-review-*.json
+AGENTS.md
+CLAUDE.md
+HANDOFF.md

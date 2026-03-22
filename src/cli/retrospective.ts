@@ -44,13 +44,15 @@ const engine = new GraphEngine(config, stateFile);
 const skills = new SkillIndex(skillDir);
 
 // --- Build input ---
+const allSkills = skills.listSkills();
 const input: RetrospectiveInput = {
   config: engine.getConfig(),
   graph: engine.exportGraph(),
   history: engine.getFullHistory(),
   inferenceRules: engine.getInferenceRules(),
   agents: engine.getAllAgents(),
-  skillNames: skills.listSkills().map(s => s.name),
+  skillNames: allSkills.map(s => s.name),
+  skillTags: allSkills.flatMap(s => s.tags),
 };
 
 console.log(`Graph: ${input.graph.nodes.length} nodes, ${input.graph.edges.length} edges`);

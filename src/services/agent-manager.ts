@@ -16,7 +16,7 @@ export class AgentManager {
 
   register(task: AgentTask): void {
     this.ctx.agents.set(task.id, task);
-    this.ctx.log(`Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`, task.agent_id);
+    this.ctx.log(`Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`, task.agent_id, { category: 'agent' });
   }
 
   getTask(taskId: string): AgentTask | null {

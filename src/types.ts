@@ -311,6 +311,7 @@ export interface SkillGapReport {
   unused_skills: string[];
   missing_skills: string[];
   failed_techniques: string[];
+  mentioned_techniques: string[];
   skill_usage_counts: Record<string, number>;
 }
 

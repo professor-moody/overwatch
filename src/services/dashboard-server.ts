@@ -33,6 +33,9 @@ export class DashboardServer {
   private clients: Set<WebSocket> = new Set();
   private dashboardHtml: string | null = null;
   private _running: boolean = false;
+  private pendingDetail: GraphUpdateDetail | null = null;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly DEBOUNCE_MS = 500;
 
   constructor(engine: GraphEngine, port: number = 8384) {
     this.engine = engine;
@@ -90,6 +93,11 @@ export class DashboardServer {
 
   stop(): Promise<void> {
     this._running = false;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.pendingDetail = null;
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
@@ -114,6 +122,35 @@ export class DashboardServer {
   onGraphUpdate(detail: GraphUpdateDetail): void {
     // Short-circuit: skip expensive work when nobody is listening
     if (this.clients.size === 0) return;
+
+    // Accumulate detail into pending batch
+    if (!this.pendingDetail) {
+      this.pendingDetail = { new_nodes: [], new_edges: [], updated_nodes: [], updated_edges: [], inferred_edges: [] };
+    }
+    for (const key of ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges'] as const) {
+      if (detail[key]) {
+        this.pendingDetail[key]!.push(...detail[key]!);
+      }
+    }
+
+    // Reset debounce timer
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => this.flushPendingUpdate(), DashboardServer.DEBOUNCE_MS);
+  }
+
+  /** Immediately flush any pending debounced update. Useful for testing. */
+  flush(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.flushPendingUpdate();
+  }
+
+  private flushPendingUpdate(): void {
+    const detail = this.pendingDetail;
+    this.pendingDetail = null;
+    this.debounceTimer = null;
+    if (!detail || this.clients.size === 0) return;
 
     // Build incremental delta: only the nodes/edges that changed
     const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);

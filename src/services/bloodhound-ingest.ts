@@ -4,6 +4,7 @@
 // ============================================================
 
 import type { Finding, NodeType, EdgeType, NodeProperties } from '../types.js';
+import { userId, hostId, domainId, normalizeKeyPart } from './parser-utils.js';
 
 // --- BloodHound JSON structures (SharpHound v4/v5 compatible) ---
 
@@ -139,12 +140,19 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
 
+  // Build SID → canonical ID lookup for nodes in this file
+  const sidMap = new Map<string, string>();
+
   for (const obj of parsed.data) {
     const sid = obj.ObjectIdentifier;
     if (!sid) continue;
 
     const props = obj.Properties || {};
-    const nodeId = makeNodeId(sid, nodeType || 'user');
+    const nodeId = nodeType
+      ? resolveCanonicalId(sid, nodeType, props)
+      : makeNodeId(sid, 'user');
+
+    sidMap.set(sid, nodeId);
 
     // Create node
     if (nodeType) {
@@ -153,16 +161,29 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
         id: nodeId,
         type: nodeType,
         label: (props.name as string) || (props.displayname as string) || sid,
+        bh_sid: sid,
         ...nodeProps,
       });
     }
+  }
+
+  // Helper: resolve SID to canonical ID if known, else fallback to SID-based
+  const resolveSid = (sid: string, fallbackType: NodeType): string =>
+    sidMap.get(sid) || makeNodeId(sid, fallbackType);
+
+  // Second pass: build edges using resolved IDs
+  for (const obj of parsed.data) {
+    const sid = obj.ObjectIdentifier;
+    if (!sid) continue;
+
+    const nodeId = resolveSid(sid, nodeType || 'user');
 
     // ACEs → edges
     if (obj.Aces) {
       for (const ace of obj.Aces) {
         const edgeType = BH_EDGE_MAP[ace.RightName];
         if (!edgeType) continue;
-        const sourceId = makeNodeId(ace.PrincipalSID, bhTypeToNodeType(ace.PrincipalType));
+        const sourceId = resolveSid(ace.PrincipalSID, bhTypeToNodeType(ace.PrincipalType));
         edges.push({
           source: sourceId,
           target: nodeId,
@@ -180,7 +201,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // Members → MEMBER_OF edges
     if (obj.Members) {
       for (const member of obj.Members) {
-        const memberId = makeNodeId(member.ObjectIdentifier, bhTypeToNodeType(member.ObjectType));
+        const memberId = resolveSid(member.ObjectIdentifier, bhTypeToNodeType(member.ObjectType));
         edges.push({
           source: memberId,
           target: nodeId,
@@ -197,10 +218,10 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // Sessions → HAS_SESSION edges
     if (obj.Sessions) {
       for (const session of obj.Sessions) {
-        const userId = makeNodeId(session.UserSID, 'user');
-        const computerId = makeNodeId(session.ComputerSID, 'host');
+        const sessUserId = resolveSid(session.UserSID, 'user');
+        const computerId = resolveSid(session.ComputerSID, 'host');
         edges.push({
-          source: userId,
+          source: sessUserId,
           target: computerId,
           properties: {
             type: 'HAS_SESSION',
@@ -215,7 +236,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // LocalAdmins → ADMIN_TO edges
     if (obj.LocalAdmins) {
       for (const admin of obj.LocalAdmins) {
-        const adminId = makeNodeId(admin.ObjectIdentifier, bhTypeToNodeType(admin.ObjectType));
+        const adminId = resolveSid(admin.ObjectIdentifier, bhTypeToNodeType(admin.ObjectType));
         edges.push({
           source: adminId,
           target: nodeId,
@@ -232,7 +253,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // RemoteDesktopUsers → CAN_RDPINTO edges
     if (obj.RemoteDesktopUsers) {
       for (const rdp of obj.RemoteDesktopUsers) {
-        const rdpId = makeNodeId(rdp.ObjectIdentifier, bhTypeToNodeType(rdp.ObjectType));
+        const rdpId = resolveSid(rdp.ObjectIdentifier, bhTypeToNodeType(rdp.ObjectType));
         edges.push({
           source: rdpId,
           target: nodeId,
@@ -249,7 +270,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // PSRemoteUsers → CAN_PSREMOTE edges
     if (obj.PSRemoteUsers) {
       for (const ps of obj.PSRemoteUsers) {
-        const psId = makeNodeId(ps.ObjectIdentifier, bhTypeToNodeType(ps.ObjectType));
+        const psId = resolveSid(ps.ObjectIdentifier, bhTypeToNodeType(ps.ObjectType));
         edges.push({
           source: psId,
           target: nodeId,
@@ -266,7 +287,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // AllowedToDelegate → DELEGATES_TO edges
     if (obj.AllowedToDelegate) {
       for (const delegateSid of obj.AllowedToDelegate) {
-        const targetId = makeNodeId(delegateSid, 'host');
+        const targetId = resolveSid(delegateSid, 'host');
         edges.push({
           source: nodeId,
           target: targetId,
@@ -283,7 +304,7 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
     // AllowedToAct → ALLOWED_TO_ACT edges
     if (obj.AllowedToAct) {
       for (const actor of obj.AllowedToAct) {
-        const actorId = makeNodeId(actor.ObjectIdentifier, bhTypeToNodeType(actor.ObjectType));
+        const actorId = resolveSid(actor.ObjectIdentifier, bhTypeToNodeType(actor.ObjectType));
         edges.push({
           source: actorId,
           target: nodeId,
@@ -316,9 +337,53 @@ export function parseBloodHoundFile(raw: string, filename: string): { finding: F
 // --- Helpers ---
 
 function makeNodeId(sid: string, nodeType: NodeType): string {
-  // Normalize SID to a consistent node ID format
+  // Fallback SID-based ID for objects without identity fields
   const cleanSid = sid.replace(/[^a-zA-Z0-9-_]/g, '').toLowerCase();
   return `bh-${nodeType}-${cleanSid}`;
+}
+
+function resolveCanonicalId(
+  sid: string,
+  nodeType: NodeType,
+  props: Record<string, unknown>,
+): string {
+  switch (nodeType) {
+    case 'user': {
+      const sam = props.samaccountname as string | undefined;
+      const domain = props.domain as string | undefined;
+      if (sam) return userId(sam, domain);
+      // Try name field (format: USER@DOMAIN or DOMAIN\USER)
+      const name = props.name as string | undefined;
+      if (name) {
+        const atMatch = name.match(/^([^@]+)@(.+)$/);
+        if (atMatch) return userId(atMatch[1], atMatch[2]);
+        const slashMatch = name.match(/^([^\\]+)\\(.+)$/);
+        if (slashMatch) return userId(slashMatch[2], slashMatch[1]);
+      }
+      return makeNodeId(sid, nodeType);
+    }
+    case 'host': {
+      // Prefer IP if available, else use hostname
+      // BH computers don't typically have IPs in Properties, but some enriched exports do
+      const ip = props.ip as string | undefined;
+      if (ip) return hostId(ip);
+      const name = props.name as string | undefined;
+      const dns = props.dnshostname as string | undefined;
+      const hostname = dns || name;
+      if (hostname) return `host-${normalizeKeyPart(hostname)}`;
+      return makeNodeId(sid, nodeType);
+    }
+    case 'domain': {
+      const name = props.name as string | undefined;
+      const domain = props.domain as string | undefined;
+      const domainName = name || domain;
+      if (domainName) return domainId(domainName);
+      return makeNodeId(sid, nodeType);
+    }
+    default:
+      // group, ou, gpo — no canonical equivalent in other parsers
+      return makeNodeId(sid, nodeType);
+  }
 }
 
 function bhTypeToNodeType(bhType: string): NodeType {

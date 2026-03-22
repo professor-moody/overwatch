@@ -49,7 +49,11 @@ const skillDir = process.env.OVERWATCH_SKILLS || './skills';
 const skills = new SkillIndex(skillDir);
 console.error(`Loaded ${skills.count} skills from ${skillDir}`);
 
-const processTracker = new ProcessTracker();
+// Restore ProcessTracker from persisted state if available
+const savedProcesses = engine.getTrackedProcesses();
+const processTracker = savedProcesses.length > 0
+  ? ProcessTracker.deserialize(savedProcesses)
+  : new ProcessTracker();
 
 const server = new McpServer({
   name: 'overwatch-mcp-server',
@@ -84,6 +88,11 @@ async function main(): Promise<void> {
   await server.connect(transport);
   console.error('Overwatch MCP server running on stdio');
 
+  // Sync ProcessTracker state into engine on every graph update (persist cycle)
+  engine.onUpdate(() => {
+    engine.setTrackedProcesses(processTracker.serialize());
+  });
+
   // Dashboard starts fire-and-forget — never blocks MCP transport
   // Only register the graph-update callback if the server actually binds
   if (dashboard) {
@@ -100,6 +109,8 @@ function shutdown() {
   if (dashboard) {
     dashboard.stop().catch(() => {});
   }
+  // Sync ProcessTracker state into engine before final persist
+  engine.setTrackedProcesses(processTracker.serialize());
   engine.persist();
   process.exit(0);
 }

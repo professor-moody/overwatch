@@ -261,6 +261,20 @@ describe('Retrospective', () => {
       expect(gaps.skill_usage_counts['lateral-movement']).toBe(1);
       expect(gaps.skill_usage_counts['kerberoasting']).toBe(1);
     });
+
+    it('uses skill tags for technique keyword matching when provided', () => {
+      const input = makeInput({
+        skillTags: ['custom-technique', 'silver-ticket', 'relay'],
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'Attempted custom-technique on target' },
+          { timestamp: '2026-01-01T02:00:00Z', description: 'silver-ticket forged successfully' },
+        ],
+      });
+      const gaps = analyzeSkillGaps(input);
+      // custom-technique and silver-ticket come from skill tags and should be detected
+      expect(gaps.mentioned_techniques).toContain('custom-technique');
+      expect(gaps.mentioned_techniques).toContain('silver-ticket');
+    });
   });
 
   // =============================================

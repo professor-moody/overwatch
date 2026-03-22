@@ -316,5 +316,96 @@ describe('BloodHound Ingestion', () => {
       expect(result.finding!.nodes[0].type).toBe('domain');
       expect(result.finding!.nodes[0].functional_level).toBe('2016');
     });
+
+    // =============================================
+    // Canonical ID Tests (P1 cross-source composition)
+    // =============================================
+
+    it('user node with samaccountname+domain gets canonical userId()', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105',
+          Properties: {
+            name: 'JSMITH@CORP.LOCAL',
+            samaccountname: 'jsmith',
+            domain: 'corp.local',
+            enabled: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 5 },
+      };
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      // Should match parser-utils userId('jsmith', 'corp.local') = 'user-corp-local-jsmith'
+      expect(result.finding!.nodes[0].id).toBe('user-corp-local-jsmith');
+    });
+
+    it('computer node with name gets canonical hostname-based ID', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+          Properties: {
+            name: 'DC01.CORP.LOCAL',
+            domain: 'corp.local',
+            operatingsystem: 'Windows Server 2022',
+          },
+          Aces: [],
+        }],
+        meta: { type: 'computers', count: 1, version: 5 },
+      };
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
+      // normalizeKeyPart('DC01.CORP.LOCAL') → 'dc01-corp-local'
+      expect(result.finding!.nodes[0].id).toBe('host-dc01-corp-local');
+    });
+
+    it('domain node gets canonical domainId()', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012',
+          Properties: { name: 'CORP.LOCAL', domain: 'corp.local' },
+          Aces: [],
+        }],
+        meta: { type: 'domains', count: 1, version: 5 },
+      };
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      // domainId('CORP.LOCAL') = 'domain-corp-local'
+      expect(result.finding!.nodes[0].id).toBe('domain-corp-local');
+    });
+
+    it('node without identity fields falls back to SID-based ID', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-XXXX',
+          Properties: {},  // no samaccountname, name, or domain
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 5 },
+      };
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(result.finding!.nodes[0].id).toMatch(/^bh-user-/);
+    });
+
+    it('all BH nodes carry bh_sid property', () => {
+      const bhData = {
+        data: [
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105',
+            Properties: { name: 'JSMITH@CORP.LOCAL', samaccountname: 'jsmith', domain: 'corp.local' },
+            Aces: [],
+          },
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+            Properties: { name: 'WS01.CORP.LOCAL', domain: 'corp.local' },
+            Aces: [],
+          },
+        ],
+        meta: { type: 'users', count: 2, version: 5 },
+      };
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      for (const node of result.finding!.nodes) {
+        expect(node.bh_sid).toBeDefined();
+        expect(typeof node.bh_sid).toBe('string');
+      }
+    });
   });
 });

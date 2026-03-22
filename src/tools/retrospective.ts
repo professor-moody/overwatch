@@ -54,7 +54,9 @@ Optionally write all outputs to disk for archival.`,
       const history = engine.getFullHistory();
       const inferenceRules = engine.getInferenceRules();
       const agents = engine.getAllAgents();
-      const skillNames = skills.listSkills().map(s => s.name);
+      const allSkills = skills.listSkills();
+      const skillNames = allSkills.map(s => s.name);
+      const skillTags = allSkills.flatMap(s => s.tags);
 
       const input: RetrospectiveInput = {
         config,
@@ -63,6 +65,7 @@ Optionally write all outputs to disk for archival.`,
         inferenceRules,
         agents,
         skillNames,
+        skillTags,
       };
 
       const result = runRetrospective(input);

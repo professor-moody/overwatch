@@ -158,22 +158,22 @@ export class GraphEngine {
     if (existsSync(this.ctx.stateFilePath)) {
       try {
         this.persistence.loadState();
-        this.log('Resumed engagement from persisted state');
+        this.log('Resumed engagement from persisted state', undefined, { category: 'system' });
       } catch (err) {
         console.error(`Failed to load state file: ${err instanceof Error ? err.message : String(err)}`);
         // Attempt recovery from most recent snapshot
         const recovered = this.persistence.recoverFromSnapshot(BUILTIN_RULES);
         if (recovered) {
-          this.log('Recovered engagement from snapshot after corrupted state file');
+          this.log('Recovered engagement from snapshot after corrupted state file', undefined, { category: 'system' });
         } else {
           console.error('No valid snapshot found, re-seeding from config');
           this.seedFromConfig();
-          this.log('Engagement re-initialized from config after corrupted state');
+          this.log('Engagement re-initialized from config after corrupted state', undefined, { category: 'system' });
         }
       }
     } else {
       this.seedFromConfig();
-      this.log('Engagement initialized from config');
+      this.log('Engagement initialized from config', undefined, { category: 'system' });
     }
   }
 
@@ -323,6 +323,10 @@ export class GraphEngine {
         ...node,
         discovered_by: finding.agent_id
       };
+      // Preserve original discovered_at for existing nodes
+      if (!isNew && existingNode?.discovered_at) {
+        fullProps.discovered_at = existingNode.discovered_at;
+      }
       this.addNode(fullProps);
       if (isNew) {
         newNodes.push(node.id);
@@ -914,6 +918,14 @@ export class GraphEngine {
 
   getAllAgents(): AgentTask[] {
     return Array.from(this.ctx.agents.values());
+  }
+
+  getTrackedProcesses(): import('./process-tracker.js').TrackedProcess[] {
+    return this.ctx.trackedProcesses;
+  }
+
+  setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {
+    this.ctx.trackedProcesses = processes;
   }
 
   exportGraph(): { nodes: Array<{ id: string; properties: NodeProperties }>; edges: Array<{ source: string; target: string; properties: EdgeProperties }> } {

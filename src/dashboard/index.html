@@ -553,14 +553,15 @@ function loadGraphData(graphData) {
     });
   });
 
-  // Add edges
+  // Add edges (keyed by source--type--target to match delta merge path)
   if (graphData.edges) {
     graphData.edges.forEach((e, i) => {
       if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
         const props = e.properties || {};
         const confidence = props.confidence || 1.0;
+        const edgeKey = e.source + '--' + (props.type || '') + '--' + e.target;
         try {
-          graph.addEdge(e.source, e.target, {
+          graph.addEdgeWithKey(edgeKey, e.source, e.target, {
             color: confidence >= 1.0 ? 'rgba(110,158,255,0.3)' : 'rgba(175,169,236,0.2)',
             size: confidence >= 1.0 ? 1 : 0.5,
             type: 'arrow',

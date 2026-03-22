@@ -191,6 +191,7 @@ describe('DashboardServer', () => {
         { source: 'host-10-10-10-1', target: 'svc-test-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
       ],
     });
+    dashboard.flush(); // Immediately send debounced update
 
     const msg = await updatePromise;
     expect(msg.type).toBe('graph_update');
@@ -281,6 +282,7 @@ describe('DashboardServer', () => {
         { source: 'host-10-10-10-1', target: 'svc-contract-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
       ],
     });
+    dashboard.flush();
 
     const msg = await updatePromise;
     expect(msg.type).toBe('graph_update');
@@ -320,6 +322,7 @@ describe('DashboardServer', () => {
       ],
       edges: [],
     });
+    dashboard.flush();
 
     const msg = await updatePromise;
     expect(msg.type).toBe('graph_update');

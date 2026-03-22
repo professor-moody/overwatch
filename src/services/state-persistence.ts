@@ -28,7 +28,8 @@ export class StatePersistence {
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
       agents: Array.from(this.ctx.agents.entries()),
-      inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id))
+      inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
+      trackedProcesses: this.ctx.trackedProcesses,
     };
     const json = JSON.stringify(data, null, 2);
 
@@ -64,7 +65,7 @@ export class StatePersistence {
         try { unlinkSync(join(dir, oldest)); } catch { /* best effort */ }
       }
     } catch (err) {
-      this.ctx.log(`Snapshot rotation error: ${err instanceof Error ? err.message : String(err)}`);
+      this.ctx.log(`Snapshot rotation error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
     }
   }
 
@@ -91,6 +92,7 @@ export class StatePersistence {
     this.ctx.graph.clear();
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
+    this.ctx.invalidatePathGraph();
     this.ctx.activityLog = data.activityLog || [];
     this.ctx.agents = new Map(data.agents || []);
     // Restore inference rules: builtins + any custom rules from the snapshot
@@ -100,7 +102,7 @@ export class StatePersistence {
         this.ctx.inferenceRules.push(rule);
       }
     }
-    this.ctx.log('Rolled back to snapshot: ' + snapshotName);
+    this.ctx.log('Rolled back to snapshot: ' + snapshotName, undefined, { category: 'system' });
     this.persist();
     return true;
   }
@@ -112,6 +114,7 @@ export class StatePersistence {
     this.ctx.graph.import(data.graph);
     this.ctx.activityLog = data.activityLog || [];
     this.ctx.agents = new Map(data.agents || []);
+    this.ctx.trackedProcesses = data.trackedProcesses || [];
     if (data.inferenceRules) {
       for (const rule of data.inferenceRules) {
         this.ctx.inferenceRules.push(rule);
@@ -129,6 +132,7 @@ export class StatePersistence {
         this.ctx.graph = this.createGraph();
         this.ctx.config = data.config;
         this.ctx.graph.import(data.graph);
+        this.ctx.invalidatePathGraph();
         this.ctx.activityLog = data.activityLog || [];
         this.ctx.agents = new Map(data.agents || []);
         this.ctx.inferenceRules = [...builtinRules];

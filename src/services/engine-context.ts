@@ -11,6 +11,7 @@ import type {
   EngagementConfig, InferenceRule, AgentTask,
   NodeProperties, EdgeProperties,
 } from '../types.js';
+import type { TrackedProcess } from './process-tracker.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -43,6 +44,7 @@ export class EngineContext {
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
   pathGraphCache: OverwatchGraph | null;  // cached undirected projection for pathfinding
+  trackedProcesses: TrackedProcess[];
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -54,6 +56,7 @@ export class EngineContext {
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;
     this.pathGraphCache = null;
+    this.trackedProcesses = [];
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {

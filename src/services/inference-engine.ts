@@ -36,11 +36,11 @@ export class InferenceEngine {
     const existingByName = this.ctx.inferenceRules.findIndex(r => r.name === rule.name);
     if (existingByName !== -1) {
       this.ctx.inferenceRules[existingByName] = rule;
-      this.ctx.log(`Custom inference rule updated (dedup by name): ${rule.name}`);
+      this.ctx.log(`Custom inference rule updated (dedup by name): ${rule.name}`, undefined, { category: 'inference' });
       return;
     }
     this.ctx.inferenceRules.push(rule);
-    this.ctx.log(`Custom inference rule added: ${rule.name}`);
+    this.ctx.log(`Custom inference rule added: ${rule.name}`, undefined, { category: 'inference' });
   }
 
   backfillRule(rule: InferenceRule): string[] {
