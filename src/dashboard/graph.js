@@ -1600,18 +1600,27 @@ function updateMinimap() {
 
   if (graph.order === 0) return;
 
+  // Use display data (sigma's camera coordinate space) for all minimap rendering
   const visibleNodeIds = getVisibleNodeIds();
   if (visibleNodeIds.length === 0) return;
 
-  // Compute bounds
+  // Collect display positions for visible nodes
+  const nodeDisplayPositions = [];
+  visibleNodeIds.forEach((nodeId) => {
+    const dd = renderer.getNodeDisplayData(nodeId);
+    if (!dd || dd.hidden) return;
+    nodeDisplayPositions.push({ id: nodeId, x: dd.x, y: dd.y, color: dd.color || graph.getNodeAttribute(nodeId, 'color') || '#888' });
+  });
+  if (nodeDisplayPositions.length === 0) return;
+
+  // Compute bounds in display space
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
-  visibleNodeIds.forEach((nodeId) => {
-    const attrs = graph.getNodeAttributes(nodeId);
-    minX = Math.min(minX, attrs.x);
-    maxX = Math.max(maxX, attrs.x);
-    minY = Math.min(minY, attrs.y);
-    maxY = Math.max(maxY, attrs.y);
+  nodeDisplayPositions.forEach(({ x, y }) => {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
   });
 
   const dx = maxX - minX || 1;
@@ -1628,39 +1637,34 @@ function updateMinimap() {
   getVisibleEdgeIds().forEach((edgeId) => {
     const src = graph.source(edgeId);
     const tgt = graph.target(edgeId);
-    const sa = graph.getNodeAttributes(src);
-    const ta = graph.getNodeAttributes(tgt);
-    ctx.moveTo(ox + (sa.x - minX) * scale, oy + (sa.y - minY) * scale);
-    ctx.lineTo(ox + (ta.x - minX) * scale, oy + (ta.y - minY) * scale);
+    const sd = renderer.getNodeDisplayData(src);
+    const td = renderer.getNodeDisplayData(tgt);
+    if (!sd || !td) return;
+    ctx.moveTo(ox + (sd.x - minX) * scale, oy + (sd.y - minY) * scale);
+    ctx.lineTo(ox + (td.x - minX) * scale, oy + (td.y - minY) * scale);
   });
   ctx.stroke();
 
   // Draw nodes
-  visibleNodeIds.forEach((nodeId) => {
-    const attrs = graph.getNodeAttributes(nodeId);
-    const nx = ox + (attrs.x - minX) * scale;
-    const ny = oy + (attrs.y - minY) * scale;
-    ctx.fillStyle = attrs.color || '#888';
+  nodeDisplayPositions.forEach(({ x, y, color }) => {
+    const nx = ox + (x - minX) * scale;
+    const ny = oy + (y - minY) * scale;
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(nx, ny, 2, 0, 2 * Math.PI);
     ctx.fill();
   });
 
-  // Draw viewport rectangle
+  // Draw viewport rectangle — camera state is in the same display space
   const camera = renderer.getCamera();
   const state = camera.getState();
-  const container = document.getElementById('sigma-container');
-  const viewW = container.clientWidth;
-  const viewH = container.clientHeight;
-
-  // Camera state: x, y (graph coords), ratio
-  const halfW = (viewW * state.ratio) / (2 * scale) * 0.8;
-  const halfH = (viewH * state.ratio) / (2 * scale) * 0.8;
+  const halfW = state.ratio * 0.5;
+  const halfH = state.ratio * 0.5;
   ctx.strokeStyle = '#6e9eff';
   ctx.lineWidth = 2;
   ctx.strokeRect(
-    Math.max(0, ox + (state.x - minX - halfW) * scale),
-    Math.max(0, oy + (state.y - minY - halfH) * scale),
+    ox + (state.x - halfW - minX) * scale,
+    oy + (state.y - halfH - minY) * scale,
     halfW * 2 * scale,
     halfH * 2 * scale
   );

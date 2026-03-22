@@ -843,30 +843,46 @@ function initMinimapClick() {
     const g = G();
     if (!g.graph || g.graph.order === 0 || !g.renderer) return;
 
-    // Map click position to graph coordinates (approximate)
+    // Map click position to display coordinates (sigma's camera space)
     const rect = canvas.getBoundingClientRect();
     const clickX = (e.clientX - rect.left) / rect.width;
     const clickY = (e.clientY - rect.top) / rect.height;
 
-    // Get visible graph bounds so the minimap matches the current view mode
+    // Get visible node bounds in display space (same coords minimap is drawn with)
     const visibleNodeIds = g.getVisibleNodeIds ? g.getVisibleNodeIds() : [];
     if (visibleNodeIds.length === 0) return;
 
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     visibleNodeIds.forEach((id) => {
-      const attrs = g.graph.getNodeAttributes(id);
-      minX = Math.min(minX, attrs.x);
-      maxX = Math.max(maxX, attrs.x);
-      minY = Math.min(minY, attrs.y);
-      maxY = Math.max(maxY, attrs.y);
+      const dd = g.renderer.getNodeDisplayData(id);
+      if (!dd || dd.hidden) return;
+      minX = Math.min(minX, dd.x);
+      maxX = Math.max(maxX, dd.x);
+      minY = Math.min(minY, dd.y);
+      maxY = Math.max(maxY, dd.y);
     });
 
-    const graphX = minX + clickX * (maxX - minX);
-    const graphY = minY + clickY * (maxY - minY);
+    if (minX === Infinity) return;
+
+    // Account for minimap padding (matches updateMinimap: pad=10, retina 2x)
+    const cw = canvas.clientWidth * 2;
+    const ch = canvas.clientHeight * 2;
+    const pad = 10;
+    const dx = maxX - minX || 1;
+    const dy = maxY - minY || 1;
+    const scale = Math.min((cw - 2 * pad) / dx, (ch - 2 * pad) / dy);
+    const ox = pad + ((cw - 2 * pad) - dx * scale) / 2;
+    const oy = pad + ((ch - 2 * pad) - dy * scale) / 2;
+
+    // Convert click pixel (in retina canvas coords) to display coords
+    const canvasX = clickX * cw;
+    const canvasY = clickY * ch;
+    const displayX = minX + (canvasX - ox) / scale;
+    const displayY = minY + (canvasY - oy) / scale;
 
     g.renderer.getCamera().animate(
-      { x: graphX, y: graphY },
+      { x: displayX, y: displayY },
       { duration: 300 }
     );
   });
