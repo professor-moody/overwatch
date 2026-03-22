@@ -97,7 +97,10 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
       : health.counts_by_severity.warning > 0
         ? `${health.counts_by_severity.warning} graph health warning(s) detected.`
         : 'Graph health checks are clean.',
-    details: health.counts_by_severity,
+    details: {
+      counts_by_severity: health.counts_by_severity,
+      top_issues: health.issues.slice(0, 5),
+    },
   });
 
   const persistenceCheck = evaluatePersistence(engine);

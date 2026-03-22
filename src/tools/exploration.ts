@@ -17,20 +17,24 @@ export function registerExplorationTools(server: McpServer, engine: GraphEngine)
       title: 'Query Graph',
       description: `Direct access to the engagement graph for open-ended analysis.
 
-Use this to explore relationships the frontier might not surface:
-- "Show me all credentials and what services they're valid on"
-- "What's connected to host X within 3 hops?"
-- "Find all ADCS-related edges"
-- "Show me every node with unconstrained delegation"
-- "What paths exist from my current access to the domain controller?"
+Use structured selectors to explore relationships the frontier might not surface:
+- \`{ "node_type": "credential" }\`
+- \`{ "node_type": "credential", "node_filter": { "privileged": true } }\`
+- \`{ "from_node": "host-10-10-10-10", "max_depth": 3 }\`
+- \`{ "edge_type": "ESC8" }\`
+- \`{ "node_type": "host", "node_filter": { "unconstrained_delegation": true } }\`
 
 This tool gives you the FULL graph — no filtering, no scoring. Use it when the frontier
 items don't capture a pattern you're seeing, or when you want to reason about the
 graph structure directly.
 
 You can query by node type, filter by properties, traverse from a specific node,
-filter edges by type, or combine these. Results include full properties.`,
+filter edges by type, or combine these. Results include full properties.
+
+Deprecated free-text payloads like \`{ "query": "credential" }\` are not supported.`,
       inputSchema: {
+        query: z.string()
+          .optional().describe('Deprecated. Free-text graph queries are not supported. Use the structured selector fields instead.'),
         node_type: nodeTypeSchema
           .optional().describe('Filter nodes by type'),
         node_filter: z.record(z.unknown())
@@ -56,6 +60,23 @@ filter edges by type, or combine these. Results include full properties.`,
       }
     },
     withErrorBoundary('query_graph', async (params) => {
+      if (params.query) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'Free-text query payloads are not supported. Use structured selector fields such as node_type, node_filter, edge_type, edge_filter, or from_node.',
+              examples: [
+                { node_type: 'credential' },
+                { node_type: 'credential', node_filter: { privileged: true } },
+                { from_node: 'host-10-10-10-10', max_depth: 3 },
+              ],
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
       const result = engine.queryGraph({
         node_type: params.node_type as NodeType | undefined,
         node_filter: params.node_filter,

@@ -48,15 +48,21 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Connect WebSocket
   WS.connect({
-    onFullState(data) {
+    onInitialState(data) {
       G.loadGraphData(data.graph);
       UI.updateUI(data.state);
       // Delayed minimap update after layout settles
       setTimeout(() => G.updateMinimap(), 500);
     },
+    onStateRefresh(data) {
+      G.syncGraphData(data.graph);
+      UI.updateUI(data.state);
+      G.updateMinimap();
+    },
     onGraphUpdate(data) {
       G.mergeGraphDelta(data.delta);
       UI.updateUI(data.state);
+      G.updateMinimap();
     },
   });
 });

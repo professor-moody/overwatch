@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import type { Finding, NodeType, EdgeType } from '../types.js';
+import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerFindingTools(server: McpServer, engine: GraphEngine): void {
@@ -64,6 +65,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
     },
     withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output }) => {
       const normalizedActionId = action_id || uuidv4();
+      const warnings: string[] = [];
       const finding: Finding = {
         id: uuidv4(),
         agent_id,
@@ -92,6 +94,49 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       };
 
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
+      if (!action_id) {
+        warnings.push('report_finding was called without prior action context; generated a new action_id, but retrospective linkage will be weaker.');
+        engine.logActionEvent({
+          description: 'Finding reported without prior action context',
+          agent_id,
+          action_id: normalizedActionId,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          frontier_type: frontierType,
+          tool_name,
+          frontier_item_id,
+          result_classification: 'neutral',
+          details: { warning: 'missing_action_context' },
+        });
+      }
+
+      const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
+      if (prepared.errors.length > 0) {
+        engine.logActionEvent({
+          description: 'Finding report rejected: invalid graph mutation',
+          agent_id,
+          action_id: normalizedActionId,
+          category: 'finding',
+          tool_name,
+          frontier_type: frontierType,
+          frontier_item_id,
+          result_classification: 'failure',
+          details: { validation_errors: prepared.errors },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id: normalizedActionId,
+              finding_id: finding.id,
+              validation_errors: prepared.errors,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
       engine.logActionEvent({
         description: `Finding reported: ${finding.nodes.length} nodes, ${finding.edges.length} edges`,
         agent_id,
@@ -111,7 +156,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         },
       });
 
-      const result = engine.ingestFinding(finding);
+      const result = engine.ingestFinding(prepared.finding);
 
       return {
         content: [{
@@ -122,6 +167,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
             new_nodes: result.new_nodes,
             new_edges: result.new_edges,
             inferred_edges: result.inferred_edges,
+            warnings: warnings.length > 0 ? warnings : undefined,
             message: `Ingested: ${result.new_nodes.length} new nodes, ${result.new_edges.length} new edges, ${result.inferred_edges.length} inferred edges`
           }, null, 2)
         }]

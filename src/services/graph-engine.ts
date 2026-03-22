@@ -16,12 +16,14 @@ import { FrontierComputer } from './frontier.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
+import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
+import { validateEdgeEndpoints } from './graph-schema.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
-  AgentTask, ExportedGraph, HealthReport
+  AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation
 } from '../types.js';
 
 // Handle CJS/ESM interop for graphology — graphology publishes CJS with a
@@ -178,6 +180,8 @@ export class GraphEngine {
       this.seedFromConfig();
       this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
     }
+
+    this.syncObjectiveNodes();
   }
 
   // =============================================
@@ -244,7 +248,8 @@ export class GraphEngine {
         type: 'objective',
         label: obj.description,
         objective_description: obj.description,
-        objective_achieved: false,
+        objective_achieved: obj.achieved,
+        objective_achieved_at: obj.achieved_at,
         discovered_at: now,
         first_seen_at: now,
         last_seen_at: now,
@@ -296,6 +301,68 @@ export class GraphEngine {
       const fallbackId = `${edgeId}-${Date.now()}`;
       return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
     }
+  }
+
+  findEdgeId(source: string, target: string, type: EdgeType): string | null {
+    if (!this.ctx.graph.hasNode(source) || !this.ctx.graph.hasNode(target)) {
+      return null;
+    }
+    const existingEdges = this.ctx.graph.edges(source, target);
+    for (const edgeId of existingEdges) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      if (attrs.type === type) return edgeId;
+    }
+    return null;
+  }
+
+  dropEdgeByRef(source: string, target: string, type: EdgeType): string | null {
+    const edgeId = this.findEdgeId(source, target, type);
+    if (!edgeId) return null;
+    this.ctx.graph.dropEdge(edgeId);
+    this.invalidatePathGraph();
+    return edgeId;
+  }
+
+  patchNodeProperties(nodeId: string, setProperties: Record<string, unknown> = {}, unsetProperties: string[] = []): NodeProperties {
+    const existing = this.getNode(nodeId);
+    if (!existing) {
+      throw new Error(`Node does not exist in graph: ${nodeId}`);
+    }
+    if ((typeof setProperties.id === 'string' && setProperties.id !== nodeId) || (typeof setProperties.type === 'string' && setProperties.type !== existing.type)) {
+      throw new Error('patch_node cannot change a node id or type.');
+    }
+
+    const normalizedPatch = existing.type === 'credential'
+      ? normalizeFindingNode({
+          ...existing,
+          ...setProperties,
+          id: nodeId,
+          type: existing.type,
+          label: typeof setProperties.label === 'string' ? setProperties.label : existing.label,
+        } as Partial<NodeProperties> & { id: string; type: string })
+      : ({ ...existing, ...setProperties } as NodeProperties);
+
+    for (const key of unsetProperties) {
+      delete (normalizedPatch as Record<string, unknown>)[key];
+    }
+
+    const validationErrors = validateFindingNode(normalizedPatch as Partial<NodeProperties> & { id: string; type: string });
+    if (validationErrors.length > 0) {
+      throw new Error(validationErrors.map(error => error.message).join('; '));
+    }
+
+    const nextNode = {
+      ...existing,
+      ...normalizedPatch,
+      id: nodeId,
+      type: existing.type,
+    } as NodeProperties;
+    const nextAttrs = {
+      ...nextNode,
+      ...normalizeNodeProvenance(nextNode),
+    };
+    this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as any);
+    return this.ctx.graph.getNodeAttributes(nodeId);
   }
 
   getNode(id: string): NodeProperties | null {
@@ -737,6 +804,162 @@ export class GraphEngine {
         }
       }
     }
+
+    this.syncObjectiveNodes();
+  }
+
+  recomputeObjectives(): { before: Array<{ id: string; achieved: boolean; achieved_at?: string }>; after: Array<{ id: string; achieved: boolean; achieved_at?: string }> } {
+    const before = this.ctx.config.objectives.map(obj => ({
+      id: obj.id,
+      achieved: obj.achieved,
+      achieved_at: obj.achieved_at,
+    }));
+
+    for (const obj of this.ctx.config.objectives) {
+      obj.achieved = false;
+      delete obj.achieved_at;
+    }
+
+    this.evaluateObjectives();
+    const after = this.ctx.config.objectives.map(obj => ({
+      id: obj.id,
+      achieved: obj.achieved,
+      achieved_at: obj.achieved_at,
+    }));
+
+    this.persist();
+    return { before, after };
+  }
+
+  correctGraph(
+    reason: string,
+    operations: GraphCorrectionOperation[],
+    actionId?: string,
+  ): {
+    dropped_edges: string[];
+    replaced_edges: Array<{ old_edge_id: string; new_edge_id: string }>;
+    patched_nodes: string[];
+  } {
+    const droppedEdges: string[] = [];
+    const replacedEdges: Array<{ old_edge_id: string; new_edge_id: string }> = [];
+    const patchedNodes: string[] = [];
+    const removedEdges: string[] = [];
+    const newEdges: string[] = [];
+    const updatedNodes: string[] = [];
+    const beforeSummary = {
+      total_nodes: this.ctx.graph.order,
+      total_edges: this.ctx.graph.size,
+    };
+
+    for (const operation of operations) {
+      if (operation.kind === 'drop_edge' || operation.kind === 'replace_edge') {
+        const sourceId = operation.source_id;
+        const targetId = operation.target_id;
+        const existingEdgeId = this.findEdgeId(sourceId, targetId, operation.edge_type);
+        if (!existingEdgeId) {
+          throw new Error(`Edge does not exist in graph: ${sourceId} --[${operation.edge_type}]--> ${targetId}`);
+        }
+
+        if (operation.kind === 'replace_edge') {
+          const newSource = operation.new_source_id || sourceId;
+          const newTarget = operation.new_target_id || targetId;
+          const newType = operation.new_edge_type || operation.edge_type;
+          const sourceNode = this.getNode(newSource);
+          const targetNode = this.getNode(newTarget);
+          if (!sourceNode || !targetNode) {
+            throw new Error(`Replacement edge references missing nodes: ${newSource} --[${newType}]--> ${newTarget}`);
+          }
+
+          const validation = validateEdgeEndpoints(newType, sourceNode.type, targetNode.type, {
+            source_id: newSource,
+            target_id: newTarget,
+            edge_id: existingEdgeId,
+          });
+          if (!validation.valid) {
+            throw new Error(`Replacement edge ${newType} cannot connect ${sourceNode.type} to ${targetNode.type}.`);
+          }
+        }
+      }
+
+      if (operation.kind === 'patch_node') {
+        const existingNode = this.getNode(operation.node_id);
+        if (!existingNode) {
+          throw new Error(`Node does not exist in graph: ${operation.node_id}`);
+        }
+      }
+    }
+
+    for (const operation of operations) {
+      if (operation.kind === 'drop_edge') {
+        const dropped = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
+        if (!dropped) {
+          throw new Error(`Edge disappeared before correction: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+        }
+        droppedEdges.push(dropped);
+        removedEdges.push(dropped);
+        continue;
+      }
+
+      if (operation.kind === 'replace_edge') {
+        const existingEdgeId = this.findEdgeId(operation.source_id, operation.target_id, operation.edge_type);
+        const previousAttrs = existingEdgeId ? this.ctx.graph.getEdgeAttributes(existingEdgeId) : null;
+        const oldEdgeId = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
+        if (!oldEdgeId) {
+          throw new Error(`Edge disappeared before replacement: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+        }
+        removedEdges.push(oldEdgeId);
+        droppedEdges.push(oldEdgeId);
+        const sourceId = operation.new_source_id || operation.source_id;
+        const targetId = operation.new_target_id || operation.target_id;
+        const edgeType = operation.new_edge_type || operation.edge_type;
+        const nextProps: EdgeProperties = {
+          ...(previousAttrs || {}),
+          ...(operation.properties || {}),
+          type: edgeType,
+          confidence: operation.confidence ?? previousAttrs?.confidence ?? 1.0,
+          discovered_at: previousAttrs?.discovered_at || new Date().toISOString(),
+          discovered_by: previousAttrs?.discovered_by,
+        };
+        const { id: newEdgeId } = this.addEdge(sourceId, targetId, nextProps);
+        replacedEdges.push({ old_edge_id: oldEdgeId, new_edge_id: newEdgeId });
+        newEdges.push(newEdgeId);
+        continue;
+      }
+
+      if (operation.kind === 'patch_node') {
+        this.patchNodeProperties(operation.node_id, operation.set_properties, operation.unset_properties);
+        patchedNodes.push(operation.node_id);
+        updatedNodes.push(operation.node_id);
+      }
+    }
+
+    this.evaluateObjectives();
+    this.logActionEvent({
+      description: `Graph corrected: ${operations.length} operation(s) applied`,
+      action_id: actionId,
+      event_type: 'graph_corrected',
+      category: 'system',
+      result_classification: 'success',
+      details: {
+        reason,
+        operations,
+        before_summary: beforeSummary,
+        after_summary: {
+          total_nodes: this.ctx.graph.order,
+          total_edges: this.ctx.graph.size,
+        },
+        dropped_edges: droppedEdges,
+        replaced_edges: replacedEdges,
+        patched_nodes: patchedNodes,
+      },
+    });
+    this.persist({ removed_edges: removedEdges, new_edges: newEdges, updated_nodes: updatedNodes });
+
+    return {
+      dropped_edges: droppedEdges,
+      replaced_edges: replacedEdges,
+      patched_nodes: patchedNodes,
+    };
   }
 
   // =============================================
@@ -1017,6 +1240,21 @@ export class GraphEngine {
   // =============================================
   // Helpers
   // =============================================
+
+  private syncObjectiveNodes(): void {
+    const now = new Date().toISOString();
+    for (const objective of this.ctx.config.objectives) {
+      const nodeId = `obj-${objective.id}`;
+      const existing = this.getNode(nodeId);
+      if (!existing) continue;
+      this.ctx.graph.mergeNodeAttributes(nodeId, {
+        objective_description: objective.description,
+        objective_achieved: objective.achieved,
+        objective_achieved_at: objective.achieved_at,
+        last_seen_at: now,
+      } as any);
+    }
+  }
 
   private propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean {
     const ignoreKeys = new Set(['discovered_at', 'discovered_by']);

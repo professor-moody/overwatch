@@ -129,22 +129,54 @@ function initRenderer() {
   return renderer;
 }
 
+function isNodeVisible(node, attrs = null) {
+  const nodeAttrs = attrs || graph.getNodeAttributes(node);
+  if (!nodeAttrs) return false;
+
+  if (!activeFilters.has(nodeAttrs.nodeType)) {
+    return false;
+  }
+
+  if (focusNeighborhood && !focusNeighborhood.has(node)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isEdgeVisible(edge) {
+  const source = graph.source(edge);
+  const target = graph.target(edge);
+  return isNodeVisible(source) && isNodeVisible(target);
+}
+
+function getVisibleNodeIds() {
+  if (!graph) return [];
+
+  const visible = [];
+  graph.forEachNode((id, attrs) => {
+    if (isNodeVisible(id, attrs)) visible.push(id);
+  });
+  return visible;
+}
+
+function getVisibleEdgeIds() {
+  if (!graph) return [];
+
+  const visible = [];
+  graph.forEachEdge((edge) => {
+    if (isEdgeVisible(edge)) visible.push(edge);
+  });
+  return visible;
+}
+
 // ============================================================
 // Reducers — control node/edge appearance per frame
 // ============================================================
 
 function nodeReducer(node, data) {
   const res = { ...data };
-  const nodeType = data.nodeType;
-
-  // Filter by type
-  if (!activeFilters.has(nodeType)) {
-    res.hidden = true;
-    return res;
-  }
-
-  // Neighborhood focus
-  if (focusNeighborhood && !focusNeighborhood.has(node)) {
+  if (!isNodeVisible(node, data)) {
     res.hidden = true;
     return res;
   }
@@ -197,14 +229,9 @@ function nodeReducer(node, data) {
 function edgeReducer(edge, data) {
   const res = { ...data };
 
-  // Neighborhood focus
-  if (focusNeighborhood) {
-    const src = graph.source(edge);
-    const tgt = graph.target(edge);
-    if (!focusNeighborhood.has(src) || !focusNeighborhood.has(tgt)) {
-      res.hidden = true;
-      return res;
-    }
+  if (!isEdgeVisible(edge)) {
+    res.hidden = true;
+    return res;
   }
 
   // Path highlighting
@@ -466,7 +493,7 @@ function enterNeighborhoodFocus(node, hops) {
     banner.classList.add('visible');
   }
 
-  renderer.refresh();
+  if (renderer) renderer.refresh();
 
   // Zoom to fit the focused neighborhood
   zoomToNodes(focusNeighborhood);
@@ -556,7 +583,7 @@ function startLayout() {
   layoutRunning = true;
   layoutIterationCount = 0;
 
-  const fa2 = graphologyLayoutForceAtlas2 || window.graphologyLayoutForceAtlas2;
+  const fa2 = window.graphologyLayoutForceAtlas2 || globalThis.graphologyLayoutForceAtlas2;
   if (!fa2 || !fa2.assign) {
     console.warn('ForceAtlas2 not available');
     layoutRunning = false;
@@ -648,6 +675,161 @@ function buildEdgeAttributes(props) {
   };
 }
 
+function getNodePosition(nodeId, fallbackPosition, preservePositions) {
+  if (preservePositions && graph.hasNode(nodeId)) {
+    const current = graph.getNodeAttributes(nodeId);
+    return { x: current.x, y: current.y, fixed: current.fixed === true };
+  }
+  return { ...fallbackPosition, fixed: false };
+}
+
+function reconcileInteractionState() {
+  if (focusNode && !graph.hasNode(focusNode)) {
+    exitNeighborhoodFocus();
+  } else if (focusNeighborhood) {
+    focusNeighborhood = new Set([...focusNeighborhood].filter(nodeId => graph.hasNode(nodeId)));
+    if (focusNeighborhood.size === 0) {
+      exitNeighborhoodFocus();
+    }
+  }
+
+  if ((pathSource && !graph.hasNode(pathSource)) || (pathTarget && !graph.hasNode(pathTarget))) {
+    clearPathHighlight();
+  } else if (pathNodes.size > 0) {
+    pathNodes = new Set([...pathNodes].filter(nodeId => graph.hasNode(nodeId)));
+    pathEdges = new Set([...pathEdges].filter(edgeId => graph.hasEdge(edgeId)));
+  }
+
+  if (hoveredNode && !graph.hasNode(hoveredNode)) {
+    hoveredNode = null;
+    hoveredNeighbors = null;
+    hideTooltip();
+  } else if (hoveredNeighbors) {
+    hoveredNeighbors = new Set([...hoveredNeighbors].filter(nodeId => graph.hasNode(nodeId)));
+  }
+}
+
+function syncGraphData(graphData, options = {}) {
+  if (!graphData || !graphData.nodes) return;
+
+  const preservePositions = options.preservePositions !== false;
+  const shouldResetLayout = options.resetLayout === true;
+
+  if (shouldResetLayout) {
+    graph.clear();
+    stopLayout();
+    clearPathHighlight();
+    focusNode = null;
+    focusNeighborhood = null;
+    hoveredNode = null;
+    hoveredNeighbors = null;
+    hideTooltip();
+  }
+
+  const positions = groupInitialPositions(graphData.nodes);
+  const nextNodeIds = new Set(graphData.nodes.map((node) => node.id));
+  const nextEdgeKeys = new Set((graphData.edges || []).map((edge) => getEdgeKey(edge)));
+
+  let structureChanged = false;
+  let addedNodes = false;
+  let addedEdges = false;
+  const addedNodeIds = [];
+
+  if (!shouldResetLayout) {
+    const edgesToRemove = [];
+    graph.forEachEdge((edgeId) => {
+      if (!nextEdgeKeys.has(edgeId)) edgesToRemove.push(edgeId);
+    });
+    for (const edgeId of edgesToRemove) {
+      graph.dropEdge(edgeId);
+      structureChanged = true;
+    }
+
+    const nodesToRemove = [];
+    graph.forEachNode((nodeId) => {
+      if (!nextNodeIds.has(nodeId)) nodesToRemove.push(nodeId);
+    });
+    for (const nodeId of nodesToRemove) {
+      graph.dropNode(nodeId);
+      structureChanged = true;
+    }
+  }
+
+  graphData.nodes.forEach((node) => {
+    const props = node.properties || {};
+    const nodeType = props.type || 'host';
+    const fallbackPosition = positions[node.id] || { x: Math.random() * 10, y: Math.random() * 10 };
+    const position = getNodePosition(node.id, fallbackPosition, preservePositions && !shouldResetLayout);
+
+    if (graph.hasNode(node.id)) {
+      const updates = {
+        label: props.label || node.id,
+        color: NODE_COLORS[nodeType] || '#888',
+        nodeType,
+        _props: props,
+      };
+      if (!preservePositions || shouldResetLayout) {
+        updates.x = position.x;
+        updates.y = position.y;
+      }
+      graph.mergeNodeAttributes(node.id, updates);
+    } else {
+      graph.addNode(node.id, {
+        label: props.label || node.id,
+        x: position.x,
+        y: position.y,
+        fixed: position.fixed,
+        size: NODE_BASE_SIZES[nodeType] || 5,
+        color: NODE_COLORS[nodeType] || '#888',
+        nodeType,
+        _props: props,
+      });
+      structureChanged = true;
+      addedNodes = true;
+      addedNodeIds.push(node.id);
+    }
+  });
+
+  (graphData.edges || []).forEach((edge) => {
+    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
+
+    const props = edge.properties || {};
+    const edgeKey = getEdgeKey(edge);
+    const attrs = buildEdgeAttributes(props);
+
+    if (graph.hasEdge(edgeKey)) {
+      graph.mergeEdgeAttributes(edgeKey, attrs);
+    } else {
+      try {
+        graph.addEdgeWithKey(edgeKey, edge.source, edge.target, attrs);
+        structureChanged = true;
+        addedEdges = true;
+      } catch { /* skip duplicate */ }
+    }
+  });
+
+  if (structureChanged) {
+    graph.forEachNode((id, attrs) => {
+      const degree = graph.degree(id);
+      graph.setNodeAttribute(id, 'size', computeNodeSize(attrs.nodeType, degree));
+    });
+    buildFilterButtons();
+  }
+
+  if (addedNodeIds.length > 0) {
+    pulseNewNodes(addedNodeIds);
+  }
+
+  reconcileInteractionState();
+
+  if ((shouldResetLayout || addedNodes || addedEdges) && !layoutRunning) {
+    startLayout();
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
 function computeNodeSize(nodeType, degree) {
   const base = NODE_BASE_SIZES[nodeType] || 5;
   return base + Math.log2(degree + 1) * 1.5;
@@ -685,52 +867,7 @@ function groupInitialPositions(nodes) {
 }
 
 function loadGraphData(graphData) {
-  graph.clear();
-  stopLayout();
-
-  if (!graphData || !graphData.nodes) return;
-
-  // Compute initial positions grouped by type
-  const positions = groupInitialPositions(graphData.nodes);
-
-  // Add nodes
-  graphData.nodes.forEach((n) => {
-    const props = n.properties || {};
-    const nodeType = props.type || 'host';
-    const pos = positions[n.id] || { x: Math.random() * 10, y: Math.random() * 10 };
-
-    graph.addNode(n.id, {
-      label: props.label || n.id,
-      x: pos.x,
-      y: pos.y,
-      size: NODE_BASE_SIZES[nodeType] || 5,
-      color: NODE_COLORS[nodeType] || '#888',
-      nodeType: nodeType,
-      _props: props,
-    });
-  });
-
-  // Add edges
-  if (graphData.edges) {
-    graphData.edges.forEach((e) => {
-      if (graph.hasNode(e.source) && graph.hasNode(e.target)) {
-        const props = e.properties || {};
-        const edgeKey = getEdgeKey(e);
-        try {
-          graph.addEdgeWithKey(edgeKey, e.source, e.target, buildEdgeAttributes(props));
-        } catch { /* skip duplicate */ }
-      }
-    });
-  }
-
-  // Update node sizes based on degree
-  graph.forEachNode((id, attrs) => {
-    const degree = graph.degree(id);
-    graph.setNodeAttribute(id, 'size', computeNodeSize(attrs.nodeType, degree));
-  });
-
-  startLayout();
-  buildFilterButtons();
+  syncGraphData(graphData, { preservePositions: false, resetLayout: true });
 }
 
 function mergeGraphDelta(delta) {
@@ -804,7 +941,10 @@ function mergeGraphDelta(delta) {
     buildFilterButtons();
   }
 
+  reconcileInteractionState();
+
   if (renderer) renderer.refresh();
+  updateMinimap();
 }
 
 // ============================================================
@@ -858,12 +998,21 @@ function buildFilterButtons() {
 function toggleFilter(type, btn) {
   if (activeFilters.has(type)) {
     activeFilters.delete(type);
-    btn.classList.remove('active');
+    if (btn) btn.classList.remove('active');
   } else {
     activeFilters.add(type);
-    btn.classList.add('active');
+    if (btn) btn.classList.add('active');
   }
+  if (!btn) buildFilterButtons();
   if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function setActiveFilters(filterTypes) {
+  activeFilters = new Set(filterTypes);
+  buildFilterButtons();
+  if (renderer) renderer.refresh();
+  updateMinimap();
 }
 
 function resetFilters() {
@@ -944,11 +1093,14 @@ function updateMinimap() {
 
   if (graph.order === 0) return;
 
+  const visibleNodeIds = getVisibleNodeIds();
+  if (visibleNodeIds.length === 0) return;
+
   // Compute bounds
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
-  graph.forEachNode((id, attrs) => {
-    if (attrs.hidden) return;
+  visibleNodeIds.forEach((nodeId) => {
+    const attrs = graph.getNodeAttributes(nodeId);
     minX = Math.min(minX, attrs.x);
     maxX = Math.max(maxX, attrs.x);
     minY = Math.min(minY, attrs.y);
@@ -966,18 +1118,19 @@ function updateMinimap() {
   ctx.lineWidth = 0.5;
   ctx.strokeStyle = 'rgba(110,158,255,0.15)';
   ctx.beginPath();
-  graph.forEachEdge((edge, attrs, src, tgt) => {
+  getVisibleEdgeIds().forEach((edgeId) => {
+    const src = graph.source(edgeId);
+    const tgt = graph.target(edgeId);
     const sa = graph.getNodeAttributes(src);
     const ta = graph.getNodeAttributes(tgt);
-    if (sa.hidden || ta.hidden) return;
     ctx.moveTo(ox + (sa.x - minX) * scale, oy + (sa.y - minY) * scale);
     ctx.lineTo(ox + (ta.x - minX) * scale, oy + (ta.y - minY) * scale);
   });
   ctx.stroke();
 
   // Draw nodes
-  graph.forEachNode((id, attrs) => {
-    if (attrs.hidden) return;
+  visibleNodeIds.forEach((nodeId) => {
+    const attrs = graph.getNodeAttributes(nodeId);
     const nx = ox + (attrs.x - minX) * scale;
     const ny = oy + (attrs.y - minY) * scale;
     ctx.fillStyle = attrs.color || '#888';
@@ -1069,6 +1222,7 @@ window.OverwatchGraph = {
   init: initGraph,
   initRenderer,
   loadGraphData,
+  syncGraphData,
   mergeGraphDelta,
   startLayout,
   stopLayout,
@@ -1079,8 +1233,12 @@ window.OverwatchGraph = {
   resetFilters,
   clearPathHighlight,
   exitNeighborhoodFocus,
+  enterNeighborhoodFocus,
+  setActiveFilters,
   exportScreenshot,
   updateMinimap,
+  getVisibleNodeIds,
+  getVisibleEdgeIds,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },

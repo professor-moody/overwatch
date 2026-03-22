@@ -421,6 +421,31 @@ export interface GraphQueryResult {
   paths?: Array<{ nodes: string[]; edges: EdgeType[]; total_confidence: number }>;
 }
 
+export type GraphCorrectionOperation =
+  | {
+      kind: 'drop_edge';
+      source_id: string;
+      edge_type: EdgeType;
+      target_id: string;
+    }
+  | {
+      kind: 'replace_edge';
+      source_id: string;
+      edge_type: EdgeType;
+      target_id: string;
+      new_source_id?: string;
+      new_edge_type?: EdgeType;
+      new_target_id?: string;
+      confidence?: number;
+      properties?: Record<string, unknown>;
+    }
+  | {
+      kind: 'patch_node';
+      node_id: string;
+      set_properties?: Record<string, unknown>;
+      unset_properties?: string[];
+    };
+
 // --- Retrospective Types ---
 
 export interface InferenceRuleSuggestion {

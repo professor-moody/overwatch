@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { unlinkSync, existsSync } from 'fs';
+import { unlinkSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
@@ -122,5 +124,37 @@ describe('DashboardServer', () => {
     dashboard.flush();
 
     expect(mockClient.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves binary assets without UTF-8 corruption', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
+    mkdirSync(join(tempDir, 'assets'));
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    writeFileSync(join(tempDir, 'assets', 'test.png'), pngBytes);
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | Buffer | undefined,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string | Buffer) {
+        this.body = body;
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).dashboardDir = tempDir;
+    (dashboard as any).serveStaticFile('/assets/test.png', res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('image/png');
+    expect(Buffer.isBuffer(res.body)).toBe(true);
+    expect(res.body).toEqual(pngBytes);
+
+    rmSync(tempDir, { recursive: true, force: true });
   });
 });

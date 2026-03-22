@@ -27,6 +27,7 @@ import { registerLoggingTools } from './tools/logging.js';
 import { ProcessTracker } from './services/process-tracker.js';
 import { DashboardServer } from './services/dashboard-server.js';
 import { registerRetrospectiveTools } from './tools/retrospective.js';
+import { registerRemediationTools } from './tools/remediation.js';
 
 // --- Load engagement config ---
 function loadConfig(): EngagementConfig {
@@ -95,6 +96,7 @@ registerInferenceTools(server, engine);
 registerParseOutputTools(server, engine);
 registerLoggingTools(server, engine);
 registerRetrospectiveTools(server, engine, skills);
+registerRemediationTools(server, engine);
 
 // ============================================================
 // Start Server

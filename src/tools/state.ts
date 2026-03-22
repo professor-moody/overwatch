@@ -143,6 +143,30 @@ Use this when you want the full health report instead of the summarized warnings
     })
   );
 
+  server.registerTool(
+    'recompute_objectives',
+    {
+      title: 'Recompute Objective Status',
+      description: `Re-evaluate all engagement objectives from the current graph state.
+
+Use this after graph correction or when objective status appears stale. Objective truth
+is derived from the graph and engagement config, not from PATH_TO_OBJECTIVE edges.`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('recompute_objectives', async () => {
+      const result = engine.recomputeObjectives();
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }),
+  );
+
   // ============================================================
   // Tool: get_history
   // Full engagement activity log for retrospectives.

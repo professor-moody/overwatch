@@ -174,7 +174,11 @@ export class DashboardServer {
   };
 
   private dashboardDir: string | null = null;
-  private fileCache: Map<string, string> = new Map();
+  private fileCache: Map<string, string | Buffer> = new Map();
+
+  private isTextAsset(ext: string): boolean {
+    return ['.html', '.css', '.js', '.json', '.svg'].includes(ext);
+  }
 
   private resolveDashboardDir(): string {
     if (this.dashboardDir) return this.dashboardDir;
@@ -242,7 +246,9 @@ export class DashboardServer {
         return;
       }
 
-      const content = readFileSync(fullPath, 'utf-8');
+      const content = this.isTextAsset(ext)
+        ? readFileSync(fullPath, 'utf-8')
+        : readFileSync(fullPath);
       this.fileCache.set(cleanPath, content);
       res.writeHead(200, { 'Content-Type': mime });
       res.end(content);

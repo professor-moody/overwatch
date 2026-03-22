@@ -4,6 +4,7 @@ import { resolve, join, extname } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { buildBloodHoundSidMap, parseBloodHoundFile } from '../services/bloodhound-ingest.js';
+import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerBloodHoundTools(server: McpServer, engine: GraphEngine): void {
@@ -78,6 +79,7 @@ populate the graph with Active Directory structure.`,
       const allErrors: string[] = [];
       const fileResults: Array<{ file: string; nodes: number; edges: number; inferred: number }> = [];
       const filePayloads: Array<{ raw: string; filename: string }> = [];
+      const parsedFindings: Array<{ file: string; finding: NonNullable<ReturnType<typeof parseBloodHoundFile>['finding']> }> = [];
 
       for (const file of filesToProcess) {
         try {
@@ -102,18 +104,37 @@ populate the graph with Active Directory structure.`,
           }
 
           if (result.finding && (result.finding.nodes.length > 0 || result.finding.edges.length > 0)) {
-            const ingestResult = engine.ingestFinding(result.finding);
-            const nodeCount = ingestResult.new_nodes.length;
-            const edgeCount = ingestResult.new_edges.length;
-            const inferredCount = ingestResult.inferred_edges.length;
-            totalNodes += nodeCount;
-            totalEdges += edgeCount;
-            totalInferred += inferredCount;
-            fileResults.push({ file: file.name, nodes: nodeCount, edges: edgeCount, inferred: inferredCount });
+            parsedFindings.push({ file: file.name, finding: result.finding });
           }
         } catch (err) {
           allErrors.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+
+      const parsedNodeLookup = new Map<string, NonNullable<ReturnType<typeof parseBloodHoundFile>['finding']>['nodes'][number]>();
+      for (const parsed of parsedFindings) {
+        for (const node of parsed.finding.nodes) {
+          if (!parsedNodeLookup.has(node.id)) {
+            parsedNodeLookup.set(node.id, node);
+          }
+        }
+      }
+
+      for (const parsed of parsedFindings) {
+        const prepared = prepareFindingForIngest(parsed.finding, nodeId => (parsedNodeLookup.get(nodeId) as any) || engine.getNode(nodeId));
+        if (prepared.errors.length > 0) {
+          allErrors.push(`${parsed.file}: invalid graph mutation (${prepared.errors.map(error => error.message).join('; ')})`);
+          continue;
+        }
+
+        const ingestResult = engine.ingestFinding(prepared.finding);
+        const nodeCount = ingestResult.new_nodes.length;
+        const edgeCount = ingestResult.new_edges.length;
+        const inferredCount = ingestResult.inferred_edges.length;
+        totalNodes += nodeCount;
+        totalEdges += edgeCount;
+        totalInferred += inferredCount;
+        fileResults.push({ file: parsed.file, nodes: nodeCount, edges: edgeCount, inferred: inferredCount });
       }
 
       return {

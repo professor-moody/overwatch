@@ -38,9 +38,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 22 tools', async () => {
+  it('lists all 24 tools', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(22);
+    expect(result.tools.length).toBe(24);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -64,6 +64,8 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('parse_output');
     expect(toolNames).toContain('log_action_event');
     expect(toolNames).toContain('run_retrospective');
+    expect(toolNames).toContain('correct_graph');
+    expect(toolNames).toContain('recompute_objectives');
   });
 
   it('get_state returns engagement state', async () => {
@@ -142,6 +144,16 @@ describe('MCP Server Integration', () => {
     expect(body.valid).toBe(false);
     expect(body.errors.length).toBeGreaterThan(0);
     expect(body.action_id).toBeDefined();
+  });
+
+  it('query_graph rejects deprecated free-text query payloads', async () => {
+    const result = await client.callTool({
+      name: 'query_graph',
+      arguments: { query: 'credential' },
+    });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+    expect(body.error).toContain('Free-text query payloads are not supported');
   });
 
   it('links validate_action and report_finding via action_id in get_history', async () => {

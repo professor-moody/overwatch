@@ -142,6 +142,56 @@ describe('structured activity logging tools', () => {
     expect(history.some(candidate => candidate.event_type === 'finding_ingested')).toBe(true);
   });
 
+  it('report_finding rejects invalid RUNS edges to shares with structured validation errors', async () => {
+    const result = await handlers.report_finding({
+      agent_id: 'agent-invalid-edge',
+      tool_name: 'manual',
+      nodes: [
+        { id: 'share-invalid', type: 'share', label: 'public' },
+      ],
+      edges: [
+        { source: 'host-10-10-10-1', target: 'share-invalid', type: 'RUNS', confidence: 1.0 },
+      ],
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.validation_errors[0].code).toBe('edge_type_constraint');
+    expect(engine.findEdgeId('host-10-10-10-1', 'share-invalid', 'RUNS')).toBeNull();
+  });
+
+  it('report_finding normalizes ad hoc credential fields before ingestion', async () => {
+    await handlers.report_finding({
+      agent_id: 'agent-normalize',
+      tool_name: 'secretsdump',
+      nodes: [
+        { id: 'user-admin', type: 'user', label: 'admin' },
+        {
+          id: 'cred-admin',
+          type: 'credential',
+          label: 'admin hash',
+          properties: {
+            username: 'administrator',
+            domain: 'test.local',
+            nthash: '11223344556677889900aabbccddeeff',
+            privileged: true,
+            obtained: true,
+          },
+        },
+      ],
+      edges: [
+        { source: 'user-admin', target: 'cred-admin', type: 'OWNS_CRED', confidence: 1.0 },
+      ],
+    });
+
+    const credential = engine.getNode('cred-admin');
+    expect(credential?.cred_type).toBe('ntlm');
+    expect(credential?.cred_material_kind).toBe('ntlm_hash');
+    expect(credential?.cred_usable_for_auth).toBe(true);
+    expect(credential?.cred_hash).toBe('11223344556677889900aabbccddeeff');
+    expect(credential?.cred_domain).toBe('test.local');
+  });
+
   it('parse_output logs parse metadata with the supplied action_id', async () => {
     const actionId = 'action-parse-1';
     await handlers.parse_output({
@@ -170,6 +220,18 @@ describe('structured activity logging tools', () => {
     const history = engine.getFullHistory().filter(candidate => candidate.action_id === payload.action_id);
     expect(history.some(candidate => candidate.event_type === 'parse_output')).toBe(true);
     expect(history.some(candidate => candidate.event_type === 'finding_ingested')).toBe(true);
+  });
+
+  it('parse_output returns a warning when action context is omitted', async () => {
+    const result = await handlers.parse_output({
+      tool_name: 'nxc',
+      output: 'SMB  10.10.10.2  445  ACME\\\\scanner  [+]  Windows Server 2019',
+      ingest: true,
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.warnings[0]).toContain('without prior action context');
+    expect(engine.getFullHistory().some(candidate => candidate.event_type === 'instrumentation_warning')).toBe(true);
   });
 
   it('register_agent and update_agent create structured agent lifecycle events', async () => {

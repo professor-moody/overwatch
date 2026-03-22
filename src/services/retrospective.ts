@@ -11,6 +11,7 @@ import type {
 } from '../types.js';
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
+import { validateEdgeEndpoints } from './graph-schema.js';
 import { getNodeFirstSeenAt } from './provenance-utils.js';
 
 export interface RetrospectiveInput {
@@ -75,6 +76,17 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
     if (pattern.count >= 3 && !coveredEdgeTypes.has(pattern.edgeType)) {
       // Skip same-type patterns — they'd produce self-loops that the engine drops
       if (pattern.sourceType === pattern.targetType) continue;
+
+      const schemaCheck = validateEdgeEndpoints(
+        pattern.edgeType,
+        pattern.sourceType as any,
+        pattern.targetType as any,
+        {
+          source_id: `suggested-${pattern.sourceType}`,
+          target_id: `suggested-${pattern.targetType}`,
+        },
+      );
+      if (!schemaCheck.valid) continue;
 
       const sourceSelector = typeToSourceSelector[pattern.sourceType];
       // Skip if we can't map the source type to a valid selector
@@ -405,6 +417,7 @@ export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQuality
   const terminalResultRate = terminalActions.length > 0
     ? terminalActions.filter(entry => !!entry.result_classification).length / terminalActions.length
     : 0;
+  const instrumentationWarnings = input.history.filter(entry => entry.event_type === 'instrumentation_warning');
 
   let heuristicCount = 0;
   let ambiguousWindows = 0;
@@ -436,6 +449,7 @@ export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQuality
   if (validatedActions.length > 0 && validatedLinkedRate < 0.6) issues.push(`Only ${(validatedLinkedRate * 100).toFixed(0)}% of validated actions link cleanly to later findings or terminal action results.`);
   if (findingEvents.length > 0 && findingLinkedRate < 0.8) issues.push(`Only ${(findingLinkedRate * 100).toFixed(0)}% of finding events link back to an action or finding ID.`);
   if (terminalActions.length > 0 && terminalResultRate < 1.0) issues.push(`Only ${(terminalResultRate * 100).toFixed(0)}% of completed/failed actions include explicit result classification.`);
+  if (instrumentationWarnings.length > 0) issues.push(`${instrumentationWarnings.length} explicit instrumentation warning(s) were recorded during the run.`);
   if (heuristicRate > 0.5) issues.push(`About ${(heuristicRate * 100).toFixed(0)}% of retrospective judgments depend on text heuristics.`);
   if (ambiguousRate > 0.2) issues.push('Nearby multi-agent findings make action/result attribution ambiguous in several windows.');
 

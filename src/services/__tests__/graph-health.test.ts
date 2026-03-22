@@ -111,7 +111,25 @@ describe('graph health', () => {
     });
 
     const report = engine.getHealthReport();
-    expect(report.issues.some(issue => issue.check === 'edge_type_constraint')).toBe(true);
+    const issue = report.issues.find(candidate => candidate.check === 'edge_type_constraint');
+    expect(issue).toBeDefined();
+    expect(issue?.details?.violations).toBeDefined();
+  });
+
+  it('suggests replacing RUNS->share with RELATED in machine-readable health details', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'bad-share-edge',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{ id: 'share-public', type: 'share', label: 'public' }],
+      edges: [
+        { source: 'host-10-10-10-1', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-03-21T10:00:00Z' } },
+      ],
+    });
+
+    const issue = engine.getHealthReport().issues.find(candidate => candidate.check === 'edge_type_constraint');
+    expect(issue?.details?.suggested_fix).toEqual(expect.objectContaining({ kind: 'replace_edge_type', edge_type: 'RELATED' }));
   });
 
   it('reports stale relay target inference after SMB signing is corrected', () => {

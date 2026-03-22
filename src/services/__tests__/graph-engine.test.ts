@@ -805,6 +805,112 @@ describe('GraphEngine', () => {
       const daObj = state.objectives.find(o => o.id === 'obj-da');
       expect(daObj?.achieved).toBe(false);
     });
+
+    it('recomputeObjectives re-evaluates stale objective state from normalized obtained credentials', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          {
+            id: 'cred-da-adhoc',
+            type: 'credential',
+            label: 'north\\administrator',
+            username: 'administrator',
+            domain: 'test.local',
+            nthash: '11223344556677889900aabbccddeeff',
+            privileged: true,
+            obtained: true,
+          } as any,
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'cred-da-adhoc', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      expect(engine.getState().objectives[0].achieved).toBe(false);
+
+      engine.patchNodeProperties('cred-da-adhoc', {
+        username: 'administrator',
+        domain: 'test.local',
+        nthash: '11223344556677889900aabbccddeeff',
+        privileged: true,
+      });
+
+      const recomputed = engine.recomputeObjectives();
+      expect(recomputed.before[0].achieved).toBe(false);
+      expect(recomputed.after[0].achieved).toBe(true);
+      expect(engine.getState().objectives[0].achieved).toBe(true);
+    });
+  });
+
+  describe('graph remediation', () => {
+    it('repairs a GOAD-style broken graph and clears stale invalid edges', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'share-public', type: 'share', label: 'public' },
+          { id: 'user-operator', type: 'user', label: 'operator' },
+          { id: 'cred-da', type: 'credential', label: 'DA hash', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_user: 'administrator', cred_domain: 'test.local', privileged: true, obtained: true },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-operator', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'cred-da', target: 'domain-test-local', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      expect(engine.getHealthReport().counts_by_severity.critical).toBeGreaterThan(0);
+
+      const correction = engine.correctGraph('repair stale GOAD-style edges', [
+        {
+          kind: 'replace_edge',
+          source_id: 'host-10-10-10-1',
+          edge_type: 'RUNS',
+          target_id: 'share-public',
+          new_edge_type: 'RELATED',
+        },
+        {
+          kind: 'replace_edge',
+          source_id: 'cred-da',
+          edge_type: 'VALID_ON',
+          target_id: 'domain-test-local',
+          new_target_id: 'host-10-10-10-1',
+        },
+      ], 'action-correct-1');
+
+      expect(correction.replaced_edges).toHaveLength(2);
+      expect(engine.getHealthReport().counts_by_severity.critical).toBe(0);
+      expect(engine.getFullHistory().some(entry => entry.event_type === 'graph_corrected')).toBe(true);
+    });
+
+    it('rolls back the whole correction batch when one operation is invalid', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'share-all', type: 'share', label: 'all' }],
+        edges: [{ source: 'host-10-10-10-1', target: 'share-all', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+
+      expect(() => engine.correctGraph('bad batch', [
+        {
+          kind: 'replace_edge',
+          source_id: 'host-10-10-10-1',
+          edge_type: 'RUNS',
+          target_id: 'share-all',
+          new_edge_type: 'RELATED',
+        },
+        {
+          kind: 'drop_edge',
+          source_id: 'cred-missing',
+          edge_type: 'VALID_ON',
+          target_id: 'host-10-10-10-1',
+        },
+      ])).toThrow();
+
+      expect(engine.findEdgeId('host-10-10-10-1', 'share-all', 'RUNS')).toBeTruthy();
+      expect(engine.findEdgeId('host-10-10-10-1', 'share-all', 'RELATED')).toBeNull();
+    });
   });
 
   // =============================================

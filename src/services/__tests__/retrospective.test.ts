@@ -183,6 +183,65 @@ describe('Retrospective', () => {
       expect(suggestions).toEqual([]);
     });
 
+    it('filters schema-invalid host->RUNS->share patterns from inference suggestions', () => {
+      const input = makeInput();
+      input.graph.nodes.push({
+        id: 'host-10-10-10-3',
+        properties: {
+          id: 'host-10-10-10-3',
+          type: 'host',
+          label: '10.10.10.3',
+          ip: '10.10.10.3',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1.0,
+        } as NodeProperties,
+      });
+      input.graph.nodes.push({
+        id: 'share-public',
+        properties: {
+          id: 'share-public',
+          type: 'share',
+          label: 'public',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1.0,
+        } as NodeProperties,
+      });
+      input.graph.edges.push(
+        { source: 'host-10-10-10-1', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T07:00:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-2', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T07:01:00Z' } as EdgeProperties },
+        { source: 'host-10-10-10-3', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T07:02:00Z' } as EdgeProperties },
+      );
+
+      const suggestions = analyzeInferenceGaps(input);
+      expect(suggestions.find(s => s.rule.id.includes('runs-host-share'))).toBeUndefined();
+    });
+
+    it('filters schema-invalid credential->VALID_ON->domain patterns from inference suggestions', () => {
+      const input = makeInput();
+      input.graph.nodes.push({
+        id: 'cred-valid',
+        properties: {
+          id: 'cred-valid',
+          type: 'credential',
+          label: 'admin hash',
+          cred_type: 'ntlm',
+          cred_material_kind: 'ntlm_hash',
+          cred_usable_for_auth: true,
+          cred_domain: 'test.local',
+          discovered_at: '2026-01-01T00:00:00Z',
+          confidence: 1.0,
+        } as NodeProperties,
+      });
+      input.graph.edges.push(
+        { source: 'cred-valid', target: 'domain-test-local', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T08:00:00Z' } as EdgeProperties },
+        { source: 'cred-valid', target: 'domain-test-local', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T08:01:00Z', inferred_by_rule: 'rule-bad' } as EdgeProperties },
+        { source: 'cred-valid', target: 'domain-test-local', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T08:02:00Z', confirmed_at: '2026-01-01T08:03:00Z' } as EdgeProperties },
+      );
+
+      const suggestions = analyzeInferenceGaps(input);
+      expect(suggestions.find(s => s.rule.id.includes('valid_on-credential-domain'))).toBeUndefined();
+    });
+
     it('counts confirmed inferred edges using inferred_by_rule + confirmed_at', () => {
       const input = makeInput();
       // Replace edges with 6 inferred edges: 3 confirmed, 3 not

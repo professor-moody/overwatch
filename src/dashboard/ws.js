@@ -5,27 +5,44 @@
 
 let ws = null;
 let reconnectTimer = null;
-let onFullState = null;
+let pollTimer = null;
+let onInitialState = null;
+let onStateRefresh = null;
 let onGraphUpdate = null;
+let hasLoadedState = false;
 
 function connectWS(callbacks) {
-  onFullState = callbacks.onFullState;
+  onInitialState = callbacks.onInitialState;
+  onStateRefresh = callbacks.onStateRefresh;
   onGraphUpdate = callbacks.onGraphUpdate;
   doConnect();
 
   // Fallback polling every 5s if WS fails
-  setInterval(() => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      pollState();
-    }
-  }, 5000);
+  if (!pollTimer) {
+    pollTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        pollState();
+      }
+    }, 5000);
+  }
 
   // Initial load via HTTP
   pollState();
 }
 
+function handleStateSnapshot(data) {
+  if (!hasLoadedState) {
+    hasLoadedState = true;
+    if (onInitialState) onInitialState(data);
+    return;
+  }
+
+  if (onStateRefresh) onStateRefresh(data);
+}
+
 function doConnect() {
-  const wsUrl = `ws://${window.location.host}/ws`;
+  const host = window.location?.host || 'localhost';
+  const wsUrl = `ws://${host}/ws`;
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
@@ -41,8 +58,8 @@ function doConnect() {
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'full_state' && onFullState) {
-        onFullState(msg.data);
+      if (msg.type === 'full_state') {
+        handleStateSnapshot(msg.data);
       } else if (msg.type === 'graph_update' && onGraphUpdate) {
         onGraphUpdate(msg.data);
       }
@@ -70,7 +87,7 @@ async function pollState() {
     const res = await fetch('/api/state');
     if (res.ok) {
       const data = await res.json();
-      if (onFullState) onFullState(data);
+      handleStateSnapshot(data);
     }
   } catch { /* silent */ }
 }

@@ -25,6 +25,8 @@ export type ActivityEventType =
   | 'finding_reported'
   | 'finding_ingested'
   | 'parse_output'
+  | 'graph_corrected'
+  | 'instrumentation_warning'
   | 'agent_registered'
   | 'agent_updated'
   | 'inference_generated'
@@ -59,6 +61,8 @@ export type GraphUpdateDetail = {
   updated_nodes?: string[];
   updated_edges?: string[];
   inferred_edges?: string[];
+  removed_nodes?: string[];
+  removed_edges?: string[];
 };
 
 export type GraphUpdateCallback = (detail: GraphUpdateDetail) => void;

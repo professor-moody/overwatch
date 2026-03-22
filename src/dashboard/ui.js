@@ -138,7 +138,7 @@ function updateFrontier(state) {
   list.innerHTML = top15.map((f, idx) => {
     const typeClass = f.type === 'incomplete_node' ? 'incomplete' : 'inferred';
     const noise = f.opsec_noise !== undefined ? f.opsec_noise.toFixed(1) : '—';
-    const nodeIds = (f.node_ids || []).join(',');
+    const nodeIds = getFrontierTargetNodeIds(f).join(',');
     return `<div class="frontier-item" data-node-ids="${escapeHtml(nodeIds)}" onclick="handleFrontierClick(this)">
       <span class="fi-type ${typeClass}">${f.type === 'incomplete_node' ? 'node' : 'edge'}</span>
       <span class="fi-desc" title="${escapeHtml(f.description || '')}">${escapeHtml(f.description || f.id)}</span>
@@ -271,6 +271,19 @@ function navigateToNode(nodeId) {
 // ============================================================
 // Frontier Click → Zoom to Node
 // ============================================================
+
+function getFrontierTargetNodeIds(frontierItem) {
+  if (!frontierItem) return [];
+
+  if (frontierItem.type === 'incomplete_node') {
+    return frontierItem.node_id ? [frontierItem.node_id] : [];
+  }
+
+  const targets = [];
+  if (frontierItem.edge_source) targets.push(frontierItem.edge_source);
+  if (frontierItem.edge_target) targets.push(frontierItem.edge_target);
+  return [...new Set(targets)];
+}
 
 function handleFrontierClick(el) {
   const nodeIds = (el.dataset.nodeIds || '').split(',').filter(Boolean);
@@ -438,6 +451,7 @@ window.OverwatchUI = {
     initMinimapClick();
   },
   updateUI,
+  getFrontierTargetNodeIds,
   showNodeDetail,
   hideDetail,
   navigateToNode,

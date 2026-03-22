@@ -1,25 +1,11 @@
 import type { OverwatchGraph } from './engine-context.js';
 import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary, NodeProperties } from '../types.js';
 import { normalizeKeyPart } from './parser-utils.js';
+import { validateEdgeEndpoints } from './graph-schema.js';
 
 const SEVERITY_ORDER: Record<HealthSeverity, number> = {
   critical: 0,
   warning: 1,
-};
-
-type EdgeConstraint = {
-  source: string[];
-  target: string[];
-};
-
-const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
-  RUNS: { source: ['host'], target: ['service'] },
-  MEMBER_OF: { source: ['user', 'group'], target: ['group'] },
-  MEMBER_OF_DOMAIN: { source: ['host', 'user', 'group'], target: ['domain'] },
-  OWNS_CRED: { source: ['user'], target: ['credential'] },
-  VALID_ON: { source: ['user', 'group', 'credential'], target: ['host'] },
-  ADMIN_TO: { source: ['user', 'group', 'credential'], target: ['host'] },
-  HAS_SESSION: { source: ['user', 'group', 'credential'], target: ['host'] },
 };
 
 export function runHealthChecks(graph: OverwatchGraph): HealthReport {
@@ -164,12 +150,14 @@ function findTypeConstraintViolations(graph: OverwatchGraph): HealthIssue[] {
   const issues: HealthIssue[] = [];
 
   graph.forEachEdge((edgeId, attrs, source, target) => {
-    const constraint = EDGE_CONSTRAINTS[attrs.type];
-    if (!constraint) return;
-
     const sourceNode = graph.getNodeAttributes(source);
     const targetNode = graph.getNodeAttributes(target);
-    if (!constraint.source.includes(sourceNode.type) || !constraint.target.includes(targetNode.type)) {
+    const validation = validateEdgeEndpoints(attrs.type, sourceNode.type, targetNode.type, {
+      edge_id: edgeId,
+      source_id: source,
+      target_id: target,
+    });
+    if (!validation.valid) {
       issues.push({
         severity: 'critical',
         check: 'edge_type_constraint',
@@ -177,10 +165,18 @@ function findTypeConstraintViolations(graph: OverwatchGraph): HealthIssue[] {
         edge_ids: [edgeId],
         node_ids: [source, target],
         details: {
-          expected_source_types: constraint.source,
-          expected_target_types: constraint.target,
+          expected_source_types: validation.violation.expected_source_types,
+          expected_target_types: validation.violation.expected_target_types,
           actual_source_type: sourceNode.type,
           actual_target_type: targetNode.type,
+          violations: [{
+            source_id: source,
+            edge_type: attrs.type,
+            target_id: target,
+            source_type: sourceNode.type,
+            target_type: targetNode.type,
+          }],
+          suggested_fix: validation.suggested_fix,
         },
       });
     }
