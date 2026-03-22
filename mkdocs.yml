@@ -1,0 +1,110 @@
+site_name: Overwatch
+site_description: Offensive security engagement orchestrator — MCP server with graph-based state management
+site_url: https://keys.github.io/overwatch/
+repo_url: https://github.com/keys/overwatch
+repo_name: keys/overwatch
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started.md
+    - Configuration: configuration.md
+    - Dashboard: dashboard.md
+  - Architecture:
+    - Overview: architecture.md
+    - Graph Model: graph-model.md
+  - Tool Reference:
+    - tools/index.md
+    - State & Health:
+      - get_state: tools/get-state.md
+      - run_lab_preflight: tools/run-lab-preflight.md
+      - run_graph_health: tools/run-graph-health.md
+      - get_history: tools/get-history.md
+      - export_graph: tools/export-graph.md
+    - Scoring & Validation:
+      - next_task: tools/next-task.md
+      - validate_action: tools/validate-action.md
+      - log_action_event: tools/log-action-event.md
+    - Findings & Parsing:
+      - report_finding: tools/report-finding.md
+      - parse_output: tools/parse-output.md
+    - Graph Exploration:
+      - query_graph: tools/query-graph.md
+      - find_paths: tools/find-paths.md
+    - Agents:
+      - register_agent: tools/register-agent.md
+      - get_agent_context: tools/get-agent-context.md
+      - update_agent: tools/update-agent.md
+    - Skills & Inference:
+      - get_skill: tools/get-skill.md
+      - suggest_inference_rule: tools/suggest-inference-rule.md
+    - Ingestion:
+      - ingest_bloodhound: tools/ingest-bloodhound.md
+    - Utilities:
+      - check_tools: tools/check-tools.md
+      - track_process: tools/track-process.md
+      - check_processes: tools/check-processes.md
+    - Analysis:
+      - run_retrospective: tools/run-retrospective.md
+  - Skills:
+    - skills/index.md
+  - Operator Playbook:
+    - playbook/index.md
+    - GOAD AD Lab: playbook/goad-lab.md
+    - HTB / Single Host: playbook/htb-single.md
+    - Session Instructions: playbook/session-instructions.md
+    - parse_output vs report_finding: playbook/parse-vs-report.md
+    - Retrospectives: playbook/retrospective.md
+  - Development:
+    - development.md
+    - Contributing: contributing.md
