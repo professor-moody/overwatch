@@ -1548,34 +1548,39 @@ function zoomOut() {
 function zoomToNodes(nodeSet, options = {}) {
   if (!renderer || nodeSet.size === 0) return;
 
+  // Use getNodeDisplayData to get positions in sigma's camera coordinate space
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
+  let count = 0;
 
   for (const nodeId of nodeSet) {
     if (!graph.hasNode(nodeId)) continue;
-    const attrs = graph.getNodeAttributes(nodeId);
-    minX = Math.min(minX, attrs.x);
-    maxX = Math.max(maxX, attrs.x);
-    minY = Math.min(minY, attrs.y);
-    maxY = Math.max(maxY, attrs.y);
+    const displayData = renderer.getNodeDisplayData(nodeId);
+    if (!displayData || displayData.hidden) continue;
+    minX = Math.min(minX, displayData.x);
+    maxX = Math.max(maxX, displayData.x);
+    minY = Math.min(minY, displayData.y);
+    maxY = Math.max(maxY, displayData.y);
+    count++;
   }
+
+  if (count === 0) return;
 
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-  const dx = maxX - minX || 1;
-  const dy = maxY - minY || 1;
+  const dx = maxX - minX;
+  const dy = maxY - minY;
 
-  // Estimate ratio
-  const container = document.getElementById('sigma-container');
-  const aspectGraph = dx / dy;
-  const aspectView = container.clientWidth / container.clientHeight;
-  const rawRatio = aspectGraph > aspectView
-    ? dx / (container.clientWidth * 0.0015)
-    : dy / (container.clientHeight * 0.0015);
   const paddingFactor = options.paddingFactor || 1.5;
   const minRatio = options.minRatio || 0.05;
   const maxRatio = options.maxRatio || 2.5;
-  const ratio = Math.min(Math.max(rawRatio * paddingFactor, minRatio), maxRatio);
+
+  // In sigma's normalized space, ratio controls zoom (1 = full graph visible)
+  // The spread in display coords directly maps to the needed ratio
+  const spread = Math.max(dx, dy);
+  const ratio = spread > 0.001
+    ? Math.min(Math.max(spread * paddingFactor, minRatio), maxRatio)
+    : minRatio * 3; // Single node or tight cluster: moderate zoom
 
   renderer.getCamera().animate({ x: cx, y: cy, ratio }, { duration: options.duration || 400 });
 }
