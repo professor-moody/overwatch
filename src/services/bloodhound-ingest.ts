@@ -4,7 +4,8 @@
 // ============================================================
 
 import type { Finding, NodeType, EdgeType, NodeProperties } from '../types.js';
-import { caId, certTemplateId, domainId, hostId, normalizeKeyPart, pkiStoreId, userId } from './parser-utils.js';
+import { caId, certTemplateId, domainId, groupId, hostId, normalizeKeyPart, pkiStoreId, splitQualifiedAccount, userId } from './parser-utils.js';
+import { resolveNodeIdentity, resolveTypedRelationRef } from './identity-resolution.js';
 
 // --- BloodHound JSON structures (SharpHound v4/v5 compatible) ---
 
@@ -237,11 +238,21 @@ export function parseBloodHoundFile(
         || (props.name as string)
         || (props.displayname as string)
         || sid;
-      nodes.push({
+      const identity = resolveNodeIdentity({
         id: sidMap.get(sid)!,
         type: nodeType,
         label,
+        ...nodeProps,
+      });
+      nodes.push({
+        id: identity.id,
+        type: nodeType,
+        label,
         bh_sid: sid,
+        identity_status: identity.status,
+        identity_family: identity.family,
+        canonical_id: identity.status === 'canonical' ? identity.id : undefined,
+        identity_markers: identity.markers,
         ...nodeProps,
       });
     }
@@ -491,20 +502,7 @@ function resolveRelationRef(
   ref: { objectId: string; objectType?: string },
   sidMap: ReadonlyMap<string, string>,
 ): string | null {
-  if (sidMap.has(ref.objectId)) {
-    return sidMap.get(ref.objectId)!;
-  }
-
-  if (!ref.objectType) {
-    return null;
-  }
-
-  const nodeType = BH_NODE_TYPE_MAP[ref.objectType.toLowerCase()];
-  if (!nodeType) {
-    return null;
-  }
-
-  return makeNodeId(ref.objectId, nodeType);
+  return resolveTypedRelationRef(ref.objectId, ref.objectType, sidMap);
 }
 
 function isAdcsMetaType(metaType?: string): boolean {
@@ -537,6 +535,24 @@ function resolveCanonicalId(
         if (atMatch) return userId(atMatch[1], atMatch[2]);
         const slashMatch = name.match(/^([^\\]+)\\(.+)$/);
         if (slashMatch) return userId(slashMatch[2], slashMatch[1]);
+      }
+      return makeNodeId(sid, nodeType);
+    }
+    case 'group': {
+      const name = (props.samaccountname as string | undefined)
+        || (props.name as string | undefined)
+        || (props.displayname as string | undefined);
+      const domain = props.domain as string | undefined;
+      if (name) {
+        const atMatch = name.match(/^([^@]+)@(.+)$/);
+        if (atMatch) {
+          return groupId(atMatch[1], atMatch[2]);
+        }
+        const qualified = splitQualifiedAccount(name);
+        if (qualified.domain) {
+          return groupId(qualified.username, qualified.domain);
+        }
+        return groupId(name, domain);
       }
       return makeNodeId(sid, nodeType);
     }
@@ -604,6 +620,8 @@ function extractNodeProperties(
 
   switch (nodeType) {
     case 'host':
+      if (props.ip) result.ip = props.ip;
+      if (props.dnshostname || props.name) result.hostname = (props.dnshostname as string | undefined) || (props.name as string | undefined);
       if (props.operatingsystem) result.os = props.operatingsystem;
       if (props.unconstraineddelegation) result.unconstrained_delegation = props.unconstraineddelegation;
       if (props.enabled !== undefined) result.alive = props.enabled;

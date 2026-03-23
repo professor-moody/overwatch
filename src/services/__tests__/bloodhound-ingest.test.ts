@@ -422,6 +422,24 @@ describe('BloodHound Ingestion', () => {
       expect(related!.target).toBe('domain-corp-local');
     });
 
+    it('resolves typed ADCS relation refs canonically without a shared SID map', () => {
+      const templates = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'TEMPLATE-1',
+          Properties: { name: 'UserTemplate', templatename: 'UserTemplate' },
+          PublishedTo: [{ ObjectIdentifier: 'CORP.LOCAL', ObjectType: 'Domain' }],
+          Aces: [],
+        }],
+        meta: { type: 'certtemplates', count: 1, version: 5 },
+      });
+
+      const result = parseBloodHoundFile(templates, 'certtemplates.json');
+      const related = result.finding!.edges.find(e => e.properties.type === 'RELATED');
+
+      expect(related).toBeDefined();
+      expect(related!.target).toBe('domain-corp-local');
+    });
+
     it('warns on unknown ADCS BloodHound object types without failing parsing', () => {
       const bhData = {
         data: [{

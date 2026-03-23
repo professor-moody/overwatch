@@ -4,6 +4,8 @@ import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 
 async function loadGraphModule() {
+  const displayUrl = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/node-display.js')).href;
+  await import(`${displayUrl}?t=${Date.now()}-${Math.random()}`);
   const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/graph.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
   return (globalThis as any).window.OverwatchGraph;

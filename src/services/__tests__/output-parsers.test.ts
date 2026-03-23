@@ -216,6 +216,8 @@ describe('Output Parsers', () => {
 
       const escEdges = finding.edges.filter(e => e.properties.type === 'ESC1');
       expect(escEdges.length).toBe(1);
+      const principal = finding.nodes.find(n => n.id === 'group-acme-domain-users');
+      expect(principal?.type).toBe('group');
     });
 
     it('handles non-JSON certipy output', () => {

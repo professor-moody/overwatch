@@ -7,6 +7,7 @@ import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { XMLParser } from 'fast-xml-parser';
 import { caId, certTemplateId, credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
+import { classifyPrincipalIdentity, getIdentityMarkers, resolveNodeIdentity } from './identity-resolution.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
 const NMAP_SERVICE_MAP: Record<string, string> = {
@@ -347,9 +348,28 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
               // Create ESC edge from enrollable entities to template
               if (tmpl['Enrollment Permissions'] && tmpl['Enrollment Permissions']['Enrollment Rights']) {
                 for (const principal of tmpl['Enrollment Permissions']['Enrollment Rights'] as string[]) {
-                  const principalId = `user-${principal.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`;
+                  const principalIdentity = classifyPrincipalIdentity(principal);
+                  const principalId = principalIdentity.id;
                   if (!seenNodes.has(principalId)) {
-                    nodes.push({ id: principalId, type: 'user', label: principal });
+                    const resolution = resolveNodeIdentity({
+                      id: principalId,
+                      type: principalIdentity.nodeType,
+                      label: principalIdentity.label,
+                      username: principalIdentity.username,
+                      domain_name: principalIdentity.domain_name,
+                    });
+                    nodes.push({
+                      id: resolution.id,
+                      type: principalIdentity.nodeType,
+                      label: principalIdentity.label,
+                      username: principalIdentity.username,
+                      domain_name: principalIdentity.domain_name,
+                      identity_status: resolution.status,
+                      identity_family: resolution.family,
+                      canonical_id: resolution.status === 'canonical' ? resolution.id : undefined,
+                      identity_markers: resolution.markers,
+                      principal_type_ambiguous: principalIdentity.ambiguous || undefined,
+                    });
                     seenNodes.add(principalId);
                   }
                   edges.push({

@@ -157,6 +157,40 @@ describe('GraphEngine', () => {
       const hostFrontier = state.frontier.find((item) => item.node_id === 'host-10-10-10-5');
       expect(hostFrontier?.missing_properties).not.toContain('services');
     });
+
+    it('auto-merges unresolved aliases into later canonical identities and retargets edges', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.addNode({
+        id: 'bh-user-s-1-5-21-1',
+        type: 'user',
+        label: 'mystery-user',
+        identity_status: 'unresolved',
+        identity_markers: ['user:acct:test-local:jsmith'],
+        discovered_at: new Date().toISOString(),
+        confidence: 0.7,
+      });
+      engine.addNode({
+        id: 'host-10-10-10-2',
+        type: 'host',
+        label: '10.10.10.2',
+        ip: '10.10.10.2',
+        alive: true,
+        discovered_at: new Date().toISOString(),
+        confidence: 1.0,
+      });
+      engine.addEdge('bh-user-s-1-5-21-1', 'host-10-10-10-2', { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() });
+
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-test-local-jsmith', type: 'user', label: 'JSMITH@TEST.LOCAL', username: 'jsmith', domain_name: 'test.local' },
+        ],
+      }));
+
+      const graph = engine.exportGraph();
+      expect(graph.nodes.some(node => node.id === 'bh-user-s-1-5-21-1')).toBe(false);
+      expect(graph.nodes.some(node => node.id === 'user-test-local-jsmith')).toBe(true);
+      expect(graph.edges.some(edge => edge.source === 'user-test-local-jsmith' && edge.target === 'host-10-10-10-2' && edge.properties.type === 'HAS_SESSION')).toBe(true);
+    });
   });
 
   // =============================================
@@ -568,7 +602,7 @@ describe('GraphEngine', () => {
       // Objective not yet achieved (no access edge on dc01) — should find path
       const paths = engine.findPathsToObjective('obj-dc');
       expect(paths.length).toBeGreaterThan(0);
-      expect(paths[0].nodes).toContain('host-dc01');
+      expect(paths[0].nodes).toContain('host-10-10-10-5');
     });
 
     it('hopsToNearestObjective returns null when objective auto-achieved', () => {
@@ -852,7 +886,7 @@ describe('GraphEngine', () => {
         nodes: [
           { id: 'share-public', type: 'share', label: 'public' },
           { id: 'user-operator', type: 'user', label: 'operator' },
-          { id: 'cred-da', type: 'credential', label: 'DA hash', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_user: 'administrator', cred_domain: 'test.local', privileged: true, obtained: true },
+          { id: 'cred-da', type: 'credential', label: 'DA hash', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_hash: '11223344556677889900aabbccddeeff', cred_value: '11223344556677889900aabbccddeeff', cred_user: 'administrator', cred_domain: 'test.local', privileged: true, obtained: true },
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
@@ -862,6 +896,7 @@ describe('GraphEngine', () => {
       }));
 
       expect(engine.getHealthReport().counts_by_severity.critical).toBeGreaterThan(0);
+      const canonicalCredId = engine.exportGraph().nodes.find(node => node.properties.type === 'credential')!.id;
 
       const correction = engine.correctGraph('repair stale GOAD-style edges', [
         {
@@ -873,7 +908,7 @@ describe('GraphEngine', () => {
         },
         {
           kind: 'replace_edge',
-          source_id: 'cred-da',
+          source_id: canonicalCredId,
           edge_type: 'VALID_ON',
           target_id: 'domain-test-local',
           new_target_id: 'host-10-10-10-1',
@@ -1328,7 +1363,7 @@ describe('GraphEngine', () => {
       });
 
       const graph = engine.exportGraph();
-      const node = graph.nodes.find(n => n.id === 'host-prov');
+      const node = graph.nodes.find(n => n.id === 'host-10-10-10-50');
       expect(node!.properties.first_seen_at).toBe('2026-03-21T10:00:00.000Z');
       expect(node!.properties.last_seen_at).toBe('2026-03-21T11:00:00.000Z');
       expect(node!.properties.discovered_at).toBe('2026-03-21T10:00:00.000Z');
@@ -1361,16 +1396,8 @@ describe('GraphEngine', () => {
 
     it('includes graph health warnings in getState()', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      engine.ingestFinding({
-        id: 'warning-1',
-        timestamp: '2026-03-21T12:00:00.000Z',
-        agent_id: 'agent-a',
-        nodes: [
-          { id: 'host-warning-a', type: 'host', label: 'warning-a', ip: '10.10.10.77', alive: true },
-          { id: 'host-warning-b', type: 'host', label: 'warning-b', ip: '10.10.10.77', alive: true },
-        ],
-        edges: [],
-      });
+      engine.addNode({ id: 'host-warning-a', type: 'host', label: 'warning-a', ip: '10.10.10.77', alive: true, discovered_at: '2026-03-21T12:00:00.000Z', confidence: 1 });
+      engine.addNode({ id: 'host-warning-b', type: 'host', label: 'warning-b', ip: '10.10.10.77', alive: true, discovered_at: '2026-03-21T12:00:00.000Z', confidence: 1 });
 
       const state = engine.getState();
       expect(state.warnings.status).toBe('critical');

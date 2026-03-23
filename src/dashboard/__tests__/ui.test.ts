@@ -4,6 +4,8 @@ import { pathToFileURL } from 'url';
 import { readFileSync } from 'fs';
 
 async function loadUiModule() {
+  const displayUrl = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/node-display.js')).href;
+  await import(`${displayUrl}?t=${Date.now()}-${Math.random()}`);
   const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/ui.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
   return (globalThis as any).window.OverwatchUI;
@@ -212,6 +214,50 @@ describe('dashboard ui frontier helpers', () => {
 
     expect(list.innerHTML).toContain('host-10-3-10-22');
     expect(list.innerHTML).toContain('user-rickon -&gt; domain-north');
+  });
+
+  it('uses the shared node display contract for frontier and drawer labels', async () => {
+    const ui = await loadUiModule();
+    const list = (globalThis as any).document.getElementById('frontier-list');
+    const props = (globalThis as any).document.getElementById('detail-props');
+    (globalThis as any).window.OverwatchGraph.graph.getNodeAttributes = (id: string) => {
+      if (id === 'host-1') {
+        return {
+          label: 'host-1',
+          nodeType: 'host',
+          _props: { type: 'host', label: 'host-1', hostname: 'winterfell.north.local', ip: '10.0.0.10' },
+        };
+      }
+      return {
+        label: 'ldap/389',
+        nodeType: 'service',
+        _props: { type: 'service', label: 'ldap/389', service_name: 'ldap', port: 389 },
+      };
+    };
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [{
+        id: 'frontier-node-host-1',
+        type: 'incomplete_node',
+        node_id: 'host-1',
+        description: 'host "winterfell.north.local" missing: os',
+        graph_metrics: { node_degree: 1, confidence: 1.0 },
+        opsec_noise: 0.1,
+      }],
+    });
+
+    ui.showNodeDetail('host-1');
+
+    expect(list.innerHTML).toContain('winterfell.north.local');
+    expect(props.innerHTML).toContain('winterfell.north.local');
+    expect(props.innerHTML).toContain('10.0.0.10');
   });
 
   it('resets transient frontier expanded state after a section disappears', async () => {

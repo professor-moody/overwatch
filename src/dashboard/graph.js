@@ -3,6 +3,8 @@
 // sigma.js init, animated ForceAtlas2, drag, hover, paths
 // ============================================================
 
+const D = () => window.OverwatchNodeDisplay;
+
 const NODE_COLORS = {
   host:        '#6e9eff',
   service:     '#5dcaa5',
@@ -288,9 +290,10 @@ function nodeReducer(node, data) {
   if (!shouldShowLabel(node, data)) {
     res.label = '';
   } else if (graphMode === 'overview' && data.nodeType === 'host') {
+    const baseLabel = D().getNodeDisplayLabel(data._props || {}, node);
     const serviceCount = graph.outEdges(node).filter((edgeId) => graph.getEdgeAttributes(edgeId).edgeType === 'RUNS').length;
     if (serviceCount > 0) {
-      res.label = `${data.label} · svc:${serviceCount}`;
+      res.label = `${baseLabel} · svc:${serviceCount}`;
     }
   }
   // Fan-out badge for credential nodes (POTENTIAL_AUTH edges are hidden by default)
@@ -1129,7 +1132,7 @@ function syncGraphData(graphData, options = {}) {
 
     if (graph.hasNode(node.id)) {
       const updates = {
-        label: props.label || node.id,
+        label: D().getNodeDisplayLabel(props, node.id),
         color: NODE_COLORS[nodeType] || '#888',
         nodeType,
         _props: props,
@@ -1141,7 +1144,7 @@ function syncGraphData(graphData, options = {}) {
       graph.mergeNodeAttributes(node.id, updates);
     } else {
       graph.addNode(node.id, {
-        label: props.label || node.id,
+        label: D().getNodeDisplayLabel(props, node.id),
         x: position.x,
         y: position.y,
         fixed: position.fixed,
@@ -1369,7 +1372,7 @@ function mergeGraphDelta(delta) {
       const nodeType = props.type || 'host';
       if (graph.hasNode(n.id)) {
         graph.mergeNodeAttributes(n.id, {
-          label: props.label || n.id,
+          label: D().getNodeDisplayLabel(props, n.id),
           color: NODE_COLORS[nodeType] || '#888',
           nodeType: nodeType,
           _props: props,
@@ -1399,7 +1402,7 @@ function mergeGraphDelta(delta) {
         const slotRatio = siblingCount === 0 ? (hash % 360) / 360 : siblingCount / (siblingCount + 1);
         const angle = angleStart + angleSpread * slotRatio;
         graph.addNode(n.id, {
-          label: props.label || n.id,
+          label: D().getNodeDisplayLabel(props, n.id),
           x: anchorPos ? anchorPos.x + radius * Math.cos(angle) : radius * Math.cos(angle),
           y: anchorPos ? anchorPos.y + radius * Math.sin(angle) : radius * Math.sin(angle),
           size: NODE_BASE_SIZES[nodeType] || 5,

@@ -35,23 +35,15 @@ describe('graph health', () => {
 
   it('reports duplicate hosts by IP as critical', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-    engine.ingestFinding({
-      id: 'dup-ip',
-      agent_id: 'test-agent',
-      timestamp: '2026-03-21T10:00:00Z',
-      nodes: [
-        { id: 'host-a', type: 'host', label: 'host-a', ip: '10.10.10.10', alive: true },
-        { id: 'host-b', type: 'host', label: 'host-b', ip: '10.10.10.10', alive: true },
-      ],
-      edges: [],
-    });
+    engine.addNode({ id: 'host-a', type: 'host', label: 'host-a', ip: '10.10.10.10', alive: true, discovered_at: '2026-03-21T10:00:00Z', confidence: 1 });
+    engine.addNode({ id: 'host-b', type: 'host', label: 'host-b', ip: '10.10.10.10', alive: true, discovered_at: '2026-03-21T10:00:00Z', confidence: 1 });
 
     const report = engine.getHealthReport();
     expect(report.status).toBe('critical');
     expect(report.issues.some(issue => issue.check === 'split_host_identity_ip')).toBe(true);
   });
 
-  it('reports mixed hostname/ip split identities as critical', () => {
+  it('converges mixed hostname/ip host identities into one canonical host', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const bhResult = parseBloodHoundFile(JSON.stringify({
       data: [{
@@ -92,7 +84,8 @@ describe('graph health', () => {
     engine.ingestFinding(nmapFinding);
 
     const report = engine.getHealthReport();
-    expect(report.issues.some(issue => issue.check === 'split_host_identity_hostname')).toBe(true);
+    expect(report.issues.some(issue => issue.check === 'split_host_identity_hostname')).toBe(false);
+    expect(report.issues.some(issue => issue.check === 'identity_marker_collision')).toBe(false);
   });
 
   it('reports type constraint violations as critical', () => {
@@ -214,5 +207,52 @@ describe('graph health', () => {
     expect(host?.properties.first_seen_at).toBeDefined();
     expect(host?.properties.last_seen_at).toBeDefined();
     expect(host?.properties.sources).toEqual(expect.arrayContaining(['bloodhound-ingest', 'nmap-parser']));
+  });
+
+  it('escalates unresolved PKI identities as identity issues', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({
+      id: 'bh-ca-ca-object-1',
+      type: 'ca',
+      label: 'Unknown CA',
+      bh_sid: 'CA-OBJECT-1',
+      identity_status: 'unresolved',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 0.5,
+    });
+
+    const issue = engine.getHealthReport().issues.find(candidate => candidate.check === 'unresolved_identity');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('critical');
+  });
+
+  it('reports identity marker collisions across canonical nodes', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({
+      id: 'user-test-local-jsmith',
+      type: 'user',
+      label: 'JSMITH@TEST.LOCAL',
+      username: 'jsmith',
+      domain_name: 'test.local',
+      identity_markers: ['user:acct:test-local:jsmith'],
+      identity_status: 'canonical',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+    engine.addNode({
+      id: 'user-alt-jsmith',
+      type: 'user',
+      label: 'JSMITH@TEST.LOCAL',
+      username: 'jsmith',
+      domain_name: 'test.local',
+      identity_markers: ['user:acct:test-local:jsmith'],
+      identity_status: 'canonical',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+
+    const issue = engine.getHealthReport().issues.find(candidate => candidate.check === 'identity_marker_collision');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('critical');
   });
 });

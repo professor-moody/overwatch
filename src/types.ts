@@ -27,6 +27,11 @@ export interface NodeProperties {
   sources?: string[];           // unique agents that contributed to this node
   confidence: number;           // 0.0 - 1.0
   notes?: string;
+  identity_status?: 'canonical' | 'unresolved' | 'superseded';
+  identity_family?: string;
+  canonical_id?: string;
+  identity_markers?: string[];
+  superseded_by?: string;
 
   // Host
   ip?: string;

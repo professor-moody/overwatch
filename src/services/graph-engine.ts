@@ -19,6 +19,7 @@ import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
+import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNodeIdentity } from './identity-resolution.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
@@ -373,7 +374,7 @@ export class GraphEngine {
   getNodesByType(type: NodeType): NodeProperties[] {
     const results: NodeProperties[] = [];
     this.ctx.graph.forEachNode((id, attrs) => {
-      if (attrs.type === type) {
+      if (attrs.type === type && attrs.identity_status !== 'superseded') {
         results.push(attrs);
       }
     });
@@ -390,7 +391,26 @@ export class GraphEngine {
     const updatedNodes: string[] = [];
     const updatedEdges: string[] = [];
     const inferredEdges: string[] = [];
-    for (const node of finding.nodes) {
+    const removedNodes: string[] = [];
+    const removedEdges: string[] = [];
+    const idRemap = new Map<string, string>();
+    const reconciliationCandidates = new Set<string>();
+
+    const normalizedNodes = finding.nodes.map((node) => {
+      const identity = resolveNodeIdentity(node);
+      const resolvedId = identity.id || node.id;
+      idRemap.set(node.id, resolvedId);
+      return {
+        ...node,
+        id: resolvedId,
+        identity_status: identity.status,
+        identity_family: identity.family,
+        canonical_id: identity.status === 'canonical' ? resolvedId : undefined,
+        identity_markers: identity.markers,
+      };
+    });
+
+    for (const node of normalizedNodes) {
       const isNew = !this.ctx.graph.hasNode(node.id);
       const existingNode = isNew ? null : this.getNode(node.id);
       const oldProps = existingNode ? { ...existingNode } : null;
@@ -419,7 +439,7 @@ export class GraphEngine {
       if (baseProps.confidence >= 1.0) {
         if (isNew) {
           fullProps.confirmed_at = finding.timestamp;
-        } else if (!existingNode?.confirmed_at && (existingNode?.confidence ?? 0) < 1.0) {
+        } else if (!existingNode?.confirmed_at) {
           fullProps.confirmed_at = finding.timestamp;
         } else if (existingNode?.confirmed_at) {
           fullProps.confirmed_at = existingNode.confirmed_at;
@@ -436,29 +456,44 @@ export class GraphEngine {
         updatedNodes.push(node.id);
         this.log(`Updated ${node.type}: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       }
+      if (fullProps.identity_status === 'canonical' && (fullProps.identity_markers?.length || 0) > 0) {
+        reconciliationCandidates.add(fullProps.id);
+      }
+    }
+
+    for (const canonicalNodeId of reconciliationCandidates) {
+      const reconciliation = this.reconcileCanonicalNode(canonicalNodeId, finding.agent_id, finding.action_id);
+      if (reconciliation.updated_canonical) {
+        updatedNodes.push(canonicalNodeId);
+      }
+      removedNodes.push(...reconciliation.removed_nodes);
+      removedEdges.push(...reconciliation.removed_edges);
+      newEdges.push(...reconciliation.new_edges);
     }
 
     // Add/update edges
     for (const edge of finding.edges) {
-      if (!this.ctx.graph.hasNode(edge.source) || !this.ctx.graph.hasNode(edge.target)) continue;
+      const sourceId = idRemap.get(edge.source) || edge.source;
+      const targetId = idRemap.get(edge.target) || edge.target;
+      if (!this.ctx.graph.hasNode(sourceId) || !this.ctx.graph.hasNode(targetId)) continue;
       const fullProps: EdgeProperties = {
         discovered_at: finding.timestamp,
         confidence: 1.0,
         ...edge.properties,
         discovered_by: finding.agent_id
       };
-      const { id: edgeId, isNew } = this.addEdge(edge.source, edge.target, fullProps);
+      const { id: edgeId, isNew } = this.addEdge(sourceId, targetId, fullProps);
       if (isNew) {
         newEdges.push(edgeId);
-        this.log(`New edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'success' });
+        this.log(`New edge: ${sourceId} --[${edge.properties.type}]--> ${targetId}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       } else {
         updatedEdges.push(edgeId);
-        this.log(`Updated edge: ${edge.source} --[${edge.properties.type}]--> ${edge.target}`, finding.agent_id, { category: 'finding', outcome: 'neutral' });
+        this.log(`Updated edge: ${sourceId} --[${edge.properties.type}]--> ${targetId}`, finding.agent_id, { category: 'finding', outcome: 'neutral' });
       }
     }
 
     // Run inference rules against new and updated nodes
-    for (const nodeId of [...newNodes, ...updatedNodes]) {
+    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
       const inferred = this.runInferenceRules(nodeId);
       inferredEdges.push(...inferred);
     }
@@ -489,7 +524,7 @@ export class GraphEngine {
 
     // Persist with real delta detail for dashboard callbacks
     const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
-    this.persist(result);
+    this.persist({ ...result, removed_nodes: removedNodes, removed_edges: removedEdges });
 
     return result;
   }
@@ -563,7 +598,7 @@ export class GraphEngine {
           visited.add(current.id);
 
           const node = this.getNode(current.id);
-          if (node) {
+          if (node && node.identity_status !== 'superseded') {
             if (!query.node_type || node.type === query.node_type) {
               if (this.matchesFilter(node, query.node_filter)) {
                 result.nodes.push({ id: current.id, properties: node });
@@ -599,6 +634,7 @@ export class GraphEngine {
         // Filter all nodes
         this.ctx.graph.forEachNode((id, attrs) => {
           if (result.nodes.length >= limit) return;
+          if (attrs.identity_status === 'superseded') return;
           if (query.node_type && attrs.type !== query.node_type) return;
           if (!this.matchesFilter(attrs, query.node_filter)) return;
           result.nodes.push({ id, properties: attrs });
@@ -1086,6 +1122,7 @@ export class GraphEngine {
     let inferredEdges = 0;
 
     this.ctx.graph.forEachNode((_, attrs) => {
+      if (attrs.identity_status === 'superseded') return;
       nodesByType[attrs.type] = (nodesByType[attrs.type] || 0) + 1;
     });
 
@@ -1100,6 +1137,7 @@ export class GraphEngine {
     const validCreds: string[] = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
+      if (attrs.identity_status === 'superseded') return;
       if (attrs.type === 'host') {
         const hasAccess = this.ctx.graph.edges(id).some(e => {
           const ep = this.ctx.graph.getEdgeAttributes(e);
@@ -1317,6 +1355,181 @@ export class GraphEngine {
 
   private isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private reconcileCanonicalNode(
+    canonicalNodeId: string,
+    agentId?: string,
+    actionId?: string,
+  ): { removed_nodes: string[]; removed_edges: string[]; new_edges: string[]; updated_canonical: boolean } {
+    const canonicalNode = this.getNode(canonicalNodeId);
+    if (!canonicalNode || !isIdentityType(canonicalNode.type) || isUnresolvedIdentityNode(canonicalNode)) {
+      return { removed_nodes: [], removed_edges: [], new_edges: [], updated_canonical: false };
+    }
+
+    const canonicalMarkers = new Set(this.getEffectiveIdentityMarkers(canonicalNode));
+    if (canonicalMarkers.size === 0) {
+      return { removed_nodes: [], removed_edges: [], new_edges: [], updated_canonical: false };
+    }
+
+    const aliases: string[] = [];
+    this.ctx.graph.forEachNode((nodeId, attrs) => {
+      if (nodeId === canonicalNodeId) return;
+      if (attrs.type !== canonicalNode.type) return;
+      const aliasMarkers = this.getEffectiveIdentityMarkers(attrs);
+      if (!aliasMarkers.some((marker) => canonicalMarkers.has(marker))) return;
+      if (!this.shouldMergeIntoCanonical(canonicalNode, attrs)) return;
+        aliases.push(nodeId);
+    });
+
+    const removedNodes: string[] = [];
+    const removedEdges: string[] = [];
+    const newEdges: string[] = [];
+    let updatedCanonical = false;
+
+    for (const aliasId of aliases) {
+      const merged = this.mergeAliasIntoCanonical(aliasId, canonicalNodeId);
+      if (!merged) continue;
+      removedNodes.push(aliasId);
+      removedEdges.push(...merged.removed_edges);
+      newEdges.push(...merged.new_edges);
+      updatedCanonical = true;
+      this.logActionEvent({
+        description: `Identity converged: ${aliasId} -> ${canonicalNodeId}`,
+        agent_id: agentId,
+        action_id: actionId,
+        category: 'system',
+        event_type: 'system',
+        result_classification: 'success',
+        target_node_ids: [canonicalNodeId],
+        details: {
+          alias_node_id: aliasId,
+          canonical_node_id: canonicalNodeId,
+          identity_markers: [...canonicalMarkers],
+        },
+      });
+    }
+
+    return {
+      removed_nodes: removedNodes,
+      removed_edges: removedEdges,
+      new_edges: newEdges,
+      updated_canonical: updatedCanonical,
+    };
+  }
+
+  private mergeAliasIntoCanonical(
+    aliasNodeId: string,
+    canonicalNodeId: string,
+  ): { removed_edges: string[]; new_edges: string[] } | null {
+    if (!this.ctx.graph.hasNode(aliasNodeId) || !this.ctx.graph.hasNode(canonicalNodeId)) {
+      return null;
+    }
+
+    const aliasNode = this.ctx.graph.getNodeAttributes(aliasNodeId);
+    const canonicalNode = this.ctx.graph.getNodeAttributes(canonicalNodeId);
+    const mergedNode = this.mergeNodeProperties(canonicalNode, aliasNode, canonicalNodeId);
+    this.ctx.graph.replaceNodeAttributes(canonicalNodeId, mergedNode as any);
+
+    const removedEdges: string[] = [];
+    const newEdges: string[] = [];
+    const connectedEdges = [...this.ctx.graph.inEdges(aliasNodeId), ...this.ctx.graph.outEdges(aliasNodeId)];
+    for (const edgeId of connectedEdges) {
+      if (!this.ctx.graph.hasEdge(edgeId)) continue;
+      const source = this.ctx.graph.source(edgeId);
+      const target = this.ctx.graph.target(edgeId);
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      const nextSource = source === aliasNodeId ? canonicalNodeId : source;
+      const nextTarget = target === aliasNodeId ? canonicalNodeId : target;
+      this.ctx.graph.dropEdge(edgeId);
+      removedEdges.push(edgeId);
+      if (nextSource === nextTarget) continue;
+      const { id: nextEdgeId, isNew } = this.addEdge(nextSource, nextTarget, attrs);
+      if (isNew) {
+        newEdges.push(nextEdgeId);
+      }
+    }
+
+    this.ctx.graph.dropNode(aliasNodeId);
+    this.invalidatePathGraph();
+    return { removed_edges: removedEdges, new_edges: newEdges };
+  }
+
+  private mergeNodeProperties(
+    canonicalNode: NodeProperties,
+    aliasNode: NodeProperties,
+    canonicalNodeId: string,
+  ): NodeProperties {
+    const merged: NodeProperties = {
+      ...aliasNode,
+      ...canonicalNode,
+      id: canonicalNodeId,
+      type: canonicalNode.type,
+      label: this.choosePreferredLabel(canonicalNode.label, aliasNode.label, canonicalNodeId),
+      discovered_at: this.earliestTimestamp(canonicalNode.discovered_at, aliasNode.discovered_at) || canonicalNode.discovered_at || aliasNode.discovered_at,
+      first_seen_at: this.earliestTimestamp(canonicalNode.first_seen_at, aliasNode.first_seen_at, canonicalNode.discovered_at, aliasNode.discovered_at),
+      last_seen_at: this.latestTimestamp(canonicalNode.last_seen_at, aliasNode.last_seen_at, canonicalNode.discovered_at, aliasNode.discovered_at),
+      confirmed_at: this.earliestTimestamp(canonicalNode.confirmed_at, aliasNode.confirmed_at),
+      confidence: Math.max(canonicalNode.confidence ?? 0, aliasNode.confidence ?? 0),
+      discovered_by: canonicalNode.discovered_by || aliasNode.discovered_by,
+      sources: this.mergeUniqueArrays(getNodeSources(canonicalNode), getNodeSources(aliasNode)),
+      identity_status: 'canonical',
+      identity_family: canonicalNode.identity_family || aliasNode.identity_family,
+      canonical_id: canonicalNodeId,
+      identity_markers: this.mergeUniqueArrays(this.getEffectiveIdentityMarkers(canonicalNode), this.getEffectiveIdentityMarkers(aliasNode)),
+    };
+
+    for (const [key, value] of Object.entries(aliasNode)) {
+      if (merged[key] === undefined || merged[key] === null || merged[key] === '') {
+        merged[key] = value;
+      }
+    }
+
+    return normalizeNodeProvenance(merged) as NodeProperties;
+  }
+
+  private getEffectiveIdentityMarkers(node: NodeProperties): string[] {
+    if (Array.isArray(node.identity_markers) && node.identity_markers.length > 0) {
+      return node.identity_markers.filter((marker): marker is string => typeof marker === 'string');
+    }
+    return getIdentityMarkers(node);
+  }
+
+  private shouldMergeIntoCanonical(canonicalNode: NodeProperties, candidateAlias: NodeProperties): boolean {
+    if (isUnresolvedIdentityNode(candidateAlias)) {
+      return true;
+    }
+
+    if (canonicalNode.type === 'host' && candidateAlias.type === 'host') {
+      const canonicalHasIp = typeof canonicalNode.ip === 'string' && canonicalNode.ip.length > 0;
+      const aliasHasIp = typeof candidateAlias.ip === 'string' && candidateAlias.ip.length > 0;
+      return canonicalHasIp && !aliasHasIp;
+    }
+
+    return false;
+  }
+
+  private mergeUniqueArrays(left: unknown[] = [], right: unknown[] = []): string[] | undefined {
+    const merged = [...new Set([...left, ...right].filter((value): value is string => typeof value === 'string' && value.length > 0))];
+    return merged.length > 0 ? merged : undefined;
+  }
+
+  private earliestTimestamp(...values: Array<string | undefined>): string | undefined {
+    const timestamps = values.filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (timestamps.length === 0) return undefined;
+    return timestamps.sort()[0];
+  }
+
+  private latestTimestamp(...values: Array<string | undefined>): string | undefined {
+    const timestamps = values.filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (timestamps.length === 0) return undefined;
+    return timestamps.sort()[timestamps.length - 1];
+  }
+
+  private choosePreferredLabel(primary: string | undefined, fallback: string | undefined, nodeId: string): string {
+    if (primary && primary !== nodeId) return primary;
+    if (fallback && fallback !== nodeId) return fallback;
+    return primary || fallback || nodeId;
   }
 
   private log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void {

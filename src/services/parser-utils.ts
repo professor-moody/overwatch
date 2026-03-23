@@ -25,6 +25,12 @@ export function userId(username: string, domain?: string): string {
   return domainKey ? `user-${domainKey}-${userKey}` : `user-${userKey}`;
 }
 
+export function groupId(name: string, domain?: string): string {
+  const groupKey = normalizeKeyPart(name);
+  const domainKey = domain ? normalizeKeyPart(domain) : '';
+  return domainKey ? `group-${domainKey}-${groupKey}` : `group-${groupKey}`;
+}
+
 export function credentialId(
   materialKind: string,
   fingerprint: string,

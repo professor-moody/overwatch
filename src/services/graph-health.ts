@@ -2,6 +2,7 @@ import type { OverwatchGraph } from './engine-context.js';
 import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary, NodeProperties } from '../types.js';
 import { normalizeKeyPart } from './parser-utils.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
+import { getIdentityMarkers, isCanonicalIdentityNode, isIdentityType, isUnresolvedIdentityNode } from './identity-resolution.js';
 
 const SEVERITY_ORDER: Record<HealthSeverity, number> = {
   critical: 0,
@@ -13,7 +14,8 @@ export function runHealthChecks(graph: OverwatchGraph): HealthReport {
 
   issues.push(...findSplitHostIdentities(graph));
   issues.push(...findDanglingEdgeIssues(graph));
-  issues.push(...findUnresolvedBloodHoundIdentities(graph));
+  issues.push(...findUnresolvedIdentityIssues(graph));
+  issues.push(...findIdentityMarkerCollisions(graph));
   issues.push(...findTypeConstraintViolations(graph));
   issues.push(...findStaleInferredEdges(graph));
 
@@ -126,22 +128,64 @@ function findDanglingEdgeIssues(graph: OverwatchGraph): HealthIssue[] {
   return issues;
 }
 
-function findUnresolvedBloodHoundIdentities(graph: OverwatchGraph): HealthIssue[] {
+function findUnresolvedIdentityIssues(graph: OverwatchGraph): HealthIssue[] {
   const issues: HealthIssue[] = [];
 
   graph.forEachNode((id, attrs) => {
-    if (!id.startsWith('bh-')) return;
-    if (!attrs.bh_sid) return;
-    if (!['host', 'user', 'domain'].includes(attrs.type)) return;
+    if (!isIdentityType(attrs.type) || !isUnresolvedIdentityNode({ ...attrs, id })) return;
+    const severity = ['host', 'domain', 'credential', 'ca', 'cert_template'].includes(attrs.type)
+      ? 'critical'
+      : 'warning';
 
     issues.push({
-      severity: 'warning',
-      check: 'unresolved_bloodhound_identity',
-      message: `BloodHound identity ${id} did not converge to a canonical ${attrs.type} node`,
+      severity,
+      check: 'unresolved_identity',
+      message: `Identity ${id} did not converge to a canonical ${attrs.type} node`,
       node_ids: [id],
-      details: { bh_sid: attrs.bh_sid, type: attrs.type },
+      details: {
+        bh_sid: attrs.bh_sid,
+        type: attrs.type,
+        identity_markers: getEffectiveIdentityMarkers(attrs),
+        suggested_resolution: id.startsWith('bh-') ? 'auto_merge' : 'needs_operator_review',
+      },
     });
   });
+
+  return issues;
+}
+
+function findIdentityMarkerCollisions(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+  const markerToNodes = new Map<string, Array<{ id: string; type: string }>>();
+
+  graph.forEachNode((id, attrs) => {
+    if (!isCanonicalIdentityNode({ ...attrs, id })) return;
+    for (const marker of getEffectiveIdentityMarkers(attrs)) {
+      const bucket = markerToNodes.get(marker) || [];
+      bucket.push({ id, type: attrs.type });
+      markerToNodes.set(marker, bucket);
+    }
+  });
+
+  for (const [marker, nodes] of markerToNodes) {
+    const uniqueIds = [...new Set(nodes.map((node) => node.id))];
+    if (uniqueIds.length < 2) continue;
+    const types = [...new Set(nodes.map((node) => node.type))];
+    const severity: HealthSeverity = types.some((type) => ['host', 'domain', 'user', 'credential', 'ca', 'cert_template'].includes(type))
+      ? 'critical'
+      : 'warning';
+    issues.push({
+      severity,
+      check: 'identity_marker_collision',
+      message: `Multiple canonical nodes claim identity marker ${marker}`,
+      node_ids: uniqueIds,
+      details: {
+        identity_marker: marker,
+        node_types: types,
+        suggested_resolution: 'replace_id',
+      },
+    });
+  }
 
   return issues;
 }
@@ -228,4 +272,11 @@ function getHostNameMarkers(node: NodeProperties): string[] {
 
 function isIpv4(value: string): boolean {
   return /^\d+\.\d+\.\d+\.\d+$/.test(value.trim());
+}
+
+function getEffectiveIdentityMarkers(node: NodeProperties): string[] {
+  if (Array.isArray(node.identity_markers) && node.identity_markers.length > 0) {
+    return node.identity_markers.filter((marker): marker is string => typeof marker === 'string');
+  }
+  return getIdentityMarkers(node);
 }

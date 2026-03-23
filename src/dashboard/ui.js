@@ -4,6 +4,7 @@
 // ============================================================
 
 const G = () => window.OverwatchGraph;
+const D = () => window.OverwatchNodeDisplay;
 
 // ============================================================
 // Sidebar Toggle
@@ -136,9 +137,10 @@ function updateStats(state) {
   for (const [type, count] of types) {
     const color = colors[type] || '#888';
     const clickable = clickableTypes.has(type);
+    const label = D().getFriendlyNodeTypeLabel(type);
     html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${color}">
       <div class="stat-value" style="color:${color}">${count}</div>
-      <div class="stat-label">${type}s</div>
+      <div class="stat-label">${escapeHtml(label)}</div>
     </button>`;
   }
   html += `<div class="stat-item telemetry" style="border-left-color:var(--accent)">
@@ -191,12 +193,10 @@ function getFrontierPrimaryLabel(frontierItem) {
   const targetNodeIds = getFrontierTargetNodeIds(frontierItem);
   for (const nodeId of targetNodeIds) {
     if (graph?.hasNode(nodeId)) {
-      const label = graph.getNodeAttribute(nodeId, 'label');
-      if (label) return label;
       const attrs = graph.getNodeAttributes(nodeId) || {};
       const props = attrs._props || {};
-      if (props.label) return props.label;
-      if (props.hostname) return props.hostname;
+      const label = D().getNodeDisplayLabel(props, nodeId) || attrs.label;
+      if (label) return label;
       if (props.ip) return props.ip;
       return nodeId;
     }
@@ -508,7 +508,7 @@ function showNodeDetail(nodeId) {
   const color = g.NODE_COLORS[nodeType] || '#888';
   const drawer = document.getElementById('node-detail');
 
-  document.getElementById('detail-title').textContent = props.label || nodeId;
+  document.getElementById('detail-title').textContent = D().getNodeDisplayLabel(props, nodeId);
   const outEdges = graph.outEdges(nodeId);
   const inEdges = graph.inEdges(nodeId);
   document.getElementById('detail-subtitle').textContent =
@@ -523,23 +523,33 @@ function showNodeDetail(nodeId) {
   }
 
   // Properties — split into identity and metadata groups
-  const skip = new Set(['label', 'type']);
-  const entries = Object.entries(props).filter(([k]) => !skip.has(k));
   const identityRows = [];
   const metadataRows = [];
-  for (const [key, val] of entries) {
+  const identityEntries = D().getNodeIdentityEntries(props, nodeId);
+  const identityKeys = new Set(identityEntries.map((entry) => entry.key));
+
+  for (const { key, value: val } of identityEntries) {
     const display = formatPropValue(key, val);
     if (display === null) continue;
     const raw = typeof val === 'object' ? JSON.stringify(val) : String(val);
-    const isTs = TIMESTAMP_PROPS.has(key);
-    const isIdentity = IDENTITY_PROPS.has(key);
-    const valClass = isIdentity ? ' prop-val-highlight' : isTs ? ' prop-val-ts' : '';
+    const valClass = TIMESTAMP_PROPS.has(key) ? ' prop-val-ts' : ' prop-val-highlight';
     const row = `<div class="prop-row">
       <span class="prop-key">${escapeHtml(key)}</span>
       <span class="prop-val${valClass}" title="${escapeHtml(raw)}">${escapeHtml(display)}</span>
     </div>`;
-    if (isIdentity) identityRows.push(row);
-    else metadataRows.push(row);
+    identityRows.push(row);
+  }
+
+  for (const [key, val] of Object.entries(props)) {
+    if (key === 'label' || key === 'type' || identityKeys.has(key)) continue;
+    const display = formatPropValue(key, val);
+    if (display === null) continue;
+    const raw = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    const valClass = TIMESTAMP_PROPS.has(key) ? ' prop-val-ts' : '';
+    metadataRows.push(`<div class="prop-row">
+      <span class="prop-key">${escapeHtml(key)}</span>
+      <span class="prop-val${valClass}" title="${escapeHtml(raw)}">${escapeHtml(display)}</span>
+    </div>`);
   }
 
   // Fan-out badge for credential nodes
@@ -668,7 +678,7 @@ function buildServiceSummary(nodeId, graph) {
       const props = serviceAttrs._props || {};
       return {
         type: props.service_name || serviceAttrs.label || 'service',
-        target: serviceAttrs.label || entry.targetId,
+        target: D().getNodeDisplayLabel(props, entry.targetId),
         meta: props.version || `port ${props.port || '?'}`,
       };
     })
@@ -705,7 +715,7 @@ function buildConnectionSection(nodeId, graph, direction) {
       edgeId,
       counterpartId,
       edgeType: edgeAttrs.edgeType || '?',
-      counterpartLabel: counterpartAttrs?.label || counterpartProps.label || counterpartId,
+      counterpartLabel: D().getNodeDisplayLabel(counterpartProps, counterpartId),
       counterpartType: counterpartAttrs?.nodeType || counterpartProps.type || '?',
       meta: confidence === '1.0' ? 'confirmed' : `conf ${confidence}`,
     };
@@ -954,11 +964,6 @@ function initMinimapClick() {
 // Utilities
 // ============================================================
 
-const IDENTITY_PROPS = new Set([
-  'id', 'username', 'hostname', 'ip', 'service_name', 'port', 'protocol',
-  'domain', 'fqdn', 'os', 'description', 'hash', 'hash_type', 'password',
-  'cn', 'dn', 'sam_account_name', 'template_name', 'ca_name',
-]);
 const TIMESTAMP_PROPS = new Set([
   'discovered_at', 'first_seen_at', 'last_seen_at', 'confirmed_at',
 ]);
