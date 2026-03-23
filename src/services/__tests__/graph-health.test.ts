@@ -379,4 +379,79 @@ describe('graph health', () => {
     expect(report.issues.some(issue => issue.check === 'shared_credential_material')).toBe(true);
     expect(report.status).not.toBe('critical');
   });
+
+  it('ignores stale persisted credential:material identity markers during health checks', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    // Simulate a node with stale persisted identity_markers from the old logic
+    engine.addNode({
+      id: 'cred-stale-a',
+      type: 'credential',
+      label: 'stale hash a',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: 'aaaa1111bbbb2222cccc3333dddd4444',
+      cred_user: 'alice',
+      cred_domain: 'acme.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+    engine.addNode({
+      id: 'cred-stale-b',
+      type: 'credential',
+      label: 'stale hash b',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: 'aaaa1111bbbb2222cccc3333dddd4444',
+      cred_user: 'bob',
+      cred_domain: 'acme.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+
+    // Manually inject stale identity_markers as if persisted from old logic
+    const graph = (engine as any).ctx.graph;
+    graph.setNodeAttribute('cred-stale-a', 'identity_markers', [
+      'credential:acct:acme-local:alice',
+      'credential:material:ntlm-hash:aaaa1111bbbb2222cccc3333dddd4444',
+    ]);
+    graph.setNodeAttribute('cred-stale-b', 'identity_markers', [
+      'credential:acct:acme-local:bob',
+      'credential:material:ntlm-hash:aaaa1111bbbb2222cccc3333dddd4444',
+    ]);
+
+    // Invalidate cache so health is recomputed
+    (engine as any).invalidateHealthReport();
+
+    const report = engine.getHealthReport();
+    // The stale credential:material markers should NOT cause an identity_marker_collision
+    const collisions = report.issues.filter(i => i.check === 'identity_marker_collision');
+    expect(collisions).toEqual([]);
+  });
+
+  it('does not let credential warnings block lab readiness', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'cred-warning-test',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{
+        id: 'cred-ambiguous',
+        type: 'credential',
+        label: 'administrator hash',
+        cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_hash: 'ff00ff00ff00ff00ff00ff00ff00ff00',
+        cred_user: 'administrator',
+      }],
+      edges: [],
+    });
+
+    const report = engine.getHealthReport();
+    // Credential ambiguity should be warning only
+    const ambiguity = report.issues.find(i => i.check === 'credential_identity_ambiguity');
+    expect(ambiguity).toBeDefined();
+    expect(ambiguity?.severity).toBe('warning');
+    // Overall status should not be critical just from credential warnings
+    expect(report.status).not.toBe('critical');
+  });
 });

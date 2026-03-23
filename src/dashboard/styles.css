@@ -261,6 +261,21 @@ body {
   color: var(--red);
 }
 
+.status-badge.boot-failed {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.status-badge.snapshot {
+  background: var(--yellow-dim, rgba(240, 181, 74, 0.15));
+  color: var(--yellow, #f0b54a);
+}
+
+.status-badge.reconnecting {
+  background: var(--yellow-dim, rgba(240, 181, 74, 0.15));
+  color: var(--yellow, #f0b54a);
+}
+
 .status-dot {
   width: 5px;
   height: 5px;

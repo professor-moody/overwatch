@@ -354,8 +354,7 @@ function isIpv4(value: string): boolean {
 }
 
 function getEffectiveIdentityMarkers(node: NodeProperties): string[] {
-  if (Array.isArray(node.identity_markers) && node.identity_markers.length > 0) {
-    return node.identity_markers.filter((marker): marker is string => typeof marker === 'string');
-  }
+  // Always recompute from node properties so stale persisted markers
+  // (e.g. old credential:material:* entries) don't cause false positives.
   return getIdentityMarkers(node);
 }

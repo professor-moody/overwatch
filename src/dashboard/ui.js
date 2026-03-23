@@ -4,7 +4,6 @@
 // ============================================================
 
 const G = () => window.OverwatchGraph;
-const D = () => window.OverwatchNodeDisplay;
 
 // ============================================================
 // Sidebar Toggle
@@ -137,7 +136,7 @@ function updateStats(state) {
   for (const [type, count] of types) {
     const color = colors[type] || '#888';
     const clickable = clickableTypes.has(type);
-    const label = D().getFriendlyNodeTypeLabel(type);
+    const label = window.OverwatchNodeDisplay.getFriendlyNodeTypeLabel(type);
     html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${color}">
       <div class="stat-value" style="color:${color}">${count}</div>
       <div class="stat-label">${escapeHtml(label)}</div>
@@ -195,7 +194,7 @@ function getFrontierPrimaryLabel(frontierItem) {
     if (graph?.hasNode(nodeId)) {
       const attrs = graph.getNodeAttributes(nodeId) || {};
       const props = attrs._props || {};
-      const label = D().getNodeDisplayLabel(props, nodeId) || attrs.label;
+      const label = window.OverwatchNodeDisplay.getNodeDisplayLabel(props, nodeId) || attrs.label;
       if (label) return label;
       if (props.ip) return props.ip;
       return nodeId;
@@ -508,7 +507,7 @@ function showNodeDetail(nodeId) {
   const color = g.NODE_COLORS[nodeType] || '#888';
   const drawer = document.getElementById('node-detail');
 
-  document.getElementById('detail-title').textContent = D().getNodeDisplayLabel(props, nodeId);
+  document.getElementById('detail-title').textContent = window.OverwatchNodeDisplay.getNodeDisplayLabel(props, nodeId);
   const outEdges = graph.outEdges(nodeId);
   const inEdges = graph.inEdges(nodeId);
   document.getElementById('detail-subtitle').textContent =
@@ -525,7 +524,7 @@ function showNodeDetail(nodeId) {
   // Properties — split into identity and metadata groups
   const identityRows = [];
   const metadataRows = [];
-  const identityEntries = D().getNodeIdentityEntries(props, nodeId);
+  const identityEntries = window.OverwatchNodeDisplay.getNodeIdentityEntries(props, nodeId);
   const identityKeys = new Set(identityEntries.map((entry) => entry.key));
 
   for (const { key, value: val } of identityEntries) {
@@ -678,7 +677,7 @@ function buildServiceSummary(nodeId, graph) {
       const props = serviceAttrs._props || {};
       return {
         type: props.service_name || serviceAttrs.label || 'service',
-        target: D().getNodeDisplayLabel(props, entry.targetId),
+        target: window.OverwatchNodeDisplay.getNodeDisplayLabel(props, entry.targetId),
         meta: props.version || `port ${props.port || '?'}`,
       };
     })
@@ -715,7 +714,7 @@ function buildConnectionSection(nodeId, graph, direction) {
       edgeId,
       counterpartId,
       edgeType: edgeAttrs.edgeType || '?',
-      counterpartLabel: D().getNodeDisplayLabel(counterpartProps, counterpartId),
+      counterpartLabel: window.OverwatchNodeDisplay.getNodeDisplayLabel(counterpartProps, counterpartId),
       counterpartType: counterpartAttrs?.nodeType || counterpartProps.type || '?',
       meta: confidence === '1.0' ? 'confirmed' : `conf ${confidence}`,
     };

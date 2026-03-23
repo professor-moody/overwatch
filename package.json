@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp -r src/dashboard dist/",
+    "build": "tsc && cp -r src/dashboard dist/ && node scripts/vendor-dashboard-deps.js",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
@@ -16,11 +16,13 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "fast-xml-parser": "^5.5.8",
     "graphology": "^0.25.4",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-operators": "^1.6.0",
     "graphology-shortest-path": "^2.1.0",
     "graphology-traversal": "^0.3.1",
     "graphology-types": "^0.24.8",
     "uuid": "^10.0.0",
+    "sigma": "^2.4.0",
     "ws": "^8.19.0",
     "zod": "^3.23.8"
   },

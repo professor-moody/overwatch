@@ -10,6 +10,8 @@ let onInitialState = null;
 let onStateRefresh = null;
 let onGraphUpdate = null;
 let hasLoadedState = false;
+let reconnectFailures = 0;
+const MAX_RECONNECT_FAILURES = 3;
 
 function connectWS(callbacks) {
   onInitialState = callbacks.onInitialState;
@@ -30,7 +32,19 @@ function connectWS(callbacks) {
   pollState();
 }
 
+function setBadge(state, label) {
+  const badge = document.getElementById('ws-status');
+  if (!badge) return;
+  badge.className = 'status-badge' + (state ? ' ' + state : '');
+  badge.innerHTML = '<span class="status-dot"></span><span>' + label + '</span>';
+}
+
 function handleStateSnapshot(data) {
+  // Update badge on successful poll when WS is not open
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setBadge('snapshot', 'Snapshot');
+  }
+
   if (!hasLoadedState) {
     hasLoadedState = true;
     if (onInitialState) onInitialState(data);
@@ -46,9 +60,8 @@ function doConnect() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    const badge = document.getElementById('ws-status');
-    badge.className = 'status-badge';
-    badge.innerHTML = '<span class="status-dot"></span><span>Live</span>';
+    reconnectFailures = 0;
+    setBadge('', 'Live');
     if (reconnectTimer) {
       clearInterval(reconnectTimer);
       reconnectTimer = null;
@@ -59,6 +72,7 @@ function doConnect() {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === 'full_state') {
+        setBadge('', 'Live');
         handleStateSnapshot(msg.data);
       } else if (msg.type === 'graph_update' && onGraphUpdate) {
         onGraphUpdate(msg.data);
@@ -69,9 +83,12 @@ function doConnect() {
   };
 
   ws.onclose = () => {
-    const badge = document.getElementById('ws-status');
-    badge.className = 'status-badge disconnected';
-    badge.innerHTML = '<span class="status-dot"></span><span>Disconnected</span>';
+    reconnectFailures++;
+    if (reconnectFailures >= MAX_RECONNECT_FAILURES && !hasLoadedState) {
+      setBadge('disconnected', 'Disconnected');
+    } else {
+      setBadge('reconnecting', 'Reconnecting\u2026');
+    }
     if (!reconnectTimer) {
       reconnectTimer = setInterval(() => doConnect(), 3000);
     }

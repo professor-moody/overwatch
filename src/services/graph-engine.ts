@@ -1505,10 +1505,18 @@ export class GraphEngine {
   }
 
   private getEffectiveIdentityMarkers(node: NodeProperties): string[] {
+    // Always recompute fresh markers from current node properties so stale
+    // persisted entries (e.g. old credential:material:*) don't pollute matching.
+    const fresh = getIdentityMarkers(node);
+    // Union with stored markers to preserve accumulated merge history.
     if (Array.isArray(node.identity_markers) && node.identity_markers.length > 0) {
-      return node.identity_markers.filter((marker): marker is string => typeof marker === 'string');
+      const set = new Set(fresh);
+      for (const marker of node.identity_markers) {
+        if (typeof marker === 'string') set.add(marker);
+      }
+      return [...set];
     }
-    return getIdentityMarkers(node);
+    return fresh;
   }
 
   private shouldMergeIntoCanonical(canonicalNode: NodeProperties, candidateAlias: NodeProperties): boolean {

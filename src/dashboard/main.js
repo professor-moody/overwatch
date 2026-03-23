@@ -8,6 +8,21 @@ window.addEventListener('DOMContentLoaded', () => {
   const UI = window.OverwatchUI;
   const WS = window.OverwatchWS;
 
+  // Defensive boot guard — abort cleanly if any module failed to load
+  const missing = [];
+  if (!G) missing.push('OverwatchGraph (graph.js)');
+  if (!UI) missing.push('OverwatchUI (ui.js)');
+  if (!WS) missing.push('OverwatchWS (ws.js)');
+  if (missing.length > 0) {
+    const badge = document.getElementById('ws-status');
+    if (badge) {
+      badge.className = 'status-badge boot-failed';
+      badge.innerHTML = '<span class="status-dot"></span><span>Boot failed</span>';
+    }
+    console.error('[Overwatch] Dashboard boot failed — missing modules:', missing.join(', '));
+    return;
+  }
+
   // Initialize graph and renderer
   G.init();
   G.initRenderer();
