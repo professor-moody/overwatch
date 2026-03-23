@@ -89,11 +89,12 @@ export function resolveNodeIdentity(
       return { id: node.id, status: 'unresolved', markers, family };
     }
     case 'credential': {
+      const account = resolveCredentialAccount(node);
       const materialKind = normalizeCredentialMaterialKind(node);
       const fingerprint = normalizeString(node.cred_hash) || normalizeString(node.cred_value);
-      if (materialKind && fingerprint) {
+      if (materialKind && fingerprint && account?.domain) {
         return {
-          id: credentialId(materialKind, fingerprint, normalizeString(node.cred_user), normalizeString(node.cred_domain)),
+          id: credentialId(materialKind, fingerprint, account.name, account.domain),
           status: 'canonical',
           markers,
           family,
@@ -160,11 +161,8 @@ export function getIdentityMarkers(
     }
     case 'credential': {
       const account = resolveCredentialAccount(node);
-      if (account) markers.add(`credential:acct:${normalizeKeyPart(account.domain || '')}:${normalizeKeyPart(account.name)}`);
-      const materialKind = normalizeCredentialMaterialKind(node);
-      const fingerprint = normalizeString(node.cred_hash) || normalizeString(node.cred_value);
-      if (materialKind && fingerprint) {
-        markers.add(`credential:material:${normalizeKeyPart(materialKind)}:${normalizeKeyPart(fingerprint)}`);
+      if (account?.domain) {
+        markers.add(`credential:acct:${normalizeKeyPart(account.domain)}:${normalizeKeyPart(account.name)}`);
       }
       break;
     }

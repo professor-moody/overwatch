@@ -15,7 +15,9 @@ export function runHealthChecks(graph: OverwatchGraph): HealthReport {
   issues.push(...findSplitHostIdentities(graph));
   issues.push(...findDanglingEdgeIssues(graph));
   issues.push(...findUnresolvedIdentityIssues(graph));
+  issues.push(...findCredentialIdentityAmbiguities(graph));
   issues.push(...findIdentityMarkerCollisions(graph));
+  issues.push(...findSharedCredentialMaterialIssues(graph));
   issues.push(...findTypeConstraintViolations(graph));
   issues.push(...findStaleInferredEdges(graph));
 
@@ -133,7 +135,7 @@ function findUnresolvedIdentityIssues(graph: OverwatchGraph): HealthIssue[] {
 
   graph.forEachNode((id, attrs) => {
     if (!isIdentityType(attrs.type) || !isUnresolvedIdentityNode({ ...attrs, id })) return;
-    const severity = ['host', 'domain', 'credential', 'ca', 'cert_template'].includes(attrs.type)
+    const severity = ['host', 'domain', 'ca', 'cert_template'].includes(attrs.type)
       ? 'critical'
       : 'warning';
 
@@ -171,18 +173,95 @@ function findIdentityMarkerCollisions(graph: OverwatchGraph): HealthIssue[] {
     const uniqueIds = [...new Set(nodes.map((node) => node.id))];
     if (uniqueIds.length < 2) continue;
     const types = [...new Set(nodes.map((node) => node.type))];
-    const severity: HealthSeverity = types.some((type) => ['host', 'domain', 'user', 'credential', 'ca', 'cert_template'].includes(type))
-      ? 'critical'
-      : 'warning';
+    const isCredentialOnly = types.length === 1 && types[0] === 'credential';
+    const severity: HealthSeverity = isCredentialOnly
+      ? 'warning'
+      : types.some((type) => ['host', 'domain', 'user', 'ca', 'cert_template'].includes(type))
+        ? 'critical'
+        : 'warning';
+    const message = isCredentialOnly
+      ? `Multiple credential nodes claim the same account-qualified identity marker ${marker}`
+      : `Multiple canonical nodes claim identity marker ${marker}`;
     issues.push({
       severity,
       check: 'identity_marker_collision',
-      message: `Multiple canonical nodes claim identity marker ${marker}`,
+      message,
       node_ids: uniqueIds,
       details: {
         identity_marker: marker,
         node_types: types,
-        suggested_resolution: 'replace_id',
+        suggested_resolution: isCredentialOnly ? 'needs_operator_review' : 'replace_id',
+      },
+    });
+  }
+
+  return issues;
+}
+
+function findCredentialIdentityAmbiguities(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+
+  graph.forEachNode((id, attrs) => {
+    if (attrs.type !== 'credential' || attrs.identity_status === 'superseded') return;
+    if (typeof attrs.cred_user !== 'string' || attrs.cred_user.length === 0) return;
+    if (typeof attrs.cred_domain === 'string' && attrs.cred_domain.length > 0) return;
+
+    issues.push({
+      severity: 'warning',
+      check: 'credential_identity_ambiguity',
+      message: `Credential ${id} is missing domain qualification for account ${attrs.cred_user}`,
+      node_ids: [id],
+      details: {
+        cred_user: attrs.cred_user,
+        suggested_resolution: 'needs_operator_review',
+      },
+    });
+  });
+
+  return issues;
+}
+
+function findSharedCredentialMaterialIssues(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+  const materialToNodes = new Map<string, Array<{ id: string; account: string; material_kind: string; fingerprint: string }>>();
+
+  graph.forEachNode((id, attrs) => {
+    if (attrs.type !== 'credential' || attrs.identity_status === 'superseded') return;
+    const materialKind = typeof attrs.cred_material_kind === 'string'
+      ? attrs.cred_material_kind
+      : typeof attrs.cred_type === 'string'
+        ? attrs.cred_type
+        : undefined;
+    const fingerprint = typeof attrs.cred_hash === 'string'
+      ? attrs.cred_hash
+      : typeof attrs.cred_value === 'string'
+        ? attrs.cred_value
+        : undefined;
+    if (!materialKind || !fingerprint) return;
+
+    const bucketKey = `${normalizeKeyPart(materialKind)}:${normalizeKeyPart(fingerprint)}`;
+    const account = typeof attrs.cred_user === 'string'
+      ? `${attrs.cred_domain || '<unknown>'}\\${attrs.cred_user}`
+      : attrs.label || id;
+    const bucket = materialToNodes.get(bucketKey) || [];
+    bucket.push({ id, account, material_kind: materialKind, fingerprint });
+    materialToNodes.set(bucketKey, bucket);
+  });
+
+  for (const [materialKey, nodes] of materialToNodes) {
+    const uniqueIds = [...new Set(nodes.map((node) => node.id))];
+    if (uniqueIds.length < 2) continue;
+    const uniqueAccounts = [...new Set(nodes.map((node) => node.account))];
+    if (uniqueAccounts.length < 2) continue;
+    issues.push({
+      severity: 'warning',
+      check: 'shared_credential_material',
+      message: `Multiple credential nodes share the same material fingerprint ${materialKey}`,
+      node_ids: uniqueIds,
+      details: {
+        material_key: materialKey,
+        accounts: uniqueAccounts,
+        suggested_resolution: 'none',
       },
     });
   }

@@ -255,4 +255,128 @@ describe('graph health', () => {
     expect(issue).toBeDefined();
     expect(issue?.severity).toBe('critical');
   });
+
+  it('treats duplicate credential account identity as warning, not critical', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({
+      id: 'cred-a',
+      type: 'credential',
+      label: 'jorah hash',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: '186f0c43150b42deadbeef0011223344',
+      cred_user: 'jorah.mormont',
+      cred_domain: 'essos.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+    engine.addNode({
+      id: 'cred-b',
+      type: 'credential',
+      label: 'jorah duplicate',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      cred_user: 'jorah.mormont',
+      cred_domain: 'essos.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+
+    const issue = engine.getHealthReport().issues.find(candidate => candidate.check === 'identity_marker_collision');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('warns on shared credential material across different accounts without reporting identity collision', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({
+      id: 'cred-viserys',
+      type: 'credential',
+      label: 'viserys hash',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: '846f08aaaaaaaaaaaaaaaaaaaaaaaaaa',
+      cred_user: 'viserys.targaryen',
+      cred_domain: 'essos.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+    engine.addNode({
+      id: 'cred-khal',
+      type: 'credential',
+      label: 'khal hash',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: '846f08aaaaaaaaaaaaaaaaaaaaaaaaaa',
+      cred_user: 'khal.drogo',
+      cred_domain: 'essos.local',
+      discovered_at: '2026-03-21T10:00:00Z',
+      confidence: 1,
+    });
+
+    const report = engine.getHealthReport();
+    expect(report.issues.some(issue => issue.check === 'identity_marker_collision')).toBe(false);
+    const issue = report.issues.find(candidate => candidate.check === 'shared_credential_material');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('warns when a credential account is missing domain qualification', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'ambiguous-cred',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{
+        id: 'cred-admin-ambiguous',
+        type: 'credential',
+        label: 'administrator hash',
+        cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_hash: '11223344556677889900aabbccddeeff',
+        cred_user: 'administrator',
+      }],
+      edges: [],
+    });
+
+    const issue = engine.getHealthReport().issues.find(candidate => candidate.check === 'credential_identity_ambiguity');
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('does not report identity collisions for same-hash credentials when domain context is missing', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'ambiguous-admins',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [
+        {
+          id: 'cred-admin-a',
+          type: 'credential',
+          label: 'administrator hash a',
+          cred_type: 'ntlm',
+          cred_material_kind: 'ntlm_hash',
+          cred_hash: '31d6cfe0d16ae931b73c59d7e0c089c0',
+          cred_user: 'administrator',
+        },
+        {
+          id: 'cred-admin-b',
+          type: 'credential',
+          label: 'administrator hash b',
+          cred_type: 'ntlm',
+          cred_material_kind: 'ntlm_hash',
+          cred_hash: '31d6cfe0d16ae931b73c59d7e0c089c0',
+          cred_user: 'krbtgt',
+        },
+      ],
+      edges: [],
+    });
+
+    const report = engine.getHealthReport();
+    expect(report.issues.some(issue => issue.check === 'identity_marker_collision')).toBe(false);
+    expect(report.issues.some(issue => issue.check === 'shared_credential_material')).toBe(true);
+    expect(report.status).not.toBe('critical');
+  });
 });

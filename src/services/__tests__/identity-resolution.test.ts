@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPrincipalIdentity, resolveNodeIdentity, resolveTypedRelationRef } from '../identity-resolution.js';
+import { classifyPrincipalIdentity, getIdentityMarkers, resolveNodeIdentity, resolveTypedRelationRef } from '../identity-resolution.js';
 
 describe('identity resolution', () => {
   it('classifies well-known enrollment groups as group principals', () => {
@@ -21,5 +21,34 @@ describe('identity resolution', () => {
     });
     expect(identity.status).toBe('unresolved');
     expect(identity.id).toBe('bh-user-s-1-5-21-x');
+  });
+
+  it('does not create canonical credential identity without a qualified domain', () => {
+    const identity = resolveNodeIdentity({
+      id: 'cred-administrator-ntlm',
+      type: 'credential',
+      label: 'administrator hash',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: '11223344556677889900aabbccddeeff',
+      cred_user: 'administrator',
+    });
+    expect(identity.status).toBe('unresolved');
+    expect(identity.id).toBe('cred-administrator-ntlm');
+  });
+
+  it('does not treat credential material reuse as an identity marker', () => {
+    const markers = getIdentityMarkers({
+      id: 'cred-test',
+      type: 'credential',
+      label: 'admin hash',
+      cred_type: 'ntlm',
+      cred_material_kind: 'ntlm_hash',
+      cred_hash: '11223344556677889900aabbccddeeff',
+      cred_user: 'administrator',
+      cred_domain: 'north.sevenkingdoms.local',
+    });
+    expect(markers).toContain('credential:acct:north-sevenkingdoms-local:administrator');
+    expect(markers.some(marker => marker.startsWith('credential:material:'))).toBe(false);
   });
 });

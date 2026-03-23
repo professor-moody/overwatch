@@ -1404,6 +1404,29 @@ describe('GraphEngine', () => {
       expect(state.warnings.counts_by_severity.critical).toBeGreaterThan(0);
       expect(state.warnings.top_issues.length).toBeGreaterThan(0);
     });
+
+    it('reuses cached health reports until the graph changes', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      const first = engine.getHealthReport();
+      const second = engine.getHealthReport();
+      expect(second).toBe(first);
+
+      engine.addNode({
+        id: 'host-cache-a',
+        type: 'host',
+        label: 'cache-a',
+        ip: '10.10.10.88',
+        alive: true,
+        discovered_at: '2026-03-21T12:05:00.000Z',
+        confidence: 1,
+      });
+
+      const third = engine.getHealthReport();
+      expect(third).not.toBe(first);
+      const fourth = engine.getHealthReport();
+      expect(fourth).toBe(third);
+    });
   });
 
   // =============================================

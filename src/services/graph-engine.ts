@@ -134,6 +134,7 @@ export class GraphEngine {
   private inference: InferenceEngine;
   private paths: PathAnalyzer;
   private frontierComputer: FrontierComputer;
+  private healthReportCache: HealthReport | null = null;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     const graph = createGraph();
@@ -273,6 +274,7 @@ export class GraphEngine {
       this.ctx.graph.addNode(props.id, props);
       this.invalidatePathGraph();
     }
+    this.invalidateHealthReport();
     return props.id;
   }
 
@@ -289,11 +291,13 @@ export class GraphEngine {
         }
         // Update existing edge
         this.ctx.graph.mergeEdgeAttributes(edgeId, props as any);
+        this.invalidateHealthReport();
         return { id: edgeId, isNew: false };
       }
     }
     // New edge
     this.invalidatePathGraph();
+    this.invalidateHealthReport();
     const edgeId = `${source}--${props.type}--${target}`;
     try {
       return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
@@ -321,6 +325,7 @@ export class GraphEngine {
     if (!edgeId) return null;
     this.ctx.graph.dropEdge(edgeId);
     this.invalidatePathGraph();
+    this.invalidateHealthReport();
     return edgeId;
   }
 
@@ -363,6 +368,7 @@ export class GraphEngine {
       ...normalizeNodeProvenance(nextNode),
     };
     this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as any);
+    this.invalidateHealthReport();
     return this.ctx.graph.getNodeAttributes(nodeId);
   }
 
@@ -1205,6 +1211,7 @@ export class GraphEngine {
   // =============================================
 
   persist(detail: GraphUpdateDetail = {}): void {
+    this.invalidateHealthReport();
     this.persistence.persist(detail);
   }
 
@@ -1213,7 +1220,9 @@ export class GraphEngine {
   }
 
   rollbackToSnapshot(snapshotName: string): boolean {
-    return this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
+    const ok = this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
+    if (ok) this.invalidateHealthReport();
+    return ok;
   }
 
   // =============================================
@@ -1276,7 +1285,14 @@ export class GraphEngine {
   }
 
   private runHealthChecks(): HealthReport {
-    return runHealthChecks(this.ctx.graph);
+    if (!this.healthReportCache) {
+      this.healthReportCache = runHealthChecks(this.ctx.graph);
+    }
+    return this.healthReportCache;
+  }
+
+  private invalidateHealthReport(): void {
+    this.healthReportCache = null;
   }
 
   // =============================================
