@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 export const NODE_TYPES = [
   'host', 'service', 'domain', 'user', 'group', 'credential',
-  'share', 'certificate', 'gpo', 'ou', 'subnet', 'objective'
+  'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
@@ -76,6 +76,8 @@ export interface NodeProperties {
   // Certificate
   template_name?: string;
   ca_name?: string;
+  ca_kind?: 'enterprise_ca' | 'root_ca' | 'aia_ca';
+  pki_store_kind?: 'ntauth_store' | 'issuance_policy';
   eku?: string[];
   enrollee_supplies_subject?: boolean;
 

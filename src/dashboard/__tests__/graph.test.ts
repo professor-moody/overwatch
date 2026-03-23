@@ -204,4 +204,19 @@ describe('dashboard graph helpers', () => {
     expect(graphModule.graphMode).toBe('overview');
     expect(graphModule.getVisibleNodeIds().sort()).toEqual(['domain-a', 'host-a', 'service-a']);
   });
+
+  it('treats certificate authorities as high-signal nodes with contextual focus', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('domain-a', { label: 'north.local', nodeType: 'domain', color: '#fff', x: 0, y: -1, _props: { type: 'domain' } });
+    graph.addNode('ca-a', { label: 'NORTH-CA', nodeType: 'ca', color: '#fff', x: 0, y: 0, _props: { type: 'ca' } });
+    graph.addNode('template-a', { label: 'UserTemplate', nodeType: 'cert_template', color: '#fff', x: 1, y: 0, _props: { type: 'cert_template' } });
+    graph.addEdgeWithKey('ca-a--RELATED--domain-a', 'ca-a', 'domain-a', { edgeType: 'RELATED' });
+    graph.addEdgeWithKey('template-a--RELATED--ca-a', 'template-a', 'ca-a', { edgeType: 'RELATED' });
+
+    graphModule.focusNodeType('ca');
+
+    expect(graphModule.getVisibleNodeIds().sort()).toEqual(['ca-a', 'domain-a', 'template-a']);
+  });
 });

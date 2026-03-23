@@ -12,10 +12,13 @@ const NODE_COLORS = {
   domain:      '#97c459',
   objective:   '#f07b6e',
   certificate: '#85b7eb',
+  ca:          '#79b9f2',
+  cert_template:'#c69bf7',
+  pki_store:   '#8f95a8',
   share:       '#e0a86e',
-  gpo:         '#b0b0b0',
-  ou:          '#b0b0b0',
-  subnet:      '#b0b0b0',
+  gpo:         '#d08770',
+  ou:          '#7fb1a8',
+  subnet:      '#8fabb8',
 };
 
 const NODE_BASE_SIZES = {
@@ -27,6 +30,9 @@ const NODE_BASE_SIZES = {
   domain: 14,
   objective: 10,
   certificate: 6,
+  ca: 8,
+  cert_template: 6,
+  pki_store: 5,
   share: 5,
   gpo: 5,
   ou: 5,
@@ -85,9 +91,9 @@ let graphMode = 'overview';
 let labelDensity = 'balanced';
 let emphasizedNodeTypes = new Set();
 
-const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'subnet']);
-const DETAIL_NODE_TYPES = new Set(['service', 'share']);
-const SUPPORTING_NODE_TYPES = new Set(['user', 'group', 'ou', 'gpo']);
+const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'ca', 'subnet']);
+const DETAIL_NODE_TYPES = new Set(['service', 'share', 'cert_template']);
+const SUPPORTING_NODE_TYPES = new Set(['user', 'group', 'ou', 'gpo', 'pki_store']);
 
 // Path highlighting
 let pathSource = null;
@@ -110,12 +116,16 @@ const FILTER_PRESETS = {
   objective: ['objective', 'host', 'domain', 'credential'],
   credential: ['credential', 'user', 'host', 'domain', 'objective', 'certificate'],
   certificate: ['certificate', 'credential', 'host', 'domain', 'objective'],
+  ca: ['ca', 'cert_template', 'certificate', 'domain', 'host', 'objective'],
+  cert_template: ['cert_template', 'ca', 'certificate', 'domain', 'user', 'group'],
+  pki_store: ['pki_store', 'ca', 'cert_template', 'domain'],
   service: ['service', 'host', 'domain', 'objective', 'share'],
   share: ['share', 'host', 'domain', 'objective', 'service'],
   user: ['user', 'credential', 'domain', 'host', 'objective', 'group'],
   group: ['group', 'user', 'domain', 'host', 'objective'],
   ou: ['ou', 'domain', 'group', 'user'],
   gpo: ['gpo', 'ou', 'domain', 'host', 'user'],
+  subnet: ['subnet', 'host', 'domain', 'objective'],
 };
 
 // New node animation
@@ -583,10 +593,11 @@ function getNodeIdsByType(nodeType) {
 function getNodeTypeContext(nodeType) {
   const seedIds = getNodeIdsByType(nodeType);
   const visible = new Set(seedIds);
+  const presetTypes = new Set(FILTER_PRESETS[nodeType] || [nodeType]);
   for (const nodeId of seedIds) {
     for (const neighbor of graph.neighbors(nodeId)) {
       const neighborType = graph.getNodeAttribute(neighbor, 'nodeType');
-      if (neighborType === nodeType || HIGH_SIGNAL_NODE_TYPES.has(neighborType)) {
+      if (neighborType === nodeType || HIGH_SIGNAL_NODE_TYPES.has(neighborType) || presetTypes.has(neighborType)) {
         visible.add(neighbor);
       }
     }
@@ -619,7 +630,7 @@ function focusNodeType(nodeType) {
   focusNode = null;
   focusNeighborhood = null;
   selectedNode = null;
-  selectedNeighborhood = null;
+  selectedNeighborhood = getNodeTypeContext(nodeType);
   inspectedEdgeIds.clear();
   graphMode = 'overview';
 
@@ -630,7 +641,7 @@ function focusNodeType(nodeType) {
   activeFilters = new Set(preset.filter((type) => NODE_COLORS[type]));
   buildFilterButtons();
   if (renderer) renderer.refresh();
-  fitVisibleGraph(getNodeTypeContext(nodeType));
+  fitVisibleGraph(selectedNeighborhood);
   updateMinimap();
 }
 
@@ -1250,6 +1261,9 @@ function groupInitialPositions(nodes, edges = []) {
     share: new Set(['host']),
     credential: new Set(['host', 'domain']),
     certificate: new Set(['host', 'domain']),
+    ca: new Set(['domain', 'host']),
+    cert_template: new Set(['ca', 'domain']),
+    pki_store: new Set(['ca', 'domain']),
     user: new Set(['domain', 'host']),
     group: new Set(['domain']),
     ou: new Set(['domain']),
@@ -1278,9 +1292,10 @@ function groupInitialPositions(nodes, edges = []) {
   function getOrbitRadius(type) {
     if (type === 'service') return 4.5;
     if (type === 'share') return 5.2;
-    if (type === 'credential' || type === 'certificate') return 5.8;
+    if (type === 'credential' || type === 'certificate' || type === 'ca') return 5.8;
+    if (type === 'cert_template') return 6.4;
     if (type === 'user') return 6.6;
-    if (type === 'group' || type === 'ou' || type === 'gpo') return 8.2;
+    if (type === 'group' || type === 'ou' || type === 'gpo' || type === 'pki_store') return 8.2;
     return 6;
   }
 

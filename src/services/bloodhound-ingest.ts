@@ -4,7 +4,7 @@
 // ============================================================
 
 import type { Finding, NodeType, EdgeType, NodeProperties } from '../types.js';
-import { userId, hostId, domainId, normalizeKeyPart } from './parser-utils.js';
+import { caId, certTemplateId, domainId, hostId, normalizeKeyPart, pkiStoreId, userId } from './parser-utils.js';
 
 // --- BloodHound JSON structures (SharpHound v4/v5 compatible) ---
 
@@ -29,6 +29,7 @@ interface BHObject {
   SPNTargets?: BHSPNTarget[];
   // Computers-specific
   Status?: { Connectable: boolean; Error?: string };
+  [key: string]: unknown;
 }
 
 interface BHAce {
@@ -76,6 +77,18 @@ const BH_NODE_TYPE_MAP: Record<string, NodeType> = {
   'gpos': 'gpo',
   'container': 'ou',
   'containers': 'ou',
+  'certtemplate': 'cert_template',
+  'certtemplates': 'cert_template',
+  'enterpriseca': 'ca',
+  'enterprisecas': 'ca',
+  'rootca': 'ca',
+  'rootcas': 'ca',
+  'aiaca': 'ca',
+  'aiacas': 'ca',
+  'ntauthstore': 'pki_store',
+  'ntauthstores': 'pki_store',
+  'issuancepolicy': 'pki_store',
+  'issuancepolicies': 'pki_store',
 };
 
 const BH_EDGE_MAP: Record<string, EdgeType> = {
@@ -104,7 +117,41 @@ const BH_EDGE_MAP: Record<string, EdgeType> = {
   'Contains': 'MEMBER_OF',
   'GPLink': 'RELATED',
   'TrustedBy': 'TRUSTS',
+  'Enroll': 'CAN_ENROLL',
+  'ADCSESC1': 'ESC1',
+  'ADCSESC2': 'ESC2',
+  'ADCSESC3': 'ESC3',
+  'ADCSESC4': 'ESC4',
+  'ADCSESC6': 'ESC6',
+  'ADCSESC8': 'ESC8',
+  'ManageCertificates': 'GENERIC_ALL',
+  'ManageCA': 'GENERIC_ALL',
 };
+
+const BH_RELATION_ARRAY_MAP: Array<{
+  key: string;
+  edgeType: EdgeType;
+  direction: 'inbound' | 'outbound';
+}> = [
+  { key: 'PublishedTo', edgeType: 'RELATED', direction: 'outbound' },
+  { key: 'IssuedSignedBy', edgeType: 'RELATED', direction: 'outbound' },
+  { key: 'EnterpriseCAFor', edgeType: 'RELATED', direction: 'outbound' },
+  { key: 'Enroll', edgeType: 'CAN_ENROLL', direction: 'inbound' },
+  { key: 'ADCSESC1', edgeType: 'ESC1', direction: 'inbound' },
+  { key: 'ADCSESC2', edgeType: 'ESC2', direction: 'inbound' },
+  { key: 'ADCSESC3', edgeType: 'ESC3', direction: 'inbound' },
+  { key: 'ADCSESC4', edgeType: 'ESC4', direction: 'inbound' },
+  { key: 'ADCSESC6', edgeType: 'ESC6', direction: 'inbound' },
+  { key: 'ADCSESC8', edgeType: 'ESC8', direction: 'inbound' },
+  { key: 'ManageCertificates', edgeType: 'GENERIC_ALL', direction: 'inbound' },
+  { key: 'ManageCA', edgeType: 'GENERIC_ALL', direction: 'inbound' },
+];
+
+const BH_STANDARD_ARRAY_KEYS = new Set([
+  'Aces', 'Members', 'Sessions', 'LocalAdmins', 'RemoteDesktopUsers',
+  'PSRemoteUsers', 'DcomUsers', 'AllowedToDelegate', 'AllowedToAct',
+  'HasSIDHistory', 'SPNTargets',
+]);
 
 // --- Ingestion ---
 
@@ -138,7 +185,10 @@ export function buildBloodHoundSidMap(files: Array<{ raw: string; filename: stri
     for (const obj of document.parsed.data) {
       const sid = obj.ObjectIdentifier;
       if (!sid) continue;
-      sidMap.set(sid, resolveCanonicalId(sid, document.nodeType, obj.Properties || {}));
+      sidMap.set(
+        sid,
+        resolveCanonicalId(sid, document.nodeType, obj.Properties || {}, document.parsed.meta?.type?.toLowerCase()),
+      );
     }
   }
 
@@ -161,6 +211,7 @@ export function parseBloodHoundFile(
 
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
+  const relationWarnings = new Set<string>();
 
   // Build SID -> ID lookup for nodes in this file and merge with any external directory-wide map.
   const sidMap = new Map<string, string>(options.sidMap ? Array.from(options.sidMap.entries()) : []);
@@ -171,7 +222,7 @@ export function parseBloodHoundFile(
 
     const props = obj.Properties || {};
     const nodeId = nodeType
-      ? resolveCanonicalId(sid, nodeType, props)
+      ? resolveCanonicalId(sid, nodeType, props, metaType)
       : makeNodeId(sid, 'user');
 
     if (!sidMap.has(sid)) {
@@ -180,11 +231,16 @@ export function parseBloodHoundFile(
 
     // Create node
     if (nodeType) {
-      const nodeProps = extractNodeProperties(props, nodeType, obj);
+      const nodeProps = extractNodeProperties(props, nodeType, obj, metaType);
+      const label = (nodeProps.ca_name as string | undefined)
+        || (nodeProps.template_name as string | undefined)
+        || (props.name as string)
+        || (props.displayname as string)
+        || sid;
       nodes.push({
         id: sidMap.get(sid)!,
         type: nodeType,
-        label: (props.name as string) || (props.displayname as string) || sid,
+        label,
         bh_sid: sid,
         ...nodeProps,
       });
@@ -341,7 +397,40 @@ export function parseBloodHoundFile(
         });
       }
     }
+
+    for (const relation of BH_RELATION_ARRAY_MAP) {
+      const refs = extractRelationRefs(obj[relation.key]);
+      for (const ref of refs) {
+        const relatedNodeId = resolveRelationRef(ref, sidMap);
+        if (!relatedNodeId) continue;
+
+        const source = relation.direction === 'inbound' ? relatedNodeId : nodeId;
+        const target = relation.direction === 'inbound' ? nodeId : relatedNodeId;
+        edges.push({
+          source,
+          target,
+          properties: {
+            type: relation.edgeType,
+            confidence: 1.0,
+            discovered_at: new Date().toISOString(),
+            discovered_by: 'bloodhound-ingest',
+          },
+        });
+      }
+    }
+
+    if (isAdcsMetaType(metaType)) {
+      for (const [key, value] of Object.entries(obj)) {
+        if (!Array.isArray(value) || value.length === 0 || BH_STANDARD_ARRAY_KEYS.has(key)) continue;
+        if (BH_RELATION_ARRAY_MAP.some((relation) => relation.key === key)) continue;
+        if (key.startsWith('ADCS') || ['Enroll', 'PublishedTo', 'IssuedSignedBy', 'EnterpriseCAFor', 'ManageCertificates', 'ManageCA'].includes(key)) {
+          relationWarnings.add(`${filename}: unmapped ADCS relationship '${key}', skipping`);
+        }
+      }
+    }
   }
+
+  errors.push(...relationWarnings);
 
   if (nodes.length === 0 && edges.length === 0) {
     return { finding: null, errors };
@@ -394,10 +483,47 @@ function makeNodeId(sid: string, nodeType: NodeType): string {
   return `bh-${nodeType}-${cleanSid}`;
 }
 
+function normalizeBhFallbackId(prefix: string, objectId: string): string {
+  return `${prefix}-${normalizeKeyPart(objectId)}`;
+}
+
+function resolveRelationRef(
+  ref: { objectId: string; objectType?: string },
+  sidMap: ReadonlyMap<string, string>,
+): string | null {
+  if (sidMap.has(ref.objectId)) {
+    return sidMap.get(ref.objectId)!;
+  }
+
+  if (!ref.objectType) {
+    return null;
+  }
+
+  const nodeType = BH_NODE_TYPE_MAP[ref.objectType.toLowerCase()];
+  if (!nodeType) {
+    return null;
+  }
+
+  return makeNodeId(ref.objectId, nodeType);
+}
+
+function isAdcsMetaType(metaType?: string): boolean {
+  if (!metaType) return false;
+  return [
+    'certtemplate', 'certtemplates',
+    'enterpriseca', 'enterprisecas',
+    'rootca', 'rootcas',
+    'aiaca', 'aiacas',
+    'ntauthstore', 'ntauthstores',
+    'issuancepolicy', 'issuancepolicies',
+  ].includes(metaType);
+}
+
 function resolveCanonicalId(
   sid: string,
   nodeType: NodeType,
   props: Record<string, unknown>,
+  metaType?: string,
 ): string {
   switch (nodeType) {
     case 'user': {
@@ -432,6 +558,26 @@ function resolveCanonicalId(
       if (domainName) return domainId(domainName);
       return makeNodeId(sid, nodeType);
     }
+    case 'ca': {
+      const caName = (props.caname as string | undefined) || (props.name as string | undefined);
+      if (caName) return caId(caName);
+      return normalizeBhFallbackId('bh-ca', sid);
+    }
+    case 'cert_template': {
+      const templateName = (props.templatename as string | undefined) || (props.name as string | undefined);
+      if (templateName) return certTemplateId(templateName);
+      return normalizeBhFallbackId('bh-cert-template', sid);
+    }
+    case 'pki_store': {
+      const storeName = (props.name as string | undefined) || (props.displayname as string | undefined);
+      const storeKind = metaType === 'ntauthstore' || metaType === 'ntauthstores'
+        ? 'ntauth_store'
+        : metaType === 'issuancepolicy' || metaType === 'issuancepolicies'
+          ? 'issuance_policy'
+          : undefined;
+      if (storeName && storeKind) return pkiStoreId(storeKind, storeName);
+      return normalizeBhFallbackId('bh-pki-store', sid);
+    }
     default:
       // group, ou, gpo — no canonical equivalent in other parsers
       return makeNodeId(sid, nodeType);
@@ -446,7 +592,8 @@ function bhTypeToNodeType(bhType: string): NodeType {
 function extractNodeProperties(
   props: Record<string, unknown>,
   nodeType: NodeType,
-  obj: BHObject
+  obj: BHObject,
+  metaType?: string,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
@@ -482,10 +629,54 @@ function extractNodeProperties(
       if (props.functionallevel) result.functional_level = props.functionallevel;
       break;
 
+    case 'subnet':
+      if (props.name) result.cidr = props.name;
+      break;
+
     case 'gpo':
       if (props.gpcpath) result.share_path = props.gpcpath;
+      break;
+
+    case 'ca':
+      if (props.caname || props.name) result.ca_name = (props.caname as string | undefined) || (props.name as string | undefined);
+      if (metaType === 'enterpriseca' || metaType === 'enterprisecas') result.ca_kind = 'enterprise_ca';
+      else if (metaType === 'rootca' || metaType === 'rootcas') result.ca_kind = 'root_ca';
+      else if (metaType === 'aiaca' || metaType === 'aiacas') result.ca_kind = 'aia_ca';
+      break;
+
+    case 'cert_template':
+      if (props.templatename || props.name) result.template_name = (props.templatename as string | undefined) || (props.name as string | undefined);
+      if (props.caservicename || props.caname) result.ca_name = (props.caservicename as string | undefined) || (props.caname as string | undefined);
+      if (props.enrolleesuppliessubject !== undefined) result.enrollee_supplies_subject = !!props.enrolleesuppliessubject;
+      if (Array.isArray(props.eku)) result.eku = props.eku;
+      else if (Array.isArray(props.ekus)) result.eku = props.ekus;
+      break;
+
+    case 'pki_store':
+      if (metaType === 'ntauthstore' || metaType === 'ntauthstores') result.pki_store_kind = 'ntauth_store';
+      else if (metaType === 'issuancepolicy' || metaType === 'issuancepolicies') result.pki_store_kind = 'issuance_policy';
       break;
   }
 
   return result;
+}
+
+function extractRelationRefs(value: unknown): Array<{ objectId: string; objectType?: string }> {
+  if (!Array.isArray(value)) return [];
+  const refs: Array<{ objectId: string; objectType?: string }> = [];
+  for (const entry of value) {
+    if (typeof entry === 'string' && entry.length > 0) {
+      refs.push({ objectId: entry });
+      continue;
+    }
+    if (entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).ObjectIdentifier === 'string') {
+      refs.push({
+        objectId: (entry as Record<string, string>).ObjectIdentifier,
+        objectType: typeof (entry as Record<string, unknown>).ObjectType === 'string'
+          ? (entry as Record<string, string>).ObjectType
+          : undefined,
+      });
+    }
+  }
+  return refs;
 }

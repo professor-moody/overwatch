@@ -60,7 +60,7 @@ describe('dashboard ui frontier helpers', () => {
 
     (globalThis as any).window = {
       OverwatchGraph: {
-        NODE_COLORS: { host: '#fff', service: '#0ff' },
+        NODE_COLORS: { host: '#fff', service: '#0ff', group: '#f9c', ca: '#8cf', cert_template: '#c9f', pki_store: '#99a', subnet: '#8aa', certificate: '#7bf', ou: '#7aa', gpo: '#d87' },
         graph: {
           hasNode(id: string) { return !!graphNodes[id]; },
           getNodeAttribute(id: string, key: string) { return graphNodes[id]?.[key]; },
@@ -299,6 +299,33 @@ describe('dashboard ui frontier helpers', () => {
     ui.handleGraphSummaryCardClick('service');
 
     expect(graphApi.focusNodeType).toHaveBeenCalledWith('service');
+  });
+
+  it('renders BH-heavy and PKI summary cards as clickable graph filters', async () => {
+    const ui = await loadUiModule();
+    const statGrid = (globalThis as any).document.getElementById('stat-grid');
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {
+        total_nodes: 0,
+        total_edges: 0,
+        nodes_by_type: { group: 4, ca: 2, subnet: 1, gpo: 3 },
+        confirmed_edges: 10,
+        inferred_edges: 5,
+      },
+      lab_readiness: { status: 'ready', top_issues: [] },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [],
+    });
+
+    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('group')");
+    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('ca')");
+    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('subnet')");
+    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('gpo')");
   });
 
   it('does not reference Google Fonts in dashboard html', () => {

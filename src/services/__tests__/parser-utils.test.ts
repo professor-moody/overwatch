@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeKeyPart, domainId, userId, credentialId, hostId, splitQualifiedAccount } from '../parser-utils.js';
+import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount } from '../parser-utils.js';
 
 describe('Parser Utilities', () => {
 
@@ -124,6 +124,23 @@ describe('Parser Utilities', () => {
 
     it('replaces all dots', () => {
       expect(hostId('192.168.1.100')).toBe('host-192-168-1-100');
+    });
+  });
+
+  // =============================================
+  // PKI IDs
+  // =============================================
+  describe('pki ids', () => {
+    it('produces canonical CA IDs', () => {
+      expect(caId('ACME-CA')).toBe('ca-acme-ca');
+    });
+
+    it('produces canonical certificate template IDs', () => {
+      expect(certTemplateId('UserTemplate')).toBe('cert-template-usertemplate');
+    });
+
+    it('produces canonical PKI store IDs', () => {
+      expect(pkiStoreId('ntauth_store', 'NTAuthCertificates')).toBe('pki-store-ntauth-store-ntauthcertificates');
     });
   });
 

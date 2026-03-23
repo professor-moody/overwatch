@@ -6,7 +6,7 @@
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { XMLParser } from 'fast-xml-parser';
-import { credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
+import { caId, certTemplateId, credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
 const NMAP_SERVICE_MAP: Record<string, string> = {
@@ -306,15 +306,16 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
     // Certificate Authorities
     if (data['Certificate Authorities']) {
       for (const [caName, caData] of Object.entries(data['Certificate Authorities'] as Record<string, any>)) {
-        const caId = `ca-${caName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`;
-        if (!seenNodes.has(caId)) {
+        const caNodeId = caId(caName);
+        if (!seenNodes.has(caNodeId)) {
           nodes.push({
-            id: caId,
-            type: 'certificate',
+            id: caNodeId,
+            type: 'ca',
             label: caName,
             ca_name: caName,
+            ca_kind: 'enterprise_ca',
           });
-          seenNodes.add(caId);
+          seenNodes.add(caNodeId);
         }
       }
     }
@@ -322,13 +323,13 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
     // Certificate Templates
     if (data['Certificate Templates']) {
       for (const [templateName, templateData] of Object.entries(data['Certificate Templates'] as Record<string, any>)) {
-        const tmplId = `cert-${templateName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`;
+        const tmplId = certTemplateId(templateName);
         const tmpl = templateData as Record<string, any>;
 
         if (!seenNodes.has(tmplId)) {
           nodes.push({
             id: tmplId,
-            type: 'certificate',
+            type: 'cert_template',
             label: templateName,
             template_name: templateName,
             enrollee_supplies_subject: tmpl['Enrollee Supplies Subject'] === true,
@@ -374,13 +375,14 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
     for (const line of lines) {
       const templateMatch = line.match(/Template Name\s*:\s*(.+)/i);
       if (templateMatch) {
-        const tmplId = `cert-${templateMatch[1].trim().replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`;
+        const templateName = templateMatch[1].trim();
+        const tmplId = certTemplateId(templateName);
         if (!seenNodes.has(tmplId)) {
           nodes.push({
             id: tmplId,
-            type: 'certificate',
-            label: templateMatch[1].trim(),
-            template_name: templateMatch[1].trim(),
+            type: 'cert_template',
+            label: templateName,
+            template_name: templateName,
           });
           seenNodes.add(tmplId);
         }

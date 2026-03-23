@@ -186,7 +186,7 @@ describe('Output Parsers', () => {
   });
 
   describe('parseCertipy', () => {
-    it('extracts certificate templates from JSON', () => {
+    it('extracts CA and certificate template infrastructure nodes from JSON', () => {
       const data = {
         'Certificate Authorities': {
           'ACME-CA': { 'CA Name': 'ACME-CA' },
@@ -207,8 +207,12 @@ describe('Output Parsers', () => {
       };
 
       const finding = parseCertipy(JSON.stringify(data));
-      const certs = finding.nodes.filter(n => n.type === 'certificate');
-      expect(certs.length).toBe(2); // CA + template
+      const cas = finding.nodes.filter(n => n.type === 'ca');
+      const templates = finding.nodes.filter(n => n.type === 'cert_template');
+      expect(cas.length).toBe(1);
+      expect(templates.length).toBe(1);
+      expect(cas[0].id).toBe('ca-acme-ca');
+      expect(templates[0].id).toBe('cert-template-usertemplate');
 
       const escEdges = finding.edges.filter(e => e.properties.type === 'ESC1');
       expect(escEdges.length).toBe(1);
@@ -217,8 +221,9 @@ describe('Output Parsers', () => {
     it('handles non-JSON certipy output', () => {
       const output = 'Template Name : VulnTemplate\nSome other data\nTemplate Name : SafeTemplate';
       const finding = parseCertipy(output);
-      const certs = finding.nodes.filter(n => n.type === 'certificate');
-      expect(certs.length).toBe(2);
+      const templates = finding.nodes.filter(n => n.type === 'cert_template');
+      expect(templates.length).toBe(2);
+      expect(templates.some(t => t.id === 'cert-template-vulntemplate')).toBe(true);
     });
 
     it('handles empty JSON', () => {

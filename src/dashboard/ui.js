@@ -126,7 +126,10 @@ function updateStats(state) {
   const confirmed = state.graph_summary?.confirmed_edges || 0;
   const inferred = state.graph_summary?.inferred_edges || 0;
   const colors = G().NODE_COLORS;
-  const clickableTypes = new Set(['host', 'domain', 'objective', 'credential', 'service', 'share', 'user']);
+  const clickableTypes = new Set([
+    'host', 'domain', 'objective', 'credential', 'service', 'share', 'user',
+    'group', 'ou', 'gpo', 'certificate', 'subnet', 'ca', 'cert_template', 'pki_store',
+  ]);
 
   let html = '';
   const types = Object.entries(nodesByType).sort((a, b) => b[1] - a[1]);

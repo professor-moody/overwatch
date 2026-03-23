@@ -317,6 +317,125 @@ describe('BloodHound Ingestion', () => {
       expect(result.finding!.nodes[0].functional_level).toBe('2016');
     });
 
+    it('parses enterprise CAs into canonical ca nodes', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'CA-OBJECT-1',
+          Properties: { name: 'ACME-CA', caname: 'ACME-CA' },
+          Aces: [],
+        }],
+        meta: { type: 'enterprisecas', count: 1, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'enterprisecas.json');
+      expect(result.finding!.nodes[0].type).toBe('ca');
+      expect(result.finding!.nodes[0].id).toBe('ca-acme-ca');
+      expect(result.finding!.nodes[0].ca_kind).toBe('enterprise_ca');
+    });
+
+    it('parses certificate templates into canonical cert_template nodes', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'TEMPLATE-1',
+          Properties: {
+            name: 'UserTemplate',
+            templatename: 'UserTemplate',
+            enrolleesuppliessubject: true,
+            eku: ['Client Authentication'],
+          },
+          Aces: [],
+        }],
+        meta: { type: 'certtemplates', count: 1, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'certtemplates.json');
+      expect(result.finding!.nodes[0].type).toBe('cert_template');
+      expect(result.finding!.nodes[0].id).toBe('cert-template-usertemplate');
+      expect(result.finding!.nodes[0].enrollee_supplies_subject).toBe(true);
+    });
+
+    it('parses PKI stores into canonical pki_store nodes', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'STORE-1',
+          Properties: { name: 'NTAuthCertificates' },
+          Aces: [],
+        }],
+        meta: { type: 'ntauthstores', count: 1, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'ntauthstores.json');
+      expect(result.finding!.nodes[0].type).toBe('pki_store');
+      expect(result.finding!.nodes[0].id).toBe('pki-store-ntauth-store-ntauthcertificates');
+      expect(result.finding!.nodes[0].pki_store_kind).toBe('ntauth_store');
+    });
+
+    it('maps explicit ADCS ACE rights onto existing edge types', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'CA-OBJECT-1',
+          Properties: { name: 'ACME-CA' },
+          Aces: [{
+            PrincipalSID: 'S-1-5-21-1234-5678-9012-512',
+            PrincipalType: 'Group',
+            RightName: 'ManageCA',
+            IsInherited: false,
+          }],
+        }],
+        meta: { type: 'enterprisecas', count: 1, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'enterprisecas.json');
+      const edge = result.finding!.edges.find(e => e.properties.type === 'GENERIC_ALL');
+      expect(edge).toBeDefined();
+      expect(edge!.target).toBe('ca-acme-ca');
+    });
+
+    it('maps ADCS relation arrays using the shared SID map', () => {
+      const domains = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012',
+          Properties: { name: 'CORP.LOCAL', domain: 'corp.local' },
+          Aces: [],
+        }],
+        meta: { type: 'domains', count: 1, version: 5 },
+      });
+      const templates = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'TEMPLATE-1',
+          Properties: { name: 'UserTemplate', templatename: 'UserTemplate' },
+          PublishedTo: [{ ObjectIdentifier: 'S-1-5-21-1234-5678-9012', ObjectType: 'Domain' }],
+          Aces: [],
+        }],
+        meta: { type: 'certtemplates', count: 1, version: 5 },
+      });
+
+      const { sidMap } = buildBloodHoundSidMap([
+        { raw: domains, filename: 'domains.json' },
+        { raw: templates, filename: 'certtemplates.json' },
+      ]);
+      const result = parseBloodHoundFile(templates, 'certtemplates.json', { sidMap });
+      const related = result.finding!.edges.find(e => e.properties.type === 'RELATED');
+
+      expect(related).toBeDefined();
+      expect(related!.source).toBe('cert-template-usertemplate');
+      expect(related!.target).toBe('domain-corp-local');
+    });
+
+    it('warns on unknown ADCS BloodHound object types without failing parsing', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'WEIRD-ADCS-1',
+          Properties: { name: 'Odd ADCS Object' },
+        }],
+        meta: { type: 'adcsmysteryobjects', count: 1, version: 5 },
+      };
+
+      const result = parseBloodHoundFile(JSON.stringify(bhData), 'adcsmysteryobjects.json');
+      expect(result.finding).toBeNull();
+      expect(result.errors.some(err => err.includes("unknown BloodHound type 'adcsmysteryobjects'"))).toBe(true);
+    });
+
     // =============================================
     // Canonical ID Tests (P1 cross-source composition)
     // =============================================

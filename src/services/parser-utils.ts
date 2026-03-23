@@ -49,6 +49,18 @@ export function hostId(ip: string): string {
   return `host-${ip.replace(/\./g, '-')}`;
 }
 
+export function caId(name: string): string {
+  return `ca-${normalizeKeyPart(name)}`;
+}
+
+export function certTemplateId(name: string): string {
+  return `cert-template-${normalizeKeyPart(name)}`;
+}
+
+export function pkiStoreId(kind: string, name: string): string {
+  return `pki-store-${normalizeKeyPart(kind)}-${normalizeKeyPart(name)}`;
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {
