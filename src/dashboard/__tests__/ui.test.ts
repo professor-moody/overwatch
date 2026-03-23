@@ -374,6 +374,56 @@ describe('dashboard ui frontier helpers', () => {
     expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('gpo')");
   });
 
+  it('promotes readiness status when health report has warnings but inline readiness is ready', async () => {
+    const ui = await loadUiModule();
+    const badge = (globalThis as any).document.getElementById('readiness-status');
+    const issuesEl = (globalThis as any).document.getElementById('readiness-issues');
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      warnings: {
+        status: 'warning',
+        counts_by_severity: { warning: 2, critical: 0 },
+        top_issues: [{ severity: 'warning', check: 'unresolved_identity', message: 'Identity X did not converge' }],
+      },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [],
+    });
+
+    expect(badge.textContent).toBe('WARNING');
+    expect(badge.className).toContain('warning');
+    expect(issuesEl.innerHTML).toContain('Identity X did not converge');
+  });
+
+  it('promotes readiness status to blocked when health report has critical issues', async () => {
+    const ui = await loadUiModule();
+    const badge = (globalThis as any).document.getElementById('readiness-status');
+
+    ui.updateUI({
+      engagement: {},
+      graph_summary: {},
+      lab_readiness: { status: 'ready', top_issues: [] },
+      warnings: {
+        status: 'critical',
+        counts_by_severity: { warning: 0, critical: 1 },
+        top_issues: [{ severity: 'critical', check: 'split_host_identity_ip', message: 'Multiple host nodes claim IP 10.10.10.1' }],
+      },
+      objectives: [],
+      active_agents: [],
+      recent_activity: [],
+      access_summary: {},
+      frontier: [],
+    });
+
+    expect(badge.textContent).toBe('BLOCKED');
+    expect(badge.className).toContain('blocked');
+  });
+
   it('does not reference Google Fonts in dashboard html', () => {
     const html = readFileSync(resolve('/Users/keys/projects/overwatch/src/dashboard/index.html'), 'utf8');
     expect(html).not.toContain('fonts.googleapis.com');

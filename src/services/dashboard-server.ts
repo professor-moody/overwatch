@@ -159,7 +159,12 @@ export class DashboardServer {
       data: {
         state,
         detail,
-        delta: { nodes: deltaNodes, edges: deltaEdges },
+        delta: {
+          nodes: deltaNodes,
+          edges: deltaEdges,
+          removed_nodes: detail.removed_nodes || [],
+          removed_edges: detail.removed_edges || [],
+        },
       },
     });
   }

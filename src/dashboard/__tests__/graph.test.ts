@@ -207,6 +207,29 @@ describe('dashboard graph helpers', () => {
     expect(graphModule.getVisibleNodeIds().sort()).toEqual(['domain-a', 'host-a', 'service-a']);
   });
 
+  it('mergeGraphDelta removes nodes and edges from removed_nodes/removed_edges', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: 'Host A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('alias-node', { label: 'Alias', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('alias-edge', 'host-a', 'alias-node', { edgeType: 'REACHABLE' });
+
+    expect(graph.hasNode('alias-node')).toBe(true);
+    expect(graph.hasEdge('alias-edge')).toBe(true);
+
+    graphModule.mergeGraphDelta({
+      nodes: [],
+      edges: [],
+      removed_nodes: ['alias-node'],
+      removed_edges: ['alias-edge'],
+    });
+
+    expect(graph.hasNode('alias-node')).toBe(false);
+    expect(graph.hasEdge('alias-edge')).toBe(false);
+    expect(graph.hasNode('host-a')).toBe(true);
+  });
+
   it('treats certificate authorities as high-signal nodes with contextual focus', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();

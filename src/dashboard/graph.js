@@ -1368,8 +1368,29 @@ function loadGraphData(graphData) {
 function mergeGraphDelta(delta) {
   if (!delta) return;
   let added = false;
+  let structureChanged = false;
   const addedNodeIds = [];
   const deltaEdges = delta.edges || [];
+
+  // Remove edges first (before removing nodes, since edges reference them)
+  if (delta.removed_edges && delta.removed_edges.length > 0) {
+    for (const edgeId of delta.removed_edges) {
+      if (graph.hasEdge(edgeId)) {
+        graph.dropEdge(edgeId);
+        structureChanged = true;
+      }
+    }
+  }
+
+  // Remove nodes
+  if (delta.removed_nodes && delta.removed_nodes.length > 0) {
+    for (const nodeId of delta.removed_nodes) {
+      if (graph.hasNode(nodeId)) {
+        graph.dropNode(nodeId);
+        structureChanged = true;
+      }
+    }
+  }
 
   // Upsert nodes
   if (delta.nodes) {
@@ -1441,11 +1462,12 @@ function mergeGraphDelta(delta) {
   }
 
   // Update sizes for affected nodes
-  if (added) {
+  if (added || structureChanged) {
     graph.forEachNode((id, attrs) => {
       const degree = graph.degree(id);
       graph.setNodeAttribute(id, 'size', computeNodeSize(attrs.nodeType, degree));
     });
+    buildFilterButtons();
   }
 
   // Animate new nodes
@@ -1455,7 +1477,6 @@ function mergeGraphDelta(delta) {
 
   if (added) {
     startLayout();
-    buildFilterButtons();
   }
 
   reconcileInteractionState();

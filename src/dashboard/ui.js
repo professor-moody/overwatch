@@ -104,19 +104,35 @@ function updateHeader(state) {
 
 function updateReadiness(state) {
   const badge = document.getElementById('readiness-status');
-  const issues = document.getElementById('readiness-issues');
+  const issuesEl = document.getElementById('readiness-issues');
   const readiness = state.lab_readiness || { status: 'ready', top_issues: [] };
+  const healthWarnings = state.warnings || {};
 
-  badge.className = `readiness-badge ${readiness.status || 'ready'}`;
-  badge.textContent = (readiness.status || 'ready').toUpperCase();
+  // Derive effective status: promote to warning/critical if health report has issues
+  let effectiveStatus = readiness.status || 'ready';
+  if (effectiveStatus === 'ready' && healthWarnings.status && healthWarnings.status !== 'healthy') {
+    effectiveStatus = healthWarnings.status === 'critical' ? 'blocked' : 'warning';
+  }
 
-  const topIssues = readiness.top_issues || [];
-  if (topIssues.length === 0) {
-    issues.innerHTML = '<div class="empty-state">No issues detected</div>';
+  badge.className = `readiness-badge ${effectiveStatus}`;
+  badge.textContent = effectiveStatus.toUpperCase();
+
+  // Merge readiness issues + health report top issues (deduplicated)
+  const allIssues = [...(readiness.top_issues || [])];
+  const healthTopIssues = (healthWarnings.top_issues || []);
+  for (const hi of healthTopIssues) {
+    const msg = hi.message || (typeof hi === 'string' ? hi : '');
+    if (msg && !allIssues.some(existing => existing.includes(msg))) {
+      allIssues.push(msg);
+    }
+  }
+
+  if (allIssues.length === 0) {
+    issuesEl.innerHTML = '<div class="empty-state">No issues detected</div>';
     return;
   }
-  issues.innerHTML = topIssues.map(issue =>
-    `<div class="readiness-issue">${escapeHtml(issue)}</div>`
+  issuesEl.innerHTML = allIssues.slice(0, 5).map(issue =>
+    `<div class="readiness-issue">${escapeHtml(typeof issue === 'string' ? issue : issue.message || JSON.stringify(issue))}</div>`
   ).join('');
 }
 

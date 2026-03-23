@@ -126,6 +126,42 @@ describe('DashboardServer', () => {
     expect(mockClient.send).toHaveBeenCalledTimes(1);
   });
 
+  it('flush includes removed_nodes and removed_edges in delta', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    // Seed graph with two nodes
+    engine.ingestFinding({
+      id: 'removal-seed',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB', port: 445, service_name: 'smb' },
+      ],
+      edges: [
+        { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-03-21T10:00:00Z' } },
+      ],
+    });
+
+    // Simulate update with removals (as from identity reconciliation)
+    dashboard.onGraphUpdate({
+      updated_nodes: ['host-10-10-10-1'],
+      removed_nodes: ['old-alias-node'],
+      removed_edges: ['old-alias-edge'],
+    });
+    dashboard.flush();
+
+    expect(mockClient.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    expect(payload.data.delta.removed_nodes).toEqual(['old-alias-node']);
+    expect(payload.data.delta.removed_edges).toEqual(['old-alias-edge']);
+  });
+
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));
