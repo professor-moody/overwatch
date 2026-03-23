@@ -1298,6 +1298,28 @@ button.stat-item {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.prop-val:hover {
+  color: var(--text-primary);
+}
+
+.prop-val.expanded {
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+  text-overflow: unset;
+  overflow: visible;
+}
+
+.frontier-filter-fallback {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 6px 8px;
+  margin-bottom: 4px;
 }
 
 .prop-val.prop-val-highlight {

@@ -341,11 +341,14 @@ function updateFrontier(state) {
   const list = document.getElementById('frontier-list');
   const allFrontier = state.frontier || [];
   const graph = G().graph;
-  const frontier = frontierTypeFilter
+  let filtered = frontierTypeFilter
     ? allFrontier.filter((item) => matchesFrontierTypeFilter(item, graph))
-    : allFrontier;
-  const countLabel = frontierTypeFilter
-    ? `(${frontier.length}/${allFrontier.length})`
+    : null;
+  // Fall back to full frontier when type filter matches nothing
+  const filterEmpty = frontierTypeFilter && filtered && filtered.length === 0 && allFrontier.length > 0;
+  const frontier = filterEmpty ? allFrontier : (filtered || allFrontier);
+  const countLabel = frontierTypeFilter && !filterEmpty
+    ? `(${filtered.length}/${allFrontier.length})`
     : `(${allFrontier.length})`;
   document.getElementById('frontier-count').textContent = countLabel;
 
@@ -362,17 +365,17 @@ function updateFrontier(state) {
   });
 
   const badgeHtml = renderFrontierFilterBadge();
+  const fallbackNote = filterEmpty
+    ? `<div class="frontier-filter-fallback">No frontier items target <strong>${escapeHtml(frontierTypeFilter)}s</strong> directly — showing all</div>`
+    : '';
 
   if (frontier.length === 0) {
-    const emptyMsg = frontierTypeFilter
-      ? `No frontier items for <strong>${frontierTypeFilter}s</strong>`
-      : 'Frontier empty — ingest data to generate candidates';
-    list.innerHTML = badgeHtml + `<div class="empty-state">${emptyMsg}</div>`;
+    list.innerHTML = badgeHtml + `<div class="empty-state">Frontier empty — ingest data to generate candidates</div>`;
     return;
   }
   const sections = getFrontierSectionItems(frontier);
   let offset = 0;
-  list.innerHTML = badgeHtml + sections.map((section) => {
+  list.innerHTML = badgeHtml + fallbackNote + sections.map((section) => {
     const html = renderFrontierSection(section, offset);
     offset += section.items.length;
     return html;
@@ -576,6 +579,7 @@ function showNodeDetail(nodeId) {
 
   document.getElementById('detail-props').innerHTML = html;
   attachConnectionHandlers();
+  attachPropExpandHandlers();
   drawer.classList.add('visible');
 }
 
@@ -772,6 +776,17 @@ function attachConnectionHandlers() {
       row.classList.add('active');
       g.highlightEdges([edgeId]);
       navigateToNode(nodeId, { edgeIds: [edgeId], hops: 1, persistent: g.graphMode === 'focused' });
+    });
+  });
+}
+
+function attachPropExpandHandlers() {
+  const body = document.getElementById('detail-props');
+  if (!body) return;
+  body.querySelectorAll('.prop-val').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      el.classList.toggle('expanded');
     });
   });
 }
