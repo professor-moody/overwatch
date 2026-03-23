@@ -494,6 +494,33 @@ describe('GraphEngine', () => {
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
     });
 
+    it('warns when outside normal time window (e.g. 8-18)', () => {
+      const engine = new GraphEngine(makeConfig({
+        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 8, end_hour: 18 } },
+      }), TEST_STATE_FILE);
+      const hour = new Date().getHours();
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1' });
+      if (hour >= 8 && hour < 18) {
+        expect(result.warnings.length).toBe(0);
+      } else {
+        expect(result.warnings.some(w => w.includes('Outside approved time window'))).toBe(true);
+      }
+    });
+
+    it('handles overnight time window wrap-around (e.g. 22-06)', () => {
+      const engine = new GraphEngine(makeConfig({
+        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 22, end_hour: 6 } },
+      }), TEST_STATE_FILE);
+      const hour = new Date().getHours();
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1' });
+      const inWindow = hour >= 22 || hour < 6;
+      if (inWindow) {
+        expect(result.warnings.some(w => w.includes('Outside'))).toBe(false);
+      } else {
+        expect(result.warnings.some(w => w.includes('Outside'))).toBe(true);
+      }
+    });
+
     it('rejects excluded edge_source in validateAction', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ edge_source: 'host-10-10-10-14', edge_target: 'host-10-10-10-1' });

@@ -4,6 +4,7 @@
 // ============================================================
 
 import GraphConstructor from 'graphology';
+import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
 import { expandCidr, isIpInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
@@ -135,6 +136,7 @@ export class GraphEngine {
   private paths: PathAnalyzer;
   private frontierComputer: FrontierComputer;
   private healthReportCache: HealthReport | null = null;
+  private frontierCache: { passed: FrontierItem[]; all: FrontierItem[] } | null = null;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     const graph = createGraph();
@@ -303,7 +305,7 @@ export class GraphEngine {
       return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
     } catch {
       // Edge key might already exist for a different source/target pair
-      const fallbackId = `${edgeId}-${Date.now()}`;
+      const fallbackId = `${edgeId}-${uuidv4().slice(0, 8)}`;
       return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
     }
   }
@@ -566,7 +568,19 @@ export class GraphEngine {
   // =============================================
 
   computeFrontier(): FrontierItem[] {
-    return this.frontierComputer.compute();
+    if (!this.frontierCache) {
+      const all = this.frontierComputer.compute();
+      const { passed } = this.filterFrontier(all);
+      this.frontierCache = { all, passed };
+    }
+    return this.frontierCache.all;
+  }
+
+  private getCachedFilteredFrontier(): FrontierItem[] {
+    if (!this.frontierCache) {
+      this.computeFrontier();
+    }
+    return this.frontierCache!.passed;
   }
 
   // =============================================
@@ -803,11 +817,14 @@ export class GraphEngine {
       errors.push(`Technique blacklisted by OPSEC profile: ${action.technique}`);
     }
 
-    // Time window check
+    // Time window check (handles wrap-around, e.g. 22:00–06:00)
     if (this.ctx.config.opsec.time_window) {
       const hour = new Date().getHours();
       const { start_hour, end_hour } = this.ctx.config.opsec.time_window;
-      if (hour < start_hour || hour > end_hour) {
+      const inWindow = start_hour <= end_hour
+        ? hour >= start_hour && hour < end_hour
+        : hour >= start_hour || hour < end_hour;
+      if (!inWindow) {
         warnings.push(`Outside approved time window (${start_hour}:00-${end_hour}:00), current hour: ${hour}`);
       }
     }
@@ -1163,8 +1180,6 @@ export class GraphEngine {
       }
     });
 
-    const frontier = this.computeFrontier();
-    const { passed } = this.filterFrontier(frontier);
     const healthReport = this.runHealthChecks();
     const labReadiness = summarizeInlineLabReadiness(this);
 
@@ -1179,7 +1194,7 @@ export class GraphEngine {
         inferred_edges: inferredEdges
       },
       objectives: this.ctx.config.objectives,
-      frontier: passed,
+      frontier: this.getCachedFilteredFrontier(),
       active_agents: Array.from(this.ctx.agents.values()).filter(a => a.status === 'running'),
       recent_activity: this.ctx.activityLog.slice(-20),
       access_summary: {
@@ -1300,6 +1315,7 @@ export class GraphEngine {
 
   private invalidateHealthReport(): void {
     this.healthReportCache = null;
+    this.frontierCache = null;
   }
 
   // =============================================

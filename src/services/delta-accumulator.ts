@@ -1,6 +1,6 @@
 import type { GraphUpdateDetail } from './engine-context.js';
 
-const DETAIL_KEYS = ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges'] as const;
+const DETAIL_KEYS = ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges', 'removed_nodes', 'removed_edges'] as const;
 
 export class DeltaAccumulator {
   private pending: Record<(typeof DETAIL_KEYS)[number], Set<string>> = {
@@ -9,6 +9,8 @@ export class DeltaAccumulator {
     updated_nodes: new Set<string>(),
     updated_edges: new Set<string>(),
     inferred_edges: new Set<string>(),
+    removed_nodes: new Set<string>(),
+    removed_edges: new Set<string>(),
   };
 
   push(detail: GraphUpdateDetail): void {

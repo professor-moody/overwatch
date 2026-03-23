@@ -350,30 +350,31 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
                 for (const principal of tmpl['Enrollment Permissions']['Enrollment Rights'] as string[]) {
                   const principalIdentity = classifyPrincipalIdentity(principal);
                   const principalId = principalIdentity.id;
-                  if (!seenNodes.has(principalId)) {
-                    const resolution = resolveNodeIdentity({
-                      id: principalId,
-                      type: principalIdentity.nodeType,
-                      label: principalIdentity.label,
-                      username: principalIdentity.username,
-                      domain_name: principalIdentity.domain_name,
-                    });
+                  const resolution = resolveNodeIdentity({
+                    id: principalId,
+                    type: principalIdentity.nodeType,
+                    label: principalIdentity.label,
+                    username: principalIdentity.username,
+                    domain_name: principalIdentity.domain_name,
+                  });
+                  const resolvedPrincipalId = resolution.id;
+                  if (!seenNodes.has(resolvedPrincipalId)) {
                     nodes.push({
-                      id: resolution.id,
+                      id: resolvedPrincipalId,
                       type: principalIdentity.nodeType,
                       label: principalIdentity.label,
                       username: principalIdentity.username,
                       domain_name: principalIdentity.domain_name,
                       identity_status: resolution.status,
                       identity_family: resolution.family,
-                      canonical_id: resolution.status === 'canonical' ? resolution.id : undefined,
+                      canonical_id: resolution.status === 'canonical' ? resolvedPrincipalId : undefined,
                       identity_markers: resolution.markers,
                       principal_type_ambiguous: principalIdentity.ambiguous || undefined,
                     });
-                    seenNodes.add(principalId);
+                    seenNodes.add(resolvedPrincipalId);
                   }
                   edges.push({
-                    source: principalId,
+                    source: resolvedPrincipalId,
                     target: tmplId,
                     properties: {
                       type: escType as EdgeType,

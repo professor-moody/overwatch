@@ -220,6 +220,31 @@ describe('Output Parsers', () => {
       expect(principal?.type).toBe('group');
     });
 
+    it('deduplicates principals that resolve to the same canonical ID', () => {
+      const data = {
+        'Certificate Templates': {
+          'VulnTemplate': {
+            'Enrollee Supplies Subject': true,
+            'Client Authentication': true,
+            'Extended Key Usage': ['Client Authentication'],
+            '[!] Vulnerabilities': {
+              'ESC1': { 'Description': 'Enrollee supplies subject' },
+            },
+            'Enrollment Permissions': {
+              'Enrollment Rights': ['ACME\\Domain Users', 'acme\\Domain Users'],
+            },
+          },
+        },
+      };
+
+      const finding = parseCertipy(JSON.stringify(data));
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(1);
+      const escEdges = finding.edges.filter(e => e.properties.type === 'ESC1');
+      expect(escEdges.length).toBe(2);
+      expect(escEdges[0].source).toBe(escEdges[1].source);
+    });
+
     it('handles non-JSON certipy output', () => {
       const output = 'Template Name : VulnTemplate\nSome other data\nTemplate Name : SafeTemplate';
       const finding = parseCertipy(output);
