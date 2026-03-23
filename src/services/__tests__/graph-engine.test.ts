@@ -191,6 +191,40 @@ describe('GraphEngine', () => {
       expect(graph.nodes.some(node => node.id === 'user-test-local-jsmith')).toBe(true);
       expect(graph.edges.some(edge => edge.source === 'user-test-local-jsmith' && edge.target === 'host-10-10-10-2' && edge.properties.type === 'HAS_SESSION')).toBe(true);
     });
+
+    it('reverse-merges hostname-only host into existing IP-based host via FQDN short name', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      // First: ingest a host with IP and FQDN (e.g. from nmap)
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-5', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local', ip: '10.10.10.5', alive: true },
+        ],
+      }));
+      expect(engine.getNode('host-10-10-10-5')).toBeDefined();
+
+      // Second: ingest a host with only a short hostname and no IP (e.g. from report_finding)
+      // This gets canonical ID host-dc01 but should reverse-merge into host-10-10-10-5
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-dc01', type: 'host', label: 'DC01', hostname: 'DC01', smb_signing: false },
+          { id: 'share-dc01-admin', type: 'share', label: '\\\\DC01\\admin$', share_name: 'admin$' },
+        ],
+        edges: [
+          { source: 'host-dc01', target: 'share-dc01-admin', properties: { type: 'RELATED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const graph = engine.exportGraph();
+      // The hostname-only node should have been merged away
+      expect(graph.nodes.some(n => n.id === 'host-dc01')).toBe(false);
+      // The IP-based node should still exist with merged properties
+      const ipHost = graph.nodes.find(n => n.id === 'host-10-10-10-5');
+      expect(ipHost).toBeDefined();
+      expect(ipHost?.properties.smb_signing).toBe(false);
+      // The share edge should be retargeted to the IP-based host
+      expect(graph.edges.some(e => e.source === 'host-10-10-10-5' && e.target === 'share-dc01-admin' && e.properties.type === 'RELATED')).toBe(true);
+    });
   });
 
   // =============================================

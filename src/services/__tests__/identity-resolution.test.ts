@@ -37,6 +37,35 @@ describe('identity resolution', () => {
     expect(identity.id).toBe('cred-administrator-ntlm');
   });
 
+  it('generates short hostname markers from FQDNs for host nodes', () => {
+    const markers = getIdentityMarkers({
+      id: 'host-10-3-10-23',
+      type: 'host',
+      hostname: 'braavos.essos.local',
+      ip: '10.3.10.23',
+    });
+    expect(markers).toContain('host:ip:10-3-10-23');
+    expect(markers).toContain('host:name:braavos-essos-local');
+    expect(markers).toContain('host:name:braavos');
+  });
+
+  it('short hostname marker matches across FQDN and bare hostname', () => {
+    const fqdnMarkers = getIdentityMarkers({
+      id: 'host-10-3-10-23',
+      type: 'host',
+      hostname: 'braavos.essos.local',
+      ip: '10.3.10.23',
+    });
+    const bareMarkers = getIdentityMarkers({
+      id: 'host-braavos',
+      type: 'host',
+      hostname: 'BRAAVOS',
+    });
+    const overlap = fqdnMarkers.filter(m => bareMarkers.includes(m));
+    expect(overlap.length).toBeGreaterThan(0);
+    expect(overlap).toContain('host:name:braavos');
+  });
+
   it('does not treat credential material reuse as an identity marker', () => {
     const markers = getIdentityMarkers({
       id: 'cred-test',

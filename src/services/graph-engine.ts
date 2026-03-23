@@ -475,6 +475,13 @@ export class GraphEngine {
       removedNodes.push(...reconciliation.removed_nodes);
       removedEdges.push(...reconciliation.removed_edges);
       newEdges.push(...reconciliation.new_edges);
+      // Update idRemap so later edge processing uses the surviving node ID
+      for (const removedId of reconciliation.removed_nodes) {
+        const survivorId = reconciliation.removed_nodes.includes(canonicalNodeId)
+          ? reconciliation.reverse_target || canonicalNodeId
+          : canonicalNodeId;
+        idRemap.set(removedId, survivorId);
+      }
     }
 
     // Add/update edges
@@ -1377,7 +1384,7 @@ export class GraphEngine {
     canonicalNodeId: string,
     agentId?: string,
     actionId?: string,
-  ): { removed_nodes: string[]; removed_edges: string[]; new_edges: string[]; updated_canonical: boolean } {
+  ): { removed_nodes: string[]; removed_edges: string[]; new_edges: string[]; updated_canonical: boolean; reverse_target?: string } {
     const canonicalNode = this.getNode(canonicalNodeId);
     if (!canonicalNode || !isIdentityType(canonicalNode.type) || isUnresolvedIdentityNode(canonicalNode)) {
       return { removed_nodes: [], removed_edges: [], new_edges: [], updated_canonical: false };
@@ -1389,19 +1396,51 @@ export class GraphEngine {
     }
 
     const aliases: string[] = [];
+    let reverseTarget: string | undefined;
     this.ctx.graph.forEachNode((nodeId, attrs) => {
       if (nodeId === canonicalNodeId) return;
       if (attrs.type !== canonicalNode.type) return;
       const aliasMarkers = this.getEffectiveIdentityMarkers(attrs);
       if (!aliasMarkers.some((marker) => canonicalMarkers.has(marker))) return;
-      if (!this.shouldMergeIntoCanonical(canonicalNode, attrs)) return;
+      if (this.shouldMergeIntoCanonical(canonicalNode, attrs)) {
         aliases.push(nodeId);
+      } else if (this.shouldMergeIntoCanonical(attrs, canonicalNode)) {
+        // Reverse merge: the newly ingested node is weaker and should merge
+        // INTO the existing stronger node (e.g. hostname-only → IP-based host)
+        reverseTarget = nodeId;
+      }
     });
 
     const removedNodes: string[] = [];
     const removedEdges: string[] = [];
     const newEdges: string[] = [];
     let updatedCanonical = false;
+
+    // Reverse merge: merge the newly ingested canonical into the stronger existing node
+    if (reverseTarget && aliases.length === 0) {
+      const merged = this.mergeAliasIntoCanonical(canonicalNodeId, reverseTarget);
+      if (merged) {
+        removedNodes.push(canonicalNodeId);
+        removedEdges.push(...merged.removed_edges);
+        newEdges.push(...merged.new_edges);
+        updatedCanonical = true;
+        this.logActionEvent({
+          description: `Identity converged (reverse): ${canonicalNodeId} -> ${reverseTarget}`,
+          agent_id: agentId,
+          action_id: actionId,
+          category: 'system',
+          event_type: 'system',
+          result_classification: 'success',
+          target_node_ids: [reverseTarget],
+          details: {
+            alias_node_id: canonicalNodeId,
+            canonical_node_id: reverseTarget,
+            identity_markers: [...canonicalMarkers],
+          },
+        });
+      }
+      return { removed_nodes: removedNodes, removed_edges: removedEdges, new_edges: newEdges, updated_canonical: updatedCanonical, reverse_target: reverseTarget };
+    }
 
     for (const aliasId of aliases) {
       const merged = this.mergeAliasIntoCanonical(aliasId, canonicalNodeId);
@@ -1431,6 +1470,7 @@ export class GraphEngine {
       removed_edges: removedEdges,
       new_edges: newEdges,
       updated_canonical: updatedCanonical,
+      reverse_target: reverseTarget,
     };
   }
 
@@ -1501,7 +1541,7 @@ export class GraphEngine {
       }
     }
 
-    return normalizeNodeProvenance(merged) as NodeProperties;
+    return { ...merged, ...normalizeNodeProvenance(merged) } as NodeProperties;
   }
 
   private getEffectiveIdentityMarkers(node: NodeProperties): string[] {

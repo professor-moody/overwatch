@@ -139,7 +139,14 @@ export function getIdentityMarkers(
       if (ip) markers.add(`host:ip:${normalizeKeyPart(ip)}`);
       for (const name of [node.hostname, node.dnshostname, node.dNSHostName, isNonIpLabel(node.label) ? node.label : undefined]) {
         const normalized = normalizeString(name);
-        if (normalized) markers.add(`host:name:${normalizeKeyPart(normalized)}`);
+        if (normalized) {
+          markers.add(`host:name:${normalizeKeyPart(normalized)}`);
+          // Also add short hostname for FQDNs so braavos.essos.local matches BRAAVOS
+          const dotIdx = normalized.indexOf('.');
+          if (dotIdx > 0) {
+            markers.add(`host:name:${normalizeKeyPart(normalized.substring(0, dotIdx))}`);
+          }
+        }
       }
       break;
     }

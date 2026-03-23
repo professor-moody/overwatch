@@ -127,7 +127,7 @@ describe('lab preflight', () => {
     expect(report.checks.find(check => check.name === 'graph_health')?.status).toBe('pass');
   });
 
-  it('returns blocked for an unhealthy GOAD scenario with split identities', () => {
+  it('auto-resolves GOAD-style BH+nmap split hosts via FQDN short-name matching', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
 
     const bhResult = parseBloodHoundFile(JSON.stringify({
@@ -168,14 +168,23 @@ describe('lab preflight', () => {
     engine.ingestFinding(bhResult.finding!);
     engine.ingestFinding(nmapFinding);
 
+    // BH hostname-only host should be auto-merged into the nmap IP-based host
+    const graph = engine.exportGraph();
+    const hosts = graph.nodes.filter(n => n.properties.type === 'host' && n.properties.hostname);
+    const dc01Nodes = hosts.filter(n =>
+      typeof n.properties.hostname === 'string' && n.properties.hostname.toLowerCase().includes('dc01'));
+    expect(dc01Nodes.length).toBe(1);
+    expect(dc01Nodes[0].properties.ip).toBe('10.10.10.5');
+
     const report = runLabPreflight(engine, {
       profile: 'goad_ad',
       toolStatuses: installedTools(['nmap', 'netexec', 'bloodhound-python']),
       dashboard: { enabled: true, running: true, address: 'http://localhost:8384' },
     });
 
-    expect(report.status).toBe('blocked');
-    expect(report.checks.find(check => check.name === 'graph_health')?.status).toBe('fail');
+    // No critical split identity issues — status should not be blocked
+    expect(report.status).not.toBe('blocked');
+    expect(report.checks.find(check => check.name === 'graph_health')?.status).not.toBe('fail');
   });
 
   it('allows single-host profile without BloodHound tooling', () => {

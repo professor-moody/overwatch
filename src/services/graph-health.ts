@@ -346,7 +346,15 @@ function getHostNameMarkers(node: NodeProperties): string[] {
     typeof node.label === 'string' && !isIpv4(node.label) ? node.label : undefined,
   ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 
-  return [...new Set(candidates.map(value => normalizeKeyPart(value)))];
+  const markers = new Set(candidates.map(value => normalizeKeyPart(value)));
+  // Also add short hostname for FQDNs so braavos.essos.local matches BRAAVOS
+  for (const name of candidates) {
+    const dotIdx = name.indexOf('.');
+    if (dotIdx > 0) {
+      markers.add(normalizeKeyPart(name.substring(0, dotIdx)));
+    }
+  }
+  return [...markers];
 }
 
 function isIpv4(value: string): boolean {
