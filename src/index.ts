@@ -102,18 +102,17 @@ registerRemediationTools(server, engine);
 // Start Server
 // ============================================================
 async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Overwatch MCP server running on stdio');
-
-  // Dashboard starts fire-and-forget — never blocks MCP transport
-  // Only register the graph-update callback if the server actually binds
+  // Start dashboard before MCP transport so it's ready before any tool calls
   if (dashboard) {
     const result = await dashboard.start();
     if (result.started) {
       engine.onUpdate((detail) => dashboard.onGraphUpdate(detail));
     }
   }
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('Overwatch MCP server running on stdio');
 }
 
 // Graceful shutdown
