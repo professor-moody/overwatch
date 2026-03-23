@@ -188,12 +188,14 @@ describe('structured activity logging tools', () => {
       ],
     });
 
-    const credential = engine.getNode('cred-admin');
-    expect(credential?.cred_type).toBe('ntlm');
-    expect(credential?.cred_material_kind).toBe('ntlm_hash');
-    expect(credential?.cred_usable_for_auth).toBe(true);
-    expect(credential?.cred_hash).toBe('11223344556677889900aabbccddeeff');
-    expect(credential?.cred_domain).toBe('test.local');
+    const graph = engine.exportGraph();
+    const credNode = graph.nodes.find(n => n.properties.type === 'credential' && n.properties.cred_user === 'administrator');
+    expect(credNode).toBeDefined();
+    expect(credNode?.properties.cred_type).toBe('ntlm');
+    expect(credNode?.properties.cred_material_kind).toBe('ntlm_hash');
+    expect(credNode?.properties.cred_usable_for_auth).toBe(true);
+    expect(credNode?.properties.cred_hash).toBe('11223344556677889900aabbccddeeff');
+    expect(credNode?.properties.cred_domain).toBe('test.local');
   });
 
   it('parse_output logs parse metadata with the supplied action_id', async () => {
