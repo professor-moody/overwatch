@@ -379,10 +379,17 @@ function edgeReducer(edge, data) {
     return res;
   }
 
-  // Hide POTENTIAL_AUTH edges unless an endpoint is actively selected/hovered/focused
-  if (data.edgeType === 'POTENTIAL_AUTH' && !isEdgeEndpointActive(edge)) {
-    res.hidden = true;
-    return res;
+  // Hide POTENTIAL_AUTH edges unless an endpoint is in focus/path mode (not simple select/hover)
+  if (data.edgeType === 'POTENTIAL_AUTH') {
+    const src = graph.source(edge);
+    const tgt = graph.target(edge);
+    const isFocused = src === focusNode || tgt === focusNode
+      || pathNodes.has(src) || pathNodes.has(tgt)
+      || inspectedEdgeIds.has(edge);
+    if (!isFocused) {
+      res.hidden = true;
+      return res;
+    }
   }
 
   // Path highlighting

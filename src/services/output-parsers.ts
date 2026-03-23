@@ -646,7 +646,7 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser')
     nodes.push({
       id: resolvedCredId,
       type: 'credential',
-      label: username ? `${username}:***` : `cracked:${hashType}`,
+      label: username ? `${username}:${plaintext}` : `cracked:${plaintext}`,
       cred_type: 'plaintext',
       cred_material_kind: 'plaintext_password',
       cred_usable_for_auth: true,
