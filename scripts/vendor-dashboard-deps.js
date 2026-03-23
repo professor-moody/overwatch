@@ -5,7 +5,7 @@
 // so the dashboard works without any external CDN access.
 // ============================================================
 
-import { mkdirSync, copyFileSync, writeFileSync, readFileSync } from 'fs';
+import { mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
@@ -17,15 +17,47 @@ const require = createRequire(import.meta.url);
 
 mkdirSync(vendorDir, { recursive: true });
 
+function findFirst(candidates) {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 // 1. graphology — ships a UMD browser bundle
-const graphologyUmd = resolve(root, 'node_modules', 'graphology', 'dist', 'graphology.umd.min.js');
+const graphologyCandidates = [
+  resolve(root, 'node_modules', 'graphology', 'dist', 'graphology.umd.min.js'),
+  resolve(root, 'node_modules', 'graphology', 'dist', 'graphology.umd.js'),
+];
+const graphologyUmd = findFirst(graphologyCandidates);
+if (!graphologyUmd) {
+  console.error('[vendor] ERROR: Could not find graphology UMD bundle. Tried:', graphologyCandidates);
+  process.exit(1);
+}
 copyFileSync(graphologyUmd, resolve(vendorDir, 'graphology.umd.min.js'));
 console.log('[vendor] graphology.umd.min.js copied');
 
-// 2. sigma — ships a pre-built browser bundle
-const sigmaBuild = resolve(root, 'node_modules', 'sigma', 'build', 'sigma.min.js');
-copyFileSync(sigmaBuild, resolve(vendorDir, 'sigma.min.js'));
-console.log('[vendor] sigma.min.js copied');
+// 2. sigma — probe multiple known locations for the browser bundle
+const sigmaRoot = resolve(root, 'node_modules', 'sigma');
+if (!existsSync(sigmaRoot)) {
+  console.error('[vendor] ERROR: sigma is not installed. Run "npm install" first.');
+  process.exit(1);
+}
+const sigmaCandidates = [
+  resolve(sigmaRoot, 'build', 'sigma.min.js'),
+  resolve(sigmaRoot, 'build', 'sigma.js'),
+  resolve(sigmaRoot, 'dist', 'sigma.min.js'),
+  resolve(sigmaRoot, 'dist', 'sigma.js'),
+  resolve(sigmaRoot, 'sigma.min.js'),
+];
+const sigmaBundle = findFirst(sigmaCandidates);
+if (!sigmaBundle) {
+  console.error('[vendor] ERROR: Could not find sigma browser bundle. Tried:', sigmaCandidates);
+  console.error('[vendor] Ensure sigma is installed: npm install');
+  process.exit(1);
+}
+copyFileSync(sigmaBundle, resolve(vendorDir, 'sigma.min.js'));
+console.log(`[vendor] sigma.min.js copied from ${sigmaBundle}`);
 
 // 3. graphology-layout-forceatlas2 — no UMD bundle; build a minimal IIFE wrapper
 //    The dashboard only uses the synchronous `assign` export.
