@@ -283,6 +283,13 @@ function nodeReducer(node, data) {
       res.label = `${data.label} · svc:${serviceCount}`;
     }
   }
+  // Fan-out badge for credential nodes (POTENTIAL_AUTH edges are hidden by default)
+  if (res.label && data.nodeType === 'credential') {
+    const authCount = graph.outEdges(node).filter((edgeId) => graph.getEdgeAttributes(edgeId).edgeType === 'POTENTIAL_AUTH').length;
+    if (authCount > 0) {
+      res.label = `${res.label} · auth:${authCount}`;
+    }
+  }
 
   // Path highlighting
   if (pathNodes.size > 0) {
@@ -342,10 +349,26 @@ function nodeReducer(node, data) {
   return res;
 }
 
+function isEdgeEndpointActive(edge) {
+  const src = graph.source(edge);
+  const tgt = graph.target(edge);
+  return src === selectedNode || tgt === selectedNode
+    || src === hoveredNode || tgt === hoveredNode
+    || src === focusNode || tgt === focusNode
+    || pathNodes.has(src) || pathNodes.has(tgt)
+    || inspectedEdgeIds.has(edge);
+}
+
 function edgeReducer(edge, data) {
   const res = { ...data };
 
   if (!isEdgeVisible(edge)) {
+    res.hidden = true;
+    return res;
+  }
+
+  // Hide POTENTIAL_AUTH edges unless an endpoint is actively selected/hovered/focused
+  if (data.edgeType === 'POTENTIAL_AUTH' && !isEdgeEndpointActive(edge)) {
     res.hidden = true;
     return res;
   }

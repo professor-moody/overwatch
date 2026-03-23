@@ -536,26 +536,39 @@ function showNodeDetail(nodeId) {
     else metadataRows.push(row);
   }
 
+  // Fan-out badge for credential nodes
+  const potentialAuthCount = (nodeType === 'credential')
+    ? outEdges.filter(eid => graph.getEdgeAttributes(eid).edgeType === 'POTENTIAL_AUTH').length
+    : 0;
+
   let html = '';
+
+  // 1. Identity / core properties — right under the header
+  if (identityRows.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Identity</div>
+      ${identityRows.join('')}
+    </div>`;
+  }
+
+  // Fan-out indicator for credentials
+  if (potentialAuthCount > 0) {
+    html += `<div class="detail-fanout-badge">${potentialAuthCount} potential auth target${potentialAuthCount !== 1 ? 's' : ''}</div>`;
+  }
+
+  // 2. Services (host nodes only)
   html += buildServiceSummary(nodeId, graph);
+
+  // 3. Grouped connections
   html += buildConnectionSection(nodeId, graph, 'out');
   html += buildConnectionSection(nodeId, graph, 'in');
-  if (identityRows.length || metadataRows.length) {
+
+  // 4. Metadata — at the bottom
+  if (metadataRows.length) {
     html += `<div class="detail-section">
-      <div class="detail-section-title">Properties</div>`;
-    if (identityRows.length) {
-      html += `<div class="prop-group">
-        <div class="prop-group-title">Identity</div>
-        ${identityRows.join('')}
-      </div>`;
-    }
-    if (metadataRows.length) {
-      html += `<div class="prop-group">
-        <div class="prop-group-title">Metadata</div>
-        ${metadataRows.join('')}
-      </div>`;
-    }
-    html += `</div>`;
+      <div class="detail-section-title">Metadata</div>
+      ${metadataRows.join('')}
+    </div>`;
   }
 
   document.getElementById('detail-props').innerHTML = html;
@@ -671,6 +684,8 @@ function buildServiceSummary(nodeId, graph) {
   </div>`;
 }
 
+const CONNECTION_GROUP_CAP = 3;
+
 function buildConnectionSection(nodeId, graph, direction) {
   const edgeIds = direction === 'out' ? graph.outEdges(nodeId) : graph.inEdges(nodeId);
   const rows = edgeIds.map(edgeId => {
@@ -685,30 +700,59 @@ function buildConnectionSection(nodeId, graph, direction) {
       edgeType: edgeAttrs.edgeType || '?',
       counterpartLabel: counterpartAttrs?.label || counterpartProps.label || counterpartId,
       counterpartType: counterpartAttrs?.nodeType || counterpartProps.type || '?',
-      counterpartIdLabel: counterpartId,
       meta: confidence === '1.0' ? 'confirmed' : `conf ${confidence}`,
     };
   }).sort((a, b) => a.edgeType.localeCompare(b.edgeType) || a.counterpartLabel.localeCompare(b.counterpartLabel));
 
   if (rows.length === 0) return '';
 
+  // Group by edge type
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.edgeType)) groups.set(row.edgeType, []);
+    groups.get(row.edgeType).push(row);
+  }
+
   const title = direction === 'out' ? `Outgoing (${rows.length})` : `Incoming (${rows.length})`;
   const dirLabel = direction.toUpperCase();
+  const sectionId = `conn-${direction}-${nodeId}`;
+
+  let groupsHtml = '';
+  for (const [edgeType, groupRows] of groups) {
+    const groupId = `${sectionId}-${edgeType}`;
+    const capped = groupRows.length > CONNECTION_GROUP_CAP;
+    const visible = capped ? groupRows.slice(0, CONNECTION_GROUP_CAP) : groupRows;
+    const hidden = capped ? groupRows.slice(CONNECTION_GROUP_CAP) : [];
+
+    groupsHtml += `<div class="connection-group" data-group-id="${escapeHtml(groupId)}">
+      <div class="connection-group-header">
+        <span class="connection-type">${escapeHtml(edgeType)}</span>
+        <span class="connection-group-count">${groupRows.length}</span>
+      </div>
+      <div class="connection-group-body">
+        ${visible.map(row => renderConnectionRow(row, dirLabel)).join('')}
+        ${hidden.length > 0 ? `<div class="connection-group-hidden" style="display:none">
+          ${hidden.map(row => renderConnectionRow(row, dirLabel)).join('')}
+        </div>
+        <button class="connection-group-more" type="button" onclick="toggleConnectionGroup(this, event)">Show ${hidden.length} more</button>` : ''}
+      </div>
+    </div>`;
+  }
+
   return `<div class="detail-section">
     <div class="detail-section-title">${title}</div>
-    <div class="connection-list">
-      ${rows.map(row => `
-        <div class="connection-row" data-node-id="${escapeHtml(row.counterpartId)}" data-edge-id="${escapeHtml(row.edgeId)}">
-          <span class="connection-direction">${dirLabel}</span>
-          <span class="connection-type">${escapeHtml(row.edgeType)}</span>
-          <span class="connection-target-wrap">
-            <span class="connection-target">${escapeHtml(row.counterpartLabel)}</span>
-            <span class="connection-node-type">${escapeHtml(row.counterpartType)}</span>
-          </span>
-          <span class="connection-meta">${escapeHtml(row.meta)}</span>
-        </div>
-      `).join('')}
-    </div>
+    <div class="connection-list">${groupsHtml}</div>
+  </div>`;
+}
+
+function renderConnectionRow(row, dirLabel) {
+  return `<div class="connection-row" data-node-id="${escapeHtml(row.counterpartId)}" data-edge-id="${escapeHtml(row.edgeId)}">
+    <span class="connection-direction">${dirLabel}</span>
+    <span class="connection-target-wrap">
+      <span class="connection-target">${escapeHtml(row.counterpartLabel)}</span>
+      <span class="connection-node-type">${escapeHtml(row.counterpartType)}</span>
+    </span>
+    <span class="connection-meta">${escapeHtml(row.meta)}</span>
   </div>`;
 }
 
@@ -927,6 +971,18 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function toggleConnectionGroup(btn, event) {
+  event?.stopPropagation?.();
+  const group = btn.closest('.connection-group');
+  if (!group) return;
+  const hidden = group.querySelector('.connection-group-hidden');
+  if (!hidden) return;
+  const isShown = hidden.style.display !== 'none';
+  hidden.style.display = isShown ? 'none' : '';
+  const totalInHidden = hidden.querySelectorAll('.connection-row').length;
+  btn.textContent = isShown ? `Show ${totalInHidden} more` : 'Show less';
+}
+
 // ============================================================
 // Exports (global)
 // ============================================================
@@ -968,3 +1024,4 @@ window.toggleFrontierSection = toggleFrontierSection;
 window.toggleFrontierSectionExpanded = toggleFrontierSectionExpanded;
 window.clearFrontierTypeFilter = clearFrontierTypeFilter;
 window.setFrontierTypeFilter = setFrontierTypeFilter;
+window.toggleConnectionGroup = toggleConnectionGroup;
