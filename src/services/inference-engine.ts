@@ -173,15 +173,20 @@ export class InferenceEngine {
     return inferred;
   }
 
-  private resolveCredentialDomains(credNodeId: string): Set<string> {
+  private resolveCredentialDomains(credNodeId: string): { domains: Set<string>; hasNonAuthoritativeDomain: boolean } {
     const domains = new Set<string>();
+    let hasNonAuthoritativeDomain = false;
 
     // Seed from credential's own cred_domain property, but only when the source
     // is authoritative (explicit DOMAIN\user prefix or graph inference).
-    // parser_context is a soft display hint and must NOT scope fanout.
+    // parser_context is a soft display hint and must NOT scope or trigger global fanout.
     const credNode = this.getNode(credNodeId);
-    if (credNode?.cred_domain && credNode.cred_domain_source !== 'parser_context') {
-      domains.add(String(credNode.cred_domain).toLowerCase());
+    if (credNode?.cred_domain) {
+      if (credNode.cred_domain_source === 'parser_context') {
+        hasNonAuthoritativeDomain = true;
+      } else {
+        domains.add(String(credNode.cred_domain).toLowerCase());
+      }
     }
 
     // Walk credential → (OWNS_CRED inbound from user) → check user properties + MEMBER_OF_DOMAIN edges
@@ -202,7 +207,7 @@ export class InferenceEngine {
         if (dName) domains.add(dName.toLowerCase());
       }
     }
-    return domains;
+    return { domains, hasNonAuthoritativeDomain };
   }
 
   private getParentHosts(serviceNodeId: string): string[] {
@@ -288,9 +293,12 @@ export class InferenceEngine {
         // the same domain as the credential's owner.  Falls back to all
         // compatible services when no domain path can be resolved.
         if (!isCredentialUsableForAuth(node)) return [];
-        const credDomains = this.resolveCredentialDomains(triggerNodeId);
+        const { domains: credDomains, hasNonAuthoritativeDomain } = this.resolveCredentialDomains(triggerNodeId);
         const allCompat = this.resolveSelector('compatible_services', triggerNodeId, rule);
-        if (credDomains.size === 0) return allCompat; // fallback for single-domain / unknown
+        // Only fall back to global fanout when there is truly zero domain info.
+        // Non-authoritative hints (parser_context) suppress global fallback —
+        // these credentials wait for authoritative domain evidence before fanning out.
+        if (credDomains.size === 0) return hasNonAuthoritativeDomain ? [] : allCompat;
         return allCompat.filter(svcId => {
           const hostIds = this.getParentHosts(svcId);
           return hostIds.some(hId => {

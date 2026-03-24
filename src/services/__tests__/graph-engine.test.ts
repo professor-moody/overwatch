@@ -529,11 +529,11 @@ describe('GraphEngine', () => {
           { source: 'user-admin', target: 'cred-admin-hash', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
-      // parser_context domain should be ignored for scoping — credential falls through
-      // to global fanout (no authoritative domain → all compatible services)
+      // parser_context domain is non-authoritative — suppresses both domain-scoped
+      // AND global fallback fanout. Credential waits for authoritative domain evidence.
       const potAuth = engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges;
-      const toSvc = potAuth.filter(e => e.target === 'svc-10-10-10-1-445');
-      expect(toSvc.length).toBeGreaterThan(0);
+      const fromCred = potAuth.filter(e => e.source === 'cred-admin-hash');
+      expect(fromCred.length).toBe(0);
     });
 
     it('backfills cred_domain when user gains MEMBER_OF_DOMAIN in a later finding', () => {
