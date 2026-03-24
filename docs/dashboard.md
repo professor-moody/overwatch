@@ -49,7 +49,9 @@ Edges are color-coded by category for quick visual identification:
 | Network | Blue | `REACHABLE`, `RUNS`, `SAME_DOMAIN` |
 | Access | Green | `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE` |
 | Credential | Amber | `VALID_ON`, `OWNS_CRED`, `POTENTIAL_AUTH` |
-| Attack | Red | `CAN_DCSYNC`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, etc. |
+| Derivation | Orange | `DERIVED_FROM`, `DUMPED_FROM` |
+| Attack | Red | `CAN_DCSYNC`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`, etc. |
+| Roasting | Red | `AS_REP_ROASTABLE`, `KERBEROASTABLE` |
 | ADCS | Purple | `CAN_ENROLL`, `ESC1`–`ESC8` |
 | Lateral | Pink | `RELAY_TARGET`, `NULL_SESSION` |
 
@@ -81,6 +83,8 @@ Click any node to open the detail panel (bottom-right). It shows:
 - All properties as key-value pairs
 - Connection count
 - Clickable neighbor list (click a neighbor to navigate to it)
+- Clickable service summary items (navigate to service/edge nodes)
+- **Derivation chain** (for credential nodes) — walks `DERIVED_FROM` edges bidirectionally to show the full credential chain with derivation methods
 
 ### Frontier Item Navigation
 
@@ -111,8 +115,21 @@ Click any panel header to collapse/expand it. Panel state is persisted in `local
 | **Fit** | Reset camera to fit all nodes |
 | **Layout** | Toggle ForceAtlas2 layout on/off |
 | **Reset** | Clear all filters, restore all node types |
-| **Export** | Download a PNG screenshot of the current view |
+| **Export ▾** | Dropdown: **PNG** screenshot or **SVG** export of the current view |
+| **Layers ▾** | Dropdown: **Attack Path**, **Compare Shortest**, **Credential Flow** overlays |
 | **?** | Toggle keyboard shortcuts overlay |
+
+### Layers
+
+The **Layers** dropdown provides three mutually exclusive visualization overlays:
+
+| Layer | Description |
+|-------|-------------|
+| **Attack Path** | Shows the actual attack path taken during the engagement (gold). Reconstructed from the activity history. |
+| **Compare Shortest** | Overlays the theoretical shortest path (cyan) alongside the actual attack path for comparison. |
+| **Credential Flow** | Highlights credential relationships: `DERIVED_FROM`, `OWNS_CRED`, `VALID_ON`, `POTENTIAL_AUTH`, `DUMPED_FROM`. Credential nodes show status badges (active=green, stale=amber, expired=red, rotated=purple). |
+
+Activating one layer clears the others.
 
 ### Keyboard Shortcuts
 
@@ -175,8 +192,9 @@ Browser ◄──── WebSocket ────► DashboardServer
 | `/` | GET | Dashboard SPA (index.html) |
 | `/styles.css` | GET | Dashboard stylesheet |
 | `/graph.js`, `/ui.js`, `/ws.js`, `/main.js` | GET | Dashboard scripts |
-| `/api/state` | GET | Current engagement state (JSON) |
+| `/api/state` | GET | Current engagement state (JSON), includes `history_count` |
 | `/api/graph` | GET | Full graph export (JSON) |
+| `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |
 | `ws://` | WebSocket | Live graph delta stream |
 
 ## Verifying Dashboard Status

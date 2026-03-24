@@ -91,6 +91,8 @@ nav:
       - suggest_inference_rule: tools/suggest-inference-rule.md
     - Ingestion:
       - ingest_bloodhound: tools/ingest-bloodhound.md
+    - Remediation:
+      - correct_graph: tools/correct-graph.md
     - Utilities:
       - check_tools: tools/check-tools.md
       - track_process: tools/track-process.md

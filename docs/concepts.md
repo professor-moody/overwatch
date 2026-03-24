@@ -39,7 +39,9 @@ Deterministic rules that fire automatically when matching nodes are ingested. Th
 
 **Example:** When a service node with `smb_signing: false` is ingested, the "SMB Signing → Relay" rule fires and creates `RELAY_TARGET` edges from all compromised hosts to that service.
 
-Six built-in rules ship with Overwatch. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Architecture](architecture.md#inference-rules) for the full list.
+Thirteen built-in rules ship with Overwatch, including **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
+
+Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Architecture](architecture.md#inference-rules) for the full list.
 
 ## Confidence
 
@@ -166,6 +168,37 @@ Overwatch splits decision-making into two layers:
 - Agent dispatch decisions
 
 The deterministic layer is a **guardrail, not a brain**. It filters the obviously impossible. The LLM does the offensive thinking.
+
+## Credential Lifecycle
+
+Credentials in Overwatch have a **lifecycle** tracked via the `credential_status` property:
+
+| Status | Meaning |
+|--------|----------|
+| `active` | Credential is current and usable |
+| `stale` | Credential may still work but hasn't been verified recently |
+| `expired` | Credential has passed its `valid_until` time |
+| `rotated` | Credential has been observed as changed |
+
+The engine automatically:
+
+- **Degrades** outbound `POTENTIAL_AUTH` edges from stale/expired credentials (confidence × 0.5)
+- **Deprioritizes** frontier items sourced from stale/expired credentials (confidence × 0.1)
+- **Tracks derivation chains** via `DERIVED_FROM` edges (e.g., hash → cracked password)
+- **Infers credential domains** from graph topology when not explicitly provided
+
+See [Graph Model — Credential Lifecycle Properties](graph-model.md#credential-lifecycle-properties) for the full property reference.
+
+## Identity Resolution
+
+Overwatch automatically resolves node identities on ingest to prevent duplicates and merge fragmented data:
+
+1. **Canonical ID generation** — Each node type has deterministic ID rules (e.g., `host-<ip>`, `user-<domain>-<username>`)
+2. **Identity markers** — Nodes carry markers for matching: hostname variants, SIDs, domain-qualified names, credential fingerprints
+3. **Alias merging** — When a canonical node is added and an existing node shares its identity markers, the weaker node is merged into the canonical one — edges are retargeted, properties merged
+4. **Provenance preservation** — Merged nodes retain `first_seen_at`, `sources`, and discovery metadata from both originals
+
+This handles the real-world messiness of BloodHound SIDs, manual findings, and parser outputs colliding on the same entity. Nodes can be `canonical` (primary), `unresolved` (ambiguous), or `superseded` (merged into another).
 
 ## Engagement State vs Graph State
 

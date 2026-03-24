@@ -63,16 +63,25 @@ The LLM handles nuanced reasoning:
 
 ### Inference Rules
 
-When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Examples:
+When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Thirteen built-in rules:
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
-| SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` edges from compromised hosts |
-| Credential Fanout | New credential node | `POTENTIAL_AUTH` to all compatible services |
-| ADCS ESC1 | Certificate with enrollee-supplied subject | `ESC1` from enrollable users |
-| Kerberos → Domain | Service with `service_name: kerberos` | `MEMBER_OF_DOMAIN` edge to domain nodes |
+| Kerberos → Domain | Service with `service_name: kerberos` | `MEMBER_OF_DOMAIN` to matching domain (hostname suffix) |
+| SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` from compromised hosts |
 | MSSQL + Domain | MSSQL on domain host | `POTENTIAL_AUTH` from domain credentials |
-| Unconstrained Delegation | Host with unconstrained delegation | `DELEGATES_TO` from domain users |
+| Credential Fanout | New credential node | `POTENTIAL_AUTH` to compatible services in same domain |
+| ADCS ESC1 | cert_template with enrollee-supplied subject | `ESC1` from enrollable users |
+| Unconstrained Delegation | Host with `unconstrained_delegation: true` | `DELEGATES_TO` from domain users |
+| AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to domain nodes |
+| Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to domain nodes |
+| Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to domain nodes |
+| Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
+| LAPS Readable | Host with `laps: true` + inbound `GENERIC_ALL` | `CAN_READ_LAPS` from edge peers |
+| gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
+| RBCD Target | Host with `maq_gt_zero: true` + inbound `WRITEABLE_BY` | `RBCD_TARGET` from edge peers |
+
+The last three use **edge-triggered inference** — they require a matching inbound edge in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
 
 These become frontier items for the LLM to evaluate. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Concepts](concepts.md#inference-rules) for how the rule lifecycle works.
 
@@ -99,16 +108,18 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Frontier** | `src/services/frontier.ts` | Frontier item generation and filtering |
 | **Inference Engine** | `src/services/inference-engine.ts` | Rule matching and hypothesis edge generation |
 | **Path Analyzer** | `src/services/path-analyzer.ts` | Shortest-path and objective reachability |
+| **Identity Resolution** | `src/services/identity-resolution.ts` | Canonical ID generation, marker matching |
+| **Identity Reconciliation** | `src/services/identity-reconciliation.ts` | Alias node merging, edge retargeting |
 | **Graph Schema** | `src/services/graph-schema.ts` | Node/edge type validation |
 | **Graph Health** | `src/services/graph-health.ts` | Integrity checks and diagnostics |
-| **Finding Validation** | `src/services/finding-validation.ts` | Input validation for reported findings |
+| **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
 | **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/output-parsers.ts` | Deterministic parsing: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder |
-| **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers |
-| **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization and dedup |
+| **Output Parsers** | `src/services/output-parsers.ts` | 11 parsers / 21 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum |
+| **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
+| **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization, lifecycle, and domain inference |
 | **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |
-| **BloodHound Ingest** | `src/services/bloodhound-ingest.ts` | SharpHound/bloodhound-python JSON → graph |
+| **BloodHound Ingest** | `src/services/bloodhound-ingest.ts` | SharpHound v4/v5 (CE) JSON → graph |
 | **Dashboard Server** | `src/services/dashboard-server.ts` | HTTP + WebSocket for live visualization |
 | **Delta Accumulator** | `src/services/delta-accumulator.ts` | Debounced graph change tracking for broadcasts |
 | **Agent Manager** | `src/services/agent-manager.ts` | Sub-agent task lifecycle |
@@ -122,11 +133,11 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 
 | Module | File | Tools |
 |--------|------|-------|
-| **State** | `src/tools/state.ts` | `get_state`, `run_lab_preflight`, `run_graph_health`, `get_history`, `export_graph` |
+| **State** | `src/tools/state.ts` | `get_state`, `run_lab_preflight`, `run_graph_health`, `recompute_objectives`, `get_history`, `export_graph` |
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
 | **Findings** | `src/tools/findings.ts` | `report_finding` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
-| **Agents** | `src/tools/agents.ts` | `register_agent`, `get_agent_context`, `update_agent` |
+| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent` |
 | **Skills** | `src/tools/skills.ts` | `get_skill` |
 | **Logging** | `src/tools/logging.ts` | `log_action_event` |
 | **Parse Output** | `src/tools/parse-output.ts` | `parse_output` |
@@ -134,6 +145,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **BloodHound** | `src/tools/bloodhound.ts` | `ingest_bloodhound` |
 | **Tool Check** | `src/tools/toolcheck.ts` | `check_tools` |
 | **Processes** | `src/tools/processes.ts` | `track_process`, `check_processes` |
+| **Remediation** | `src/tools/remediation.ts` | `correct_graph` |
 | **Retrospective** | `src/tools/retrospective.ts` | `run_retrospective` |
 
 ### Dashboard

@@ -23,6 +23,10 @@ The raw output comes from one of these supported tools:
 | Kerbrute | `kerbrute` |
 | Hashcat | `hashcat` |
 | Responder | `responder` |
+| Ldapsearch | `ldapsearch`, `ldapdomaindump`, `ldap` |
+| Enum4linux | `enum4linux`, `enum4linux-ng` |
+| Rubeus | `rubeus` |
+| Web Dir Enum | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` |
 
 ### Why
 
@@ -41,6 +45,22 @@ The raw output comes from one of these supported tools:
   "action_id": "act-abc123"
 }
 ```
+
+### With Context
+
+For parsers that benefit from ambient context (secretsdump, hashcat), pass the `context` parameter:
+
+```json
+{
+  "tool_name": "secretsdump",
+  "output": "Administrator:500:aad3b...",
+  "action_id": "act-dump-01",
+  "context": { "domain": "corp.local", "source_host": "10.10.10.5" }
+}
+```
+
+- **`domain`** — soft hint for `cred_domain` when output lacks domain prefixes
+- **`source_host`** — creates `DUMPED_FROM` edges linking credentials to source
 
 ## Use `report_finding` When
 
@@ -83,14 +103,20 @@ The raw output comes from one of these supported tools:
 | Manual web app discovery | `report_finding` with host + service nodes |
 | Certipy find results | `parse_output` with `tool_name: "certipy"` |
 | Observed a login prompt | `report_finding` with service node |
-| Secretsdump output | `parse_output` with `tool_name: "secretsdump"` |
+| Secretsdump output | `parse_output` with `tool_name: "secretsdump"` + `context` |
 | Custom script output | `report_finding` with structured nodes/edges |
 | Hashcat cracked hashes | `parse_output` with `tool_name: "hashcat"` |
 | Responder captured hash | `parse_output` with `tool_name: "responder"` |
+| LDAP domain dump | `parse_output` with `tool_name: "ldapsearch"` |
+| Enum4linux-ng JSON | `parse_output` with `tool_name: "enum4linux"` |
+| Rubeus Kerberoast | `parse_output` with `tool_name: "rubeus"` |
+| Gobuster/Feroxbuster scan | `parse_output` with `tool_name: "gobuster"` or `"feroxbuster"` |
+| ffuf fuzzing results | `parse_output` with `tool_name: "ffuf"` |
 
 ## Tips
 
-- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers
+- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (21 aliases across 11 parsers)
 - Use `parse_output` with `ingest: false` to preview what would be parsed without modifying the graph
 - Always include `action_id` from `validate_action` for traceability
+- Pass `context` with `domain` and `source_host` when available for better credential attribution
 - Node IDs should follow conventions: `host-<ip>`, `svc-<ip>-<port>`, `user-<domain>-<name>`

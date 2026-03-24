@@ -31,23 +31,26 @@ overwatch/
 │   │   ├── parse-output.ts   # parse_output
 │   │   ├── logging.ts        # log_action_event
 │   │   ├── retrospective.ts  # run_retrospective
+│   │   ├── remediation.ts    # correct_graph
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic (23 modules)
+│   ├── services/             # Core business logic (26 modules)
 │   │   ├── graph-engine.ts   # Graph operations, state coordination
 │   │   ├── engine-context.ts # Mutable state container, update callbacks
 │   │   ├── frontier.ts       # Frontier item generation and filtering
 │   │   ├── inference-engine.ts # Rule matching and edge generation
 │   │   ├── path-analyzer.ts  # Shortest-path and objective reachability
+│   │   ├── identity-resolution.ts  # Canonical ID generation, marker matching
+│   │   ├── identity-reconciliation.ts # Alias node merging, edge retargeting
 │   │   ├── graph-schema.ts   # Node/edge type validation
 │   │   ├── graph-health.ts   # Integrity checks and diagnostics
 │   │   ├── finding-validation.ts # Input validation for findings
 │   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── output-parsers.ts # Parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
+│   │   ├── output-parsers.ts # 11 parsers / 21 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum
 │   │   ├── parser-utils.ts   # Shared parsing helpers
-│   │   ├── credential-utils.ts # Credential normalization and dedup
+│   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
-│   │   ├── bloodhound-ingest.ts # BloodHound JSON → graph
+│   │   ├── bloodhound-ingest.ts # SharpHound v4/v5 (CE) JSON → graph
 │   │   ├── dashboard-server.ts  # HTTP + WebSocket server (static file serving)
 │   │   ├── delta-accumulator.ts # Debounced graph change tracking
 │   │   ├── agent-manager.ts  # Agent task lifecycle
@@ -76,7 +79,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **342 tests across 19 files**, all passing. Run the full suite:
+Tests use [Vitest](https://vitest.dev/). **638 tests across 26 files**, all passing. Run the full suite:
 
 ```bash
 npm test
@@ -86,23 +89,26 @@ Test files are co-located with their modules under `__tests__/` directories:
 
 | Test File | Coverage |
 |-----------|----------|
-| `graph-engine.test.ts` | Graph operations, frontier, inference, persistence |
-| `cidr.test.ts` | CIDR parsing and scope matching |
+| `graph-engine.test.ts` | Graph operations, frontier, inference, persistence, identity |
+| `cidr.test.ts` | CIDR parsing, scope matching, hostname resolution |
 | `skill-index.test.ts` | Skill search and indexing |
-| `bloodhound-ingest.test.ts` | BloodHound JSON parsing |
-| `output-parsers.test.ts` | Nmap, NXC, Certipy, Secretsdump, etc. |
-| `parser-utils.test.ts` | Shared parsing utilities |
-| `credential-utils.test.ts` | Credential normalization |
-| `dashboard-server.test.ts` | HTTP endpoints + WebSocket |
+| `bloodhound-ingest.test.ts` | BloodHound JSON parsing, SharpHound CE adapter |
+| `output-parsers.test.ts` | All 11 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum |
+| `parser-utils.test.ts` | Shared parsing utilities, canonical ID generation |
+| `credential-utils.test.ts` | Credential normalization, lifecycle, domain inference |
+| `credential-lifecycle.test.ts` | Credential status, expiry, derivation chains, degradation |
+| `identity-resolution.test.ts` | Canonical ID generation, marker matching |
+| `graph-schema.test.ts` | Edge endpoint constraints |
+| `dashboard-server.test.ts` | HTTP endpoints, WebSocket, /api/history |
 | `graph-health.test.ts` | Graph integrity checks |
 | `lab-preflight.test.ts` | Lab readiness validation |
-| `retrospective.test.ts` | Retrospective analysis |
+| `retrospective.test.ts` | Retrospective analysis, credential chains, RLVR traces |
 | `process-tracker.test.ts` | PID tracking |
 | `delta-accumulator.test.ts` | Graph change tracking |
-| `activity-logging.test.ts` | Action event logging |
+| `activity-logging.test.ts` | Action event logging, dispatch_agents |
 | `error-boundary.test.ts` | Error handling wrapper |
 | `processes.test.ts` | Process tool integration |
-| `mcp-server.integration.test.ts` | End-to-end MCP protocol |
+| `mcp-server.integration.test.ts` | End-to-end MCP protocol (25 tools) |
 
 ## Adding a New Parser
 

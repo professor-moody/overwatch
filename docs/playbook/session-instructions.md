@@ -21,17 +21,17 @@ The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It 
 
 4. **Explore the graph** with `query_graph()` when the frontier doesn't capture a pattern you're seeing
 
-5. **Validate before executing** with `validate_action()` — catches scope violations, OPSEC blacklist hits, and impossible targets
+5. **Validate before executing** with `validate_action()` — catches scope violations, OPSEC blacklist hits, and impossible targets. **Always pass `frontier_item_id`** from `next_task()` so the retrospective can attribute results to frontier items. Returns an `action_id` to use for subsequent calls.
 
-6. **Log execution start** with `log_action_event(event_type="action_started")` before major tool execution
+6. **Log execution start** with `log_action_event(event_type="action_started")` before major tool execution. **Always pass both `action_id` and `frontier_item_id`.**
 
 7. **Execute** using shell commands, scripts, or other tools
 
 8. **Parse or report results**:
-    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, etc.)
-    - Use `report_finding()` for manual observations or unsupported tools
+    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf). **Always pass `action_id` and `frontier_item_id`.**
+    - Use `report_finding()` for manual observations or unsupported tools. **Always pass `action_id` and `frontier_item_id`.**
 
-9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`
+9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`. **Always pass `action_id`** (the server auto-threads `frontier_item_id` from earlier calls with the same `action_id`).
 
 10. **Dispatch sub-agents** with `register_agent()` for parallel work
 
@@ -41,7 +41,7 @@ The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It 
 
 - **The graph is your memory** — after compaction, `get_state()` reconstructs everything
 - **Report early, report often** — every finding triggers inference rules that may surface new attack paths
-- **Use structured action logging** — `validate_action()` gives the `action_id`; `log_action_event()` records execution
+- **Use structured action logging** — `validate_action()` gives the `action_id`; `log_action_event()` records execution. **Thread `frontier_item_id`** through every call for retrospective attribution
 - **The deterministic layer is a guardrail, not a brain** — it filters the impossible; the LLM does the offensive thinking
 - **Validate before you execute** — every significant action goes through `validate_action()` first
 - **Use `query_graph()` liberally** — if you have a hunch about a relationship, query for it
@@ -56,12 +56,13 @@ When dispatching sub-agents via `register_agent`, give them these instructions:
 > - `get_agent_context` — get your scoped subgraph view
 > - `validate_action` — check before executing
 > - `log_action_event` — record action start/completion/failure
-> - `parse_output` — use for supported raw tool output
+> - `parse_output` — use for supported raw tool output before falling back to manual findings
 > - `report_finding` — report every discovery immediately
-> - `query_graph` — explore the graph for more context
+> - `query_graph` — explore the graph if you need more context
 > - `get_skill` — get methodology guidance for your task
+> - `correct_graph` — fix bad data if needed
 >
-> Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure.
+> Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure. When done, your task will be marked complete by the primary session.
 
 ### Sub-Agent Workflow
 

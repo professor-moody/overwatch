@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 22 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 25 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -9,6 +9,7 @@ Overwatch exposes 22 MCP tools organized by function. Each tool uses Zod schemas
 | [`get_state`](get-state.md) | Full engagement briefing from graph | :white_check_mark: |
 | [`run_lab_preflight`](run-lab-preflight.md) | Aggregate lab-readiness checks | :white_check_mark: |
 | [`run_graph_health`](run-graph-health.md) | Full graph integrity report | :white_check_mark: |
+| [`recompute_objectives`](#) | Re-evaluate objective achievement status | :x: |
 | [`get_history`](get-history.md) | Full activity log | :white_check_mark: |
 | [`export_graph`](export-graph.md) | Complete graph dump | :white_check_mark: |
 | [`next_task`](next-task.md) | Filtered frontier candidates for scoring | :x: |
@@ -19,6 +20,7 @@ Overwatch exposes 22 MCP tools organized by function. Each tool uses Zod schemas
 | [`query_graph`](query-graph.md) | Open-ended graph exploration | :white_check_mark: |
 | [`find_paths`](find-paths.md) | Shortest paths to objectives | :white_check_mark: |
 | [`register_agent`](register-agent.md) | Dispatch a sub-agent task | :x: |
+| [`dispatch_agents`](#) | Batch-dispatch agents from frontier | :x: |
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | :white_check_mark: |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | :x: |
 | [`get_skill`](get-skill.md) | RAG search over skill library | :white_check_mark: |
@@ -27,6 +29,7 @@ Overwatch exposes 22 MCP tools organized by function. Each tool uses Zod schemas
 | [`check_tools`](check-tools.md) | Inspect installed offensive tooling | :white_check_mark: |
 | [`track_process`](track-process.md) | Register a long-running scan | :x: |
 | [`check_processes`](check-processes.md) | Inspect tracked process state | :white_check_mark: |
+| [`correct_graph`](correct-graph.md) | Transactional graph repair | :x: |
 | [`run_retrospective`](run-retrospective.md) | Post-engagement analysis | :white_check_mark: |
 
 ## Tool Categories

@@ -39,7 +39,7 @@ Just start the server with the same `OVERWATCH_CONFIG`. The server automatically
 
 ### What's the difference between `parse_output` and `report_finding`?
 
-- **`parse_output`** — deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent.
+- **`parse_output`** — deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent. Accepts an optional `context` parameter for domain and source host hints.
 - **`report_finding`** — manual finding submission for unsupported tools, analyst observations, or already-structured data. The LLM constructs the nodes and edges.
 
 Use `parse_output` whenever possible. See [parse_output vs report_finding](playbook/parse-vs-report.md) for detailed guidance.
@@ -122,7 +122,10 @@ You can:
 - Shift+click two nodes to see the shortest path
 - Double-click to isolate a neighborhood
 - Click frontier items to zoom to their target nodes
-- Export PNG screenshots
+- Export PNG screenshots or SVG files via the Export dropdown
+- Toggle **Attack Path** overlay to see the actual path taken (gold) and compare against the theoretical shortest path (cyan)
+- Toggle **Credential Flow** to visualize credential relationships and derivation chains with status badges
+- View credential derivation chains in the node detail panel
 
 ### The dashboard is blank or shows errors
 
@@ -157,6 +160,18 @@ Errors are blocking — `valid: false`. These should never be overridden:
 - Out-of-scope target
 - Blacklisted technique
 - Target node doesn't exist
+
+### How do credential lifecycle states work?
+
+Credentials track their lifecycle via the `credential_status` property (`active`, `stale`, `expired`, `rotated`). The engine automatically degrades outbound `POTENTIAL_AUTH` edges from expired/stale credentials and deprioritizes frontier items that depend on them. Derivation chains (`DERIVED_FROM` edges) connect credentials through cracking or extraction steps. See [Concepts — Credential Lifecycle](concepts.md#credential-lifecycle) for details.
+
+### What is identity resolution?
+
+Overwatch automatically canonicalizes node IDs and merges alias nodes on ingest. When a BloodHound SID, parser output, and manual finding all reference the same host or user, identity resolution detects the overlap via identity markers and merges them into a single canonical node — retargeting edges and preserving provenance. See [Concepts — Identity Resolution](concepts.md#identity-resolution).
+
+### How do I fix bad data in the graph?
+
+Use [`correct_graph`](tools/correct-graph.md) for transactional graph repair. It supports dropping edges, replacing edges (change type/endpoints/confidence), and patching node properties. All operations in a batch are atomic.
 
 ## Retrospective
 

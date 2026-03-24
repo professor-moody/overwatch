@@ -60,7 +60,7 @@ The server exposes **25 MCP tools** covering the full engagement lifecycle — f
 
 ## Graph Model
 
-### Node Types (16)
+### Node Types (15)
 
 | Type | Description |
 |------|-------------|
@@ -80,22 +80,22 @@ The server exposes **25 MCP tools** covering the full engagement lifecycle — f
 | `subnet` | Network subnet |
 | `objective` | Engagement objective (virtual node) |
 
-### Edge Types (~30)
+### Edge Types (37)
 
-Relationship types include: `REACHABLE`, `RUNS`, `MEMBER_OF`, `MEMBER_OF_DOMAIN`, `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`, `CAN_DCSYNC`, `OWNS_CRED`, `VALID_ON`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_ENROLL`, `ESC1`–`ESC8`, `TRUSTS`, `SAME_DOMAIN`, `RELAY_TARGET`, `NULL_SESSION`, `POTENTIAL_AUTH`, `PATH_TO_OBJECTIVE`, and `RELATED`.
+Relationship types include: `REACHABLE`, `RUNS`, `MEMBER_OF`, `MEMBER_OF_DOMAIN`, `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`, `CAN_DCSYNC`, `OWNS_CRED`, `VALID_ON`, `DERIVED_FROM`, `DUMPED_FROM`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_ENROLL`, `ESC1`–`ESC8`, `TRUSTS`, `SAME_DOMAIN`, `AS_REP_ROASTABLE`, `KERBEROASTABLE`, `CAN_DELEGATE_TO`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`, `RELAY_TARGET`, `NULL_SESSION`, `POTENTIAL_AUTH`, `PATH_TO_OBJECTIVE`, and `RELATED`.
 
 All edges carry `confidence`, `discovered_at`, `discovered_by`, and optional `inferred` flag. Edge endpoints are validated against a schema defining valid (source_type → target_type) combinations.
 
 ### Inference Rules
 
 Rules fire automatically when nodes are ingested. Each rule has:
-- **Trigger** — node type + optional property match
-- **Selectors** — how to find related nodes (9 selector types: `trigger_node`, `parent_host`, `domain_nodes`, `domain_users`, `domain_credentials`, `all_compromised`, `compatible_services`, `enrollable_users`, `trigger_service`)
+- **Trigger** — node type + optional property match + optional `requires_edge` (for edge-triggered rules)
+- **Selectors** — how to find related nodes (12 selector types: `trigger_node`, `parent_host`, `domain_nodes`, `domain_users`, `domain_credentials`, `all_compromised`, `compatible_services`, `compatible_services_same_domain`, `matching_domain`, `edge_peers`, `enrollable_users`, `trigger_service`)
 - **Produces** — edge type + confidence + condition
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
 
-Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes.
+Thirteen built-in rules cover: Kerberos→Domain, SMB Relay, MSSQL domain auth, credential fanout (domain-scoped), ADCS ESC1, unconstrained delegation, AS-REP roasting, Kerberoasting, constrained delegation, web login forms, LAPS/gMSA readable, and RBCD targets. Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes.
 
 ---
 
@@ -160,21 +160,25 @@ Eight integrity checks:
 7. Edge type constraint violations
 8. Stale inferred edges
 
-### Output Parsers (`src/services/output-parsers.ts` — 808 lines)
+### Output Parsers (`src/services/output-parsers.ts`)
 
-Seven deterministic parsers:
+Eleven deterministic parsers with 21 aliases:
 
 | Parser | Input | Output |
 |--------|-------|--------|
-| `nmap` | Nmap XML | host + service nodes, RUNS edges |
-| `nxc` / `netexec` | NXC stdout | host + SMB services + shares, ADMIN_TO/VALID_ON edges |
+| `nmap` | Nmap XML | host + service nodes, RUNS edges, OS detection |
+| `nxc` / `netexec` | NXC stdout | host + SMB services + shares + users, access edges, NULL_SESSION |
 | `certipy` | Certipy JSON | CA + cert_template nodes, ESC vulnerability edges |
-| `secretsdump` | SAM/NTDS dump | credential + user nodes, OWNS_CRED edges |
+| `secretsdump` | SAM/NTDS dump | credential + user nodes, OWNS_CRED + DUMPED_FROM + MEMBER_OF_DOMAIN edges |
 | `kerbrute` | User enum / spray | user + domain + credential nodes |
 | `hashcat` | Cracked hashes | credential nodes (Kerberoast, AS-REP, NTLMv2, NTLM) |
 | `responder` | NTLMv2 captures | host + user + credential nodes |
+| `ldapsearch` | LDIF / ldapdomaindump JSON | user + group + host + domain nodes, UAC flags, group memberships |
+| `enum4linux` | JSON (-oJ) or text | host + SMB service + user + group + share nodes, null session detection |
+| `rubeus` | Kerberoast / AS-REP / monitor | user + credential nodes, OWNS_CRED edges (TGT/TGS detection) |
+| `gobuster` / `feroxbuster` / `ffuf` | Text or JSON | service node enrichment with discovered_paths, login form detection |
 
-All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication.
+All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication. Parsers accept optional `ParseContext` (`domain`, `source_host`) for ambient context.
 
 ### BloodHound Ingestion (`src/services/bloodhound-ingest.ts` — 701 lines)
 
@@ -214,7 +218,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | Tool | Purpose |
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
-| `parse_output` | Deterministic tool output parsing (7 parsers) |
+| `parse_output` | Deterministic tool output parsing (11 parsers, 21 aliases) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
 
 ### Scoring & Planning
@@ -321,13 +325,13 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**24 test files** across the codebase:
+**26 test files** across the codebase:
 
 | Area | Files | Coverage |
 |------|-------|----------|
 | Integration | `mcp-server.integration.test.ts` | All 25 tools via stdio transport |
-| Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback |
-| Services | 12 test files | CIDR, BloodHound, parsers, identity, health, credentials, preflight, retrospective, dashboard, delta accumulator |
+| Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity |
+| Services | 14 test files | CIDR, BloodHound, parsers (11), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema |
 | Tools | 3 test files | Error boundary, activity logging, process tracking |
 | Dashboard | 4 test files | Boot, graph rendering, UI, WebSocket |
 | CLI | `lab-smoke.test.ts` | End-to-end lab workflow |
@@ -390,9 +394,9 @@ overwatch/
 │   │   ├── finding-validation.ts   # Pre-ingest validation
 │   │   ├── graph-schema.ts         # Edge endpoint constraints
 │   │   ├── graph-health.ts         # 8 integrity checks
-│   │   ├── credential-utils.ts     # Credential classification
-│   │   ├── output-parsers.ts       # 7 deterministic parsers (808 lines)
-│   │   ├── bloodhound-ingest.ts    # SharpHound JSON parser (701 lines)
+│   │   ├── credential-utils.ts     # Credential classification + lifecycle
+│   │   ├── output-parsers.ts       # 11 deterministic parsers (21 aliases)
+│   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
 │   │   ├── skill-index.ts          # TF-IDF skill search
 │   │   ├── dashboard-server.ts     # HTTP + WebSocket server
 │   │   ├── lab-preflight.ts        # Lab readiness checks
@@ -428,7 +432,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 7 parsers covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 11 parsers (21 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.
@@ -437,4 +441,4 @@ overwatch/
 
 - **GraphEngine is the largest module** (~1,415 lines). It delegates well to submodules but acts as a facade for 40+ methods. Could benefit from interface segregation if it grows further.
 - **BFS path analysis** is appropriate for pentest-scale graphs (hundreds to low thousands of nodes). For enterprise-scale BloodHound imports (tens of thousands), the undirected projection cache will be important.
-- **Inference rule selectors are string-based** — The 9 selectors are resolved at runtime. Rule definitions rely on convention rather than compile-time safety.
+- **Inference rule selectors are string-based** — The 12 selectors are resolved at runtime. Rule definitions rely on convention rather than compile-time safety.
