@@ -280,6 +280,75 @@ describe('DashboardServer', () => {
     }
   });
 
+  it('serveHistory limit returns oldest entries first (forward pagination)', () => {
+    for (let i = 0; i < 5; i++) {
+      engine.ingestFinding({
+        id: `order-test-${i}`,
+        agent_id: 'test-agent',
+        timestamp: `2026-03-21T10:0${i}:00Z`,
+        nodes: [{ id: `host-order-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
+        edges: [],
+      });
+    }
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveHistory('/api/history?limit=2', res);
+    const page1 = JSON.parse(res.body);
+    expect(page1.entries.length).toBe(2);
+    // First page should be the oldest entries
+    const firstTs = page1.entries[0].timestamp;
+    const lastTs = page1.entries[page1.entries.length - 1].timestamp;
+    expect(firstTs <= lastTs).toBe(true);
+
+    // Second page using after= should return the next entries, not be empty
+    (dashboard as any).serveHistory(`/api/history?limit=2&after=${lastTs}`, res);
+    const page2 = JSON.parse(res.body);
+    expect(page2.entries.length).toBeGreaterThan(0);
+    // All page2 entries should be newer than page1's last entry
+    for (const entry of page2.entries) {
+      expect(entry.timestamp > lastTs).toBe(true);
+    }
+  });
+
+  it('graph_update WS payload includes history_count', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    engine.ingestFinding({
+      id: 'hc-ws-test',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{ id: 'host-hc-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      edges: [],
+    });
+
+    dashboard.onGraphUpdate({ new_nodes: ['host-hc-1'] });
+    dashboard.flush();
+
+    expect(mockClient.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    expect(payload.type).toBe('graph_update');
+    expect(typeof payload.data.state.history_count).toBe('number');
+    expect(payload.data.state.history_count).toBeGreaterThan(0);
+  });
+
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));

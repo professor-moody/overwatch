@@ -153,12 +153,13 @@ export class DashboardServer {
     const deltaEdges = fullGraph.edges.filter(e => e.id !== undefined && changedEdgeIds.has(e.id));
 
     const state = this.engine.getState();
+    const historyCount = this.engine.getFullHistory().length;
 
     this.broadcast({
       type: 'graph_update',
       timestamp: new Date().toISOString(),
       data: {
-        state,
+        state: { ...state, history_count: historyCount },
         detail,
         delta: {
           nodes: deltaNodes,
@@ -294,7 +295,7 @@ export class DashboardServer {
     const total = entries.length;
 
     if (limit && limit > 0) {
-      entries = entries.slice(-limit);
+      entries = entries.slice(0, limit);
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });

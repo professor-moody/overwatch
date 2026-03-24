@@ -952,11 +952,14 @@ async function refreshAttackPathIfActive() {
   if (actual.nodes.size === 0) return;
   const hadTheoretical = !!attackPathOverlay.theoretical;
   attackPathOverlay = { actual, theoretical: null };
-  if (hadTheoretical) showTheoreticalComparison();
-  const bar = document.getElementById('path-info-bar');
-  if (bar) {
-    bar.querySelector('.path-label').textContent = `Actual path: ${actual.nodes.size} nodes · ${actual.edges.size} hops`;
-    bar.querySelector('.path-edges').textContent = '';
+  if (hadTheoretical) {
+    showTheoreticalComparison();
+  } else {
+    const bar = document.getElementById('path-info-bar');
+    if (bar) {
+      bar.querySelector('.path-label').textContent = `Actual path: ${actual.nodes.size} nodes · ${actual.edges.size} hops`;
+      bar.querySelector('.path-edges').textContent = '';
+    }
   }
   if (renderer) renderer.refresh();
   updateMinimap();
