@@ -615,66 +615,63 @@ function showNodeDetail(nodeId) {
 }
 
 function buildDerivationChainSection(nodeId, graph) {
-  // Walk DERIVED_FROM edges in both directions to build full chain containing this node
-  const chainNodes = [nodeId];
-  const visited = new Set([nodeId]);
+  const visited = new Set();
 
-  // Walk backward (find ancestors)
-  let current = nodeId;
-  let walking = true;
-  while (walking) {
-    walking = false;
-    for (const edgeId of graph.edges(current)) {
+  // Walk backward to find the root ancestor
+  function findRoot(id) {
+    visited.add(id);
+    for (const edgeId of graph.edges(id)) {
       const attrs = graph.getEdgeAttributes(edgeId);
       if (attrs.edgeType !== 'DERIVED_FROM') continue;
-      const neighbor = graph.opposite(current, edgeId);
+      const neighbor = graph.opposite(id, edgeId);
       if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
-        // Check direction: if neighbor is the "parent" (target of DERIVED_FROM from current)
-        if (graph.source(edgeId) === current) {
-          visited.add(neighbor);
-          chainNodes.unshift(neighbor);
-          current = neighbor;
-          walking = true;
-          break;
-        }
+        if (graph.source(edgeId) === id) return findRoot(neighbor);
       }
     }
+    return id;
   }
 
-  // Walk forward (find descendants)
-  current = nodeId;
-  walking = true;
-  while (walking) {
-    walking = false;
-    for (const edgeId of graph.edges(current)) {
+  const root = findRoot(nodeId);
+  visited.clear();
+
+  // DFS to build tree, collecting all children per node
+  function getChildren(id) {
+    const children = [];
+    for (const edgeId of graph.edges(id)) {
       const attrs = graph.getEdgeAttributes(edgeId);
       if (attrs.edgeType !== 'DERIVED_FROM') continue;
-      const neighbor = graph.opposite(current, edgeId);
-      if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
-        if (graph.target(edgeId) === current) {
-          visited.add(neighbor);
-          chainNodes.push(neighbor);
-          current = neighbor;
-          walking = true;
-          break;
-        }
+      const neighbor = graph.opposite(id, edgeId);
+      if (graph.getNodeAttribute(neighbor, 'nodeType') === 'credential' && graph.target(edgeId) === id) {
+        children.push(neighbor);
       }
     }
+    return children;
   }
 
-  if (chainNodes.length < 2) return null;
-
-  const items = chainNodes.map(id => {
+  // Render tree recursively
+  function renderTree(id) {
+    if (visited.has(id)) return '';
+    visited.add(id);
     const p = graph.getNodeAttributes(id)._props || {};
     const label = p.label || id;
     const method = p.derivation_method || '';
     const isCurrent = id === nodeId;
-    return `<span class="chain-node${isCurrent ? ' chain-current' : ''}" data-node="${escapeHtml(id)}">${escapeHtml(label)}${method ? ` <span class="chain-method">(${escapeHtml(method)})</span>` : ''}</span>`;
-  });
+    const nodeHtml = `<span class="chain-node${isCurrent ? ' chain-current' : ''}" data-node="${escapeHtml(id)}">${escapeHtml(label)}${method ? ` <span class="chain-method">(${escapeHtml(method)})</span>` : ''}</span>`;
+
+    const children = getChildren(id).filter(c => !visited.has(c));
+    if (children.length === 0) return nodeHtml;
+    if (children.length === 1) return nodeHtml + ' → ' + renderTree(children[0]);
+    // Multiple children: render as branching list
+    const branches = children.map(c => renderTree(c)).filter(Boolean);
+    return nodeHtml + ' → [' + branches.join(', ') + ']';
+  }
+
+  const html = renderTree(root);
+  if (!html || visited.size < 2) return null;
 
   return `<div class="detail-section">
     <div class="detail-section-title">Derivation Chain</div>
-    <div class="derivation-chain">${items.join(' → ')}</div>
+    <div class="derivation-chain">${html}</div>
   </div>`;
 }
 

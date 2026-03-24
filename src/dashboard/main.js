@@ -103,10 +103,10 @@ window.addEventListener('DOMContentLoaded', () => {
     focusShowAll.addEventListener('click', () => G.exitNeighborhoodFocus());
   }
 
-  // Path info bar close
+  // Path info bar close — clears all overlay modes (path, attack path, credential flow)
   const pathClose = document.getElementById('path-close');
   if (pathClose) {
-    pathClose.addEventListener('click', () => G.clearPathHighlight());
+    pathClose.addEventListener('click', () => G.clearAllOverlays());
   }
 
   // Node detail close
@@ -137,11 +137,13 @@ window.addEventListener('DOMContentLoaded', () => {
       G.syncGraphData(data.graph);
       UI.updateUI(data.state);
       G.updateMinimap();
+      checkHistoryChanged(data.state || data);
     },
     onGraphUpdate(data) {
       G.mergeGraphDelta(data.delta);
       UI.updateUI(data.state);
       G.updateMinimap();
+      checkHistoryChanged(data.state || data);
     },
   });
 });
@@ -160,4 +162,14 @@ function setupToolbarDropdown(wrapperId, toggleBtnId) {
 
 function closeAllDropdowns() {
   document.querySelectorAll('.toolbar-dropdown.open').forEach(el => el.classList.remove('open'));
+}
+
+function checkHistoryChanged(state) {
+  const serverCount = state?.history_count;
+  if (typeof serverCount !== 'number') return;
+  const G = window.OverwatchGraph;
+  if (!G) return;
+  if (serverCount > G.activityHistoryCacheTotal) {
+    G.refreshAttackPathIfActive();
+  }
 }

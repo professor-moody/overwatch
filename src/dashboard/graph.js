@@ -106,7 +106,7 @@ let pathNodes = new Set();
 
 // Attack path overlay
 let attackPathOverlay = null; // null | { actual: { nodes: Set, edges: Set }, theoretical: { nodes: Set, edges: Set } | null }
-let activityHistoryCache = null; // cached /api/history response
+let activityHistoryCache = null; // { entries: [], knownTotal: N } | null
 
 // Credential flow
 let credentialFlowMode = false;
@@ -916,17 +916,50 @@ function clearPathHighlight() {
 // ============================================================
 
 async function fetchActivityHistory() {
-  if (activityHistoryCache) return activityHistoryCache;
+  if (activityHistoryCache) return activityHistoryCache.entries;
+  const PAGE_SIZE = 500;
+  let allEntries = [];
+  let after = undefined;
   try {
-    const res = await fetch('/api/history?limit=500');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    activityHistoryCache = data.entries || [];
-    return activityHistoryCache;
+    while (true) {
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (after) params.set('after', after);
+      const res = await fetch(`/api/history?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const page = data.entries || [];
+      allEntries = allEntries.concat(page);
+      if (page.length < PAGE_SIZE) break; // last page
+      after = page[page.length - 1].timestamp;
+    }
+    activityHistoryCache = { entries: allEntries, knownTotal: allEntries.length };
+    return allEntries;
   } catch (err) {
     console.warn('[Overwatch] Failed to fetch activity history:', err);
     return [];
   }
+}
+
+function invalidateHistoryCache() {
+  activityHistoryCache = null;
+}
+
+async function refreshAttackPathIfActive() {
+  if (!attackPathOverlay) return;
+  invalidateHistoryCache();
+  const entries = await fetchActivityHistory();
+  const actual = buildActualPath(entries);
+  if (actual.nodes.size === 0) return;
+  const hadTheoretical = !!attackPathOverlay.theoretical;
+  attackPathOverlay = { actual, theoretical: null };
+  if (hadTheoretical) showTheoreticalComparison();
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent = `Actual path: ${actual.nodes.size} nodes · ${actual.edges.size} hops`;
+    bar.querySelector('.path-edges').textContent = '';
+  }
+  if (renderer) renderer.refresh();
+  updateMinimap();
 }
 
 function buildActualPath(activityEntries) {
@@ -1078,7 +1111,7 @@ function buildCredentialFlowData() {
     if (attrs.nodeType === 'credential') flowNodes.add(nodeId);
   });
 
-  // Build DERIVED_FROM chains
+  // Build DERIVED_FROM chains using DFS to capture all branches
   const chains = [];
   const credNodes = [...flowNodes].filter(id => graph.hasNode(id) && graph.getNodeAttribute(id, 'nodeType') === 'credential');
   const hasInboundDerivation = new Set();
@@ -1088,39 +1121,34 @@ function buildCredentialFlowData() {
     }
   });
 
-  // Walk chains from root credentials (those with no inbound DERIVED_FROM)
+  // DFS from root credentials (those with no inbound DERIVED_FROM)
   for (const rootId of credNodes) {
     if (hasInboundDerivation.has(rootId)) continue;
 
-    // Follow outbound DERIVED_FROM edges (root → derived → derived)
-    const chain = [rootId];
-    const visited = new Set([rootId]);
-    let current = rootId;
-    let walking = true;
+    const treeNodes = [];
+    const visited = new Set();
 
-    while (walking) {
-      walking = false;
-      const edges = graph.edges(current);
-      for (const edgeId of edges) {
+    function dfs(nodeId) {
+      if (visited.has(nodeId)) return;
+      visited.add(nodeId);
+      treeNodes.push({
+        id: nodeId,
+        label: graph.getNodeAttribute(nodeId, 'label') || nodeId,
+        method: graph.getNodeAttribute(nodeId, '_props')?.derivation_method || null,
+      });
+      for (const edgeId of graph.edges(nodeId)) {
         const attrs = graph.getEdgeAttributes(edgeId);
         if (attrs.edgeType !== 'DERIVED_FROM') continue;
-        const neighbor = graph.opposite(current, edgeId);
+        const neighbor = graph.opposite(nodeId, edgeId);
         if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
-          visited.add(neighbor);
-          chain.push(neighbor);
-          current = neighbor;
-          walking = true;
-          break;
+          dfs(neighbor);
         }
       }
     }
 
-    if (chain.length > 1) {
-      chains.push(chain.map(id => ({
-        id,
-        label: graph.getNodeAttribute(id, 'label') || id,
-        method: graph.getNodeAttribute(id, '_props')?.derivation_method || null,
-      })));
+    dfs(rootId);
+    if (treeNodes.length > 1) {
+      chains.push(treeNodes);
     }
   }
 
@@ -1162,6 +1190,31 @@ function clearCredentialFlowMode() {
 
   const bar = document.getElementById('path-info-bar');
   if (bar) bar.classList.remove('visible');
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearAllOverlays() {
+  // Clear all three overlay modes without redundant refreshes
+  pathSource = null;
+  pathTarget = null;
+  pathEdges.clear();
+  pathNodes.clear();
+  attackPathOverlay = null;
+  credentialFlowMode = false;
+  credFlowData = null;
+
+  const bar = document.getElementById('path-info-bar');
+  if (bar) bar.classList.remove('visible');
+
+  // Reset Layers dropdown button states
+  const ap = document.getElementById('btn-layer-attack-path');
+  const cs = document.getElementById('btn-layer-compare-shortest');
+  const cf = document.getElementById('btn-layer-cred-flow');
+  if (ap) ap.dataset.active = 'false';
+  if (cs) { cs.dataset.active = 'false'; cs.disabled = true; }
+  if (cf) cf.dataset.active = 'false';
 
   if (renderer) renderer.refresh();
   updateMinimap();
@@ -2290,6 +2343,8 @@ window.OverwatchGraph = {
   setLabelDensity,
   // Attack path overlay
   fetchActivityHistory,
+  invalidateHistoryCache,
+  refreshAttackPathIfActive,
   showAttackPath,
   clearAttackPathOverlay,
   showTheoreticalComparison,
@@ -2297,6 +2352,7 @@ window.OverwatchGraph = {
   // Credential flow
   showCredentialFlow,
   clearCredentialFlowMode,
+  clearAllOverlays,
   buildCredentialFlowData,
   // Path helpers
   findShortestPath,
@@ -2306,6 +2362,7 @@ window.OverwatchGraph = {
   get layoutRunning() { return layoutRunning; },
   get graphMode() { return graphMode; },
   get attackPathOverlay() { return attackPathOverlay; },
+  get activityHistoryCacheTotal() { return activityHistoryCache ? activityHistoryCache.knownTotal : 0; },
   get credentialFlowMode() { return credentialFlowMode; },
   get credFlowData() { return credFlowData; },
   NODE_COLORS,

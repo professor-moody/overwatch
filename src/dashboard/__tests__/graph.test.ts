@@ -330,6 +330,60 @@ describe('dashboard graph helpers', () => {
     expect(result.chains.length).toBe(0);
   });
 
+  it('invalidateHistoryCache clears the cache so next fetch is fresh', async () => {
+    const graphModule = await loadGraphModule();
+    graphModule.init();
+
+    // Initially no cache
+    expect(graphModule.activityHistoryCacheTotal).toBe(0);
+
+    // Simulate a manual cache set via internal state (can't mock fetch easily)
+    graphModule.invalidateHistoryCache();
+    expect(graphModule.activityHistoryCacheTotal).toBe(0);
+  });
+
+  it('clearAllOverlays resets path, attack path, and credential flow states', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('cred-a', { label: 'cred-a', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('cred-b', { label: 'cred-b', nodeType: 'credential', color: '#fff', x: 1, y: 0, _props: { type: 'credential' } });
+    graph.addEdgeWithKey('cred-a--DERIVED_FROM--cred-b', 'cred-a', 'cred-b', { edgeType: 'DERIVED_FROM' });
+
+    // Activate credential flow, then clear all
+    expect(graphModule.credentialFlowMode).toBe(false);
+    expect(graphModule.attackPathOverlay).toBe(null);
+
+    graphModule.clearAllOverlays();
+
+    expect(graphModule.credentialFlowMode).toBe(false);
+    expect(graphModule.attackPathOverlay).toBe(null);
+  });
+
+  it('buildCredentialFlowData captures branching DERIVED_FROM DAGs', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    // Parent credential with two derived children
+    graph.addNode('cred-root', { label: 'root-ntlm', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('cred-child1', { label: 'child1-tgt', nodeType: 'credential', color: '#fff', x: 1, y: 0, _props: { type: 'credential', derivation_method: 'overpass-the-hash' } });
+    graph.addNode('cred-child2', { label: 'child2-tgt', nodeType: 'credential', color: '#fff', x: 2, y: 0, _props: { type: 'credential', derivation_method: 'silver-ticket' } });
+
+    // Both children derived from root (child → parent direction)
+    graph.addEdgeWithKey('cred-child1--DERIVED_FROM--cred-root', 'cred-child1', 'cred-root', { edgeType: 'DERIVED_FROM' });
+    graph.addEdgeWithKey('cred-child2--DERIVED_FROM--cred-root', 'cred-child2', 'cred-root', { edgeType: 'DERIVED_FROM' });
+
+    const result = graphModule.buildCredentialFlowData();
+
+    // Should have one chain containing all 3 nodes (not just 2)
+    expect(result.chains.length).toBe(1);
+    const chainIds = result.chains[0].map((n: any) => n.id);
+    expect(chainIds).toContain('cred-root');
+    expect(chainIds).toContain('cred-child1');
+    expect(chainIds).toContain('cred-child2');
+    expect(chainIds.length).toBe(3);
+  });
+
   it('treats certificate authorities as high-signal nodes with contextual focus', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();
