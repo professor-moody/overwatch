@@ -781,6 +781,24 @@ export function generateReport(
     lines.push('');
   }
 
+  // Credential Chains
+  const credChains = buildCredentialChains(input.graph);
+  if (credChains.length > 0) {
+    lines.push('### Credential Chains');
+    lines.push('');
+    for (const chain of credChains) {
+      const parts: string[] = [];
+      for (let i = 0; i < chain.labels.length; i++) {
+        if (i > 0) {
+          parts.push(` → [${chain.methods[i - 1]}] → `);
+        }
+        parts.push(chain.labels[i]);
+      }
+      lines.push(`- ${parts.join('')}`);
+    }
+    lines.push('');
+  }
+
   // Agent Summary
   if (input.agents.length > 0) {
     lines.push('## Agent Activity');
@@ -1165,6 +1183,83 @@ export function runRetrospective(input: RetrospectiveInput): RetrospectiveResult
     trace_quality: traceQuality,
     summary: summaryLines.join('\n'),
   };
+}
+
+// ============================================================
+// Credential Chain Analysis
+// ============================================================
+
+export interface CredentialChain {
+  chain: string[];       // node IDs in derivation order
+  labels: string[];      // human-readable labels
+  methods: string[];     // derivation_method for each link
+}
+
+export function buildCredentialChains(graph: ExportedGraph): CredentialChain[] {
+  // Build adjacency from DERIVED_FROM edges (source derived from target)
+  const derivedFrom = new Map<string, { target: string; method: string }[]>();
+  const hasInbound = new Set<string>();
+
+  for (const edge of graph.edges) {
+    if (edge.properties.type !== 'DERIVED_FROM') continue;
+    const entries = derivedFrom.get(edge.source) || [];
+    entries.push({
+      target: edge.target,
+      method: (edge.properties.derivation_method as string) || 'unknown',
+    });
+    derivedFrom.set(edge.source, entries);
+    hasInbound.add(edge.target);
+  }
+
+  if (derivedFrom.size === 0) return [];
+
+  // Find chain roots: nodes that are targets of DERIVED_FROM but not sources
+  // (i.e. the original credentials from which others were derived).
+  // We walk forward from every source that has no parent to build chains.
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
+  const allSources = new Set(derivedFrom.keys());
+  // Roots are nodes that appear as targets but not as sources (leaf origins)
+  // OR sources that don't appear as any target (chain tips)
+  const chainTips = [...allSources].filter(id => !hasInbound.has(id));
+
+  // If no clear tips (cycles), just start from all sources
+  const starts = chainTips.length > 0 ? chainTips : [...allSources];
+
+  const chains: CredentialChain[] = [];
+  const visited = new Set<string>();
+
+  function walk(nodeId: string, chain: string[], labels: string[], methods: string[]): void {
+    if (visited.has(nodeId)) return; // prevent cycles
+    visited.add(nodeId);
+
+    const nextEdges = derivedFrom.get(nodeId);
+    if (!nextEdges || nextEdges.length === 0) {
+      // End of chain — only emit if length > 1
+      if (chain.length > 1) {
+        chains.push({ chain: [...chain], labels: [...labels], methods: [...methods] });
+      }
+      return;
+    }
+
+    for (const { target, method } of nextEdges) {
+      const targetNode = nodeMap.get(target);
+      const targetLabel = targetNode
+        ? `${getCredentialDisplayKind(targetNode)}: ${targetNode.cred_user || targetNode.label}`
+        : target;
+      walk(target, [...chain, target], [...labels, targetLabel], [...methods, method]);
+    }
+  }
+
+  for (const startId of starts) {
+    visited.clear();
+    const startNode = nodeMap.get(startId);
+    const startLabel = startNode
+      ? `${getCredentialDisplayKind(startNode)}: ${startNode.cred_user || startNode.label}`
+      : startId;
+    walk(startId, [startId], [startLabel], []);
+  }
+
+  return chains;
 }
 
 // ============================================================

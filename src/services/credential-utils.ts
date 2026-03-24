@@ -35,6 +35,17 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
 }
 
 export function isCredentialUsableForAuth(node: NodeProperties): boolean {
+  // Lifecycle gates — expired or rotated credentials are never usable
+  if (node.credential_status === 'expired' || node.credential_status === 'rotated') {
+    return false;
+  }
+  if (typeof node.valid_until === 'string') {
+    const expiry = new Date(node.valid_until).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      return false;
+    }
+  }
+
   if (typeof node.cred_usable_for_auth === 'boolean') {
     return node.cred_usable_for_auth;
   }
@@ -51,6 +62,19 @@ export function isCredentialUsableForAuth(node: NodeProperties): boolean {
     default:
       return false;
   }
+}
+
+export function isCredentialStaleOrExpired(node: NodeProperties): boolean {
+  if (node.credential_status === 'expired' || node.credential_status === 'stale' || node.credential_status === 'rotated') {
+    return true;
+  }
+  if (typeof node.valid_until === 'string') {
+    const expiry = new Date(node.valid_until).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function isReusableDomainCredential(node: NodeProperties): boolean {

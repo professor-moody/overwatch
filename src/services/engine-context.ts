@@ -30,6 +30,7 @@ export type ActivityEventType =
   | 'agent_registered'
   | 'agent_updated'
   | 'inference_generated'
+  | 'credential_degradation'
   | 'objective_achieved'
   | 'system';
 

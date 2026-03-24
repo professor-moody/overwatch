@@ -36,6 +36,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Credential relationships
   VALID_ON: { source: ['user', 'group', 'credential'], target: ['host'] },
   OWNS_CRED: { source: ['user'], target: ['credential'] },
+  DERIVED_FROM: { source: ['credential'], target: ['credential'] },
   // AD attack paths
   CAN_DCSYNC: { source: ['user', 'group'], target: ['domain'] },
   DELEGATES_TO: { source: ['user', 'host'], target: ['host', 'service'] },

@@ -14,7 +14,7 @@ import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
-import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
@@ -569,6 +569,11 @@ export class GraphEngine {
       inferredEdges.push(...inferred);
     }
 
+    // Degrade POTENTIAL_AUTH edges from expired/stale credentials
+    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
+      this.degradeExpiredCredentialEdges(nodeId);
+    }
+
     // Check objectives
     this.evaluateObjectives();
 
@@ -617,6 +622,32 @@ export class GraphEngine {
 
   private runInferenceRules(triggerNodeId: string): string[] {
     return this.inference.runRules(triggerNodeId);
+  }
+
+  degradeExpiredCredentialEdges(credNodeId: string): string[] {
+    const node = this.getNode(credNodeId);
+    if (!node || node.type !== 'credential' || !isCredentialStaleOrExpired(node)) return [];
+
+    const degraded: string[] = [];
+    for (const edgeId of this.ctx.graph.outEdges(credNodeId) as string[]) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      if (attrs.type !== 'POTENTIAL_AUTH') continue;
+      const newConfidence = Math.max(0.1, attrs.confidence * 0.5);
+      if (newConfidence >= attrs.confidence) continue;
+      this.ctx.graph.mergeEdgeAttributes(edgeId, { confidence: newConfidence } as any);
+      degraded.push(edgeId);
+    }
+
+    if (degraded.length > 0) {
+      this.log(`Degraded ${degraded.length} POTENTIAL_AUTH edge(s) from expired/stale credential ${credNodeId}`, undefined, {
+        category: 'inference',
+        event_type: 'credential_degradation',
+        details: { credential_node: credNodeId, degraded_edges: degraded.length, credential_status: node.credential_status },
+      });
+      this.invalidateHealthReport();
+    }
+
+    return degraded;
   }
 
   // =============================================

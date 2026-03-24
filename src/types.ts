@@ -71,6 +71,10 @@ export interface NodeProperties {
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
   observed_from_ip?: string;
+  valid_until?: string;         // ISO timestamp — expiry for time-limited creds (TGT/TGS, tokens, certs)
+  rotated_at?: string;          // ISO timestamp — when credential was observed as changed
+  stale_at?: string;            // ISO timestamp — when credential became stale
+  credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
 
   // Share
   share_name?: string;
@@ -105,7 +109,7 @@ export const EDGE_TYPES = [
   // Access
   'ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE',
   // Credential relationships
-  'VALID_ON', 'OWNS_CRED',
+  'VALID_ON', 'OWNS_CRED', 'DERIVED_FROM',
   // AD attack paths
   'CAN_DCSYNC', 'DELEGATES_TO', 'WRITEABLE_BY', 'GENERIC_ALL',
   'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER',
@@ -252,6 +256,7 @@ export interface FrontierItem {
   };
   opsec_noise: number;
   staleness_seconds: number;
+  stale_credential?: boolean;
 }
 
 export interface ScoredTask {

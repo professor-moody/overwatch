@@ -7,6 +7,7 @@
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, EdgeProperties, FrontierItem } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
+import { isCredentialStaleOrExpired } from './credential-utils.js';
 
 // --- Fan-out estimates by service type ---
 const FAN_OUT_ESTIMATES: Record<string, number> = {
@@ -65,21 +66,26 @@ export class FrontierComputer {
       if (attrs.tested) return;
       if (attrs.confidence >= 1.0) return; // confirmed edges aren't frontier
 
+      // Check if edge source is a stale/expired credential
+      const sourceNode = this.ctx.graph.getNodeAttributes(source);
+      const isStale = sourceNode.type === 'credential' && isCredentialStaleOrExpired(sourceNode);
+
       frontier.push({
         id: `frontier-edge-${edgeId}`,
         type: 'inferred_edge',
         edge_source: source,
         edge_target: target,
         edge_type: attrs.type,
-        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})`,
+        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${isStale ? ' [stale credential]' : ''}`,
         graph_metrics: {
           hops_to_objective: this.hopsToObjective(target),
           fan_out_estimate: 2,
           node_degree: this.ctx.graph.degree(target),
-          confidence: attrs.confidence
+          confidence: isStale ? attrs.confidence * 0.1 : attrs.confidence
         },
         opsec_noise: attrs.opsec_noise || 0.3,
-        staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000
+        staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000,
+        stale_credential: isStale || undefined,
       });
     });
 

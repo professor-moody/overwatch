@@ -3,6 +3,7 @@ import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary
 import { normalizeKeyPart } from './parser-utils.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { getIdentityMarkers, isCanonicalIdentityNode, isIdentityType, isUnresolvedIdentityNode } from './identity-resolution.js';
+import { isCredentialStaleOrExpired } from './credential-utils.js';
 
 const SEVERITY_ORDER: Record<HealthSeverity, number> = {
   critical: 0,
@@ -20,6 +21,9 @@ export function runHealthChecks(graph: OverwatchGraph): HealthReport {
   issues.push(...findSharedCredentialMaterialIssues(graph));
   issues.push(...findTypeConstraintViolations(graph));
   issues.push(...findStaleInferredEdges(graph));
+  issues.push(...findExpiredCredentialAuthEdges(graph));
+  issues.push(...findBrokenCredentialLineage(graph));
+  issues.push(...findUnmarkedStaleCredentials(graph));
 
   const sortedIssues = issues.sort((left, right) => {
     const severityCompare = SEVERITY_ORDER[left.severity] - SEVERITY_ORDER[right.severity];
@@ -365,4 +369,105 @@ function getEffectiveIdentityMarkers(node: NodeProperties): string[] {
   // Always recompute from node properties so stale persisted markers
   // (e.g. old credential:material:* entries) don't cause false positives.
   return getIdentityMarkers(node);
+}
+
+function findExpiredCredentialAuthEdges(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+
+  graph.forEachNode((id, attrs) => {
+    if (attrs.type !== 'credential' || attrs.identity_status === 'superseded') return;
+    if (!isCredentialStaleOrExpired(attrs)) return;
+
+    const activeAuthEdges: string[] = [];
+    for (const edgeId of graph.outEdges(id) as string[]) {
+      const edgeAttrs = graph.getEdgeAttributes(edgeId);
+      if (edgeAttrs.type === 'POTENTIAL_AUTH' && edgeAttrs.confidence >= 0.5) {
+        activeAuthEdges.push(edgeId);
+      }
+    }
+
+    if (activeAuthEdges.length > 0) {
+      issues.push({
+        severity: 'warning',
+        check: 'expired_credential_auth_edges',
+        message: `Expired/stale credential ${id} still has ${activeAuthEdges.length} active POTENTIAL_AUTH edge(s) with confidence >= 0.5`,
+        node_ids: [id],
+        edge_ids: activeAuthEdges,
+        details: {
+          credential_status: attrs.credential_status,
+          valid_until: attrs.valid_until,
+        },
+      });
+    }
+  });
+
+  return issues;
+}
+
+function findBrokenCredentialLineage(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+
+  graph.forEachEdge((edgeId, attrs, source, target) => {
+    if (attrs.type !== 'DERIVED_FROM') return;
+
+    const missing: string[] = [];
+    if (!graph.hasNode(source)) {
+      missing.push(`source:${source}`);
+    } else {
+      const sourceAttrs = graph.getNodeAttributes(source);
+      if (sourceAttrs.identity_status === 'superseded') {
+        missing.push(`source:${source} (superseded)`);
+      }
+    }
+    if (!graph.hasNode(target)) {
+      missing.push(`target:${target}`);
+    } else {
+      const targetAttrs = graph.getNodeAttributes(target);
+      if (targetAttrs.identity_status === 'superseded') {
+        missing.push(`target:${target} (superseded)`);
+      }
+    }
+
+    if (missing.length > 0) {
+      issues.push({
+        severity: 'critical',
+        check: 'broken_credential_lineage',
+        message: `DERIVED_FROM edge ${edgeId} references missing or superseded credential node(s)`,
+        edge_ids: [edgeId],
+        node_ids: [source, target],
+        details: { missing },
+      });
+    }
+  });
+
+  return issues;
+}
+
+function findUnmarkedStaleCredentials(graph: OverwatchGraph): HealthIssue[] {
+  const issues: HealthIssue[] = [];
+  const now = Date.now();
+
+  graph.forEachNode((id, attrs) => {
+    if (attrs.type !== 'credential' || attrs.identity_status === 'superseded') return;
+
+    if (typeof attrs.valid_until === 'string') {
+      const expiry = new Date(attrs.valid_until).getTime();
+      if (Number.isFinite(expiry) && expiry < now) {
+        if (!attrs.credential_status || attrs.credential_status === 'active') {
+          issues.push({
+            severity: 'warning',
+            check: 'unmarked_stale_credential',
+            message: `Credential ${id} has valid_until in the past but credential_status is still '${attrs.credential_status || 'unset'}'`,
+            node_ids: [id],
+            details: {
+              valid_until: attrs.valid_until,
+              credential_status: attrs.credential_status,
+            },
+          });
+        }
+      }
+    }
+  });
+
+  return issues;
 }

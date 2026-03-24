@@ -6,7 +6,7 @@
 import type { Finding, NodeType, EdgeType } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { XMLParser } from 'fast-xml-parser';
-import { caId, certTemplateId, credentialId, domainId, hostId, splitQualifiedAccount, userId } from './parser-utils.js';
+import { caId, certTemplateId, credentialId, domainId, groupId, hostId, normalizeKeyPart, splitQualifiedAccount, userId } from './parser-utils.js';
 import { classifyPrincipalIdentity, getIdentityMarkers, resolveNodeIdentity } from './identity-resolution.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
@@ -755,6 +755,987 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 
+// --- ldapsearch / ldapdomaindump Parser ---
+
+// UAC bit for "Do not require Kerberos preauthentication"
+const UAC_DONT_REQUIRE_PREAUTH = 0x400000;
+// UAC bit for disabled account
+const UAC_ACCOUNTDISABLE = 0x0002;
+
+function domainFromDn(dn: string): string | undefined {
+  const dcParts: string[] = [];
+  for (const part of dn.split(',')) {
+    const m = part.trim().match(/^DC=(.+)$/i);
+    if (m) dcParts.push(m[1]);
+  }
+  return dcParts.length > 0 ? dcParts.join('.') : undefined;
+}
+
+function parseLdifStanzas(raw: string): Array<Record<string, string[]>> {
+  // Handle line continuations (leading space = continuation of previous line)
+  const unfolded = raw.replace(/\r?\n /g, '');
+  const stanzas: Array<Record<string, string[]>> = [];
+  let current: Record<string, string[]> = {};
+  let hasContent = false;
+
+  for (const line of unfolded.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      if (hasContent) {
+        stanzas.push(current);
+        current = {};
+        hasContent = false;
+      }
+      continue;
+    }
+    // base64-encoded: attr:: base64value
+    const b64Match = trimmed.match(/^([^:]+)::\s*(.*)$/);
+    if (b64Match) {
+      const [, attr, b64val] = b64Match;
+      const key = attr.toLowerCase();
+      let decoded: string;
+      try {
+        decoded = Buffer.from(b64val, 'base64').toString('utf-8');
+      } catch {
+        decoded = b64val;
+      }
+      (current[key] ??= []).push(decoded);
+      hasContent = true;
+      continue;
+    }
+    // Normal: attr: value
+    const normalMatch = trimmed.match(/^([^:]+):\s*(.*)$/);
+    if (normalMatch) {
+      const [, attr, val] = normalMatch;
+      (current[attr.toLowerCase()] ??= []).push(val);
+      hasContent = true;
+    }
+  }
+  if (hasContent) stanzas.push(current);
+  return stanzas;
+}
+
+export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+    const key = `${source}--${type}--${target}`;
+    if (seenNodes.has(key)) return;
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    seenNodes.add(key);
+  }
+
+  // Try ldapdomaindump JSON first
+  try {
+    const data = JSON.parse(output);
+    if (Array.isArray(data) && data.length > 0 && data[0].attributes) {
+      return parseLdapdomaindumpJson(data, agentId);
+    }
+  } catch {
+    // Not JSON — parse as LDIF
+  }
+
+  const stanzas = parseLdifStanzas(output);
+  for (const entry of stanzas) {
+    const objectClass = (entry['objectclass'] || []).map(c => c.toLowerCase());
+    const dn = (entry['dn'] || [''])[0];
+    const domain = domainFromDn(dn);
+    const sam = (entry['samaccountname'] || [''])[0];
+
+    if (!sam) continue;
+
+    // User objects
+    if (objectClass.includes('person') || objectClass.includes('user')) {
+      const resolvedUserId = userId(sam, domain);
+      if (seenNodes.has(resolvedUserId)) continue;
+
+      const uacRaw = parseInt((entry['useraccountcontrol'] || ['0'])[0], 10) || 0;
+      const spns = entry['serviceprincipalname'] || [];
+      const adminCount = (entry['admincount'] || ['0'])[0];
+      const displayName = (entry['displayname'] || [''])[0] || undefined;
+      const sidVal = (entry['objectsid'] || [''])[0] || undefined;
+      const enabled = !(uacRaw & UAC_ACCOUNTDISABLE);
+
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${sam}` : sam,
+        username: sam,
+        domain_name: domain,
+        display_name: displayName,
+        enabled,
+        has_spn: spns.length > 0 || undefined,
+        asrep_roastable: !!(uacRaw & UAC_DONT_REQUIRE_PREAUTH) || undefined,
+        privileged: adminCount === '1' || undefined,
+        sid: sidVal,
+      });
+      seenNodes.add(resolvedUserId);
+
+      // Domain membership
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedUserId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+
+      // Group memberships
+      for (const memberOf of entry['memberof'] || []) {
+        const groupCn = memberOf.match(/^CN=([^,]+)/i);
+        if (groupCn) {
+          const resolvedGroupId = groupId(groupCn[1], domain);
+          if (!seenNodes.has(resolvedGroupId)) {
+            nodes.push({ id: resolvedGroupId, type: 'group', label: groupCn[1], domain_name: domain });
+            seenNodes.add(resolvedGroupId);
+          }
+          addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
+        }
+      }
+      continue;
+    }
+
+    // Group objects
+    if (objectClass.includes('group')) {
+      const resolvedGroupId = groupId(sam, domain);
+      if (seenNodes.has(resolvedGroupId)) continue;
+
+      const sidVal = (entry['objectsid'] || [''])[0] || undefined;
+      const adminCount = (entry['admincount'] || ['0'])[0];
+      nodes.push({
+        id: resolvedGroupId,
+        type: 'group',
+        label: sam,
+        domain_name: domain,
+        sid: sidVal,
+        privileged: adminCount === '1' || undefined,
+      });
+      seenNodes.add(resolvedGroupId);
+      continue;
+    }
+
+    // Computer objects
+    if (objectClass.includes('computer')) {
+      const dnsHostname = (entry['dnshostname'] || [''])[0];
+      const osVal = (entry['operatingsystem'] || [''])[0] || undefined;
+      const ip = dnsHostname || sam.replace(/\$$/, '');
+      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : hostId(ip);
+      if (seenNodes.has(resolvedHostId)) continue;
+
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: dnsHostname || sam,
+        hostname: dnsHostname || undefined,
+        os: osVal,
+        domain_joined: true,
+        alive: true,
+      });
+      seenNodes.add(resolvedHostId);
+
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+      continue;
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+    const key = `${source}--${type}--${target}`;
+    if (seenNodes.has(key)) return;
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    seenNodes.add(key);
+  }
+
+  for (const entry of data) {
+    const attrs = entry.attributes || entry;
+    const objectClass = (attrs.objectClass || []).map((c: string) => c.toLowerCase());
+    const sam = (Array.isArray(attrs.sAMAccountName) ? attrs.sAMAccountName[0] : attrs.sAMAccountName) || '';
+    const dn = (Array.isArray(attrs.distinguishedName) ? attrs.distinguishedName[0] : attrs.distinguishedName) || '';
+    const domain = domainFromDn(dn);
+
+    if (!sam) continue;
+
+    if (objectClass.includes('person') || objectClass.includes('user')) {
+      const resolvedUserId = userId(sam, domain);
+      if (seenNodes.has(resolvedUserId)) continue;
+
+      const uac = parseInt(attrs.userAccountControl || '0', 10) || 0;
+      const spns = attrs.servicePrincipalName || [];
+      const adminCount = String(attrs.adminCount || '0');
+
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${sam}` : sam,
+        username: sam,
+        domain_name: domain,
+        display_name: attrs.displayName || undefined,
+        enabled: !(uac & UAC_ACCOUNTDISABLE),
+        has_spn: (Array.isArray(spns) ? spns.length > 0 : !!spns) || undefined,
+        asrep_roastable: !!(uac & UAC_DONT_REQUIRE_PREAUTH) || undefined,
+        privileged: adminCount === '1' || undefined,
+        sid: attrs.objectSid || undefined,
+      });
+      seenNodes.add(resolvedUserId);
+
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedUserId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+
+      for (const memberOf of (attrs.memberOf || [])) {
+        const groupCn = memberOf.match(/^CN=([^,]+)/i);
+        if (groupCn) {
+          const resolvedGroupId = groupId(groupCn[1], domain);
+          if (!seenNodes.has(resolvedGroupId)) {
+            nodes.push({ id: resolvedGroupId, type: 'group', label: groupCn[1], domain_name: domain });
+            seenNodes.add(resolvedGroupId);
+          }
+          addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
+        }
+      }
+      continue;
+    }
+
+    if (objectClass.includes('computer')) {
+      const dnsHostname = attrs.dNSHostName || attrs.dnshostname || '';
+      const osVal = attrs.operatingSystem || undefined;
+      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : `host-${normalizeKeyPart(sam)}`;
+      if (seenNodes.has(resolvedHostId)) continue;
+
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: dnsHostname || sam,
+        hostname: dnsHostname || undefined,
+        os: osVal,
+        domain_joined: true,
+        alive: true,
+      });
+      seenNodes.add(resolvedHostId);
+
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+      continue;
+    }
+
+    if (objectClass.includes('group')) {
+      const resolvedGroupId = groupId(sam, domain);
+      if (seenNodes.has(resolvedGroupId)) continue;
+      nodes.push({
+        id: resolvedGroupId,
+        type: 'group',
+        label: sam,
+        domain_name: domain,
+        sid: attrs.objectSid || undefined,
+        privileged: String(attrs.adminCount || '0') === '1' || undefined,
+      });
+      seenNodes.add(resolvedGroupId);
+      continue;
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// --- enum4linux-ng Parser ---
+
+export function parseEnum4linux(output: string, agentId: string = 'enum4linux-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+    const key = `${source}--${type}--${target}`;
+    if (seenNodes.has(key)) return;
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    seenNodes.add(key);
+  }
+
+  // Try JSON first (enum4linux-ng -oJ)
+  try {
+    const data = JSON.parse(output);
+    return parseEnum4linuxJson(data, agentId);
+  } catch {
+    // Fall back to text parsing
+  }
+
+  // Text-mode parsing
+  let targetIp: string | undefined;
+  let domain: string | undefined;
+  let nullSession = false;
+
+  for (const line of output.split('\n')) {
+    // Target IP
+    const targetMatch = line.match(/Target:\s*(\d+\.\d+\.\d+\.\d+)/i) ||
+                         line.match(/\|\s*Target\s*\|\s*(\d+\.\d+\.\d+\.\d+)/);
+    if (targetMatch) { targetIp = targetMatch[1]; continue; }
+
+    // Domain/Workgroup
+    const domainMatch = line.match(/Domain:\s*(\S+)/i) ||
+                         line.match(/\[\+\]\s*.*domain\s+name:\s*(\S+)/i);
+    if (domainMatch && !domain) { domain = domainMatch[1]; continue; }
+
+    // Null session
+    if (/null session/i.test(line) && /\[\+\]/.test(line)) {
+      nullSession = true;
+      continue;
+    }
+
+    // RID-cycled users: 500: ACME\Administrator or 1103: ACME\jdoe (SidTypeUser)
+    const ridMatch = line.match(/(\d+):\s*([^\\]+)\\(\S+)\s*\(SidTypeUser\)/i);
+    if (ridMatch) {
+      const [, , ridDomain, username] = ridMatch;
+      const resolvedDomain = ridDomain || domain;
+      const resolvedUserId = userId(username, resolvedDomain);
+      if (!seenNodes.has(resolvedUserId)) {
+        nodes.push({
+          id: resolvedUserId,
+          type: 'user',
+          label: resolvedDomain ? `${resolvedDomain}\\${username}` : username,
+          username,
+          domain_name: resolvedDomain,
+        });
+        seenNodes.add(resolvedUserId);
+      }
+      if (resolvedDomain) {
+        const resolvedDomainId = domainId(resolvedDomain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: resolvedDomain, domain_name: resolvedDomain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedUserId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+      continue;
+    }
+
+    // RID-cycled groups: 513: ACME\Domain Users (SidTypeGroup)
+    const ridGroupMatch = line.match(/(\d+):\s*([^\\]+)\\(.+?)\s*\(SidTypeGroup\)/i);
+    if (ridGroupMatch) {
+      const [, , gDomain, gName] = ridGroupMatch;
+      const resolvedGroupId = groupId(gName, gDomain || domain);
+      if (!seenNodes.has(resolvedGroupId)) {
+        nodes.push({ id: resolvedGroupId, type: 'group', label: gName, domain_name: gDomain || domain });
+        seenNodes.add(resolvedGroupId);
+      }
+      continue;
+    }
+
+    // Share enumeration: [+] sharename ... READ/WRITE or Mapping: OK, Listing: OK
+    const shareMatch = line.match(/\[\+\]\s*(\S+)\s+.*(?:READ|WRITE|Mapping:\s*OK)/i);
+    if (shareMatch && targetIp) {
+      const shareName = shareMatch[1];
+      if (shareName.startsWith('[') || shareName === 'Enumerating') continue;
+      const shareNodeId = `share-${targetIp.replace(/\./g, '-')}-${normalizeKeyPart(shareName)}`;
+      if (!seenNodes.has(shareNodeId)) {
+        const readable = /READ/i.test(line) || /Listing:\s*OK/i.test(line);
+        const writable = /WRITE/i.test(line);
+        nodes.push({
+          id: shareNodeId,
+          type: 'share',
+          label: `\\\\${targetIp}\\${shareName}`,
+          share_name: shareName,
+          readable: readable || undefined,
+          writable: writable || undefined,
+        });
+        seenNodes.add(shareNodeId);
+      }
+    }
+  }
+
+  // Create host and SMB service context if we found a target
+  if (targetIp) {
+    const resolvedHostId = hostId(targetIp);
+    const serviceNodeId = `svc-${targetIp.replace(/\./g, '-')}-445`;
+
+    if (!seenNodes.has(resolvedHostId)) {
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: targetIp,
+        ip: targetIp,
+        alive: true,
+        domain_joined: domain ? true : undefined,
+        null_session: nullSession || undefined,
+      });
+      seenNodes.add(resolvedHostId);
+    }
+    if (!seenNodes.has(serviceNodeId)) {
+      nodes.push({
+        id: serviceNodeId,
+        type: 'service',
+        label: 'smb/445',
+        port: 445,
+        protocol: 'tcp',
+        service_name: 'smb',
+      });
+      seenNodes.add(serviceNodeId);
+    }
+    addEdgeOnce(resolvedHostId, serviceNodeId, 'RUNS', 1.0);
+
+    if (nullSession) {
+      addEdgeOnce(resolvedHostId, serviceNodeId, 'NULL_SESSION', 1.0);
+    }
+
+    // Attach shares to host
+    for (const node of nodes) {
+      if (node.type === 'share') {
+        addEdgeOnce(resolvedHostId, node.id, 'RELATED', 1.0);
+      }
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+function parseEnum4linuxJson(data: any, agentId: string): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+    const key = `${source}--${type}--${target}`;
+    if (seenNodes.has(key)) return;
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    seenNodes.add(key);
+  }
+
+  const targetIp = data.target?.host || data.target?.ip || data.os_info?.target;
+  const domain = data.domain_info?.domain || data.target?.domain;
+  const osInfo = data.os_info;
+  const nullSession = data.session_check?.null_session_allowed === true ||
+                       data.session_check?.null_session === true;
+  const smbSigning = data.smb_info?.signing_required;
+
+  // Host + service
+  if (targetIp) {
+    const resolvedHostId = hostId(targetIp);
+    const serviceNodeId = `svc-${targetIp.replace(/\./g, '-')}-445`;
+
+    nodes.push({
+      id: resolvedHostId,
+      type: 'host',
+      label: targetIp,
+      ip: targetIp,
+      hostname: osInfo?.hostname || undefined,
+      os: osInfo?.os || osInfo?.os_version || undefined,
+      alive: true,
+      domain_joined: domain ? true : undefined,
+      null_session: nullSession || undefined,
+    });
+    seenNodes.add(resolvedHostId);
+
+    nodes.push({
+      id: serviceNodeId,
+      type: 'service',
+      label: 'smb/445',
+      port: 445,
+      protocol: 'tcp',
+      service_name: 'smb',
+      smb_signing: smbSigning,
+    });
+    seenNodes.add(serviceNodeId);
+    addEdgeOnce(resolvedHostId, serviceNodeId, 'RUNS', 1.0);
+
+    if (nullSession) {
+      addEdgeOnce(resolvedHostId, serviceNodeId, 'NULL_SESSION', 1.0);
+    }
+  }
+
+  // Users
+  const users = data.users || {};
+  for (const [rid, userObj] of Object.entries(users as Record<string, any>)) {
+    const username = userObj.username || userObj.name;
+    if (!username) continue;
+    const resolvedUserId = userId(username, domain);
+    if (seenNodes.has(resolvedUserId)) continue;
+
+    nodes.push({
+      id: resolvedUserId,
+      type: 'user',
+      label: domain ? `${domain}\\${username}` : username,
+      username,
+      domain_name: domain,
+    });
+    seenNodes.add(resolvedUserId);
+
+    if (domain) {
+      const resolvedDomainId = domainId(domain);
+      if (!seenNodes.has(resolvedDomainId)) {
+        nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+        seenNodes.add(resolvedDomainId);
+      }
+      addEdgeOnce(resolvedUserId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+    }
+  }
+
+  // Groups
+  const groups = data.groups || {};
+  for (const [rid, grpObj] of Object.entries(groups as Record<string, any>)) {
+    const gName = grpObj.groupname || grpObj.name;
+    if (!gName) continue;
+    const resolvedGroupId = groupId(gName, domain);
+    if (seenNodes.has(resolvedGroupId)) continue;
+
+    nodes.push({
+      id: resolvedGroupId,
+      type: 'group',
+      label: gName,
+      domain_name: domain,
+    });
+    seenNodes.add(resolvedGroupId);
+
+    // Members
+    for (const member of (grpObj.members || [])) {
+      const memberName = typeof member === 'string' ? member : member.name || member.username;
+      if (!memberName) continue;
+      const resolvedUserId = userId(memberName, domain);
+      if (seenNodes.has(resolvedUserId)) {
+        addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
+      }
+    }
+  }
+
+  // Shares
+  const shares = data.shares || {};
+  for (const [shareName, shareObj] of Object.entries(shares as Record<string, any>)) {
+    if (!targetIp) continue;
+    const shareNodeId = `share-${targetIp.replace(/\./g, '-')}-${normalizeKeyPart(shareName)}`;
+    if (seenNodes.has(shareNodeId)) continue;
+
+    const access = shareObj.access || {};
+    nodes.push({
+      id: shareNodeId,
+      type: 'share',
+      label: `\\\\${targetIp}\\${shareName}`,
+      share_name: shareName,
+      readable: access.mapping === 'OK' || access.readable === true || undefined,
+      writable: access.writable === true || undefined,
+    });
+    seenNodes.add(shareNodeId);
+
+    const resolvedHostId = hostId(targetIp);
+    addEdgeOnce(resolvedHostId, shareNodeId, 'RELATED', 1.0);
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// --- Rubeus Parser (kerberoast, asreproast, monitor/triage) ---
+
+export function parseRubeus(output: string, agentId: string = 'rubeus-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const seenNodes = new Set<string>();
+  const now = new Date().toISOString();
+
+  if (!output.trim()) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
+  // Detect subcommand from content patterns
+  const hasKerberoastHash = /\$krb5tgs\$/i.test(output);
+  const hasAsrepHash = /\$krb5asrep\$/i.test(output);
+  const hasBase64Ticket = /Base64EncodedTicket/i.test(output);
+
+  // Parse stanza-based output: blocks delimited by [*] lines
+  if (hasKerberoastHash) {
+    parseRubeusKerberoast(output, nodes, edges, seenNodes, now, agentId);
+  }
+  if (hasAsrepHash) {
+    parseRubeusAsreproast(output, nodes, edges, seenNodes, now, agentId);
+  }
+  if (hasBase64Ticket) {
+    parseRubeusMonitor(output, nodes, edges, seenNodes, now, agentId);
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+function parseRubeusKerberoast(
+  output: string, nodes: Finding['nodes'], edges: Finding['edges'],
+  seenNodes: Set<string>, now: string, agentId: string,
+): void {
+  // Split into blocks per user — Rubeus outputs [*] SamAccountName : ... per entry
+  const blocks = output.split(/(?=\[\*\]\s*SamAccountName\s*:)/i);
+
+  for (const block of blocks) {
+    const samMatch = block.match(/SamAccountName\s*:\s*(\S+)/i);
+    const spnMatch = block.match(/ServicePrincipalName\s*:\s*(\S+)/i);
+    const hashMatch = block.match(/Hash\s*:\s*(\$krb5tgs\$[^\s]+)/i);
+    // Handle multi-line hashes (Rubeus wraps long hashes)
+    const multiLineHash = block.match(/Hash\s*:\s*([\s\S]*?)(?=\n\s*\n|\[\*\]|$)/i);
+
+    if (!samMatch) continue;
+    const username = samMatch[1];
+    let hash = hashMatch ? hashMatch[1] : undefined;
+
+    // For multi-line hashes, join and clean
+    if (!hash && multiLineHash) {
+      hash = multiLineHash[1].replace(/\s+/g, '').trim();
+      if (!hash.startsWith('$krb5tgs$')) hash = undefined;
+    }
+
+    // Extract domain from SPN or hash
+    let domain: string | undefined;
+    const domainFromHash = hash?.match(/\$krb5tgs\$\d+\$\*[^$]+\$([^$*]+)\$/);
+    if (domainFromHash) domain = domainFromHash[1];
+
+    // User node with has_spn
+    const resolvedUserId = userId(username, domain);
+    if (!seenNodes.has(resolvedUserId)) {
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${username}` : username,
+        username,
+        domain_name: domain,
+        has_spn: true,
+      });
+      seenNodes.add(resolvedUserId);
+    }
+
+    // Credential node for the TGS hash
+    if (hash) {
+      const resolvedCredId = credentialId('kerberos_tgs', hash, username, domain);
+      if (!seenNodes.has(resolvedCredId)) {
+        nodes.push({
+          id: resolvedCredId,
+          type: 'credential',
+          label: `TGS:${username}`,
+          cred_type: 'kerberos_tgs',
+          cred_material_kind: 'kerberos_tgs',
+          cred_usable_for_auth: false,
+          cred_evidence_kind: 'dump',
+          cred_value: hash,
+          cred_user: username,
+          cred_domain: domain,
+        });
+        seenNodes.add(resolvedCredId);
+      }
+      edges.push({
+        source: resolvedUserId,
+        target: resolvedCredId,
+        properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+    }
+  }
+}
+
+function parseRubeusAsreproast(
+  output: string, nodes: Finding['nodes'], edges: Finding['edges'],
+  seenNodes: Set<string>, now: string, agentId: string,
+): void {
+  const blocks = output.split(/(?=\[\*\]\s*User\s*:)/i);
+
+  for (const block of blocks) {
+    const userMatch = block.match(/User\s*:\s*(\S+)/i);
+    const hashMatch = block.match(/Hash\s*:\s*(\$krb5asrep\$[^\s]+)/i);
+    const multiLineHash = block.match(/Hash\s*:\s*([\s\S]*?)(?=\n\s*\n|\[\*\]|$)/i);
+
+    if (!userMatch) continue;
+    const username = userMatch[1];
+    let hash = hashMatch ? hashMatch[1] : undefined;
+
+    if (!hash && multiLineHash) {
+      hash = multiLineHash[1].replace(/\s+/g, '').trim();
+      if (!hash.startsWith('$krb5asrep$')) hash = undefined;
+    }
+
+    // Extract domain from hash: $krb5asrep$user@DOMAIN:...
+    let domain: string | undefined;
+    const domainFromHash = hash?.match(/\$krb5asrep\$[^@]*@([^:]+)/);
+    if (domainFromHash) domain = domainFromHash[1];
+
+    const resolvedUserId = userId(username, domain);
+    if (!seenNodes.has(resolvedUserId)) {
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${username}` : username,
+        username,
+        domain_name: domain,
+        asrep_roastable: true,
+      });
+      seenNodes.add(resolvedUserId);
+    }
+
+    if (hash) {
+      const resolvedCredId = credentialId('kerberos_tgs', hash, username, domain);
+      if (!seenNodes.has(resolvedCredId)) {
+        nodes.push({
+          id: resolvedCredId,
+          type: 'credential',
+          label: `ASREP:${username}`,
+          cred_type: 'kerberos_tgs',
+          cred_material_kind: 'kerberos_tgs',
+          cred_usable_for_auth: false,
+          cred_evidence_kind: 'dump',
+          cred_value: hash,
+          cred_user: username,
+          cred_domain: domain,
+        });
+        seenNodes.add(resolvedCredId);
+      }
+      edges.push({
+        source: resolvedUserId,
+        target: resolvedCredId,
+        properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+    }
+  }
+}
+
+function parseRubeusMonitor(
+  output: string, nodes: Finding['nodes'], edges: Finding['edges'],
+  seenNodes: Set<string>, now: string, agentId: string,
+): void {
+  // Split on User lines in monitor/triage output
+  const blocks = output.split(/(?=\[\*\]\s*User\s*:)/i);
+
+  for (const block of blocks) {
+    const userMatch = block.match(/User\s*:\s*(\S+)/i);
+    const ticketMatch = block.match(/Base64EncodedTicket\s*:\s*(\S+)/i);
+    const serviceMatch = block.match(/Service\s*:\s*(\S+)/i);
+
+    if (!userMatch || !ticketMatch) continue;
+    const rawUser = userMatch[1];
+    const ticket = ticketMatch[1];
+    const service = serviceMatch ? serviceMatch[1] : undefined;
+
+    // Parse DOMAIN\user or user
+    const { domain, username } = splitQualifiedAccount(rawUser);
+
+    // Skip machine accounts
+    if (username.endsWith('$')) continue;
+
+    const resolvedUserId = userId(username, domain);
+    if (!seenNodes.has(resolvedUserId)) {
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${username}` : username,
+        username,
+        domain_name: domain,
+      });
+      seenNodes.add(resolvedUserId);
+    }
+
+    // Determine if TGT or TGS based on service field
+    const isTgt = !service || service.toLowerCase().startsWith('krbtgt/');
+    const credType = isTgt ? 'kerberos_tgt' : 'kerberos_tgs';
+    const materialKind = isTgt ? 'kerberos_tgt' : 'kerberos_tgs';
+
+    const resolvedCredId = credentialId(materialKind, ticket.slice(0, 40), username, domain);
+    if (!seenNodes.has(resolvedCredId)) {
+      nodes.push({
+        id: resolvedCredId,
+        type: 'credential',
+        label: `${isTgt ? 'TGT' : 'TGS'}:${username}`,
+        cred_type: credType,
+        cred_material_kind: materialKind,
+        cred_usable_for_auth: true,
+        cred_evidence_kind: 'capture',
+        cred_value: ticket,
+        cred_user: username,
+        cred_domain: domain,
+      });
+      seenNodes.add(resolvedCredId);
+    }
+
+    edges.push({
+      source: resolvedUserId,
+      target: resolvedCredId,
+      properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+    });
+  }
+}
+
+// --- gobuster / feroxbuster / ffuf Parser ---
+
+const LOGIN_PATH_PATTERNS = /\/(login|signin|auth|wp-login|admin|weblogin|sso|cas|saml|oauth)/i;
+
+export function parseWebDirEnum(output: string, agentId: string = 'webdirenum-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const now = new Date().toISOString();
+
+  const discoveredPaths: Array<{ path: string; status: number; size?: number }> = [];
+  let targetUrl: string | undefined;
+  let hasLoginForm = false;
+
+  if (!output.trim()) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
+  // Try ffuf JSON first
+  try {
+    const data = JSON.parse(output);
+    if (data.results && Array.isArray(data.results)) {
+      targetUrl = data.commandline?.match(/(?:-u\s+)(\S+)/)?.[1] || data.config?.url;
+      // Normalize target URL from ffuf config
+      if (!targetUrl && data.results.length > 0) {
+        const firstUrl = data.results[0].url || '';
+        const parsed = firstUrl.match(/^(https?:\/\/[^/]+)/i);
+        if (parsed) targetUrl = parsed[1];
+      }
+
+      for (const r of data.results) {
+        const url = r.url || '';
+        const status = r.status || 0;
+        const size = r.length || r.content_length || r.words || undefined;
+        const path = url.replace(/^https?:\/\/[^/]+/i, '') || '/';
+        discoveredPaths.push({ path, status, size });
+        if (LOGIN_PATH_PATTERNS.test(path)) hasLoginForm = true;
+      }
+      return buildWebDirEnumFinding(targetUrl, discoveredPaths, hasLoginForm, agentId, now);
+    }
+  } catch {
+    // Not JSON — try line-based
+  }
+
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // Gobuster: /path (Status: 200) [Size: 1234]
+    const gobusterMatch = line.match(/^(\/\S*)\s+\(Status:\s*(\d+)\)(?:\s+\[Size:\s*(\d+)\])?/);
+    if (gobusterMatch) {
+      const [, path, status, size] = gobusterMatch;
+      discoveredPaths.push({ path, status: parseInt(status), size: size ? parseInt(size) : undefined });
+      if (LOGIN_PATH_PATTERNS.test(path)) hasLoginForm = true;
+      continue;
+    }
+
+    // Feroxbuster: 200 GET 1234l 5678w 91011c http://target/path
+    const feroxMatch = line.match(/^(\d{3})\s+\w+\s+\d+l?\s+\d+w?\s+(\d+)c?\s+(https?:\/\/\S+)/);
+    if (feroxMatch) {
+      const [, status, size, url] = feroxMatch;
+      const path = url.replace(/^https?:\/\/[^/]+/i, '') || '/';
+      if (!targetUrl) {
+        const baseMatch = url.match(/^(https?:\/\/[^/]+)/i);
+        if (baseMatch) targetUrl = baseMatch[1];
+      }
+      discoveredPaths.push({ path, status: parseInt(status), size: parseInt(size) });
+      if (LOGIN_PATH_PATTERNS.test(path)) hasLoginForm = true;
+      continue;
+    }
+
+    // Gobuster URL in output header: Url: http://target
+    const urlMatch = line.match(/^(?:Target|Url):\s*(https?:\/\/\S+)/i);
+    if (urlMatch && !targetUrl) {
+      targetUrl = urlMatch[1].replace(/\/+$/, '');
+    }
+  }
+
+  return buildWebDirEnumFinding(targetUrl, discoveredPaths, hasLoginForm, agentId, now);
+}
+
+function buildWebDirEnumFinding(
+  targetUrl: string | undefined,
+  discoveredPaths: Array<{ path: string; status: number; size?: number }>,
+  hasLoginForm: boolean,
+  agentId: string,
+  now: string,
+): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+
+  if (discoveredPaths.length === 0) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
+  // Build a synthetic service node for enrichment
+  // Extract host:port from URL to create a stable service node ID
+  let serviceId = 'svc-unknown-http';
+  let hostNodeId: string | undefined;
+
+  if (targetUrl) {
+    const urlParts = targetUrl.match(/^(https?):\/\/([^:/]+)(?::(\d+))?/i);
+    if (urlParts) {
+      const [, scheme, host, portStr] = urlParts;
+      const port = portStr ? parseInt(portStr) : (scheme === 'https' ? 443 : 80);
+      const hostKey = host.replace(/[.\s]/g, '-');
+      serviceId = `svc-${hostKey}-${port}`;
+      hostNodeId = `host-${hostKey}`;
+
+      // Create host node
+      const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(host);
+      nodes.push({
+        id: hostNodeId,
+        type: 'host',
+        label: host,
+        ip: isIp ? host : undefined,
+        hostname: isIp ? undefined : host,
+        alive: true,
+      });
+
+      // Create service node
+      nodes.push({
+        id: serviceId,
+        type: 'service',
+        label: `${scheme}/${port}`,
+        port,
+        protocol: 'tcp',
+        service_name: scheme,
+        discovered_paths: discoveredPaths,
+        has_login_form: hasLoginForm || undefined,
+      });
+
+      edges.push({
+        source: hostNodeId,
+        target: serviceId,
+        properties: { type: 'RUNS', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+      });
+    }
+  }
+
+  // If we couldn't parse a URL, still emit a service-like node
+  if (nodes.length === 0) {
+    nodes.push({
+      id: serviceId,
+      type: 'service',
+      label: 'http (unknown target)',
+      service_name: 'http',
+      discovered_paths: discoveredPaths,
+      has_login_form: hasLoginForm || undefined,
+    });
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
 // --- Registry ---
 
 const PARSERS: Record<string, (output: string, agentId?: string) => Finding> = {
@@ -768,6 +1749,16 @@ const PARSERS: Record<string, (output: string, agentId?: string) => Finding> = {
   'kerbrute': parseKerbrute,
   'hashcat': parseHashcat,
   'responder': parseResponder,
+  'ldapsearch': parseLdapsearch,
+  'ldapdomaindump': parseLdapsearch,
+  'ldap': parseLdapsearch,
+  'enum4linux': parseEnum4linux,
+  'enum4linux-ng': parseEnum4linux,
+  'rubeus': parseRubeus,
+  'gobuster': parseWebDirEnum,
+  'feroxbuster': parseWebDirEnum,
+  'ffuf': parseWebDirEnum,
+  'dirbuster': parseWebDirEnum,
 };
 
 export function getSupportedParsers(): string[] {
