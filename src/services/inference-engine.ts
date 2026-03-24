@@ -175,11 +175,24 @@ export class InferenceEngine {
 
   private resolveCredentialDomains(credNodeId: string): Set<string> {
     const domains = new Set<string>();
-    // Walk credential → (OWNS_CRED inbound from user) → user → (MEMBER_OF_DOMAIN outbound) → domain
+
+    // Seed from credential's own cred_domain property (set by parsers)
+    const credNode = this.getNode(credNodeId);
+    if (credNode?.cred_domain) {
+      domains.add(String(credNode.cred_domain).toLowerCase());
+    }
+
+    // Walk credential → (OWNS_CRED inbound from user) → check user properties + MEMBER_OF_DOMAIN edges
     for (const edge of this.ctx.graph.inEdges(credNodeId) as string[]) {
       if (this.ctx.graph.getEdgeAttributes(edge).type !== 'OWNS_CRED') continue;
-      const userId = this.ctx.graph.source(edge);
-      for (const domEdge of this.ctx.graph.outEdges(userId) as string[]) {
+      const ownerId = this.ctx.graph.source(edge);
+      const ownerNode = this.getNode(ownerId);
+      // Seed from owner user's domain_name property
+      if (ownerNode?.domain_name) {
+        domains.add(String(ownerNode.domain_name).toLowerCase());
+      }
+      // Also walk explicit MEMBER_OF_DOMAIN edges
+      for (const domEdge of this.ctx.graph.outEdges(ownerId) as string[]) {
         if (this.ctx.graph.getEdgeAttributes(domEdge).type !== 'MEMBER_OF_DOMAIN') continue;
         const domId = this.ctx.graph.target(domEdge);
         const domNode = this.getNode(domId);
@@ -299,7 +312,7 @@ export class InferenceEngine {
           const hnLower = hn.toLowerCase();
           for (const d of domains) {
             const dName = (d.domain_name || d.label || '').toLowerCase();
-            if (dName && hnLower.endsWith(dName)) {
+            if (dName && (hnLower === dName || hnLower.endsWith('.' + dName))) {
               matched.add(d.id);
             }
           }

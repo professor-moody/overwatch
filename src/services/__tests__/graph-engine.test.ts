@@ -275,6 +275,30 @@ describe('GraphEngine', () => {
       expect(state.graph_summary.edges_by_type['MEMBER_OF_DOMAIN'] || 0).toBe(0);
     });
 
+    it('does NOT infer MEMBER_OF_DOMAIN when hostname is sibling domain (dot-boundary)', () => {
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'eviltest.local'], exclusions: [] } });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      // Host with hostname in eviltest.local, NOT test.local
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-3', type: 'host', label: 'dc01.eviltest.local', ip: '10.10.10.3', hostname: 'dc01.eviltest.local' },
+        ],
+      }));
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-3-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-3', target: 'svc-10-10-10-3-88', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Should infer MEMBER_OF_DOMAIN to eviltest.local but NOT test.local
+      const graph = engine.exportGraph();
+      const domEdges = graph.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN' && e.source === 'host-10-10-10-3');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].target).toBe('domain-eviltest-local');
+    });
+
     it('infers RELAY_TARGET from SMB signing disabled', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       // Need a compromised host first for the relay source
@@ -337,13 +361,14 @@ describe('GraphEngine', () => {
 
     it('infers POTENTIAL_AUTH for new credentials', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a service that accepts domain auth
+      // Add a service that accepts domain auth (host must be in same domain)
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
@@ -408,6 +433,7 @@ describe('GraphEngine', () => {
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
@@ -446,6 +472,36 @@ describe('GraphEngine', () => {
       // The credential should NOT create POTENTIAL_AUTH to the service in other.local
       const potAuthEdges = engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges;
       const crossDomain = potAuthEdges.filter(e => e.target === 'svc-10-10-10-2-445');
+      expect(crossDomain.length).toBe(0);
+    });
+
+    it('does NOT fan out hashcat cred with cred_domain but no MEMBER_OF_DOMAIN edge across domains', () => {
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'other.local'], exclusions: [] } });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      // Service in "other.local"
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+          { id: 'svc-10-10-10-2-445', type: 'service', label: 'SMB .2', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-2', target: 'svc-10-10-10-2-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-2', target: 'domain-other-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Hashcat-style credential: user has domain_name, cred has cred_domain, but NO MEMBER_OF_DOMAIN edge
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-test-cracked', type: 'user', label: 'TEST.LOCAL\\cracked', username: 'cracked', domain_name: 'TEST.LOCAL' },
+          { id: 'cred-cracked', type: 'credential', label: 'cracked:Password1', cred_type: 'plaintext', cred_material_kind: 'plaintext_password', cred_usable_for_auth: true, cred_value: 'Password1', cred_user: 'cracked', cred_domain: 'TEST.LOCAL' },
+        ],
+        edges: [
+          { source: 'user-test-cracked', target: 'cred-cracked', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Should NOT fan out to "other.local" service
+      const potAuth = engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges;
+      const crossDomain = potAuth.filter(e => e.target === 'svc-10-10-10-2-445');
       expect(crossDomain.length).toBe(0);
     });
 
@@ -504,6 +560,33 @@ describe('GraphEngine', () => {
       const startEvent = history.find((e: any) => e.event_type === 'action_started' && e.action_id === 'act-123');
       expect(startEvent?.frontier_item_id).toBe('fi-abc');
       expect(startEvent?.frontier_type).toBe('inferred_edge');
+    });
+
+    it('survives state reload via rebuildActionFrontierMap', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Log an event with action_id + frontier_item_id
+      engine.logActionEvent({
+        description: 'validate action',
+        action_id: 'act-persist',
+        event_type: 'action_validated',
+        frontier_item_id: 'fi-persist',
+        frontier_type: 'incomplete_node',
+      });
+      // Persist state to disk
+      engine.persist();
+
+      // Create a new engine instance and load the saved state
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Log a follow-up event with same action_id but NO frontier_item_id
+      engine2.logActionEvent({
+        description: 'complete action',
+        action_id: 'act-persist',
+        event_type: 'action_completed',
+      });
+      const history = engine2.getFullHistory();
+      const completedEvent = history.find((e: any) => e.event_type === 'action_completed' && e.action_id === 'act-persist');
+      expect(completedEvent?.frontier_item_id).toBe('fi-persist');
+      expect(completedEvent?.frontier_type).toBe('incomplete_node');
     });
   });
 
@@ -1745,6 +1828,7 @@ describe('GraphEngine', () => {
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'svc-smb-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
@@ -1769,6 +1853,7 @@ describe('GraphEngine', () => {
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'svc-smb-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 

@@ -106,6 +106,7 @@ export class StatePersistence {
         this.ctx.inferenceRules.push(rule);
       }
     }
+    this.ctx.rebuildActionFrontierMap();
     this.ctx.log('Rolled back to snapshot: ' + snapshotName, undefined, { category: 'system' });
     this.persist();
     return true;
@@ -126,6 +127,7 @@ export class StatePersistence {
         this.ctx.inferenceRules.push(rule);
       }
     }
+    this.ctx.rebuildActionFrontierMap();
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[]): boolean {
@@ -149,6 +151,7 @@ export class StatePersistence {
             this.ctx.inferenceRules.push(rule);
           }
         }
+        this.ctx.rebuildActionFrontierMap();
         // Overwrite corrupted state file with valid snapshot data
         this.persist();
         return true;

@@ -135,6 +135,18 @@ export class EngineContext {
     return entry;
   }
 
+  rebuildActionFrontierMap(): void {
+    this.actionFrontierMap.clear();
+    for (const entry of this.activityLog) {
+      if (entry.action_id && entry.frontier_item_id) {
+        this.actionFrontierMap.set(entry.action_id, {
+          frontier_item_id: entry.frontier_item_id,
+          frontier_type: entry.frontier_type,
+        });
+      }
+    }
+  }
+
   invalidatePathGraph(): void {
     this.pathGraphCache = null;
   }
