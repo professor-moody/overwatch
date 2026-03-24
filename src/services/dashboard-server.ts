@@ -54,10 +54,11 @@ export class DashboardServer {
       // Send full state on connect
       const state = this.engine.getState();
       const graph = this.engine.exportGraph();
+      const historyCount = this.engine.getFullHistory().length;
       ws.send(JSON.stringify({
         type: 'full_state',
         timestamp: new Date().toISOString(),
-        data: { state, graph },
+        data: { state, graph, history_count: historyCount },
       }));
 
       ws.on('close', () => {
@@ -209,10 +210,14 @@ export class DashboardServer {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-    if (url === '/api/state') {
+    const pathname = url.split('?')[0];
+
+    if (pathname === '/api/state') {
       this.serveState(res);
-    } else if (url === '/api/graph') {
+    } else if (pathname === '/api/graph') {
       this.serveGraph(res);
+    } else if (pathname === '/api/history') {
+      this.serveHistory(url, res);
     } else {
       this.serveStaticFile(url, res);
     }
@@ -266,8 +271,34 @@ export class DashboardServer {
   private serveState(res: ServerResponse): void {
     const state = this.engine.getState();
     const graph = this.engine.exportGraph();
+    const historyCount = this.engine.getFullHistory().length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ state, graph }));
+    res.end(JSON.stringify({ state, graph, history_count: historyCount }));
+  }
+
+  private serveHistory(url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const limit = params.has('limit') ? parseInt(params.get('limit')!, 10) : undefined;
+    const after = params.get('after') || undefined;
+    const before = params.get('before') || undefined;
+
+    let entries = this.engine.getFullHistory();
+
+    if (after) {
+      entries = entries.filter(e => e.timestamp > after);
+    }
+    if (before) {
+      entries = entries.filter(e => e.timestamp < before);
+    }
+
+    const total = entries.length;
+
+    if (limit && limit > 0) {
+      entries = entries.slice(-limit);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ entries, total }));
   }
 
   private serveGraph(res: ServerResponse): void {

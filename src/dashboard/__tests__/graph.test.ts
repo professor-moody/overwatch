@@ -230,6 +230,106 @@ describe('dashboard graph helpers', () => {
     expect(graph.hasNode('host-a')).toBe(true);
   });
 
+  it('findShortestPath returns correct nodes and edges for connected graph', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('a', { label: 'A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('b', { label: 'B', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addNode('c', { label: 'C', nodeType: 'host', color: '#fff', x: 2, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('a--REACHABLE--b', 'a', 'b', { edgeType: 'REACHABLE' });
+    graph.addEdgeWithKey('b--REACHABLE--c', 'b', 'c', { edgeType: 'REACHABLE' });
+
+    const result = graphModule.findShortestPath('a', 'c');
+    expect(result.nodes.size).toBe(3);
+    expect(result.nodes.has('a')).toBe(true);
+    expect(result.nodes.has('b')).toBe(true);
+    expect(result.nodes.has('c')).toBe(true);
+    expect(result.edges.size).toBe(2);
+  });
+
+  it('findShortestPath returns empty sets for disconnected nodes', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('a', { label: 'A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('z', { label: 'Z', nodeType: 'host', color: '#fff', x: 5, y: 0, _props: { type: 'host' } });
+
+    const result = graphModule.findShortestPath('a', 'z');
+    expect(result.edges.size).toBe(0);
+  });
+
+  it('buildActualPath reconstructs path from activity entries', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('h1', { label: 'H1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('h2', { label: 'H2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addNode('h3', { label: 'H3', nodeType: 'host', color: '#fff', x: 2, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('h1--REACHABLE--h2', 'h1', 'h2', { edgeType: 'REACHABLE' });
+    graph.addEdgeWithKey('h2--REACHABLE--h3', 'h2', 'h3', { edgeType: 'REACHABLE' });
+
+    const entries = [
+      { timestamp: '2026-01-01T01:00:00Z', target_node_ids: ['h1'], category: 'finding' },
+      { timestamp: '2026-01-01T02:00:00Z', target_node_ids: ['h2'], category: 'finding' },
+      { timestamp: '2026-01-01T03:00:00Z', target_node_ids: ['h3'], category: 'finding' },
+    ];
+
+    const result = graphModule.buildActualPath(entries);
+    expect(result.nodes.size).toBe(3);
+    expect(result.edges.size).toBe(2);
+  });
+
+  it('buildActualPath skips gaps between disconnected consecutive nodes', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('h1', { label: 'H1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('h2', { label: 'H2', nodeType: 'host', color: '#fff', x: 5, y: 0, _props: { type: 'host' } });
+
+    const entries = [
+      { timestamp: '2026-01-01T01:00:00Z', target_node_ids: ['h1'], category: 'finding' },
+      { timestamp: '2026-01-01T02:00:00Z', target_node_ids: ['h2'], category: 'finding' },
+    ];
+
+    const result = graphModule.buildActualPath(entries);
+    expect(result.nodes.size).toBe(2);
+    expect(result.edges.size).toBe(0);
+  });
+
+  it('buildCredentialFlowData collects credential-related edges and chains', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('user-a', { label: 'alice', nodeType: 'user', color: '#fff', x: 0, y: 0, _props: { type: 'user' } });
+    graph.addNode('cred-a', { label: 'alice-ntlm', nodeType: 'credential', color: '#fff', x: 1, y: 0, _props: { type: 'credential' } });
+    graph.addNode('cred-b', { label: 'alice-tgt', nodeType: 'credential', color: '#fff', x: 2, y: 0, _props: { type: 'credential', derivation_method: 'pass-the-hash' } });
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 3, y: 0, _props: { type: 'host' } });
+
+    graph.addEdgeWithKey('user-a--OWNS_CRED--cred-a', 'user-a', 'cred-a', { edgeType: 'OWNS_CRED' });
+    graph.addEdgeWithKey('cred-a--DERIVED_FROM--cred-b', 'cred-a', 'cred-b', { edgeType: 'DERIVED_FROM' });
+    graph.addEdgeWithKey('cred-b--VALID_ON--host-a', 'cred-b', 'host-a', { edgeType: 'VALID_ON' });
+
+    const result = graphModule.buildCredentialFlowData();
+    expect(result.flowEdges.size).toBe(3);
+    expect(result.flowNodes.has('user-a')).toBe(true);
+    expect(result.flowNodes.has('cred-a')).toBe(true);
+    expect(result.flowNodes.has('cred-b')).toBe(true);
+    expect(result.flowNodes.has('host-a')).toBe(true);
+    expect(result.chains.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('buildCredentialFlowData returns empty data for graph without credentials', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: 'Host A', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+
+    const result = graphModule.buildCredentialFlowData();
+    expect(result.flowEdges.size).toBe(0);
+    expect(result.chains.length).toBe(0);
+  });
+
   it('treats certificate authorities as high-signal nodes with contextual focus', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();

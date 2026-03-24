@@ -58,6 +58,8 @@ const EDGE_CATEGORIES = {
   ESC4: '#afa9ec', ESC6: '#afa9ec', ESC8: '#afa9ec',
   // Lateral movement
   RELAY_TARGET: '#ed93b1', NULL_SESSION: '#ed93b1',
+  // Credential derivation
+  DERIVED_FROM: '#ff8c42',
   // Domain
   MEMBER_OF: '#6b6977', MEMBER_OF_DOMAIN: '#6b6977', TRUSTS: '#97c459',
   SAME_DOMAIN: '#6b6977',
@@ -101,6 +103,14 @@ let pathSource = null;
 let pathTarget = null;
 let pathEdges = new Set();
 let pathNodes = new Set();
+
+// Attack path overlay
+let attackPathOverlay = null; // null | { actual: { nodes: Set, edges: Set }, theoretical: { nodes: Set, edges: Set } | null }
+let activityHistoryCache = null; // cached /api/history response
+
+// Credential flow
+let credentialFlowMode = false;
+let credFlowData = null; // { flowEdges: Set, flowNodes: Set, chains: [] }
 
 // Neighborhood focus
 let focusNode = null;
@@ -303,6 +313,48 @@ function nodeReducer(node, data) {
     }
   }
 
+  // Credential flow mode
+  if (credentialFlowMode && credFlowData) {
+    if (data.nodeType === 'credential') {
+      res.zIndex = 2;
+      res.highlighted = true;
+      res.size = (data.size || 5) * 1.4;
+      res.label = data.label || data._props?.label || node;
+      const status = data._props?.credential_status;
+      if (status === 'active') res.color = '#3ecf8e';
+      else if (status === 'stale') res.color = '#eab308';
+      else if (status === 'expired') res.color = '#ef4444';
+      else if (status === 'rotated') res.color = '#a78bfa';
+    } else if (credFlowData.flowNodes.has(node)) {
+      res.zIndex = 1;
+    } else {
+      res.color = dimColor(data.color, 0.12);
+      res.label = '';
+      res.zIndex = 0;
+    }
+    return res;
+  }
+
+  // Attack path overlay
+  if (attackPathOverlay) {
+    const inActual = attackPathOverlay.actual.nodes.has(node);
+    const inTheoretical = attackPathOverlay.theoretical?.nodes.has(node);
+    if (inActual) {
+      res.highlighted = true;
+      res.zIndex = 3;
+      res.color = '#f0b54a';
+    } else if (inTheoretical) {
+      res.highlighted = true;
+      res.zIndex = 2;
+      res.color = '#6e9eff';
+    } else {
+      res.color = dimColor(data.color, 0.1);
+      res.label = '';
+      res.zIndex = 0;
+    }
+    return res;
+  }
+
   // Path highlighting
   if (pathNodes.size > 0) {
     if (pathNodes.has(node)) {
@@ -379,17 +431,43 @@ function edgeReducer(edge, data) {
     return res;
   }
 
-  // Hide POTENTIAL_AUTH edges unless an endpoint is in focus/path mode (not simple select/hover)
+  // Hide POTENTIAL_AUTH edges unless an endpoint is in focus/path mode or credential flow is active
   if (data.edgeType === 'POTENTIAL_AUTH') {
     const src = graph.source(edge);
     const tgt = graph.target(edge);
-    const isFocused = src === focusNode || tgt === focusNode
+    const isFocused = credentialFlowMode
+      || src === focusNode || tgt === focusNode
       || pathNodes.has(src) || pathNodes.has(tgt)
       || inspectedEdgeIds.has(edge);
     if (!isFocused) {
       res.hidden = true;
       return res;
     }
+  }
+
+  // Credential flow mode
+  if (credentialFlowMode && credFlowData) {
+    if (credFlowData.flowEdges.has(edge)) {
+      const et = data.edgeType;
+      if (et === 'DERIVED_FROM') { res.color = '#ff8c42'; res.size = 3; res.zIndex = 3; }
+      else if (et === 'OWNS_CRED') { res.color = '#f0b54a'; res.size = 2; res.zIndex = 2; }
+      else { res.color = '#eab308'; res.size = 1.5; res.zIndex = 1; }
+    } else {
+      res.color = 'rgba(255,255,255,0.03)';
+      res.size = 0.3;
+      res.zIndex = 0;
+    }
+    return res;
+  }
+
+  // Attack path overlay
+  if (attackPathOverlay) {
+    const inActual = attackPathOverlay.actual.edges.has(edge);
+    const inTheoretical = attackPathOverlay.theoretical?.edges.has(edge);
+    if (inActual) { res.color = '#f0b54a'; res.size = 3; res.zIndex = 3; }
+    else if (inTheoretical) { res.color = '#6e9eff'; res.size = 2; res.zIndex = 2; }
+    else { res.color = 'rgba(255,255,255,0.03)'; res.size = 0.3; res.zIndex = 0; }
+    return res;
   }
 
   // Path highlighting
@@ -744,19 +822,19 @@ function handlePathClick(node) {
   findAndHighlightPath();
 }
 
-function findAndHighlightPath() {
-  if (!pathSource || !pathTarget) return;
+function findShortestPath(source, target) {
+  if (!graph || !source || !target || !graph.hasNode(source) || !graph.hasNode(target)) {
+    return { nodes: new Set(), edges: new Set() };
+  }
 
-  pathEdges.clear();
-  pathNodes.clear();
-  pathNodes.add(pathSource);
-  pathNodes.add(pathTarget);
+  const resultNodes = new Set([source, target]);
+  const resultEdges = new Set();
 
   // BFS shortest path (undirected traversal)
   const visited = new Map(); // node → parent
   const edgeUsed = new Map(); // node → edge that led here
-  const queue = [pathSource];
-  visited.set(pathSource, null);
+  const queue = [source];
+  visited.set(source, null);
 
   let found = false;
   while (queue.length > 0 && !found) {
@@ -768,7 +846,7 @@ function findAndHighlightPath() {
         visited.set(neighbor, current);
         edgeUsed.set(neighbor, edge);
         queue.push(neighbor);
-        if (neighbor === pathTarget) {
+        if (neighbor === target) {
           found = true;
           break;
         }
@@ -777,16 +855,26 @@ function findAndHighlightPath() {
   }
 
   if (found) {
-    // Trace back from target to source
-    let current = pathTarget;
-    while (current !== pathSource) {
-      pathNodes.add(current);
+    let current = target;
+    while (current !== source) {
+      resultNodes.add(current);
       const edge = edgeUsed.get(current);
-      if (edge) pathEdges.add(edge);
+      if (edge) resultEdges.add(edge);
       current = visited.get(current);
     }
+  }
 
-    // Show path info bar
+  return { nodes: resultNodes, edges: resultEdges };
+}
+
+function findAndHighlightPath() {
+  if (!pathSource || !pathTarget) return;
+
+  const result = findShortestPath(pathSource, pathTarget);
+  pathNodes = result.nodes;
+  pathEdges = result.edges;
+
+  if (pathEdges.size > 0) {
     showPathInfo();
   }
 
@@ -821,6 +909,262 @@ function clearPathHighlight() {
   if (bar) bar.classList.remove('visible');
 
   if (renderer) renderer.refresh();
+}
+
+// ============================================================
+// Attack Path Overlay
+// ============================================================
+
+async function fetchActivityHistory() {
+  if (activityHistoryCache) return activityHistoryCache;
+  try {
+    const res = await fetch('/api/history?limit=500');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    activityHistoryCache = data.entries || [];
+    return activityHistoryCache;
+  } catch (err) {
+    console.warn('[Overwatch] Failed to fetch activity history:', err);
+    return [];
+  }
+}
+
+function buildActualPath(activityEntries) {
+  if (!graph || !activityEntries || activityEntries.length === 0) {
+    return { nodes: new Set(), edges: new Set() };
+  }
+
+  const relevantCategories = new Set(['finding', 'inference']);
+  const relevantEvents = new Set(['action_completed', 'finding_ingested']);
+
+  // Filter and sort chronologically
+  const relevant = activityEntries
+    .filter(e => {
+      if (!e.target_node_ids || e.target_node_ids.length === 0) return false;
+      const catMatch = !e.category || relevantCategories.has(e.category);
+      const evtMatch = !e.event_type || relevantEvents.has(e.event_type);
+      return catMatch || evtMatch;
+    })
+    .sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+  const orderedNodes = [];
+  const seen = new Set();
+  for (const entry of relevant) {
+    for (const nodeId of entry.target_node_ids) {
+      if (graph.hasNode(nodeId) && !seen.has(nodeId)) {
+        seen.add(nodeId);
+        orderedNodes.push(nodeId);
+      }
+    }
+  }
+
+  const resultNodes = new Set(orderedNodes);
+  const resultEdges = new Set();
+
+  // Connect consecutive nodes via graph edges
+  for (let i = 0; i < orderedNodes.length - 1; i++) {
+    const a = orderedNodes[i];
+    const b = orderedNodes[i + 1];
+    const edges = graph.edges(a);
+    for (const edgeId of edges) {
+      const opposite = graph.opposite(a, edgeId);
+      if (opposite === b) {
+        resultEdges.add(edgeId);
+        break;
+      }
+    }
+  }
+
+  return { nodes: resultNodes, edges: resultEdges };
+}
+
+async function showAttackPath() {
+  clearPathHighlight();
+  clearCredentialFlowMode();
+
+  const entries = await fetchActivityHistory();
+  const actual = buildActualPath(entries);
+
+  if (actual.nodes.size === 0) {
+    console.warn('[Overwatch] No attack path nodes found in activity history');
+    return;
+  }
+
+  attackPathOverlay = { actual, theoretical: null };
+
+  // Show info in path bar
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent = `Actual path: ${actual.nodes.size} nodes · ${actual.edges.size} hops`;
+    bar.querySelector('.path-edges').textContent = '';
+    bar.classList.add('visible');
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function showTheoreticalComparison() {
+  if (!attackPathOverlay || attackPathOverlay.actual.nodes.size < 2) return;
+
+  // Find first and last nodes of the actual path
+  const nodeArr = [...attackPathOverlay.actual.nodes];
+  const source = nodeArr[0];
+  const target = nodeArr[nodeArr.length - 1];
+
+  const theoretical = findShortestPath(source, target);
+  attackPathOverlay = { ...attackPathOverlay, theoretical };
+
+  // Update info bar
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent =
+      `Actual: ${attackPathOverlay.actual.edges.size} hops │ Shortest: ${theoretical.edges.size} hops`;
+    bar.querySelector('.path-edges').textContent = '';
+    bar.classList.add('visible');
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearTheoreticalComparison() {
+  if (!attackPathOverlay) return;
+  attackPathOverlay = { ...attackPathOverlay, theoretical: null };
+
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent =
+      `Actual path: ${attackPathOverlay.actual.nodes.size} nodes · ${attackPathOverlay.actual.edges.size} hops`;
+    bar.querySelector('.path-edges').textContent = '';
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearAttackPathOverlay() {
+  attackPathOverlay = null;
+
+  const bar = document.getElementById('path-info-bar');
+  if (bar) bar.classList.remove('visible');
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+// ============================================================
+// Credential Flow Visualization
+// ============================================================
+
+function buildCredentialFlowData() {
+  if (!graph) return { flowEdges: new Set(), flowNodes: new Set(), chains: [] };
+
+  const CRED_EDGE_TYPES = new Set(['DERIVED_FROM', 'OWNS_CRED', 'VALID_ON', 'POTENTIAL_AUTH']);
+  const flowEdges = new Set();
+  const flowNodes = new Set();
+
+  // Collect all credential-related edges and their endpoint nodes
+  graph.forEachEdge((edgeId, attrs) => {
+    if (CRED_EDGE_TYPES.has(attrs.edgeType)) {
+      flowEdges.add(edgeId);
+      flowNodes.add(graph.source(edgeId));
+      flowNodes.add(graph.target(edgeId));
+    }
+  });
+
+  // Always include all credential nodes
+  graph.forEachNode((nodeId, attrs) => {
+    if (attrs.nodeType === 'credential') flowNodes.add(nodeId);
+  });
+
+  // Build DERIVED_FROM chains
+  const chains = [];
+  const credNodes = [...flowNodes].filter(id => graph.hasNode(id) && graph.getNodeAttribute(id, 'nodeType') === 'credential');
+  const hasInboundDerivation = new Set();
+  graph.forEachEdge((edgeId, attrs) => {
+    if (attrs.edgeType === 'DERIVED_FROM') {
+      hasInboundDerivation.add(graph.source(edgeId)); // source is the derived cred (points from child → parent)
+    }
+  });
+
+  // Walk chains from root credentials (those with no inbound DERIVED_FROM)
+  for (const rootId of credNodes) {
+    if (hasInboundDerivation.has(rootId)) continue;
+
+    // Follow outbound DERIVED_FROM edges (root → derived → derived)
+    const chain = [rootId];
+    const visited = new Set([rootId]);
+    let current = rootId;
+    let walking = true;
+
+    while (walking) {
+      walking = false;
+      const edges = graph.edges(current);
+      for (const edgeId of edges) {
+        const attrs = graph.getEdgeAttributes(edgeId);
+        if (attrs.edgeType !== 'DERIVED_FROM') continue;
+        const neighbor = graph.opposite(current, edgeId);
+        if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
+          visited.add(neighbor);
+          chain.push(neighbor);
+          current = neighbor;
+          walking = true;
+          break;
+        }
+      }
+    }
+
+    if (chain.length > 1) {
+      chains.push(chain.map(id => ({
+        id,
+        label: graph.getNodeAttribute(id, 'label') || id,
+        method: graph.getNodeAttribute(id, '_props')?.derivation_method || null,
+      })));
+    }
+  }
+
+  return { flowEdges, flowNodes, chains };
+}
+
+function showCredentialFlow() {
+  clearPathHighlight();
+  clearAttackPathOverlay();
+
+  credFlowData = buildCredentialFlowData();
+  credentialFlowMode = true;
+
+  // Auto-enable credential filter if hidden
+  if (!activeFilters.has('credential')) {
+    activeFilters.add('credential');
+    buildFilterButtons();
+  }
+
+  // Show info in path bar
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    const credCount = [...credFlowData.flowNodes].filter(id =>
+      graph.hasNode(id) && graph.getNodeAttribute(id, 'nodeType') === 'credential'
+    ).length;
+    bar.querySelector('.path-label').textContent =
+      `${credCount} credentials · ${credFlowData.chains.length} derivation chains · ${credFlowData.flowEdges.size} auth edges`;
+    bar.querySelector('.path-edges').textContent = '';
+    bar.classList.add('visible');
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearCredentialFlowMode() {
+  credentialFlowMode = false;
+  credFlowData = null;
+
+  const bar = document.getElementById('path-info-bar');
+  if (bar) bar.classList.remove('visible');
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
 }
 
 // ============================================================
@@ -1777,6 +2121,106 @@ function exportScreenshot() {
   link.click();
 }
 
+function exportSVG() {
+  if (!renderer || !graph) return;
+
+  const visibleNodes = getVisibleNodeIds();
+  const visibleEdges = getVisibleEdgeIds();
+
+  if (visibleNodes.length === 0) {
+    // Empty graph — export blank SVG
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#080a0f"/></svg>`;
+    triggerSVGDownload(emptySvg);
+    return;
+  }
+
+  // Collect display data for visible nodes
+  const nodeData = [];
+  for (const nodeId of visibleNodes) {
+    const dd = renderer.getNodeDisplayData(nodeId);
+    if (!dd || dd.hidden) continue;
+    const attrs = graph.getNodeAttributes(nodeId);
+    const showLabel = shouldShowLabel(nodeId, attrs);
+    nodeData.push({
+      id: nodeId,
+      x: dd.x,
+      y: dd.y,
+      size: dd.size || 5,
+      color: dd.color || attrs.color || '#888',
+      label: showLabel ? (dd.label || attrs.label || '') : '',
+    });
+  }
+
+  if (nodeData.length === 0) {
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#080a0f"/></svg>`;
+    triggerSVGDownload(emptySvg);
+    return;
+  }
+
+  // Compute bounding box
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of nodeData) {
+    minX = Math.min(minX, n.x - n.size);
+    maxX = Math.max(maxX, n.x + n.size);
+    minY = Math.min(minY, n.y - n.size);
+    maxY = Math.max(maxY, n.y + n.size);
+  }
+
+  const padding = 40;
+  const vbX = minX - padding;
+  const vbY = minY - padding;
+  const vbW = (maxX - minX) + padding * 2;
+  const vbH = (maxY - minY) + padding * 2;
+
+  const escXml = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // Build edges SVG
+  const edgeLines = [];
+  for (const edgeId of visibleEdges) {
+    const src = graph.source(edgeId);
+    const tgt = graph.target(edgeId);
+    const srcDD = renderer.getNodeDisplayData(src);
+    const tgtDD = renderer.getNodeDisplayData(tgt);
+    if (!srcDD || !tgtDD || srcDD.hidden || tgtDD.hidden) continue;
+    const edgeDD = renderer.getEdgeDisplayData(edgeId);
+    const edgeAttrs = graph.getEdgeAttributes(edgeId);
+    const color = (edgeDD && edgeDD.color) || edgeAttrs.color || '#444';
+    const size = (edgeDD && edgeDD.size) || edgeAttrs.size || 0.5;
+    edgeLines.push(`<line x1="${srcDD.x}" y1="${srcDD.y}" x2="${tgtDD.x}" y2="${tgtDD.y}" stroke="${escXml(color)}" stroke-width="${size}" stroke-opacity="0.8"/>`);
+  }
+
+  // Build nodes SVG
+  const nodeCircles = [];
+  const nodeLabels = [];
+  for (const n of nodeData) {
+    nodeCircles.push(`<circle cx="${n.x}" cy="${n.y}" r="${n.size}" fill="${escXml(n.color)}"/>`);
+    if (n.label) {
+      nodeLabels.push(`<text x="${n.x}" y="${n.y - n.size - 3}" text-anchor="middle" fill="#c8cdd3" font-size="${Math.max(n.size * 0.8, 4)}" font-family="Inter, system-ui, sans-serif">${escXml(n.label)}</text>`);
+    }
+  }
+
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" width="${Math.round(vbW)}" height="${Math.round(vbH)}">`,
+    `<rect x="${vbX}" y="${vbY}" width="${vbW}" height="${vbH}" fill="#080a0f"/>`,
+    `<g class="edges">${edgeLines.join('')}</g>`,
+    `<g class="nodes">${nodeCircles.join('')}</g>`,
+    `<g class="labels">${nodeLabels.join('')}</g>`,
+    `</svg>`,
+  ].join('\n');
+
+  triggerSVGDownload(svg);
+}
+
+function triggerSVGDownload(svgString) {
+  const blob = new Blob([svgString], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = `overwatch-graph-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.svg`;
+  link.href = url;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 // ============================================================
 // Utilities
 // ============================================================
@@ -1832,6 +2276,7 @@ window.OverwatchGraph = {
   focusNodeType,
   setActiveFilters,
   exportScreenshot,
+  exportSVG,
   updateMinimap,
   getVisibleNodeIds,
   getVisibleEdgeIds,
@@ -1843,10 +2288,26 @@ window.OverwatchGraph = {
   showSelection,
   setGraphMode,
   setLabelDensity,
+  // Attack path overlay
+  fetchActivityHistory,
+  showAttackPath,
+  clearAttackPathOverlay,
+  showTheoreticalComparison,
+  clearTheoreticalComparison,
+  // Credential flow
+  showCredentialFlow,
+  clearCredentialFlowMode,
+  buildCredentialFlowData,
+  // Path helpers
+  findShortestPath,
+  buildActualPath,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },
   get graphMode() { return graphMode; },
+  get attackPathOverlay() { return attackPathOverlay; },
+  get credentialFlowMode() { return credentialFlowMode; },
+  get credFlowData() { return credFlowData; },
   NODE_COLORS,
   NODE_BASE_SIZES,
 };

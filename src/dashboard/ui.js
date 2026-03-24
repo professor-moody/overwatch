@@ -594,7 +594,13 @@ function showNodeDetail(nodeId) {
   html += buildConnectionSection(nodeId, graph, 'out');
   html += buildConnectionSection(nodeId, graph, 'in');
 
-  // 4. Metadata — at the bottom
+  // 4. Credential derivation chain (when credential flow mode is active)
+  if (nodeType === 'credential' && g.credentialFlowMode && g.credFlowData) {
+    const chainHtml = buildDerivationChainSection(nodeId, graph);
+    if (chainHtml) html += chainHtml;
+  }
+
+  // 5. Metadata — at the bottom
   if (metadataRows.length) {
     html += `<div class="detail-section">
       <div class="detail-section-title">Metadata</div>
@@ -606,6 +612,70 @@ function showNodeDetail(nodeId) {
   attachConnectionHandlers();
   attachPropExpandHandlers();
   drawer.classList.add('visible');
+}
+
+function buildDerivationChainSection(nodeId, graph) {
+  // Walk DERIVED_FROM edges in both directions to build full chain containing this node
+  const chainNodes = [nodeId];
+  const visited = new Set([nodeId]);
+
+  // Walk backward (find ancestors)
+  let current = nodeId;
+  let walking = true;
+  while (walking) {
+    walking = false;
+    for (const edgeId of graph.edges(current)) {
+      const attrs = graph.getEdgeAttributes(edgeId);
+      if (attrs.edgeType !== 'DERIVED_FROM') continue;
+      const neighbor = graph.opposite(current, edgeId);
+      if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
+        // Check direction: if neighbor is the "parent" (target of DERIVED_FROM from current)
+        if (graph.source(edgeId) === current) {
+          visited.add(neighbor);
+          chainNodes.unshift(neighbor);
+          current = neighbor;
+          walking = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Walk forward (find descendants)
+  current = nodeId;
+  walking = true;
+  while (walking) {
+    walking = false;
+    for (const edgeId of graph.edges(current)) {
+      const attrs = graph.getEdgeAttributes(edgeId);
+      if (attrs.edgeType !== 'DERIVED_FROM') continue;
+      const neighbor = graph.opposite(current, edgeId);
+      if (!visited.has(neighbor) && graph.getNodeAttribute(neighbor, 'nodeType') === 'credential') {
+        if (graph.target(edgeId) === current) {
+          visited.add(neighbor);
+          chainNodes.push(neighbor);
+          current = neighbor;
+          walking = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (chainNodes.length < 2) return null;
+
+  const items = chainNodes.map(id => {
+    const p = graph.getNodeAttributes(id)._props || {};
+    const label = p.label || id;
+    const method = p.derivation_method || '';
+    const isCurrent = id === nodeId;
+    return `<span class="chain-node${isCurrent ? ' chain-current' : ''}" data-node="${escapeHtml(id)}">${escapeHtml(label)}${method ? ` <span class="chain-method">(${escapeHtml(method)})</span>` : ''}</span>`;
+  });
+
+  return `<div class="detail-section">
+    <div class="detail-section-title">Derivation Chain</div>
+    <div class="derivation-chain">${items.join(' → ')}</div>
+  </div>`;
 }
 
 function hideDetail() {

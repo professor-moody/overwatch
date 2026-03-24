@@ -162,6 +162,124 @@ describe('DashboardServer', () => {
     expect(payload.data.delta.removed_edges).toEqual(['old-alias-edge']);
   });
 
+  it('serveState includes history_count', () => {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveState(res);
+    const payload = JSON.parse(res.body);
+    expect(typeof payload.history_count).toBe('number');
+    expect(payload.state).toBeDefined();
+    expect(payload.graph).toBeDefined();
+  });
+
+  it('serveHistory returns full history with total count', () => {
+    engine.ingestFinding({
+      id: 'history-test',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      edges: [],
+    });
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveHistory('/api/history', res);
+    const payload = JSON.parse(res.body);
+    expect(payload.total).toBeGreaterThan(0);
+    expect(Array.isArray(payload.entries)).toBe(true);
+    expect(payload.entries.length).toBe(payload.total);
+  });
+
+  it('serveHistory respects limit parameter', () => {
+    // Ingest multiple findings to create activity
+    for (let i = 0; i < 5; i++) {
+      engine.ingestFinding({
+        id: `limit-test-${i}`,
+        agent_id: 'test-agent',
+        timestamp: `2026-03-21T10:0${i}:00Z`,
+        nodes: [{ id: `host-limit-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
+        edges: [],
+      });
+    }
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveHistory('/api/history?limit=2', res);
+    const payload = JSON.parse(res.body);
+    expect(payload.entries.length).toBe(2);
+    expect(payload.total).toBeGreaterThanOrEqual(5);
+  });
+
+  it('serveHistory filters by after/before parameters', () => {
+    for (let i = 0; i < 3; i++) {
+      engine.ingestFinding({
+        id: `time-filter-${i}`,
+        agent_id: 'test-agent',
+        timestamp: `2026-03-21T1${i}:00:00Z`,
+        nodes: [{ id: `host-tf-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
+        edges: [],
+      });
+    }
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    // Filter to only entries after 11:00
+    (dashboard as any).serveHistory('/api/history?after=2026-03-21T11:00:00Z', res);
+    const payload = JSON.parse(res.body);
+    // All returned entries should be after the threshold
+    for (const entry of payload.entries) {
+      expect(entry.timestamp > '2026-03-21T11:00:00Z').toBe(true);
+    }
+  });
+
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));

@@ -36,7 +36,56 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-reset').addEventListener('click', () => G.resetFilters());
   document.getElementById('btn-zoom-in').addEventListener('click', () => G.zoomIn());
   document.getElementById('btn-zoom-out').addEventListener('click', () => G.zoomOut());
-  document.getElementById('btn-export').addEventListener('click', () => G.exportScreenshot());
+  // Export dropdown
+  setupToolbarDropdown('export-dropdown', 'btn-export');
+  document.getElementById('btn-export-png')?.addEventListener('click', () => {
+    G.exportScreenshot();
+    closeAllDropdowns();
+  });
+  document.getElementById('btn-export-svg')?.addEventListener('click', () => {
+    G.exportSVG();
+    closeAllDropdowns();
+  });
+
+  // Layers dropdown
+  setupToolbarDropdown('layers-dropdown', 'btn-layers');
+  document.getElementById('btn-layer-attack-path')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    if (active) {
+      document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
+      G.showAttackPath();
+    } else {
+      G.clearAttackPathOverlay();
+    }
+    document.getElementById('btn-layer-compare-shortest').disabled = !active;
+    if (!active) document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+  });
+  document.getElementById('btn-layer-compare-shortest')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    if (active) {
+      G.showTheoreticalComparison();
+    } else {
+      G.clearTheoreticalComparison();
+    }
+  });
+  document.getElementById('btn-layer-cred-flow')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    if (active) {
+      document.getElementById('btn-layer-attack-path').dataset.active = 'false';
+      document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+      document.getElementById('btn-layer-compare-shortest').disabled = true;
+      G.showCredentialFlow();
+    } else {
+      G.clearCredentialFlowMode();
+    }
+  });
+
   document.getElementById('btn-shortcuts').addEventListener('click', () => {
     UI.toggleShortcutsOverlay();
   });
@@ -71,6 +120,11 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Close dropdowns when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.toolbar-dropdown')) closeAllDropdowns();
+  });
+
   // Connect WebSocket
   WS.connect({
     onInitialState(data) {
@@ -91,3 +145,19 @@ window.addEventListener('DOMContentLoaded', () => {
     },
   });
 });
+
+function setupToolbarDropdown(wrapperId, toggleBtnId) {
+  const wrapper = document.getElementById(wrapperId);
+  const btn = document.getElementById(toggleBtnId);
+  if (!wrapper || !btn) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = wrapper.classList.contains('open');
+    closeAllDropdowns();
+    if (!wasOpen) wrapper.classList.add('open');
+  });
+}
+
+function closeAllDropdowns() {
+  document.querySelectorAll('.toolbar-dropdown.open').forEach(el => el.classList.remove('open'));
+}

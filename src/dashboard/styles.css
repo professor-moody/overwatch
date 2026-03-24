@@ -184,6 +184,61 @@ body {
   flex-shrink: 0;
 }
 
+.toolbar-dropdown {
+  position: relative;
+}
+
+.toolbar-dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 150px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+.toolbar-dropdown.open .toolbar-dropdown-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar-dropdown-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: 600 12px var(--font);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+}
+
+.toolbar-dropdown-menu button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-dropdown-menu button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.toolbar-dropdown-menu button[data-active="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
 .toolbar-view-controls {
   display: flex;
   align-items: center;
@@ -1423,6 +1478,42 @@ button.stat-item {
   background: var(--bg-hover);
   color: var(--text-secondary);
   border-color: var(--border-strong);
+}
+
+/* Derivation chain in credential flow mode */
+.derivation-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.chain-node {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255,140,66,0.1);
+  color: #ff8c42;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chain-node:hover {
+  background: rgba(255,140,66,0.2);
+}
+
+.chain-current {
+  background: rgba(255,140,66,0.25);
+  font-weight: 600;
+  outline: 1px solid rgba(255,140,66,0.4);
+}
+
+.chain-method {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 11px;
 }
 
 /* Fan-out badge for credential nodes */

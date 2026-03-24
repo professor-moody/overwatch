@@ -41,7 +41,21 @@
       <button id="btn-layout" title="Toggle layout">Layout</button>
       <button id="btn-reset" title="Reset filters">Reset</button>
       <div class="toolbar-sep"></div>
-      <button id="btn-export" title="Export PNG">Export</button>
+      <div class="toolbar-dropdown" id="export-dropdown">
+        <button id="btn-export" title="Export graph">Export ▾</button>
+        <div class="toolbar-dropdown-menu" id="export-menu">
+          <button id="btn-export-png">Export PNG</button>
+          <button id="btn-export-svg">Export SVG</button>
+        </div>
+      </div>
+      <div class="toolbar-dropdown" id="layers-dropdown">
+        <button id="btn-layers" title="Visual layers">Layers ▾</button>
+        <div class="toolbar-dropdown-menu" id="layers-menu">
+          <button id="btn-layer-attack-path" data-active="false">Attack Path</button>
+          <button id="btn-layer-compare-shortest" data-active="false" disabled>Compare Shortest</button>
+          <button id="btn-layer-cred-flow" data-active="false">Credential Flow</button>
+        </div>
+      </div>
       <button id="btn-shortcuts" title="Keyboard shortcuts">?</button>
     </div>
 
