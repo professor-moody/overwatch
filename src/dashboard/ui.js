@@ -824,9 +824,10 @@ function buildConnectionSection(nodeId, graph, direction) {
     const hidden = capped ? groupRows.slice(CONNECTION_GROUP_CAP) : [];
 
     groupsHtml += `<div class="connection-group" data-group-id="${escapeHtml(groupId)}">
-      <div class="connection-group-header">
+      <div class="connection-group-header" data-edge-type="${escapeHtml(edgeType)}" title="Highlight all ${escapeHtml(edgeType)} edges">
         <span class="connection-type">${escapeHtml(edgeType)}</span>
         <span class="connection-group-count">${groupRows.length}</span>
+        <span class="connection-highlight-icon">⊙</span>
       </div>
       <div class="connection-group-body">
         ${visible.map(row => renderConnectionRow(row, dirLabel)).join('')}
@@ -868,6 +869,14 @@ function attachConnectionHandlers() {
       row.classList.add('active');
       g.highlightEdges([edgeId]);
       navigateToNode(nodeId, { edgeIds: [edgeId], hops: 1, persistent: g.graphMode === 'focused' });
+    });
+  });
+  body.querySelectorAll('.connection-group-header[data-edge-type]').forEach((header) => {
+    header.style.cursor = 'pointer';
+    header.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const edgeType = header.getAttribute('data-edge-type');
+      if (edgeType) G().setEdgeTypeFilter(edgeType);
     });
   });
 }

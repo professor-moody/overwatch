@@ -97,6 +97,9 @@ describe('dashboard graph helpers', () => {
           classList: makeClassList(),
         };
       },
+      querySelectorAll() {
+        return [];
+      },
     };
     (globalThis as any).graphology = { Graph };
   });
@@ -382,6 +385,81 @@ describe('dashboard graph helpers', () => {
     expect(chainIds).toContain('cred-child1');
     expect(chainIds).toContain('cred-child2');
     expect(chainIds.length).toBe(3);
+  });
+
+  it('getEdgeTypeCounts returns correct per-type breakdown with inferred flag', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: '10.10.10.2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addNode('user-a', { label: 'alice', nodeType: 'user', color: '#fff', x: 2, y: 0, _props: { type: 'user' } });
+
+    graph.addEdgeWithKey('host-a--ADMIN_TO--host-b', 'host-a', 'host-b', { edgeType: 'ADMIN_TO', inferredByRule: null });
+    graph.addEdgeWithKey('host-b--ADMIN_TO--host-a', 'host-b', 'host-a', { edgeType: 'ADMIN_TO', inferredByRule: 'test-rule' });
+    graph.addEdgeWithKey('user-a--HAS_SESSION--host-a', 'user-a', 'host-a', { edgeType: 'HAS_SESSION', inferredByRule: null });
+
+    const counts = graphModule.getEdgeTypeCounts();
+    expect(counts.get('ADMIN_TO').total).toBe(2);
+    expect(counts.get('ADMIN_TO').confirmed).toBe(1);
+    expect(counts.get('ADMIN_TO').inferred).toBe(1);
+    expect(counts.get('HAS_SESSION').total).toBe(1);
+    expect(counts.get('HAS_SESSION').confirmed).toBe(1);
+    expect(counts.get('HAS_SESSION').inferred).toBe(0);
+  });
+
+  it('setEdgeTypeFilter toggles on and clearEdgeFilter resets', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: '10.10.10.2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('host-a--ADMIN_TO--host-b', 'host-a', 'host-b', { edgeType: 'ADMIN_TO' });
+
+    expect(graphModule.edgeTypeFilter).toBe(null);
+
+    graphModule.setEdgeTypeFilter('ADMIN_TO');
+    expect(graphModule.edgeTypeFilter).toEqual({ type: 'ADMIN_TO' });
+
+    graphModule.clearEdgeFilter();
+    expect(graphModule.edgeTypeFilter).toBe(null);
+  });
+
+  it('setEdgeSourceFilter toggles confirmed/inferred', async () => {
+    const graphModule = await loadGraphModule();
+    graphModule.init();
+
+    expect(graphModule.edgeSourceFilter).toBe(null);
+
+    graphModule.setEdgeSourceFilter('inferred');
+    expect(graphModule.edgeSourceFilter).toBe('inferred');
+
+    // Toggle off same source
+    graphModule.setEdgeSourceFilter('inferred');
+    expect(graphModule.edgeSourceFilter).toBe(null);
+  });
+
+  it('buildEdgeAttributes preserves inferredByRule from props', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: '10.10.10.2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+
+    // Simulate loading graph data with inferred_by_rule on an edge
+    graphModule.loadGraphData({
+      nodes: [
+        { id: 'host-a', properties: { type: 'host', label: '10.10.10.1' } },
+        { id: 'host-b', properties: { type: 'host', label: '10.10.10.2' } },
+      ],
+      edges: [
+        { id: 'host-a--POTENTIAL_AUTH--host-b', source: 'host-a', target: 'host-b', properties: { type: 'POTENTIAL_AUTH', confidence: 0.7, inferred_by_rule: 'kerberoastable' } },
+      ],
+    });
+
+    const attrs = graph.getEdgeAttributes('host-a--POTENTIAL_AUTH--host-b');
+    expect(attrs.inferredByRule).toBe('kerberoastable');
+    expect(attrs.edgeType).toBe('POTENTIAL_AUTH');
   });
 
   it('treats certificate authorities as high-signal nodes with contextual focus', async () => {

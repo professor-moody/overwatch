@@ -50,10 +50,20 @@
       </div>
       <div class="toolbar-dropdown" id="layers-dropdown">
         <button id="btn-layers" title="Visual layers">Layers ▾</button>
-        <div class="toolbar-dropdown-menu" id="layers-menu">
+        <div class="toolbar-dropdown-menu toolbar-dropdown-menu--wide" id="layers-menu">
           <button id="btn-layer-attack-path" data-active="false">Attack Path</button>
           <button id="btn-layer-compare-shortest" data-active="false" disabled>Compare Shortest</button>
           <button id="btn-layer-cred-flow" data-active="false">Credential Flow</button>
+          <div class="edge-filter-divider"></div>
+          <div class="edge-filter-section">
+            <div class="edge-filter-heading">Edge Source</div>
+            <div class="edge-source-toggles">
+              <button id="btn-edge-confirmed" data-active="false">Confirmed</button>
+              <button id="btn-edge-inferred" data-active="false">Inferred</button>
+            </div>
+            <div class="edge-filter-heading">Edge Types</div>
+            <div class="edge-type-list" id="edge-type-list"></div>
+          </div>
         </div>
       </div>
       <button id="btn-shortcuts" title="Keyboard shortcuts">?</button>

@@ -86,6 +86,33 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Edge source filter toggles
+  document.getElementById('btn-edge-confirmed')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    document.getElementById('btn-edge-inferred').dataset.active = 'false';
+    // Clear overlay buttons
+    document.getElementById('btn-layer-attack-path').dataset.active = 'false';
+    document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+    document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
+    document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
+    if (active) G.setEdgeSourceFilter('confirmed');
+    else G.clearEdgeFilter();
+  });
+  document.getElementById('btn-edge-inferred')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    document.getElementById('btn-edge-confirmed').dataset.active = 'false';
+    document.getElementById('btn-layer-attack-path').dataset.active = 'false';
+    document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+    document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
+    document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
+    if (active) G.setEdgeSourceFilter('inferred');
+    else G.clearEdgeFilter();
+  });
+
   document.getElementById('btn-shortcuts').addEventListener('click', () => {
     UI.toggleShortcutsOverlay();
   });
@@ -130,6 +157,7 @@ window.addEventListener('DOMContentLoaded', () => {
     onInitialState(data) {
       G.loadGraphData(data.graph);
       UI.updateUI(data.state);
+      refreshEdgeTypeList();
       // Delayed minimap update after layout settles
       setTimeout(() => G.updateMinimap(), 500);
     },
@@ -137,12 +165,14 @@ window.addEventListener('DOMContentLoaded', () => {
       G.syncGraphData(data.graph);
       UI.updateUI(data.state);
       G.updateMinimap();
+      refreshEdgeTypeList();
       checkHistoryChanged(data.state || data);
     },
     onGraphUpdate(data) {
       G.mergeGraphDelta(data.delta);
       UI.updateUI(data.state);
       G.updateMinimap();
+      refreshEdgeTypeList();
       checkHistoryChanged(data.state || data);
     },
   });
@@ -162,6 +192,48 @@ function setupToolbarDropdown(wrapperId, toggleBtnId) {
 
 function closeAllDropdowns() {
   document.querySelectorAll('.toolbar-dropdown.open').forEach(el => el.classList.remove('open'));
+}
+
+function refreshEdgeTypeList() {
+  const G = window.OverwatchGraph;
+  if (!G) return;
+  const list = document.getElementById('edge-type-list');
+  if (!list) return;
+  const counts = G.getEdgeTypeCounts();
+  if (counts.size === 0) {
+    list.innerHTML = '<div style="padding:4px 10px;color:var(--text-muted);font-size:11px">No edges</div>';
+    return;
+  }
+  const categories = G.EDGE_CATEGORIES || {};
+  const activeType = G.edgeTypeFilter?.type || null;
+  const sorted = [...counts.entries()].sort((a, b) => b[1].total - a[1].total);
+  list.innerHTML = sorted.map(([edgeType, c]) => {
+    const color = categories[edgeType] || 'rgba(110,158,255,0.25)';
+    const activeClass = activeType === edgeType ? ' active' : '';
+    const inferLabel = c.inferred > 0 ? ` (${c.inferred} inf)` : '';
+    return `<div class="edge-type-row${activeClass}" data-edge-type="${edgeType}">
+      <span class="edge-type-dot" style="background:${color}"></span>
+      <span class="edge-type-name">${edgeType}</span>
+      <span class="edge-type-count">${c.total}${inferLabel}</span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.edge-type-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const et = row.dataset.edgeType;
+      // Clear source filter buttons
+      document.getElementById('btn-edge-confirmed').dataset.active = 'false';
+      document.getElementById('btn-edge-inferred').dataset.active = 'false';
+      // Clear overlay buttons
+      document.getElementById('btn-layer-attack-path').dataset.active = 'false';
+      document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+      document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
+      // Toggle active state on rows
+      const wasActive = row.classList.contains('active');
+      list.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
+      if (!wasActive) row.classList.add('active');
+      G.setEdgeTypeFilter(et);
+    });
+  });
 }
 
 function checkHistoryChanged(state) {

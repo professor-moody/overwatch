@@ -112,6 +112,10 @@ let activityHistoryCache = null; // { entries: [], knownTotal: N } | null
 let credentialFlowMode = false;
 let credFlowData = null; // { flowEdges: Set, flowNodes: Set, chains: [] }
 
+// Edge type filter
+let edgeTypeFilter = null; // null | { type: string } — highlight all edges of this type
+let edgeSourceFilter = null; // null | 'confirmed' | 'inferred'
+
 // Neighborhood focus
 let focusNode = null;
 let focusNeighborhood = null; // Set of visible node IDs when focused
@@ -431,11 +435,13 @@ function edgeReducer(edge, data) {
     return res;
   }
 
-  // Hide POTENTIAL_AUTH edges unless an endpoint is in focus/path mode or credential flow is active
+  // Hide POTENTIAL_AUTH edges unless an endpoint is in focus/path mode or credential flow/edge filter is active
   if (data.edgeType === 'POTENTIAL_AUTH') {
     const src = graph.source(edge);
     const tgt = graph.target(edge);
     const isFocused = credentialFlowMode
+      || (edgeTypeFilter && edgeTypeFilter.type === 'POTENTIAL_AUTH')
+      || (edgeSourceFilter !== null)
       || src === focusNode || tgt === focusNode
       || pathNodes.has(src) || pathNodes.has(tgt)
       || inspectedEdgeIds.has(edge);
@@ -443,6 +449,36 @@ function edgeReducer(edge, data) {
       res.hidden = true;
       return res;
     }
+  }
+
+  // Edge type filter
+  if (edgeTypeFilter) {
+    if (data.edgeType === edgeTypeFilter.type) {
+      res.color = EDGE_CATEGORIES[data.edgeType] || DEFAULT_EDGE_COLOR;
+      res.size = 2.5;
+      res.zIndex = 3;
+    } else {
+      res.color = 'rgba(255,255,255,0.03)';
+      res.size = 0.3;
+      res.zIndex = 0;
+    }
+    return res;
+  }
+
+  // Edge source filter (confirmed vs inferred)
+  if (edgeSourceFilter) {
+    const isInferred = !!data.inferredByRule;
+    const matches = (edgeSourceFilter === 'inferred' && isInferred) || (edgeSourceFilter === 'confirmed' && !isInferred);
+    if (matches) {
+      res.color = EDGE_CATEGORIES[data.edgeType] || DEFAULT_EDGE_COLOR;
+      res.size = 2;
+      res.zIndex = 2;
+    } else {
+      res.color = 'rgba(255,255,255,0.03)';
+      res.size = 0.3;
+      res.zIndex = 0;
+    }
+    return res;
   }
 
   // Credential flow mode
@@ -1207,6 +1243,8 @@ function clearAllOverlays() {
   attackPathOverlay = null;
   credentialFlowMode = false;
   credFlowData = null;
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
 
   const bar = document.getElementById('path-info-bar');
   if (bar) bar.classList.remove('visible');
@@ -1219,8 +1257,116 @@ function clearAllOverlays() {
   if (cs) { cs.dataset.active = 'false'; cs.disabled = true; }
   if (cf) cf.dataset.active = 'false';
 
+  // Reset edge filter UI
+  document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
+  const confBtn = document.getElementById('btn-edge-confirmed');
+  const infBtn = document.getElementById('btn-edge-inferred');
+  if (confBtn) confBtn.dataset.active = 'false';
+  if (infBtn) infBtn.dataset.active = 'false';
+
   if (renderer) renderer.refresh();
   updateMinimap();
+}
+
+// ============================================================
+// Edge Type Filter
+// ============================================================
+
+function setEdgeTypeFilter(edgeType) {
+  // Toggle off if same type
+  if (edgeTypeFilter && edgeTypeFilter.type === edgeType) {
+    clearEdgeFilter();
+    return;
+  }
+  // Clear other overlays
+  attackPathOverlay = null;
+  credentialFlowMode = false;
+  credFlowData = null;
+  pathEdges.clear();
+  pathNodes.clear();
+  edgeSourceFilter = null;
+  edgeTypeFilter = { type: edgeType };
+
+  // Count matching edges
+  let count = 0;
+  graph.forEachEdge((edge, attrs) => {
+    if (attrs.edgeType === edgeType) count++;
+  });
+
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent = `Showing: ${count} ${edgeType} edge${count !== 1 ? 's' : ''}`;
+    bar.querySelector('.path-edges').textContent = '';
+    bar.classList.add('visible');
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function setEdgeSourceFilter(source) {
+  // Toggle off if same source
+  if (edgeSourceFilter === source) {
+    clearEdgeFilter();
+    return;
+  }
+  // Clear other overlays
+  attackPathOverlay = null;
+  credentialFlowMode = false;
+  credFlowData = null;
+  pathEdges.clear();
+  pathNodes.clear();
+  edgeTypeFilter = null;
+  edgeSourceFilter = source;
+
+  let count = 0;
+  graph.forEachEdge((edge, attrs) => {
+    const isInferred = !!attrs.inferredByRule;
+    if ((source === 'inferred' && isInferred) || (source === 'confirmed' && !isInferred)) count++;
+  });
+
+  const label = source === 'confirmed' ? 'confirmed' : 'inferred';
+  const bar = document.getElementById('path-info-bar');
+  if (bar) {
+    bar.querySelector('.path-label').textContent = `Showing: ${count} ${label} edge${count !== 1 ? 's' : ''}`;
+    bar.querySelector('.path-edges').textContent = '';
+    bar.classList.add('visible');
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function clearEdgeFilter() {
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
+
+  if (typeof document !== 'undefined') {
+    const bar = document.getElementById('path-info-bar');
+    if (bar) bar.classList.remove('visible');
+    document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
+    const confBtn = document.getElementById('btn-edge-confirmed');
+    const infBtn = document.getElementById('btn-edge-inferred');
+    if (confBtn) confBtn.dataset.active = 'false';
+    if (infBtn) infBtn.dataset.active = 'false';
+  }
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function getEdgeTypeCounts() {
+  const counts = new Map();
+  if (!graph) return counts;
+  graph.forEachEdge((edge, attrs) => {
+    const et = attrs.edgeType || '?';
+    if (!counts.has(et)) counts.set(et, { total: 0, confirmed: 0, inferred: 0 });
+    const entry = counts.get(et);
+    entry.total++;
+    if (attrs.inferredByRule) entry.inferred++;
+    else entry.confirmed++;
+  });
+  return counts;
 }
 
 // ============================================================
@@ -1441,6 +1587,7 @@ function buildEdgeAttributes(props) {
     confidence: confidence,
     edgeType: edgeType,
     label: edgeType,
+    inferredByRule: props.inferred_by_rule || null,
   };
 }
 
@@ -2360,6 +2507,11 @@ window.OverwatchGraph = {
   // Path helpers
   findShortestPath,
   buildActualPath,
+  // Edge type filter
+  setEdgeTypeFilter,
+  setEdgeSourceFilter,
+  clearEdgeFilter,
+  getEdgeTypeCounts,
   get graph() { return graph; },
   get renderer() { return renderer; },
   get layoutRunning() { return layoutRunning; },
@@ -2368,6 +2520,9 @@ window.OverwatchGraph = {
   get activityHistoryCacheTotal() { return activityHistoryCache ? activityHistoryCache.knownTotal : 0; },
   get credentialFlowMode() { return credentialFlowMode; },
   get credFlowData() { return credFlowData; },
+  get edgeTypeFilter() { return edgeTypeFilter; },
+  get edgeSourceFilter() { return edgeSourceFilter; },
+  EDGE_CATEGORIES,
   NODE_COLORS,
   NODE_BASE_SIZES,
 };
