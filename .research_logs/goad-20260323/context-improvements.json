@@ -3,33 +3,40 @@
     {
       "area": "incomplete_node",
       "observation": "Incomplete-node exploration produced strong yield and likely benefited from richer host/service context.",
-      "evidence_count": 2,
+      "evidence_count": 12,
       "confidence": "low"
     },
     {
       "area": "untested_edge",
-      "observation": "untested_edge was underrepresented in the engagement, so conclusions about its yield are weak.",
-      "evidence_count": 0,
+      "observation": "untested_edge produced 100% apparent yield across 1469 observed follow-ups.",
+      "evidence_count": 1469,
       "confidence": "low"
     },
     {
       "area": "inferred_edge",
-      "observation": "inferred_edge produced 81% apparent yield across 16 observed follow-ups.",
-      "evidence_count": 16,
+      "observation": "inferred_edge produced 95% apparent yield across 19 observed follow-ups.",
+      "evidence_count": 19,
       "confidence": "low"
     }
   ],
   "context_gaps": [
     {
       "area": "parser improvement",
-      "gap": "2 service nodes lack banner, version, or protocol enrichment.",
-      "recommendation": "Improve service parsing so Claude gets richer service context instead of making decisions from bare open ports.",
+      "gap": "5 live host nodes still lack operating-system enrichment.",
+      "recommendation": "Improve parser or manual enrichment coverage so hosts carry OS context before follow-on reasoning.",
+      "severity": "warning",
+      "confidence": "medium"
+    },
+    {
+      "area": "skill-library improvement",
+      "gap": "Techniques were attempted without matching skill coverage: netexec.",
+      "recommendation": "Add or improve skills for the techniques repeatedly attempted during the engagement.",
       "severity": "warning",
       "confidence": "medium"
     },
     {
       "area": "validation-warning improvement",
-      "gap": "1 history entries indicate failures or access denial, which may mean validation warnings were too weak or too generic.",
+      "gap": "6 history entries indicate failures or access denial, which may mean validation warnings were too weak or too generic.",
       "recommendation": "Strengthen validate_action guidance for recurring failure patterns so Claude gets clearer pre-execution context.",
       "severity": "warning",
       "confidence": "low"
@@ -40,6 +47,13 @@
       "recommendation": "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance.",
       "severity": "critical",
       "confidence": "high"
+    },
+    {
+      "area": "inference-rule improvement",
+      "gap": "1474/1474 inferred edges remained unconfirmed.",
+      "recommendation": "Improve inference rules or enrich supporting node context so hypotheses arrive with better evidence.",
+      "severity": "warning",
+      "confidence": "medium"
     }
   ],
   "opsec_observations": [],
@@ -52,22 +66,24 @@
     "recommendation": "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance."
   },
   "recommendations": [
-    "Improve service parsing so frontier reasoning includes richer service details.",
+    "Improve parser or manual enrichment coverage for host operating-system context.",
+    "Add or update skills for techniques that appeared in the engagement without matching coverage.",
     "Strengthen validation warnings for recurring failure patterns observed in the history.",
-    "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance."
+    "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance.",
+    "Improve inference support context rather than trying to compensate with ranking formulas."
   ],
   "success_by_frontier_type": {
     "incomplete_node": {
-      "total": 2,
-      "successful": 2
+      "total": 12,
+      "successful": 12
     },
     "untested_edge": {
-      "total": 0,
-      "successful": 0
+      "total": 1469,
+      "successful": 1469
     },
     "inferred_edge": {
-      "total": 16,
-      "successful": 13
+      "total": 19,
+      "successful": 18
     }
   }
 }

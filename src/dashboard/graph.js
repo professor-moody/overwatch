@@ -1132,7 +1132,7 @@ function clearAttackPathOverlay() {
 function buildCredentialFlowData() {
   if (!graph) return { flowEdges: new Set(), flowNodes: new Set(), chains: [] };
 
-  const CRED_EDGE_TYPES = new Set(['DERIVED_FROM', 'OWNS_CRED', 'VALID_ON', 'POTENTIAL_AUTH']);
+  const CRED_EDGE_TYPES = new Set(['DERIVED_FROM', 'OWNS_CRED', 'VALID_ON', 'POTENTIAL_AUTH', 'DUMPED_FROM']);
   const flowEdges = new Set();
   const flowNodes = new Set();
 

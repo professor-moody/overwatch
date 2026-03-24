@@ -1,0 +1,75 @@
+[
+  {
+    "rule": {
+      "id": "suggested-runs-host-service",
+      "name": "Auto-infer RUNS from host to service",
+      "description": "Pattern observed 59 times: host nodes frequently have RUNS edges to service nodes",
+      "trigger": {
+        "node_type": "service"
+      },
+      "produces": [
+        {
+          "edge_type": "RUNS",
+          "source_selector": "parent_host",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "host→RUNS→service appeared 59 times with no covering inference rule",
+    "occurrences": 59
+  },
+  {
+    "rule": {
+      "id": "suggested-owns_cred-user-credential",
+      "name": "Auto-infer OWNS_CRED from user to credential",
+      "description": "Pattern observed 40 times: user nodes frequently have OWNS_CRED edges to credential nodes",
+      "trigger": {
+        "node_type": "credential"
+      },
+      "produces": [
+        {
+          "edge_type": "OWNS_CRED",
+          "source_selector": "domain_users",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "user→OWNS_CRED→credential appeared 40 times with no covering inference rule",
+    "occurrences": 40
+  },
+  {
+    "rule": {
+      "id": "suggested-review-rule-kerberos-domain",
+      "name": "Review low-performing rule: rule-kerberos-domain",
+      "description": "Only 0% of edges from rule 'rule-kerberos-domain' were confirmed (0/9). Consider raising its confidence threshold or removing it.",
+      "trigger": {},
+      "produces": []
+    },
+    "evidence": "0/9 inferred edges confirmed for rule rule-kerberos-domain",
+    "occurrences": 9
+  },
+  {
+    "rule": {
+      "id": "suggested-review-rule-cred-fanout",
+      "name": "Review low-performing rule: rule-cred-fanout",
+      "description": "Only 0% of edges from rule 'rule-cred-fanout' were confirmed (0/1465). Consider raising its confidence threshold or removing it.",
+      "trigger": {},
+      "produces": []
+    },
+    "evidence": "0/1465 inferred edges confirmed for rule rule-cred-fanout",
+    "occurrences": 1465
+  },
+  {
+    "rule": {
+      "id": "suggested-review-low-confidence",
+      "name": "Review low-performing inference rules",
+      "description": "Only 0% of inferred edges were confirmed overall. Consider raising confidence thresholds or removing noisy rules.",
+      "trigger": {},
+      "produces": []
+    },
+    "evidence": "0/1474 inferred edges confirmed",
+    "occurrences": 1474
+  }
+]

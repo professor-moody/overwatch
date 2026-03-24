@@ -759,6 +759,8 @@ function buildServiceSummary(nodeId, graph) {
       const serviceAttrs = graph.getNodeAttributes(entry.targetId);
       const props = serviceAttrs._props || {};
       return {
+        nodeId: entry.targetId,
+        edgeId: entry.edgeId,
         type: props.service_name || serviceAttrs.label || 'service',
         target: window.OverwatchNodeDisplay.getNodeDisplayLabel(props, entry.targetId),
         meta: props.version || `port ${props.port || '?'}`,
@@ -772,7 +774,7 @@ function buildServiceSummary(nodeId, graph) {
     <div class="detail-section-title">Open Services (${serviceRows.length})</div>
     <div class="service-summary-list">
       ${serviceRows.map(service => `
-        <div class="service-summary-item">
+        <div class="service-summary-item" data-node-id="${escapeHtml(service.nodeId)}" data-edge-id="${escapeHtml(service.edgeId)}">
           <span class="connection-direction">SVC</span>
           <span class="service-summary-type">${escapeHtml(service.type)}</span>
           <span class="service-summary-target">${escapeHtml(service.target)}</span>
@@ -869,6 +871,19 @@ function attachConnectionHandlers() {
       row.classList.add('active');
       g.highlightEdges([edgeId]);
       navigateToNode(nodeId, { edgeIds: [edgeId], hops: 1, persistent: g.graphMode === 'focused' });
+    });
+  });
+  body.querySelectorAll('.service-summary-item[data-node-id]').forEach((item) => {
+    item.style.cursor = 'pointer';
+    item.addEventListener('click', () => {
+      const nodeId = item.getAttribute('data-node-id');
+      const edgeId = item.getAttribute('data-edge-id');
+      if (!nodeId) return;
+      const g = G();
+      body.querySelectorAll('.service-summary-item.active').forEach((el) => el.classList.remove('active'));
+      item.classList.add('active');
+      if (edgeId) g.highlightEdges([edgeId]);
+      navigateToNode(nodeId, { edgeIds: edgeId ? [edgeId] : [], hops: 1, persistent: g.graphMode === 'focused' });
     });
   });
   body.querySelectorAll('.connection-group-header[data-edge-type]').forEach((header) => {

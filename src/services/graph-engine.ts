@@ -45,13 +45,13 @@ const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-kerberos-domain',
     name: 'Kerberos implies domain membership',
-    description: 'Host running Kerberos (port 88) is likely a domain controller',
+    description: 'Host running Kerberos (port 88) is likely a domain controller — matched by hostname suffix',
     trigger: { node_type: 'service', property_match: { service_name: 'kerberos' } },
     produces: [{
       edge_type: 'MEMBER_OF_DOMAIN',
       source_selector: 'parent_host',
-      target_selector: 'domain_nodes',
-      confidence: 0.9
+      target_selector: 'matching_domain',
+      confidence: 0.7
     }]
   },
   {
@@ -81,13 +81,13 @@ const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-cred-fanout',
     name: 'New credential tests against compatible services',
-    description: 'When a new credential is found, create POTENTIAL_AUTH edges to all services accepting that cred type',
+    description: 'When a new credential is found, create POTENTIAL_AUTH edges to compatible services in the same domain',
     trigger: { node_type: 'credential' },
     produces: [{
       edge_type: 'POTENTIAL_AUTH',
       source_selector: 'trigger_node',
-      target_selector: 'compatible_services',
-      confidence: 0.6
+      target_selector: 'compatible_services_same_domain',
+      confidence: 0.4
     }]
   },
   {
@@ -627,8 +627,21 @@ export class GraphEngine {
       inferredEdges.push(...inferred);
     }
 
-    // Backfill cred_domain from graph ownership paths for credentials missing domain qualification
-    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
+    // Backfill cred_domain from graph ownership paths for credentials missing domain qualification.
+    // Include credentials owned by users in edgeEndpoints — handles incremental ingestion where
+    // a MEMBER_OF_DOMAIN edge arrives after the credential was already created.
+    const backfillCandidates = new Set([...newNodes, ...updatedNodes]);
+    for (const nodeId of edgeEndpoints) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
+      if (attrs.type !== 'user') continue;
+      for (const edge of this.ctx.graph.outEdges(nodeId)) {
+        if (this.ctx.graph.getEdgeAttributes(edge).type === 'OWNS_CRED') {
+          backfillCandidates.add(this.ctx.graph.target(edge));
+        }
+      }
+    }
+    for (const nodeId of backfillCandidates) {
       if (!this.ctx.graph.hasNode(nodeId)) continue;
       const attrs = this.ctx.graph.getNodeAttributes(nodeId);
       if (attrs.type !== 'credential') continue;

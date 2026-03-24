@@ -1,0 +1,10 @@
+Engagement: GOAD First Run (goad-20260323)
+Graph: 151 nodes, 1590 edges
+Objectives: 1/1 achieved
+Agents: 0 dispatched (0 completed)
+Activity: 1822 log entries
+---
+Inference suggestions: 5
+Skill gaps: 1 missing, 29 unused
+Context improvements: 5 recommendations
+Training traces: 1766 steps (mixed quality)

@@ -173,6 +173,45 @@ export class InferenceEngine {
     return inferred;
   }
 
+  private resolveCredentialDomains(credNodeId: string): Set<string> {
+    const domains = new Set<string>();
+    // Walk credential → (OWNS_CRED inbound from user) → user → (MEMBER_OF_DOMAIN outbound) → domain
+    for (const edge of this.ctx.graph.inEdges(credNodeId) as string[]) {
+      if (this.ctx.graph.getEdgeAttributes(edge).type !== 'OWNS_CRED') continue;
+      const userId = this.ctx.graph.source(edge);
+      for (const domEdge of this.ctx.graph.outEdges(userId) as string[]) {
+        if (this.ctx.graph.getEdgeAttributes(domEdge).type !== 'MEMBER_OF_DOMAIN') continue;
+        const domId = this.ctx.graph.target(domEdge);
+        const domNode = this.getNode(domId);
+        const dName = domNode?.domain_name || domNode?.label;
+        if (dName) domains.add(dName.toLowerCase());
+      }
+    }
+    return domains;
+  }
+
+  private getParentHosts(serviceNodeId: string): string[] {
+    const hosts: string[] = [];
+    for (const edge of this.ctx.graph.inEdges(serviceNodeId) as string[]) {
+      if (this.ctx.graph.getEdgeAttributes(edge).type === 'RUNS') {
+        hosts.push(this.ctx.graph.source(edge));
+      }
+    }
+    return hosts;
+  }
+
+  private getNodeDomains(nodeId: string): string[] {
+    const domains: string[] = [];
+    for (const edge of this.ctx.graph.outEdges(nodeId) as string[]) {
+      if (this.ctx.graph.getEdgeAttributes(edge).type !== 'MEMBER_OF_DOMAIN') continue;
+      const domId = this.ctx.graph.target(edge);
+      const domNode = this.getNode(domId);
+      const dName = domNode?.domain_name || domNode?.label;
+      if (dName) domains.push(dName.toLowerCase());
+    }
+    return domains;
+  }
+
   private resolveSelector(selector: string, triggerNodeId: string, rule?: InferenceRule): string[] {
     const node = this.getNode(triggerNodeId);
     if (!node) return [];
@@ -227,6 +266,45 @@ export class InferenceEngine {
             return false;
           })
           .map(n => n.id);
+      }
+
+      case 'compatible_services_same_domain': {
+        // Domain-scoped variant: only return services whose parent host is in
+        // the same domain as the credential's owner.  Falls back to all
+        // compatible services when no domain path can be resolved.
+        if (!isCredentialUsableForAuth(node)) return [];
+        const credDomains = this.resolveCredentialDomains(triggerNodeId);
+        const allCompat = this.resolveSelector('compatible_services', triggerNodeId, rule);
+        if (credDomains.size === 0) return allCompat; // fallback for single-domain / unknown
+        return allCompat.filter(svcId => {
+          const hostIds = this.getParentHosts(svcId);
+          return hostIds.some(hId => {
+            const hostDomains = this.getNodeDomains(hId);
+            return hostDomains.some(d => credDomains.has(d));
+          });
+        });
+      }
+
+      case 'matching_domain': {
+        // Hostname-suffix matching: given a trigger service node, find its
+        // parent host's hostname and match against domain nodes whose name
+        // is a suffix of that hostname.  Produces nothing if no match.
+        const hosts = this.resolveSelector('parent_host', triggerNodeId, rule);
+        const matched = new Set<string>();
+        const domains = this.getNodesByType('domain');
+        for (const hId of hosts) {
+          const hostNode = this.getNode(hId);
+          const hn = hostNode?.hostname || hostNode?.label || '';
+          if (!hn || !hn.includes('.')) continue;
+          const hnLower = hn.toLowerCase();
+          for (const d of domains) {
+            const dName = (d.domain_name || d.label || '').toLowerCase();
+            if (dName && hnLower.endsWith(dName)) {
+              matched.add(d.id);
+            }
+          }
+        }
+        return Array.from(matched);
       }
 
       case 'enrollable_users':

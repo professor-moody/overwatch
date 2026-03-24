@@ -92,6 +92,45 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
     });
+
+    it('infers OS from service banners when osmatch is absent', () => {
+      const noOsNmap = `<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="10.10.10.20" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="445">
+        <state state="open"/>
+        <service name="microsoft-ds" product="Microsoft Windows" version="Server 2019"/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/>
+    <address addr="10.10.10.21" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.5"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>`;
+      const finding = parseNmapXml(noOsNmap);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      const winHost = hosts.find(h => h.ip === '10.10.10.20');
+      const linuxHost = hosts.find(h => h.ip === '10.10.10.21');
+      expect(winHost?.os).toBe('Windows');
+      expect(linuxHost?.os).toBe('Linux/Ubuntu');
+    });
+
+    it('does not override osmatch with banner inference', () => {
+      // The original sampleNmap has osmatch="Windows Server 2019" — banner inference should not override
+      const finding = parseNmapXml(sampleNmap);
+      const host = finding.nodes.find(n => n.ip === '10.10.10.5');
+      expect(host?.os).toBe('Windows Server 2019');
+    });
   });
 
   describe('parseNxc', () => {
@@ -529,11 +568,17 @@ describe('Output Parsers', () => {
       expect(creds[0].cred_domain_source).toBe('explicit');
     });
 
-    it('creates MEMBER_OF_DOMAIN edges when domain is known', () => {
+    it('does NOT create MEMBER_OF_DOMAIN from context.domain for unqualified SAM lines', () => {
       const noDomainSAM = 'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
       const finding = parseSecretsdump(noDomainSAM, 'test-agent', { domain: 'acme.local' });
       const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
-      expect(domEdges.length).toBe(1);
+      // Unqualified SAM accounts must NOT get MEMBER_OF_DOMAIN from context fallback
+      expect(domEdges.length).toBe(0);
+      // But cred_domain is still set as a soft hint
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].cred_domain).toBe('acme.local');
+      expect(creds[0].cred_domain_source).toBe('parser_context');
+      // Context domain node is still emitted for graph completeness
       const domains = finding.nodes.filter(n => n.type === 'domain');
       expect(domains.length).toBe(1);
       expect(domains[0].domain_name).toBe('acme.local');
@@ -550,7 +595,7 @@ describe('Output Parsers', () => {
       expect(hosts[0].label).toBe('10.10.10.5');
     });
 
-    it('creates both DUMPED_FROM and MEMBER_OF_DOMAIN with full context', () => {
+    it('creates DUMPED_FROM but NOT MEMBER_OF_DOMAIN for unqualified SAM lines with full context', () => {
       const sam = [
         'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
         'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
@@ -559,9 +604,22 @@ describe('Output Parsers', () => {
       const dumpEdges = finding.edges.filter(e => e.properties.type === 'DUMPED_FROM');
       const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
       expect(dumpEdges.length).toBe(2);
-      expect(domEdges.length).toBe(2);
+      // Unqualified SAM lines must NOT produce MEMBER_OF_DOMAIN from context
+      expect(domEdges.length).toBe(0);
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.every(c => c.dump_source_host === '10.10.10.5')).toBe(true);
+      // Credential cred_domain is still set as a hint
+      expect(creds.every(c => c.cred_domain === 'acme.local')).toBe(true);
+    });
+
+    it('creates MEMBER_OF_DOMAIN for NTDS lines with explicit DOMAIN prefix', () => {
+      const ntds = 'ACME\\jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(ntds, 'test-agent', { source_host: '10.10.10.5' });
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].cred_domain).toBe('ACME');
+      expect(creds[0].cred_domain_source).toBe('explicit');
     });
 
     it('preserves existing behavior without context', () => {
@@ -571,6 +629,22 @@ describe('Output Parsers', () => {
       expect(dumpEdges.length).toBe(0);
       // Only ACME\\jdoe should produce MEMBER_OF_DOMAIN (explicit domain)
       expect(domEdges.length).toBe(1);
+    });
+
+    it('source_host stub node includes ip property when source_host is an IP', () => {
+      const sam = 'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(sam, 'test-agent', { source_host: '10.10.10.5' });
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host?.ip).toBe('10.10.10.5');
+      expect(host?.hostname).toBeUndefined();
+    });
+
+    it('source_host stub node includes hostname property when source_host is a hostname', () => {
+      const sam = 'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(sam, 'test-agent', { source_host: 'dc01.acme.local' });
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host?.hostname).toBe('dc01.acme.local');
+      expect(host?.ip).toBeUndefined();
     });
   });
 

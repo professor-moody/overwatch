@@ -1,0 +1,7 @@
+{
+  "status": "mixed",
+  "issues": [
+    "1/1766 traces rely mostly on text heuristics rather than structured action/result linkage.",
+    "History contains no explicit frontier_type fields, which weakens causal analysis."
+  ]
+}

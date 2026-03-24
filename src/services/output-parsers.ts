@@ -46,6 +46,35 @@ interface NmapHost {
   }>;
 }
 
+const OS_BANNER_PATTERNS: Array<{ pattern: RegExp; os: string }> = [
+  { pattern: /Microsoft Windows/i, os: 'Windows' },
+  { pattern: /Windows Server (\d+)/i, os: 'Windows Server' },
+  { pattern: /OpenSSH.*Ubuntu/i, os: 'Linux/Ubuntu' },
+  { pattern: /OpenSSH.*Debian/i, os: 'Linux/Debian' },
+  { pattern: /OpenSSH.*el[789]/i, os: 'Linux/RHEL' },
+  { pattern: /OpenSSH.*CentOS/i, os: 'Linux/CentOS' },
+  { pattern: /Apache.*(?:Ubuntu|Debian)/i, os: 'Linux' },
+  { pattern: /nginx/i, os: 'Linux' },
+  { pattern: /Samba/i, os: 'Linux' },
+  { pattern: /FreeBSD/i, os: 'FreeBSD' },
+];
+
+function inferOsFromBanners(ports: NmapHost['ports']): string | undefined {
+  for (const port of ports) {
+    const text = [port.version, port.banner].filter(Boolean).join(' ');
+    if (!text) continue;
+    for (const { pattern, os } of OS_BANNER_PATTERNS) {
+      const m = text.match(pattern);
+      if (m) {
+        // For "Windows Server (\d+)", include the version number
+        if (os === 'Windows Server' && m[1]) return `Windows Server ${m[1]}`;
+        return os;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
@@ -54,13 +83,19 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
   for (const host of hosts) {
     const resolvedHostId = hostId(host.ip);
 
+    // Infer OS from service banners when osmatch is absent
+    let os = host.os;
+    if (!os) {
+      os = inferOsFromBanners(host.ports);
+    }
+
     nodes.push({
       id: resolvedHostId,
       type: 'host',
       label: host.hostname || host.ip,
       ip: host.ip,
       hostname: host.hostname,
-      os: host.os,
+      os,
       alive: host.alive,
     });
 
@@ -612,7 +647,11 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
   if (sourceHost) {
     sourceHostId = hostId(sourceHost);
     if (!seenNodes.has(sourceHostId)) {
-      nodes.push({ id: sourceHostId, type: 'host', label: sourceHost });
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(sourceHost);
+      nodes.push({
+        id: sourceHostId, type: 'host', label: sourceHost,
+        ...(isIp ? { ip: sourceHost } : { hostname: sourceHost }),
+      });
       seenNodes.add(sourceHostId);
     }
   }
@@ -633,19 +672,23 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
 
     const [, rawUser, , , nthash] = m;
 
-    // Parse DOMAIN\user or plain user; fall back to context domain
+    // Parse DOMAIN\user or plain user
+    // IMPORTANT: context.domain is only a soft hint for credential display.
+    // We must NOT use it for user identity or MEMBER_OF_DOMAIN edges because
+    // SAM dumps produce unqualified local accounts (Administrator:500) that
+    // would be falsely merged with domain accounts if context.domain is applied.
     const parsed = splitQualifiedAccount(rawUser);
-    const domain = parsed.domain || contextDomain;
+    const explicitDomain = parsed.domain;  // from DOMAIN\user prefix only
     const username = parsed.username;
 
     // Skip machine accounts
     if (username.endsWith('$')) continue;
 
     const userLower = username.toLowerCase();
-    const resolvedCredId = credentialId('ntlm_hash', nthash, username, domain);
-    const resolvedUserId = userId(username, domain);
+    const resolvedCredId = credentialId('ntlm_hash', nthash, username, explicitDomain);
+    const resolvedUserId = userId(username, explicitDomain);
     const isPrivileged = PRIVILEGED_ACCOUNTS.has(userLower);
-    const domainFromContext = !parsed.domain && !!contextDomain;
+    const domainFromContext = !explicitDomain && !!contextDomain;
 
     if (!seenNodes.has(resolvedCredId)) {
       nodes.push({
@@ -658,8 +701,8 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
         cred_evidence_kind: 'dump',
         cred_value: nthash,
         cred_user: username,
-        cred_domain: domain,
-        cred_domain_source: domainFromContext ? 'parser_context' : domain ? 'explicit' : undefined,
+        cred_domain: explicitDomain || contextDomain,
+        cred_domain_source: domainFromContext ? 'parser_context' : explicitDomain ? 'explicit' : undefined,
         dump_source_host: sourceHost,
         privileged: isPrivileged || undefined,
       });
@@ -670,9 +713,9 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
       nodes.push({
         id: resolvedUserId,
         type: 'user',
-        label: domain ? `${domain}\\${username}` : username,
+        label: explicitDomain ? `${explicitDomain}\\${username}` : username,
         username,
-        domain_name: domain,
+        domain_name: explicitDomain,
         privileged: isPrivileged || undefined,
       });
       seenNodes.add(resolvedUserId);
@@ -684,11 +727,12 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
       properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
     });
 
-    // MEMBER_OF_DOMAIN edge when domain is known
-    const effectiveDomainNodeId = domain ? domainId(domain) : undefined;
+    // MEMBER_OF_DOMAIN edge only when domain is explicitly present in the dump line
+    // (DOMAIN\user format). Never from context.domain — that would falsely qualify local SAM accounts.
+    const effectiveDomainNodeId = explicitDomain ? domainId(explicitDomain) : undefined;
     if (effectiveDomainNodeId) {
       if (!seenNodes.has(effectiveDomainNodeId)) {
-        nodes.push({ id: effectiveDomainNodeId, type: 'domain', label: domain!, domain_name: domain });
+        nodes.push({ id: effectiveDomainNodeId, type: 'domain', label: explicitDomain!, domain_name: explicitDomain });
         seenNodes.add(effectiveDomainNodeId);
       }
       edges.push({

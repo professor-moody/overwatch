@@ -231,9 +231,15 @@ describe('GraphEngine', () => {
   // Inference Rules
   // =============================================
   describe('inference rules', () => {
-    it('infers MEMBER_OF_DOMAIN from Kerberos service', () => {
+    it('infers MEMBER_OF_DOMAIN from Kerberos service via hostname suffix', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a Kerberos service on a host
+      // Give the host a hostname so matching_domain can resolve via suffix
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: 'dc01.test.local', ip: '10.10.10.1', hostname: 'dc01.test.local' },
+        ],
+      }));
+      // Add a Kerberos service on the host
       const result = engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'svc-10-10-10-1-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
@@ -247,6 +253,26 @@ describe('GraphEngine', () => {
       // Should have inferred MEMBER_OF_DOMAIN
       const state = engine.getState();
       expect(state.graph_summary.edges_by_type['MEMBER_OF_DOMAIN']).toBeGreaterThan(0);
+    });
+
+    it('does NOT infer MEMBER_OF_DOMAIN for Kerberos host without matching hostname', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Host has no hostname — matching_domain should produce nothing
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'svc-10-10-10-1-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-88', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // No hostname = no domain match = no inferred MEMBER_OF_DOMAIN
+      const domEdges = result.inferred_edges.filter(eId => {
+        const attrs = engine.getNode(eId);
+        return false; // edge IDs, check via graph
+      });
+      const state = engine.getState();
+      expect(state.graph_summary.edges_by_type['MEMBER_OF_DOMAIN'] || 0).toBe(0);
     });
 
     it('infers RELAY_TARGET from SMB signing disabled', () => {
@@ -355,12 +381,15 @@ describe('GraphEngine', () => {
 
     it('still infers POTENTIAL_AUTH from secretsdump NT hashes', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Host must be in the same domain as the credential for domain-scoped fanout
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: 'dc01.test.local', ip: '10.10.10.1', hostname: 'dc01.test.local' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
         ],
         edges: [
           { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
 
@@ -388,6 +417,94 @@ describe('GraphEngine', () => {
 
       expect(result.inferred_edges.some(e => e.includes('POTENTIAL_AUTH'))).toBe(true);
     });
+
+    it('does NOT fan out POTENTIAL_AUTH across domains (domain-scoped)', () => {
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'other.local'], exclusions: [] } });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      // Add a service in "other.local" domain
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+          { id: 'svc-10-10-10-2-445', type: 'service', label: 'SMB .2', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-2', target: 'svc-10-10-10-2-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-2', target: 'domain-other-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Add a credential in "test.local" domain
+      const result = engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-test-jdoe', type: 'user', label: 'test.local\\jdoe', username: 'jdoe', domain_name: 'test.local' },
+          { id: 'cred-test-jdoe', type: 'credential', label: 'NTLM:jdoe', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_value: 'aabbccdd', cred_user: 'jdoe' },
+        ],
+        edges: [
+          { source: 'user-test-jdoe', target: 'cred-test-jdoe', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-test-jdoe', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // The credential should NOT create POTENTIAL_AUTH to the service in other.local
+      const potAuthEdges = engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges;
+      const crossDomain = potAuthEdges.filter(e => e.target === 'svc-10-10-10-2-445');
+      expect(crossDomain.length).toBe(0);
+    });
+
+    it('backfills cred_domain when user gains MEMBER_OF_DOMAIN in a later finding', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Finding 1: user + credential, no domain
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-jdoe', type: 'user', label: 'jdoe', username: 'jdoe' },
+          { id: 'cred-jdoe-hash', type: 'credential', label: 'NTLM:jdoe', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_value: 'aabbccdd', cred_user: 'jdoe' },
+        ],
+        edges: [
+          { source: 'user-jdoe', target: 'cred-jdoe-hash', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Credential should have no domain yet
+      const graph1 = engine.exportGraph();
+      const cred1 = graph1.nodes.find(n => n.id === 'cred-jdoe-hash');
+      expect(cred1?.properties.cred_domain).toBeFalsy();
+
+      // Finding 2: user gains MEMBER_OF_DOMAIN edge
+      engine.ingestFinding(makeFinding({
+        edges: [
+          { source: 'user-jdoe', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Credential should now have domain backfilled
+      const graph2 = engine.exportGraph();
+      const cred2 = graph2.nodes.find(n => n.id === 'cred-jdoe-hash');
+      expect(cred2?.properties.cred_domain).toBe('test.local');
+      expect(cred2?.properties.cred_domain_source).toBe('graph_inference');
+    });
+  });
+
+  // =============================================
+  // frontier_item_id auto-threading
+  // =============================================
+  describe('frontier_item_id auto-threading', () => {
+    it('auto-fills frontier_item_id on subsequent events with same action_id', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // First event: action_validated with frontier_item_id
+      engine.logActionEvent({
+        description: 'validate action',
+        action_id: 'act-123',
+        event_type: 'action_validated',
+        frontier_item_id: 'fi-abc',
+        frontier_type: 'inferred_edge',
+      });
+      // Second event: action_started with same action_id but NO frontier_item_id
+      engine.logActionEvent({
+        description: 'start action',
+        action_id: 'act-123',
+        event_type: 'action_started',
+      });
+      const history = engine.getFullHistory();
+      const startEvent = history.find((e: any) => e.event_type === 'action_started' && e.action_id === 'act-123');
+      expect(startEvent?.frontier_item_id).toBe('fi-abc');
+      expect(startEvent?.frontier_type).toBe('inferred_edge');
+    });
   });
 
   // =============================================
@@ -407,6 +524,12 @@ describe('GraphEngine', () => {
 
     it('generates inferred_edge items for untested inferred edges', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Give host a hostname so kerberos matching_domain selector works
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: 'dc01.test.local', ip: '10.10.10.1', hostname: 'dc01.test.local' },
+        ],
+      }));
       // Create an inferred edge via Kerberos
       engine.ingestFinding(makeFinding({
         nodes: [

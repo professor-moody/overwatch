@@ -80,6 +80,7 @@ export class EngineContext {
   lastSnapshotTime: number;
   pathGraphCache: OverwatchGraph | null;  // cached undirected projection for pathfinding
   trackedProcesses: TrackedProcess[];
+  actionFrontierMap: Map<string, { frontier_item_id: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -92,6 +93,7 @@ export class EngineContext {
     this.lastSnapshotTime = 0;
     this.pathGraphCache = null;
     this.trackedProcesses = [];
+    this.actionFrontierMap = new Map();
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
@@ -103,8 +105,25 @@ export class EngineContext {
   }
 
   logEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
+    // Auto-thread frontier_item_id from action_id mapping when caller omits it
+    let enriched = event;
+    if (event.action_id && event.frontier_item_id) {
+      this.actionFrontierMap.set(event.action_id, {
+        frontier_item_id: event.frontier_item_id,
+        frontier_type: event.frontier_type,
+      });
+    } else if (event.action_id && !event.frontier_item_id) {
+      const cached = this.actionFrontierMap.get(event.action_id);
+      if (cached) {
+        enriched = {
+          ...event,
+          frontier_item_id: cached.frontier_item_id,
+          frontier_type: event.frontier_type || cached.frontier_type,
+        };
+      }
+    }
     const entry = normalizeActivityLogEntry({
-      ...event,
+      ...enriched,
       timestamp: new Date().toISOString(),
     });
     this.activityLog.push({
