@@ -210,6 +210,30 @@ function findCredentialIdentityAmbiguities(graph: OverwatchGraph): HealthIssue[]
     if (typeof attrs.cred_user !== 'string' || attrs.cred_user.length === 0) return;
     if (typeof attrs.cred_domain === 'string' && attrs.cred_domain.length > 0) return;
 
+    // Determine why inference didn't resolve this
+    let hasOwner = false;
+    const candidateDomains = new Set<string>();
+    graph.forEachInEdge(id, (_edgeId, edgeAttrs, source) => {
+      if (edgeAttrs.type !== 'OWNS_CRED') return;
+      const sourceAttrs = graph.getNodeAttributes(source);
+      if (sourceAttrs.type !== 'user') return;
+      hasOwner = true;
+      graph.forEachOutEdge(source, (_eid, eAttrs, _src, target) => {
+        if (eAttrs.type !== 'MEMBER_OF_DOMAIN') return;
+        const tgtAttrs = graph.getNodeAttributes(target);
+        if (tgtAttrs.type === 'domain') {
+          const dn = tgtAttrs.domain_name || tgtAttrs.label;
+          if (typeof dn === 'string' && dn.length > 0) candidateDomains.add(dn.toLowerCase());
+        }
+      });
+    });
+
+    const suggestedResolution = !hasOwner
+      ? 'no_owner'
+      : candidateDomains.size === 0
+        ? 'owner_has_no_domain'
+        : 'multiple_domains';
+
     issues.push({
       severity: 'warning',
       check: 'credential_identity_ambiguity',
@@ -217,7 +241,8 @@ function findCredentialIdentityAmbiguities(graph: OverwatchGraph): HealthIssue[]
       node_ids: [id],
       details: {
         cred_user: attrs.cred_user,
-        suggested_resolution: 'needs_operator_review',
+        suggested_resolution: suggestedResolution,
+        candidate_domains: candidateDomains.size > 1 ? [...candidateDomains] : undefined,
       },
     });
   });

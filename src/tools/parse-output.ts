@@ -43,6 +43,10 @@ Pass either the raw output content or a local file path for large artifacts.`,
         agent_id: z.string().optional().describe('Agent ID to attribute the findings to'),
         action_id: z.string().optional().describe('Stable action ID linking this parse to a validated/executed action'),
         frontier_item_id: z.string().optional().describe('Frontier item this parse came from'),
+        context: z.object({
+          domain: z.string().optional().describe('Domain to associate with parsed credentials/users when not present in output (e.g. north.sevenkingdoms.local)'),
+          source_host: z.string().optional().describe('Host IP/hostname that the tool was run against (creates DUMPED_FROM provenance edges for credential dumps)'),
+        }).optional().describe('Optional context for parsers that benefit from domain/host information'),
         ingest: z.boolean().default(true).describe('Automatically ingest parsed findings into the graph'),
         list_parsers: z.boolean().default(false).describe('List all supported parser names'),
       },
@@ -53,7 +57,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('parse_output', async ({ tool_name, output, file_path, agent_id, action_id, frontier_item_id, ingest, list_parsers }) => {
+    withErrorBoundary('parse_output', async ({ tool_name, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers }) => {
       const normalizedActionId = action_id || uuidv4();
       const warnings: string[] = [];
       if (list_parsers) {
@@ -99,7 +103,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
         outputText = output!;
       }
 
-      const finding = parseOutput(tool_name, outputText, agent_id);
+      const finding = parseOutput(tool_name, outputText, agent_id, context);
       if (!finding) {
         engine.logActionEvent({
           description: `Output parse failed: no parser for ${tool_name}`,

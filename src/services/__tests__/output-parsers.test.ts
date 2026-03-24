@@ -96,7 +96,7 @@ describe('Output Parsers', () => {
 
   describe('parseNxc', () => {
     it('extracts admin access from Pwn3d! output', () => {
-      const output = `SMB  10.10.10.5  445  ACME\\jdoe  [+]  (Pwn3d!)`;
+      const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\jdoe (Pwn3d!)`;
       const finding = parseNxc(output);
 
       const hosts = finding.nodes.filter(n => n.type === 'host');
@@ -120,7 +120,7 @@ describe('Output Parsers', () => {
     });
 
     it('extracts valid auth from + status', () => {
-      const output = `SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019`;
+      const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\scanner Windows Server 2019`;
       const finding = parseNxc(output);
 
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
@@ -130,9 +130,9 @@ describe('Output Parsers', () => {
 
     it('handles multi-line output', () => {
       const output = [
-        'SMB  10.10.10.5  445  ACME\\admin  [+]  (Pwn3d!)',
-        'SMB  10.10.10.6  445  ACME\\admin  [+]  Windows Server 2016',
-        'SMB  10.10.10.7  445  ACME\\admin  [-]  Access denied',
+        'SMB  10.10.10.5  445  DC01  [+] ACME\\admin (Pwn3d!)',
+        'SMB  10.10.10.6  445  SRV01  [+] ACME\\admin Windows Server 2016',
+        'SMB  10.10.10.7  445  WEB01  [-] ACME\\admin Access denied',
       ].join('\n');
 
       const finding = parseNxc(output);
@@ -147,7 +147,7 @@ describe('Output Parsers', () => {
     });
 
     it('connects enumerated shares back to the host and SMB service', () => {
-      const output = `SMB  10.10.10.5  445  IPC$  READ, WRITE`;
+      const output = `SMB  10.10.10.5  445  DC01  IPC$  READ, WRITE`;
       const finding = parseNxc(output);
 
       const services = finding.nodes.filter(n => n.type === 'service');
@@ -164,10 +164,10 @@ describe('Output Parsers', () => {
 
     it('deduplicates repeated host, service, and share discoveries', () => {
       const output = [
-        'SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019',
-        'SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019',
-        'SMB  10.10.10.5  445  IPC$  READ',
-        'SMB  10.10.10.5  445  IPC$  READ',
+        'SMB  10.10.10.5  445  DC01  [+] ACME\\scanner Windows Server 2019',
+        'SMB  10.10.10.5  445  DC01  [+] ACME\\scanner Windows Server 2019',
+        'SMB  10.10.10.5  445  DC01  IPC$  READ',
+        'SMB  10.10.10.5  445  DC01  IPC$  READ',
       ].join('\n');
       const finding = parseNxc(output);
 
@@ -182,6 +182,132 @@ describe('Output Parsers', () => {
     it('handles empty output', () => {
       const finding = parseNxc('');
       expect(finding.nodes.length).toBe(0);
+    });
+
+    it('extracts host metadata from [*] info lines', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False) (Null Auth:True)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host).toBeDefined();
+      expect(host!.hostname).toBe('WINTERFELL');
+      expect(host!.domain_name).toBe('north.sevenkingdoms.local');
+      expect(host!.os).toBe('Windows 10 / Server 2019 Build 17763 x64');
+      expect(host!.null_session).toBe(true);
+      expect(host!.label).toBe('WINTERFELL');
+
+      const svc = finding.nodes.find(n => n.type === 'service');
+      expect(svc).toBeDefined();
+      expect(svc!.smb_signing).toBe(true);
+      expect(svc!.smbv1).toBe(false);
+    });
+
+    it('creates NULL_SESSION edge when Null Auth is True', () => {
+      const output = [
+        'SMB         10.3.10.12      445    MEEREEN          [*] Windows Server 2016 Standard Evaluation 14393 x64 (name:MEEREEN) (domain:essos.local) (signing:True) (SMBv1:True) (Null Auth:True)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const nullEdges = finding.edges.filter(e => e.properties.type === 'NULL_SESSION');
+      expect(nullEdges).toHaveLength(1);
+      expect(nullEdges[0].source).toBe('host-10-3-10-12');
+      expect(nullEdges[0].target).toBe('svc-10-3-10-12-445');
+    });
+
+    it('does not create NULL_SESSION edge when Null Auth is False', () => {
+      const output = [
+        'SMB         10.3.10.13      445    CASTELBLACK      [*] Windows 10 x64 (name:CASTELBLACK) (domain:north.sevenkingdoms.local) (signing:False) (SMBv1:False) (Null Auth:False)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const nullEdges = finding.edges.filter(e => e.properties.type === 'NULL_SESSION');
+      expect(nullEdges).toHaveLength(0);
+    });
+
+    it('extracts users from --users enumeration table', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False) (Null Auth:True)',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] north.sevenkingdoms.local\\:',
+        'SMB         10.3.10.11      445    WINTERFELL       -Username-                    -Last PW Set-       -BadPW- -Description-',
+        'SMB         10.3.10.11      445    WINTERFELL       Guest                         <never>             0       Built-in account for guest access to the computer/domain',
+        'SMB         10.3.10.11      445    WINTERFELL       arya.stark                    2025-07-26 19:35:06 0       Arya Stark',
+        'SMB         10.3.10.11      445    WINTERFELL       jon.snow                      2025-07-26 19:35:29 0       Jon Snow',
+        'SMB         10.3.10.11      445    WINTERFELL       sql_svc                       2025-07-26 19:35:38 0       sql service',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Enumerated 4 local users: NORTH',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const users = finding.nodes.filter(n => n.type === 'user');
+      // Guest is skipped, so 3 users
+      expect(users).toHaveLength(3);
+      expect(users.map(u => u.username).sort()).toEqual(['arya.stark', 'jon.snow', 'sql_svc']);
+
+      // Each user has domain from the [*] info line
+      expect(users.every(u => u.domain_name === 'north.sevenkingdoms.local')).toBe(true);
+
+      // Each user has MEMBER_OF_DOMAIN edge
+      const memberEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(memberEdges).toHaveLength(3);
+
+      // Domain node was created
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains).toHaveLength(1);
+      expect(domains[0].domain_name).toBe('north.sevenkingdoms.local');
+    });
+
+    it('extracts password from AD description field', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False) (Null Auth:True)',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] north.sevenkingdoms.local\\:',
+        'SMB         10.3.10.11      445    WINTERFELL       -Username-                    -Last PW Set-       -BadPW- -Description-',
+        'SMB         10.3.10.11      445    WINTERFELL       samwell.tarly                 2025-07-26 19:35:32 0       Samwell Tarly (Password : Heartsbane)',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Enumerated 1 local users: NORTH',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      // Credential node
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_user).toBe('samwell.tarly');
+      expect(creds[0].cred_domain).toBe('north.sevenkingdoms.local');
+      expect(creds[0].cred_type).toBe('plaintext');
+      expect(creds[0].cred_value).toBe('Heartsbane');
+
+      // OWNS_CRED edge
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred).toHaveLength(1);
+
+      // User node should also exist with description
+      const user = finding.nodes.find(n => n.type === 'user' && n.username === 'samwell.tarly');
+      expect(user).toBeDefined();
+      expect(user!.description).toBe('Samwell Tarly (Password : Heartsbane)');
+    });
+
+    it('handles combined info + users + shares output', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False) (Null Auth:True)',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] north.sevenkingdoms.local\\:',
+        'SMB         10.3.10.11      445    WINTERFELL       -Username-                    -Last PW Set-       -BadPW- -Description-',
+        'SMB         10.3.10.11      445    WINTERFELL       arya.stark                    2025-07-26 19:35:06 0       Arya Stark',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Enumerated 1 local users: NORTH',
+        'SMB         10.3.10.11      445    WINTERFELL       IPC$  READ',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      // Should have host, service, user, domain, share
+      expect(finding.nodes.filter(n => n.type === 'host')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'service')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'user')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'domain')).toHaveLength(1);
+      expect(finding.nodes.filter(n => n.type === 'share')).toHaveLength(1);
+
+      // Edges: RUNS, NULL_SESSION, MEMBER_OF_DOMAIN, RELATED
+      expect(finding.edges.filter(e => e.properties.type === 'RUNS')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'NULL_SESSION')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN')).toHaveLength(1);
+      expect(finding.edges.filter(e => e.properties.type === 'RELATED')).toHaveLength(1);
     });
   });
 
@@ -381,6 +507,71 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
     });
+
+    it('uses context.domain as fallback when no domain in output', () => {
+      const noDomainSAM = [
+        'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+        'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      ].join('\n');
+      const finding = parseSecretsdump(noDomainSAM, 'test-agent', { domain: 'acme.local' });
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_domain).toBe('acme.local');
+      expect(creds[0].cred_domain_source).toBe('parser_context');
+      expect(creds[1].cred_domain).toBe('acme.local');
+    });
+
+    it('prefers explicit domain over context.domain', () => {
+      const withDomain = 'ACME\\jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(withDomain, 'test-agent', { domain: 'other.local' });
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].cred_domain).toBe('ACME');
+      expect(creds[0].cred_domain_source).toBe('explicit');
+    });
+
+    it('creates MEMBER_OF_DOMAIN edges when domain is known', () => {
+      const noDomainSAM = 'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(noDomainSAM, 'test-agent', { domain: 'acme.local' });
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains.length).toBe(1);
+      expect(domains[0].domain_name).toBe('acme.local');
+    });
+
+    it('creates DUMPED_FROM edges when context.source_host is set', () => {
+      const sam = 'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const finding = parseSecretsdump(sam, 'test-agent', { source_host: '10.10.10.5' });
+      const dumpEdges = finding.edges.filter(e => e.properties.type === 'DUMPED_FROM');
+      expect(dumpEdges.length).toBe(1);
+      expect(dumpEdges[0].target).toBe('host-10-10-10-5');
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].label).toBe('10.10.10.5');
+    });
+
+    it('creates both DUMPED_FROM and MEMBER_OF_DOMAIN with full context', () => {
+      const sam = [
+        'Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+        'jdoe:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      ].join('\n');
+      const finding = parseSecretsdump(sam, 'test-agent', { domain: 'acme.local', source_host: '10.10.10.5' });
+      const dumpEdges = finding.edges.filter(e => e.properties.type === 'DUMPED_FROM');
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(dumpEdges.length).toBe(2);
+      expect(domEdges.length).toBe(2);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.every(c => c.dump_source_host === '10.10.10.5')).toBe(true);
+    });
+
+    it('preserves existing behavior without context', () => {
+      const finding = parseSecretsdump(sampleNTDS);
+      const dumpEdges = finding.edges.filter(e => e.properties.type === 'DUMPED_FROM');
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(dumpEdges.length).toBe(0);
+      // Only ACME\\jdoe should produce MEMBER_OF_DOMAIN (explicit domain)
+      expect(domEdges.length).toBe(1);
+    });
   });
 
   // =============================================
@@ -519,6 +710,31 @@ describe('Output Parsers', () => {
       const finding = parseHashcat('');
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
+    });
+
+    it('uses context.domain for plain NTLM hashes without domain', () => {
+      const ntlm = 'fc525c9683e8fe067095ba2ddc971889:Password123';
+      const finding = parseHashcat(ntlm, 'test-agent', { domain: 'acme.local' });
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      // Plain NTLM has no username, so domain doesn't apply to user
+      // But if a username were present, domain would be set
+      expect(creds[0].cred_domain).toBe('acme.local');
+    });
+
+    it('preserves explicit domain from Kerberoast hash over context', () => {
+      const kerberoast = '$krb5tgs$23$*svc_sql$ACME.LOCAL$acme.local/svc_sql*$aabbccdd...:SqlPass123';
+      const finding = parseHashcat(kerberoast, 'test-agent', { domain: 'other.local' });
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds[0].cred_domain).toBe('ACME.LOCAL');
+      expect(creds[0].cred_domain_source).toBe('explicit');
+    });
+
+    it('preserves behavior without context', () => {
+      const finding = parseHashcat(sampleNTLM);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_domain).toBeUndefined();
     });
   });
 

@@ -58,8 +58,8 @@ const EDGE_CATEGORIES = {
   ESC4: '#afa9ec', ESC6: '#afa9ec', ESC8: '#afa9ec',
   // Lateral movement
   RELAY_TARGET: '#ed93b1', NULL_SESSION: '#ed93b1',
-  // Credential derivation
-  DERIVED_FROM: '#ff8c42',
+  // Credential derivation / provenance
+  DERIVED_FROM: '#ff8c42', DUMPED_FROM: '#ff8c42',
   // Domain
   MEMBER_OF: '#6b6977', MEMBER_OF_DOMAIN: '#6b6977', TRUSTS: '#97c459',
   SAME_DOMAIN: '#6b6977',

@@ -4,6 +4,7 @@
 // ============================================================
 
 import type { NodeProperties } from '../types.js';
+import type { OverwatchGraph } from './engine-context.js';
 
 export function getCredentialMaterialKind(node: NodeProperties): string | undefined {
   if (typeof node.cred_material_kind === 'string') {
@@ -12,6 +13,7 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
 
   switch (node.cred_type) {
     case 'plaintext':
+    case 'cleartext':
       return 'plaintext_password';
     case 'ntlm':
       return 'ntlm_hash';
@@ -92,4 +94,34 @@ export function isReusableDomainCredential(node: NodeProperties): boolean {
 
 export function getCredentialDisplayKind(node: NodeProperties): string {
   return getCredentialMaterialKind(node) || node.cred_type || 'unknown';
+}
+
+export function inferCredentialDomain(credNodeId: string, graph: OverwatchGraph): { domain: string } | null {
+  if (!graph.hasNode(credNodeId)) return null;
+
+  const candidateDomains = new Set<string>();
+
+  // Walk inbound OWNS_CRED edges to find owner user(s)
+  graph.forEachInEdge(credNodeId, (edgeId, edgeAttrs, source) => {
+    if (edgeAttrs.type !== 'OWNS_CRED') return;
+    const sourceAttrs = graph.getNodeAttributes(source);
+    if (sourceAttrs.type !== 'user') return;
+
+    // Walk outbound edges from the user to find MEMBER_OF_DOMAIN → domain
+    graph.forEachOutEdge(source, (_eid, eAttrs, _src, target) => {
+      if (eAttrs.type !== 'MEMBER_OF_DOMAIN') return;
+      const targetAttrs = graph.getNodeAttributes(target);
+      if (targetAttrs.type !== 'domain') return;
+      const domainName = targetAttrs.domain_name || targetAttrs.label;
+      if (typeof domainName === 'string' && domainName.length > 0) {
+        candidateDomains.add(domainName.toLowerCase());
+      }
+    });
+  });
+
+  if (candidateDomains.size === 1) {
+    return { domain: [...candidateDomains][0] };
+  }
+
+  return null;
 }

@@ -62,11 +62,13 @@ export interface NodeProperties {
   member_of?: string[];         // group IDs
 
   // Credential
-  cred_type?: 'plaintext' | 'ntlm' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_value?: string;          // hash or redacted reference
   cred_hash?: string;           // normalized hash material for cracked/captured creds
   cred_user?: string;           // associated user node id
   cred_domain?: string;
+  cred_domain_inferred?: boolean;
+  cred_domain_source?: 'explicit' | 'graph_inference' | 'parser_context';
   cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
@@ -75,6 +77,7 @@ export interface NodeProperties {
   rotated_at?: string;          // ISO timestamp — when credential was observed as changed
   stale_at?: string;            // ISO timestamp — when credential became stale
   credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
+  dump_source_host?: string;
 
   // Share
   share_name?: string;
@@ -109,7 +112,7 @@ export const EDGE_TYPES = [
   // Access
   'ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE',
   // Credential relationships
-  'VALID_ON', 'OWNS_CRED', 'DERIVED_FROM',
+  'VALID_ON', 'OWNS_CRED', 'DERIVED_FROM', 'DUMPED_FROM',
   // AD attack paths
   'CAN_DCSYNC', 'DELEGATES_TO', 'WRITEABLE_BY', 'GENERIC_ALL',
   'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER',
@@ -148,6 +151,14 @@ export interface EdgeProperties {
   inferred_by_rule?: string;    // rule ID that created this edge
   inferred_at?: string;         // ISO timestamp when inferred
   confirmed_at?: string;        // ISO timestamp when confidence raised to 1.0
+  [key: string]: unknown;
+}
+
+// --- Parser Context ---
+
+export interface ParseContext {
+  domain?: string;
+  source_host?: string;
   [key: string]: unknown;
 }
 

@@ -48,6 +48,7 @@ describe('edge constraints', () => {
     ['RBCD_TARGET', 'host', 'host'],
     ['RBCD_TARGET', 'user', 'host'],
     ['DERIVED_FROM', 'credential', 'credential'],
+    ['DUMPED_FROM', 'credential', 'host'],
     ['RELAY_TARGET', 'credential', 'host'],
     ['NULL_SESSION', 'host', 'host'],
     ['POTENTIAL_AUTH', 'credential', 'service'],
@@ -82,6 +83,8 @@ describe('edge constraints', () => {
     ['RBCD_TARGET', 'group', 'host'],
     ['DERIVED_FROM', 'user', 'credential'],
     ['DERIVED_FROM', 'credential', 'user'],
+    ['DUMPED_FROM', 'user', 'host'],
+    ['DUMPED_FROM', 'credential', 'service'],
   ];
 
   for (const [edgeType, sourceType, targetType] of invalidCases) {

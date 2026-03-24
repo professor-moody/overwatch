@@ -14,7 +14,7 @@ import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
-import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired } from './credential-utils.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired, inferCredentialDomain } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
@@ -625,6 +625,22 @@ export class GraphEngine {
     for (const nodeId of inferenceTargets) {
       const inferred = this.runInferenceRules(nodeId);
       inferredEdges.push(...inferred);
+    }
+
+    // Backfill cred_domain from graph ownership paths for credentials missing domain qualification
+    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
+      if (attrs.type !== 'credential') continue;
+      if (typeof attrs.cred_domain === 'string' && attrs.cred_domain.length > 0) continue;
+      const inferred = inferCredentialDomain(nodeId, this.ctx.graph);
+      if (inferred) {
+        this.ctx.graph.mergeNodeAttributes(nodeId, {
+          cred_domain: inferred.domain,
+          cred_domain_inferred: true,
+          cred_domain_source: 'graph_inference',
+        });
+      }
     }
 
     // Degrade POTENTIAL_AUTH edges from expired/stale credentials

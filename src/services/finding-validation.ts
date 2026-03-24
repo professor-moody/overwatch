@@ -96,8 +96,16 @@ export function normalizeFindingNode<T extends Partial<NodeProperties> & { id: s
     normalized.cred_domain = normalized.domain;
   }
 
+  if (typeof normalized.cred_type !== 'string' && typeof normalized.credential_type === 'string') {
+    normalized.cred_type = normalized.credential_type as NodeProperties['cred_type'];
+  }
+
   if (typeof normalized.cred_hash !== 'string' && typeof normalized.nthash === 'string') {
     normalized.cred_hash = normalized.nthash;
+  }
+
+  if (typeof normalized.cred_value !== 'string' && typeof normalized.password === 'string') {
+    normalized.cred_value = normalized.password;
   }
 
   if (typeof normalized.cred_value !== 'string' && typeof normalized.cred_hash === 'string') {

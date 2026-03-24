@@ -68,9 +68,11 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   CAN_READ_LAPS: { source: ['user', 'group'], target: ['host'] },
   CAN_READ_GMSA: { source: ['user', 'group'], target: ['user'] },
   RBCD_TARGET: { source: ['host', 'user'], target: ['host'] },
+  // Credential provenance
+  DUMPED_FROM: { source: ['credential'], target: ['host'] },
   // Lateral movement
   RELAY_TARGET: { source: ['host', 'user', 'credential'], target: ['host'] },
-  NULL_SESSION: { source: ['host'], target: ['host'] },
+  NULL_SESSION: { source: ['host'], target: ['host', 'service'] },
   POTENTIAL_AUTH: { source: ['credential', 'user'], target: ['service', 'host'] },
   // Objective
   PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group'], target: ['objective'] },

@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import Graph from 'graphology';
 import {
   getCredentialMaterialKind,
   isCredentialUsableForAuth,
   isReusableDomainCredential,
   getCredentialDisplayKind,
+  inferCredentialDomain,
 } from '../credential-utils.js';
+import { normalizeFindingNode } from '../finding-validation.js';
 import type { NodeProperties } from '../../types.js';
 
 function makeCredNode(overrides: Partial<NodeProperties> = {}): NodeProperties {
@@ -63,6 +66,10 @@ describe('Credential Utilities', () => {
 
     it('falls back to cred_type: ssh_key → ssh_key', () => {
       expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'ssh_key' }))).toBe('ssh_key');
+    });
+
+    it('falls back to cred_type: cleartext → plaintext_password', () => {
+      expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'cleartext' }))).toBe('plaintext_password');
     });
 
     it('returns undefined when neither field is set', () => {
@@ -184,6 +191,137 @@ describe('Credential Utilities', () => {
 
     it('returns unknown when neither field is set', () => {
       expect(getCredentialDisplayKind(makeCredNode())).toBe('unknown');
+    });
+  });
+
+  // =============================================
+  // normalizeFindingNode — credential property aliases
+  // =============================================
+  describe('normalizeFindingNode credential aliases', () => {
+    it('aliases credential_type → cred_type', () => {
+      const node = { id: 'cred-test', type: 'credential' as const, label: 'test', credential_type: 'cleartext' } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_type).toBe('cleartext');
+    });
+
+    it('aliases password → cred_value', () => {
+      const node = { id: 'cred-test', type: 'credential' as const, label: 'test', password: 'Secret123' } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_value).toBe('Secret123');
+    });
+
+    it('aliases username → cred_user and domain → cred_domain', () => {
+      const node = { id: 'cred-test', type: 'credential' as const, label: 'test', username: 'samwell.tarly', domain: 'north.sevenkingdoms.local' } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_user).toBe('samwell.tarly');
+      expect(result.cred_domain).toBe('north.sevenkingdoms.local');
+    });
+
+    it('does not overwrite existing canonical properties', () => {
+      const node = { id: 'cred-test', type: 'credential' as const, label: 'test', cred_type: 'plaintext' as const, credential_type: 'ntlm', cred_value: 'existing', password: 'overridden' } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_type).toBe('plaintext');
+      expect(result.cred_value).toBe('existing');
+    });
+
+    it('full agent-style credential converges with all aliases', () => {
+      const node = {
+        id: 'cred-north-samwell.tarly-cleartext',
+        type: 'credential' as const,
+        label: 'samwell.tarly cleartext password',
+        username: 'samwell.tarly',
+        domain: 'north.sevenkingdoms.local',
+        credential_type: 'cleartext',
+        password: 'Heartsbane',
+      } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_user).toBe('samwell.tarly');
+      expect(result.cred_domain).toBe('north.sevenkingdoms.local');
+      expect(result.cred_type).toBe('cleartext');
+      expect(result.cred_value).toBe('Heartsbane');
+      expect(result.cred_material_kind).toBe('plaintext_password');
+      expect(result.cred_usable_for_auth).toBe(true);
+    });
+
+    it('does not touch non-credential nodes', () => {
+      const node = { id: 'user-test', type: 'user' as const, label: 'test', username: 'admin', password: 'secret' } as any;
+      const result = normalizeFindingNode(node);
+      expect(result.cred_user).toBeUndefined();
+      expect(result.cred_value).toBeUndefined();
+    });
+  });
+
+  // =============================================
+  // inferCredentialDomain
+  // =============================================
+  describe('inferCredentialDomain', () => {
+    function makeGraph() {
+      return new (Graph as any)({ type: 'directed', multi: true });
+    }
+
+    it('returns domain when single owner has single MEMBER_OF_DOMAIN', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      g.addNode('user-jdoe', { type: 'user', label: 'jdoe', username: 'jdoe' });
+      g.addNode('domain-acme', { type: 'domain', label: 'acme.local', domain_name: 'acme.local' });
+      g.addEdge('user-jdoe', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-jdoe', 'domain-acme', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+
+      const result = inferCredentialDomain('cred-1', g);
+      expect(result).toEqual({ domain: 'acme.local' });
+    });
+
+    it('returns null when owner has multiple domains', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      g.addNode('user-jdoe', { type: 'user', label: 'jdoe', username: 'jdoe' });
+      g.addNode('domain-a', { type: 'domain', label: 'acme.local', domain_name: 'acme.local' });
+      g.addNode('domain-b', { type: 'domain', label: 'corp.local', domain_name: 'corp.local' });
+      g.addEdge('user-jdoe', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-jdoe', 'domain-a', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-jdoe', 'domain-b', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+
+      expect(inferCredentialDomain('cred-1', g)).toBeNull();
+    });
+
+    it('returns null when no owner exists', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      expect(inferCredentialDomain('cred-1', g)).toBeNull();
+    });
+
+    it('returns domain when multiple owners share same domain', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:shared', cred_user: 'shared' });
+      g.addNode('user-a', { type: 'user', label: 'alice', username: 'alice' });
+      g.addNode('user-b', { type: 'user', label: 'bob', username: 'bob' });
+      g.addNode('domain-acme', { type: 'domain', label: 'acme.local', domain_name: 'acme.local' });
+      g.addEdge('user-a', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-b', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-a', 'domain-acme', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-b', 'domain-acme', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+
+      expect(inferCredentialDomain('cred-1', g)).toEqual({ domain: 'acme.local' });
+    });
+
+    it('returns null when multiple owners have different domains', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:shared', cred_user: 'shared' });
+      g.addNode('user-a', { type: 'user', label: 'alice', username: 'alice' });
+      g.addNode('user-b', { type: 'user', label: 'bob', username: 'bob' });
+      g.addNode('domain-a', { type: 'domain', label: 'acme.local', domain_name: 'acme.local' });
+      g.addNode('domain-b', { type: 'domain', label: 'corp.local', domain_name: 'corp.local' });
+      g.addEdge('user-a', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-b', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-a', 'domain-a', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-b', 'domain-b', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+
+      expect(inferCredentialDomain('cred-1', g)).toBeNull();
+    });
+
+    it('returns null for non-existent node', () => {
+      const g = makeGraph();
+      expect(inferCredentialDomain('cred-nonexistent', g)).toBeNull();
     });
   });
 });
