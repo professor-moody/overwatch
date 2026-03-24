@@ -505,6 +505,37 @@ describe('GraphEngine', () => {
       expect(crossDomain.length).toBe(0);
     });
 
+    it('does NOT use parser_context cred_domain for domain-scoped fanout', () => {
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local'], exclusions: [] } });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      // Service on a domain-joined host
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Unqualified SAM account with parser_context domain hint (not authoritative)
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-admin', type: 'user', label: 'Administrator', username: 'Administrator' },
+          { id: 'cred-admin-hash', type: 'credential', label: 'NTLM:Administrator', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_value: 'aad3b435b51404ee', cred_user: 'Administrator', cred_domain: 'test.local', cred_domain_source: 'parser_context' },
+        ],
+        edges: [
+          { source: 'user-admin', target: 'cred-admin-hash', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // parser_context domain should be ignored for scoping — credential falls through
+      // to global fanout (no authoritative domain → all compatible services)
+      const potAuth = engine.queryGraph({ edge_type: 'POTENTIAL_AUTH' }).edges;
+      const toSvc = potAuth.filter(e => e.target === 'svc-10-10-10-1-445');
+      expect(toSvc.length).toBeGreaterThan(0);
+    });
+
     it('backfills cred_domain when user gains MEMBER_OF_DOMAIN in a later finding', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       // Finding 1: user + credential, no domain

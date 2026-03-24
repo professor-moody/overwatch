@@ -176,9 +176,11 @@ export class InferenceEngine {
   private resolveCredentialDomains(credNodeId: string): Set<string> {
     const domains = new Set<string>();
 
-    // Seed from credential's own cred_domain property (set by parsers)
+    // Seed from credential's own cred_domain property, but only when the source
+    // is authoritative (explicit DOMAIN\user prefix or graph inference).
+    // parser_context is a soft display hint and must NOT scope fanout.
     const credNode = this.getNode(credNodeId);
-    if (credNode?.cred_domain) {
+    if (credNode?.cred_domain && credNode.cred_domain_source !== 'parser_context') {
       domains.add(String(credNode.cred_domain).toLowerCase());
     }
 
