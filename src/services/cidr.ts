@@ -72,6 +72,25 @@ export function isIpInScope(ip: string, cidrs: string[], exclusions: string[]): 
   return false;
 }
 
+export function isHostnameInScope(hostname: string, domains: string[], exclusions: string[]): boolean {
+  const lower = hostname.toLowerCase();
+  // Check exclusions first (exact match or domain suffix)
+  for (const excl of exclusions) {
+    if (!excl.includes('/')) {
+      const exclLower = excl.toLowerCase();
+      if (lower === exclLower || lower.endsWith('.' + exclLower)) return false;
+    }
+  }
+  // If no scope domains configured, can't determine — allow
+  if (domains.length === 0) return true;
+  // Check if hostname belongs to any scope domain
+  for (const domain of domains) {
+    const domainLower = domain.toLowerCase();
+    if (lower === domainLower || lower.endsWith('.' + domainLower)) return true;
+  }
+  return false;
+}
+
 function ipToNum(ip: string): number {
   const parts = ip.split('.').map(Number);
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;

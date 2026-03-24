@@ -1,0 +1,73 @@
+{
+  "frontier_observations": [
+    {
+      "area": "incomplete_node",
+      "observation": "Incomplete-node exploration produced strong yield and likely benefited from richer host/service context.",
+      "evidence_count": 2,
+      "confidence": "low"
+    },
+    {
+      "area": "untested_edge",
+      "observation": "untested_edge was underrepresented in the engagement, so conclusions about its yield are weak.",
+      "evidence_count": 0,
+      "confidence": "low"
+    },
+    {
+      "area": "inferred_edge",
+      "observation": "inferred_edge produced 81% apparent yield across 16 observed follow-ups.",
+      "evidence_count": 16,
+      "confidence": "low"
+    }
+  ],
+  "context_gaps": [
+    {
+      "area": "parser improvement",
+      "gap": "2 service nodes lack banner, version, or protocol enrichment.",
+      "recommendation": "Improve service parsing so Claude gets richer service context instead of making decisions from bare open ports.",
+      "severity": "warning",
+      "confidence": "medium"
+    },
+    {
+      "area": "validation-warning improvement",
+      "gap": "1 history entries indicate failures or access denial, which may mean validation warnings were too weak or too generic.",
+      "recommendation": "Strengthen validate_action guidance for recurring failure patterns so Claude gets clearer pre-execution context.",
+      "severity": "warning",
+      "confidence": "low"
+    },
+    {
+      "area": "logging/instrumentation improvement",
+      "gap": "Structured activity logging is not strong enough to support high-confidence iterative improvements.",
+      "recommendation": "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance.",
+      "severity": "critical",
+      "confidence": "high"
+    }
+  ],
+  "opsec_observations": [],
+  "logging_quality": {
+    "status": "weak",
+    "issues": [
+      "Only 0% of history entries include a frontier type.",
+      "About 100% of retrospective judgments depend on text heuristics."
+    ],
+    "recommendation": "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance."
+  },
+  "recommendations": [
+    "Improve service parsing so frontier reasoning includes richer service details.",
+    "Strengthen validation warnings for recurring failure patterns observed in the history.",
+    "Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance."
+  ],
+  "success_by_frontier_type": {
+    "incomplete_node": {
+      "total": 2,
+      "successful": 2
+    },
+    "untested_edge": {
+      "total": 0,
+      "successful": 0
+    },
+    "inferred_edge": {
+      "total": 16,
+      "successful": 13
+    }
+  }
+}

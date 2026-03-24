@@ -115,6 +115,7 @@ export class StatePersistence {
     const raw = readFileSync(this.ctx.stateFilePath, 'utf-8');
     const data = JSON.parse(raw);
     this.ctx.config = data.config;
+    this.ctx.graph.clear();
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
     this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));

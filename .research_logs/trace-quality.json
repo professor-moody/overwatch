@@ -1,0 +1,6 @@
+{
+  "status": "good",
+  "issues": [
+    "History contains no explicit frontier_type fields, which weakens causal analysis."
+  ]
+}

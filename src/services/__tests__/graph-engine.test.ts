@@ -1751,7 +1751,9 @@ describe('GraphEngine', () => {
         ],
       }));
 
-      expect(result.updated_nodes).toContain('user-array-test');
+      // Provenance-only changes (last_seen_at, first_seen_at, sources) are not
+      // considered meaningful updates, so the node should NOT appear in updated_nodes.
+      expect(result.updated_nodes).not.toContain('user-array-test');
       const graph = engine.exportGraph();
       const node = graph.nodes.find((candidate) => candidate.id === 'user-array-test');
       expect(node!.properties.member_of).toEqual(['group-a', 'group-b']);
@@ -1799,6 +1801,220 @@ describe('GraphEngine', () => {
       expect(saved.activityLog).toHaveLength(5000);
       expect(saved.activityLog[0].description).toBe('persisted-activity-5');
       expect(saved.activityLog.at(-1).description).toBe('persisted-activity-5004');
+    });
+  });
+
+  // =============================================
+  // Sprint 1: Inference rules (AS-REP, Kerberoast, Constrained Delegation, Web Login)
+  // =============================================
+  describe('new inference rules', () => {
+    it('creates AS_REP_ROASTABLE edge when user has asrep_roastable', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-asrep', type: 'user', label: 'asrep-user', asrep_roastable: true } as any,
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const asrepEdges = graph.edges.filter(e => e.properties.type === 'AS_REP_ROASTABLE');
+      expect(asrepEdges.length).toBeGreaterThan(0);
+      expect(asrepEdges[0].source).toBe('user-asrep');
+      expect(asrepEdges[0].properties.confidence).toBe(0.85);
+    });
+
+    it('creates KERBEROASTABLE edge when user has has_spn', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-spn', type: 'user', label: 'spn-user', has_spn: true } as any,
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const kerbEdges = graph.edges.filter(e => e.properties.type === 'KERBEROASTABLE');
+      expect(kerbEdges.length).toBeGreaterThan(0);
+      expect(kerbEdges[0].source).toBe('user-spn');
+      expect(kerbEdges[0].properties.confidence).toBe(0.85);
+    });
+
+    it('creates CAN_DELEGATE_TO edge when host has constrained_delegation', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Use IP 10.10.10.5 — identity resolution will resolve to host-10-10-10-5
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-cd', type: 'host', label: 'constrained-host', ip: '10.10.10.5', constrained_delegation: true } as any,
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const cdEdges = graph.edges.filter(e => e.properties.type === 'CAN_DELEGATE_TO');
+      expect(cdEdges.length).toBeGreaterThan(0);
+      expect(cdEdges[0].source).toBe('host-10-10-10-5');
+      expect(cdEdges[0].properties.confidence).toBe(0.8);
+    });
+
+    it('creates POTENTIAL_AUTH edge when service has has_login_form', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // First add a domain credential
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'cred-web', type: 'credential', label: 'web-cred', cred_type: 'plaintext', cred_value: 'pass123', cred_user: 'admin', cred_domain: 'test.local', cred_material_kind: 'plaintext_password' as any },
+          { id: 'user-web', type: 'user', label: 'admin' },
+        ],
+        edges: [
+          { source: 'user-web', target: 'cred-web', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      // Now add a service with login form
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-web', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+          { id: 'svc-http', type: 'service', label: 'http/80', service_name: 'http', port: 80, has_login_form: true } as any,
+        ],
+        edges: [
+          { source: 'host-web', target: 'svc-http', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const authEdges = graph.edges.filter(e =>
+        e.properties.type === 'POTENTIAL_AUTH' && e.target === 'svc-http' && e.properties.inferred_by_rule === 'rule-web-login-form'
+      );
+      expect(authEdges.length).toBeGreaterThan(0);
+      expect(authEdges[0].properties.confidence).toBe(0.5);
+    });
+  });
+
+  // =============================================
+  // Sprint 1: Hostname scope enforcement
+  // =============================================
+  describe('hostname scope enforcement', () => {
+    it('rejects hostname-only node when hostname does not match scope domains', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Identity resolution renames to host-dc01-other-local
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-oos', type: 'host', label: 'dc01.other.local', hostname: 'dc01.other.local' },
+        ],
+      }));
+      const resolvedId = 'host-dc01-other-local';
+      const result = engine.validateAction({ target_node: resolvedId });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
+
+    it('allows hostname-only node when hostname matches a scope domain', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Identity resolution renames to host-dc01-test-local
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-inscope', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local' },
+        ],
+      }));
+      const resolvedId = 'host-dc01-test-local';
+      const result = engine.validateAction({ target_node: resolvedId });
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // =============================================
+  // Sprint 1: Objective achievement for non-credential targets
+  // =============================================
+  describe('objective achievement', () => {
+    it('achieves objective when share has readable: true', () => {
+      const config = makeConfig({
+        objectives: [{
+          id: 'obj-share',
+          description: 'Read SYSVOL share',
+          target_node_type: 'share' as NodeType,
+          target_criteria: { share_name: 'SYSVOL' },
+          achieved: false,
+        }],
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'share-sysvol', type: 'share', label: 'SYSVOL', share_name: 'SYSVOL', readable: true } as any,
+        ],
+      }));
+      const state = engine.getState();
+      expect(state.objectives[0].achieved).toBe(true);
+    });
+
+    it('uses custom achievement_edge_types when provided', () => {
+      const config = makeConfig({
+        objectives: [{
+          id: 'obj-custom',
+          description: 'DCSync the domain',
+          target_node_type: 'domain' as NodeType,
+          target_criteria: { domain_name: 'test.local' },
+          achievement_edge_types: ['CAN_DCSYNC'] as any,
+          achieved: false,
+        }],
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-dcsync', type: 'user', label: 'dcsync-user' },
+        ],
+        edges: [
+          { source: 'user-dcsync', target: 'domain-test-local', properties: { type: 'CAN_DCSYNC', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const state = engine.getState();
+      expect(state.objectives[0].achieved).toBe(true);
+    });
+  });
+
+  // =============================================
+  // Sprint 1: Access-level classification
+  // =============================================
+  describe('access-level classification', () => {
+    it('reports local_admin when privileged cred has no cred_domain', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-localadm', type: 'user', label: 'localadmin' },
+          { id: 'cred-localadm', type: 'credential', label: 'local-admin-cred', privileged: true, cred_type: 'ntlm', cred_value: 'aad3b435b51404eeaad3b435b51404ee', cred_hash: 'aad3b435b51404eeaad3b435b51404ee', cred_material_kind: 'ntlm_hash' as any, cred_usable_for_auth: true },
+          { id: 'host-target', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        ],
+        edges: [
+          { source: 'user-localadm', target: 'cred-localadm', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'cred-localadm', target: 'host-target', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const state = engine.getState();
+      expect(state.access_summary.current_access_level).toBe('local_admin');
+    });
+
+    it('reports domain_admin when privileged cred has matching cred_domain', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-da', type: 'user', label: 'da-user' },
+          { id: 'cred-da', type: 'credential', label: 'da-cred', privileged: true, cred_type: 'ntlm', cred_value: 'aad3b435b51404eeaad3b435b51404ee', cred_hash: 'aad3b435b51404eeaad3b435b51404ee', cred_domain: 'test.local', cred_material_kind: 'ntlm_hash' as any, cred_usable_for_auth: true },
+          { id: 'host-da', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        ],
+        edges: [
+          { source: 'user-da', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'cred-da', target: 'host-da', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const state = engine.getState();
+      expect(state.access_summary.current_access_level).toBe('domain_admin');
+    });
+  });
+
+  // =============================================
+  // Sprint 1: activity_count contract
+  // =============================================
+  describe('getState activityCount', () => {
+    it('returns the requested number of activity entries', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      for (let i = 0; i < 50; i++) {
+        (engine as any).log(`activity-${i}`);
+      }
+      const state5 = engine.getState({ activityCount: 5 });
+      expect(state5.recent_activity).toHaveLength(5);
+      const state50 = engine.getState({ activityCount: 50 });
+      expect(state50.recent_activity.length).toBeGreaterThanOrEqual(50);
     });
   });
 });

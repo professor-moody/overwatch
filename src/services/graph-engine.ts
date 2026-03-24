@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { expandCidr, isIpInScope } from './cidr.js';
+import { expandCidr, isIpInScope, isHostnameInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -94,7 +94,7 @@ const BUILTIN_RULES: InferenceRule[] = [
     id: 'rule-adcs-esc1',
     name: 'ADCS enrollment + subject supply = ESC1 candidate',
     description: 'Certificate template allowing enrollee-supplied subject name',
-    trigger: { node_type: 'certificate', property_match: { enrollee_supplies_subject: true } },
+    trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
     produces: [{
       edge_type: 'ESC1',
       source_selector: 'enrollable_users',
@@ -112,6 +112,54 @@ const BUILTIN_RULES: InferenceRule[] = [
       source_selector: 'domain_users',
       target_selector: 'trigger_node',
       confidence: 0.85
+    }]
+  },
+  {
+    id: 'rule-asrep-roastable',
+    name: 'AS-REP Roastable user',
+    description: 'User with Kerberos pre-auth disabled is AS-REP roastable',
+    trigger: { node_type: 'user', property_match: { asrep_roastable: true } },
+    produces: [{
+      edge_type: 'AS_REP_ROASTABLE',
+      source_selector: 'trigger_node',
+      target_selector: 'domain_nodes',
+      confidence: 0.85
+    }]
+  },
+  {
+    id: 'rule-kerberoastable',
+    name: 'Kerberoastable user',
+    description: 'User with SPN set is kerberoastable',
+    trigger: { node_type: 'user', property_match: { has_spn: true } },
+    produces: [{
+      edge_type: 'KERBEROASTABLE',
+      source_selector: 'trigger_node',
+      target_selector: 'domain_nodes',
+      confidence: 0.85
+    }]
+  },
+  {
+    id: 'rule-constrained-delegation',
+    name: 'Constrained delegation target',
+    description: 'Host with constrained delegation can impersonate users to target services',
+    trigger: { node_type: 'host', property_match: { constrained_delegation: true } },
+    produces: [{
+      edge_type: 'CAN_DELEGATE_TO',
+      source_selector: 'trigger_node',
+      target_selector: 'domain_nodes',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-web-login-form',
+    name: 'Web login form discovered',
+    description: 'HTTP service with login form is a candidate for credential testing',
+    trigger: { node_type: 'service', property_match: { has_login_form: true } },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'domain_credentials',
+      target_selector: 'trigger_service',
+      confidence: 0.5
     }]
   }
 ];
@@ -770,9 +818,29 @@ export class GraphEngine {
     return null;
   }
 
+  private resolveHostname(nodeId: string): string | null {
+    const node = this.getNode(nodeId);
+    if (!node) return null;
+    if (node.hostname) return node.hostname;
+    // Walk inbound edges to find the parent host
+    for (const edge of this.ctx.graph.inEdges(nodeId) as string[]) {
+      const source = this.ctx.graph.source(edge);
+      const sourceNode = this.getNode(source);
+      if (sourceNode?.type === 'host' && sourceNode.hostname) return sourceNode.hostname;
+    }
+    return null;
+  }
+
   private isNodeExcluded(nodeId: string): string | null {
     const ip = this.resolveHostIp(nodeId);
     if (ip && this.isExcluded(ip)) return ip;
+    // Fall back to hostname-based scope check for nodes without IPs
+    if (!ip) {
+      const hostname = this.resolveHostname(nodeId);
+      if (hostname && !isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
+        return hostname;
+      }
+    }
     return null;
   }
 
@@ -845,7 +913,7 @@ export class GraphEngine {
   // =============================================
 
   private evaluateObjectives(): void {
-    const ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
+    const DEFAULT_ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
 
     for (const obj of this.ctx.config.objectives) {
       if (obj.achieved) continue;
@@ -855,18 +923,25 @@ export class GraphEngine {
           node_type: obj.target_node_type,
           node_filter: obj.target_criteria
         });
-        // A matching node must also be obtained — either via an access edge
-        // (HAS_SESSION, ADMIN_TO, OWNS_CRED) or an explicit obtained flag.
+        const accessEdgeTypes = obj.achievement_edge_types
+          ? new Set(obj.achievement_edge_types)
+          : DEFAULT_ACCESS_EDGE_TYPES;
+        // A matching node must also be obtained — via an access edge, an explicit
+        // obtained flag, or (for shares) readable/writable properties.
         const obtained = matching.nodes.some(n => {
           const nodeProps = n.properties;
           if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
             return false;
           }
           if (n.properties.obtained === true) return true;
+          // Shares with readable/writable access count as obtained
+          if (nodeProps.type === 'share' && (nodeProps.readable === true || nodeProps.writable === true)) {
+            return true;
+          }
           return this.ctx.graph.inEdges(n.id).some((e: string) => {
             const ep = this.ctx.graph.getEdgeAttributes(e);
             if (ep.type !== 'OWNS_CRED') {
-              return ACCESS_EDGE_TYPES.has(ep.type) && ep.confidence >= 0.9;
+              return accessEdgeTypes.has(ep.type) && ep.confidence >= 0.9;
             }
             return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && ep.confidence >= 0.9;
           });
@@ -1153,7 +1228,8 @@ export class GraphEngine {
   // State Summary
   // =============================================
 
-  getState(): EngagementState {
+  getState(options?: { activityCount?: number }): EngagementState {
+    const activityCount = options?.activityCount ?? 20;
     const nodesByType: Record<string, number> = {};
     const edgesByType: Record<string, number> = {};
     let confirmedEdges = 0;
@@ -1204,7 +1280,7 @@ export class GraphEngine {
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),
       active_agents: Array.from(this.ctx.agents.values()).filter(a => a.status === 'running'),
-      recent_activity: this.ctx.activityLog.slice(-20),
+      recent_activity: this.ctx.activityLog.slice(-activityCount),
       access_summary: {
         compromised_hosts: compromised,
         valid_credentials: validCreds,
@@ -1217,9 +1293,13 @@ export class GraphEngine {
 
   private computeAccessLevel(compromised: string[]): string {
     if (compromised.length === 0) return 'none';
-    // Check for DA — credential must be actually obtained, not just discovered
+    const scopeDomains = this.ctx.config.scope.domains.map(d => d.toLowerCase());
+    // Check for DA — credential must be actually obtained, not just discovered,
+    // AND must be a domain credential matching a scope domain.
     const hasDa = this.getNodesByType('credential').some(c => {
       if (c.privileged !== true || c.confidence < 0.9 || !isCredentialUsableForAuth(c)) return false;
+      // Must be a domain credential matching a scope domain
+      if (!c.cred_domain || !scopeDomains.includes(c.cred_domain.toLowerCase())) return false;
       // Must have an OWNS_CRED inbound edge or explicit obtained flag
       if (c.obtained === true) return true;
       return this.ctx.graph.inEdges(c.id).some((e: string) => {
@@ -1346,7 +1426,7 @@ export class GraphEngine {
   }
 
   private propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean {
-    const ignoreKeys = new Set(['discovered_at', 'discovered_by']);
+    const ignoreKeys = new Set(['discovered_at', 'discovered_by', 'last_seen_at', 'first_seen_at', 'sources']);
     for (const [key, val] of Object.entries(newProps)) {
       if (ignoreKeys.has(key)) continue;
       if (val !== undefined && val !== null && !this.valuesEqual(oldProps[key], val)) return true;

@@ -1,0 +1,122 @@
+[
+  {
+    "rule": {
+      "id": "suggested-runs-host-service",
+      "name": "Auto-infer RUNS from host to service",
+      "description": "Pattern observed 30 times: host nodes frequently have RUNS edges to service nodes",
+      "trigger": {
+        "node_type": "service"
+      },
+      "produces": [
+        {
+          "edge_type": "RUNS",
+          "source_selector": "parent_host",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "host→RUNS→service appeared 30 times with no covering inference rule",
+    "occurrences": 30
+  },
+  {
+    "rule": {
+      "id": "suggested-runs-host-share",
+      "name": "Auto-infer RUNS from host to share",
+      "description": "Pattern observed 5 times: host nodes frequently have RUNS edges to share nodes",
+      "trigger": {
+        "node_type": "share"
+      },
+      "produces": [
+        {
+          "edge_type": "RUNS",
+          "source_selector": "parent_host",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "host→RUNS→share appeared 5 times with no covering inference rule",
+    "occurrences": 5
+  },
+  {
+    "rule": {
+      "id": "suggested-owns_cred-user-credential",
+      "name": "Auto-infer OWNS_CRED from user to credential",
+      "description": "Pattern observed 9 times: user nodes frequently have OWNS_CRED edges to credential nodes",
+      "trigger": {
+        "node_type": "credential"
+      },
+      "produces": [
+        {
+          "edge_type": "OWNS_CRED",
+          "source_selector": "domain_users",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "user→OWNS_CRED→credential appeared 9 times with no covering inference rule",
+    "occurrences": 9
+  },
+  {
+    "rule": {
+      "id": "suggested-valid_on-credential-domain",
+      "name": "Auto-infer VALID_ON from credential to domain",
+      "description": "Pattern observed 9 times: credential nodes frequently have VALID_ON edges to domain nodes",
+      "trigger": {
+        "node_type": "domain"
+      },
+      "produces": [
+        {
+          "edge_type": "VALID_ON",
+          "source_selector": "domain_credentials",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "credential→VALID_ON→domain appeared 9 times with no covering inference rule",
+    "occurrences": 9
+  },
+  {
+    "rule": {
+      "id": "suggested-admin_to-credential-host",
+      "name": "Auto-infer ADMIN_TO from credential to host",
+      "description": "Pattern observed 6 times: credential nodes frequently have ADMIN_TO edges to host nodes",
+      "trigger": {
+        "node_type": "host"
+      },
+      "produces": [
+        {
+          "edge_type": "ADMIN_TO",
+          "source_selector": "domain_credentials",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "credential→ADMIN_TO→host appeared 6 times with no covering inference rule",
+    "occurrences": 6
+  },
+  {
+    "rule": {
+      "id": "suggested-valid_on-credential-host",
+      "name": "Auto-infer VALID_ON from credential to host",
+      "description": "Pattern observed 9 times: credential nodes frequently have VALID_ON edges to host nodes",
+      "trigger": {
+        "node_type": "host"
+      },
+      "produces": [
+        {
+          "edge_type": "VALID_ON",
+          "source_selector": "domain_credentials",
+          "target_selector": "trigger_node",
+          "confidence": 0.6
+        }
+      ]
+    },
+    "evidence": "credential→VALID_ON→host appeared 9 times with no covering inference rule",
+    "occurrences": 9
+  }
+]

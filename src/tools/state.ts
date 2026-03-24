@@ -50,11 +50,10 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
       }
     },
     withErrorBoundary('get_state', async ({ include_full_frontier, activity_count }) => {
-      const state = engine.getState();
+      const state = engine.getState({ activityCount: activity_count });
       if (!include_full_frontier) {
         state.frontier = state.frontier.slice(0, 10);
       }
-      state.recent_activity = state.recent_activity.slice(-activity_count);
       return {
         content: [{ type: 'text', text: JSON.stringify(state, null, 2) }]
       };

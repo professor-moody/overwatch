@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandCidr, isIpInCidr, isIpInScope } from '../cidr.js';
+import { expandCidr, isIpInCidr, isIpInScope, isHostnameInScope } from '../cidr.js';
 
 describe('expandCidr', () => {
   it('expands a /24 to 254 hosts (skips network + broadcast)', () => {
@@ -109,5 +109,47 @@ describe('isIpInScope', () => {
 
   it('returns true with empty exclusions', () => {
     expect(isIpInScope('10.10.10.5', cidrs, [])).toBe(true);
+  });
+});
+
+describe('isHostnameInScope', () => {
+  const domains = ['test.local', 'corp.example.com'];
+  const exclusions = ['bad.test.local', '10.10.10.14'];
+
+  it('returns true for hostname matching a scope domain', () => {
+    expect(isHostnameInScope('dc01.test.local', domains, exclusions)).toBe(true);
+  });
+
+  it('returns true for exact domain match', () => {
+    expect(isHostnameInScope('test.local', domains, exclusions)).toBe(true);
+  });
+
+  it('returns true for subdomain of scope domain', () => {
+    expect(isHostnameInScope('web.corp.example.com', domains, exclusions)).toBe(true);
+  });
+
+  it('returns false for hostname not matching any scope domain', () => {
+    expect(isHostnameInScope('dc01.other.local', domains, exclusions)).toBe(false);
+  });
+
+  it('returns false for excluded hostname (exact match)', () => {
+    expect(isHostnameInScope('bad.test.local', domains, exclusions)).toBe(false);
+  });
+
+  it('returns false for subdomain of excluded hostname', () => {
+    expect(isHostnameInScope('sub.bad.test.local', domains, exclusions)).toBe(false);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isHostnameInScope('DC01.TEST.LOCAL', domains, exclusions)).toBe(true);
+    expect(isHostnameInScope('BAD.TEST.LOCAL', domains, exclusions)).toBe(false);
+  });
+
+  it('returns true when no domains configured (cannot determine)', () => {
+    expect(isHostnameInScope('anything.random.com', [], [])).toBe(true);
+  });
+
+  it('ignores CIDR exclusions (only hostname matching)', () => {
+    expect(isHostnameInScope('dc01.test.local', domains, ['10.0.0.0/8'])).toBe(true);
   });
 });

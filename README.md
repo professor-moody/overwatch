@@ -13,7 +13,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **Graph-based state** — directed property graphs (hosts, services, credentials, relationships) with traversable attack paths
 - **Hybrid scoring** — deterministic layer handles scope/dedup/OPSEC vetoes; the LLM handles attack chain reasoning
 - **Inference rules** — automatic hypothesis generation (e.g., "SMB signing disabled → relay target")
-- **22 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, and more
+- **25 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, and more
 - **29 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
@@ -105,7 +105,7 @@ Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)*
 - **[Architecture](https://keys.github.io/overwatch/architecture/)** — design decisions and component overview
 - **[Configuration](https://keys.github.io/overwatch/configuration/)** — engagement config, OPSEC profiles, env vars
 - **[Graph Model](https://keys.github.io/overwatch/graph-model/)** — node types, edge types, inference rules
-- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 22 MCP tools with parameters and examples
+- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 25 MCP tools with parameters and examples
 - **[Skills Library](https://keys.github.io/overwatch/skills/)** — 29 offensive methodology guides
 - **[Operator Playbook](https://keys.github.io/overwatch/playbook/)** — lab workflows, session instructions, best practices
 - **[Development](https://keys.github.io/overwatch/development/)** — project structure, testing, extending

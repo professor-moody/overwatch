@@ -114,6 +114,10 @@ export const EDGE_TYPES = [
   'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC6', 'ESC8',
   // Trust
   'TRUSTS', 'SAME_DOMAIN',
+  // Roasting
+  'AS_REP_ROASTABLE', 'KERBEROASTABLE',
+  // Delegation
+  'CAN_DELEGATE_TO',
   // Lateral movement
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH',
   // Objective
@@ -148,6 +152,7 @@ export interface EngagementObjective {
   description: string;
   target_node_type?: NodeType;
   target_criteria?: Record<string, unknown>;  // match against node props
+  achievement_edge_types?: EdgeType[];        // custom edge types that count as "obtained" (default: HAS_SESSION, ADMIN_TO, OWNS_CRED)
   achieved: boolean;
   achieved_at?: string;
 }

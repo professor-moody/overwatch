@@ -22,13 +22,54 @@ export type EdgeFixSuggestion =
   | { kind: 'recreate_edge'; message: string };
 
 export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
+  // Network
+  REACHABLE: { source: ['host'], target: ['host'] },
   RUNS: { source: ['host'], target: ['service'] },
+  // Domain membership
   MEMBER_OF: { source: ['user', 'group'], target: ['group'] },
   MEMBER_OF_DOMAIN: { source: ['host', 'user', 'group'], target: ['domain'] },
-  OWNS_CRED: { source: ['user'], target: ['credential'] },
-  VALID_ON: { source: ['user', 'group', 'credential'], target: ['host'] },
+  // Access
   ADMIN_TO: { source: ['user', 'group', 'credential'], target: ['host'] },
   HAS_SESSION: { source: ['user', 'group', 'credential'], target: ['host'] },
+  CAN_RDPINTO: { source: ['user', 'group', 'credential'], target: ['host'] },
+  CAN_PSREMOTE: { source: ['user', 'group', 'credential'], target: ['host'] },
+  // Credential relationships
+  VALID_ON: { source: ['user', 'group', 'credential'], target: ['host'] },
+  OWNS_CRED: { source: ['user'], target: ['credential'] },
+  // AD attack paths
+  CAN_DCSYNC: { source: ['user', 'group'], target: ['domain'] },
+  DELEGATES_TO: { source: ['user', 'host'], target: ['host', 'service'] },
+  WRITEABLE_BY: { source: ['user', 'group'], target: ['user', 'group', 'host', 'gpo', 'ou', 'cert_template', 'ca'] },
+  GENERIC_ALL: { source: ['user', 'group'], target: ['user', 'group', 'host', 'domain', 'gpo', 'ou', 'cert_template', 'ca'] },
+  GENERIC_WRITE: { source: ['user', 'group'], target: ['user', 'group', 'host', 'gpo', 'ou', 'cert_template'] },
+  WRITE_OWNER: { source: ['user', 'group'], target: ['user', 'group', 'host', 'domain', 'gpo', 'ou', 'cert_template', 'ca'] },
+  WRITE_DACL: { source: ['user', 'group'], target: ['user', 'group', 'host', 'domain', 'gpo', 'ou', 'cert_template', 'ca'] },
+  ADD_MEMBER: { source: ['user', 'group'], target: ['group'] },
+  FORCE_CHANGE_PASSWORD: { source: ['user', 'group'], target: ['user'] },
+  ALLOWED_TO_ACT: { source: ['host', 'user'], target: ['host'] },
+  // ADCS
+  CAN_ENROLL: { source: ['user', 'group'], target: ['cert_template', 'ca'] },
+  ESC1: { source: ['user', 'group'], target: ['cert_template'] },
+  ESC2: { source: ['user', 'group'], target: ['cert_template'] },
+  ESC3: { source: ['user', 'group'], target: ['cert_template'] },
+  ESC4: { source: ['user', 'group'], target: ['cert_template'] },
+  ESC6: { source: ['user', 'group'], target: ['ca'] },
+  ESC8: { source: ['user', 'group'], target: ['ca'] },
+  // Trust
+  TRUSTS: { source: ['domain'], target: ['domain'] },
+  SAME_DOMAIN: { source: ['host', 'user', 'group'], target: ['host', 'user', 'group'] },
+  // Roasting
+  AS_REP_ROASTABLE: { source: ['user'], target: ['domain'] },
+  KERBEROASTABLE: { source: ['user'], target: ['domain'] },
+  // Delegation
+  CAN_DELEGATE_TO: { source: ['host', 'user'], target: ['host', 'service'] },
+  // Lateral movement
+  RELAY_TARGET: { source: ['host', 'user', 'credential'], target: ['host'] },
+  NULL_SESSION: { source: ['host'], target: ['host'] },
+  POTENTIAL_AUTH: { source: ['credential', 'user'], target: ['service', 'host'] },
+  // Objective
+  PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group'], target: ['objective'] },
+  // RELATED is intentionally unconstrained
 };
 
 export function getEdgeConstraint(edgeType: EdgeType): EdgeConstraint | undefined {
