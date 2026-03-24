@@ -122,6 +122,8 @@ export const EDGE_TYPES = [
   'AS_REP_ROASTABLE', 'KERBEROASTABLE',
   // Delegation
   'CAN_DELEGATE_TO',
+  // ACL-derived
+  'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
   // Lateral movement
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH',
   // Objective
@@ -404,6 +406,11 @@ export interface InferenceRule {
     node_type?: NodeType;
     edge_type?: EdgeType;
     property_match?: Record<string, unknown>;
+    requires_edge?: {
+      type: EdgeType;
+      direction: 'inbound' | 'outbound';
+      peer_match?: Record<string, unknown>;
+    };
   };
   produces: {
     edge_type: EdgeType;

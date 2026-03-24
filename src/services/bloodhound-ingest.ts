@@ -154,6 +154,80 @@ const BH_STANDARD_ARRAY_KEYS = new Set([
   'HasSIDHistory', 'SPNTargets',
 ]);
 
+// --- SharpHound CE Format Normalization ---
+
+// SharpHound CE (v2 / BloodHound CE) uses PascalCase property keys and meta.version >= 5.
+// Classic (bloodhound-python / SharpHound v4) uses lowercase property keys.
+// This adapter normalizes CE format to classic format so the same parser handles both.
+
+function isSharpHoundCE(parsed: BHFile): boolean {
+  // CE uses meta.version >= 5; classic uses 3 or 4
+  if (parsed.meta?.version >= 5) return true;
+
+  // Heuristic: check if first object's Properties has PascalCase keys
+  if (parsed.data?.length > 0) {
+    const props = parsed.data[0].Properties;
+    if (props) {
+      const keys = Object.keys(props);
+      // CE typically has keys like 'SAMAccountName', 'DisplayName', 'Enabled'
+      // Classic has 'samaccountname', 'displayname', 'enabled'
+      const hasPascalCase = keys.some(k => /^[A-Z]/.test(k) && k.length > 1 && k !== k.toUpperCase());
+      const hasLowerCase = keys.some(k => /^[a-z]/.test(k));
+      if (hasPascalCase && !hasLowerCase) return true;
+    }
+  }
+  return false;
+}
+
+function lowercaseObjectKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key.toLowerCase()] = value;
+  }
+  return result;
+}
+
+export function normalizeSharpHoundCE(raw: string, filename: string): { normalized: string; wasCE: boolean; error?: string } {
+  let parsed: BHFile;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { normalized: raw, wasCE: false, error: `Failed to parse ${filename}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  if (!parsed.data || !Array.isArray(parsed.data)) {
+    return { normalized: raw, wasCE: false };
+  }
+
+  if (!isSharpHoundCE(parsed)) {
+    return { normalized: raw, wasCE: false };
+  }
+
+  // Normalize: lowercase all property keys in each object
+  const normalizedData = parsed.data.map((obj: BHObject) => {
+    const normalizedObj: Record<string, unknown> = { ...obj };
+
+    // Normalize Properties keys to lowercase
+    if (obj.Properties && typeof obj.Properties === 'object') {
+      normalizedObj.Properties = lowercaseObjectKeys(obj.Properties);
+    }
+
+    return normalizedObj;
+  });
+
+  const normalizedFile = {
+    ...parsed,
+    data: normalizedData,
+    meta: {
+      ...parsed.meta,
+      // Preserve original version but mark as normalized
+      _original_version: parsed.meta?.version,
+    },
+  };
+
+  return { normalized: JSON.stringify(normalizedFile), wasCE: true };
+}
+
 // --- Ingestion ---
 
 export interface BloodHoundIngestResult {
@@ -200,8 +274,13 @@ export function parseBloodHoundFile(
   raw: string,
   filename: string,
   options: BloodHoundParseOptions = {},
-): { finding: Finding | null; errors: string[] } {
-  const document = parseBloodHoundDocument(raw, filename);
+): { finding: Finding | null; errors: string[]; wasCE?: boolean } {
+  // Auto-detect and normalize SharpHound CE format
+  const ceResult = normalizeSharpHoundCE(raw, filename);
+  const effectiveRaw = ceResult.normalized;
+  const wasCE = ceResult.wasCE;
+
+  const document = parseBloodHoundDocument(effectiveRaw, filename);
   const errors: string[] = [];
   errors.push(...document.errors);
   if (!document.parsed) return { finding: null, errors };
@@ -444,7 +523,7 @@ export function parseBloodHoundFile(
   errors.push(...relationWarnings);
 
   if (nodes.length === 0 && edges.length === 0) {
-    return { finding: null, errors };
+    return { finding: null, errors, wasCE };
   }
 
   const finding: Finding = {
@@ -455,7 +534,7 @@ export function parseBloodHoundFile(
     edges,
   };
 
-  return { finding, errors };
+  return { finding, errors, wasCE };
 }
 
 // --- Helpers ---

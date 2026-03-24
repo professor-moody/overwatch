@@ -41,6 +41,13 @@ describe('edge constraints', () => {
     ['AS_REP_ROASTABLE', 'user', 'domain'],
     ['KERBEROASTABLE', 'user', 'domain'],
     ['CAN_DELEGATE_TO', 'host', 'service'],
+    ['CAN_READ_LAPS', 'user', 'host'],
+    ['CAN_READ_LAPS', 'group', 'host'],
+    ['CAN_READ_GMSA', 'user', 'user'],
+    ['CAN_READ_GMSA', 'group', 'user'],
+    ['RBCD_TARGET', 'host', 'host'],
+    ['RBCD_TARGET', 'user', 'host'],
+    ['DERIVED_FROM', 'credential', 'credential'],
     ['RELAY_TARGET', 'credential', 'host'],
     ['NULL_SESSION', 'host', 'host'],
     ['POTENTIAL_AUTH', 'credential', 'service'],
@@ -69,6 +76,12 @@ describe('edge constraints', () => {
     ['NULL_SESSION', 'user', 'host'],
     ['ESC1', 'host', 'cert_template'],
     ['ALLOWED_TO_ACT', 'group', 'host'],
+    ['CAN_READ_LAPS', 'host', 'host'],
+    ['CAN_READ_LAPS', 'credential', 'host'],
+    ['CAN_READ_GMSA', 'host', 'user'],
+    ['RBCD_TARGET', 'group', 'host'],
+    ['DERIVED_FROM', 'user', 'credential'],
+    ['DERIVED_FROM', 'credential', 'user'],
   ];
 
   for (const [edgeType, sourceType, targetType] of invalidCases) {

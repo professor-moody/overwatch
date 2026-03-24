@@ -161,6 +161,54 @@ const BUILTIN_RULES: InferenceRule[] = [
       target_selector: 'trigger_service',
       confidence: 0.5
     }]
+  },
+  {
+    id: 'rule-laps-readable',
+    name: 'LAPS password readable via ACL',
+    description: 'Host with LAPS enabled and inbound GENERIC_ALL from a principal allows LAPS password read',
+    trigger: {
+      node_type: 'host',
+      property_match: { laps: true },
+      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'CAN_READ_LAPS',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.75
+    }]
+  },
+  {
+    id: 'rule-gmsa-readable',
+    name: 'gMSA password readable via ACL',
+    description: 'gMSA service account with inbound GENERIC_ALL from a principal allows gMSA password read',
+    trigger: {
+      node_type: 'user',
+      property_match: { gmsa: true },
+      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'CAN_READ_GMSA',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.75
+    }]
+  },
+  {
+    id: 'rule-rbcd-target',
+    name: 'RBCD eligible target',
+    description: 'Host writable by a principal is an RBCD target when MachineAccountQuota > 0',
+    trigger: {
+      node_type: 'host',
+      property_match: { maq_gt_zero: true },
+      requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'RBCD_TARGET',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
   }
 ];
 
@@ -563,8 +611,18 @@ export class GraphEngine {
       }
     }
 
-    // Run inference rules against new and updated nodes
-    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
+    // Collect edge endpoint nodes so cross-node rules re-evaluate when edges arrive
+    const edgeEndpoints = new Set<string>();
+    for (const edgeId of newEdges) {
+      if (this.ctx.graph.hasEdge(edgeId)) {
+        edgeEndpoints.add(this.ctx.graph.source(edgeId));
+        edgeEndpoints.add(this.ctx.graph.target(edgeId));
+      }
+    }
+
+    // Run inference rules against new nodes, updated nodes, and edge endpoints
+    const inferenceTargets = new Set([...newNodes, ...updatedNodes, ...edgeEndpoints]);
+    for (const nodeId of inferenceTargets) {
       const inferred = this.runInferenceRules(nodeId);
       inferredEdges.push(...inferred);
     }

@@ -2017,6 +2017,122 @@ describe('GraphEngine', () => {
       expect(state50.recent_activity.length).toBeGreaterThanOrEqual(50);
     });
   });
+
+  // =============================================
+  // Sprint 4: Cross-node inference rules (requires_edge)
+  // =============================================
+  describe('cross-node inference rules', () => {
+    it('LAPS rule fires when host has laps:true and inbound GENERIC_ALL', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Ingest a group and a LAPS-enabled host with GENERIC_ALL from group to host
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'group-it', type: 'group', label: 'IT Admins' },
+          { id: 'host-laps', type: 'host', label: '10.10.10.20', ip: '10.10.10.20', laps: true } as any,
+        ],
+        edges: [
+          { source: 'group-it', target: 'host-laps', properties: { type: 'GENERIC_ALL', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const lapsEdges = graph.edges.filter(e => e.properties.type === 'CAN_READ_LAPS');
+      expect(lapsEdges.length).toBeGreaterThan(0);
+      expect(lapsEdges[0].source).toBe('group-it-admins');
+      expect(lapsEdges[0].target).toBe('host-10-10-10-20');
+      expect(lapsEdges[0].properties.confidence).toBe(0.75);
+    });
+
+    it('LAPS rule does NOT fire without inbound GENERIC_ALL', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-laps2', type: 'host', label: '10.10.10.21', ip: '10.10.10.21', laps: true } as any,
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const lapsEdges = graph.edges.filter(e => e.properties.type === 'CAN_READ_LAPS');
+      expect(lapsEdges.length).toBe(0);
+    });
+
+    it('gMSA rule fires when user has gmsa:true and inbound GENERIC_ALL', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'group-readers', type: 'group', label: 'gMSA Readers' },
+          { id: 'user-gmsa', type: 'user', label: 'svc_sql$', gmsa: true } as any,
+        ],
+        edges: [
+          { source: 'group-readers', target: 'user-gmsa', properties: { type: 'GENERIC_ALL', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const gmsaEdges = graph.edges.filter(e => e.properties.type === 'CAN_READ_GMSA');
+      expect(gmsaEdges.length).toBeGreaterThan(0);
+      expect(gmsaEdges[0].source).toBe('group-gmsa-readers');
+      expect(gmsaEdges[0].target).toBe('user-gmsa');
+      expect(gmsaEdges[0].properties.confidence).toBe(0.75);
+    });
+
+    it('RBCD rule fires when host has maq_gt_zero and inbound WRITEABLE_BY', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+          { id: 'host-rbcd', type: 'host', label: '10.10.10.22', ip: '10.10.10.22', maq_gt_zero: true } as any,
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'host-rbcd', properties: { type: 'WRITEABLE_BY', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const rbcdEdges = graph.edges.filter(e => e.properties.type === 'RBCD_TARGET');
+      expect(rbcdEdges.length).toBeGreaterThan(0);
+      expect(rbcdEdges[0].source).toBe('user-attacker');
+      expect(rbcdEdges[0].target).toBe('host-10-10-10-22');
+      expect(rbcdEdges[0].properties.confidence).toBe(0.7);
+    });
+
+    it('RBCD rule does NOT fire without inbound WRITEABLE_BY', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-rbcd2', type: 'host', label: '10.10.10.23', ip: '10.10.10.23', maq_gt_zero: true } as any,
+        ],
+      }));
+      const graph = engine.exportGraph();
+      const rbcdEdges = graph.edges.filter(e => e.properties.type === 'RBCD_TARGET');
+      expect(rbcdEdges.length).toBe(0);
+    });
+
+    it('cross-node rules fire when trigger node is re-ingested after edge arrives', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // First ingest LAPS host without the edge
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-bf', type: 'host', label: '10.10.10.24', ip: '10.10.10.24', laps: true } as any,
+        ],
+      }));
+      // No CAN_READ_LAPS yet
+      let graph = engine.exportGraph();
+      expect(graph.edges.filter(e => e.properties.type === 'CAN_READ_LAPS').length).toBe(0);
+
+      // Now ingest the group + GENERIC_ALL edge, AND re-ingest the host in the same finding
+      // so inference rules re-evaluate the host with the edge now present
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'group-bf', type: 'group', label: 'Backfill Group' },
+          { id: 'host-bf', type: 'host', label: '10.10.10.24', ip: '10.10.10.24', laps: true } as any,
+        ],
+        edges: [
+          { source: 'group-bf', target: 'host-bf', properties: { type: 'GENERIC_ALL', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+      graph = engine.exportGraph();
+      const lapsEdges = graph.edges.filter(e => e.properties.type === 'CAN_READ_LAPS');
+      expect(lapsEdges.length).toBeGreaterThan(0);
+      expect(lapsEdges[0].source).toBe('group-backfill-group');
+    });
+  });
 });
 
 // =============================================

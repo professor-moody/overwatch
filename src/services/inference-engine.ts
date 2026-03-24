@@ -53,6 +53,7 @@ export class InferenceEngine {
         );
         if (!matches) return;
       }
+      if (rule.trigger.requires_edge && !this.hasMatchingEdge(nodeId, rule.trigger.requires_edge)) return;
       inferred.push(...this.runRulesForRule(rule, nodeId));
     });
     return inferred;
@@ -73,6 +74,8 @@ export class InferenceEngine {
         if (!matches) continue;
       }
 
+      if (rule.trigger.requires_edge && !this.hasMatchingEdge(triggerNodeId, rule.trigger.requires_edge)) continue;
+
       inferred.push(...this.applyRuleProductions(rule, triggerNodeId));
     }
 
@@ -83,12 +86,59 @@ export class InferenceEngine {
     return this.applyRuleProductions(rule, triggerNodeId);
   }
 
+  private hasMatchingEdge(nodeId: string, req: NonNullable<InferenceRule['trigger']['requires_edge']>): boolean {
+    const edges = req.direction === 'inbound'
+      ? this.ctx.graph.inEdges(nodeId) as string[]
+      : this.ctx.graph.outEdges(nodeId) as string[];
+    for (const e of edges) {
+      const attrs = this.ctx.graph.getEdgeAttributes(e);
+      if (attrs.type !== req.type) continue;
+      if (req.peer_match) {
+        const peerId = req.direction === 'inbound'
+          ? this.ctx.graph.source(e)
+          : this.ctx.graph.target(e);
+        const peer = this.getNode(peerId);
+        if (!peer) continue;
+        const matches = Object.entries(req.peer_match).every(
+          ([k, v]) => (peer as Record<string, unknown>)[k] === v
+        );
+        if (!matches) continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private resolveEdgePeers(nodeId: string, req: NonNullable<InferenceRule['trigger']['requires_edge']>): string[] {
+    const edges = req.direction === 'inbound'
+      ? this.ctx.graph.inEdges(nodeId) as string[]
+      : this.ctx.graph.outEdges(nodeId) as string[];
+    const peers: string[] = [];
+    for (const e of edges) {
+      const attrs = this.ctx.graph.getEdgeAttributes(e);
+      if (attrs.type !== req.type) continue;
+      const peerId = req.direction === 'inbound'
+        ? this.ctx.graph.source(e)
+        : this.ctx.graph.target(e);
+      if (req.peer_match) {
+        const peer = this.getNode(peerId);
+        if (!peer) continue;
+        const matches = Object.entries(req.peer_match).every(
+          ([k, v]) => (peer as Record<string, unknown>)[k] === v
+        );
+        if (!matches) continue;
+      }
+      peers.push(peerId);
+    }
+    return peers;
+  }
+
   private applyRuleProductions(rule: InferenceRule, triggerNodeId: string): string[] {
     const inferred: string[] = [];
     const now = new Date().toISOString();
     for (const production of rule.produces) {
-      const sources = this.resolveSelector(production.source_selector, triggerNodeId);
-      const targets = this.resolveSelector(production.target_selector, triggerNodeId);
+      const sources = this.resolveSelector(production.source_selector, triggerNodeId, rule);
+      const targets = this.resolveSelector(production.target_selector, triggerNodeId, rule);
       for (const src of sources) {
         for (const tgt of targets) {
           if (src === tgt) continue;
@@ -123,7 +173,7 @@ export class InferenceEngine {
     return inferred;
   }
 
-  private resolveSelector(selector: string, triggerNodeId: string): string[] {
+  private resolveSelector(selector: string, triggerNodeId: string, rule?: InferenceRule): string[] {
     const node = this.getNode(triggerNodeId);
     if (!node) return [];
 
@@ -181,6 +231,11 @@ export class InferenceEngine {
 
       case 'enrollable_users':
         return this.getNodesByType('user').map(n => n.id);
+
+      case 'edge_peers': {
+        if (!rule?.trigger.requires_edge) return [];
+        return this.resolveEdgePeers(triggerNodeId, rule.trigger.requires_edge);
+      }
 
       default:
         console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);

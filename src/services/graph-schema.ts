@@ -64,6 +64,10 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   KERBEROASTABLE: { source: ['user'], target: ['domain'] },
   // Delegation
   CAN_DELEGATE_TO: { source: ['host', 'user'], target: ['host', 'service'] },
+  // ACL-derived
+  CAN_READ_LAPS: { source: ['user', 'group'], target: ['host'] },
+  CAN_READ_GMSA: { source: ['user', 'group'], target: ['user'] },
+  RBCD_TARGET: { source: ['host', 'user'], target: ['host'] },
   // Lateral movement
   RELAY_TARGET: { source: ['host', 'user', 'credential'], target: ['host'] },
   NULL_SESSION: { source: ['host'], target: ['host'] },

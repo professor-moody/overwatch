@@ -625,4 +625,448 @@ describe('Output Parsers', () => {
       expect(finding.edges.length).toBe(0);
     });
   });
+
+  // =============================================
+  // ldapsearch / ldapdomaindump Parser
+  // =============================================
+  describe('parseLdapsearch', () => {
+    const sampleLdif = [
+      'dn: CN=John Doe,CN=Users,DC=acme,DC=local',
+      'objectClass: top',
+      'objectClass: person',
+      'objectClass: user',
+      'sAMAccountName: jdoe',
+      'displayName: John Doe',
+      'userAccountControl: 512',
+      'memberOf: CN=Domain Admins,CN=Users,DC=acme,DC=local',
+      'memberOf: CN=IT Staff,OU=Groups,DC=acme,DC=local',
+      'servicePrincipalName: MSSQLSvc/db01.acme.local:1433',
+      'adminCount: 1',
+      '',
+      'dn: CN=svc_backup,CN=Users,DC=acme,DC=local',
+      'objectClass: top',
+      'objectClass: person',
+      'objectClass: user',
+      'sAMAccountName: svc_backup',
+      'userAccountControl: 4260352',
+      '',
+      'dn: CN=Domain Admins,CN=Users,DC=acme,DC=local',
+      'objectClass: top',
+      'objectClass: group',
+      'sAMAccountName: Domain Admins',
+      'adminCount: 1',
+      '',
+      'dn: CN=DC01,OU=Domain Controllers,DC=acme,DC=local',
+      'objectClass: top',
+      'objectClass: computer',
+      'sAMAccountName: DC01$',
+      'dNSHostName: dc01.acme.local',
+      'operatingSystem: Windows Server 2019',
+      '',
+    ].join('\n');
+
+    it('extracts user nodes from LDIF output', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+      expect(users[0].username).toBe('jdoe');
+      expect(users[0].domain_name).toBe('acme.local');
+      expect(users[0].display_name).toBe('John Doe');
+    });
+
+    it('extracts group nodes from LDIF output', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      // Domain Admins (from group entry) + IT Staff (from memberOf)
+      expect(groups.length).toBeGreaterThanOrEqual(2);
+      expect(groups.some(g => g.label === 'Domain Admins')).toBe(true);
+    });
+
+    it('extracts host nodes from computer objects', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].hostname).toBe('dc01.acme.local');
+      expect(hosts[0].os).toBe('Windows Server 2019');
+      expect(hosts[0].domain_joined).toBe(true);
+    });
+
+    it('creates MEMBER_OF edges from memberOf attributes', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      const memberOf = finding.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      expect(memberOf.length).toBe(2); // jdoe -> Domain Admins, jdoe -> IT Staff
+    });
+
+    it('detects has_spn from servicePrincipalName', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      const jdoe = finding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      expect(jdoe?.has_spn).toBe(true);
+    });
+
+    it('detects asrep_roastable from userAccountControl', () => {
+      const finding = parseLdapsearch(sampleLdif);
+      // svc_backup has UAC 4260352 which includes 0x400000 (DONT_REQUIRE_PREAUTH)
+      const svcBackup = finding.nodes.find(n => n.type === 'user' && n.username === 'svc_backup');
+      expect(svcBackup?.asrep_roastable).toBe(true);
+    });
+
+    it('parses ldapdomaindump JSON format', () => {
+      const ldapdomaindump = JSON.stringify([
+        {
+          attributes: {
+            objectClass: ['top', 'person', 'user'],
+            sAMAccountName: 'admin',
+            distinguishedName: 'CN=admin,CN=Users,DC=acme,DC=local',
+            userAccountControl: '512',
+            servicePrincipalName: ['HTTP/web01.acme.local'],
+            adminCount: '1',
+          },
+        },
+        {
+          attributes: {
+            objectClass: ['top', 'computer'],
+            sAMAccountName: 'WEB01$',
+            distinguishedName: 'CN=WEB01,OU=Servers,DC=acme,DC=local',
+            dNSHostName: 'web01.acme.local',
+            operatingSystem: 'Windows Server 2022',
+          },
+        },
+      ]);
+      const finding = parseLdapsearch(ldapdomaindump);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(users.length).toBe(1);
+      expect(users[0].has_spn).toBe(true);
+      expect(users[0].privileged).toBe(true);
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].hostname).toBe('web01.acme.local');
+    });
+
+    it('handles empty/malformed input', () => {
+      expect(parseLdapsearch('').nodes.length).toBe(0);
+      expect(parseLdapsearch('random garbage\nno ldap here').nodes.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // enum4linux-ng Parser
+  // =============================================
+  describe('parseEnum4linux', () => {
+    const sampleJson = JSON.stringify({
+      target: { host: '10.10.10.5' },
+      domain_info: { domain: 'ACME' },
+      os_info: { os: 'Windows Server 2019', hostname: 'DC01' },
+      session_check: { null_session_allowed: true },
+      users: {
+        '500': { username: 'Administrator' },
+        '1103': { username: 'jdoe' },
+      },
+      groups: {
+        '512': { groupname: 'Domain Admins', members: [{ name: 'Administrator' }] },
+      },
+      shares: {
+        'IPC$': { access: { mapping: 'OK', readable: true } },
+        'SYSVOL': { access: { mapping: 'OK', readable: true } },
+      },
+    });
+
+    it('extracts host + SMB service from JSON output', () => {
+      const finding = parseEnum4linux(sampleJson);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].ip).toBe('10.10.10.5');
+      expect(hosts[0].os).toBe('Windows Server 2019');
+      expect(services.length).toBe(1);
+      expect(services[0].service_name).toBe('smb');
+    });
+
+    it('extracts users from JSON output', () => {
+      const finding = parseEnum4linux(sampleJson);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+      expect(users.map(u => u.username).sort()).toEqual(['Administrator', 'jdoe']);
+    });
+
+    it('extracts shares with read permissions', () => {
+      const finding = parseEnum4linux(sampleJson);
+      const shares = finding.nodes.filter(n => n.type === 'share');
+      expect(shares.length).toBe(2);
+      expect(shares.every(s => s.readable === true)).toBe(true);
+    });
+
+    it('detects null session capability', () => {
+      const finding = parseEnum4linux(sampleJson);
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host?.null_session).toBe(true);
+      const nullEdges = finding.edges.filter(e => e.properties.type === 'NULL_SESSION');
+      expect(nullEdges.length).toBe(1);
+    });
+
+    it('creates MEMBER_OF edges for group memberships', () => {
+      const finding = parseEnum4linux(sampleJson);
+      const memberOf = finding.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      expect(memberOf.length).toBe(1); // Administrator -> Domain Admins
+    });
+
+    it('parses text-mode output', () => {
+      const textOutput = [
+        '  Target: 10.10.10.20',
+        '  [+] Domain: CORP',
+        '  [+] Null session established',
+        '  500: CORP\\Administrator (SidTypeUser)',
+        '  1103: CORP\\svc_sql (SidTypeUser)',
+        '  513: CORP\\Domain Users (SidTypeGroup)',
+      ].join('\n');
+      const finding = parseEnum4linux(textOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(users.length).toBe(2);
+      expect(groups.length).toBe(1);
+      expect(finding.nodes.find(n => n.type === 'host')?.ip).toBe('10.10.10.20');
+    });
+
+    it('handles empty/malformed input', () => {
+      expect(parseEnum4linux('').nodes.length).toBe(0);
+      expect(parseEnum4linux('no useful data').nodes.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Rubeus Parser
+  // =============================================
+  describe('parseRubeus', () => {
+    const kerberoastOutput = [
+      '[*] Action: Kerberoasting',
+      '',
+      '[*] SamAccountName         : svc_sql',
+      '[*] DistinguishedName      : CN=svc_sql,CN=Users,DC=acme,DC=local',
+      '[*] ServicePrincipalName   : MSSQLSvc/db01.acme.local:1433',
+      '[*] Hash                   : $krb5tgs$23$*svc_sql$ACME.LOCAL$acme.local/svc_sql*$aabbccdd1122',
+      '',
+      '[*] SamAccountName         : svc_http',
+      '[*] ServicePrincipalName   : HTTP/web01.acme.local',
+      '[*] Hash                   : $krb5tgs$23$*svc_http$ACME.LOCAL$acme.local/svc_http*$eeff0011',
+    ].join('\n');
+
+    it('extracts kerberoast TGS hashes as credential nodes', () => {
+      const finding = parseRubeus(kerberoastOutput);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      expect(creds[0].cred_type).toBe('kerberos_tgs');
+      expect(creds[0].cred_material_kind).toBe('kerberos_tgs');
+      expect(creds[0].cred_usable_for_auth).toBe(false);
+      expect(creds[0].cred_evidence_kind).toBe('dump');
+    });
+
+    it('sets has_spn: true on roasted user nodes', () => {
+      const finding = parseRubeus(kerberoastOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+      expect(users.every(u => u.has_spn === true)).toBe(true);
+    });
+
+    it('extracts AS-REP hashes as credential nodes', () => {
+      const asrepOutput = [
+        '[*] Action: AS-REP Roasting',
+        '',
+        '[*] User                   : jdoe',
+        '[*] Hash                   : $krb5asrep$jdoe@ACME.LOCAL:aabbccdd1122',
+      ].join('\n');
+      const finding = parseRubeus(asrepOutput);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_type).toBe('kerberos_tgs');
+      expect(creds[0].cred_usable_for_auth).toBe(false);
+    });
+
+    it('sets asrep_roastable: true on AS-REP user nodes', () => {
+      const asrepOutput = [
+        '[*] User                   : jdoe',
+        '[*] Hash                   : $krb5asrep$jdoe@ACME.LOCAL:aabbccdd1122',
+      ].join('\n');
+      const finding = parseRubeus(asrepOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].asrep_roastable).toBe(true);
+    });
+
+    it('extracts captured TGTs from monitor output', () => {
+      const monitorOutput = [
+        '[*] User                  : ACME\\jdoe',
+        '[*] LUID                  : 0x3e7',
+        '[*] Service               : krbtgt/ACME.LOCAL',
+        '[*] Base64EncodedTicket   : doIFqDCCBaSgAwIBBaEDAgE=',
+      ].join('\n');
+      const finding = parseRubeus(monitorOutput);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_type).toBe('kerberos_tgt');
+      expect(creds[0].cred_material_kind).toBe('kerberos_tgt');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      expect(creds[0].cred_evidence_kind).toBe('capture');
+    });
+
+    it('creates OWNS_CRED edges for captured tickets', () => {
+      const monitorOutput = [
+        '[*] User                  : ACME\\jdoe',
+        '[*] Service               : krbtgt/ACME.LOCAL',
+        '[*] Base64EncodedTicket   : doIFqDCCBaSgAwIBBaEDAgE=',
+      ].join('\n');
+      const finding = parseRubeus(monitorOutput);
+      const ownsCred = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsCred.length).toBe(1);
+    });
+
+    it('skips machine accounts in monitor output', () => {
+      const monitorOutput = [
+        '[*] User                  : ACME\\DC01$',
+        '[*] Service               : krbtgt/ACME.LOCAL',
+        '[*] Base64EncodedTicket   : doIFqDCCBaSgAwIBBaEDAgE=',
+      ].join('\n');
+      const finding = parseRubeus(monitorOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(users.length).toBe(0);
+      expect(creds.length).toBe(0);
+    });
+
+    it('handles empty output', () => {
+      const finding = parseRubeus('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // gobuster / feroxbuster / ffuf Parser
+  // =============================================
+  describe('parseWebDirEnum', () => {
+    it('parses gobuster text output paths and status codes', () => {
+      const gobusterOutput = [
+        'Url:                     http://10.10.10.5:8080',
+        '/index.html (Status: 200) [Size: 1234]',
+        '/admin (Status: 301) [Size: 456]',
+        '/api (Status: 200) [Size: 789]',
+      ].join('\n');
+      const finding = parseWebDirEnum(gobusterOutput);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].discovered_paths).toHaveLength(3);
+      expect(services[0].port).toBe(8080);
+    });
+
+    it('parses feroxbuster text output', () => {
+      const feroxOutput = [
+        '200 GET 100l 200w 5000c http://10.10.10.5/index.html',
+        '301 GET 10l 20w 300c http://10.10.10.5/login',
+        '403 GET 5l 10w 200c http://10.10.10.5/secret',
+      ].join('\n');
+      const finding = parseWebDirEnum(feroxOutput);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].discovered_paths).toHaveLength(3);
+      expect(services[0].has_login_form).toBe(true);
+    });
+
+    it('parses ffuf JSON output', () => {
+      const ffufJson = JSON.stringify({
+        results: [
+          { url: 'http://10.10.10.5/api', status: 200, length: 1234 },
+          { url: 'http://10.10.10.5/login', status: 302, length: 100 },
+        ],
+      });
+      const finding = parseWebDirEnum(ffufJson);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].discovered_paths).toHaveLength(2);
+    });
+
+    it('detects login form from path patterns', () => {
+      const output = [
+        '/index.html (Status: 200) [Size: 1234]',
+        '/wp-login.php (Status: 200) [Size: 5678]',
+      ].join('\n');
+      const finding = parseWebDirEnum(output);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      // No target URL header, so only a service node without host context
+      const svc = services.find(s => s.has_login_form === true);
+      expect(svc).toBeDefined();
+    });
+
+    it('returns service enrichment node with discovered_paths', () => {
+      const output = [
+        'Url:                     http://10.10.10.5',
+        '/robots.txt (Status: 200) [Size: 100]',
+      ].join('\n');
+      const finding = parseWebDirEnum(output);
+      const svc = finding.nodes.find(n => n.type === 'service');
+      expect(svc).toBeDefined();
+      const paths = svc!.discovered_paths as Array<{ path: string; status: number; size?: number }>;
+      expect(paths).toHaveLength(1);
+      expect(paths[0].path).toBe('/robots.txt');
+      expect(paths[0].status).toBe(200);
+    });
+
+    it('auto-detects format (JSON vs text)', () => {
+      // JSON (ffuf)
+      const jsonResult = parseOutput('ffuf', JSON.stringify({ results: [{ url: 'http://t/a', status: 200, length: 1 }] }));
+      expect(jsonResult).not.toBeNull();
+      expect(jsonResult!.nodes.length).toBeGreaterThan(0);
+
+      // Text (gobuster)
+      const textResult = parseOutput('gobuster', '/path (Status: 200) [Size: 100]');
+      expect(textResult).not.toBeNull();
+    });
+
+    it('handles empty output', () => {
+      const finding = parseWebDirEnum('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Updated registry tests
+  // =============================================
+  describe('getSupportedParsers (updated)', () => {
+    it('includes all new parser aliases', () => {
+      const parsers = getSupportedParsers();
+      expect(parsers).toContain('ldapsearch');
+      expect(parsers).toContain('ldapdomaindump');
+      expect(parsers).toContain('ldap');
+      expect(parsers).toContain('enum4linux');
+      expect(parsers).toContain('enum4linux-ng');
+      expect(parsers).toContain('rubeus');
+      expect(parsers).toContain('gobuster');
+      expect(parsers).toContain('feroxbuster');
+      expect(parsers).toContain('ffuf');
+      expect(parsers).toContain('dirbuster');
+      expect(parsers.length).toBeGreaterThanOrEqual(20);
+    });
+  });
+
+  describe('parseOutput dispatches new parsers', () => {
+    it('dispatches ldapsearch aliases', () => {
+      expect(parseOutput('ldapsearch', '')).not.toBeNull();
+      expect(parseOutput('ldapdomaindump', '')).not.toBeNull();
+      expect(parseOutput('ldap', '')).not.toBeNull();
+    });
+
+    it('dispatches enum4linux aliases', () => {
+      expect(parseOutput('enum4linux', '')).not.toBeNull();
+      expect(parseOutput('enum4linux-ng', '')).not.toBeNull();
+    });
+
+    it('dispatches rubeus', () => {
+      expect(parseOutput('rubeus', '')).not.toBeNull();
+    });
+
+    it('dispatches web dir enum aliases', () => {
+      expect(parseOutput('gobuster', '')).not.toBeNull();
+      expect(parseOutput('feroxbuster', '')).not.toBeNull();
+      expect(parseOutput('ffuf', '')).not.toBeNull();
+      expect(parseOutput('dirbuster', '')).not.toBeNull();
+    });
+  });
 });

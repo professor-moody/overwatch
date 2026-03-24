@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildBloodHoundSidMap, parseBloodHoundFile } from '../bloodhound-ingest.js';
+import { buildBloodHoundSidMap, parseBloodHoundFile, normalizeSharpHoundCE } from '../bloodhound-ingest.js';
 
 describe('BloodHound Ingestion', () => {
 
@@ -614,6 +614,201 @@ describe('BloodHound Ingestion', () => {
       const reverse = buildBloodHoundSidMap([computers, users]).sidMap;
 
       expect(Object.fromEntries(forward)).toEqual(Object.fromEntries(reverse));
+    });
+  });
+
+  // =============================================
+  // SharpHound CE Format Support
+  // =============================================
+  describe('SharpHound CE format', () => {
+
+    it('detects CE format by meta.version >= 5', () => {
+      const ceData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-500',
+          Properties: {
+            SAMAccountName: 'Administrator',
+            Domain: 'acme.local',
+            Enabled: true,
+            AdminCount: true,
+            DisplayName: 'Built-in Administrator',
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 6 },
+      });
+
+      const result = normalizeSharpHoundCE(ceData, 'users.json');
+      expect(result.wasCE).toBe(true);
+      // Verify properties were lowercased
+      const normalized = JSON.parse(result.normalized);
+      const props = normalized.data[0].Properties;
+      expect(props.samaccountname).toBe('Administrator');
+      expect(props.domain).toBe('acme.local');
+      expect(props.enabled).toBe(true);
+      expect(props.admincount).toBe(true);
+      expect(props.displayname).toBe('Built-in Administrator');
+    });
+
+    it('detects CE format by PascalCase property heuristic', () => {
+      const ceData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-500',
+          Properties: {
+            SAMAccountName: 'jdoe',
+            Domain: 'corp.local',
+            HasSPN: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 4 }, // version < 5 but PascalCase
+      });
+
+      const result = normalizeSharpHoundCE(ceData, 'users.json');
+      expect(result.wasCE).toBe(true);
+    });
+
+    it('does not flag classic format as CE', () => {
+      const classicData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-500',
+          Properties: {
+            samaccountname: 'jdoe',
+            domain: 'corp.local',
+            hasspn: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 4 },
+      });
+
+      const result = normalizeSharpHoundCE(classicData, 'users.json');
+      expect(result.wasCE).toBe(false);
+    });
+
+    it('parseBloodHoundFile processes CE users.json end-to-end', () => {
+      const ceData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-500',
+          Properties: {
+            Name: 'ADMINISTRATOR@ACME.LOCAL',
+            SAMAccountName: 'Administrator',
+            Domain: 'acme.local',
+            Enabled: true,
+            AdminCount: true,
+            DisplayName: 'Built-in Admin',
+            HasSPN: false,
+            DontReqPreauth: false,
+          },
+          Aces: [],
+        }, {
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1103',
+          Properties: {
+            Name: 'SVC_SQL@ACME.LOCAL',
+            SAMAccountName: 'svc_sql',
+            Domain: 'acme.local',
+            Enabled: true,
+            HasSPN: true,
+            DontReqPreauth: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 2, version: 6 },
+      });
+
+      const { finding, errors, wasCE } = parseBloodHoundFile(ceData, 'users.json');
+      expect(wasCE).toBe(true);
+      expect(errors.length).toBe(0);
+      expect(finding).not.toBeNull();
+
+      const users = finding!.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+
+      // Label comes from props.name ('ADMINISTRATOR@ACME.LOCAL') after CE normalization
+      const admin = users.find(n => n.label?.includes('ADMINISTRATOR'));
+      expect(admin).toBeDefined();
+      expect(admin!.privileged).toBe(true);
+      expect(admin!.display_name).toBe('Built-in Admin');
+
+      const svcSql = users.find(n => n.label?.includes('SVC_SQL'));
+      expect(svcSql).toBeDefined();
+      expect(svcSql!.has_spn).toBe(true);
+      expect(svcSql!.asrep_roastable).toBe(true);
+    });
+
+    it('parseBloodHoundFile processes CE computers.json end-to-end', () => {
+      const ceData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+          Properties: {
+            Name: 'DC01.ACME.LOCAL',
+            OperatingSystem: 'Windows Server 2022',
+            Enabled: true,
+            UnconstrainedDelegation: true,
+            Domain: 'acme.local',
+          },
+          Status: { Connectable: true },
+          Aces: [],
+          LocalAdmins: [{
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-512',
+            ObjectType: 'Group',
+          }],
+        }],
+        meta: { type: 'computers', count: 1, version: 6 },
+      });
+
+      const { finding, wasCE } = parseBloodHoundFile(ceData, 'computers.json');
+      expect(wasCE).toBe(true);
+      expect(finding).not.toBeNull();
+
+      const hosts = finding!.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].os).toBe('Windows Server 2022');
+      expect(hosts[0].alive).toBe(true);
+
+      const adminEdges = finding!.edges.filter(e => e.properties.type === 'ADMIN_TO');
+      expect(adminEdges.length).toBe(1);
+    });
+
+    it('parseBloodHoundFile processes CE groups.json with members', () => {
+      const ceData = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-512',
+          Properties: {
+            SAMAccountName: 'Domain Admins',
+            Domain: 'acme.local',
+            AdminCount: true,
+          },
+          Members: [{
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-500',
+            ObjectType: 'User',
+          }],
+          Aces: [],
+        }],
+        meta: { type: 'groups', count: 1, version: 5 },
+      });
+
+      const { finding, wasCE } = parseBloodHoundFile(ceData, 'groups.json');
+      expect(wasCE).toBe(true);
+      expect(finding).not.toBeNull();
+
+      const groups = finding!.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(1);
+      expect(groups[0].privileged).toBe(true);
+
+      const memberOf = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      expect(memberOf.length).toBe(1);
+    });
+
+    it('handles malformed JSON gracefully', () => {
+      const result = normalizeSharpHoundCE('not json', 'bad.json');
+      expect(result.wasCE).toBe(false);
+      expect(result.error).toBeDefined();
+    });
+
+    it('handles missing data array gracefully', () => {
+      const result = normalizeSharpHoundCE(JSON.stringify({ meta: { type: 'users' } }), 'empty.json');
+      expect(result.wasCE).toBe(false);
     });
   });
 });

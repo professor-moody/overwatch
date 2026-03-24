@@ -27,6 +27,10 @@ Supported tools:
 - **kerbrute**: User enumeration + password spray → user + domain + credential nodes
 - **hashcat**: Cracked hashes (NTLM, Kerberoast, AS-REP, NTLMv2) → credential nodes
 - **responder**: Captured NTLMv2 hashes → credential + user + host nodes + capture evidence
+- **ldapsearch** / **ldapdomaindump** / **ldap**: LDIF or ldapdomaindump JSON → user + group + host + domain nodes with UAC flags, SPNs, group memberships
+- **enum4linux** / **enum4linux-ng**: JSON or text output → host + SMB service + user + group + share nodes, null session detection
+- **rubeus**: Kerberoast/AS-REP roast hashes + monitor/triage captured tickets → user + credential nodes + OWNS_CRED edges
+- **gobuster** / **feroxbuster** / **ffuf** / **dirbuster**: Directory enumeration → service node enrichment with discovered paths, login form detection
 
 The parsed output is automatically ingested into the graph. This reduces LLM token cost
 by handling structured parsing deterministically.
