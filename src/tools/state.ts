@@ -87,7 +87,7 @@ Use this before your first lab run, after major ingestion, or after restart to c
       inputSchema: {
         profile: z.enum(['goad_ad', 'single_host', 'network'])
           .optional()
-          .describe('Lab profile to validate against. If omitted, inferred from engagement config (goad_ad if domains configured, otherwise network).'),
+          .describe('Lab profile to validate against. If omitted, inferred from engagement config (goad_ad if domains configured, otherwise single_host). Set explicitly to network for multi-host CIDR engagements.'),
       },
       annotations: {
         readOnlyHint: true,

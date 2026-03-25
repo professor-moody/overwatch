@@ -6,7 +6,7 @@ Step-by-step guide for a multi-host CIDR-scoped engagement like an HTB ProLab (D
 
 - Target network accessible (VPN connected)
 - Overwatch server configured with the target CIDR(s) in scope
-- `"profile": "network"` set in `engagement.json` (or omitted — inferred when no domains are configured)
+- `"profile": "network"` set explicitly in `engagement.json` (required — unprofiled configs default to `single_host`)
 - Claude Code connected to Overwatch
 
 ## Profile Semantics

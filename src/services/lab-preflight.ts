@@ -56,7 +56,9 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
   const profile = options.profile || inferProfile(config);
   const dashboard = options.dashboard || DEFAULT_DASHBOARD_STATUS;
   const graph = engine.exportGraph();
-  const health = engine.getHealthReport();
+  const rawHealth = engine.getHealthReport();
+  const adContext = engine.checkADContext();
+  const health = contextualFilterHealthReport(rawHealth, profile, adContext);
   const graphStage = determineGraphStage(graph);
 
   const checks: LabReadinessCheck[] = [];
