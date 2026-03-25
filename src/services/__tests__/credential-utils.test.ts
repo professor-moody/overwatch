@@ -323,5 +323,33 @@ describe('Credential Utilities', () => {
       const g = makeGraph();
       expect(inferCredentialDomain('cred-nonexistent', g)).toBeNull();
     });
+
+    it('falls back to owner domain_name property when no MEMBER_OF_DOMAIN edges', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      g.addNode('user-jdoe', { type: 'user', label: 'jdoe', username: 'jdoe', domain_name: 'north.sevenkingdoms.local' });
+      g.addEdge('user-jdoe', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      // No MEMBER_OF_DOMAIN edge — should fall back to domain_name property
+      expect(inferCredentialDomain('cred-1', g)).toEqual({ domain: 'north.sevenkingdoms.local' });
+    });
+
+    it('prefers MEMBER_OF_DOMAIN edge over domain_name property fallback', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      g.addNode('user-jdoe', { type: 'user', label: 'jdoe', username: 'jdoe', domain_name: 'stale.local' });
+      g.addNode('domain-acme', { type: 'domain', label: 'acme.local', domain_name: 'acme.local' });
+      g.addEdge('user-jdoe', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      g.addEdge('user-jdoe', 'domain-acme', { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      // Edge domain should win, not the property
+      expect(inferCredentialDomain('cred-1', g)).toEqual({ domain: 'acme.local' });
+    });
+
+    it('returns null when owner has no domain_name and no MEMBER_OF_DOMAIN edges', () => {
+      const g = makeGraph();
+      g.addNode('cred-1', { type: 'credential', label: 'NTLM:jdoe', cred_user: 'jdoe' });
+      g.addNode('user-jdoe', { type: 'user', label: 'jdoe', username: 'jdoe' });
+      g.addEdge('user-jdoe', 'cred-1', { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' });
+      expect(inferCredentialDomain('cred-1', g)).toBeNull();
+    });
   });
 });

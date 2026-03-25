@@ -564,7 +564,7 @@ describe('Output Parsers', () => {
       const withDomain = 'ACME\\jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
       const finding = parseSecretsdump(withDomain, 'test-agent', { domain: 'other.local' });
       const creds = finding.nodes.filter(n => n.type === 'credential');
-      expect(creds[0].cred_domain).toBe('ACME');
+      expect(creds[0].cred_domain).toBe('acme');
       expect(creds[0].cred_domain_source).toBe('explicit');
     });
 
@@ -618,7 +618,7 @@ describe('Output Parsers', () => {
       const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
       expect(domEdges.length).toBe(1);
       const creds = finding.nodes.filter(n => n.type === 'credential');
-      expect(creds[0].cred_domain).toBe('ACME');
+      expect(creds[0].cred_domain).toBe('acme');
       expect(creds[0].cred_domain_source).toBe('explicit');
     });
 
@@ -1357,6 +1357,81 @@ describe('Output Parsers', () => {
       expect(parseOutput('feroxbuster', '')).not.toBeNull();
       expect(parseOutput('ffuf', '')).not.toBeNull();
       expect(parseOutput('dirbuster', '')).not.toBeNull();
+    });
+  });
+
+  // =============================================
+  // Domain alias resolution
+  // =============================================
+  describe('domain alias resolution', () => {
+
+    it('NXC parser resolves NetBIOS domain to FQDN via domain_aliases', () => {
+      const nxcOutput = [
+        'SMB   10.10.10.1  445  WINTERFELL  [*] Windows Server 2019 (name:WINTERFELL) (domain:NORTH) (signing:True) (SMBv1:False)',
+        'SMB   10.10.10.1  445  WINTERFELL  [+] NORTH\\samwell.tarly:Heartsbane1',
+      ].join('\n');
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      const finding = parseNxc(nxcOutput, 'test-agent', { domain_aliases: aliases });
+
+      // User node should use FQDN domain in its ID
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].id).toBe('user-north-sevenkingdoms-local-samwell-tarly');
+      expect(users[0].domain_name).toBe('north.sevenkingdoms.local');
+
+      // Domain node should use FQDN
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains.length).toBe(1);
+      expect(domains[0].id).toBe('domain-north-sevenkingdoms-local');
+
+      // MEMBER_OF_DOMAIN edge should connect to FQDN domain
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].target).toBe('domain-north-sevenkingdoms-local');
+    });
+
+    it('NXC parser falls back to lowercased NetBIOS when no alias match', () => {
+      const nxcOutput = [
+        'SMB   10.10.10.1  445  WINTERFELL  [*] Windows Server 2019 (name:WINTERFELL) (domain:NORTH) (signing:True) (SMBv1:False)',
+        'SMB   10.10.10.1  445  WINTERFELL  [+] NORTH\\samwell.tarly:Heartsbane1',
+      ].join('\n');
+      // No aliases at all
+      const finding = parseNxc(nxcOutput, 'test-agent');
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users[0].id).toBe('user-north-samwell-tarly');
+    });
+
+    it('secretsdump resolves NetBIOS DOMAIN\\user prefix via domain_aliases', () => {
+      const ntds = 'NORTH\\samwell.tarly:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::';
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      const finding = parseSecretsdump(ntds, 'test-agent', { domain_aliases: aliases });
+
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].id).toBe('user-north-sevenkingdoms-local-samwell-tarly');
+
+      const domEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].target).toBe('domain-north-sevenkingdoms-local');
+    });
+
+    it('enum4linux resolves RID-cycled domain via domain_aliases', () => {
+      const e4lOutput = [
+        '[+] Target: 10.10.10.1',
+        '[+] Domain: NORTH',
+        '500: NORTH\\Administrator (SidTypeUser)',
+        '513: NORTH\\Domain Users (SidTypeGroup)',
+      ].join('\n');
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      const finding = parseEnum4linux(e4lOutput, 'test-agent', { domain_aliases: aliases });
+
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].id).toBe('user-north-sevenkingdoms-local-administrator');
+
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(1);
+      expect(groups[0].domain_name).toBe('north.sevenkingdoms.local');
     });
   });
 });

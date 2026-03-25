@@ -811,4 +811,120 @@ describe('BloodHound Ingestion', () => {
       expect(result.wasCE).toBe(false);
     });
   });
+
+  // =============================================
+  // MEMBER_OF_DOMAIN edge creation
+  // =============================================
+  describe('MEMBER_OF_DOMAIN edges', () => {
+
+    it('creates MEMBER_OF_DOMAIN edge for users with domain property', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1103',
+          Properties: {
+            samaccountname: 'jdoe',
+            domain: 'acme.local',
+            enabled: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(finding).not.toBeNull();
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].source).toBe('user-acme-local-jdoe');
+      expect(domEdges[0].target).toBe('domain-acme-local');
+    });
+
+    it('creates MEMBER_OF_DOMAIN edge for hosts with domain property', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+          Properties: {
+            name: 'DC01.ACME.LOCAL',
+            domain: 'acme.local',
+            operatingsystem: 'Windows Server 2019',
+            enabled: true,
+          },
+          Status: { Connectable: true },
+          Aces: [],
+          LocalAdmins: [],
+          RemoteDesktopUsers: [],
+          PSRemoteUsers: [],
+          DcomUsers: [],
+          AllowedToDelegate: [],
+          AllowedToAct: [],
+        }],
+        meta: { type: 'computers', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
+      expect(finding).not.toBeNull();
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].target).toBe('domain-acme-local');
+    });
+
+    it('creates MEMBER_OF_DOMAIN edge for groups with domain property', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-512',
+          Properties: {
+            name: 'DOMAIN ADMINS@ACME.LOCAL',
+            domain: 'acme.local',
+            admincount: true,
+          },
+          Members: [],
+          Aces: [],
+        }],
+        meta: { type: 'groups', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'groups.json');
+      expect(finding).not.toBeNull();
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(1);
+      expect(domEdges[0].target).toBe('domain-acme-local');
+    });
+
+    it('does NOT create MEMBER_OF_DOMAIN edge for nodes without domain property', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1103',
+          Properties: {
+            samaccountname: 'localuser',
+            enabled: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(finding).not.toBeNull();
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(0);
+    });
+
+    it('does NOT create MEMBER_OF_DOMAIN edge for domain-type nodes', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012',
+          Properties: {
+            name: 'ACME.LOCAL',
+            domain: 'acme.local',
+            functionallevel: '2016',
+          },
+          Aces: [],
+          Links: [],
+          ChildObjects: [],
+          Trusts: [],
+        }],
+        meta: { type: 'domains', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(0);
+    });
+  });
 });

@@ -6,7 +6,7 @@
 import type { Finding, NodeType, EdgeType, ParseContext } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { XMLParser } from 'fast-xml-parser';
-import { caId, certTemplateId, credentialId, domainId, groupId, hostId, normalizeKeyPart, splitQualifiedAccount, userId } from './parser-utils.js';
+import { caId, certTemplateId, credentialId, domainId, groupId, hostId, normalizeKeyPart, resolveDomainName, splitQualifiedAccount, userId } from './parser-utils.js';
 import { classifyPrincipalIdentity, getIdentityMarkers, resolveNodeIdentity } from './identity-resolution.js';
 
 // Nmap uses verbose service names; normalize to short names matching inference rules
@@ -213,7 +213,7 @@ function extractNmapHosts(xml: string): NmapHost[] {
 
 // --- NetExec (NXC) Parser ---
 
-export function parseNxc(output: string, agentId: string = 'nxc-parser'): Finding {
+export function parseNxc(output: string, agentId: string = 'nxc-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const lines = output.split('\n');
@@ -339,7 +339,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
       if (nameMatch) meta.hostname = nameMatch[1].trim();
 
       const domainMatch = infoMsg.match(/\(domain:([^)]+)\)/i);
-      if (domainMatch) meta.domain = domainMatch[1].trim();
+      if (domainMatch) meta.domain = resolveDomainName(domainMatch[1].trim(), context?.domain_aliases);
 
       const signingMatch = infoMsg.match(/\(signing:(True|False)\)/i);
       if (signingMatch) meta.signing = signingMatch[1].toLowerCase() === 'true';
@@ -368,7 +368,8 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
       if (message.includes('Pwn3d!')) {
         const credMatch = message.match(/([^\\]+)\\([^\s]+)/);
         if (credMatch) {
-          const [, credDomain, username] = credMatch;
+          const [, rawCredDomain, username] = credMatch;
+          const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
           const resolvedUserId = addUserNode(username, credDomain);
           // Upgrade to privileged
           const userNode = nodes.find(n => n.id === resolvedUserId);
@@ -381,7 +382,8 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser'): Findin
       if (status === '+') {
         const credMatch = message.match(/([^\\]+)\\([^\s:]+)/);
         if (credMatch) {
-          const [, credDomain, username] = credMatch;
+          const [, rawCredDomain, username] = credMatch;
+          const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
           if (username && username !== '') {
             addUserNode(username, credDomain);
             addEdgeOnce(userId(username, credDomain), resolvedHostId, 'VALID_ON', 0.9);
@@ -678,7 +680,7 @@ export function parseSecretsdump(output: string, agentId: string = 'secretsdump-
     // SAM dumps produce unqualified local accounts (Administrator:500) that
     // would be falsely merged with domain accounts if context.domain is applied.
     const parsed = splitQualifiedAccount(rawUser);
-    const explicitDomain = parsed.domain;  // from DOMAIN\user prefix only
+    const explicitDomain = parsed.domain ? resolveDomainName(parsed.domain, context?.domain_aliases) : undefined;
     const username = parsed.username;
 
     // Skip machine accounts
@@ -1344,7 +1346,7 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
 
 // --- enum4linux-ng Parser ---
 
-export function parseEnum4linux(output: string, agentId: string = 'enum4linux-parser'): Finding {
+export function parseEnum4linux(output: string, agentId: string = 'enum4linux-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
@@ -1379,7 +1381,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
     // Domain/Workgroup
     const domainMatch = line.match(/Domain:\s*(\S+)/i) ||
                          line.match(/\[\+\]\s*.*domain\s+name:\s*(\S+)/i);
-    if (domainMatch && !domain) { domain = domainMatch[1]; continue; }
+    if (domainMatch && !domain) { domain = resolveDomainName(domainMatch[1], context?.domain_aliases); continue; }
 
     // Null session
     if (/null session/i.test(line) && /\[\+\]/.test(line)) {
@@ -1391,7 +1393,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
     const ridMatch = line.match(/(\d+):\s*([^\\]+)\\(\S+)\s*\(SidTypeUser\)/i);
     if (ridMatch) {
       const [, , ridDomain, username] = ridMatch;
-      const resolvedDomain = ridDomain || domain;
+      const resolvedDomain = ridDomain ? resolveDomainName(ridDomain, context?.domain_aliases) : domain;
       const resolvedUserId = userId(username, resolvedDomain);
       if (!seenNodes.has(resolvedUserId)) {
         nodes.push({
@@ -1418,9 +1420,10 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
     const ridGroupMatch = line.match(/(\d+):\s*([^\\]+)\\(.+?)\s*\(SidTypeGroup\)/i);
     if (ridGroupMatch) {
       const [, , gDomain, gName] = ridGroupMatch;
-      const resolvedGroupId = groupId(gName, gDomain || domain);
+      const resolvedGDomain = gDomain ? resolveDomainName(gDomain, context?.domain_aliases) : domain;
+      const resolvedGroupId = groupId(gName, resolvedGDomain);
       if (!seenNodes.has(resolvedGroupId)) {
-        nodes.push({ id: resolvedGroupId, type: 'group', label: gName, domain_name: gDomain || domain });
+        nodes.push({ id: resolvedGroupId, type: 'group', label: gName, domain_name: resolvedGDomain });
         seenNodes.add(resolvedGroupId);
       }
       continue;

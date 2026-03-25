@@ -218,14 +218,25 @@ function findCredentialIdentityAmbiguities(graph: OverwatchGraph): HealthIssue[]
       const sourceAttrs = graph.getNodeAttributes(source);
       if (sourceAttrs.type !== 'user') return;
       hasOwner = true;
+      let foundEdgeDomain = false;
       graph.forEachOutEdge(source, (_eid, eAttrs, _src, target) => {
         if (eAttrs.type !== 'MEMBER_OF_DOMAIN') return;
         const tgtAttrs = graph.getNodeAttributes(target);
         if (tgtAttrs.type === 'domain') {
           const dn = tgtAttrs.domain_name || tgtAttrs.label;
-          if (typeof dn === 'string' && dn.length > 0) candidateDomains.add(dn.toLowerCase());
+          if (typeof dn === 'string' && dn.length > 0) {
+            candidateDomains.add(dn.toLowerCase());
+            foundEdgeDomain = true;
+          }
         }
       });
+      // Fallback: use owner's domain_name property if no MEMBER_OF_DOMAIN edges found
+      if (!foundEdgeDomain) {
+        const ownerDn = sourceAttrs.domain_name;
+        if (typeof ownerDn === 'string' && ownerDn.length > 0) {
+          candidateDomains.add(ownerDn.toLowerCase());
+        }
+      }
     });
 
     const suggestedResolution = !hasOwner

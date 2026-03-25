@@ -229,6 +229,13 @@ export class InferenceEngine {
       const dName = domNode?.domain_name || domNode?.label;
       if (dName) domains.push(dName.toLowerCase());
     }
+    // Fallback: use domain_name property if no MEMBER_OF_DOMAIN edges found
+    if (domains.length === 0) {
+      const node = this.getNode(nodeId);
+      if (node?.domain_name && typeof node.domain_name === 'string') {
+        domains.push(node.domain_name.toLowerCase());
+      }
+    }
     return domains;
   }
 

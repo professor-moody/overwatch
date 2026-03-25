@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import type { ParseContext } from '../types.js';
 import { parseOutput, getSupportedParsers } from '../services/output-parsers.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
@@ -103,7 +104,23 @@ Pass either the raw output content or a local file path for large artifacts.`,
         outputText = output!;
       }
 
-      const finding = parseOutput(tool_name, outputText, agent_id, context);
+      // Build NetBIOS→FQDN domain alias map from existing graph domain nodes
+      const enrichedContext: ParseContext = { ...context };
+      if (!enrichedContext.domain_aliases) {
+        const aliases: Record<string, string> = {};
+        for (const node of engine.getNodesByType('domain')) {
+          const fqdn = (node.domain_name || node.label || '') as string;
+          if (fqdn && fqdn.includes('.')) {
+            const netbios = fqdn.split('.')[0].toUpperCase();
+            aliases[netbios] = fqdn.toLowerCase();
+          }
+        }
+        if (Object.keys(aliases).length > 0) {
+          enrichedContext.domain_aliases = aliases;
+        }
+      }
+
+      const finding = parseOutput(tool_name, outputText, agent_id, enrichedContext);
       if (!finding) {
         engine.logActionEvent({
           description: `Output parse failed: no parser for ${tool_name}`,

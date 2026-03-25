@@ -66,6 +66,59 @@ describe('identity resolution', () => {
     expect(overlap).toContain('host:name:braavos');
   });
 
+  it('generates short-domain marker for users with FQDN domain', () => {
+    const markers = getIdentityMarkers({
+      id: 'user-north-sevenkingdoms-local-samwell-tarly',
+      type: 'user',
+      username: 'samwell.tarly',
+      domain_name: 'north.sevenkingdoms.local',
+    });
+    expect(markers).toContain('user:acct:north-sevenkingdoms-local:samwell-tarly');
+    expect(markers).toContain('user:acct:north:samwell-tarly');
+  });
+
+  it('short-domain marker enables NetBIOS↔FQDN user reconciliation', () => {
+    const fqdnMarkers = getIdentityMarkers({
+      id: 'user-north-sevenkingdoms-local-samwell-tarly',
+      type: 'user',
+      username: 'samwell.tarly',
+      domain_name: 'north.sevenkingdoms.local',
+    });
+    const netbiosMarkers = getIdentityMarkers({
+      id: 'user-north-samwell-tarly',
+      type: 'user',
+      username: 'samwell.tarly',
+      domain_name: 'NORTH',
+    });
+    const overlap = fqdnMarkers.filter(m => netbiosMarkers.includes(m));
+    expect(overlap.length).toBeGreaterThan(0);
+    expect(overlap).toContain('user:acct:north:samwell-tarly');
+  });
+
+  it('generates short-domain marker for groups with FQDN domain', () => {
+    const markers = getIdentityMarkers({
+      id: 'group-north-sevenkingdoms-local-domain-admins',
+      type: 'group',
+      label: 'Domain Admins',
+      samaccountname: 'Domain Admins',
+      domain_name: 'north.sevenkingdoms.local',
+    });
+    expect(markers).toContain('group:acct:north-sevenkingdoms-local:domain-admins');
+    expect(markers).toContain('group:acct:north:domain-admins');
+  });
+
+  it('does NOT add short-domain marker for single-label domains', () => {
+    const markers = getIdentityMarkers({
+      id: 'user-north-samwell-tarly',
+      type: 'user',
+      username: 'samwell.tarly',
+      domain_name: 'NORTH',
+    });
+    // Should have the primary marker but NOT a short-domain duplicate
+    expect(markers).toContain('user:acct:north:samwell-tarly');
+    expect(markers.filter(m => m === 'user:acct:north:samwell-tarly').length).toBe(1);
+  });
+
   it('does not treat credential material reuse as an identity marker', () => {
     const markers = getIdentityMarkers({
       id: 'cred-test',

@@ -107,6 +107,7 @@ export function inferCredentialDomain(credNodeId: string, graph: OverwatchGraph)
     const sourceAttrs = graph.getNodeAttributes(source);
     if (sourceAttrs.type !== 'user') return;
 
+    let foundEdgeDomain = false;
     // Walk outbound edges from the user to find MEMBER_OF_DOMAIN → domain
     graph.forEachOutEdge(source, (_eid, eAttrs, _src, target) => {
       if (eAttrs.type !== 'MEMBER_OF_DOMAIN') return;
@@ -115,8 +116,17 @@ export function inferCredentialDomain(credNodeId: string, graph: OverwatchGraph)
       const domainName = targetAttrs.domain_name || targetAttrs.label;
       if (typeof domainName === 'string' && domainName.length > 0) {
         candidateDomains.add(domainName.toLowerCase());
+        foundEdgeDomain = true;
       }
     });
+
+    // Fallback: use owner's domain_name property if no MEMBER_OF_DOMAIN edges found
+    if (!foundEdgeDomain) {
+      const dn = sourceAttrs.domain_name;
+      if (typeof dn === 'string' && dn.length > 0) {
+        candidateDomains.add(dn.toLowerCase());
+      }
+    }
   });
 
   if (candidateDomains.size === 1) {

@@ -67,6 +67,17 @@ export function pkiStoreId(kind: string, name: string): string {
   return `pki-store-${normalizeKeyPart(kind)}-${normalizeKeyPart(name)}`;
 }
 
+export function resolveDomainName(raw: string, aliases?: Record<string, string>): string {
+  const trimmed = raw.trim();
+  if (trimmed.includes('.')) return trimmed.toLowerCase();
+  if (aliases) {
+    const upper = trimmed.toUpperCase();
+    const fqdn = aliases[upper];
+    if (fqdn) return fqdn.toLowerCase();
+  }
+  return trimmed.toLowerCase();
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {

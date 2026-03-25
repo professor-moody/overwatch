@@ -159,6 +159,7 @@ export interface EdgeProperties {
 export interface ParseContext {
   domain?: string;
   source_host?: string;
+  domain_aliases?: Record<string, string>;
   [key: string]: unknown;
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount } from '../parser-utils.js';
+import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount, resolveDomainName } from '../parser-utils.js';
 
 describe('Parser Utilities', () => {
 
@@ -166,6 +166,44 @@ describe('Parser Utilities', () => {
     it('handles multi-part domain with backslash', () => {
       const result = splitQualifiedAccount('ACME.LOCAL\\svc_sql');
       expect(result).toEqual({ domain: 'ACME.LOCAL', username: 'svc_sql' });
+    });
+  });
+
+  // =============================================
+  // resolveDomainName
+  // =============================================
+  describe('resolveDomainName', () => {
+    it('returns FQDN lowercased when input contains a dot', () => {
+      expect(resolveDomainName('ACME.LOCAL')).toBe('acme.local');
+    });
+
+    it('returns NetBIOS lowercased when no aliases provided', () => {
+      expect(resolveDomainName('NORTH')).toBe('north');
+    });
+
+    it('resolves NetBIOS name to FQDN via alias map', () => {
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      expect(resolveDomainName('NORTH', aliases)).toBe('north.sevenkingdoms.local');
+    });
+
+    it('resolves NetBIOS case-insensitively', () => {
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      expect(resolveDomainName('north', aliases)).toBe('north.sevenkingdoms.local');
+    });
+
+    it('returns FQDN unchanged even if alias exists for first label', () => {
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      expect(resolveDomainName('north.sevenkingdoms.local', aliases)).toBe('north.sevenkingdoms.local');
+    });
+
+    it('returns lowercased NetBIOS when alias map has no match', () => {
+      const aliases = { 'ESSOS': 'essos.local' };
+      expect(resolveDomainName('NORTH', aliases)).toBe('north');
+    });
+
+    it('trims whitespace from input', () => {
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      expect(resolveDomainName('  NORTH  ', aliases)).toBe('north.sevenkingdoms.local');
     });
   });
 });

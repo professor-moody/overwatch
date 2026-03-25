@@ -162,7 +162,15 @@ export function getIdentityMarkers(
       const principal = resolveAccountPrincipal(node, node.type);
       if (principal) {
         const kind = node.type === 'group' ? 'group' : 'user';
-        markers.add(`${kind}:acct:${normalizeKeyPart(principal.domain || '')}:${normalizeKeyPart(principal.name)}`);
+        const domainKey = normalizeKeyPart(principal.domain || '');
+        markers.add(`${kind}:acct:${domainKey}:${normalizeKeyPart(principal.name)}`);
+        // Add short-domain marker for FQDNs so NORTH matches north.sevenkingdoms.local
+        if (principal.domain && principal.domain.includes('.')) {
+          const shortDomain = normalizeKeyPart(principal.domain.split('.')[0]);
+          if (shortDomain !== domainKey) {
+            markers.add(`${kind}:acct:${shortDomain}:${normalizeKeyPart(principal.name)}`);
+          }
+        }
       }
       break;
     }

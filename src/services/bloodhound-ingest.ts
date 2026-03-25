@@ -509,6 +509,25 @@ export function parseBloodHoundFile(
       }
     }
 
+    // MEMBER_OF_DOMAIN edges for nodes with an explicit domain property
+    if (nodeType && ['user', 'host', 'group'].includes(nodeType)) {
+      const props = obj.Properties || {};
+      const domainName = props.domain as string | undefined;
+      if (domainName) {
+        const resolvedDomainId = domainId(domainName);
+        edges.push({
+          source: nodeId,
+          target: resolvedDomainId,
+          properties: {
+            type: 'MEMBER_OF_DOMAIN',
+            confidence: 1.0,
+            discovered_at: new Date().toISOString(),
+            discovered_by: 'bloodhound-ingest',
+          },
+        });
+      }
+    }
+
     if (isAdcsMetaType(metaType)) {
       for (const [key, value] of Object.entries(obj)) {
         if (!Array.isArray(value) || value.length === 0 || BH_STANDARD_ARRAY_KEYS.has(key)) continue;
