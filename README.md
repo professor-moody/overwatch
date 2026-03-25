@@ -13,10 +13,11 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **Graph-based state** — directed property graphs (hosts, services, credentials, relationships) with traversable attack paths
 - **Hybrid scoring** — deterministic layer handles scope/dedup/OPSEC vetoes; the LLM handles attack chain reasoning
 - **Inference rules** — automatic hypothesis generation (e.g., "SMB signing disabled → relay target")
-- **25 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, and more
+- **34 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, and more
 - **29 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
+- **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O and ownership enforcement
 - **Retrospective analysis** — post-engagement skill gaps, inference suggestions, RLVR training traces
 
 ## Quick Start
@@ -96,6 +97,9 @@ Then run `claude` — see the full [Getting Started](https://keys.github.io/over
 | `suggest_inference_rule` | Add custom inference rules |
 | `run_retrospective` | Post-engagement analysis |
 | `get_history` / `export_graph` | Activity log and graph export |
+| `open_session` / `write_session` / `read_session` | Persistent interactive sessions |
+| `list_sessions` / `update_session` / `close_session` | Session management and lifecycle |
+| `resize_session` / `signal_session` / `send_to_session` | Session control and convenience I/O |
 
 Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)**
 
@@ -105,7 +109,7 @@ Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)*
 - **[Architecture](https://keys.github.io/overwatch/architecture/)** — design decisions and component overview
 - **[Configuration](https://keys.github.io/overwatch/configuration/)** — engagement config, OPSEC profiles, env vars
 - **[Graph Model](https://keys.github.io/overwatch/graph-model/)** — node types, edge types, inference rules
-- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 25 MCP tools with parameters and examples
+- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 34 MCP tools with parameters and examples
 - **[Skills Library](https://keys.github.io/overwatch/skills/)** — 29 offensive methodology guides
 - **[Operator Playbook](https://keys.github.io/overwatch/playbook/)** — lab workflows, session instructions, best practices
 - **[Development](https://keys.github.io/overwatch/development/)** — project structure, testing, extending

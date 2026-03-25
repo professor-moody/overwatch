@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 25 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 34 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -31,6 +31,15 @@ Overwatch exposes 25 MCP tools organized by function. Each tool uses Zod schemas
 | [`check_processes`](check-processes.md) | Inspect tracked process state | :white_check_mark: |
 | [`correct_graph`](correct-graph.md) | Transactional graph repair | :x: |
 | [`run_retrospective`](run-retrospective.md) | Post-engagement analysis | :white_check_mark: |
+| [`open_session`](sessions.md) | Create persistent interactive session (SSH, PTY, socket) | :x: |
+| [`write_session`](sessions.md) | Write raw bytes to a session | :x: |
+| [`read_session`](sessions.md) | Cursor-based read from session buffer | :white_check_mark: |
+| [`send_to_session`](sessions.md) | [Experimental] Write + wait + read | :x: |
+| [`list_sessions`](sessions.md) | List sessions with metadata | :white_check_mark: |
+| [`update_session`](sessions.md) | Update capabilities, title, ownership | :x: |
+| [`resize_session`](sessions.md) | Resize terminal dimensions | :x: |
+| [`signal_session`](sessions.md) | Send signal to session process | :x: |
+| [`close_session`](sessions.md) | Close and destroy a session | :x: |
 
 ## Tool Categories
 
@@ -57,6 +66,9 @@ Bulk data import from external tools.
 
 ### Utilities
 System-level checks and process tracking.
+
+### Sessions
+Persistent interactive sessions — SSH, local PTY, and TCP socket (reverse shell). Cursor-based I/O with ownership enforcement.
 
 ### Analysis
 Post-engagement retrospective and training data export.

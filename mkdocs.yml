@@ -97,6 +97,8 @@ nav:
       - check_tools: tools/check-tools.md
       - track_process: tools/track-process.md
       - check_processes: tools/check-processes.md
+    - Sessions:
+      - Session Management: tools/sessions.md
     - Analysis:
       - run_retrospective: tools/run-retrospective.md
   - Skills:
@@ -107,6 +109,7 @@ nav:
     - End-to-End Walkthrough: playbook/walkthrough.md
     - GOAD AD Lab: playbook/goad-lab.md
     - HTB / Single Host: playbook/htb-single.md
+    - HTB / Network: playbook/htb-network.md
     - Session Instructions: playbook/session-instructions.md
     - parse_output vs report_finding: playbook/parse-vs-report.md
     - Retrospectives: playbook/retrospective.md

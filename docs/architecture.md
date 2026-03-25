@@ -128,6 +128,8 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Tool Check** | `src/services/tool-check.ts` | Offensive tool availability detection |
 | **Process Tracker** | `src/services/process-tracker.ts` | PID tracking for long-running scans |
 | **Lab Preflight** | `src/services/lab-preflight.ts` | Lab readiness validation |
+| **Session Manager** | `src/services/session-manager.ts` | Persistent interactive sessions, RingBuffer, ownership enforcement |
+| **Session Adapters** | `src/services/session-adapters.ts` | LocalPty (node-pty), SSH, and Socket transport adapters |
 
 ### Tools
 
@@ -147,6 +149,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Processes** | `src/tools/processes.ts` | `track_process`, `check_processes` |
 | **Remediation** | `src/tools/remediation.ts` | `correct_graph` |
 | **Retrospective** | `src/tools/retrospective.ts` | `run_retrospective` |
+| **Sessions** | `src/tools/sessions.ts` | `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `update_session`, `resize_session`, `signal_session`, `close_session` |
 
 ### Dashboard
 

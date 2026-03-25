@@ -11,6 +11,7 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "id": "string (required)",
   "name": "string (required)",
   "created_at": "ISO 8601 timestamp (required)",
+  "profile": "goad_ad | htb_single | network (optional, inferred if omitted)",
   "scope": {
     "cidrs": ["CIDR notation strings"],
     "domains": ["domain names"],
@@ -47,6 +48,18 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
 | `domains` | `string[]` | Domain names in scope (e.g., `target.local`) |
 | `exclusions` | `string[]` | IPs or hostnames explicitly excluded |
 | `hosts` | `string[]` | Additional in-scope hostnames not covered by CIDRs |
+
+### Lab Profile
+
+The optional `profile` field selects the lab preflight profile, which controls which checks run and what tools are required.
+
+| Profile | Description |
+|---------|-------------|
+| `goad_ad` | Active Directory lab — requires BloodHound, NXC, nmap. Checks domain scope. |
+| `htb_single` | Single-target HTB machine — minimal scope, focused checks. |
+| `network` | Network-only engagement — requires nmap. BH/NXC optional. Checks CIDR scope, not domains. |
+
+If omitted, the profile is **inferred**: `goad_ad` when `scope.domains` is non-empty, `network` otherwise.
 
 ### Objectives
 

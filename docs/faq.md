@@ -173,6 +173,29 @@ Overwatch automatically canonicalizes node IDs and merges alias nodes on ingest.
 
 Use [`correct_graph`](tools/correct-graph.md) for transactional graph repair. It supports dropping edges, replacing edges (change type/endpoints/confidence), and patching node properties. All operations in a batch are atomic.
 
+## Sessions
+
+### What are sessions?
+
+Sessions are **persistent interactive I/O channels** — SSH connections, local PTY shells, or TCP sockets (for catching reverse shells). Unlike MCP tool calls which are request-response, sessions stay open across multiple tool calls. You write commands with `write_session`, read output with `read_session`, and the session stays alive until you `close_session`.
+
+### How does session ownership work?
+
+When a session is opened with `agent_id`, that agent **claims** the session. Only the claiming agent (or a caller with `force: true`) can write, resize, signal, update, or close the session. Any agent can read from any session. Unclaimed sessions (no `agent_id`) are open to all callers.
+
+Ownership can be transferred via `update_session` by the current owner.
+
+### Do sessions survive server restarts?
+
+No. Sessions are **ephemeral runtime state** — PTY file descriptors and socket connections cannot be serialized. When the server shuts down, all sessions are closed and their final output is captured. After restart, agents must open new sessions.
+
+The engagement graph (findings, frontier, objectives) survives restarts. Sessions do not.
+
+### What's the difference between `write_session` and `send_to_session`?
+
+- **`write_session`** — raw I/O primitive. Writes bytes, returns the new buffer position. You call `read_session` separately to get output.
+- **`send_to_session`** — convenience sugar (experimental). Writes a command, waits for output to settle (idle timeout or regex match), then returns the captured output in one call. Simpler but less flexible — use `write`/`read` for interactive prompts, password entry, or REPL input.
+
 ## Retrospective
 
 ### When should I run a retrospective?

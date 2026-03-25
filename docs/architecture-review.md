@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **25 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **34 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,10 +31,10 @@ The server exposes **25 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              25 MCP Tools (Zod-validated)                  │  │
+│  │              34 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · inference · remediation  │  │
-│  │  skills · toolcheck · processes · retrospective            │  │
+│  │  skills · toolcheck · processes · retrospective · sessions │  │
 │  └──────────────────────────┬────────────────────────────────┘  │
 │                              │                                   │
 │  ┌───────────────────────────▼───────────────────────────────┐  │
@@ -194,11 +194,19 @@ HTTP + WebSocket server on port 8384 (configurable). Serves a sigma.js WebGL das
 
 ### Lab Preflight (`src/services/lab-preflight.ts`)
 
-Aggregate readiness checks for lab workflows (GOAD AD, single host, HTB). Validates config, scope, tool availability, graph health, persistence safety, dashboard status, and graph stage.
+Aggregate readiness checks for lab workflows (GOAD AD, single host, HTB, network). Validates config, scope, tool availability, graph health, persistence safety, dashboard status, and graph stage. Profile is inferred from scope if not explicitly set.
+
+### Session Manager (`src/services/session-manager.ts`)
+
+Persistent interactive sessions with three transport adapters (local PTY via node-pty, SSH via node-pty, TCP socket for reverse shells). Each session has a 128KB ring buffer with absolute monotonic cursor positions for cursor-based reads. Ownership enforcement via `claimed_by` — single writer, many readers, `force` override. Sessions are ephemeral (not persisted across restarts).
+
+### Session Adapters (`src/services/session-adapters.ts`)
+
+Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter` (SSH via node-pty), `SocketAdapter` (net.createServer/connect for bind/reverse shells). Socket sessions start in `pending` state and transition to `connected` when a connection arrives.
 
 ---
 
-## MCP Tools (25)
+## MCP Tools (34)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -256,6 +264,20 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | `suggest_inference_rule` | Custom inference rule creation + backfill |
 | `correct_graph` | Transactional graph repair (drop/replace edges, patch nodes) |
 | `run_retrospective` | Post-engagement analysis (5 structured outputs) |
+
+### Sessions
+
+| Tool | Purpose |
+|------|---------|
+| `open_session` | Create persistent interactive session (SSH, PTY, socket) |
+| `write_session` | Write raw bytes to a session (I/O primitive) |
+| `read_session` | Cursor-based read from session buffer |
+| `send_to_session` | [Experimental] Write command + wait + read |
+| `list_sessions` | List sessions with metadata |
+| `update_session` | Update capabilities, title, ownership |
+| `resize_session` | Resize terminal dimensions (PTY only) |
+| `signal_session` | Send signal (SIGINT, SIGTERM, etc.) |
+| `close_session` | Close and destroy a session |
 
 ---
 
@@ -325,13 +347,13 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**26 test files** across the codebase:
+**27 test files** across the codebase:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Integration | `mcp-server.integration.test.ts` | All 25 tools via stdio transport |
+| Integration | `mcp-server.integration.test.ts` | All 34 tools via stdio transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity |
-| Services | 14 test files | CIDR, BloodHound, parsers (11), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema |
+| Services | 15 test files | CIDR, BloodHound, parsers (11), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager |
 | Tools | 3 test files | Error boundary, activity logging, process tracking |
 | Dashboard | 4 test files | Boot, graph rendering, UI, WebSocket |
 | CLI | `lab-smoke.test.ts` | End-to-end lab workflow |
@@ -366,7 +388,7 @@ overwatch/
 │   ├── index.ts                    # Thin entrypoint (~137 lines)
 │   ├── config.ts                   # Config loading + validation
 │   ├── types.ts                    # Zod schemas + TypeScript types (535 lines)
-│   ├── tools/                      # 15 MCP tool modules
+│   ├── tools/                      # 16 MCP tool modules
 │   │   ├── state.ts                # get_state, preflight, health, history, export
 │   │   ├── findings.ts             # report_finding
 │   │   ├── scoring.ts              # next_task, validate_action
@@ -381,6 +403,7 @@ overwatch/
 │   │   ├── skills.ts               # get_skill
 │   │   ├── toolcheck.ts            # check_tools
 │   │   ├── processes.ts            # track_process, check_processes
+│   │   ├── sessions.ts             # open/write/read/send_to/list/update/resize/signal/close_session
 │   │   └── error-boundary.ts       # withErrorBoundary wrapper
 │   ├── services/                   # Core business logic
 │   │   ├── graph-engine.ts         # Central orchestrator (~1,415 lines)
@@ -405,7 +428,9 @@ overwatch/
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization
 │   │   ├── retrospective.ts        # Post-engagement analysis (~1,186 lines)
-│   │   └── tool-check.ts           # Tool availability detection
+│   │   ├── tool-check.ts           # Tool availability detection
+│   │   ├── session-manager.ts      # Persistent sessions, RingBuffer, ownership
+│   │   └── session-adapters.ts     # LocalPty, SSH, Socket transport adapters
 │   ├── dashboard/                  # Browser SPA
 │   │   ├── index.html              # sigma.js WebGL graph
 │   │   ├── main.js                 # Dashboard logic

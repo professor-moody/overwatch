@@ -200,6 +200,46 @@ Overwatch automatically resolves node identities on ingest to prevent duplicates
 
 This handles the real-world messiness of BloodHound SIDs, manual findings, and parser outputs colliding on the same entity. Nodes can be `canonical` (primary), `unresolved` (ambiguous), or `superseded` (merged into another).
 
+## Sessions
+
+Overwatch maintains **persistent interactive sessions** — long-lived bidirectional I/O channels that survive across MCP tool calls. Sessions support SSH, local PTY, and TCP socket transports (for reverse shells and listeners).
+
+### I/O Model
+
+The core primitives are `write_session` (raw bytes) and `read_session` (cursor-based). Each session has a 128KB ring buffer with absolute monotonic positions. Agents track `end_pos` from each read and pass it as `from_pos` on the next to get only new output.
+
+`send_to_session` is an experimental convenience tool that writes a command, waits for output to settle (idle timeout or regex match), and returns the captured output in one call.
+
+### TTY Quality
+
+Sessions track their terminal capability via `tty_quality`:
+
+| Level | Description | Example |
+|-------|-------------|---------|
+| `none` | No terminal | Non-interactive exec |
+| `dumb` | Raw I/O only | Raw reverse shell |
+| `partial` | Line editing | After `python3 -c 'import pty; ...'` |
+| `full` | Full PTY | SSH, local shell, fully upgraded shell |
+
+Quality can be upgraded at runtime via `update_session` after a shell upgrade.
+
+### Ownership
+
+Sessions have a `claimed_by` field (agent ID). When set, only the claiming agent can write or control the session. Any agent can read. Use `update_session` to transfer ownership or `force: true` to override. Unclaimed sessions are open to all.
+
+### Lifecycle
+
+Sessions follow this state machine:
+
+```
+pending → connected → closed
+                   → error
+```
+
+Socket sessions (reverse shells, listeners) start in `pending` and transition to `connected` when a connection is established. PTY and SSH sessions connect immediately. Sessions are ephemeral across server restarts — PTY file descriptors cannot be serialized.
+
+See [Session Tools](tools/sessions.md) for the full API reference.
+
 ## Engagement State vs Graph State
 
 These are related but distinct:

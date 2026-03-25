@@ -32,8 +32,9 @@ overwatch/
 │   │   ├── logging.ts        # log_action_event
 │   │   ├── retrospective.ts  # run_retrospective
 │   │   ├── remediation.ts    # correct_graph
+│   │   ├── sessions.ts      # open_session, write/read/send_to/list/update/resize/signal/close_session
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic (26 modules)
+│   ├── services/             # Core business logic (28 modules)
 │   │   ├── graph-engine.ts   # Graph operations, state coordination
 │   │   ├── engine-context.ts # Mutable state container, update callbacks
 │   │   ├── frontier.ts       # Frontier item generation and filtering
@@ -58,7 +59,9 @@ overwatch/
 │   │   ├── cidr.ts           # CIDR parsing, expansion, scope matching
 │   │   ├── tool-check.ts     # Offensive tool detection
 │   │   ├── process-tracker.ts # PID tracking for long-running scans
-│   │   └── lab-preflight.ts  # Lab readiness validation
+│   │   ├── lab-preflight.ts  # Lab readiness validation
+│   │   ├── session-manager.ts # Persistent sessions, RingBuffer, ownership
+│   │   └── session-adapters.ts # LocalPty (node-pty), SSH, Socket adapters
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke
@@ -79,7 +82,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **638 tests across 26 files**, all passing. Run the full suite:
+Tests use [Vitest](https://vitest.dev/). **741 tests across 27 files**, all passing. Run the full suite:
 
 ```bash
 npm test
@@ -108,7 +111,8 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `activity-logging.test.ts` | Action event logging, dispatch_agents |
 | `error-boundary.test.ts` | Error handling wrapper |
 | `processes.test.ts` | Process tool integration |
-| `mcp-server.integration.test.ts` | End-to-end MCP protocol (25 tools) |
+| `session-manager.test.ts` | RingBuffer, SessionManager, ownership enforcement, adapters |
+| `mcp-server.integration.test.ts` | End-to-end MCP protocol (34 tools) |
 
 ## Adding a New Parser
 
