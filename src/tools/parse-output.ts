@@ -111,11 +111,14 @@ Pass either the raw output content or a local file path for large artifacts.`,
         for (const node of engine.getNodesByType('domain')) {
           const fqdn = (node.domain_name || node.label || '') as string;
           if (fqdn && fqdn.includes('.')) {
-            // Prefer explicit netbios_name (from BH ingest) over first-label heuristic
-            const netbios = typeof node.netbios_name === 'string' && node.netbios_name.length > 0
-              ? node.netbios_name.toUpperCase()
-              : fqdn.split('.')[0].toUpperCase();
-            aliases[netbios] = fqdn.toLowerCase();
+            // Always register the first-label heuristic alias
+            const fqdnLower = fqdn.toLowerCase();
+            const firstLabel = fqdn.split('.')[0].toUpperCase();
+            aliases[firstLabel] = fqdnLower;
+            // Also register explicit netbios_name when it differs (renamed-domain environments)
+            if (typeof node.netbios_name === 'string' && node.netbios_name.length > 0) {
+              aliases[node.netbios_name.toUpperCase()] = fqdnLower;
+            }
           }
         }
         if (Object.keys(aliases).length > 0) {
