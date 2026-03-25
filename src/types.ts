@@ -570,3 +570,59 @@ export interface RetrospectiveResult {
   trace_quality: TraceQualityReport;
   summary: string;
 }
+
+// ============================================================
+// Session Manager Types
+// ============================================================
+
+export type SessionKind = 'ssh' | 'local_pty' | 'socket';
+export type SessionState = 'pending' | 'connected' | 'closed' | 'error';
+export type TtyQuality = 'none' | 'dumb' | 'partial' | 'full';
+
+export interface SessionCapabilities {
+  has_stdin: boolean;
+  has_stdout: boolean;
+  supports_resize: boolean;
+  supports_signals: boolean;
+  tty_quality: TtyQuality;
+}
+
+export interface SessionMetadata {
+  id: string;
+  kind: SessionKind;
+  transport: string;
+  state: SessionState;
+  title: string;
+  host?: string;
+  user?: string;
+  port?: number;
+  pid?: number;
+  agent_id?: string;
+  target_node?: string;
+  claimed_by?: string;
+  started_at: string;
+  last_activity_at: string;
+  closed_at?: string;
+  capabilities: SessionCapabilities;
+  buffer_end_pos: number;
+  notes?: string;
+}
+
+export interface SessionReadResult {
+  session_id: string;
+  start_pos: number;
+  end_pos: number;
+  text: string;
+  truncated: boolean;
+}
+
+export interface AdapterHandle {
+  pid?: number;
+  capabilities: SessionCapabilities;
+  write(data: string): void;
+  resize?(cols: number, rows: number): void;
+  kill?(signal?: string): void;
+  close(): void;
+  onData(cb: (chunk: string) => void): void;
+  onExit(cb: (info: { exitCode?: number; signal?: number }) => void): void;
+}

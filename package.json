@@ -21,8 +21,9 @@
     "graphology-shortest-path": "^2.1.0",
     "graphology-traversal": "^0.3.1",
     "graphology-types": "^0.24.8",
-    "uuid": "^10.0.0",
+    "node-pty": "^1.1.0",
     "sigma": "^2.4.0",
+    "uuid": "^10.0.0",
     "ws": "^8.19.0",
     "zod": "^3.23.8"
   },

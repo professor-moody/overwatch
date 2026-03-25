@@ -32,6 +32,11 @@ export type ActivityEventType =
   | 'inference_generated'
   | 'credential_degradation'
   | 'objective_achieved'
+  | 'session_opened'
+  | 'session_connected'
+  | 'session_signaled'
+  | 'session_closed'
+  | 'session_error'
   | 'system';
 
 export type ActivityLogEntry = {

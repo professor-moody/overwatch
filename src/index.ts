@@ -28,6 +28,9 @@ import { ProcessTracker } from './services/process-tracker.js';
 import { DashboardServer } from './services/dashboard-server.js';
 import { registerRetrospectiveTools } from './tools/retrospective.js';
 import { registerRemediationTools } from './tools/remediation.js';
+import { registerSessionTools } from './tools/sessions.js';
+import { SessionManager } from './services/session-manager.js';
+import { LocalPtyAdapter, SshAdapter, SocketAdapter } from './services/session-adapters.js';
 
 // --- Load engagement config ---
 function loadConfig(): EngagementConfig {
@@ -65,6 +68,12 @@ const processTracker = savedProcesses.length > 0
   ? ProcessTracker.deserialize(savedProcesses)
   : new ProcessTracker();
 
+// Initialize SessionManager with adapters
+const sessionManager = new SessionManager(engine);
+sessionManager.registerAdapter(new LocalPtyAdapter());
+sessionManager.registerAdapter(new SshAdapter());
+sessionManager.registerAdapter(new SocketAdapter());
+
 const server = new McpServer({
   name: 'overwatch-mcp-server',
   version: '0.1.0'
@@ -97,6 +106,7 @@ registerParseOutputTools(server, engine);
 registerLoggingTools(server, engine);
 registerRetrospectiveTools(server, engine, skills);
 registerRemediationTools(server, engine);
+registerSessionTools(server, sessionManager, engine);
 
 // ============================================================
 // Start Server
@@ -118,6 +128,8 @@ async function main(): Promise<void> {
 // Graceful shutdown
 function shutdown() {
   console.error('Shutting down Overwatch...');
+  // Close all active sessions
+  sessionManager.shutdown().catch(() => {});
   if (dashboard) {
     dashboard.stop().catch(() => {});
   }

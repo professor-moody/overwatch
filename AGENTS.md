@@ -79,3 +79,12 @@ When dispatching agents, give them these instructions:
 | `get_skill` | RAG skill lookup | When you need methodology for a specific scenario |
 | `get_history` | Full activity log | During retrospectives |
 | `export_graph` | Complete graph dump | For reporting and retrospectives |
+| `open_session` | Create persistent interactive session (SSH, PTY, socket) | When you need a long-lived shell, reverse shell catch, or interactive session |
+| `write_session` | Write raw bytes to a session (I/O primitive) | For all session input — commands, passwords, REPL input, partial data |
+| `read_session` | Cursor-based read from session buffer | Incremental output reads — track `end_pos` as your cursor |
+| `send_to_session` | [Experimental] Write command + wait + read | Convenience for simple shell commands; use write/read for prompts/REPLs |
+| `list_sessions` | List sessions with metadata | Check active sessions, get session details |
+| `update_session` | Update capabilities, title, ownership | After shell upgrade, ownership transfer, adding notes |
+| `resize_session` | Resize terminal dimensions | PTY sessions only — after layout changes |
+| `signal_session` | Send signal (SIGINT, SIGTERM, etc.) | Cancel running commands, terminate processes |
+| `close_session` | Close and destroy a session | When done with a session — returns final output |
