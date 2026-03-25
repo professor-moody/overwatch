@@ -1,18 +1,29 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { unlinkSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
+import { resolve, basename } from 'path';
 
-const STATE_FILE = resolve('./state-eng-001.json');
 const ENGAGEMENT_JSON = resolve('./engagement.json');
 const SKILLS_DIR = resolve('./skills');
+const engagementId = JSON.parse(readFileSync(ENGAGEMENT_JSON, 'utf-8')).id;
+const STATE_FILE = resolve(`./state-${engagementId}.json`);
 
 let client: Client;
 let transport: StdioClientTransport;
 
 function cleanup() {
   if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
+  // Clean up snapshot files for this engagement
+  const prefix = `state-${engagementId}.snap-`;
+  const dir = resolve('.');
+  try {
+    for (const file of readdirSync(dir)) {
+      if (file.startsWith(prefix) && file.endsWith('.json')) {
+        unlinkSync(resolve(dir, file));
+      }
+    }
+  } catch {}
 }
 
 describe('MCP Server Integration', () => {
@@ -145,6 +156,45 @@ describe('MCP Server Integration', () => {
     expect(body.valid).toBe(false);
     expect(body.errors.length).toBeGreaterThan(0);
     expect(body.action_id).toBeDefined();
+  });
+
+  it('validate_action accepts in-scope target_ip without a graph node', async () => {
+    const result = await client.callTool({
+      name: 'validate_action',
+      arguments: {
+        target_ip: '10.10.110.5',
+        tool_name: 'nmap',
+        technique: 'portscan',
+        description: 'Pre-discovery scan of in-scope IP',
+      },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.valid).toBe(true);
+    expect(body.action_id).toBeDefined();
+  });
+
+  it('validate_action rejects excluded target_ip', async () => {
+    const result = await client.callTool({
+      name: 'validate_action',
+      arguments: {
+        target_ip: '10.10.110.2',
+        description: 'Scan excluded IP',
+      },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.valid).toBe(false);
+    expect(body.errors.some((e: string) => e.includes('out of scope'))).toBe(true);
+  });
+
+  it('next_task includes network_discovery frontier items', async () => {
+    const result = await client.callTool({ name: 'next_task', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    const discovery = body.candidates.filter((c: any) => c.type === 'network_discovery');
+    expect(discovery.length).toBeGreaterThan(0);
+    expect(discovery[0].target_cidr).toBe('10.10.110.0/24');
   });
 
   it('query_graph rejects deprecated free-text query payloads', async () => {

@@ -40,13 +40,14 @@ export type ActivityLogEntry = {
   description: string;
   agent_id?: string;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
-  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge';
+  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery';
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;
   event_type?: ActivityEventType;
   tool_name?: string;
   technique?: string;
   target_node_ids?: string[];
+  target_ips?: string[];
   target_edge?: { source: string; target: string; type?: string };
   frontier_item_id?: string;
   validation_result?: 'valid' | 'invalid' | 'warning_only';
@@ -175,6 +176,7 @@ export function normalizeActivityLogEntry(
     tool_name: entry.tool_name,
     technique: entry.technique,
     target_node_ids: entry.target_node_ids,
+    target_ips: entry.target_ips,
     target_edge: entry.target_edge,
     frontier_item_id: entry.frontier_item_id,
     validation_result: entry.validation_result,

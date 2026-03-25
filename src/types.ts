@@ -255,11 +255,12 @@ export interface ExportedGraph {
 
 export interface FrontierItem {
   id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge';
+  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;
   edge_type?: EdgeType;
+  target_cidr?: string;
   missing_properties?: string[];
   description: string;
   graph_metrics: {

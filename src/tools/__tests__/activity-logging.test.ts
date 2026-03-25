@@ -102,6 +102,37 @@ describe('structured activity logging tools', () => {
     expect(validationEvent?.tool_name).toBe('nmap');
   });
 
+  it('validate_action with target_ip logs target_ips instead of target_node_ids', async () => {
+    const result = await handlers.validate_action({
+      target_ip: '10.10.10.1',
+      technique: 'portscan',
+      tool_name: 'nmap',
+      description: 'Pre-discovery scan of in-scope IP',
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.action_id).toBeDefined();
+    expect(payload.valid).toBe(true);
+
+    const history = engine.getFullHistory();
+    const event = history.find(candidate => candidate.action_id === payload.action_id && candidate.event_type === 'action_validated');
+    expect(event).toBeDefined();
+    expect(event?.target_ips).toEqual(['10.10.10.1']);
+    expect(event?.target_node_ids).toBeUndefined();
+  });
+
+  it('validate_action rejects out-of-scope target_ip', async () => {
+    const result = await handlers.validate_action({
+      target_ip: '192.168.1.1',
+      tool_name: 'nmap',
+      description: 'Scan out-of-scope IP',
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.valid).toBe(false);
+    expect(payload.errors.some((e: string) => e.includes('out of scope'))).toBe(true);
+  });
+
   it('validate_action is marked non-read-only and non-idempotent because it logs', () => {
     expect(toolConfigs.validate_action.annotations.readOnlyHint).toBe(false);
     expect(toolConfigs.validate_action.annotations.idempotentHint).toBe(false);

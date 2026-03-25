@@ -698,6 +698,44 @@ describe('GraphEngine', () => {
       const highNoiseInFrontier = state.frontier.filter(f => f.opsec_noise > 0.1);
       expect(highNoiseInFrontier.length).toBe(0);
     });
+
+    it('emits network_discovery items from scope CIDRs', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const frontier = engine.computeFrontier();
+      const discovery = frontier.filter(f => f.type === 'network_discovery');
+      expect(discovery.length).toBe(1);
+      expect(discovery[0].target_cidr).toBe('10.10.10.0/28');
+      expect(discovery[0].id).toBe('frontier-discovery-10-10-10-0-28');
+      expect(discovery[0].description).toContain('Discover hosts');
+      expect(discovery[0].graph_metrics.fan_out_estimate).toBeGreaterThan(0);
+    });
+
+    it('emits one network_discovery item per CIDR', () => {
+      const config = makeConfig({
+        scope: { cidrs: ['10.10.10.0/24', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const frontier = engine.computeFrontier();
+      const discovery = frontier.filter(f => f.type === 'network_discovery');
+      expect(discovery.length).toBe(2);
+      expect(discovery.map(d => d.target_cidr).sort()).toEqual(['10.10.10.0/24', '192.168.1.0/24']);
+    });
+
+    it('network_discovery items pass through filterFrontier', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const frontier = engine.computeFrontier();
+      const { passed } = engine.filterFrontier(frontier);
+      const discovery = passed.filter(f => f.type === 'network_discovery');
+      expect(discovery.length).toBe(1);
+    });
+
+    it('network_discovery items appear in getState frontier', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const state = engine.getState();
+      const discovery = state.frontier.filter(f => f.type === 'network_discovery');
+      expect(discovery.length).toBe(1);
+      expect(discovery[0].target_cidr).toBe('10.10.10.0/28');
+    });
   });
 
   // =============================================
@@ -797,6 +835,40 @@ describe('GraphEngine', () => {
       const result = engine.validateAction({ edge_source: 'host-10-10-10-14', edge_target: 'host-10-10-10-1' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
+
+    it('validates in-scope target_ip without requiring a graph node', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_ip: '10.10.10.1' });
+      expect(result.valid).toBe(true);
+      expect(result.errors.length).toBe(0);
+    });
+
+    it('rejects out-of-scope target_ip', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_ip: '192.168.1.1' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
+
+    it('rejects excluded target_ip', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_ip: '10.10.10.14' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
+
+    it('validates target_ip combined with technique', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_ip: '10.10.10.1', technique: 'portscan' });
+      expect(result.valid).toBe(true);
+    });
+
+    it('rejects target_ip with blacklisted technique', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_ip: '10.10.10.1', technique: 'zerologon' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('blacklisted'))).toBe(true);
     });
 
     it('filterFrontier excludes items with out-of-scope edge_target', () => {

@@ -951,7 +951,7 @@ export class GraphEngine {
   // Validation (Layer 3 — post-LLM sanity check)
   // =============================================
 
-  validateAction(action: { target_node?: string; edge_source?: string; edge_target?: string; technique?: string }): {
+  validateAction(action: { target_node?: string; target_ip?: string; edge_source?: string; edge_target?: string; technique?: string }): {
     valid: boolean;
     errors: string[];
     warnings: string[];
@@ -968,6 +968,13 @@ export class GraphEngine {
     }
     if (action.edge_target && !this.ctx.graph.hasNode(action.edge_target)) {
       errors.push(`Target node does not exist: ${action.edge_target}`);
+    }
+
+    // Scope check for raw target_ip (pre-discovery validation)
+    if (action.target_ip) {
+      if (!isIpInScope(action.target_ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions)) {
+        errors.push(`Target IP is out of scope: ${action.target_ip}`);
+      }
     }
 
     // Check scope — target_node, edge_source, and edge_target
@@ -1542,6 +1549,10 @@ export class GraphEngine {
   }
 
   private resolveFrontierSeeds(frontierItemId: string): string[] {
+    if (frontierItemId.startsWith('frontier-discovery-')) {
+      return []; // network_discovery items have no backing graph nodes
+    }
+
     if (frontierItemId.startsWith('frontier-node-')) {
       const nodeId = frontierItemId.slice('frontier-node-'.length);
       return this.ctx.graph.hasNode(nodeId) ? [nodeId] : [];

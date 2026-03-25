@@ -5,7 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
-  const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge'] as const;
+  const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery'] as const;
 
   function buildTask(agent_id: string, frontier_item_id: string, subgraph_node_ids: string[], skill?: string) {
     return {
@@ -147,7 +147,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         }
 
         const scope = engine.computeSubgraphNodeIds(item.id, hops);
-        if (scope.length === 0) {
+        if (scope.length === 0 && item.type !== 'network_discovery') {
           skipped_unscoped.push({
             frontier_item_id: item.id,
             frontier_type: item.type,
@@ -227,6 +227,28 @@ auto-computed from the frontier item's target node(s).`,
       const seedIds = task.subgraph_node_ids.length > 0
         ? task.subgraph_node_ids
         : engine.computeSubgraphNodeIds(task.frontier_item_id, hops);
+
+      // For network_discovery tasks with no backing nodes, return CIDR + scope context
+      if (seedIds.length === 0 && task.frontier_item_id.startsWith('frontier-discovery-')) {
+        const frontierItem = engine.getFrontierItem(task.frontier_item_id);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              task_id: task.id,
+              agent_id: task.agent_id,
+              frontier_item_id: task.frontier_item_id,
+              skill: task.skill,
+              discovery_context: {
+                target_cidr: frontierItem?.target_cidr,
+                scope: engine.getState().config.scope,
+              },
+              subgraph: { nodes: [], edges: [] },
+              message: `Network discovery task for ${frontierItem?.target_cidr || 'unknown CIDR'}`,
+            }, null, 2)
+          }]
+        };
+      }
 
       const subgraph = engine.getSubgraphForAgent(seedIds, { hops });
 

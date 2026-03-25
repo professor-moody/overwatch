@@ -89,6 +89,30 @@ export class FrontierComputer {
       });
     });
 
+    // 3. Network discovery items from scope CIDRs
+    for (const cidr of this.ctx.config.scope.cidrs) {
+      const slug = cidr.replace(/[./]/g, '-');
+      const maskStr = cidr.split('/')[1];
+      const mask = maskStr ? parseInt(maskStr) : 32;
+      const hostBits = 32 - mask;
+      const estimatedHosts = mask >= 31 ? 1 : (1 << hostBits) - 2;
+
+      frontier.push({
+        id: `frontier-discovery-${slug}`,
+        type: 'network_discovery',
+        target_cidr: cidr,
+        description: `Discover hosts in ${cidr}`,
+        graph_metrics: {
+          hops_to_objective: null,
+          fan_out_estimate: Math.min(estimatedHosts, 254),
+          node_degree: 0,
+          confidence: 1.0,
+        },
+        opsec_noise: 0.2,
+        staleness_seconds: 0,
+      });
+    }
+
     return frontier;
   }
 

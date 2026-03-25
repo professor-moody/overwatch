@@ -87,6 +87,7 @@ Checks:
 Call this before every significant action. Returns valid/invalid with specific errors and warnings.`,
       inputSchema: {
         target_node: z.string().optional().describe('Node ID being targeted'),
+        target_ip: z.string().optional().describe('Raw IP address to validate against scope (pre-discovery, no graph node required)'),
         edge_source: z.string().optional().describe('Source node of the edge being tested'),
         edge_target: z.string().optional().describe('Target node of the edge being tested'),
         technique: z.string().optional().describe('Technique name (e.g. kerberoast, ntlmrelay, portscan)'),
@@ -102,15 +103,16 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, edge_source, edge_target, technique, action_id, tool_name, frontier_item_id, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, action_id, tool_name, frontier_item_id, description }) => {
       const normalizedActionId = action_id || uuidv4();
-      const result = engine.validateAction({ target_node, edge_source, edge_target, technique });
+      const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique });
       const validationResult = !result.valid
         ? 'invalid'
         : result.warnings.length > 0
           ? 'warning_only'
           : 'valid';
       const targetNodeIds = [target_node, edge_source, edge_target].filter((value): value is string => !!value);
+      const targetIps = target_ip ? [target_ip] : undefined;
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
 
       engine.logActionEvent({
@@ -122,6 +124,7 @@ Call this before every significant action. Returns valid/invalid with specific e
         tool_name,
         technique,
         target_node_ids: targetNodeIds.length > 0 ? [...new Set(targetNodeIds)] : undefined,
+        target_ips: targetIps,
         target_edge: edge_source && edge_target ? { source: edge_source, target: edge_target } : undefined,
         frontier_item_id,
         validation_result: validationResult,
