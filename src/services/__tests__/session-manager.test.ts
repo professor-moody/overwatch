@@ -317,7 +317,7 @@ describe('SessionManager', () => {
         agent_id: 'agent-1',
         initial_wait_ms: 0,
       });
-      const updated = manager.update(metadata.id, { claimed_by: 'agent-2' });
+      const updated = manager.update(metadata.id, { claimed_by: 'agent-2' }, 'agent-1');
       expect(updated.claimed_by).toBe('agent-2');
     });
 
@@ -440,6 +440,157 @@ describe('SessionManager', () => {
       const fetched = manager.getSession(metadata.id);
       expect(fetched).not.toBeNull();
       expect(fetched!.title).toBe('test');
+    });
+  });
+});
+
+// ============================================================
+// Ownership enforcement regression tests
+// ============================================================
+
+describe('SessionManager — ownership enforcement', () => {
+  let manager: SessionManager;
+  let mockAdapter: ReturnType<typeof createMockAdapter>;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    manager = new SessionManager(null);
+    mockAdapter = createMockAdapter();
+    manager.registerAdapter(mockAdapter.adapter);
+    const result = await manager.create({
+      kind: 'local_pty',
+      title: 'claimed shell',
+      agent_id: 'owner-agent',
+      initial_wait_ms: 0,
+    });
+    sessionId = result.metadata.id;
+  });
+
+  afterEach(async () => {
+    await manager.shutdown();
+  });
+
+  describe('write — omitted agent_id bypass (P1)', () => {
+    it('rejects write when agent_id is omitted on a claimed session', () => {
+      expect(() => manager.write(sessionId, 'hello'))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('rejects write when agent_id is undefined on a claimed session', () => {
+      expect(() => manager.write(sessionId, 'hello', undefined))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('allows write from the owning agent', () => {
+      expect(() => manager.write(sessionId, 'hello', 'owner-agent'))
+        .not.toThrow();
+    });
+
+    it('allows write with force even from wrong agent', () => {
+      expect(() => manager.write(sessionId, 'hello', 'other-agent', true))
+        .not.toThrow();
+    });
+  });
+
+  describe('update — no ownership check (P2)', () => {
+    it('rejects update when agent_id is omitted on a claimed session', () => {
+      expect(() => manager.update(sessionId, { notes: 'hijack' }))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('rejects update from wrong agent', () => {
+      expect(() => manager.update(sessionId, { notes: 'hijack' }, 'other-agent'))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('allows update from the owning agent', () => {
+      expect(() => manager.update(sessionId, { notes: 'legit' }, 'owner-agent'))
+        .not.toThrow();
+    });
+
+    it('allows update with force from wrong agent', () => {
+      const updated = manager.update(sessionId, { notes: 'forced' }, 'other-agent', true);
+      expect(updated.notes).toBe('forced');
+    });
+  });
+
+  describe('resize — no ownership check (P2)', () => {
+    it('rejects resize when agent_id is omitted on a claimed session', () => {
+      expect(() => manager.resize(sessionId, 200, 50))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('allows resize from the owning agent', () => {
+      expect(() => manager.resize(sessionId, 200, 50, 'owner-agent'))
+        .not.toThrow();
+    });
+
+    it('allows resize with force from wrong agent', () => {
+      expect(() => manager.resize(sessionId, 200, 50, 'other-agent', true))
+        .not.toThrow();
+    });
+  });
+
+  describe('signal — no ownership check (P2)', () => {
+    it('rejects signal when agent_id is omitted on a claimed session', () => {
+      expect(() => manager.signal(sessionId, 'SIGINT'))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('allows signal from the owning agent', () => {
+      expect(() => manager.signal(sessionId, 'SIGINT', 'owner-agent'))
+        .not.toThrow();
+    });
+
+    it('allows signal with force from wrong agent', () => {
+      expect(() => manager.signal(sessionId, 'SIGINT', 'other-agent', true))
+        .not.toThrow();
+    });
+  });
+
+  describe('close — no ownership check (P2)', () => {
+    it('rejects close when agent_id is omitted on a claimed session', () => {
+      expect(() => manager.close(sessionId))
+        .toThrow('claimed by "owner-agent"');
+    });
+
+    it('allows close from the owning agent', () => {
+      expect(() => manager.close(sessionId, 'owner-agent'))
+        .not.toThrow();
+    });
+
+    it('allows close with force from wrong agent', async () => {
+      // Need a fresh session since the owning-agent test above may have closed it
+      const r = await manager.create({
+        kind: 'local_pty',
+        title: 'another claimed',
+        agent_id: 'owner-agent',
+        initial_wait_ms: 0,
+      });
+      expect(() => manager.close(r.metadata.id, 'other-agent', true))
+        .not.toThrow();
+    });
+  });
+
+  describe('unclaimed sessions remain open to all', () => {
+    it('allows write without agent_id on unclaimed session', async () => {
+      const r = await manager.create({
+        kind: 'local_pty',
+        title: 'unclaimed shell',
+        initial_wait_ms: 0,
+      });
+      expect(() => manager.write(r.metadata.id, 'hello'))
+        .not.toThrow();
+    });
+
+    it('allows close without agent_id on unclaimed session', async () => {
+      const r = await manager.create({
+        kind: 'local_pty',
+        title: 'unclaimed shell',
+        initial_wait_ms: 0,
+      });
+      expect(() => manager.close(r.metadata.id))
+        .not.toThrow();
     });
   });
 });

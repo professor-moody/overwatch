@@ -380,9 +380,10 @@ export class SessionManager {
     });
   }
 
-  resize(sessionId: string, cols: number, rows: number): void {
+  resize(sessionId: string, cols: number, rows: number, claimedBy?: string, force?: boolean): void {
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
+    this.assertOwnership(session, claimedBy, force);
 
     if (!session.metadata.capabilities.supports_resize) {
       throw new Error(`Session ${sessionId} does not support resize (tty_quality: ${session.metadata.capabilities.tty_quality})`);
@@ -393,9 +394,10 @@ export class SessionManager {
     }
   }
 
-  signal(sessionId: string, sig: string): void {
+  signal(sessionId: string, sig: string, claimedBy?: string, force?: boolean): void {
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
+    this.assertOwnership(session, claimedBy, force);
 
     if (!session.metadata.capabilities.supports_signals) {
       throw new Error(`Session ${sessionId} does not support signals (tty_quality: ${session.metadata.capabilities.tty_quality})`);
@@ -413,8 +415,9 @@ export class SessionManager {
     title?: string;
     claimed_by?: string;
     notes?: string;
-  }): SessionMetadata {
+  }, claimedBy?: string, force?: boolean): SessionMetadata {
     const session = this.getSessionOrThrow(sessionId);
+    this.assertOwnership(session, claimedBy, force);
 
     if (updates.capabilities) {
       session.metadata.capabilities = {
@@ -430,8 +433,9 @@ export class SessionManager {
     return { ...session.metadata };
   }
 
-  close(sessionId: string): { metadata: SessionMetadata; final: SessionReadResult } {
+  close(sessionId: string, claimedBy?: string, force?: boolean): { metadata: SessionMetadata; final: SessionReadResult } {
     const session = this.getSessionOrThrow(sessionId);
+    this.assertOwnership(session, claimedBy, force);
 
     // Capture final output
     const tailResult = session.buffer.tail(8192);
@@ -498,7 +502,7 @@ export class SessionManager {
 
   private assertOwnership(session: Session, claimedBy?: string, force?: boolean): void {
     if (force) return;
-    if (session.metadata.claimed_by && claimedBy && session.metadata.claimed_by !== claimedBy) {
+    if (session.metadata.claimed_by && session.metadata.claimed_by !== claimedBy) {
       throw new Error(
         `Session ${session.metadata.id} is claimed by "${session.metadata.claimed_by}", ` +
         `not "${claimedBy}". Use force=true to override.`

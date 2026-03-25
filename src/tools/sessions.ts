@@ -277,6 +277,8 @@ Use this to:
         title: z.string().optional().describe('New session title'),
         claimed_by: z.string().optional().describe('Transfer ownership to this agent_id'),
         notes: z.string().optional().describe('Operational notes'),
+        agent_id: z.string().optional().describe('Agent performing the update (checked against claimed_by)'),
+        force: z.boolean().default(false).describe('Override ownership check'),
       },
       annotations: {
         readOnlyHint: false,
@@ -285,7 +287,7 @@ Use this to:
         openWorldHint: false,
       },
     },
-    withErrorBoundary('update_session', async ({ session_id, tty_quality, supports_resize, supports_signals, title, claimed_by, notes }) => {
+    withErrorBoundary('update_session', async ({ session_id, tty_quality, supports_resize, supports_signals, title, claimed_by, notes, agent_id, force }) => {
       const capabilities: Record<string, unknown> = {};
       if (tty_quality !== undefined) capabilities.tty_quality = tty_quality;
       if (supports_resize !== undefined) capabilities.supports_resize = supports_resize;
@@ -296,7 +298,7 @@ Use this to:
         title,
         claimed_by,
         notes,
-      });
+      }, agent_id, force);
 
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
@@ -316,6 +318,8 @@ Use this to:
         session_id: z.string().describe('Session ID'),
         cols: z.number().int().describe('New column count'),
         rows: z.number().int().describe('New row count'),
+        agent_id: z.string().optional().describe('Agent performing the resize (checked against claimed_by)'),
+        force: z.boolean().default(false).describe('Override ownership check'),
       },
       annotations: {
         readOnlyHint: false,
@@ -324,8 +328,8 @@ Use this to:
         openWorldHint: false,
       },
     },
-    withErrorBoundary('resize_session', async ({ session_id, cols, rows }) => {
-      sessionManager.resize(session_id, cols, rows);
+    withErrorBoundary('resize_session', async ({ session_id, cols, rows, agent_id, force }) => {
+      sessionManager.resize(session_id, cols, rows, agent_id, force);
       return {
         content: [{ type: 'text', text: JSON.stringify({ session_id, cols, rows, resized: true }, null, 2) }],
       };
@@ -344,6 +348,8 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
       inputSchema: {
         session_id: z.string().describe('Session ID'),
         signal: z.enum(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGTSTP', 'SIGCONT']).describe('Signal to send'),
+        agent_id: z.string().optional().describe('Agent performing the signal (checked against claimed_by)'),
+        force: z.boolean().default(false).describe('Override ownership check'),
       },
       annotations: {
         readOnlyHint: false,
@@ -352,8 +358,8 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('signal_session', async ({ session_id, signal }) => {
-      sessionManager.signal(session_id, signal);
+    withErrorBoundary('signal_session', async ({ session_id, signal, agent_id, force }) => {
+      sessionManager.signal(session_id, signal, agent_id, force);
       return {
         content: [{ type: 'text', text: JSON.stringify({ session_id, signal, sent: true }, null, 2) }],
       };
@@ -370,6 +376,8 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
       description: `Close and destroy a session. Returns final output snapshot and session summary.`,
       inputSchema: {
         session_id: z.string().describe('Session ID to close'),
+        agent_id: z.string().optional().describe('Agent performing the close (checked against claimed_by)'),
+        force: z.boolean().default(false).describe('Override ownership check'),
       },
       annotations: {
         readOnlyHint: false,
@@ -378,8 +386,8 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('close_session', async ({ session_id }) => {
-      const result = sessionManager.close(session_id);
+    withErrorBoundary('close_session', async ({ session_id, agent_id, force }) => {
+      const result = sessionManager.close(session_id, agent_id, force);
       const duration = result.metadata.started_at && result.metadata.closed_at
         ? (new Date(result.metadata.closed_at).getTime() - new Date(result.metadata.started_at).getTime()) / 1000
         : 0;
