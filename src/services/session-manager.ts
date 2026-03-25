@@ -480,7 +480,7 @@ export class SessionManager {
     for (const [id, session] of this.sessions) {
       if (session.metadata.state === 'connected' || session.metadata.state === 'pending') {
         try {
-          this.close(id);
+          this.close(id, undefined, true);
         } catch { /* best effort on shutdown */ }
       }
     }

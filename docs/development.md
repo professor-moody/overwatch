@@ -82,7 +82,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **741 tests across 27 files**, all passing. Run the full suite:
+Tests use [Vitest](https://vitest.dev/). **742 tests across 27 files**, all passing. Run the full suite:
 
 ```bash
 npm test

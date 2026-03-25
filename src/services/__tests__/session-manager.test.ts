@@ -572,6 +572,16 @@ describe('SessionManager — ownership enforcement', () => {
     });
   });
 
+  describe('shutdown — closes claimed sessions via force bypass', () => {
+    it('closes claimed sessions during shutdown', async () => {
+      // sessionId is claimed by 'owner-agent' from beforeEach
+      // shutdown must bypass ownership to close it
+      await manager.shutdown();
+      const meta = manager.getSession(sessionId);
+      expect(meta?.state).toBe('closed');
+    });
+  });
+
   describe('unclaimed sessions remain open to all', () => {
     it('allows write without agent_id on unclaimed session', async () => {
       const r = await manager.create({
