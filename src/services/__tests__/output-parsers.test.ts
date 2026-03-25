@@ -1415,6 +1415,30 @@ describe('Output Parsers', () => {
       expect(domEdges[0].target).toBe('domain-north-sevenkingdoms-local');
     });
 
+    it('enum4linux JSON path resolves domain via domain_aliases (P2 regression)', () => {
+      const jsonData = {
+        target: { host: '10.10.10.1', domain: 'NORTH' },
+        domain_info: { domain: 'NORTH' },
+        users: {
+          '500': { username: 'Administrator' },
+        },
+        groups: {
+          '513': { groupname: 'Domain Users' },
+        },
+      };
+      const aliases = { 'NORTH': 'north.sevenkingdoms.local' };
+      const finding = parseEnum4linux(JSON.stringify(jsonData), 'test-agent', { domain_aliases: aliases });
+
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].id).toBe('user-north-sevenkingdoms-local-administrator');
+      expect(users[0].domain_name).toBe('north.sevenkingdoms.local');
+
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(1);
+      expect(groups[0].domain_name).toBe('north.sevenkingdoms.local');
+    });
+
     it('enum4linux resolves RID-cycled domain via domain_aliases', () => {
       const e4lOutput = [
         '[+] Target: 10.10.10.1',

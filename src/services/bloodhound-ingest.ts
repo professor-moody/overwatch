@@ -292,6 +292,7 @@ export function parseBloodHoundFile(
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const relationWarnings = new Set<string>();
+  const seenDomainStubs = new Set<string>();
 
   // Build SID -> ID lookup for nodes in this file and merge with any external directory-wide map.
   const sidMap = new Map<string, string>(options.sidMap ? Array.from(options.sidMap.entries()) : []);
@@ -515,6 +516,17 @@ export function parseBloodHoundFile(
       const domainName = props.domain as string | undefined;
       if (domainName) {
         const resolvedDomainId = domainId(domainName);
+        // Emit stub domain node so the edge target exists in this finding
+        // (avoids validation rejection on single-file imports)
+        if (!seenDomainStubs.has(resolvedDomainId)) {
+          nodes.push({
+            id: resolvedDomainId,
+            type: 'domain',
+            label: domainName,
+            domain_name: domainName.toLowerCase(),
+          });
+          seenDomainStubs.add(resolvedDomainId);
+        }
         edges.push({
           source: nodeId,
           target: resolvedDomainId,
@@ -743,6 +755,7 @@ function extractNodeProperties(
 
     case 'domain':
       if (props.functionallevel) result.functional_level = props.functionallevel;
+      if (props.netbiosname) result.netbios_name = (props.netbiosname as string).toUpperCase();
       break;
 
     case 'subnet':

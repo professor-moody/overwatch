@@ -32,9 +32,10 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'computers.json');
       expect(result).not.toBeNull();
-      expect(result.finding!.nodes.length).toBe(1);
+      const hostNodes = result.finding!.nodes.filter(n => n.type === 'host');
+      expect(hostNodes.length).toBe(1);
 
-      const node = result.finding!.nodes[0];
+      const node = hostNodes[0];
       expect(node.type).toBe('host');
       expect(node.label).toBe('DC01.ACME.LOCAL');
       expect(node.os).toBe('Windows Server 2019');
@@ -66,9 +67,10 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
       expect(result).not.toBeNull();
-      expect(result.finding!.nodes.length).toBe(1);
+      const userNodes = result.finding!.nodes.filter(n => n.type === 'user');
+      expect(userNodes.length).toBe(1);
 
-      const node = result.finding!.nodes[0];
+      const node = userNodes[0];
       expect(node.type).toBe('user');
       expect(node.label).toBe('ADMINISTRATOR@ACME.LOCAL');
       expect(node.privileged).toBe(true);
@@ -137,8 +139,9 @@ describe('BloodHound Ingestion', () => {
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'groups.json');
       expect(result).not.toBeNull();
-      expect(result.finding!.nodes.length).toBe(1);
-      expect(result.finding!.nodes[0].type).toBe('group');
+      const groupNodes = result.finding!.nodes.filter(n => n.type === 'group');
+      expect(groupNodes.length).toBe(1);
+      expect(groupNodes[0].type).toBe('group');
 
       // Should have a MEMBER_OF edge
       const memberEdges = result.finding!.edges.filter(e => e.properties.type === 'MEMBER_OF');
@@ -539,7 +542,10 @@ describe('BloodHound Ingestion', () => {
         meta: { type: 'users', count: 2, version: 5 },
       };
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
-      for (const node of result.finding!.nodes) {
+      // Stub domain nodes don't carry bh_sid; filter to BH-sourced nodes only
+      const bhNodes = result.finding!.nodes.filter(n => n.type !== 'domain' || n.bh_sid);
+      expect(bhNodes.length).toBeGreaterThan(0);
+      for (const node of bhNodes) {
         expect(node.bh_sid).toBeDefined();
         expect(typeof node.bh_sid).toBe('string');
       }
@@ -903,6 +909,78 @@ describe('BloodHound Ingestion', () => {
       expect(finding).not.toBeNull();
       const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
       expect(domEdges.length).toBe(0);
+    });
+
+    it('emits stub domain node alongside MEMBER_OF_DOMAIN edge (P1 regression)', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1103',
+          Properties: {
+            samaccountname: 'jdoe',
+            domain: 'acme.local',
+            enabled: true,
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(finding).not.toBeNull();
+      // Stub domain node must exist so single-file imports pass validation
+      const domainNodes = finding!.nodes.filter(n => n.type === 'domain');
+      expect(domainNodes.length).toBe(1);
+      expect(domainNodes[0].id).toBe('domain-acme-local');
+      expect(domainNodes[0].domain_name).toBe('acme.local');
+    });
+
+    it('deduplicates stub domain nodes across multiple objects in same file', () => {
+      const bhData = {
+        data: [
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1103',
+            Properties: { samaccountname: 'jdoe', domain: 'acme.local', enabled: true },
+            Aces: [],
+          },
+          {
+            ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1104',
+            Properties: { samaccountname: 'jsmith', domain: 'acme.local', enabled: true },
+            Aces: [],
+          },
+        ],
+        meta: { type: 'users', count: 2, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'users.json');
+      expect(finding).not.toBeNull();
+      const domainNodes = finding!.nodes.filter(n => n.type === 'domain');
+      // Only one stub domain node despite two users in the same domain
+      expect(domainNodes.length).toBe(1);
+      // But two MEMBER_OF_DOMAIN edges
+      const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(domEdges.length).toBe(2);
+    });
+
+    it('extracts netbios_name from BH domain objects (OQ regression)', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012',
+          Properties: {
+            name: 'CORP.CONTOSO.COM',
+            domain: 'corp.contoso.com',
+            functionallevel: '2016',
+            netbiosname: 'OLDNAME',
+          },
+          Aces: [],
+          Links: [],
+          ChildObjects: [],
+          Trusts: [],
+        }],
+        meta: { type: 'domains', count: 1, version: 4 },
+      };
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+      const domNode = finding!.nodes.find(n => n.type === 'domain');
+      expect(domNode).toBeDefined();
+      expect(domNode!.netbios_name).toBe('OLDNAME');
     });
 
     it('does NOT create MEMBER_OF_DOMAIN edge for domain-type nodes', () => {

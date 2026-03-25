@@ -1362,7 +1362,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   // Try JSON first (enum4linux-ng -oJ)
   try {
     const data = JSON.parse(output);
-    return parseEnum4linuxJson(data, agentId);
+    return parseEnum4linuxJson(data, agentId, context);
   } catch {
     // Fall back to text parsing
   }
@@ -1496,7 +1496,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 
-function parseEnum4linuxJson(data: any, agentId: string): Finding {
+function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
@@ -1510,7 +1510,8 @@ function parseEnum4linuxJson(data: any, agentId: string): Finding {
   }
 
   const targetIp = data.target?.host || data.target?.ip || data.os_info?.target;
-  const domain = data.domain_info?.domain || data.target?.domain;
+  const rawDomain = data.domain_info?.domain || data.target?.domain;
+  const domain = rawDomain ? resolveDomainName(rawDomain, context?.domain_aliases) : undefined;
   const osInfo = data.os_info;
   const nullSession = data.session_check?.null_session_allowed === true ||
                        data.session_check?.null_session === true;
