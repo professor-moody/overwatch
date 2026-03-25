@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { expandCidr, isIpInScope, isHostnameInScope } from './cidr.js';
+import { isIpInScope, isHostnameInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -299,22 +299,7 @@ export class GraphEngine {
   private seedFromConfig(): void {
     const now = new Date().toISOString();
 
-    // Create host nodes from CIDRs
-    for (const cidr of this.ctx.config.scope.cidrs) {
-      const ips = expandCidr(cidr);
-      for (const ip of ips) {
-        this.addNode({
-          id: `host-${ip.replace(/\./g, '-')}`,
-          type: 'host',
-          label: ip,
-          ip,
-          discovered_at: now,
-          first_seen_at: now,
-          last_seen_at: now,
-          confidence: 1.0
-        });
-      }
-    }
+    // CIDRs are used for scope validation only — hosts are created when tools discover them
 
     // Create host nodes from explicit hosts
     if (this.ctx.config.scope.hosts) {

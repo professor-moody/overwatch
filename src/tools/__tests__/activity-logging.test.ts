@@ -115,6 +115,7 @@ describe('structured activity logging tools', () => {
       tool_name: 'nxc',
       target_node_ids: ['host-10-10-10-1'],
       nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', properties: { ip: '10.10.10.1' } },
         { id: 'svc-log-test', type: 'service', label: 'SMB test', properties: { port: 445, service_name: 'smb' } },
       ],
       edges: [
@@ -147,6 +148,8 @@ describe('structured activity logging tools', () => {
   });
 
   it('report_finding rejects invalid RUNS edges to shares with structured validation errors', async () => {
+    // Pre-create host node so the edge validation focuses on type constraint
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     const result = await handlers.report_finding({
       agent_id: 'agent-invalid-edge',
       tool_name: 'manual',
@@ -274,6 +277,34 @@ describe('structured activity logging tools', () => {
     expect(payload.error).toContain('exactly one');
   });
 
+  it('parse_output auto-builds both first-label and netbios_name domain aliases', async () => {
+    engine.addNode({
+      id: 'domain-corp-contoso-com',
+      type: 'domain',
+      label: 'corp.contoso.com',
+      domain_name: 'corp.contoso.com',
+      netbios_name: 'OLDNAME',
+      discovered_at: new Date().toISOString(),
+      discovered_by: 'test',
+      confidence: 1.0,
+    });
+
+    await handlers.parse_output({
+      tool_name: 'secretsdump',
+      output: [
+        'OLDNAME\\legacy.user:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+        'CORP\\modern.user:1104:aad3b435b51404eeaad3b435b51404ee:0123456789abcdef0123456789abcdef:::',
+      ].join('\n'),
+      ingest: true,
+    });
+
+    expect(engine.getNode('user-corp-contoso-com-legacy-user')?.domain_name).toBe('corp.contoso.com');
+    expect(engine.getNode('user-corp-contoso-com-modern-user')?.domain_name).toBe('corp.contoso.com');
+    expect(engine.getNode('domain-corp-contoso-com')).toBeTruthy();
+    expect(engine.getNode('user-oldname-legacy-user')).toBeNull();
+    expect(engine.getNode('user-corp-modern-user')).toBeNull();
+  });
+
   it('register_agent and update_agent create structured agent lifecycle events', async () => {
     const registration = await handlers.register_agent({
       agent_id: 'agent-ops',
@@ -299,6 +330,8 @@ describe('structured activity logging tools', () => {
   });
 
   it('register_agent can omit subgraph_node_ids and get_agent_context auto-computes scope', async () => {
+    // Pre-create host node so frontier resolution can find it
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     const registration = await handlers.register_agent({
       agent_id: 'agent-auto-scope',
       frontier_item_id: 'frontier-node-host-10-10-10-1',
@@ -335,6 +368,9 @@ describe('structured activity logging tools', () => {
   });
 
   it('dispatch_agents batch-registers frontier tasks and skips existing assignments', async () => {
+    // Pre-create hosts so frontier generates incomplete_node items
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
+    engine.addNode({ id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     const first = await handlers.dispatch_agents({
       count: 2,
       strategy: 'top_priority',
@@ -364,6 +400,8 @@ describe('structured activity logging tools', () => {
   });
 
   it('dispatch_agents interleaves types in round-robin order for by_type strategy', async () => {
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
+    engine.addNode({ id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     engine.addNode({
       id: 'svc-10-10-10-1-ldap',
       type: 'service',

@@ -115,7 +115,10 @@ describe('graph health', () => {
       id: 'bad-share-edge',
       agent_id: 'test-agent',
       timestamp: '2026-03-21T10:00:00Z',
-      nodes: [{ id: 'share-public', type: 'share', label: 'public' }],
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        { id: 'share-public', type: 'share', label: 'public' },
+      ],
       edges: [
         { source: 'host-10-10-10-1', target: 'share-public', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-03-21T10:00:00Z' } },
       ],
@@ -132,6 +135,8 @@ describe('graph health', () => {
       agent_id: 'test-agent',
       timestamp: '2026-03-21T10:00:00Z',
       nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
         { id: 'user-attacker', type: 'user', label: 'attacker' },
         { id: 'svc-smb', type: 'service', label: 'SMB', port: 445, service_name: 'smb', smb_signing: false },
       ],

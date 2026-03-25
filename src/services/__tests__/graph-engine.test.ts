@@ -45,11 +45,11 @@ describe('GraphEngine', () => {
   // Seeding
   // =============================================
   describe('seeding from config', () => {
-    it('creates host nodes from CIDR', () => {
+    it('does NOT auto-expand CIDRs into host nodes', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
-      // /28 = 14 usable hosts
-      expect(state.graph_summary.nodes_by_type['host']).toBe(14);
+      // CIDRs define scope boundaries only — hosts are created by tool output
+      expect(state.graph_summary.nodes_by_type['host'] || 0).toBe(0);
     });
 
     it('creates domain nodes', () => {
@@ -87,6 +87,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB on .1', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -100,10 +101,11 @@ describe('GraphEngine', () => {
 
     it('merges properties on existing nodes', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // First: host exists from seeding with no OS
-      const before = engine.getState();
-      const hostNode = before.frontier.find(f => f.node_id === 'host-10-10-10-1');
-      expect(hostNode).toBeDefined();
+      // Create host first
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      expect(engine.getNode('host-10-10-10-1')).toBeDefined();
 
       // Update with OS info
       engine.ingestFinding(makeFinding({
@@ -114,7 +116,7 @@ describe('GraphEngine', () => {
 
       const state = engine.getState();
       // Node count should not increase for the host type
-      expect(state.graph_summary.nodes_by_type['host']).toBe(14);
+      expect(state.graph_summary.nodes_by_type['host']).toBe(1);
     });
 
     it('skips edges with missing source/target nodes', () => {
@@ -129,9 +131,12 @@ describe('GraphEngine', () => {
 
     it('deduplicates edges of the same type', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a service first
+      // Add a host and service first
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-test', type: 'service', label: 'test svc' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-test', type: 'service', label: 'test svc' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
       }));
 
@@ -260,6 +265,7 @@ describe('GraphEngine', () => {
       // Host has no hostname — matching_domain should produce nothing
       const result = engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
         ],
         edges: [
@@ -332,6 +338,7 @@ describe('GraphEngine', () => {
       // Add SMB service without signing info — no relay inference
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-3', type: 'host', label: '10.10.10.3', ip: '10.10.10.3' },
           { id: 'svc-10-10-10-3-445', type: 'service', label: 'SMB .3', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -342,6 +349,7 @@ describe('GraphEngine', () => {
       // Need a compromised host for relay source
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
         ],
         edges: [
@@ -364,6 +372,7 @@ describe('GraphEngine', () => {
       // Add a service that accepts domain auth (host must be in same domain)
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -386,6 +395,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -429,6 +439,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB .1', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -627,12 +638,14 @@ describe('GraphEngine', () => {
   describe('frontier', () => {
     it('generates incomplete_node items for hosts missing alive status', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Create a host without alive status
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
       const state = engine.getState();
       const aliveItems = state.frontier.filter(
         f => f.type === 'incomplete_node' && f.missing_properties?.includes('alive')
       );
-      // All 14 hosts should be missing alive status initially
-      // (minus excluded IP which is filtered out by the deterministic layer)
       expect(aliveItems.length).toBeGreaterThan(0);
     });
 
@@ -693,6 +706,9 @@ describe('GraphEngine', () => {
   describe('validation', () => {
     it('validates existing nodes', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
       const result = engine.validateAction({ target_node: 'host-10-10-10-1' });
       expect(result.valid).toBe(true);
     });
@@ -706,6 +722,9 @@ describe('GraphEngine', () => {
 
     it('rejects excluded IPs', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' }],
+      }));
       const result = engine.validateAction({ target_node: 'host-10-10-10-14' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
@@ -720,12 +739,21 @@ describe('GraphEngine', () => {
 
     it('allows non-blacklisted techniques', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
       const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'portscan' });
       expect(result.valid).toBe(true);
     });
 
     it('rejects excluded edge_target in validateAction', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
+        ],
+      }));
       const result = engine.validateAction({ edge_source: 'host-10-10-10-1', edge_target: 'host-10-10-10-14' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
@@ -760,6 +788,12 @@ describe('GraphEngine', () => {
 
     it('rejects excluded edge_source in validateAction', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        ],
+      }));
       const result = engine.validateAction({ edge_source: 'host-10-10-10-14', edge_target: 'host-10-10-10-1' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
@@ -767,6 +801,12 @@ describe('GraphEngine', () => {
 
     it('filterFrontier excludes items with out-of-scope edge_target', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
+        ],
+      }));
       const frontier = [{
         id: 'frontier-edge-1',
         type: 'inferred_edge' as const,
@@ -789,6 +829,7 @@ describe('GraphEngine', () => {
       // Add a service on the excluded host (10.10.10.14)
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
           { id: 'svc-10-10-10-14-445', type: 'service', label: 'SMB on excluded', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -847,6 +888,7 @@ describe('GraphEngine', () => {
       // Add a service on the excluded host (10.10.10.14)
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
           { id: 'svc-10-10-10-14-445', type: 'service', label: 'SMB on excluded', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -943,6 +985,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB', port: 445, service_name: 'smb' },
         ],
         edges: [
@@ -1030,9 +1073,12 @@ describe('GraphEngine', () => {
 
     it('returns scoped subgraph for agent', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a service connected to host-10-10-10-1
+      // Add a host and service connected to it
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-test', type: 'service', label: 'test' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-test', type: 'service', label: 'test' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
       }));
 
@@ -1182,6 +1228,7 @@ describe('GraphEngine', () => {
 
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'share-public', type: 'share', label: 'public' },
           { id: 'user-operator', type: 'user', label: 'operator' },
           { id: 'cred-da', type: 'credential', label: 'DA hash', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_hash: '11223344556677889900aabbccddeeff', cred_value: '11223344556677889900aabbccddeeff', cred_user: 'administrator', cred_domain: 'test.local', privileged: true, obtained: true },
@@ -1221,7 +1268,10 @@ describe('GraphEngine', () => {
     it('rolls back the whole correction batch when one operation is invalid', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'share-all', type: 'share', label: 'all' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'share-all', type: 'share', label: 'all' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'share-all', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
       }));
 
@@ -1508,9 +1558,12 @@ describe('GraphEngine', () => {
   describe('edge overcounting fix', () => {
     it('ingestFinding returns empty new_edges when re-ingesting the same edge', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a service and edge
+      // Add a host, service and edge
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-overcount', type: 'service', label: 'overcount test' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-overcount', type: 'service', label: 'overcount test' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-overcount', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
       }));
       // Re-ingest same edge
@@ -1531,7 +1584,10 @@ describe('GraphEngine', () => {
       engine.onUpdate((detail) => { receivedDetail = detail; });
 
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-delta-test', type: 'service', label: 'delta test' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-delta-test', type: 'service', label: 'delta test' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-delta-test', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
       }));
 
@@ -1542,7 +1598,11 @@ describe('GraphEngine', () => {
 
     it('ingestFinding result includes updated_nodes when merging properties', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // host-10-10-10-1 already exists from seeding
+      // Create host first
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      // Now merge with new properties
       const result = engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true, os: 'Windows Server 2022' }],
       }));
@@ -1552,9 +1612,12 @@ describe('GraphEngine', () => {
 
     it('ingestFinding result includes updated_edges when re-ingesting edge', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Add a service and edge
+      // Add a host, service and edge
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-edge-upd', type: 'service', label: 'edge update test' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-edge-upd', type: 'service', label: 'edge update test' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-edge-upd', properties: { type: 'RUNS', confidence: 0.5, discovered_at: new Date().toISOString() } }],
       }));
       // Re-ingest same edge with updated confidence
@@ -1567,9 +1630,12 @@ describe('GraphEngine', () => {
 
     it('delta callback includes updated_nodes and updated_edges', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // First: create the service and edge
+      // First: create the host, service and edge
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'svc-cb-upd', type: 'service', label: 'callback update test' }],
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-cb-upd', type: 'service', label: 'callback update test' },
+        ],
         edges: [{ source: 'host-10-10-10-1', target: 'svc-cb-upd', properties: { type: 'RUNS', confidence: 0.5, discovered_at: new Date().toISOString() } }],
       }));
 
@@ -1738,8 +1804,9 @@ describe('GraphEngine', () => {
       // Should not throw — falls back to seedFromConfig
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
-      // Should have re-seeded hosts from CIDR
-      expect(state.graph_summary.nodes_by_type['host']).toBe(14);
+      // Should have re-seeded domain and objective nodes (no CIDR host expansion)
+      expect(state.graph_summary.nodes_by_type['domain']).toBe(1);
+      expect(state.graph_summary.nodes_by_type['objective']).toBe(1);
     });
 
     it('recovers tracked processes from snapshot after state corruption', () => {
@@ -1795,6 +1862,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
           { id: 'host-dc01', type: 'host', label: 'dc01.test.local', hostname: 'dc01.test.local', ip: '10.10.10.5', alive: true },
         ],
@@ -1817,6 +1885,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
           { id: 'cred-da', type: 'credential', label: 'DA cred', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
         ],
@@ -1835,6 +1904,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
         ],
         edges: [
@@ -1854,6 +1924,7 @@ describe('GraphEngine', () => {
       // Ingest a credential to trigger the cred-fanout inference rule
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-smb-test', type: 'service', label: 'SMB on 10.10.10.1', port: 445, service_name: 'smb' },
           { id: 'cred-test', type: 'credential', label: 'test cred', cred_type: 'ntlm', cred_user: 'testuser', cred_domain: 'test.local' },
         ],
@@ -1879,6 +1950,7 @@ describe('GraphEngine', () => {
       // First: create an inferred edge via cred-fanout
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-smb-test', type: 'service', label: 'SMB on 10.10.10.1', port: 445, service_name: 'smb' },
           { id: 'cred-test', type: 'credential', label: 'test cred', cred_type: 'ntlm', cred_user: 'testuser', cred_domain: 'test.local' },
         ],
@@ -1920,6 +1992,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-isolated', type: 'service', label: 'isolated svc', port: 9999, service_name: 'unknown' },
         ],
         edges: [
@@ -1938,6 +2011,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-http-test', type: 'service', label: 'HTTP', port: 80, service_name: 'http' },
         ],
         edges: [
@@ -1958,6 +2032,7 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-http-test', type: 'service', label: 'HTTP', port: 80, service_name: 'http' },
         ],
         edges: [

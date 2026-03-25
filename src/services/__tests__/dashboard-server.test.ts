@@ -81,6 +81,7 @@ describe('DashboardServer', () => {
       agent_id: 'test-agent',
       timestamp: '2026-03-21T10:00:00Z',
       nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
         { id: 'svc-10-10-10-1-445', type: 'service', label: 'SMB', port: 445, service_name: 'smb' },
       ],
       edges: [

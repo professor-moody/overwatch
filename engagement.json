@@ -1,37 +1,29 @@
 {
-  "id": "eng-001",
-  "name": "Internal Pentest - ACME Corp Lab",
-  "created_at": "2026-03-20T00:00:00Z",
+  "id": "dante-1",
+  "name": "Dante Run",
+  "created_at": "2026-03-22T18:00:00Z",
   "scope": {
-    "cidrs": ["10.10.10.0/24"],
-    "domains": ["acme.local"],
-    "exclusions": ["10.10.10.254"],
-    "hosts": []
+    "cidrs": [
+      "10.10.110.0/24"
+    ],
+    "domains": [],
+    "exclusions": [
+      "10.10.110.2"
+    ]
   },
   "objectives": [
     {
-      "id": "obj-da",
-      "description": "Achieve Domain Admin on acme.local",
+      "id": "compromise",
+      "description": "Compromise the Dante infrastructure",
       "target_node_type": "credential",
-      "target_criteria": { "privileged": true, "cred_domain": "acme.local" },
-      "achieved": false
-    },
-    {
-      "id": "obj-finance",
-      "description": "Access finance share and exfiltrate sensitive data",
-      "target_node_type": "share",
-      "target_criteria": { "share_name": "finance$", "readable": true },
+      "target_criteria": {
+        "privileged": true
+      },
       "achieved": false
     }
   ],
   "opsec": {
     "name": "pentest",
-    "max_noise": 0.7,
-    "time_window": {
-      "start_hour": 8,
-      "end_hour": 22
-    },
-    "blacklisted_techniques": ["zerologon"],
-    "notes": "Standard internal pentest rules. Avoid production-impacting techniques."
+    "max_noise": 0.7
   }
 }
