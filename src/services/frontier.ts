@@ -8,6 +8,7 @@ import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, EdgeProperties, FrontierItem } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
 import { isCredentialStaleOrExpired } from './credential-utils.js';
+import { isIpInCidr } from './cidr.js';
 
 // --- Fan-out estimates by service type ---
 const FAN_OUT_ESTIMATES: Record<string, number> = {
@@ -89,8 +90,12 @@ export class FrontierComputer {
       });
     });
 
-    // 3. Network discovery items from scope CIDRs
+    // 3. Network discovery items from scope CIDRs (only if no hosts discovered yet)
+    const discoveredIps = this.collectDiscoveredIps();
     for (const cidr of this.ctx.config.scope.cidrs) {
+      // Skip CIDRs that already have at least one discovered host
+      if (discoveredIps.some(ip => isIpInCidr(ip, cidr))) continue;
+
       const slug = cidr.replace(/[./]/g, '-');
       const maskStr = cidr.split('/')[1];
       const mask = maskStr ? parseInt(maskStr) : 32;
@@ -156,6 +161,14 @@ export class FrontierComputer {
     }
     if (node.type === 'credential') return 15;
     return FAN_OUT_ESTIMATES['default'];
+  }
+
+  private collectDiscoveredIps(): string[] {
+    const ips: string[] = [];
+    this.ctx.graph.forEachNode((_id: string, attrs) => {
+      if (attrs.type === 'host' && attrs.ip) ips.push(attrs.ip);
+    });
+    return ips;
   }
 
   private estimateNoiseForNode(node: NodeProperties, missing: string[]): number {

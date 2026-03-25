@@ -294,6 +294,7 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     incomplete_node: { total: 0, successful: 0 },
     untested_edge: { total: 0, successful: 0 },
     inferred_edge: { total: 0, successful: 0 },
+    network_discovery: { total: 0, successful: 0 },
   };
 
   const groupedActions = groupHistoryByActionId(input.history);
@@ -332,7 +333,9 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     // Fallback: text-based detection for legacy entries
     if (!frontierType) {
       const desc = entry.description.toLowerCase();
-      if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
+      if (desc.includes('discover') || desc.includes('host discovery') || desc.includes('network scan')) {
+        frontierType = 'network_discovery';
+      } else if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
         frontierType = 'incomplete_node';
       } else if (desc.includes('untested') || desc.includes('test')) {
         frontierType = 'untested_edge';

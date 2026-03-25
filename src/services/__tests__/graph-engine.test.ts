@@ -736,6 +736,39 @@ describe('GraphEngine', () => {
       expect(discovery.length).toBe(1);
       expect(discovery[0].target_cidr).toBe('10.10.10.0/28');
     });
+
+    it('network_discovery item is suppressed once a host in that CIDR is discovered', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Before: discovery item exists
+      let frontier = engine.computeFrontier();
+      expect(frontier.some(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28')).toBe(true);
+
+      // Discover a host in the CIDR
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+
+      // After: discovery item should be gone
+      frontier = engine.computeFrontier();
+      expect(frontier.some(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28')).toBe(false);
+    });
+
+    it('only the satisfied CIDR is suppressed in multi-CIDR engagements', () => {
+      const config = makeConfig({
+        scope: { cidrs: ['10.10.10.0/24', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+      // Discover a host only in the first CIDR
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-5', type: 'host', label: '10.10.10.5', ip: '10.10.10.5' }],
+      }));
+
+      const frontier = engine.computeFrontier();
+      const discovery = frontier.filter(f => f.type === 'network_discovery');
+      expect(discovery.length).toBe(1);
+      expect(discovery[0].target_cidr).toBe('192.168.1.0/24');
+    });
   });
 
   // =============================================

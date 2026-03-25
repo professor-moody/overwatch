@@ -380,6 +380,21 @@ describe('Retrospective', () => {
       expect(improvements.success_by_frontier_type).toHaveProperty('incomplete_node');
       expect(improvements.success_by_frontier_type).toHaveProperty('untested_edge');
       expect(improvements.success_by_frontier_type).toHaveProperty('inferred_edge');
+      expect(improvements.success_by_frontier_type).toHaveProperty('network_discovery');
+    });
+
+    it('tracks network_discovery actions in success_by_frontier_type', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T00:30:00Z', description: 'Discover hosts in 10.10.10.0/28', frontier_type: 'network_discovery', outcome: 'success', category: 'frontier' },
+          { timestamp: '2026-01-01T00:35:00Z', description: 'Discover hosts in 192.168.1.0/24', frontier_type: 'network_discovery', outcome: 'failure', category: 'frontier' },
+        ],
+      });
+      const improvements = analyzeContextImprovements(input);
+      const stats = improvements.success_by_frontier_type['network_discovery'];
+      expect(stats).toBeDefined();
+      expect(stats.total).toBe(2);
+      expect(stats.successful).toBe(1);
     });
 
     it('turns low-yield inferred edges into a context observation, not a weight change', () => {
