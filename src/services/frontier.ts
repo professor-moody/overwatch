@@ -90,26 +90,33 @@ export class FrontierComputer {
       });
     });
 
-    // 3. Network discovery items from scope CIDRs (only if no hosts discovered yet)
+    // 3. Network discovery items from scope CIDRs
+    //    Suppress fully-explored CIDRs; reduce fan_out for partially-explored ones.
     const discoveredIps = this.collectDiscoveredIps();
     for (const cidr of this.ctx.config.scope.cidrs) {
-      // Skip CIDRs that already have at least one discovered host
-      if (discoveredIps.some(ip => isIpInCidr(ip, cidr))) continue;
-
       const slug = cidr.replace(/[./]/g, '-');
       const maskStr = cidr.split('/')[1];
       const mask = maskStr ? parseInt(maskStr) : 32;
       const hostBits = 32 - mask;
-      const estimatedHosts = mask >= 31 ? 1 : (1 << hostBits) - 2;
+      const totalEstimate = mask >= 31 ? 1 : (1 << hostBits) - 2;
+      const cappedEstimate = Math.min(totalEstimate, 254);
+
+      const discoveredInCidr = discoveredIps.filter(ip => isIpInCidr(ip, cidr)).length;
+      const remaining = cappedEstimate - discoveredInCidr;
+
+      // Suppress when all estimated hosts have been discovered
+      if (remaining <= 0) continue;
 
       frontier.push({
         id: `frontier-discovery-${slug}`,
         type: 'network_discovery',
         target_cidr: cidr,
-        description: `Discover hosts in ${cidr}`,
+        description: discoveredInCidr === 0
+          ? `Discover hosts in ${cidr}`
+          : `Continue discovery in ${cidr} (${discoveredInCidr} found, ~${remaining} remaining)`,
         graph_metrics: {
           hops_to_objective: null,
-          fan_out_estimate: Math.min(estimatedHosts, 254),
+          fan_out_estimate: remaining,
           node_degree: 0,
           confidence: 1.0,
         },

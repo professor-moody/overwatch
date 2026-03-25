@@ -737,23 +737,50 @@ describe('GraphEngine', () => {
       expect(discovery[0].target_cidr).toBe('10.10.10.0/28');
     });
 
-    it('network_discovery item is suppressed once a host in that CIDR is discovered', () => {
+    it('network_discovery item persists with reduced fan_out after partial exploration', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-      // Before: discovery item exists
+      // /28 = 14 usable hosts
       let frontier = engine.computeFrontier();
-      expect(frontier.some(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28')).toBe(true);
+      let discovery = frontier.find(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28');
+      expect(discovery).toBeDefined();
+      expect(discovery!.graph_metrics.fan_out_estimate).toBe(14);
 
-      // Discover a host in the CIDR
+      // Discover one host
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
       }));
 
-      // After: discovery item should be gone
       frontier = engine.computeFrontier();
-      expect(frontier.some(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28')).toBe(false);
+      discovery = frontier.find(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28');
+      expect(discovery).toBeDefined();
+      expect(discovery!.graph_metrics.fan_out_estimate).toBe(13);
+      expect(discovery!.description).toContain('Continue discovery');
+      expect(discovery!.description).toContain('1 found');
     });
 
-    it('only the satisfied CIDR is suppressed in multi-CIDR engagements', () => {
+    it('network_discovery item is suppressed once all estimated hosts are discovered', () => {
+      // /30 = 2 usable hosts
+      const config = makeConfig({
+        scope: { cidrs: ['10.10.10.0/30'], domains: ['test.local'], exclusions: [] },
+      });
+      const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+      let frontier = engine.computeFrontier();
+      expect(frontier.some(f => f.type === 'network_discovery')).toBe(true);
+
+      // Discover both hosts in the /30
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+        ],
+      }));
+
+      frontier = engine.computeFrontier();
+      expect(frontier.some(f => f.type === 'network_discovery')).toBe(false);
+    });
+
+    it('partial exploration reduces only the affected CIDR in multi-CIDR engagements', () => {
       const config = makeConfig({
         scope: { cidrs: ['10.10.10.0/24', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
       });
@@ -766,8 +793,12 @@ describe('GraphEngine', () => {
 
       const frontier = engine.computeFrontier();
       const discovery = frontier.filter(f => f.type === 'network_discovery');
-      expect(discovery.length).toBe(1);
-      expect(discovery[0].target_cidr).toBe('192.168.1.0/24');
+      expect(discovery.length).toBe(2);
+
+      const first = discovery.find(d => d.target_cidr === '10.10.10.0/24')!;
+      const second = discovery.find(d => d.target_cidr === '192.168.1.0/24')!;
+      expect(first.graph_metrics.fan_out_estimate).toBe(253);
+      expect(second.graph_metrics.fan_out_estimate).toBe(254);
     });
   });
 

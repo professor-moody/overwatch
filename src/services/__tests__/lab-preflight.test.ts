@@ -187,6 +187,71 @@ describe('lab preflight', () => {
     expect(report.checks.find(check => check.name === 'graph_health')?.status).not.toBe('fail');
   });
 
+  it('network profile passes with CIDR scope and nmap only', () => {
+    const config = makeConfig({
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: ['10.10.110.2'] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const nmapFinding = parseNmapXml(`<?xml version="1.0"?>
+      <nmaprun>
+        <host>
+          <status state="up"/>
+          <address addr="10.10.110.5" addrtype="ipv4"/>
+          <ports>
+            <port protocol="tcp" portid="445">
+              <state state="open"/>
+              <service name="microsoft-ds"/>
+            </port>
+          </ports>
+        </host>
+      </nmaprun>`);
+    engine.ingestFinding(nmapFinding);
+
+    const report = runLabPreflight(engine, {
+      profile: 'network',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.status).toBe('warning'); // warning from dashboard/cred tools, not blocked
+    expect(report.profile).toBe('network');
+    expect(report.missing_required_tools).toEqual([]);
+    expect(report.graph_stage).toBe('mid_run');
+    expect(report.checks.find(c => c.name === 'scope_shape')?.status).toBe('pass');
+  });
+
+  it('infers network profile when no profile set and no domains', () => {
+    const config = makeConfig({
+      scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const report = runLabPreflight(engine, {
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.profile).toBe('network');
+  });
+
+  it('network profile recommends Nmap sweep for empty graph', () => {
+    const config = makeConfig({
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const report = runLabPreflight(engine, {
+      profile: 'network',
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.recommended_next_steps.some(s => s.includes('Nmap sweep'))).toBe(true);
+  });
+
   it('allows single-host profile without BloodHound tooling', () => {
     const config = makeConfig({
       scope: {
@@ -232,6 +297,29 @@ describe('lab preflight', () => {
     const summary = summarizeInlineLabReadiness(engine);
 
     expect(summary.status).toBe('warning');
+    expect(summary.top_issues.some(issue => issue.includes('Graph is empty'))).toBe(true);
+  });
+
+  it('inline readiness warns about missing domains only for goad_ad profile', () => {
+    const engine = new GraphEngine(makeConfig({
+      profile: 'goad_ad' as const,
+      scope: { cidrs: ['10.10.10.0/24'], domains: [], exclusions: [] },
+    }), TEST_STATE_FILE);
+
+    const summary = summarizeInlineLabReadiness(engine);
+
+    expect(summary.status).toBe('warning');
     expect(summary.top_issues.some(issue => issue.includes('No scoped domains'))).toBe(true);
+  });
+
+  it('inline readiness does not warn about missing domains for network profile', () => {
+    const engine = new GraphEngine(makeConfig({
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.10.0/24'], domains: [], exclusions: [] },
+    }), TEST_STATE_FILE);
+
+    const summary = summarizeInlineLabReadiness(engine);
+
+    expect(summary.top_issues.some(issue => issue.includes('No scoped domains'))).toBe(false);
   });
 });

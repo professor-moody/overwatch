@@ -1,5 +1,5 @@
 import type { OverwatchGraph } from './engine-context.js';
-import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary, NodeProperties } from '../types.js';
+import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary, LabProfile, NodeProperties } from '../types.js';
 import { normalizeKeyPart } from './parser-utils.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { getIdentityMarkers, isCanonicalIdentityNode, isIdentityType, isUnresolvedIdentityNode } from './identity-resolution.js';
@@ -55,6 +55,63 @@ export function summarizeHealthReport(report: HealthReport, maxIssues: number = 
     counts_by_severity: report.counts_by_severity,
     top_issues: report.issues.slice(0, maxIssues),
   };
+}
+
+// Domain-dependent health check names that are expected noise in non-AD engagements
+const AD_DEPENDENT_CHECKS = new Set([
+  'credential_identity_ambiguity',
+  'unresolved_identity',
+]);
+
+/**
+ * Detect whether the graph contains any AD context — domain nodes,
+ * domain-qualified users/groups, or kerberos/ldap services tied to domains.
+ */
+export function hasADContext(graph: OverwatchGraph): boolean {
+  let found = false;
+  graph.forEachNode((_id, attrs) => {
+    if (found) return;
+    if (attrs.type === 'domain') { found = true; return; }
+    if ((attrs.type === 'user' || attrs.type === 'group') &&
+        typeof attrs.domain_name === 'string' && attrs.domain_name.length > 0) {
+      found = true; return;
+    }
+    if (attrs.type === 'service' &&
+        (attrs.service_name === 'kerberos' || attrs.service_name === 'ldap')) {
+      found = true; return;
+    }
+  });
+  return found;
+}
+
+/**
+ * Suppress domain-dependent credential/identity warnings from the health report
+ * for non-goad_ad profiles when no AD context has been discovered yet.
+ * Returns a new report; the original is not mutated.
+ */
+export function contextualFilterHealthReport(
+  report: HealthReport,
+  profile: LabProfile,
+  adContextPresent: boolean,
+): HealthReport {
+  // No filtering needed for goad_ad or when AD context is present
+  if (profile === 'goad_ad' || adContextPresent) return report;
+
+  const filtered = report.issues.filter(issue => !AD_DEPENDENT_CHECKS.has(issue.check));
+  if (filtered.length === report.issues.length) return report;
+
+  const counts_by_severity = {
+    warning: filtered.filter(issue => issue.severity === 'warning').length,
+    critical: filtered.filter(issue => issue.severity === 'critical').length,
+  } satisfies Record<HealthSeverity, number>;
+
+  const status = counts_by_severity.critical > 0
+    ? 'critical' as const
+    : counts_by_severity.warning > 0
+      ? 'warning' as const
+      : 'healthy' as const;
+
+  return { status, counts_by_severity, issues: filtered };
 }
 
 function findSplitHostIdentities(graph: OverwatchGraph): HealthIssue[] {

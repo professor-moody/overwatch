@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, readFileSync } from 'fs';
 import { dirname } from 'path';
-import { engagementConfigSchema } from '../types.js';
+import { engagementConfigSchema, inferProfile } from '../types.js';
 import type {
   ExportedGraph,
   HealthReport,
@@ -40,7 +40,8 @@ const SEED_NODE_TYPES = new Set(['host', 'domain', 'objective']);
 
 export function summarizeInlineLabReadiness(engine: GraphEngine): LabReadinessSummary {
   const inputs = getSyncReadinessInputs(engine);
-  const issues = buildInlineIssues(inputs);
+  const profile = inferProfile(inputs.config);
+  const issues = buildInlineIssues(inputs, profile);
   return {
     status: deriveStatusFromIssues(issues),
     top_issues: issues.slice(0, 3),
@@ -48,9 +49,9 @@ export function summarizeInlineLabReadiness(engine: GraphEngine): LabReadinessSu
 }
 
 export function runLabPreflight(engine: GraphEngine, options: LabPreflightOptions = {}): LabPreflightReport {
-  const profile = options.profile || 'goad_ad';
-  const dashboard = options.dashboard || DEFAULT_DASHBOARD_STATUS;
   const config = engine.getConfig();
+  const profile = options.profile || inferProfile(config);
+  const dashboard = options.dashboard || DEFAULT_DASHBOARD_STATUS;
   const graph = engine.exportGraph();
   const health = engine.getHealthReport();
   const graphStage = determineGraphStage(graph);
@@ -71,6 +72,11 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
     checks.push(hasDomainScope
       ? { name: 'domain_scope', status: 'pass', message: 'Domain-aware scope is configured.', details: { domains: config.scope.domains } }
       : { name: 'domain_scope', status: 'fail', message: 'GOAD profile requires at least one scoped domain.' });
+  } else if (profile === 'network') {
+    const hasCidrScope = config.scope.cidrs.length > 0;
+    checks.push(hasCidrScope
+      ? { name: 'scope_shape', status: 'pass', message: 'Network CIDR scope is configured.', details: { cidrs: config.scope.cidrs } }
+      : { name: 'scope_shape', status: 'warning', message: 'Network profile has no CIDR scope yet.' });
   } else {
     checks.push({
       name: 'scope_shape',
@@ -78,7 +84,7 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
         ? 'pass'
         : 'warning',
       message: config.scope.cidrs.length > 0 || (config.scope.hosts?.length || 0) > 0
-        ? 'Single-host or network scope is configured.'
+        ? 'Single-host scope is configured.'
         : 'Single-host profile has no explicit host or CIDR scope yet.',
     });
   }
@@ -136,11 +142,13 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
   }
 
   if (graphStage === 'empty' || graphStage === 'seeded') {
-    recommendedNextSteps.push(
-      profile === 'goad_ad'
-        ? 'Seed the graph with BloodHound, then parse Nmap and NXC output for the same hosts.'
-        : 'Parse an Nmap scan and report at least one manual or parsed finding before relying on frontier output.',
-    );
+    if (profile === 'goad_ad') {
+      recommendedNextSteps.push('Seed the graph with BloodHound, then parse Nmap and NXC output for the same hosts.');
+    } else if (profile === 'network') {
+      recommendedNextSteps.push('Start with an Nmap sweep of the CIDR scope, then parse results. AD domains will be detected automatically if present.');
+    } else {
+      recommendedNextSteps.push('Parse an Nmap scan and report at least one manual or parsed finding before relying on frontier output.');
+    }
   }
 
   if (profile === 'goad_ad' && !toolCheck.hasRecommendedCredentialWorkflow) {
@@ -169,7 +177,7 @@ function getSyncReadinessInputs(engine: GraphEngine): SyncReadinessInputs {
   };
 }
 
-function buildInlineIssues(inputs: SyncReadinessInputs): string[] {
+function buildInlineIssues(inputs: SyncReadinessInputs, profile: LabProfile): string[] {
   const issues: string[] = [];
   const graphStage = determineGraphStage(inputs.graph);
 
@@ -179,7 +187,7 @@ function buildInlineIssues(inputs: SyncReadinessInputs): string[] {
     issues.push(`${inputs.health.counts_by_severity.warning} graph health warning(s) are present.`);
   }
 
-  if (inputs.config.scope.domains.length === 0) {
+  if (profile === 'goad_ad' && inputs.config.scope.domains.length === 0) {
     issues.push('No scoped domains are configured, so GOAD-style AD workflows will be limited.');
   }
 

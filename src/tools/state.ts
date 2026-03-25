@@ -79,14 +79,15 @@ This aggregates:
 - current graph stage (empty, seeded, or mid-run)
 
 Profiles:
-- **goad_ad**: GOAD-style multi-host AD lab validation
-- **single_host**: HTB-style or standalone host validation
+- **goad_ad**: GOAD-style multi-host AD lab validation (requires scoped domains)
+- **network**: Multi-host CIDR-scoped lab (HTB ProLabs, etc.) — domains discovered organically
+- **single_host**: Standalone single-target host validation
 
 Use this before your first lab run, after major ingestion, or after restart to confirm the environment is trustworthy enough for operator testing.`,
       inputSchema: {
-        profile: z.enum(['goad_ad', 'single_host'])
-          .default('goad_ad')
-          .describe('Lab profile to validate against.'),
+        profile: z.enum(['goad_ad', 'single_host', 'network'])
+          .optional()
+          .describe('Lab profile to validate against. If omitted, inferred from engagement config (goad_ad if domains configured, otherwise network).'),
       },
       annotations: {
         readOnlyHint: true,

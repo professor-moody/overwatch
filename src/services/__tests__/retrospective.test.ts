@@ -397,6 +397,19 @@ describe('Retrospective', () => {
       expect(stats.successful).toBe(1);
     });
 
+    it('text fallback does not mislabel generic "discovered" entries as network_discovery', () => {
+      const input = makeInput({
+        history: [
+          { timestamp: '2026-01-01T01:00:00Z', description: 'New host discovered via nmap scan', outcome: 'success' },
+          { timestamp: '2026-01-01T01:05:00Z', description: 'Service discovered on port 445', outcome: 'success' },
+          { timestamp: '2026-01-01T01:10:00Z', description: 'Credential discovered in share', outcome: 'success' },
+        ],
+      });
+      const improvements = analyzeContextImprovements(input);
+      const stats = improvements.success_by_frontier_type['network_discovery'];
+      expect(stats.total).toBe(0);
+    });
+
     it('turns low-yield inferred edges into a context observation, not a weight change', () => {
       const input = makeInput({
         history: [

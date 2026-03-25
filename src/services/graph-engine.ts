@@ -15,13 +15,14 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired, inferCredentialDomain } from './credential-utils.js';
-import { runHealthChecks, summarizeHealthReport } from './graph-health.js';
+import { runHealthChecks, summarizeHealthReport, hasADContext, contextualFilterHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNodeIdentity } from './identity-resolution.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
+import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
@@ -1374,7 +1375,10 @@ export class GraphEngine {
       }
     });
 
-    const healthReport = this.runHealthChecks();
+    const rawHealthReport = this.runHealthChecks();
+    const profile = inferProfile(this.ctx.config);
+    const adContext = hasADContext(this.ctx.graph);
+    const healthReport = contextualFilterHealthReport(rawHealthReport, profile, adContext);
     const labReadiness = summarizeInlineLabReadiness(this);
 
     return {

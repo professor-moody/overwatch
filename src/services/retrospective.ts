@@ -333,7 +333,7 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     // Fallback: text-based detection for legacy entries
     if (!frontierType) {
       const desc = entry.description.toLowerCase();
-      if (desc.includes('discover') || desc.includes('host discovery') || desc.includes('network scan')) {
+      if (desc.includes('discover hosts') || desc.includes('continue discovery') || desc.includes('host discovery') || desc.includes('network discovery') || desc.includes('network scan')) {
         frontierType = 'network_discovery';
       } else if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
         frontierType = 'incomplete_node';

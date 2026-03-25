@@ -190,6 +190,7 @@ export interface EngagementConfig {
   id: string;
   name: string;
   created_at: string;
+  profile?: LabProfile;
   scope: {
     cidrs: string[];
     domains: string[];
@@ -224,6 +225,7 @@ export const engagementConfigSchema = z.object({
   id: nonEmptyString,
   name: nonEmptyString,
   created_at: nonEmptyString,
+  profile: z.enum(['goad_ad', 'single_host', 'network']).optional(),
   scope: z.object({
     cidrs: z.array(z.string()),
     domains: z.array(z.string()),
@@ -355,7 +357,13 @@ export interface EngagementState {
   lab_readiness: LabReadinessSummary;
 }
 
-export type LabProfile = 'goad_ad' | 'single_host';
+export type LabProfile = 'goad_ad' | 'single_host' | 'network';
+
+export function inferProfile(config: EngagementConfig): LabProfile {
+  if (config.profile) return config.profile;
+  if (config.scope.domains.length > 0) return 'goad_ad';
+  return 'network';
+}
 export type LabReadinessStatus = 'ready' | 'warning' | 'blocked';
 
 export interface LabReadinessCheck {

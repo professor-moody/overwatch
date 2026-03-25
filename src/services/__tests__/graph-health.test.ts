@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { unlinkSync, existsSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
+import { hasADContext, contextualFilterHealthReport } from '../graph-health.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
 import { parseNmapXml, parseSecretsdump } from '../output-parsers.js';
 
@@ -458,5 +459,158 @@ describe('graph health', () => {
     expect(ambiguity?.severity).toBe('warning');
     // Overall status should not be critical just from credential warnings
     expect(report.status).not.toBe('critical');
+  });
+});
+
+describe('hasADContext', () => {
+  afterEach(cleanup);
+
+  it('returns false for empty graph', () => {
+    const engine = new GraphEngine({
+      ...makeConfig(),
+      scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] },
+    }, TEST_STATE_FILE);
+    expect(hasADContext((engine as any).ctx.graph)).toBe(false);
+  });
+
+  it('returns true when domain node exists', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({ id: 'domain-acme', type: 'domain', label: 'acme.local', domain_name: 'acme.local', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    expect(hasADContext((engine as any).ctx.graph)).toBe(true);
+  });
+
+  it('returns true when user has domain_name', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({ id: 'user-admin', type: 'user', label: 'admin', domain_name: 'acme.local', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    expect(hasADContext((engine as any).ctx.graph)).toBe(true);
+  });
+
+  it('returns true when kerberos service exists', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.addNode({ id: 'svc-kerb', type: 'service', label: 'kerberos', service_name: 'kerberos', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    expect(hasADContext((engine as any).ctx.graph)).toBe(true);
+  });
+
+  it('returns false for hosts and services without AD context', () => {
+    const engine = new GraphEngine({
+      ...makeConfig(),
+      scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] },
+    }, TEST_STATE_FILE);
+    engine.addNode({ id: 'host-1', type: 'host', label: '10.10.10.5', ip: '10.10.10.5', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    engine.addNode({ id: 'svc-http', type: 'service', label: 'http', service_name: 'http', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    expect(hasADContext((engine as any).ctx.graph)).toBe(false);
+  });
+});
+
+describe('contextualFilterHealthReport', () => {
+  afterEach(cleanup);
+
+  it('suppresses credential_identity_ambiguity for network profile without AD', () => {
+    const engine = new GraphEngine({
+      ...makeConfig(),
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] },
+    }, TEST_STATE_FILE);
+
+    // Create a credential without domain qualification to trigger the ambiguity warning
+    engine.ingestFinding({
+      id: 'cred-filter-test',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{
+        id: 'cred-test',
+        type: 'credential',
+        label: 'test hash',
+        cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_hash: 'aabbccdd00112233aabbccdd00112233',
+        cred_user: 'testuser',
+      }],
+      edges: [],
+    });
+
+    const rawReport = engine.getHealthReport();
+    const hasAmbiguity = rawReport.issues.some(i => i.check === 'credential_identity_ambiguity');
+    expect(hasAmbiguity).toBe(true);
+
+    const filtered = contextualFilterHealthReport(rawReport, 'network', false);
+    expect(filtered.issues.some(i => i.check === 'credential_identity_ambiguity')).toBe(false);
+  });
+
+  it('preserves credential_identity_ambiguity for goad_ad profile', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+    engine.ingestFinding({
+      id: 'cred-filter-goad',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{
+        id: 'cred-test2',
+        type: 'credential',
+        label: 'test hash',
+        cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_hash: 'aabbccdd00112233aabbccdd00112233',
+        cred_user: 'testuser',
+      }],
+      edges: [],
+    });
+
+    const rawReport = engine.getHealthReport();
+    const filtered = contextualFilterHealthReport(rawReport, 'goad_ad', false);
+    expect(filtered.issues.some(i => i.check === 'credential_identity_ambiguity')).toBe(true);
+  });
+
+  it('re-escalates warnings when AD context is discovered', () => {
+    const engine = new GraphEngine({
+      ...makeConfig(),
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] },
+    }, TEST_STATE_FILE);
+
+    engine.ingestFinding({
+      id: 'cred-filter-escalate',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{
+        id: 'cred-test3',
+        type: 'credential',
+        label: 'test hash',
+        cred_type: 'ntlm',
+        cred_material_kind: 'ntlm_hash',
+        cred_hash: 'aabbccdd00112233aabbccdd00112233',
+        cred_user: 'testuser',
+      }],
+      edges: [],
+    });
+
+    const rawReport = engine.getHealthReport();
+
+    // Without AD context: suppressed
+    const filteredNoAD = contextualFilterHealthReport(rawReport, 'network', false);
+    expect(filteredNoAD.issues.some(i => i.check === 'credential_identity_ambiguity')).toBe(false);
+
+    // With AD context: re-escalated
+    const filteredWithAD = contextualFilterHealthReport(rawReport, 'network', true);
+    expect(filteredWithAD.issues.some(i => i.check === 'credential_identity_ambiguity')).toBe(true);
+  });
+
+  it('does not suppress non-AD-dependent health issues', () => {
+    const engine = new GraphEngine({
+      ...makeConfig(),
+      profile: 'network' as const,
+      scope: { cidrs: ['10.10.10.0/28'], domains: [], exclusions: [] },
+    }, TEST_STATE_FILE);
+
+    // Create duplicate hosts to trigger split_host_identity (not AD-dependent)
+    engine.addNode({ id: 'host-a', type: 'host', label: 'host-a', ip: '10.10.10.5', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+    engine.addNode({ id: 'host-b', type: 'host', label: 'host-b', ip: '10.10.10.5', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+
+    const rawReport = engine.getHealthReport();
+    const hasSplitHost = rawReport.issues.some(i => i.check === 'split_host_identity_ip');
+    expect(hasSplitHost).toBe(true);
+
+    const filtered = contextualFilterHealthReport(rawReport, 'network', false);
+    expect(filtered.issues.some(i => i.check === 'split_host_identity_ip')).toBe(true);
   });
 });
