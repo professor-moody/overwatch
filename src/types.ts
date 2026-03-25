@@ -362,7 +362,7 @@ export type LabProfile = 'goad_ad' | 'single_host' | 'network';
 export function inferProfile(config: EngagementConfig): LabProfile {
   if (config.profile) return config.profile;
   if (config.scope.domains.length > 0) return 'goad_ad';
-  return 'network';
+  return 'single_host';
 }
 export type LabReadinessStatus = 'ready' | 'warning' | 'blocked';
 

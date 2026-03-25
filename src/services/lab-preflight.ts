@@ -11,6 +11,7 @@ import type {
   LabReadinessSummary,
 } from '../types.js';
 import type { GraphEngine } from './graph-engine.js';
+import { contextualFilterHealthReport, hasADContext } from './graph-health.js';
 import type { ToolStatus } from './tool-check.js';
 
 type DashboardStatus = {
@@ -41,7 +42,9 @@ const SEED_NODE_TYPES = new Set(['host', 'domain', 'objective']);
 export function summarizeInlineLabReadiness(engine: GraphEngine): LabReadinessSummary {
   const inputs = getSyncReadinessInputs(engine);
   const profile = inferProfile(inputs.config);
-  const issues = buildInlineIssues(inputs, profile);
+  const adContext = engine.checkADContext();
+  const filteredHealth = contextualFilterHealthReport(inputs.health, profile, adContext);
+  const issues = buildInlineIssues({ ...inputs, health: filteredHealth }, profile);
   return {
     status: deriveStatusFromIssues(issues),
     top_issues: issues.slice(0, 3),

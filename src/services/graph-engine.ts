@@ -1477,6 +1477,10 @@ export class GraphEngine {
     return this.runHealthChecks();
   }
 
+  checkADContext(): boolean {
+    return hasADContext(this.ctx.graph);
+  }
+
   getFrontierItem(frontierItemId: string): FrontierItem | null {
     return this.computeFrontier().find(item => item.id === frontierItemId) || null;
   }

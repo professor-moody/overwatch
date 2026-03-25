@@ -222,8 +222,23 @@ describe('lab preflight', () => {
     expect(report.checks.find(c => c.name === 'scope_shape')?.status).toBe('pass');
   });
 
-  it('infers network profile when no profile set and no domains', () => {
+  it('infers single_host profile when no profile set and no domains', () => {
     const config = makeConfig({
+      scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const report = runLabPreflight(engine, {
+      toolStatuses: installedTools(['nmap']),
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.profile).toBe('single_host');
+  });
+
+  it('uses explicit network profile when set in config', () => {
+    const config = makeConfig({
+      profile: 'network' as const,
       scope: { cidrs: ['10.10.110.0/24'], domains: [], exclusions: [] },
     });
     const engine = new GraphEngine(config, TEST_STATE_FILE);
