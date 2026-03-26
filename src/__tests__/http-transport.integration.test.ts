@@ -2,11 +2,18 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolve } from 'path';
-import { unlinkSync, existsSync, readFileSync, readdirSync, mkdtempSync, rmSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createServer } from 'net';
 import { createOverwatchApp, startHttpApp, shutdownOverwatchApp, type OverwatchApp } from '../app.js';
 import { parseEngagementConfig } from '../config.js';
+
+const supportsLocalListen = await new Promise<boolean>((resolve) => {
+  const srv = createServer();
+  srv.on('error', () => { srv.close(); resolve(false); });
+  srv.listen(0, '127.0.0.1', () => { srv.close(); resolve(true); });
+});
 
 const ENGAGEMENT_JSON = resolve('./engagement.json');
 const rawConfig = readFileSync(ENGAGEMENT_JSON, 'utf-8');
@@ -22,7 +29,7 @@ function cleanup() {
   try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
 }
 
-describe('MCP HTTP Transport Integration', () => {
+describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
   beforeAll(async () => {
     app = createOverwatchApp({
       config,
