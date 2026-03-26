@@ -94,13 +94,27 @@ export class SkillIndex {
       .map(t => this.stem(t));
   }
 
+  // Security/tool terms that should never be stemmed
+  private static readonly STEM_STOPLIST = new Set([
+    'kerberos', 'mimikatz', 'rubeus', 'certipy', 'impacket',
+    'bloodhound', 'hashcat', 'responder', 'crackmapexec',
+    'smbclient', 'ldapsearch', 'secretsdump', 'ntlmrelayx',
+    'petitpotam', 'printnightmare', 'zerologon', 'adcs',
+    'dcsync', 'nmap', 'feroxbuster', 'gobuster', 'ffuf',
+    'enum4linux', 'sshpass', 'chisel', 'ligolo', 'proxychains',
+  ]);
+
   private stem(word: string): string {
-    // Lightweight suffix stripping for security/technical terms
+    // Short-circuit: preserve exact security/tool terms
+    if (SkillIndex.STEM_STOPLIST.has(word)) return word;
+
+    // Lightweight suffix stripping — ordered to avoid double-strip
     return word
+      .replace(/sses$/, 'ss')
       .replace(/ies$/, 'y')
       .replace(/ation$/, 'ate')
       .replace(/(ing|ed|ment|ness)$/, '')
-      .replace(/s$/, '');
+      .replace(/([^s])s$/, '$1');
   }
 
   private computeTF(tokens: string[]): Map<string, number> {

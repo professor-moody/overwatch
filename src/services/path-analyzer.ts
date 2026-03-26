@@ -12,6 +12,8 @@ import type { EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../
 // Handle CJS/ESM interop for graphology
 const Graph = (GraphConstructor as any).default || GraphConstructor;
 
+type PathEdgeAttrs = { weight: number };
+
 export type QueryGraphFn = (query: GraphQuery) => GraphQueryResult;
 
 export class PathAnalyzer {
@@ -47,13 +49,13 @@ export class PathAnalyzer {
 
       const fwdKey = `${source}--${attrs.type}--${target}`;
       if (!pg.hasEdge(fwdKey)) {
-        try { pg.addEdgeWithKey(fwdKey, source, target, { weight } as any); } catch {}
+        try { pg.addEdgeWithKey(fwdKey, source, target, { weight } as PathEdgeAttrs as unknown as EdgeProperties); } catch {}
       }
 
       if (this.bidirectionalEdgeTypes.has(attrs.type)) {
         const revKey = `${target}--${attrs.type}--${source}-rev`;
         if (!pg.hasEdge(revKey)) {
-          try { pg.addEdgeWithKey(revKey, target, source, { weight } as any); } catch {}
+          try { pg.addEdgeWithKey(revKey, target, source, { weight } as PathEdgeAttrs as unknown as EdgeProperties); } catch {}
         }
       }
     });

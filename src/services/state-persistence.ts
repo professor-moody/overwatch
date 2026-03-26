@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdi
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
-import type { InferenceRule } from '../types.js';
+import type { InferenceRule, NodeProperties } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 
 export const MAX_SNAPSHOTS = 5;
@@ -164,7 +164,7 @@ export class StatePersistence {
 
   private normalizeLoadedNodeProvenance(): void {
     this.ctx.graph.forEachNode((nodeId, attrs) => {
-      this.ctx.graph.mergeNodeAttributes(nodeId, normalizeNodeProvenance(attrs) as any);
+      this.ctx.graph.mergeNodeAttributes(nodeId, normalizeNodeProvenance(attrs) as Partial<NodeProperties>);
     });
   }
 }

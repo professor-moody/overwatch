@@ -362,7 +362,7 @@ export class GraphEngine {
   addNode(props: NodeProperties): string {
     if (this.ctx.graph.hasNode(props.id)) {
       // Merge properties
-      this.ctx.graph.mergeNodeAttributes(props.id, props as any);
+      this.ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
     } else {
       this.ctx.graph.addNode(props.id, props);
       this.invalidatePathGraph();
@@ -383,7 +383,7 @@ export class GraphEngine {
           this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
         }
         // Update existing edge
-        this.ctx.graph.mergeEdgeAttributes(edgeId, props as any);
+        this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
         this.invalidateHealthReport();
         return { id: edgeId, isNew: false };
       }
@@ -460,7 +460,7 @@ export class GraphEngine {
       ...nextNode,
       ...normalizeNodeProvenance(nextNode),
     };
-    this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as any);
+    this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
     this.invalidateHealthReport();
     return this.ctx.graph.getNodeAttributes(nodeId);
   }
@@ -708,7 +708,7 @@ export class GraphEngine {
       if (attrs.type !== 'POTENTIAL_AUTH') continue;
       const newConfidence = Math.max(0.1, attrs.confidence * 0.5);
       if (newConfidence >= attrs.confidence) continue;
-      this.ctx.graph.mergeEdgeAttributes(edgeId, { confidence: newConfidence } as any);
+      this.ctx.graph.mergeEdgeAttributes(edgeId, { confidence: newConfidence } as Partial<EdgeProperties>);
       degraded.push(edgeId);
     }
 
@@ -1754,7 +1754,7 @@ export class GraphEngine {
         objective_achieved: objective.achieved,
         objective_achieved_at: objective.achieved_at,
         last_seen_at: now,
-      } as any);
+      } as Partial<NodeProperties>);
     }
   }
 

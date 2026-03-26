@@ -4,7 +4,7 @@
 // ============================================================
 
 import type {
-  EngagementConfig, NodeProperties, EdgeProperties, EdgeType, ExportedGraph,
+  EngagementConfig, NodeProperties, EdgeProperties, EdgeType, NodeType, ExportedGraph,
   InferenceRule, AgentTask, InferenceRuleSuggestion,
   SkillGapReport, ContextImprovementReport, RLVRTrace, RetrospectiveResult,
   LoggingQualityReport, TraceQualityReport, AnalysisConfidence,
@@ -79,8 +79,8 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
 
       const schemaCheck = validateEdgeEndpoints(
         pattern.edgeType,
-        pattern.sourceType as any,
-        pattern.targetType as any,
+        pattern.sourceType as NodeType,
+        pattern.targetType as NodeType,
         {
           source_id: `suggested-${pattern.sourceType}`,
           target_id: `suggested-${pattern.targetType}`,
@@ -97,7 +97,7 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
           id: `suggested-${pattern.edgeType.toLowerCase()}-${pattern.sourceType}-${pattern.targetType}`,
           name: `Auto-infer ${pattern.edgeType} from ${pattern.sourceType} to ${pattern.targetType}`,
           description: `Pattern observed ${pattern.count} times: ${pattern.sourceType} nodes frequently have ${pattern.edgeType} edges to ${pattern.targetType} nodes`,
-          trigger: { node_type: pattern.targetType as any },
+          trigger: { node_type: pattern.targetType as NodeType },
           produces: [{
             edge_type: pattern.edgeType,
             source_selector: sourceSelector,

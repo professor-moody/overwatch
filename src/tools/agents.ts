@@ -129,6 +129,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         candidates = ordered;
       }
 
+      const total_candidates = candidates.length;
       const dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; frontier_type: string; skill?: string }> = [];
       const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_id: string }> = [];
       const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
@@ -167,17 +168,23 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         });
       }
 
+      const result: Record<string, unknown> = {
+        requested: count,
+        strategy,
+        types: [...typeOrder],
+        total_candidates,
+        dispatched,
+        skipped_existing,
+        skipped_unscoped,
+      };
+      if (dispatched.length === 0) {
+        result.warning = 'No agents dispatched — all candidates were skipped or filtered';
+      }
+
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
-            requested: count,
-            strategy,
-            types: [...typeOrder],
-            dispatched,
-            skipped_existing,
-            skipped_unscoped,
-          }, null, 2)
+          text: JSON.stringify(result, null, 2)
         }]
       };
     })

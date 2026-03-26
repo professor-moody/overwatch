@@ -23,15 +23,13 @@ import type { ActivityEventType } from './engine-context.js';
 const DEFAULT_BUFFER_SIZE = 128 * 1024; // 128KB
 
 export class RingBuffer {
-  private buf: string[];
+  private chunks: Array<{ text: string; absStart: number }> = [];
   private capacity: number;
-  private writeIdx: number = 0;
-  private _endPos: number = 0; // absolute monotonic position (characters written)
-  private totalWritten: number = 0;
+  private _endPos: number = 0;
+  private retainedLength: number = 0;
 
   constructor(capacity: number = DEFAULT_BUFFER_SIZE) {
     this.capacity = capacity;
-    this.buf = [];
   }
 
   get endPos(): number {
@@ -39,22 +37,43 @@ export class RingBuffer {
   }
 
   get startPos(): number {
-    // Oldest available position — if we haven't wrapped, it's 0
-    if (this.totalWritten <= this.capacity) return 0;
-    return this._endPos - this.currentLength();
+    if (this.chunks.length === 0) return 0;
+    return this.chunks[0].absStart;
   }
 
   write(chunk: string): void {
-    for (const ch of chunk) {
-      if (this.buf.length < this.capacity) {
-        this.buf.push(ch);
-      } else {
-        this.buf[this.writeIdx] = ch;
-      }
-      this.writeIdx = (this.writeIdx + 1) % this.capacity;
-    }
+    if (chunk.length === 0) return;
+
+    this.chunks.push({ text: chunk, absStart: this._endPos });
     this._endPos += chunk.length;
-    this.totalWritten += chunk.length;
+    this.retainedLength += chunk.length;
+
+    // Trim oldest chunks when retained data exceeds capacity
+    while (this.retainedLength > this.capacity && this.chunks.length > 1) {
+      const oldest = this.chunks[0];
+      const excess = this.retainedLength - this.capacity;
+      if (oldest.text.length <= excess) {
+        // Drop entire chunk
+        this.chunks.shift();
+        this.retainedLength -= oldest.text.length;
+      } else {
+        // Trim partial front of oldest chunk
+        const trimmed = oldest.text.slice(excess);
+        oldest.text = trimmed;
+        oldest.absStart += excess;
+        this.retainedLength -= excess;
+        break;
+      }
+    }
+
+    // If a single chunk exceeds capacity, trim it to capacity
+    if (this.retainedLength > this.capacity && this.chunks.length === 1) {
+      const c = this.chunks[0];
+      const excess = this.retainedLength - this.capacity;
+      c.text = c.text.slice(excess);
+      c.absStart += excess;
+      this.retainedLength = c.text.length;
+    }
   }
 
   read(fromPos: number): { text: string; startPos: number; endPos: number; truncated: boolean } {
@@ -72,39 +91,31 @@ export class RingBuffer {
       truncated = true;
     }
 
-    const len = currentEnd - effectiveFrom;
-    const text = this.extractChars(effectiveFrom, len);
+    const text = this.extractRange(effectiveFrom, currentEnd);
     return { text, startPos: effectiveFrom, endPos: currentEnd, truncated };
   }
 
   tail(n: number): { text: string; startPos: number; endPos: number; truncated: boolean } {
     const currentEnd = this._endPos;
-    const currentLen = this.currentLength();
-    const actualN = Math.min(n, currentLen);
+    const actualN = Math.min(n, this.retainedLength);
     const fromPos = currentEnd - actualN;
     return this.read(fromPos);
   }
 
-  private currentLength(): number {
-    return Math.min(this.totalWritten, this.capacity);
-  }
+  private extractRange(fromAbs: number, toAbs: number): string {
+    if (fromAbs >= toAbs || this.chunks.length === 0) return '';
 
-  private extractChars(fromAbsPos: number, count: number): string {
-    const bufLen = this.buf.length;
-    if (bufLen === 0 || count === 0) return '';
+    const parts: string[] = [];
+    for (const chunk of this.chunks) {
+      const chunkEnd = chunk.absStart + chunk.text.length;
+      if (chunkEnd <= fromAbs) continue;
+      if (chunk.absStart >= toAbs) break;
 
-    // Map absolute position to buffer index
-    // If buffer hasn't wrapped: index = absPos
-    // If wrapped: need to account for ring structure
-    const result: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const absPos = fromAbsPos + i;
-      // Map to buffer index: the character at absPos was written when
-      // writeIdx was at (absPos % capacity) if we had started from 0
-      const bufIdx = absPos % this.capacity;
-      result.push(this.buf[bufIdx]);
+      const sliceStart = Math.max(0, fromAbs - chunk.absStart);
+      const sliceEnd = Math.min(chunk.text.length, toAbs - chunk.absStart);
+      parts.push(chunk.text.slice(sliceStart, sliceEnd));
     }
-    return result.join('');
+    return parts.join('');
   }
 }
 

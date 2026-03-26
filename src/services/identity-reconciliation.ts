@@ -136,7 +136,7 @@ export class IdentityReconciler {
     const aliasNode = this.graph.getNodeAttributes(aliasNodeId);
     const canonicalNode = this.graph.getNodeAttributes(canonicalNodeId);
     const mergedNode = this.mergeNodeProperties(canonicalNode, aliasNode, canonicalNodeId);
-    this.graph.replaceNodeAttributes(canonicalNodeId, mergedNode as any);
+    this.graph.replaceNodeAttributes(canonicalNodeId, mergedNode as NodeProperties);
 
     const removedEdges: string[] = [];
     const newEdges: string[] = [];

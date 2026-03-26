@@ -2,31 +2,36 @@
 // Overwatch — CIDR Utilities
 // ============================================================
 
-export function expandCidr(cidr: string): string[] {
+export interface CidrExpansionResult {
+  ips: string[];
+  truncated: boolean;
+  total_hosts?: number;
+}
+
+const EXPANSION_CAP = 4094; // /20 equivalent — usable hosts in a /20
+
+export function expandCidrDetailed(cidr: string): CidrExpansionResult {
   const [base, maskStr] = cidr.split('/');
-  if (!maskStr) return [base];
+  if (!maskStr) return { ips: [base], truncated: false };
 
   const mask = parseInt(maskStr);
-  if (mask < 0 || mask > 32) return [base];
-  if (mask === 32) return [base];
+  if (mask < 0 || mask > 32) return { ips: [base], truncated: false };
+  if (mask === 32) return { ips: [base], truncated: false };
 
   const parts = base.split('.').map(Number);
   const ip = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
 
   const hostBits = 32 - mask;
   const numHosts = 1 << hostBits;
-
-  // Cap expansion at /20 (4094 hosts) to prevent memory issues
-  if (numHosts > 4096) {
-    console.error(`CIDR ${cidr} expands to ${numHosts - 2} hosts, capping at /20 equivalent. Use smaller subnets.`);
-    return [base];
-  }
+  const usableHosts = numHosts - 2; // exclude network + broadcast
+  const truncated = usableHosts > EXPANSION_CAP;
+  const limit = truncated ? EXPANSION_CAP : usableHosts;
 
   const network = (ip & (0xFFFFFFFF << hostBits)) >>> 0;
   const ips: string[] = [];
 
   // Skip network and broadcast addresses
-  for (let i = 1; i < numHosts - 1; i++) {
+  for (let i = 1; i <= limit; i++) {
     const addr = (network + i) >>> 0;
     ips.push([
       (addr >>> 24) & 0xFF,
@@ -36,7 +41,14 @@ export function expandCidr(cidr: string): string[] {
     ].join('.'));
   }
 
-  return ips;
+  return truncated
+    ? { ips, truncated: true, total_hosts: usableHosts }
+    : { ips, truncated: false };
+}
+
+/** Backward-compatible wrapper — returns just the IP array. */
+export function expandCidr(cidr: string): string[] {
+  return expandCidrDetailed(cidr).ips;
 }
 
 export function isIpInCidr(ip: string, cidr: string): boolean {

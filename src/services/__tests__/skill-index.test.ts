@@ -66,4 +66,44 @@ describe('SkillIndex', () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].name.toLowerCase()).toMatch(/lateral/);
   });
+
+  it('stemmer handles security terms correctly', () => {
+    // Access the private stem method for direct testing
+    const stem = (word: string) => (skills as any).stem(word);
+
+    // sses$ → ss (addresses, processes)
+    expect(stem('addresses')).toBe('address');
+    expect(stem('processes')).toBe('process');
+
+    // ies$ → y
+    expect(stem('vulnerabilities')).toBe('vulnerability');
+    expect(stem('policies')).toBe('policy');
+
+    // ation$ → ate
+    expect(stem('enumeration')).toBe('enumerate');
+
+    // ing/ed removal
+    expect(stem('scanning')).toBe('scann');
+    expect(stem('discovered')).toBe('discover');
+
+    // s$ guarded — should not turn 'ss' into 's'
+    expect(stem('access')).toBe('access');
+    expect(stem('lass')).toBe('lass');
+
+    // Normal s$ stripping
+    expect(stem('hosts')).toBe('host');
+    expect(stem('ports')).toBe('port');
+  });
+
+  it('stemmer preserves stop-list terms', () => {
+    const stem = (word: string) => (skills as any).stem(word);
+
+    expect(stem('kerberos')).toBe('kerberos');
+    expect(stem('mimikatz')).toBe('mimikatz');
+    expect(stem('rubeus')).toBe('rubeus');
+    expect(stem('bloodhound')).toBe('bloodhound');
+    expect(stem('nmap')).toBe('nmap');
+    expect(stem('impacket')).toBe('impacket');
+    expect(stem('certipy')).toBe('certipy');
+  });
 });

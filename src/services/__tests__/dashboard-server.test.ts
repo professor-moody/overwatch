@@ -350,6 +350,113 @@ describe('DashboardServer', () => {
     expect(payload.data.state.history_count).toBeGreaterThan(0);
   });
 
+  it('serveHistory ignores invalid limit parameter', () => {
+    for (let i = 0; i < 3; i++) {
+      engine.ingestFinding({
+        id: `invalid-limit-${i}`,
+        agent_id: 'test-agent',
+        timestamp: `2026-03-21T1${i}:00:00Z`,
+        nodes: [{ id: `host-il-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
+        edges: [],
+      });
+    }
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    // NaN limit should be ignored (return all)
+    (dashboard as any).serveHistory('/api/history?limit=abc', res);
+    const payload1 = JSON.parse(res.body);
+    expect(payload1.entries.length).toBe(payload1.total);
+
+    // Negative limit should be ignored
+    (dashboard as any).serveHistory('/api/history?limit=-5', res);
+    const payload2 = JSON.parse(res.body);
+    expect(payload2.entries.length).toBe(payload2.total);
+
+    // Zero limit should be ignored
+    (dashboard as any).serveHistory('/api/history?limit=0', res);
+    const payload3 = JSON.parse(res.body);
+    expect(payload3.entries.length).toBe(payload3.total);
+  });
+
+  it('serveHistory ignores invalid after/before parameters', () => {
+    engine.ingestFinding({
+      id: 'invalid-date-test',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-21T10:00:00Z',
+      nodes: [{ id: 'host-idt-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      edges: [],
+    });
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    // Invalid after param should be ignored (return all)
+    (dashboard as any).serveHistory('/api/history?after=not-a-date', res);
+    const payload = JSON.parse(res.body);
+    expect(payload.entries.length).toBe(payload.total);
+    expect(payload.total).toBeGreaterThan(0);
+  });
+
+  it('static file responses include Cache-Control header', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-cc-'));
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | Buffer | undefined,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string | Buffer) {
+        this.body = body;
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).dashboardDir = tempDir;
+    (dashboard as any).serveStaticFile('/index.html', res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Cache-Control']).toBe('no-cache');
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('stop() clears fileCache', async () => {
+    // Populate cache by accessing it directly
+    (dashboard as any).fileCache.set('test.html', '<html></html>');
+    expect((dashboard as any).fileCache.size).toBe(1);
+
+    await dashboard.stop();
+    expect((dashboard as any).fileCache.size).toBe(0);
+  });
+
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));

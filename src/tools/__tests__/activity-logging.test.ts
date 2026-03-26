@@ -430,6 +430,45 @@ describe('structured activity logging tools', () => {
     ).toBe(true);
   });
 
+  it('dispatch_agents includes total_candidates in response', async () => {
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
+    engine.addNode({ id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
+
+    const result = await handlers.dispatch_agents({
+      count: 1,
+      strategy: 'top_priority',
+      types: ['incomplete_node'],
+      hops: 1,
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(typeof payload.total_candidates).toBe('number');
+    expect(payload.total_candidates).toBeGreaterThanOrEqual(payload.dispatched.length);
+  });
+
+  it('dispatch_agents emits warning when no agents dispatched', async () => {
+    // First exhaust all candidates of a given type
+    engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
+    await handlers.dispatch_agents({
+      count: 100,
+      strategy: 'top_priority',
+      types: ['incomplete_node'],
+      hops: 1,
+    });
+
+    // Second dispatch — all candidates already have running tasks
+    const result = await handlers.dispatch_agents({
+      count: 3,
+      strategy: 'top_priority',
+      types: ['incomplete_node'],
+      hops: 1,
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.dispatched).toHaveLength(0);
+    expect(payload.warning).toContain('No agents dispatched');
+  });
+
   it('dispatch_agents interleaves types in round-robin order for by_type strategy', async () => {
     engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     engine.addNode({ id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });

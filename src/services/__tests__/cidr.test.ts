@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandCidr, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from '../cidr.js';
+import { expandCidr, expandCidrDetailed, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from '../cidr.js';
 
 describe('expandCidr', () => {
   it('expands a /24 to 254 hosts (skips network + broadcast)', () => {
@@ -19,10 +19,10 @@ describe('expandCidr', () => {
     expect(ips).toEqual(['192.168.1.1']);
   });
 
-  it('caps expansion for subnets larger than /20', () => {
+  it('caps expansion at 4094 hosts for subnets larger than /20', () => {
     const ips = expandCidr('10.0.0.0/16');
-    // Should return just the base address, not 65534 hosts
-    expect(ips).toEqual(['10.0.0.0']);
+    expect(ips.length).toBe(4094);
+    expect(ips[0]).toBe('10.0.0.1');
   });
 
   it('handles /30 (2 usable hosts)', () => {
@@ -151,6 +151,38 @@ describe('isHostnameInScope', () => {
 
   it('ignores CIDR exclusions (only hostname matching)', () => {
     expect(isHostnameInScope('dc01.test.local', domains, ['10.0.0.0/8'])).toBe(true);
+  });
+});
+
+describe('expandCidrDetailed', () => {
+  it('returns non-truncated result for /24', () => {
+    const result = expandCidrDetailed('10.10.10.0/24');
+    expect(result.truncated).toBe(false);
+    expect(result.ips.length).toBe(254);
+    expect(result.total_hosts).toBeUndefined();
+  });
+
+  it('returns truncated result with total_hosts for /16', () => {
+    const result = expandCidrDetailed('10.0.0.0/16');
+    expect(result.truncated).toBe(true);
+    expect(result.ips.length).toBe(4094);
+    expect(result.total_hosts).toBe(65534);
+    expect(result.ips[0]).toBe('10.0.0.1');
+  });
+
+  it('returns non-truncated single IP for /32', () => {
+    const result = expandCidrDetailed('10.10.10.5/32');
+    expect(result).toEqual({ ips: ['10.10.10.5'], truncated: false });
+  });
+
+  it('returns non-truncated single IP for bare address', () => {
+    const result = expandCidrDetailed('192.168.1.1');
+    expect(result).toEqual({ ips: ['192.168.1.1'], truncated: false });
+  });
+
+  it('returns non-truncated single IP for invalid mask', () => {
+    const result = expandCidrDetailed('10.0.0.1/33');
+    expect(result).toEqual({ ips: ['10.0.0.1'], truncated: false });
   });
 });
 
