@@ -9,10 +9,10 @@ Overwatch supports three consumption modes. The graph, state, and tools are iden
 ### Mode A: Native MCP (default)
 
 ```
-┌──────────────┐   stdio/HTTP   ┌─────────────────────┐
-│  Claude Code  │──────────────▶│  Overwatch MCP Server │
-│  (Opus/Sonnet)│◀──────────────│  (graph + inference)  │
-└──────────────┘   MCP protocol └─────────────────────┘
++----------------+                +------------------------+
+|  Claude Code   | --stdio/HTTP-> |  Overwatch MCP Server  |
+|  (Opus/Sonnet) | <--MCP-------> |  (graph + inference)   |
++----------------+                +------------------------+
 ```
 
 - Claude Code connects directly as an MCP client
@@ -23,10 +23,10 @@ Overwatch supports three consumption modes. The graph, state, and tools are iden
 ### Mode B: CLI Adapter (Claude Code via bash)
 
 ```
-┌──────────────┐   bash tool   ┌───────────────┐   HTTP   ┌─────────────────────┐
-│  Claude Code  │─────────────▶│  overwatch CLI  │────────▶│  Overwatch MCP Server │
-│  (Opus/Sonnet)│◀─ stdout ────│  (thin relay)   │◀───────│  (graph + inference)  │
-└──────────────┘               └───────────────┘          └─────────────────────┘
++----------------+              +-----------------+              +------------------------+
+|  Claude Code   | --bash-----> |  overwatch CLI  | --HTTP-----> |  Overwatch MCP Server  |
+|  (Opus/Sonnet) | <--stdout--- |  (thin relay)   | <--JSON----- |  (graph + inference)   |
++----------------+              +-----------------+              +------------------------+
 ```
 
 - Claude Code invokes `overwatch` commands via its bash tool
@@ -37,10 +37,10 @@ Overwatch supports three consumption modes. The graph, state, and tools are iden
 ### Mode C: Manual Operator
 
 ```
-┌──────────────┐   terminal    ┌───────────────┐   HTTP   ┌─────────────────────┐
-│  Human        │─────────────▶│  overwatch CLI  │────────▶│  Overwatch MCP Server │
-│  Operator     │◀─ stdout ────│  (thin relay)   │◀───────│  (graph + inference)  │
-└──────────────┘               └───────────────┘          └─────────────────────┘
++----------------+              +-----------------+              +------------------------+
+|  Human         | --terminal-> |  overwatch CLI  | --HTTP-----> |  Overwatch MCP Server  |
+|  Operator      | <--stdout--- |  (thin relay)   | <--JSON----- |  (graph + inference)   |
++----------------+              +-----------------+              +------------------------+
 ```
 
 - Human types commands directly in a terminal
