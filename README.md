@@ -13,7 +13,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **Graph-based state** — directed property graphs (hosts, services, credentials, relationships) with traversable attack paths
 - **Hybrid scoring** — deterministic layer handles scope/dedup/OPSEC vetoes; the LLM handles attack chain reasoning
 - **Inference rules** — automatic hypothesis generation (e.g., "SMB signing disabled → relay target")
-- **34 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, and more
+- **36 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, scope management, and more
 - **32 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
@@ -100,6 +100,8 @@ Then run `claude` — see the full [Getting Started](https://keys.github.io/over
 | `open_session` / `write_session` / `read_session` | Persistent interactive sessions |
 | `list_sessions` / `update_session` / `close_session` | Session management and lifecycle |
 | `resize_session` / `signal_session` / `send_to_session` | Session control and convenience I/O |
+| `update_scope` | Confirmation-gated runtime scope expansion/contraction |
+| `get_system_prompt` | Generate dynamic agent instructions from engagement state |
 
 Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)**
 
@@ -109,7 +111,7 @@ Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)*
 - **[Architecture](https://keys.github.io/overwatch/architecture/)** — design decisions and component overview
 - **[Configuration](https://keys.github.io/overwatch/configuration/)** — engagement config, OPSEC profiles, env vars
 - **[Graph Model](https://keys.github.io/overwatch/graph-model/)** — node types, edge types, inference rules
-- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 34 MCP tools with parameters and examples
+- **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 36 MCP tools with parameters and examples
 - **[Skills Library](https://keys.github.io/overwatch/skills/)** — 32 offensive methodology guides
 - **[Operator Playbook](https://keys.github.io/overwatch/playbook/)** — lab workflows, session instructions, best practices
 - **[Development](https://keys.github.io/overwatch/development/)** — project structure, testing, extending

@@ -25,8 +25,9 @@ describe('app bootstrap', () => {
 
     const toolNames: string[] = [];
     const fakeServer = {
-      registerTool(name: string) {
+      registerTool(name: string, _config?: any, _cb?: any) {
         toolNames.push(name);
+        return { enable() {}, disable() {}, enabled: true };
       },
     } as any;
 
@@ -38,11 +39,12 @@ describe('app bootstrap', () => {
       getDashboardStatus: () => ({ enabled: false, running: false }),
     });
 
-    expect(toolNames).toHaveLength(35);
+    expect(toolNames).toHaveLength(36);
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('run_retrospective');
     expect(toolNames).toContain('open_session');
     expect(toolNames).toContain('close_session');
     expect(toolNames).toContain('update_scope');
+    expect(toolNames).toContain('get_system_prompt');
   });
 });

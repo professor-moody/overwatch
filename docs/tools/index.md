@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 34 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 36 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -40,6 +40,8 @@ Overwatch exposes 34 MCP tools organized by function. Each tool uses Zod schemas
 | [`resize_session`](sessions.md) | Resize terminal dimensions | :x: |
 | [`signal_session`](sessions.md) | Send signal to session process | :x: |
 | [`close_session`](sessions.md) | Close and destroy a session | :x: |
+| [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | :x: |
+| [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | :white_check_mark: |
 
 ## Tool Categories
 

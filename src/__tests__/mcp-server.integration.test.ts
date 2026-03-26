@@ -31,6 +31,17 @@ const supportsLocalPty = (() => {
   }
 })();
 
+const supportsLocalListen = (() => {
+  try {
+    const srv = createServer();
+    srv.listen(0, '127.0.0.1');
+    srv.close();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 function cleanup() {
   if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
   // Clean up snapshot files for this engagement
@@ -125,9 +136,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 34 tools including the session toolset', async () => {
+  it('lists all 36 tools including the session toolset', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(34);
+    expect(result.tools.length).toBe(36);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -163,6 +174,8 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('resize_session');
     expect(toolNames).toContain('signal_session');
     expect(toolNames).toContain('close_session');
+    expect(toolNames).toContain('update_scope');
+    expect(toolNames).toContain('get_system_prompt');
   });
 
   it('get_state returns engagement state', async () => {
@@ -417,7 +430,7 @@ describe('MCP Server Integration', () => {
     expect(forceClosed.session.state).toBe('closed');
   });
 
-  it('supports a deterministic socket pending-to-connected lifecycle through MCP', async () => {
+  it.skipIf(!supportsLocalListen)('supports a deterministic socket pending-to-connected lifecycle through MCP', async () => {
     const port = await getFreePort();
     const opened = await callToolJson('open_session', {
       kind: 'socket',

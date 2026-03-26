@@ -4,9 +4,15 @@
 // ============================================================
 
 import { readFileSync, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { Express } from 'express';
+import type { Server } from 'http';
 import { GraphEngine } from './services/graph-engine.js';
 import { SkillIndex } from './services/skill-index.js';
 import { ProcessTracker } from './services/process-tracker.js';
@@ -32,6 +38,8 @@ import { registerRetrospectiveTools } from './tools/retrospective.js';
 import { registerRemediationTools } from './tools/remediation.js';
 import { registerSessionTools } from './tools/sessions.js';
 import { registerScopeTools } from './tools/scope.js';
+import { registerInstructionTools } from './tools/instructions.js';
+import type { ToolEntry } from './services/prompt-generator.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -49,6 +57,8 @@ export type OverwatchApp = {
   sessionManager: SessionManager;
   server: McpServer;
   dashboard: DashboardServer | null;
+  httpTransports?: Record<string, StreamableHTTPServerTransport>;
+  httpServer?: Server;
 };
 
 export type CreateOverwatchAppOptions = {
@@ -56,6 +66,7 @@ export type CreateOverwatchAppOptions = {
   configPath?: string;
   skillDir?: string;
   dashboardPort?: number;
+  stateFilePath?: string;
 };
 
 export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || './engagement.json'): EngagementConfig {
@@ -83,7 +94,16 @@ export function registerAllTools(
     sessionManager: SessionManager;
     getDashboardStatus: DashboardStatusProvider;
   },
-): void {
+): ToolEntry[] {
+  const toolEntries: ToolEntry[] = [];
+
+  // Wrap registerTool to collect name+description for the prompt generator
+  const originalRegisterTool = (server as McpServer).registerTool.bind(server as McpServer);
+  (server as McpServer).registerTool = function (name: string, config: any, cb: any) {
+    toolEntries.push({ name, description: config?.description || '' });
+    return originalRegisterTool(name, config, cb);
+  };
+
   registerStateTools(server as McpServer, deps.engine, {
     getDashboardStatus: deps.getDashboardStatus,
   });
@@ -102,12 +122,20 @@ export function registerAllTools(
   registerRemediationTools(server as McpServer, deps.engine);
   registerSessionTools(server as McpServer, deps.sessionManager, deps.engine);
   registerScopeTools(server as McpServer, deps.engine);
+
+  // Register instruction tools last (needs the collected tool list)
+  registerInstructionTools(server as McpServer, deps.engine, () => toolEntries);
+
+  // Restore original registerTool
+  (server as McpServer).registerTool = originalRegisterTool;
+
+  return toolEntries;
 }
 
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {
   const configPath = options.configPath || process.env.OVERWATCH_CONFIG || './engagement.json';
   const config = options.config || loadConfig(configPath);
-  const engine = new GraphEngine(config);
+  const engine = new GraphEngine(config, options.stateFilePath);
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);
   console.error(`Loaded ${skills.count} skills from ${skillDir}`);
@@ -166,7 +194,132 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
   console.error('Overwatch MCP server running on stdio');
 }
 
+export type StartHttpAppOptions = {
+  port?: number;
+  host?: string;
+};
+
+export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptions = {}): Promise<Express> {
+  const port = options.port ?? parseInt(process.env.OVERWATCH_HTTP_PORT || '3000', 10);
+  const host = options.host ?? process.env.OVERWATCH_HTTP_HOST ?? '127.0.0.1';
+
+  const expressApp = createMcpExpressApp({ host });
+  const transports: Record<string, StreamableHTTPServerTransport> = {};
+  app.httpTransports = transports;
+
+  // Each HTTP session needs its own McpServer (SDK limitation: one connect() per server).
+  // All sessions share the same engine, skills, and services.
+  function createSessionServer(): McpServer {
+    const server = new McpServer({
+      name: 'overwatch-mcp-server',
+      version: '0.1.0',
+    });
+    registerAllTools(server, {
+      engine: app.engine,
+      skills: app.skills,
+      processTracker: app.processTracker,
+      sessionManager: app.sessionManager,
+      getDashboardStatus: () => ({
+        enabled: app.dashboard !== null,
+        running: app.dashboard?.running ?? false,
+        address: app.dashboard?.address,
+      }),
+    });
+    return server;
+  }
+
+  // MCP POST — initialize new session or route to existing
+  expressApp.post('/mcp', async (req: any, res: any) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    if (sessionId && transports[sessionId]) {
+      await transports[sessionId].handleRequest(req, res, req.body);
+      return;
+    }
+
+    if (!sessionId && isInitializeRequest(req.body)) {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid: string) => {
+          transports[sid] = transport;
+        },
+      });
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid && transports[sid]) {
+          delete transports[sid];
+        }
+      };
+      const server = createSessionServer();
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    res.status(400).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+      id: null,
+    });
+  });
+
+  // MCP GET — SSE stream for server-initiated messages
+  expressApp.get('/mcp', async (req: any, res: any) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    await transports[sessionId].handleRequest(req, res);
+  });
+
+  // MCP DELETE — session termination
+  expressApp.delete('/mcp', async (req: any, res: any) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    await transports[sessionId].handleRequest(req, res);
+  });
+
+  // Start dashboard (on its own port as before)
+  if (app.dashboard) {
+    const result = await app.dashboard.start();
+    if (result.started) {
+      app.engine.onUpdate((detail) => app.dashboard?.onGraphUpdate(detail));
+    }
+  }
+
+  // Start HTTP server
+  return new Promise<Express>((resolve, reject) => {
+    const server = expressApp.listen(port, host, () => {
+      console.error(`Overwatch MCP HTTP transport at http://${host}:${port}/mcp`);
+      if (app.dashboard?.running) {
+        console.error(`Dashboard at ${app.dashboard.address}`);
+      }
+      app.httpServer = server;
+      resolve(expressApp);
+    });
+    server.on('error', (err: Error) => {
+      reject(err);
+    });
+  });
+}
+
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
+  // Close all HTTP transport sessions
+  if (app.httpTransports) {
+    for (const [sid, transport] of Object.entries(app.httpTransports)) {
+      try {
+        await transport.close();
+      } catch { /* best effort */ }
+      delete app.httpTransports[sid];
+    }
+  }
+  if (app.httpServer) {
+    await new Promise<void>((resolve) => app.httpServer!.close(() => resolve()));
+  }
   await app.sessionManager.shutdown().catch(() => {});
   if (app.dashboard) {
     await app.dashboard.stop().catch(() => {});

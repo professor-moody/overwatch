@@ -2526,6 +2526,9 @@ window.OverwatchGraph = {
   get credFlowData() { return credFlowData; },
   get edgeTypeFilter() { return edgeTypeFilter; },
   get edgeSourceFilter() { return edgeSourceFilter; },
+  // Reducers (exported for testing)
+  edgeReducer,
+  nodeReducer,
   EDGE_CATEGORIES,
   NODE_COLORS,
   NODE_BASE_SIZES,

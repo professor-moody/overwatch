@@ -552,4 +552,65 @@ describe('dashboard graph helpers', () => {
 
     expect(graphModule.getVisibleNodeIds().sort()).toEqual(['ca-a', 'domain-a', 'template-a']);
   });
+
+  it('edgeReducer hides POTENTIAL_AUTH by default and reveals via edge type filter', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: '10.10.10.2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    const edgeKey = 'host-a--POTENTIAL_AUTH--host-b';
+    graph.addEdgeWithKey(edgeKey, 'host-a', 'host-b', { edgeType: 'POTENTIAL_AUTH', inferredByRule: 'rule-cred-fanout' });
+
+    // Default: edgeReducer hides POTENTIAL_AUTH
+    const defaultResult = graphModule.edgeReducer(edgeKey, graph.getEdgeAttributes(edgeKey));
+    expect(defaultResult.hidden).toBe(true);
+
+    // Activate edge type filter for POTENTIAL_AUTH — should reveal it
+    graphModule.setEdgeTypeFilter('POTENTIAL_AUTH');
+    const filteredResult = graphModule.edgeReducer(edgeKey, graph.getEdgeAttributes(edgeKey));
+    expect(filteredResult.hidden).toBeUndefined();
+    expect(filteredResult.size).toBe(2.5);
+
+    graphModule.clearEdgeFilter();
+  });
+
+  it('edgeReducer reveals POTENTIAL_AUTH via edge source filter (inferred)', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: '10.10.10.2', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    const edgeKey = 'host-a--POTENTIAL_AUTH--host-b';
+    graph.addEdgeWithKey(edgeKey, 'host-a', 'host-b', { edgeType: 'POTENTIAL_AUTH', inferredByRule: 'rule-cred-fanout' });
+
+    // Activate edge source filter — POTENTIAL_AUTH with inferredByRule should be visible
+    graphModule.setEdgeSourceFilter('inferred');
+    const result = graphModule.edgeReducer(edgeKey, graph.getEdgeAttributes(edgeKey));
+    expect(result.hidden).toBeUndefined();
+    expect(result.size).toBe(2);
+
+    graphModule.clearEdgeFilter();
+  });
+
+  it('edgeReducer reveals POTENTIAL_AUTH in credential flow mode', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('cred-a', { label: 'admin-ntlm', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    const edgeKey = 'cred-a--POTENTIAL_AUTH--host-a';
+    graph.addEdgeWithKey(edgeKey, 'cred-a', 'host-a', { edgeType: 'POTENTIAL_AUTH', inferredByRule: 'rule-cred-fanout' });
+
+    // Default: hidden
+    const defaultResult = graphModule.edgeReducer(edgeKey, graph.getEdgeAttributes(edgeKey));
+    expect(defaultResult.hidden).toBe(true);
+
+    // Activate credential flow — POTENTIAL_AUTH should be visible
+    graphModule.showCredentialFlow();
+    const flowResult = graphModule.edgeReducer(edgeKey, graph.getEdgeAttributes(edgeKey));
+    expect(flowResult.hidden).toBeUndefined();
+
+    graphModule.clearCredentialFlowMode();
+  });
 });

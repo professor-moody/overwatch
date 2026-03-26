@@ -11,8 +11,9 @@
     "test": "npm run test:source",
     "test:source": "vitest run",
     "test:integration:stdio": "npm run build && vitest run --config vitest.integration-stdio.config.ts",
+    "test:integration:http": "npm run build && vitest run --config vitest.integration-http.config.ts",
     "check:dist": "git diff --exit-code -- dist",
-    "verify": "npm run test:source && npm run test:integration:stdio && npm run check:dist",
+    "verify": "npm run test:source && npm run test:integration:stdio && npm run test:integration:http && npm run check:dist",
     "retrospective": "node dist/cli/retrospective.js",
     "lab:smoke": "node dist/cli/lab-smoke.js"
   },
@@ -32,6 +33,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.5.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",

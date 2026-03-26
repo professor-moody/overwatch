@@ -2,7 +2,7 @@
 // Overwatch — MCP Orchestrator Server
 // ============================================================
 
-import { createAppOrExit, shutdownOverwatchApp, startStdioApp } from './app.js';
+import { createAppOrExit, shutdownOverwatchApp, startStdioApp, startHttpApp } from './app.js';
 
 const app = createAppOrExit();
 
@@ -10,7 +10,13 @@ const app = createAppOrExit();
 // Start Server
 // ============================================================
 async function main(): Promise<void> {
-  await startStdioApp(app);
+  const transport = process.env.OVERWATCH_TRANSPORT || (process.argv.includes('--http') ? 'http' : 'stdio');
+
+  if (transport === 'http') {
+    await startHttpApp(app);
+  } else {
+    await startStdioApp(app);
+  }
 }
 
 // Graceful shutdown

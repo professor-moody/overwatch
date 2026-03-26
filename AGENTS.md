@@ -89,3 +89,4 @@ When dispatching agents, give them these instructions:
 | `signal_session` | Send signal (SIGINT, SIGTERM, etc.) | Cancel running commands, terminate processes |
 | `close_session` | Close and destroy a session | When done with a session — returns final output |
 | `update_scope` | Expand or contract engagement scope at runtime | When a pivot network or new domain is discovered outside original scope |
+| `get_system_prompt` | Generate dynamic agent instructions from engagement state | Session initialization, agent dispatch — replaces static AGENTS.md |
