@@ -31,6 +31,7 @@ import { registerLoggingTools } from './tools/logging.js';
 import { registerRetrospectiveTools } from './tools/retrospective.js';
 import { registerRemediationTools } from './tools/remediation.js';
 import { registerSessionTools } from './tools/sessions.js';
+import { registerScopeTools } from './tools/scope.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -100,6 +101,7 @@ export function registerAllTools(
   registerRetrospectiveTools(server as McpServer, deps.engine, deps.skills);
   registerRemediationTools(server as McpServer, deps.engine);
   registerSessionTools(server as McpServer, deps.sessionManager, deps.engine);
+  registerScopeTools(server as McpServer, deps.engine);
 }
 
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {

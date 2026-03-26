@@ -2583,6 +2583,142 @@ describe('GraphEngine', () => {
       expect(lapsEdges[0].source).toBe('group-backfill-group');
     });
   });
+
+  // =============================================
+  // Scope Management
+  // =============================================
+  describe('scope management', () => {
+    it('updateScope adds CIDR and frontier includes new network discovery', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add out-of-scope host
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5', alive: true }],
+      }));
+
+      // Verify it's filtered before scope expansion
+      const frontier1 = engine.computeFrontier();
+      const { passed: passed1 } = engine.filterFrontier(frontier1);
+      const hasOos = passed1.some(f => f.node_id === 'host-172-16-1-5');
+      expect(hasOos).toBe(false);
+
+      // Expand scope
+      const result = engine.updateScope({ add_cidrs: ['172.16.1.0/24'], reason: 'Pivot network discovered' });
+      expect(result.applied).toBe(true);
+      expect(result.after.cidrs).toContain('172.16.1.0/24');
+      expect(result.affected_node_count).toBe(1);
+
+      // Verify frontier now includes the host and the new network discovery
+      const frontier2 = engine.computeFrontier();
+      const { passed: passed2 } = engine.filterFrontier(frontier2);
+      const hasHost = passed2.some(f => f.node_id === 'host-172-16-1-5');
+      expect(hasHost).toBe(true);
+      const hasNetDisc = passed2.some(f => f.type === 'network_discovery' && f.target_cidr === '172.16.1.0/24');
+      expect(hasNetDisc).toBe(true);
+    });
+
+    it('updateScope with confirm=false via previewScopeChange returns preview without mutating', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' }],
+      }));
+
+      const preview = engine.previewScopeChange({ add_cidrs: ['172.16.1.0/24'] });
+      expect(preview.nodes_entering_scope).toBe(1);
+      expect(preview.nodes_leaving_scope).toBe(0);
+
+      // Scope should NOT have changed
+      expect(engine.getConfig().scope.cidrs).not.toContain('172.16.1.0/24');
+    });
+
+    it('updateScope removes CIDR', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const before = engine.getConfig().scope.cidrs;
+      expect(before).toContain('10.10.10.0/28');
+
+      const result = engine.updateScope({ remove_cidrs: ['10.10.10.0/28'], reason: 'Reducing scope' });
+      expect(result.applied).toBe(true);
+      expect(result.after.cidrs).not.toContain('10.10.10.0/28');
+    });
+
+    it('updateScope logs scope_updated activity event', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateScope({ add_cidrs: ['192.168.2.0/24'], reason: 'Test expansion' });
+
+      const history = engine.getFullHistory();
+      const scopeEvent = history.find(h => h.event_type === 'scope_updated');
+      expect(scopeEvent).toBeDefined();
+      expect(scopeEvent!.description).toContain('Test expansion');
+      expect((scopeEvent!.details as any).after.cidrs).toContain('192.168.2.0/24');
+    });
+
+    it('updateScope rejects invalid CIDR', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.updateScope({ add_cidrs: ['not-a-cidr'], reason: 'bad' });
+      expect(result.applied).toBe(false);
+      expect(result.errors[0]).toContain('Invalid CIDR');
+    });
+
+    it('collectScopeSuggestions groups out-of-scope hosts into /24 suggestions', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' },
+          { id: 'host-172-16-1-10', type: 'host', label: '172.16.1.10', ip: '172.16.1.10' },
+          { id: 'host-172-16-2-1', type: 'host', label: '172.16.2.1', ip: '172.16.2.1' },
+        ],
+      }));
+
+      const suggestions = engine.collectScopeSuggestions();
+      expect(suggestions.length).toBe(2);
+      const s1 = suggestions.find(s => s.suggested_cidr === '172.16.1.0/24');
+      expect(s1).toBeDefined();
+      expect(s1!.out_of_scope_ips).toEqual(['172.16.1.10', '172.16.1.5']);
+      expect(s1!.node_ids.length).toBe(2);
+      const s2 = suggestions.find(s => s.suggested_cidr === '172.16.2.0/24');
+      expect(s2).toBeDefined();
+      expect(s2!.out_of_scope_ips).toEqual(['172.16.2.1']);
+    });
+
+    it('getState includes scope_suggestions for out-of-scope hosts', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' }],
+      }));
+
+      const state = engine.getState();
+      expect(state.scope_suggestions.length).toBe(1);
+      expect(state.scope_suggestions[0].suggested_cidr).toBe('172.16.1.0/24');
+    });
+
+    it('after scope expansion, previously out-of-scope nodes pass filterFrontier', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5', alive: true }],
+      }));
+
+      // Before expansion — filtered out
+      const frontier1 = engine.computeFrontier();
+      const { passed: p1, filtered: f1 } = engine.filterFrontier(frontier1);
+      expect(f1.some(f => f.item.node_id === 'host-172-16-1-5')).toBe(true);
+
+      // Expand scope
+      engine.updateScope({ add_cidrs: ['172.16.1.0/24'], reason: 'Pivot' });
+
+      // After expansion — passes through
+      const frontier2 = engine.computeFrontier();
+      const { passed: p2 } = engine.filterFrontier(frontier2);
+      expect(p2.some(f => f.node_id === 'host-172-16-1-5')).toBe(true);
+    });
+
+    it('persisted config survives reload with expanded scope', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateScope({ add_cidrs: ['172.16.1.0/24'], reason: 'Persist test' });
+
+      // Load from persisted state
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      expect(engine2.getConfig().scope.cidrs).toContain('172.16.1.0/24');
+    });
+  });
 });
 
 // =============================================

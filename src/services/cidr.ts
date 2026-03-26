@@ -91,6 +91,32 @@ export function isHostnameInScope(hostname: string, domains: string[], exclusion
   return false;
 }
 
+export function isValidCidr(cidr: string): boolean {
+  const match = cidr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/);
+  if (!match) return false;
+  const octets = [match[1], match[2], match[3], match[4]].map(Number);
+  if (octets.some(o => o > 255)) return false;
+  if (match[5] !== undefined) {
+    const mask = Number(match[5]);
+    if (mask < 0 || mask > 32) return false;
+  }
+  return true;
+}
+
+export function inferCidrFromIps(ips: string[]): string[] {
+  const subnets = new Map<string, Set<string>>();
+  for (const ip of ips) {
+    const parts = ip.split('.');
+    if (parts.length !== 4) continue;
+    const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    if (!subnets.has(prefix)) subnets.set(prefix, new Set());
+    subnets.get(prefix)!.add(ip);
+  }
+  return Array.from(subnets.keys())
+    .sort()
+    .map(prefix => `${prefix}.0/24`);
+}
+
 function ipToNum(ip: string): number {
   const parts = ip.split('.').map(Number);
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;

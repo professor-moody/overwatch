@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { isIpInScope, isHostnameInScope } from './cidr.js';
+import { isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -27,7 +27,8 @@ import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
-  AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation
+  AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
+  ScopeSuggestion
 } from '../types.js';
 
 // Handle CJS/ESM interop for graphology — graphology publishes CJS with a
@@ -1402,6 +1403,7 @@ export class GraphEngine {
       },
       warnings: summarizeHealthReport(healthReport),
       lab_readiness: labReadiness,
+      scope_suggestions: this.collectScopeSuggestions(),
     };
   }
 
@@ -1428,6 +1430,215 @@ export class GraphEngine {
     );
     if (hasAdmin) return 'local_admin';
     return 'user';
+  }
+
+  // =============================================
+  // Scope Management
+  // =============================================
+
+  updateScope(changes: {
+    add_cidrs?: string[];
+    remove_cidrs?: string[];
+    add_domains?: string[];
+    remove_domains?: string[];
+    add_exclusions?: string[];
+    remove_exclusions?: string[];
+    reason: string;
+  }): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
+    const errors: string[] = [];
+
+    // Validate CIDRs
+    for (const cidr of changes.add_cidrs || []) {
+      if (!isValidCidr(cidr)) errors.push(`Invalid CIDR: ${cidr}`);
+    }
+    for (const cidr of changes.remove_cidrs || []) {
+      if (!isValidCidr(cidr)) errors.push(`Invalid CIDR to remove: ${cidr}`);
+    }
+    for (const cidr of changes.add_exclusions || []) {
+      if (!isValidCidr(cidr)) errors.push(`Invalid exclusion: ${cidr}`);
+    }
+    for (const cidr of changes.remove_exclusions || []) {
+      if (!isValidCidr(cidr)) errors.push(`Invalid exclusion to remove: ${cidr}`);
+    }
+
+    if (errors.length > 0) {
+      return { applied: false, errors, before: { ...this.ctx.config.scope }, after: { ...this.ctx.config.scope }, affected_node_count: 0 };
+    }
+
+    const before = {
+      cidrs: [...this.ctx.config.scope.cidrs],
+      domains: [...this.ctx.config.scope.domains],
+      exclusions: [...this.ctx.config.scope.exclusions],
+    };
+
+    // Apply mutations
+    if (changes.add_cidrs) {
+      for (const cidr of changes.add_cidrs) {
+        if (!this.ctx.config.scope.cidrs.includes(cidr)) {
+          this.ctx.config.scope.cidrs.push(cidr);
+        }
+      }
+    }
+    if (changes.remove_cidrs) {
+      this.ctx.config.scope.cidrs = this.ctx.config.scope.cidrs.filter(c => !changes.remove_cidrs!.includes(c));
+    }
+    if (changes.add_domains) {
+      for (const domain of changes.add_domains) {
+        if (!this.ctx.config.scope.domains.includes(domain)) {
+          this.ctx.config.scope.domains.push(domain);
+        }
+      }
+    }
+    if (changes.remove_domains) {
+      this.ctx.config.scope.domains = this.ctx.config.scope.domains.filter(d => !changes.remove_domains!.includes(d));
+    }
+    if (changes.add_exclusions) {
+      for (const excl of changes.add_exclusions) {
+        if (!this.ctx.config.scope.exclusions.includes(excl)) {
+          this.ctx.config.scope.exclusions.push(excl);
+        }
+      }
+    }
+    if (changes.remove_exclusions) {
+      this.ctx.config.scope.exclusions = this.ctx.config.scope.exclusions.filter(e => !changes.remove_exclusions!.includes(e));
+    }
+
+    const after = {
+      cidrs: [...this.ctx.config.scope.cidrs],
+      domains: [...this.ctx.config.scope.domains],
+      exclusions: [...this.ctx.config.scope.exclusions],
+    };
+
+    // Count nodes now in scope that were previously out of scope
+    let affectedNodeCount = 0;
+    this.ctx.graph.forEachNode((id, attrs) => {
+      if (attrs.type !== 'host') return;
+      const ip = attrs.ip;
+      if (!ip) return;
+      const wasInScope = isIpInScope(ip, before.cidrs, before.exclusions);
+      const nowInScope = isIpInScope(ip, after.cidrs, after.exclusions);
+      if (!wasInScope && nowInScope) affectedNodeCount++;
+    });
+
+    // Invalidate caches
+    this.invalidateFrontierCache();
+    this.invalidateHealthReport();
+
+    // Log the scope change
+    this.logActionEvent({
+      description: `Scope updated: ${changes.reason}`,
+      event_type: 'scope_updated',
+      category: 'system',
+      result_classification: 'success',
+      details: {
+        reason: changes.reason,
+        before,
+        after,
+        affected_node_count: affectedNodeCount,
+      },
+    });
+
+    this.persist();
+
+    return { applied: true, errors: [], before, after, affected_node_count: affectedNodeCount };
+  }
+
+  collectScopeSuggestions(): ScopeSuggestion[] {
+    const outOfScopeIps = new Map<string, { ips: Set<string>; nodeIds: Set<string>; firstSeen: string; sources: Set<string> }>();
+
+    this.ctx.graph.forEachNode((id, attrs) => {
+      if (attrs.type !== 'host' || !attrs.ip) return;
+      if (isIpInScope(attrs.ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions)) return;
+
+      const parts = attrs.ip.split('.');
+      if (parts.length !== 4) return;
+      const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
+      const suggestedCidr = `${prefix}.0/24`;
+
+      if (!outOfScopeIps.has(suggestedCidr)) {
+        outOfScopeIps.set(suggestedCidr, { ips: new Set(), nodeIds: new Set(), firstSeen: attrs.discovered_at, sources: new Set() });
+      }
+      const entry = outOfScopeIps.get(suggestedCidr)!;
+      entry.ips.add(attrs.ip);
+      entry.nodeIds.add(id);
+      if (attrs.discovered_at < entry.firstSeen) entry.firstSeen = attrs.discovered_at;
+      if (attrs.discovered_by) entry.sources.add(attrs.discovered_by);
+    });
+
+    return Array.from(outOfScopeIps.entries()).map(([cidr, data]) => ({
+      suggested_cidr: cidr,
+      out_of_scope_ips: Array.from(data.ips).sort(),
+      node_ids: Array.from(data.nodeIds),
+      first_seen_at: data.firstSeen,
+      source_descriptions: Array.from(data.sources),
+    }));
+  }
+
+  previewScopeChange(changes: {
+    add_cidrs?: string[];
+    remove_cidrs?: string[];
+    add_domains?: string[];
+    remove_domains?: string[];
+    add_exclusions?: string[];
+    remove_exclusions?: string[];
+  }): { before: EngagementConfig['scope']; after: EngagementConfig['scope']; nodes_entering_scope: number; nodes_leaving_scope: number; pending_suggestions_resolved: string[] } {
+    const before = {
+      cidrs: [...this.ctx.config.scope.cidrs],
+      domains: [...this.ctx.config.scope.domains],
+      exclusions: [...this.ctx.config.scope.exclusions],
+    };
+
+    // Compute hypothetical after state
+    const afterCidrs = [...before.cidrs];
+    for (const cidr of changes.add_cidrs || []) {
+      if (!afterCidrs.includes(cidr)) afterCidrs.push(cidr);
+    }
+    for (const cidr of changes.remove_cidrs || []) {
+      const idx = afterCidrs.indexOf(cidr);
+      if (idx >= 0) afterCidrs.splice(idx, 1);
+    }
+    const afterDomains = [...before.domains];
+    for (const d of changes.add_domains || []) {
+      if (!afterDomains.includes(d)) afterDomains.push(d);
+    }
+    for (const d of changes.remove_domains || []) {
+      const idx = afterDomains.indexOf(d);
+      if (idx >= 0) afterDomains.splice(idx, 1);
+    }
+    const afterExclusions = [...before.exclusions];
+    for (const e of changes.add_exclusions || []) {
+      if (!afterExclusions.includes(e)) afterExclusions.push(e);
+    }
+    for (const e of changes.remove_exclusions || []) {
+      const idx = afterExclusions.indexOf(e);
+      if (idx >= 0) afterExclusions.splice(idx, 1);
+    }
+
+    const after = { cidrs: afterCidrs, domains: afterDomains, exclusions: afterExclusions };
+
+    let entering = 0;
+    let leaving = 0;
+    this.ctx.graph.forEachNode((_id, attrs) => {
+      if (attrs.type !== 'host' || !attrs.ip) return;
+      const wasIn = isIpInScope(attrs.ip, before.cidrs, before.exclusions);
+      const nowIn = isIpInScope(attrs.ip, after.cidrs, after.exclusions);
+      if (!wasIn && nowIn) entering++;
+      if (wasIn && !nowIn) leaving++;
+    });
+
+    // Check which pending suggestions would be resolved
+    const suggestions = this.collectScopeSuggestions();
+    const resolved: string[] = [];
+    for (const s of suggestions) {
+      for (const ip of s.out_of_scope_ips) {
+        if (isIpInScope(ip, after.cidrs, after.exclusions)) {
+          resolved.push(s.suggested_cidr);
+          break;
+        }
+      }
+    }
+
+    return { before, after, nodes_entering_scope: entering, nodes_leaving_scope: leaving, pending_suggestions_resolved: [...new Set(resolved)] };
   }
 
   // =============================================
@@ -1521,6 +1732,10 @@ export class GraphEngine {
 
   private invalidateHealthReport(): void {
     this.healthReportCache = null;
+    this.frontierCache = null;
+  }
+
+  private invalidateFrontierCache(): void {
     this.frontierCache = null;
   }
 

@@ -355,6 +355,17 @@ export interface EngagementState {
   };
   warnings: HealthSummary;
   lab_readiness: LabReadinessSummary;
+  scope_suggestions: ScopeSuggestion[];
+}
+
+// --- Scope Suggestions (surfaced by get_state for operator review) ---
+
+export interface ScopeSuggestion {
+  suggested_cidr: string;
+  out_of_scope_ips: string[];
+  node_ids: string[];
+  first_seen_at: string;
+  source_descriptions: string[];
 }
 
 export type LabProfile = 'goad_ad' | 'single_host' | 'network';

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandCidr, isIpInCidr, isIpInScope, isHostnameInScope } from '../cidr.js';
+import { expandCidr, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from '../cidr.js';
 
 describe('expandCidr', () => {
   it('expands a /24 to 254 hosts (skips network + broadcast)', () => {
@@ -151,5 +151,53 @@ describe('isHostnameInScope', () => {
 
   it('ignores CIDR exclusions (only hostname matching)', () => {
     expect(isHostnameInScope('dc01.test.local', domains, ['10.0.0.0/8'])).toBe(true);
+  });
+});
+
+describe('isValidCidr', () => {
+  it('accepts valid CIDR notation', () => {
+    expect(isValidCidr('10.10.10.0/24')).toBe(true);
+    expect(isValidCidr('172.16.1.0/24')).toBe(true);
+    expect(isValidCidr('192.168.1.1/32')).toBe(true);
+  });
+
+  it('accepts bare IP (no mask)', () => {
+    expect(isValidCidr('10.10.10.1')).toBe(true);
+  });
+
+  it('rejects non-IP strings', () => {
+    expect(isValidCidr('not-a-cidr')).toBe(false);
+    expect(isValidCidr('')).toBe(false);
+    expect(isValidCidr('10.10.10')).toBe(false);
+  });
+
+  it('rejects out-of-range octets', () => {
+    expect(isValidCidr('256.1.1.1/24')).toBe(false);
+    expect(isValidCidr('10.10.10.300')).toBe(false);
+  });
+
+  it('rejects out-of-range mask', () => {
+    expect(isValidCidr('10.10.10.0/33')).toBe(false);
+  });
+});
+
+describe('inferCidrFromIps', () => {
+  it('groups IPs into /24 CIDRs', () => {
+    const result = inferCidrFromIps(['172.16.1.5', '172.16.1.10', '172.16.2.1']);
+    expect(result).toEqual(['172.16.1.0/24', '172.16.2.0/24']);
+  });
+
+  it('returns empty for empty input', () => {
+    expect(inferCidrFromIps([])).toEqual([]);
+  });
+
+  it('deduplicates IPs in the same subnet', () => {
+    const result = inferCidrFromIps(['10.0.0.1', '10.0.0.1', '10.0.0.2']);
+    expect(result).toEqual(['10.0.0.0/24']);
+  });
+
+  it('sorts output by prefix', () => {
+    const result = inferCidrFromIps(['192.168.1.1', '10.0.0.1', '172.16.0.1']);
+    expect(result).toEqual(['10.0.0.0/24', '172.16.0.0/24', '192.168.1.0/24']);
   });
 });

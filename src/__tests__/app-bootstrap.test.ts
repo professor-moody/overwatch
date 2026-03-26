@@ -38,10 +38,11 @@ describe('app bootstrap', () => {
       getDashboardStatus: () => ({ enabled: false, running: false }),
     });
 
-    expect(toolNames).toHaveLength(34);
+    expect(toolNames).toHaveLength(35);
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('run_retrospective');
     expect(toolNames).toContain('open_session');
     expect(toolNames).toContain('close_session');
+    expect(toolNames).toContain('update_scope');
   });
 });

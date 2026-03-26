@@ -99,6 +99,7 @@ export class DashboardServer {
       this.debounceTimer = null;
     }
     this.accumulator.drain();
+    this.fileCache.clear();
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
@@ -241,7 +242,7 @@ export class DashboardServer {
 
     // Check cache
     if (this.fileCache.has(cleanPath)) {
-      res.writeHead(200, { 'Content-Type': mime });
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
       res.end(this.fileCache.get(cleanPath));
       return;
     }
@@ -261,7 +262,7 @@ export class DashboardServer {
         ? readFileSync(fullPath, 'utf-8')
         : readFileSync(fullPath);
       this.fileCache.set(cleanPath, content);
-      res.writeHead(200, { 'Content-Type': mime });
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
       res.end(content);
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -279,9 +280,15 @@ export class DashboardServer {
 
   private serveHistory(url: string, res: ServerResponse): void {
     const params = new URL(url, 'http://localhost').searchParams;
-    const limit = params.has('limit') ? parseInt(params.get('limit')!, 10) : undefined;
-    const after = params.get('after') || undefined;
-    const before = params.get('before') || undefined;
+    let limit: number | undefined;
+    if (params.has('limit')) {
+      const parsed = parseInt(params.get('limit')!, 10);
+      limit = Number.isFinite(parsed) && parsed >= 1 ? parsed : undefined;
+    }
+    const rawAfter = params.get('after') || undefined;
+    const after = rawAfter && !isNaN(Date.parse(rawAfter)) ? rawAfter : undefined;
+    const rawBefore = params.get('before') || undefined;
+    const before = rawBefore && !isNaN(Date.parse(rawBefore)) ? rawBefore : undefined;
 
     let entries = this.engine.getFullHistory();
 
