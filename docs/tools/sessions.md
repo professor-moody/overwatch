@@ -75,6 +75,8 @@ Convenience: write command + wait for output to settle + return captured output.
 | `timeout_ms` | number? | Max wait (default: 10000) |
 | `idle_ms` | number? | Return after this much silence (default: 500) |
 | `wait_for` | string? | Regex — return immediately on match |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
 
 For password prompts, REPLs, or streaming tools (`tail -f`, `tcpdump`), use `write_session` + `read_session` directly.
 
@@ -100,6 +102,8 @@ Update session metadata after changes (e.g., shell upgrade).
 | `title` | string? | New title |
 | `claimed_by` | string? | Transfer ownership |
 | `notes` | string? | Operational notes |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
 
 ### `resize_session`
 
@@ -110,6 +114,8 @@ Resize terminal dimensions (PTY sessions only).
 | `session_id` | string | Session ID |
 | `cols` | number | New column count |
 | `rows` | number | New row count |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
 
 ### `signal_session`
 
@@ -119,6 +125,8 @@ Send a signal to the session process (PTY sessions only).
 |-----------|------|-------------|
 | `session_id` | string | Session ID |
 | `signal` | `SIGINT \| SIGTERM \| SIGKILL \| SIGTSTP \| SIGCONT` | Signal to send |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
 
 ### `close_session`
 
@@ -127,6 +135,8 @@ Close and destroy a session.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | string | Session to close |
+| `agent_id` | string? | Checked against `claimed_by` |
+| `force` | boolean? | Override ownership check |
 
 Returns final output snapshot + session summary (duration, total bytes).
 
@@ -153,7 +163,7 @@ pending → connected → closed
 
 ## Ownership
 
-Sessions have a `claimed_by` field (agent ID). Only the claiming agent can write. Any agent can read. Use `update_session` to transfer ownership or `force: true` to override.
+Sessions have a `claimed_by` field (agent ID). Only the claiming agent can write or control the session. Any agent can read. Use `update_session` to transfer ownership or `force: true` to override.
 
 ## Examples
 

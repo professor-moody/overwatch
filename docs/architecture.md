@@ -43,7 +43,7 @@ The graph is powered by [graphology](https://graphology.github.io/), a robust Ja
 
 The orchestrator survives context compaction by design — it's not in the context window. After compaction, `get_state()` reconstructs a complete briefing from the graph. Zero information loss.
 
-Communication happens over **stdio** using the [Model Context Protocol](https://modelcontextprotocol.io/), the same protocol Claude Code uses for all tool integrations.
+The current transport is **stdio** using the [Model Context Protocol](https://modelcontextprotocol.io/), the same protocol Claude Code uses for tool integrations. The core app bootstrap is transport-neutral so additional transports can be layered on later.
 
 ### Hybrid Scoring
 

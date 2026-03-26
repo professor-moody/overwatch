@@ -1,16 +1,18 @@
 import { describe, it, expect } from 'vitest';
+import { readdirSync } from 'fs';
 import { SkillIndex } from '../skill-index.js';
 
 const skills = new SkillIndex('./skills');
+const expectedSkillCount = readdirSync('./skills').filter(file => file.endsWith('.md')).length;
 
 describe('SkillIndex', () => {
   it('loads skills from directory', () => {
-    expect(skills.count).toBe(29);
+    expect(skills.count).toBe(expectedSkillCount);
   });
 
   it('listSkills returns all skills with names and tags', () => {
     const list = skills.listSkills();
-    expect(list.length).toBe(29);
+    expect(list.length).toBe(expectedSkillCount);
     expect(list[0]).toHaveProperty('id');
     expect(list[0]).toHaveProperty('name');
     expect(list[0]).toHaveProperty('tags');

@@ -16,7 +16,7 @@ Not in a single server instance. Each Overwatch server runs one engagement. To r
 
 ### Can I use this with models other than Claude?
 
-Overwatch is a standard MCP server communicating over stdio. Any MCP-compatible client can connect to it. However, the `AGENTS.md` session instructions and sub-agent dispatch are written for Claude Code specifically. You'd need to adapt the session instructions for other clients.
+Overwatch is a standard MCP server. Today the shipped runtime transport is stdio, and any MCP-compatible client that can talk to a stdio MCP server can connect to it. However, the `AGENTS.md` session instructions and sub-agent dispatch are written for Claude Code specifically. You'd need to adapt the session instructions for other clients.
 
 The core server functionality (graph operations, inference rules, parsers, persistence) is model-agnostic.
 

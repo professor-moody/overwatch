@@ -8,7 +8,11 @@
     "build": "tsc && cp -r src/dashboard dist/ && node scripts/vendor-dashboard-deps.js",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "npm run test:source",
+    "test:source": "vitest run",
+    "test:integration:stdio": "npm run build && vitest run --config vitest.integration-stdio.config.ts",
+    "check:dist": "git diff --exit-code -- dist",
+    "verify": "npm run test:source && npm run test:integration:stdio && npm run check:dist",
     "retrospective": "node dist/cli/retrospective.js",
     "lab:smoke": "node dist/cli/lab-smoke.js"
   },

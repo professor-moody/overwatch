@@ -3,6 +3,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { resolve, basename } from 'path';
+import { createConnection, createServer, type Socket } from 'net';
+import { setTimeout as delay } from 'timers/promises';
+import * as pty from 'node-pty';
 
 const ENGAGEMENT_JSON = resolve('./engagement.json');
 const SKILLS_DIR = resolve('./skills');
@@ -11,6 +14,22 @@ const STATE_FILE = resolve(`./state-${engagementId}.json`);
 
 let client: Client;
 let transport: StdioClientTransport;
+
+const supportsLocalPty = (() => {
+  try {
+    const proc = pty.spawn('/bin/sh', [], {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: { ...process.env as Record<string, string> },
+    });
+    proc.kill();
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function cleanup() {
   if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
@@ -26,6 +45,62 @@ function cleanup() {
   } catch {}
 }
 
+function parseToolBody(result: Awaited<ReturnType<Client['callTool']>>) {
+  return JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+}
+
+async function callToolJson(name: string, args: Record<string, unknown> = {}) {
+  return parseToolBody(await client.callTool({ name, arguments: args }));
+}
+
+async function getFreePort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('Failed to obtain ephemeral port'));
+        return;
+      }
+      const { port } = address;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolvePort(port);
+      });
+    });
+  });
+}
+
+async function waitForSessionState(sessionId: string, expectedState: string, timeoutMs: number = 2000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const body = await callToolJson('list_sessions', { session_id: sessionId });
+    if (body.state === expectedState) return body;
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for session ${sessionId} to reach state ${expectedState}`);
+}
+
+async function readUntilContains(sessionId: string, fromPos: number, needle: string, timeoutMs: number = 2000) {
+  const start = Date.now();
+  let cursor = fromPos;
+  let combined = '';
+
+  while (Date.now() - start < timeoutMs) {
+    const body = await callToolJson('read_session', { session_id: sessionId, from_pos: cursor });
+    cursor = body.end_pos;
+    combined += body.text || '';
+    if (combined.includes(needle)) {
+      return { body, combined, endPos: cursor };
+    }
+    await delay(50);
+  }
+
+  throw new Error(`Timed out waiting for session output containing "${needle}"`);
+}
+
 describe('MCP Server Integration', () => {
   beforeAll(async () => {
     cleanup();
@@ -36,6 +111,7 @@ describe('MCP Server Integration', () => {
         ...process.env as Record<string, string>,
         OVERWATCH_CONFIG: ENGAGEMENT_JSON,
         OVERWATCH_SKILLS: SKILLS_DIR,
+        OVERWATCH_DASHBOARD_PORT: '0',
       },
       stderr: 'pipe',
     });
@@ -49,9 +125,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 25 tools', async () => {
+  it('lists all 34 tools including the session toolset', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(25);
+    expect(result.tools.length).toBe(34);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -78,6 +154,15 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('run_retrospective');
     expect(toolNames).toContain('correct_graph');
     expect(toolNames).toContain('recompute_objectives');
+    expect(toolNames).toContain('open_session');
+    expect(toolNames).toContain('write_session');
+    expect(toolNames).toContain('read_session');
+    expect(toolNames).toContain('send_to_session');
+    expect(toolNames).toContain('list_sessions');
+    expect(toolNames).toContain('update_session');
+    expect(toolNames).toContain('resize_session');
+    expect(toolNames).toContain('signal_session');
+    expect(toolNames).toContain('close_session');
   });
 
   it('get_state returns engagement state', async () => {
@@ -205,6 +290,210 @@ describe('MCP Server Integration', () => {
     expect(result.isError).toBe(true);
     const body = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
     expect(body.error).toContain('Free-text query payloads are not supported');
+  });
+
+  it.skipIf(!supportsLocalPty)('supports a full local_pty session lifecycle through MCP', async () => {
+    const opened = await callToolJson('open_session', {
+      kind: 'local_pty',
+      title: 'integration-local-shell',
+      shell: '/bin/sh',
+      cwd: resolve('.'),
+      agent_id: 'owner-agent',
+      cols: 100,
+      rows: 30,
+    });
+
+    expect(opened.session.state).toBe('connected');
+    expect(opened.session.claimed_by).toBe('owner-agent');
+
+    const listed = await callToolJson('list_sessions', { session_id: opened.session.id });
+    expect(listed.id).toBe(opened.session.id);
+    expect(listed.title).toBe('integration-local-shell');
+
+    const sent = await callToolJson('send_to_session', {
+      session_id: opened.session.id,
+      command: 'printf session-ready',
+      agent_id: 'owner-agent',
+      wait_for: 'session-ready',
+      timeout_ms: 4000,
+      idle_ms: 100,
+    });
+    expect(sent.text).toContain('session-ready');
+
+    const write = await callToolJson('write_session', {
+      session_id: opened.session.id,
+      data: 'printf cursor-check',
+      append_newline: true,
+      agent_id: 'owner-agent',
+    });
+    const cursorRead = await readUntilContains(opened.session.id, write.end_pos, 'cursor-check');
+    expect(cursorRead.combined).toContain('cursor-check');
+
+    const updated = await callToolJson('update_session', {
+      session_id: opened.session.id,
+      title: 'integration-local-shell-upgraded',
+      tty_quality: 'full',
+      supports_resize: true,
+      supports_signals: true,
+      notes: 'session lifecycle check',
+      agent_id: 'owner-agent',
+    });
+    expect(updated.title).toBe('integration-local-shell-upgraded');
+    expect(updated.notes).toBe('session lifecycle check');
+    expect(updated.capabilities.tty_quality).toBe('full');
+
+    const resized = await callToolJson('resize_session', {
+      session_id: opened.session.id,
+      cols: 120,
+      rows: 40,
+      agent_id: 'owner-agent',
+    });
+    expect(resized.resized).toBe(true);
+
+    const signaled = await callToolJson('signal_session', {
+      session_id: opened.session.id,
+      signal: 'SIGINT',
+      agent_id: 'owner-agent',
+    });
+    expect(signaled.sent).toBe(true);
+
+    const closed = await callToolJson('close_session', {
+      session_id: opened.session.id,
+      agent_id: 'owner-agent',
+    });
+    expect(closed.session.state).toBe('closed');
+    expect(closed.final_output.session_id).toBe(opened.session.id);
+
+    const activeSessions = await callToolJson('list_sessions', { active_only: true });
+    expect(activeSessions.sessions.some((s: any) => s.id === opened.session.id)).toBe(false);
+  });
+
+  it.skipIf(!supportsLocalPty)('enforces ownership for claimed session control paths and allows force override', async () => {
+    const opened = await callToolJson('open_session', {
+      kind: 'local_pty',
+      title: 'ownership-shell',
+      shell: '/bin/sh',
+      agent_id: 'owner-agent',
+    });
+
+    const omittedAgent = await client.callTool({
+      name: 'write_session',
+      arguments: {
+        session_id: opened.session.id,
+        data: 'printf denied',
+        append_newline: true,
+      },
+    });
+    expect(omittedAgent.isError).toBe(true);
+    expect(parseToolBody(omittedAgent).error).toContain('claimed by "owner-agent"');
+
+    const wrongAgent = await client.callTool({
+      name: 'signal_session',
+      arguments: {
+        session_id: opened.session.id,
+        signal: 'SIGINT',
+        agent_id: 'other-agent',
+      },
+    });
+    expect(wrongAgent.isError).toBe(true);
+    expect(parseToolBody(wrongAgent).error).toContain('claimed by "owner-agent"');
+
+    const forced = await callToolJson('send_to_session', {
+      session_id: opened.session.id,
+      command: 'printf forced-ok',
+      agent_id: 'other-agent',
+      force: true,
+      wait_for: 'forced-ok',
+      timeout_ms: 4000,
+      idle_ms: 100,
+    });
+    expect(forced.text).toContain('forced-ok');
+
+    const forceClosed = await callToolJson('close_session', {
+      session_id: opened.session.id,
+      agent_id: 'other-agent',
+      force: true,
+    });
+    expect(forceClosed.session.state).toBe('closed');
+  });
+
+  it('supports a deterministic socket pending-to-connected lifecycle through MCP', async () => {
+    const port = await getFreePort();
+    const opened = await callToolJson('open_session', {
+      kind: 'socket',
+      title: 'integration-socket-listener',
+      mode: 'listen',
+      port,
+      agent_id: 'socket-owner',
+    });
+
+    expect(opened.session.state).toBe('pending');
+
+    const socketClient = await new Promise<Socket>((resolveSocket, reject) => {
+      const sock = createConnection({ host: '127.0.0.1', port }, () => resolveSocket(sock));
+      sock.once('error', reject);
+    });
+
+    const connected = await waitForSessionState(opened.session.id, 'connected');
+    expect(connected.state).toBe('connected');
+
+    socketClient.write('client-hello\n');
+    const serverRead = await readUntilContains(opened.session.id, opened.initial_output.end_pos, 'client-hello');
+    expect(serverRead.combined).toContain('client-hello');
+
+    const clientData = new Promise<string>((resolveData, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for socket data')), 2000);
+      socketClient.once('data', (chunk) => {
+        clearTimeout(timeout);
+        resolveData(chunk.toString());
+      });
+      socketClient.once('error', reject);
+    });
+
+    await callToolJson('write_session', {
+      session_id: opened.session.id,
+      data: 'server-hello',
+      append_newline: true,
+      agent_id: 'socket-owner',
+    });
+    expect(await clientData).toContain('server-hello');
+
+    const closed = await callToolJson('close_session', {
+      session_id: opened.session.id,
+      agent_id: 'socket-owner',
+    });
+    expect(closed.session.state).toBe('closed');
+
+    socketClient.destroy();
+  });
+
+  it.skipIf(!supportsLocalPty)('session activity does not distort inline lab readiness', async () => {
+    const before = await callToolJson('get_state', {});
+    const baseline = JSON.stringify(before.lab_readiness);
+
+    const opened = await callToolJson('open_session', {
+      kind: 'local_pty',
+      title: 'readiness-session-check',
+      shell: '/bin/sh',
+      agent_id: 'readiness-owner',
+    });
+
+    await callToolJson('send_to_session', {
+      session_id: opened.session.id,
+      command: 'printf readiness-ok',
+      agent_id: 'readiness-owner',
+      wait_for: 'readiness-ok',
+      timeout_ms: 4000,
+      idle_ms: 100,
+    });
+
+    const after = await callToolJson('get_state', {});
+    expect(JSON.stringify(after.lab_readiness)).toBe(baseline);
+
+    await callToolJson('close_session', {
+      session_id: opened.session.id,
+      agent_id: 'readiness-owner',
+    });
   });
 
   it('links validate_action and report_finding via action_id in get_history', async () => {
@@ -368,5 +657,30 @@ describe('MCP Server Integration', () => {
     expect(body.context_improvements.recommendations).toBeInstanceOf(Array);
     expect(body.trace_quality).toBeDefined();
     expect(body.scoring).toBeUndefined();
+  });
+
+  it.skipIf(!supportsLocalPty)('run_retrospective handles structured session lifecycle events sanely', async () => {
+    const opened = await callToolJson('open_session', {
+      kind: 'local_pty',
+      title: 'retro-session-check',
+      shell: '/bin/sh',
+      agent_id: 'retro-owner',
+    });
+
+    await callToolJson('signal_session', {
+      session_id: opened.session.id,
+      signal: 'SIGINT',
+      agent_id: 'retro-owner',
+    });
+
+    await callToolJson('close_session', {
+      session_id: opened.session.id,
+      agent_id: 'retro-owner',
+    });
+
+    const retro = await callToolJson('run_retrospective', {});
+    expect(retro.training_traces).toBeInstanceOf(Array);
+    expect(retro.training_traces.some((trace: any) =>
+      ['session_opened', 'session_signaled', 'session_closed'].includes(trace.action?.type))).toBe(true);
   });
 });

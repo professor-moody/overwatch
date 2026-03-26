@@ -1019,7 +1019,19 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     let technique: string | undefined;
     let tool: string | undefined;
 
-    if (desc.includes('finding') || desc.includes('ingest')) {
+    const structuredSessionTypes: Record<string, string> = {
+      session_opened: 'session_opened',
+      session_connected: 'session_connected',
+      session_signaled: 'session_signaled',
+      session_closed: 'session_closed',
+      session_error: 'session_error',
+    };
+
+    if (entry.event_type && structuredSessionTypes[entry.event_type]) {
+      actionType = structuredSessionTypes[entry.event_type];
+      const sessionId = entry.details?.session_id;
+      if (typeof sessionId === 'string') target = sessionId;
+    } else if (desc.includes('finding') || desc.includes('ingest')) {
       actionType = 'report_finding';
     } else if (desc.includes('agent dispatch')) {
       actionType = 'dispatch_agent';
@@ -1068,7 +1080,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     nodeCount += newNodes;
     edgeCount += newEdges;
     if (objAchieved) objectivesAchieved++;
-    if (desc.includes('admin') || desc.includes('session')) accessLevel = 'user';
+    if (desc.includes('admin') || desc.includes('has_session')) accessLevel = 'user';
     if (desc.includes('domain admin') || desc.includes('da ')) accessLevel = 'domain_admin';
 
     // Compute reward

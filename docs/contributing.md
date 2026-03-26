@@ -5,14 +5,14 @@
 1. Fork and clone the repo
 2. `npm install`
 3. `npm run build` to confirm clean compilation
-4. `npm test` to confirm all tests pass
+4. `npm run verify` to confirm source tests, build-backed stdio integration, and generated artifacts all pass cleanly
 
 ## Development Workflow
 
 1. Create a feature branch from `main`
 2. Make your changes
 3. Add or update tests — never reduce coverage
-4. Run `npm test` to verify
+4. Run `npm run verify` before opening the pull request
 5. Open a pull request
 
 ## Code Style

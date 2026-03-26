@@ -599,6 +599,62 @@ describe('Retrospective', () => {
       expect(trace_quality.status).toBe('good');
     });
 
+    it('classifies structured session lifecycle events without falling back to text heuristics', () => {
+      const input = makeInput({
+        history: [
+          {
+            timestamp: '2026-01-01T02:00:00Z',
+            event_id: 'evt-session-1',
+            event_type: 'session_opened',
+            description: 'Session "shell-1" opened (local_pty, pty)',
+            category: 'system',
+            details: { session_id: 'session-1', session_kind: 'local_pty', session_state: 'connected' },
+          },
+          {
+            timestamp: '2026-01-01T02:01:00Z',
+            event_id: 'evt-session-2',
+            event_type: 'session_signaled',
+            description: 'Signal SIGINT sent to session "shell-1"',
+            category: 'system',
+            details: { session_id: 'session-1', session_kind: 'local_pty', session_state: 'connected' },
+          },
+          {
+            timestamp: '2026-01-01T02:02:00Z',
+            event_id: 'evt-session-3',
+            event_type: 'session_closed',
+            description: 'Session "shell-1" closed by operator',
+            category: 'system',
+            details: { session_id: 'session-1', session_kind: 'local_pty', session_state: 'closed' },
+          },
+        ],
+      });
+
+      const { traces } = exportTrainingTraces(input);
+      expect(traces[0].action.type).toBe('session_opened');
+      expect(traces[0].action.target).toBe('session-1');
+      expect(traces[0].derived_from).toBe('mixed');
+      expect(traces[1].action.type).toBe('session_signaled');
+      expect(traces[2].action.type).toBe('session_closed');
+    });
+
+    it('does not treat generic session lifecycle events as user access', () => {
+      const input = makeInput({
+        history: [
+          {
+            timestamp: '2026-01-01T02:00:00Z',
+            event_id: 'evt-session-only',
+            event_type: 'session_opened',
+            description: 'Session "shell-1" opened (local_pty, pty)',
+            category: 'system',
+            details: { session_id: 'session-1', session_kind: 'local_pty', session_state: 'connected' },
+          },
+        ],
+      });
+
+      const { traces } = exportTrainingTraces(input);
+      expect(traces[0].state_summary.access_level).toBe('none');
+    });
+
     it('returns empty traces for empty history', () => {
       const input = makeInput();
       input.history = [];
