@@ -154,13 +154,27 @@ invocations. If things go wrong:
 All output is JSON. Parse it directly. Do not add --human flag.
 ```
 
+## What's Manual vs. Automatic
+
+Once the AGENTS.md is in place and Claude Code starts, **everything is autonomous**. Claude reads the AGENTS.md, bootstraps via `get-system-prompt`, then drives the entire engagement loop through bash.
+
+| Step | Who | When |
+|------|-----|------|
+| Write `engagement.json` | Human | Once, before engagement |
+| Start Overwatch HTTP server | Human | Once, before engagement |
+| Place `AGENTS.md` in project root | Human | Once, before engagement |
+| Start Claude Code | Human | Once |
+| Everything else below | Claude Code | Autonomous |
+
+The walkthrough below shows exactly what Claude Code does — every command is run by Claude via its bash tool. The human just watches (and approves bash commands if Claude Code's policy requires it).
+
 ## Walkthrough: Network Engagement via CLI
 
-A Dante-style network engagement translated to CLI commands.
+What Claude Code actually does during a Dante-style network engagement, step by step.
 
-### Phase 0 — Config
+### Phase 0 — Human Setup (one-time)
 
-Ensure `engagement.json` exists in the Overwatch directory:
+The human creates `engagement.json` in the Overwatch directory:
 
 ```json
 {
@@ -173,65 +187,70 @@ Ensure `engagement.json` exists in the Overwatch directory:
 }
 ```
 
-Start the server:
+The human starts the server and launches Claude Code:
 
 ```bash
 OVERWATCH_TRANSPORT=http node dist/index.js
+claude
 ```
 
-### Phase 1 — Bootstrap
+**From here on, Claude Code runs everything.**
+
+### Phase 1 — Claude Bootstraps
+
+Claude reads the AGENTS.md, then:
 
 ```bash
-# Verify connectivity and engagement identity
-overwatch health
+# Fetch full dynamic instructions (core loop, tool table, state, OPSEC)
+overwatch get-system-prompt --role primary
 
-# Load full engagement state
+# Load engagement state
 overwatch get-state
 
-# Run preflight checks
+# Run preflight — checks tools, config, graph health
 echo '{"profile":"network"}' | overwatch call run_lab_preflight --stdin
 
-# Check available offensive tools on PATH
+# See what offensive tools are available on PATH
 overwatch call check_tools
 ```
 
-### Phase 2 — Discovery
+Claude now has the engagement briefing, knows the scope, and has the full tool table.
 
-Validate, execute, parse:
+### Phase 2 — Claude Discovers the Network
+
+Claude validates, runs nmap, and parses — all in one flow:
 
 ```bash
-# Validate the scan action
+# 1. Validate the scan
 echo '{
   "action_type": "network_scan",
   "target_node_id": "cidr-10-10-110-0-24",
-  "command": "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX scan.xml 10.10.110.0/24"
+  "command": "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX /tmp/scan.xml 10.10.110.0/24"
 }' | overwatch validate-action --stdin
 # → returns action_id: "act-xxx"
 
-# Log execution start
+# 2. Log execution start
 overwatch log-action --action-id act-xxx --type action_started --frontier-item-id fi-yyy
 
-# (operator runs nmap separately)
+# 3. Run nmap (Claude executes this directly via bash)
+nmap -sS -sV -sC -O -p- --min-rate=1000 -oX /tmp/scan.xml 10.10.110.0/24
 
-# Parse results into the graph
-cat scan.xml | python3 -c "
-import sys, json
-xml = sys.stdin.read()
-print(json.dumps({'tool_name': 'nmap', 'output': xml, 'agent_id': 'primary', 'action_id': 'act-xxx', 'frontier_item_id': 'fi-yyy'}))
-" | overwatch parse-output --stdin
+# 4. Feed results into the graph
+echo '{"tool_name": "nmap", "output": "'$(cat /tmp/scan.xml | jq -Rs .| tr -d '"')'", "agent_id": "primary", "action_id": "act-xxx", "frontier_item_id": "fi-yyy"}' | overwatch parse-output --stdin
 
-# Log completion
+# 5. Log completion
 overwatch log-action --action-id act-xxx --type action_completed
 ```
 
-### Phase 3 — Enumerate
+### Phase 3 — Claude Enumerates Services
+
+Claude checks the frontier, picks the highest-priority target, and works it:
 
 ```bash
-# Check what the frontier suggests
+# See what the frontier suggests
 overwatch next-task --count 10
 
-# For each candidate, validate → execute → report
-# Example: SMB enumeration
+# Validate SMB enumeration on the top candidate
 echo '{
   "action_type": "smb_enum",
   "target_node_id": "svc-10-10-110-10-445",
@@ -240,21 +259,20 @@ echo '{
 
 overwatch log-action --action-id act-002 --type action_started
 
-# (operator runs nxc)
+# Run nxc (Claude executes this directly)
+NXC_OUTPUT=$(nxc smb 10.10.110.10 --shares -u '' -p '' 2>&1)
 
-echo '{
-  "tool_name": "nxc",
-  "output": "SMB  10.10.110.10  445  DC01  [*] Windows Server 2019 ...",
-  "agent_id": "primary",
-  "action_id": "act-002"
-}' | overwatch parse-output --stdin
+# Parse results into the graph
+echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\"}" | overwatch parse-output --stdin
 
 overwatch log-action --action-id act-002 --type action_completed
 ```
 
-### Phase 4 — Report manual findings
+Claude repeats this loop for each frontier candidate — validate, execute, parse, log.
 
-For unsupported tools or manual observations:
+### Phase 4 — Claude Reports Findings
+
+When Claude uses a tool without a built-in parser, it structures the findings manually:
 
 ```bash
 echo '{
@@ -269,33 +287,39 @@ echo '{
 }' | overwatch report-finding --stdin
 ```
 
-### Phase 5 — Query and explore
+### Phase 5 — Claude Explores the Graph
+
+Claude queries the graph to plan attack paths:
 
 ```bash
 # Query all hosts
 echo '{"node_type": "host"}' | overwatch query-graph --stdin
 
-# Query specific node
-echo '{"node_id": "host-10-10-110-10"}' | overwatch query-graph --stdin
-
-# Find paths to objective
+# Find paths from a credential to the objective
 echo '{"source_id": "cred-plaintext-sql-svc", "target_id": "obj-compromise"}' | overwatch call find_paths --stdin
 
-# Get methodology for a technique
+# Look up methodology for a technique
 echo '{"query": "kerberoasting"}' | overwatch call get_skill --stdin
 ```
 
-### Phase 6 — Session management
+### Phase 6 — Session Recovery
+
+If the server restarts or the session expires, Claude handles it transparently. The CLI retries once with a fresh session automatically. If things are truly broken:
 
 ```bash
-# Check current state anytime
-overwatch get-state
-
-# If session seems stale (server restarted, etc.)
+# Clear stale local cache
 overwatch reset-session
+
+# Reconnect
 overwatch health
 
-# When done — terminate cleanly
+# Resume — graph state is intact on the server
+overwatch get-state
+```
+
+When the engagement is complete:
+
+```bash
 overwatch close
 ```
 
