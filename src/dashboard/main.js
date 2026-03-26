@@ -49,17 +49,23 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Layers dropdown
   setupToolbarDropdown('layers-dropdown', 'btn-layers');
-  document.getElementById('btn-layer-attack-path')?.addEventListener('click', (e) => {
+  document.getElementById('btn-layer-attack-path')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const active = btn.dataset.active !== 'true';
-    btn.dataset.active = String(active);
     if (active) {
+      const shown = await G.showAttackPath();
+      btn.dataset.active = String(shown);
+      if (!shown) {
+        document.getElementById('btn-layer-compare-shortest').disabled = true;
+        document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
+        return;
+      }
       document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
       document.getElementById('btn-edge-confirmed').dataset.active = 'false';
       document.getElementById('btn-edge-inferred').dataset.active = 'false';
       document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
-      G.showAttackPath();
     } else {
+      btn.dataset.active = 'false';
       G.clearAttackPathOverlay();
     }
     document.getElementById('btn-layer-compare-shortest').disabled = !active;

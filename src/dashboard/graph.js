@@ -1051,19 +1051,18 @@ function buildActualPath(activityEntries) {
 }
 
 async function showAttackPath() {
-  clearPathHighlight();
-  clearCredentialFlowMode();
-  edgeTypeFilter = null;
-  edgeSourceFilter = null;
-
   const entries = await fetchActivityHistory();
   const actual = buildActualPath(entries);
 
   if (actual.nodes.size === 0) {
     console.warn('[Overwatch] No attack path nodes found in activity history');
-    return;
+    return false;
   }
 
+  clearPathHighlight();
+  clearCredentialFlowMode();
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
   attackPathOverlay = { actual, theoretical: null };
 
   // Show info in path bar
@@ -1076,6 +1075,7 @@ async function showAttackPath() {
 
   if (renderer) renderer.refresh();
   updateMinimap();
+  return true;
 }
 
 function showTheoreticalComparison() {

@@ -106,6 +106,7 @@ describe('dashboard graph helpers', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete (globalThis as any).fetch;
     delete (globalThis as any).window;
     delete (globalThis as any).document;
     delete (globalThis as any).graphology;
@@ -493,6 +494,30 @@ describe('dashboard graph helpers', () => {
     graphModule.showCredentialFlow();
     expect(graphModule.edgeSourceFilter).toBe(null);
     expect(graphModule.credentialFlowMode).toBe(true);
+  });
+
+  it('showAttackPath leaves existing edge filters intact when no path can be built', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('cred-a', { label: 'cred-a', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('cred-a--VALID_ON--host-a', 'cred-a', 'host-a', { edgeType: 'VALID_ON' });
+
+    graphModule.setEdgeTypeFilter('VALID_ON');
+    expect(graphModule.edgeTypeFilter).toEqual({ type: 'VALID_ON' });
+
+    (globalThis as any).fetch = vi.fn(async () => ({
+      ok: true,
+      async json() {
+        return { entries: [] };
+      },
+    }));
+
+    const shown = await graphModule.showAttackPath();
+    expect(shown).toBe(false);
+    expect(graphModule.edgeTypeFilter).toEqual({ type: 'VALID_ON' });
+    expect(graphModule.attackPathOverlay).toBe(null);
   });
 
   it('setEdgeTypeFilter clears credential flow mode', async () => {

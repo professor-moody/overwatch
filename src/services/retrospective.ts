@@ -1050,7 +1050,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
 
     // Extract target from description
     const ipMatch = desc.match(/(\d+\.\d+\.\d+\.\d+)/);
-    if (ipMatch) target = ipMatch[1];
+    if (!target && ipMatch) target = ipMatch[1];
 
     // Look for findings following this action
     let newNodes = 0;

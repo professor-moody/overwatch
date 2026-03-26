@@ -655,6 +655,25 @@ describe('Retrospective', () => {
       expect(traces[0].state_summary.access_level).toBe('none');
     });
 
+    it('preserves structured session ids even when the session title contains an IP address', () => {
+      const input = makeInput({
+        history: [
+          {
+            timestamp: '2026-01-01T02:00:00Z',
+            event_id: 'evt-session-ip-title',
+            event_type: 'session_opened',
+            description: 'Session "reverse 10.0.0.5" opened (local_pty, pty)',
+            category: 'system',
+            details: { session_id: 'session-123', session_kind: 'local_pty', session_state: 'connected' },
+          },
+        ],
+      });
+
+      const { traces } = exportTrainingTraces(input);
+      expect(traces[0].action.type).toBe('session_opened');
+      expect(traces[0].action.target).toBe('session-123');
+    });
+
     it('returns empty traces for empty history', () => {
       const input = makeInput();
       input.history = [];
