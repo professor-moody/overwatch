@@ -70,11 +70,32 @@ Add Overwatch as an MCP server in your Claude Code config (`~/.claude/settings.j
 
 ## Run
 
+### stdio (default — Claude Code)
+
 ```bash
 claude
 ```
 
 Claude Code will connect to the Overwatch MCP server automatically. The `AGENTS.md` file in the project root provides the primary session instructions. Claude will call `get_state()` first to load the engagement briefing, then enter the main scoring loop.
+
+### HTTP/SSE (remote deployment)
+
+For remote deployment, web-based consumers, or multiple simultaneous clients:
+
+```bash
+OVERWATCH_TRANSPORT=http npm start
+# or
+node dist/index.js --http
+```
+
+The HTTP server binds to `127.0.0.1:3000` by default. Configure with:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OVERWATCH_HTTP_PORT` | `3000` | HTTP server port |
+| `OVERWATCH_HTTP_HOST` | `127.0.0.1` | Bind address |
+
+The MCP endpoint is at `POST /mcp`. Sessions are tracked via the `mcp-session-id` header. Multiple clients can connect simultaneously — each gets its own MCP session sharing the same underlying graph.
 
 ## Verify Setup
 

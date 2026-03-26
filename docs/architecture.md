@@ -43,7 +43,12 @@ The graph is powered by [graphology](https://graphology.github.io/), a robust Ja
 
 The orchestrator survives context compaction by design — it's not in the context window. After compaction, `get_state()` reconstructs a complete briefing from the graph. Zero information loss.
 
-The current transport is **stdio** using the [Model Context Protocol](https://modelcontextprotocol.io/), the same protocol Claude Code uses for tool integrations. The core app bootstrap is transport-neutral so additional transports can be layered on later.
+Two transports are supported:
+
+- **stdio** — the default, using the [Model Context Protocol](https://modelcontextprotocol.io/) over standard I/O. This is how Claude Code connects.
+- **HTTP/SSE** — streamable HTTP transport for remote deployment, web-based consumers, and multiple simultaneous clients. Enable with `OVERWATCH_TRANSPORT=http` or the `--http` CLI flag.
+
+The core app bootstrap (`src/app.ts`) is transport-neutral — both transports share the same `GraphEngine`, skills, and services. Each HTTP session gets its own `McpServer` instance (SDK limitation: one `connect()` per server) but all sessions share the underlying graph.
 
 ### Hybrid Scoring
 
@@ -130,6 +135,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Lab Preflight** | `src/services/lab-preflight.ts` | Lab readiness validation |
 | **Session Manager** | `src/services/session-manager.ts` | Persistent interactive sessions, RingBuffer, ownership enforcement |
 | **Session Adapters** | `src/services/session-adapters.ts` | LocalPty (node-pty), SSH, and Socket transport adapters |
+| **Prompt Generator** | `src/services/prompt-generator.ts` | Dynamic system prompt generation for primary and sub-agent roles |
 
 ### Tools
 
@@ -150,6 +156,8 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Remediation** | `src/tools/remediation.ts` | `correct_graph` |
 | **Retrospective** | `src/tools/retrospective.ts` | `run_retrospective` |
 | **Sessions** | `src/tools/sessions.ts` | `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `update_session`, `resize_session`, `signal_session`, `close_session` |
+| **Scope** | `src/tools/scope.ts` | `update_scope` |
+| **Instructions** | `src/tools/instructions.ts` | `get_system_prompt` |
 
 ### Dashboard
 

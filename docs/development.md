@@ -6,9 +6,11 @@
 npm run build    # Compile TypeScript + copy dashboard assets
 npm run dev      # Watch mode (tsc --watch)
 npm start        # Run server (stdio)
+npm start -- --http  # Run server (HTTP/SSE transport)
 npm test         # Run fast source-level tests
 npm run test:integration:stdio   # Fresh-build stdio integration suite
-npm run verify   # Source tests + build-backed stdio integration + dist freshness check
+npm run test:integration:http    # Fresh-build HTTP transport integration suite
+npm run verify   # Source + stdio integration + HTTP integration + dist freshness check
 ```
 
 ## Project Structure
@@ -35,9 +37,11 @@ overwatch/
 │   │   ├── logging.ts        # log_action_event
 │   │   ├── retrospective.ts  # run_retrospective
 │   │   ├── remediation.ts    # correct_graph
-│   │   ├── sessions.ts      # open_session, write/read/send_to/list/update/resize/signal/close_session
+│   │   ├── sessions.ts       # open_session, write/read/send_to/list/update/resize/signal/close_session
+│   │   ├── scope.ts          # update_scope
+│   │   ├── instructions.ts   # get_system_prompt
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic (28 modules)
+│   ├── services/             # Core business logic (29 modules)
 │   │   ├── graph-engine.ts   # Graph operations, state coordination
 │   │   ├── engine-context.ts # Mutable state container, update callbacks
 │   │   ├── frontier.ts       # Frontier item generation and filtering
@@ -64,7 +68,8 @@ overwatch/
 │   │   ├── process-tracker.ts # PID tracking for long-running scans
 │   │   ├── lab-preflight.ts  # Lab readiness validation
 │   │   ├── session-manager.ts # Persistent sessions, RingBuffer, ownership
-│   │   └── session-adapters.ts # LocalPty (node-pty), SSH, Socket adapters
+│   │   ├── session-adapters.ts # LocalPty (node-pty), SSH, Socket adapters
+│   │   └── prompt-generator.ts # Dynamic system prompt generation
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke
@@ -77,7 +82,8 @@ overwatch/
 │   │   └── main.js           # Entry point wiring modules
 │   └── __tests__/
 │       ├── app-bootstrap.test.ts
-│       └── mcp-server.integration.test.ts
+│       ├── mcp-server.integration.test.ts
+│       └── http-transport.integration.test.ts
 ├── skills/                   # 32 offensive methodology guides
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
@@ -86,13 +92,16 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **773 tests across 28 files** are split between fast source tests and a build-backed stdio integration suite so local iteration stays fast while release verification still exercises the built server artifact.
+Tests use [Vitest](https://vitest.dev/). **807 tests across 31 files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
-npm test
-npm run test:integration:stdio
-npm run verify
+npm test                        # Fast source tests (801 tests)
+npm run test:integration:stdio  # Stdio integration (24 tests)
+npm run test:integration:http   # HTTP transport integration (6 tests)
+npm run verify                  # All of the above + dist freshness check
 ```
+
+Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
 
 Test files are co-located with their modules under `__tests__/` directories:
 
@@ -118,8 +127,10 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `error-boundary.test.ts` | Error handling wrapper |
 | `processes.test.ts` | Process tool integration |
 | `session-manager.test.ts` | RingBuffer, SessionManager, ownership enforcement, adapters |
-| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration |
+| `prompt-generator.test.ts` | Primary and sub-agent prompt generation, state reflection |
+| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (36 tools) |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
+| `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
 
 ## Adding a New Parser
 
@@ -153,5 +164,5 @@ engine.addInferenceRule({
 1. Create a new file in `src/tools/` following the pattern of existing modules
 2. Define the tool with `server.registerTool()` using Zod schemas for input validation
 3. Wrap the handler with `withErrorBoundary()` for consistent error handling
-4. Import and call the registration function in `src/index.ts`
+4. Import and call the registration function in `src/app.ts` (`registerAllTools`)
 5. Add tests in `src/tools/__tests__/`

@@ -186,3 +186,6 @@ When an action targets something outside scope:
 | `OVERWATCH_CONFIG` | `./engagement.json` | Path to engagement configuration file |
 | `OVERWATCH_SKILLS` | `./skills` | Path to skill library directory |
 | `OVERWATCH_DASHBOARD_PORT` | `8384` | Port for live dashboard (set to `0` to disable) |
+| `OVERWATCH_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
+| `OVERWATCH_HTTP_PORT` | `3000` | Port for HTTP/SSE transport (when `OVERWATCH_TRANSPORT=http`) |
+| `OVERWATCH_HTTP_HOST` | `127.0.0.1` | Bind address for HTTP/SSE transport |
