@@ -8,6 +8,7 @@ export default defineConfig({
     exclude: [
       'dist/**',
       'src/__tests__/mcp-server.integration.test.ts',
+      'src/__tests__/http-transport.integration.test.ts',
     ],
   },
 });

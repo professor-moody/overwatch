@@ -31,16 +31,17 @@ const supportsLocalPty = (() => {
   }
 })();
 
-const supportsLocalListen = (() => {
-  try {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1');
+const supportsLocalListen = await new Promise<boolean>((resolve) => {
+  const srv = createServer();
+  srv.on('error', () => {
     srv.close();
-    return true;
-  } catch {
-    return false;
-  }
-})();
+    resolve(false);
+  });
+  srv.listen(0, '127.0.0.1', () => {
+    srv.close();
+    resolve(true);
+  });
+});
 
 function cleanup() {
   if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);

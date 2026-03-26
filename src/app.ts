@@ -291,18 +291,22 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     }
   }
 
-  // Start HTTP server
+  // Start HTTP server — use http.createServer so server.address() is
+  // reliable even with ephemeral port 0.
+  const { createServer: createHttpServer } = await import('http');
+  const server = createHttpServer(expressApp);
+  app.httpServer = server;
+
   return new Promise<Express>((resolve, reject) => {
-    const server = expressApp.listen(port, host, () => {
-      console.error(`Overwatch MCP HTTP transport at http://${host}:${port}/mcp`);
+    server.on('error', (err: Error) => reject(err));
+    server.listen(port, host, () => {
+      const addr = server.address();
+      const boundPort = (addr && typeof addr === 'object') ? addr.port : port;
+      console.error(`Overwatch MCP HTTP transport at http://${host}:${boundPort}/mcp`);
       if (app.dashboard?.running) {
         console.error(`Dashboard at ${app.dashboard.address}`);
       }
-      app.httpServer = server;
       resolve(expressApp);
-    });
-    server.on('error', (err: Error) => {
-      reject(err);
     });
   });
 }
