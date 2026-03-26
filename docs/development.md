@@ -6,7 +6,9 @@
 npm run build    # Compile TypeScript + copy dashboard assets
 npm run dev      # Watch mode (tsc --watch)
 npm start        # Run server (stdio)
-npm test         # Run all tests (vitest)
+npm test         # Run fast source-level tests
+npm run test:integration:stdio   # Fresh-build stdio integration suite
+npm run verify   # Source tests + build-backed stdio integration + dist freshness check
 ```
 
 ## Project Structure
@@ -14,7 +16,8 @@ npm test         # Run all tests (vitest)
 ```
 overwatch/
 ├── src/
-│   ├── index.ts              # Entrypoint — config, server init, tool registration
+│   ├── app.ts                # Core app/bootstrap + transport-neutral tool registration
+│   ├── index.ts              # Stdio entrypoint + graceful shutdown
 │   ├── config.ts             # Config parsing and validation
 │   ├── types.ts              # Shared types + Zod schemas
 │   ├── tools/                # MCP tool modules (one per domain)
@@ -73,8 +76,9 @@ overwatch/
 │   │   ├── ws.js             # WebSocket + HTTP polling, reconnect
 │   │   └── main.js           # Entry point wiring modules
 │   └── __tests__/
+│       ├── app-bootstrap.test.ts
 │       └── mcp-server.integration.test.ts
-├── skills/                   # 29 offensive methodology guides
+├── skills/                   # 32 offensive methodology guides
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
 └── docs/                     # Documentation source
@@ -82,10 +86,12 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **742 tests across 27 files**, all passing. Run the full suite:
+Tests use [Vitest](https://vitest.dev/). **773 tests across 28 files** are split between fast source tests and a build-backed stdio integration suite so local iteration stays fast while release verification still exercises the built server artifact.
 
 ```bash
 npm test
+npm run test:integration:stdio
+npm run verify
 ```
 
 Test files are co-located with their modules under `__tests__/` directories:
@@ -112,7 +118,8 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `error-boundary.test.ts` | Error handling wrapper |
 | `processes.test.ts` | Process tool integration |
 | `session-manager.test.ts` | RingBuffer, SessionManager, ownership enforcement, adapters |
-| `mcp-server.integration.test.ts` | End-to-end MCP protocol (34 tools) |
+| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration |
+| `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
 
 ## Adding a New Parser
 

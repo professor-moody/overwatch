@@ -55,6 +55,9 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.dataset.active = String(active);
     if (active) {
       document.getElementById('btn-layer-cred-flow').dataset.active = 'false';
+      document.getElementById('btn-edge-confirmed').dataset.active = 'false';
+      document.getElementById('btn-edge-inferred').dataset.active = 'false';
+      document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
       G.showAttackPath();
     } else {
       G.clearAttackPathOverlay();
@@ -80,6 +83,9 @@ window.addEventListener('DOMContentLoaded', () => {
       document.getElementById('btn-layer-attack-path').dataset.active = 'false';
       document.getElementById('btn-layer-compare-shortest').dataset.active = 'false';
       document.getElementById('btn-layer-compare-shortest').disabled = true;
+      document.getElementById('btn-edge-confirmed').dataset.active = 'false';
+      document.getElementById('btn-edge-inferred').dataset.active = 'false';
+      document.querySelectorAll('.edge-type-row.active').forEach(el => el.classList.remove('active'));
       G.showCredentialFlow();
     } else {
       G.clearCredentialFlowMode();

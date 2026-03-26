@@ -186,7 +186,7 @@ Full SharpHound v4/v5 JSON parser. Maps all BH object types (computers, users, g
 
 ### Skill Index (`src/services/skill-index.ts`)
 
-Local TF-IDF search over 29 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
+Local TF-IDF search over 32 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
 
 ### Dashboard Server (`src/services/dashboard-server.ts`)
 
@@ -257,7 +257,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 
 | Tool | Purpose |
 |------|---------|
-| `get_skill` | RAG skill search and retrieval (29 skills) |
+| `get_skill` | RAG skill search and retrieval (32 skills) |
 | `check_tools` | Offensive tool availability detection |
 | `track_process` | Register long-running scan for tracking |
 | `check_processes` | Check tracked process status |
@@ -347,10 +347,11 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**27 test files** across the codebase:
+**28 test files** across the codebase:
 
 | Area | Files | Coverage |
 |------|-------|----------|
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap |
 | Integration | `mcp-server.integration.test.ts` | All 34 tools via stdio transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity |
 | Services | 15 test files | CIDR, BloodHound, parsers (11), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager |
@@ -440,7 +441,7 @@ overwatch/
 │       ├── lab-smoke.ts            # Lab smoke test harness
 │       ├── lab-smoke-lib.ts        # Smoke test library
 │       └── retrospective.ts        # CLI retrospective runner
-├── skills/                         # 29 offensive methodology guides
+├── skills/                         # 32 offensive methodology guides
 ├── fixtures/                       # Test fixtures (GOAD synth data)
 ├── engagement.json                 # Example engagement config
 ├── package.json                    # Dependencies + scripts

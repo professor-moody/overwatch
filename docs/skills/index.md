@@ -1,6 +1,6 @@
 # Skills Library
 
-Overwatch includes 29 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool.
+Overwatch includes 32 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool.
 
 ## Available Skills
 
@@ -24,6 +24,7 @@ Overwatch includes 29 offensive methodology guides searchable via TF-IDF through
 | AD Persistence | `ad-persistence.md` | Golden/Silver tickets, skeleton key, DCShadow |
 | SCCM Attacks | `sccm-attacks.md` | SCCM/MECM credential harvesting and lateral movement |
 | Exchange Attacks | `exchange-attacks.md` | ProxyLogon, ProxyShell, mailbox access |
+| MSSQL Attacks | `mssql-attacks.md` | xp_cmdshell, linked servers, impersonation, credential extraction |
 
 ### Credentials
 
@@ -39,6 +40,13 @@ Overwatch includes 29 offensive methodology guides searchable via TF-IDF through
 |-------|------|-------------|
 | Lateral Movement | `lateral-movement.md` | WMI, PSExec, WinRM, DCOM, RDP |
 | Pivoting | `pivoting.md` | SSH tunnels, SOCKS proxies, port forwarding |
+
+### Container & CI/CD
+
+| Skill | File | Description |
+|-------|------|-------------|
+| Container & Kubernetes | `container-attacks.md` | Pod escape, RBAC abuse, service account theft, etcd access |
+| CI/CD Exploitation | `cicd-exploitation.md` | Jenkins, GitLab CI, GitHub Actions — secret extraction, runner abuse |
 
 ### Web Application
 
@@ -78,7 +86,7 @@ Overwatch includes 29 offensive methodology guides searchable via TF-IDF through
 The `get_skill` tool uses TF-IDF search. Tips for effective queries:
 
 - Use specific technique names: `"kerberoast"`, `"ntlm relay"`, `"adcs esc1"`
-- Use service names: `"smb"`, `"ldap"`, `"mssql"`, `"http"`
+- Use service names: `"smb"`, `"ldap"`, `"mssql"`, `"http"`, `"jenkins"`, `"kubernetes"`
 - Use attack patterns: `"privilege escalation"`, `"lateral movement"`, `"credential dumping"`
 
 ## Writing Custom Skills

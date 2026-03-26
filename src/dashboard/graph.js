@@ -1053,6 +1053,8 @@ function buildActualPath(activityEntries) {
 async function showAttackPath() {
   clearPathHighlight();
   clearCredentialFlowMode();
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
 
   const entries = await fetchActivityHistory();
   const actual = buildActualPath(entries);
@@ -1197,6 +1199,8 @@ function buildCredentialFlowData() {
 function showCredentialFlow() {
   clearPathHighlight();
   clearAttackPathOverlay();
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
 
   credFlowData = buildCredentialFlowData();
   credentialFlowMode = true;

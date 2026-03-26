@@ -14,7 +14,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **Hybrid scoring** — deterministic layer handles scope/dedup/OPSEC vetoes; the LLM handles attack chain reasoning
 - **Inference rules** — automatic hypothesis generation (e.g., "SMB signing disabled → relay target")
 - **34 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, and more
-- **29 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
+- **32 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
 - **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O and ownership enforcement
@@ -110,7 +110,7 @@ Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)*
 - **[Configuration](https://keys.github.io/overwatch/configuration/)** — engagement config, OPSEC profiles, env vars
 - **[Graph Model](https://keys.github.io/overwatch/graph-model/)** — node types, edge types, inference rules
 - **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 34 MCP tools with parameters and examples
-- **[Skills Library](https://keys.github.io/overwatch/skills/)** — 29 offensive methodology guides
+- **[Skills Library](https://keys.github.io/overwatch/skills/)** — 32 offensive methodology guides
 - **[Operator Playbook](https://keys.github.io/overwatch/playbook/)** — lab workflows, session instructions, best practices
 - **[Development](https://keys.github.io/overwatch/development/)** — project structure, testing, extending
 
@@ -120,7 +120,8 @@ Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)*
 npm run build    # Compile TypeScript + copy dashboard
 npm run dev      # Watch mode
 npm start        # Run server (stdio)
-npm test         # Run all tests
+npm test         # Run fast source-level tests
+npm run verify   # Source tests + build-backed stdio integration + dist freshness check
 ```
 
 ## License

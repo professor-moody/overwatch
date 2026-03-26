@@ -462,6 +462,57 @@ describe('dashboard graph helpers', () => {
     expect(attrs.edgeType).toBe('POTENTIAL_AUTH');
   });
 
+  it('showCredentialFlow clears edge type and source filters', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('cred-a', { label: 'cred-a', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('cred-a--VALID_ON--host-a', 'cred-a', 'host-a', { edgeType: 'VALID_ON' });
+
+    // Activate edge type filter
+    graphModule.setEdgeTypeFilter('VALID_ON');
+    expect(graphModule.edgeTypeFilter).toEqual({ type: 'VALID_ON' });
+
+    // Activate credential flow — should clear edge filters
+    graphModule.showCredentialFlow();
+    expect(graphModule.edgeTypeFilter).toBe(null);
+    expect(graphModule.edgeSourceFilter).toBe(null);
+    expect(graphModule.credentialFlowMode).toBe(true);
+  });
+
+  it('showCredentialFlow clears edge source filter', async () => {
+    const graphModule = await loadGraphModule();
+    graphModule.init();
+
+    // Activate edge source filter
+    graphModule.setEdgeSourceFilter('confirmed');
+    expect(graphModule.edgeSourceFilter).toBe('confirmed');
+
+    // Activate credential flow — should clear edge source filter
+    graphModule.showCredentialFlow();
+    expect(graphModule.edgeSourceFilter).toBe(null);
+    expect(graphModule.credentialFlowMode).toBe(true);
+  });
+
+  it('setEdgeTypeFilter clears credential flow mode', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('cred-a', { label: 'cred-a', nodeType: 'credential', color: '#fff', x: 0, y: 0, _props: { type: 'credential' } });
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 1, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('cred-a--VALID_ON--host-a', 'cred-a', 'host-a', { edgeType: 'VALID_ON' });
+
+    // Activate credential flow
+    graphModule.showCredentialFlow();
+    expect(graphModule.credentialFlowMode).toBe(true);
+
+    // Activate edge type filter — should clear credential flow
+    graphModule.setEdgeTypeFilter('VALID_ON');
+    expect(graphModule.credentialFlowMode).toBe(false);
+    expect(graphModule.edgeTypeFilter).toEqual({ type: 'VALID_ON' });
+  });
+
   it('treats certificate authorities as high-signal nodes with contextual focus', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();
