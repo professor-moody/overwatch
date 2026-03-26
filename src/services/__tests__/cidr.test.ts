@@ -184,6 +184,22 @@ describe('expandCidrDetailed', () => {
     const result = expandCidrDetailed('10.0.0.1/33');
     expect(result).toEqual({ ips: ['10.0.0.1'], truncated: false });
   });
+
+  it('handles /1 without overflow (hostBits=31)', () => {
+    const result = expandCidrDetailed('0.0.0.0/1');
+    expect(result.truncated).toBe(true);
+    expect(result.ips.length).toBe(4094);
+    expect(result.total_hosts).toBe(2147483646);
+    expect(result.ips[0]).toBe('0.0.0.1');
+  });
+
+  it('handles /0 without overflow (hostBits=32)', () => {
+    const result = expandCidrDetailed('0.0.0.0/0');
+    expect(result.truncated).toBe(true);
+    expect(result.ips.length).toBe(4094);
+    expect(result.total_hosts).toBe(4294967294);
+    expect(result.ips[0]).toBe('0.0.0.1');
+  });
 });
 
 describe('isValidCidr', () => {

@@ -22,12 +22,13 @@ export function expandCidrDetailed(cidr: string): CidrExpansionResult {
   const ip = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
 
   const hostBits = 32 - mask;
-  const numHosts = 1 << hostBits;
+  const numHosts = 2 ** hostBits; // avoid 1<<hostBits which overflows at hostBits>=31
   const usableHosts = numHosts - 2; // exclude network + broadcast
   const truncated = usableHosts > EXPANSION_CAP;
   const limit = truncated ? EXPANSION_CAP : usableHosts;
 
-  const network = (ip & (0xFFFFFFFF << hostBits)) >>> 0;
+  const networkMask = hostBits >= 32 ? 0 : (0xFFFFFFFF << hostBits) >>> 0;
+  const network = (ip & networkMask) >>> 0;
   const ips: string[] = [];
 
   // Skip network and broadcast addresses
