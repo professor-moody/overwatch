@@ -98,6 +98,14 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Community hulls toggle
+  document.getElementById('btn-layer-community-hulls')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    G.communityHullsEnabled = active;
+  });
+
   // Edge source filter toggles
   document.getElementById('btn-edge-confirmed')?.addEventListener('click', (e) => {
     const btn = e.currentTarget;

@@ -274,6 +274,8 @@ export interface FrontierItem {
   opsec_noise: number;
   staleness_seconds: number;
   stale_credential?: boolean;
+  community_id?: number;
+  community_unexplored_count?: number;
 }
 
 export interface ScoredTask {
@@ -334,6 +336,9 @@ export interface EngagementState {
     edges_by_type: Record<string, number>;
     confirmed_edges: number;
     inferred_edges: number;
+    community_count: number;
+    largest_community_size: number;
+    unexplored_community_count: number;
   };
   objectives: EngagementObjective[];
   frontier: FrontierItem[];

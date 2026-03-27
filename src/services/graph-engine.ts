@@ -22,6 +22,7 @@ import { validateEdgeEndpoints } from './graph-schema.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNodeIdentity } from './identity-resolution.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
+import { detectCommunities, communityStats } from './community-detection.js';
 import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -731,6 +732,31 @@ export class GraphEngine {
   computeFrontier(): FrontierItem[] {
     if (!this.frontierCache) {
       const all = this.frontierComputer.compute();
+      // Enrich frontier items with community data
+      const communities = this.getCommunities();
+      if (communities.size > 0) {
+        // Count frontier items per community for community_unexplored_count
+        const communityFrontierCounts = new Map<number, number>();
+        for (const item of all) {
+          const targetId = item.node_id || item.edge_target;
+          if (targetId) {
+            const cid = communities.get(targetId);
+            if (cid !== undefined) {
+              communityFrontierCounts.set(cid, (communityFrontierCounts.get(cid) || 0) + 1);
+            }
+          }
+        }
+        for (const item of all) {
+          const targetId = item.node_id || item.edge_target;
+          if (targetId) {
+            const cid = communities.get(targetId);
+            if (cid !== undefined) {
+              item.community_id = cid;
+              item.community_unexplored_count = communityFrontierCounts.get(cid);
+            }
+          }
+        }
+      }
       const { passed } = this.filterFrontier(all);
       this.frontierCache = { all, passed };
     }
@@ -762,6 +788,40 @@ export class GraphEngine {
 
   findPaths(fromNode: string, toNode: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
     return this.paths.findPaths(fromNode, toNode, maxPaths);
+  }
+
+  // =============================================
+  // Community Detection (delegated to community-detection.ts)
+  // =============================================
+
+  getCommunities(): Map<string, number> {
+    if (this.ctx.communityCache) return this.ctx.communityCache;
+    const communities = detectCommunities(this.ctx.graph);
+    this.ctx.communityCache = communities;
+    // Write community_id onto node properties so it flows through graph exports
+    for (const [nodeId, cid] of communities) {
+      if (this.ctx.graph.hasNode(nodeId)) {
+        this.ctx.graph.setNodeAttribute(nodeId, 'community_id', cid);
+      }
+    }
+    return communities;
+  }
+
+  private getCommunityStats(): { community_count: number; largest_community_size: number; unexplored_community_count: number } {
+    const communities = this.getCommunities();
+    const stats = communityStats(communities);
+    // Count communities that have at least one frontier item target.
+    // Use computeFrontier() which already enriches items with community_id.
+    const frontier = this.computeFrontier();
+    const frontierCommunities = new Set<number>();
+    for (const item of frontier) {
+      if (item.community_id !== undefined) frontierCommunities.add(item.community_id);
+    }
+    return {
+      community_count: stats.community_count,
+      largest_community_size: stats.largest_community_size,
+      unexplored_community_count: frontierCommunities.size,
+    };
   }
 
   // =============================================
@@ -1390,7 +1450,8 @@ export class GraphEngine {
         total_edges: this.ctx.graph.size,
         edges_by_type: edgesByType,
         confirmed_edges: confirmedEdges,
-        inferred_edges: inferredEdges
+        inferred_edges: inferredEdges,
+        ...this.getCommunityStats(),
       },
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),

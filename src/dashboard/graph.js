@@ -112,6 +112,9 @@ let activityHistoryCache = null; // { entries: [], knownTotal: N } | null
 let credentialFlowMode = false;
 let credFlowData = null; // { flowEdges: Set, flowNodes: Set, chains: [] }
 
+// Community hulls
+let communityHullsEnabled = true;
+
 // Edge type filter
 let edgeTypeFilter = null; // null | { type: string } — highlight all edges of this type
 let edgeSourceFilter = null; // null | 'confirmed' | 'inferred'
@@ -184,6 +187,7 @@ function initRenderer() {
   setupDrag();
   setupHover();
   setupClick();
+  hookCommunityHulls();
 
   return renderer;
 }
@@ -2317,6 +2321,111 @@ function zoomToNodes(nodeSet, options = {}) {
 }
 
 // ============================================================
+// Community Hull Rendering
+// ============================================================
+
+const COMMUNITY_HULL_COLORS = [
+  'rgba(110,158,255,0.07)',
+  'rgba(93,202,165,0.07)',
+  'rgba(240,181,74,0.07)',
+  'rgba(204,102,255,0.07)',
+  'rgba(255,127,102,0.07)',
+  'rgba(102,204,204,0.07)',
+  'rgba(255,178,102,0.07)',
+  'rgba(153,153,255,0.07)',
+];
+
+function convexHull(points) {
+  if (points.length < 3) return points.slice();
+  points.sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (O, A, B) => (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
+  const lower = [];
+  for (const p of points) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = points.length - 1; i >= 0; i--) {
+    const p = points[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
+}
+
+function expandHull(hull, padding) {
+  if (hull.length < 2) return hull;
+  // Compute centroid
+  let cx = 0, cy = 0;
+  for (const p of hull) { cx += p.x; cy += p.y; }
+  cx /= hull.length; cy /= hull.length;
+  // Push each point outward from centroid
+  return hull.map(p => {
+    const dx = p.x - cx, dy = p.y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { x: p.x + (dx / dist) * padding, y: p.y + (dy / dist) * padding };
+  });
+}
+
+function drawCommunityHulls() {
+  if (!communityHullsEnabled || !renderer || !graph || graph.order === 0) return;
+
+  const canvases = renderer.getCanvases();
+  const labelsCanvas = canvases.labels || canvases.hovers || Object.values(canvases)[0];
+  if (!labelsCanvas) return;
+  const ctx = labelsCanvas.getContext('2d');
+  if (!ctx) return;
+
+  // Group visible nodes by community_id
+  const communityNodes = new Map();
+  graph.forEachNode((id, attrs) => {
+    if (attrs.hidden) return;
+    const cid = attrs._props && attrs._props.community_id;
+    if (cid === undefined || cid === null) return;
+    if (!communityNodes.has(cid)) communityNodes.set(cid, []);
+    const vp = renderer.graphToViewport({ x: attrs.x, y: attrs.y });
+    communityNodes.get(cid).push(vp);
+  });
+
+  const HULL_PADDING = 24;
+  const CORNER_RADIUS = 12;
+
+  for (const [cid, points] of communityNodes) {
+    if (points.length < 3) continue;
+    const hull = convexHull(points);
+    if (hull.length < 3) continue;
+    const expanded = expandHull(hull, HULL_PADDING);
+
+    const color = COMMUNITY_HULL_COLORS[cid % COMMUNITY_HULL_COLORS.length];
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+
+    // Draw rounded hull using arcTo for smooth corners
+    const n = expanded.length;
+    const first = expanded[0];
+    const mid = { x: (expanded[n - 1].x + first.x) / 2, y: (expanded[n - 1].y + first.y) / 2 };
+    ctx.moveTo(mid.x, mid.y);
+    for (let i = 0; i < n; i++) {
+      const curr = expanded[i];
+      const next = expanded[(i + 1) % n];
+      const midNext = { x: (curr.x + next.x) / 2, y: (curr.y + next.y) / 2 };
+      ctx.arcTo(curr.x, curr.y, midNext.x, midNext.y, CORNER_RADIUS);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function hookCommunityHulls() {
+  if (!renderer) return;
+  renderer.on('afterRender', drawCommunityHulls);
+}
+
+// ============================================================
 // Minimap
 // ============================================================
 
@@ -2620,6 +2729,9 @@ window.OverwatchGraph = {
   clearCredentialFlowMode,
   clearAllOverlays,
   buildCredentialFlowData,
+  // Community hulls
+  drawCommunityHulls,
+  convexHull,
   // Path helpers
   findShortestPath,
   buildActualPath,
@@ -2638,6 +2750,8 @@ window.OverwatchGraph = {
   get credFlowData() { return credFlowData; },
   get edgeTypeFilter() { return edgeTypeFilter; },
   get edgeSourceFilter() { return edgeSourceFilter; },
+  get communityHullsEnabled() { return communityHullsEnabled; },
+  set communityHullsEnabled(v) { communityHullsEnabled = !!v; if (renderer) renderer.refresh(); },
   // Reducers (exported for testing)
   edgeReducer,
   nodeReducer,

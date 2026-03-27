@@ -593,6 +593,44 @@ describe('dashboard graph helpers', () => {
     graphModule.clearEdgeFilter();
   });
 
+  it('convexHull computes correct hull for a set of points', async () => {
+    const graphModule = await loadGraphModule();
+    // Square with a point inside — hull should be the 4 corners
+    const points = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+      { x: 5, y: 5 }, // interior point — should not be in hull
+    ];
+    const hull = graphModule.convexHull(points);
+    expect(hull.length).toBe(4);
+    // Interior point should not be in the hull
+    const hasInterior = hull.some((p: any) => p.x === 5 && p.y === 5);
+    expect(hasInterior).toBe(false);
+  });
+
+  it('convexHull handles collinear points', async () => {
+    const graphModule = await loadGraphModule();
+    const points = [
+      { x: 0, y: 0 },
+      { x: 5, y: 0 },
+      { x: 10, y: 0 },
+    ];
+    const hull = graphModule.convexHull(points);
+    // Collinear points — hull degenerates to 2 endpoints
+    expect(hull.length).toBeLessThanOrEqual(3);
+  });
+
+  it('community hulls toggle works', async () => {
+    const graphModule = await loadGraphModule();
+    expect(graphModule.communityHullsEnabled).toBe(true);
+    graphModule.communityHullsEnabled = false;
+    expect(graphModule.communityHullsEnabled).toBe(false);
+    graphModule.communityHullsEnabled = true;
+    expect(graphModule.communityHullsEnabled).toBe(true);
+  });
+
   it('edgeReducer reveals POTENTIAL_AUTH in credential flow mode', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();

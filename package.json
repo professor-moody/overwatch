@@ -21,6 +21,7 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "fast-xml-parser": "^5.5.8",
     "graphology": "^0.25.4",
+    "graphology-communities-louvain": "^2.0.2",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-operators": "^1.6.0",
     "graphology-shortest-path": "^2.1.0",

@@ -86,6 +86,7 @@ export class EngineContext {
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
   pathGraphCache: OverwatchGraph | null;  // cached undirected projection for pathfinding
+  communityCache: Map<string, number> | null;  // cached Louvain community assignments
   trackedProcesses: TrackedProcess[];
   actionFrontierMap: Map<string, { frontier_item_id: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
 
@@ -99,6 +100,7 @@ export class EngineContext {
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;
     this.pathGraphCache = null;
+    this.communityCache = null;
     this.trackedProcesses = [];
     this.actionFrontierMap = new Map();
   }
@@ -156,6 +158,7 @@ export class EngineContext {
 
   invalidatePathGraph(): void {
     this.pathGraphCache = null;
+    this.communityCache = null;
   }
 
   fireUpdateCallbacks(detail: GraphUpdateDetail): void {
