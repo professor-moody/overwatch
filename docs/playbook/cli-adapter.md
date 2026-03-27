@@ -76,15 +76,37 @@ OVERWATCH_TRANSPORT=http node dist/index.js
 
 The server binds to `http://127.0.0.1:3000/mcp` by default.
 
-### 2. Place the AGENTS.md template
+### 2. Build the CLI adapter
 
-Create this file in your project root **before starting Claude Code**. Claude reads it automatically at session start:
+```bash
+cd /path/to/overwatch-adapter
+npm install
+npm run build
+```
+
+Note the absolute path to the built adapter (e.g., `/home/op/overwatch-adapter`). Claude Code will invoke it as `node /home/op/overwatch-adapter/dist/cli.js <command>`.
+
+### 3. Place the AGENTS.md template
+
+Create this file in your project root **before starting Claude Code**. Claude reads it automatically at session start.
+
+Replace `/home/op/overwatch-adapter` with the actual absolute path from step 2:
 
 ```markdown
 # Overwatch — CLI Adapter Mode
 
-MCP is not available in this environment. Use the `overwatch` CLI adapter instead.
+MCP is not available in this environment. Use the Overwatch CLI adapter instead.
 All Overwatch tools are available as shell commands. Output is JSON by default.
+
+The CLI adapter is invoked as:
+
+    node /home/op/overwatch-adapter/dist/cli.js <command> [args] [--flags]
+
+For brevity, define a shell function at session start:
+
+    overwatch() { node /home/op/overwatch-adapter/dist/cli.js "$@"; }
+
+Then use `overwatch <command>` for all subsequent calls.
 
 ## Session Start
 
@@ -137,13 +159,13 @@ invocations. If things go wrong:
 All output is JSON. Parse it directly. Do not add --human flag.
 ```
 
-### 3. Start Claude Code
+### 4. Start Claude Code
 
 ```bash
 claude
 ```
 
-Claude reads the AGENTS.md, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
+Claude reads the AGENTS.md, defines the shell function, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
 
 ## What's Manual vs. Automatic
 
@@ -153,7 +175,8 @@ Once the AGENTS.md is in place and Claude Code starts, **everything is autonomou
 |------|-----|------|
 | Write `engagement.json` | Human | Once, before engagement |
 | Start Overwatch HTTP server | Human | Once, before engagement |
-| Place `AGENTS.md` in project root | Human | Once, before engagement |
+| Build CLI adapter (`npm install && npm run build`) | Human | Once, before engagement |
+| Place `AGENTS.md` in project root (with adapter path) | Human | Once, before engagement |
 | Start Claude Code | Human | Once |
 | Everything else below | Claude Code | Autonomous |
 

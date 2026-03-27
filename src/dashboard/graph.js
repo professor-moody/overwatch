@@ -167,6 +167,10 @@ function initRenderer() {
     labelDensity: 0.4,
     labelGridCellSize: 120,
     labelRenderedSizeThreshold: 5,
+    renderEdgeLabels: true,
+    edgeLabelFont: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    edgeLabelSize: 9,
+    edgeLabelColor: { color: '#7a7886' },
     defaultEdgeColor: DEFAULT_EDGE_COLOR,
     defaultEdgeType: 'arrow',
     edgeReducer: edgeReducer,
@@ -429,6 +433,11 @@ function isEdgeEndpointActive(edge) {
 
 function edgeReducer(edge, data) {
   const res = { ...data };
+
+  // Only show edge labels when zoomed in past detail threshold
+  if (getCurrentCameraRatio() > ZOOM_REVEAL_THRESHOLDS.detail) {
+    res.label = '';
+  }
 
   if (!isEdgeVisible(edge)) {
     res.hidden = true;
@@ -1466,8 +1475,29 @@ function hideTooltip() {
 // Layout — Animated ForceAtlas2
 // ============================================================
 
-function getLayoutSettings() {
+const NODE_MASS = {
+  domain: 10, objective: 8, host: 3, credential: 2,
+  user: 1.5, group: 1.5, service: 1, share: 1,
+};
+const SETTLE_ITERATIONS = 80;
+
+function getLayoutSettings(phase) {
   const order = graph.order;
+  if (phase === 1) {
+    // Phase 1: fast rough positioning — high theta, strong gravity
+    return {
+      gravity: 1.0,
+      scalingRatio: order > 50 ? 60 : 30,
+      linLogMode: true,
+      adjustSizes: true,
+      barnesHutOptimize: true,
+      barnesHutTheta: 0.8,
+      slowDown: 8,
+      strongGravityMode: false,
+      outboundAttractionDistribution: true,
+    };
+  }
+  // Phase 2 (default): fine tuning — lower theta, gentler gravity
   return {
     gravity: 0.3,
     scalingRatio: order > 50 ? 60 : 30,
@@ -1479,6 +1509,13 @@ function getLayoutSettings() {
     strongGravityMode: false,
     outboundAttractionDistribution: true,
   };
+}
+
+function applyNodeMass() {
+  graph.forEachNode((id, attrs) => {
+    const mass = NODE_MASS[attrs.nodeType] || 1;
+    graph.setNodeAttribute(id, 'mass', mass);
+  });
 }
 
 function startLayout() {
@@ -1495,10 +1532,17 @@ function startLayout() {
     return;
   }
 
-  const settings = getLayoutSettings();
+  applyNodeMass();
+  const PHASE_BOUNDARY = 200;
+  let settings = getLayoutSettings(1);
 
   function frame() {
     if (!layoutRunning) return;
+
+    // Switch to phase 2 at boundary
+    if (layoutIterationCount === PHASE_BOUNDARY) {
+      settings = getLayoutSettings(2);
+    }
 
     // Save positions of fixed nodes (FA2 doesn't respect 'fixed')
     const fixedPositions = new Map();
@@ -1532,6 +1576,43 @@ function startLayout() {
 
   layoutAnimId = requestAnimationFrame(frame);
   updateLayoutButton();
+}
+
+function settleNewNodes(addedNodeIds) {
+  if (addedNodeIds.length === 0) return;
+  if (graph.order === 0) return;
+
+  const fa2 = window.graphologyLayoutForceAtlas2 || globalThis.graphologyLayoutForceAtlas2;
+  if (!fa2 || !fa2.assign) return;
+
+  // Pin all pre-existing nodes
+  const addedSet = new Set(addedNodeIds);
+  graph.forEachNode((id) => {
+    if (!addedSet.has(id)) {
+      graph.setNodeAttribute(id, 'fixed', true);
+    }
+  });
+
+  applyNodeMass();
+  const settings = getLayoutSettings(2);
+
+  // Run a short burst to settle new nodes only
+  const itersPerStep = LAYOUT_ITERS_PER_FRAME;
+  let settled = 0;
+  while (settled < SETTLE_ITERATIONS) {
+    fa2.assign(graph, { iterations: itersPerStep, settings });
+    settled += itersPerStep;
+  }
+
+  // Unpin all nodes
+  graph.forEachNode((id, attrs) => {
+    if (!addedSet.has(id) && attrs.fixed === true) {
+      graph.setNodeAttribute(id, 'fixed', false);
+    }
+  });
+
+  if (renderer) renderer.refresh();
+  updateMinimap();
 }
 
 function stopLayout() {
@@ -1956,33 +2037,44 @@ function mergeGraphDelta(delta) {
           _props: props,
         });
       } else {
-        const anchorEdge = deltaEdges.find((edge) =>
-          (edge.source === n.id && graph.hasNode(edge.target)) ||
-          (edge.target === n.id && graph.hasNode(edge.source))
-        );
-        const anchorId = anchorEdge
-          ? (anchorEdge.source === n.id ? anchorEdge.target : anchorEdge.source)
-          : null;
-        const anchorPos = anchorId && graph.hasNode(anchorId)
-          ? graph.getNodeAttributes(anchorId)
-          : null;
-        const siblingCount = anchorId
-          ? graph.edges(anchorId).filter((edgeId) => {
-              const oppositeId = graph.opposite(anchorId, edgeId);
-              return graph.hasNode(oppositeId) && graph.getNodeAttribute(oppositeId, 'nodeType') === nodeType;
-            }).length
-          : 0;
+        // Collect positions of ALL connected existing neighbors (centroid placement)
+        const neighborPositions = [];
+        for (const edge of deltaEdges) {
+          const peerId = edge.source === n.id ? edge.target : (edge.target === n.id ? edge.source : null);
+          if (peerId && graph.hasNode(peerId)) {
+            const peerAttrs = graph.getNodeAttributes(peerId);
+            if (typeof peerAttrs.x === 'number' && typeof peerAttrs.y === 'number') {
+              neighborPositions.push({ x: peerAttrs.x, y: peerAttrs.y });
+            }
+          }
+        }
+
         const hash = n.id.split('').reduce((acc, ch) => ((acc * 31) + ch.charCodeAt(0)) >>> 0, 0);
         const baseRadius = DETAIL_NODE_TYPES.has(nodeType) ? 4.5 : SUPPORTING_NODE_TYPES.has(nodeType) ? 6.4 : 5.4;
         const radius = baseRadius + ((hash % 5) - 2) * 0.18;
-        const angleSpread = DETAIL_NODE_TYPES.has(nodeType) ? Math.PI * 1.7 : Math.PI * 2;
-        const angleStart = DETAIL_NODE_TYPES.has(nodeType) ? -Math.PI * 0.85 : -Math.PI;
-        const slotRatio = siblingCount === 0 ? (hash % 360) / 360 : siblingCount / (siblingCount + 1);
-        const angle = angleStart + angleSpread * slotRatio;
+        const angle = ((hash % 360) / 360) * Math.PI * 2 - Math.PI;
+        let startX, startY;
+
+        if (neighborPositions.length >= 2) {
+          // Centroid of all connected neighbors — best FA2 starting point
+          const cx = neighborPositions.reduce((s, p) => s + p.x, 0) / neighborPositions.length;
+          const cy = neighborPositions.reduce((s, p) => s + p.y, 0) / neighborPositions.length;
+          startX = cx + radius * 0.5 * Math.cos(angle);
+          startY = cy + radius * 0.5 * Math.sin(angle);
+        } else if (neighborPositions.length === 1) {
+          // Single neighbor — orbit around it
+          startX = neighborPositions[0].x + radius * Math.cos(angle);
+          startY = neighborPositions[0].y + radius * Math.sin(angle);
+        } else {
+          // No neighbors in graph yet — place in open space
+          startX = radius * Math.cos(angle);
+          startY = radius * Math.sin(angle);
+        }
+
         graph.addNode(n.id, {
           label: window.OverwatchNodeDisplay.getNodeDisplayLabel(props, n.id),
-          x: anchorPos ? anchorPos.x + radius * Math.cos(angle) : radius * Math.cos(angle),
-          y: anchorPos ? anchorPos.y + radius * Math.sin(angle) : radius * Math.sin(angle),
+          x: startX,
+          y: startY,
           size: NODE_BASE_SIZES[nodeType] || 5,
           color: NODE_COLORS[nodeType] || '#888',
           nodeType: nodeType,
@@ -2026,7 +2118,11 @@ function mergeGraphDelta(delta) {
     pulseNewNodes(addedNodeIds);
   }
 
-  if (added) {
+  if (addedNodeIds.length > 0) {
+    // Pin-and-resume: settle new nodes without disrupting existing layout
+    settleNewNodes(addedNodeIds);
+  } else if (added) {
+    // Pure edge additions — run full layout
     startLayout();
   }
 
