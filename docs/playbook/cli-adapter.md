@@ -2,25 +2,41 @@
 
 How to operate Overwatch through the CLI adapter — for environments where native MCP is unavailable (policy restrictions, non-MCP clients, manual operator use).
 
-## Operator Flow — Three Modes
+## Operator Flow — Three Transport Modes
 
-Overwatch supports three consumption modes. The graph, state, and tools are identical across all three — only the transport differs.
+Overwatch supports three transport modes. The graph, state, and tools are identical across all three — only the transport differs.
 
-### Mode A: Native MCP (default)
+### Mode A: MCP over stdio (default)
 
 ```
-+----------------+                +------------------------+
-|  Claude Code   | --stdio/HTTP-> |  Overwatch MCP Server  |
-|  (Opus/Sonnet) | <--MCP-------> |  (graph + inference)   |
-+----------------+                +------------------------+
++----------------+              +------------------------+
+|  Claude Code   | --stdio----> |  Overwatch MCP Server  |
+|  (Opus/Sonnet) | <--stdio---- |  (graph + inference)   |
++----------------+              +------------------------+
 ```
 
-- Claude Code connects directly as an MCP client
-- Session managed by the SDK (transparent)
-- Tools appear in Claude's tool palette
+- Claude Code connects as a native MCP client over stdin/stdout
+- Tools appear directly in Claude's tool palette
+- No network required — server runs as a child process
+- **Env:** `OVERWATCH_TRANSPORT=stdio` (default)
 - **Use when:** Claude Code has unrestricted MCP access
 
-### Mode B: CLI Adapter (Claude Code via bash)
+### Mode B: MCP over HTTP
+
+```
++----------------+              +------------------------+
+|  Claude Code   | --HTTP-----> |  Overwatch MCP Server  |
+|  (Opus/Sonnet) | <--JSON----- |  (graph + inference)   |
++----------------+              +------------------------+
+```
+
+- Claude Code connects as a native MCP client over StreamableHTTP
+- Same MCP protocol, but over the network instead of stdio
+- Server runs independently — survives Claude Code restarts
+- **Env:** `OVERWATCH_TRANSPORT=http` (binds to `http://127.0.0.1:3000/mcp`)
+- **Use when:** You want the server to persist independently, or multiple clients need to connect
+
+### Mode C: CLI Adapter
 
 ```
 +----------------+              +-----------------+              +------------------------+
@@ -29,24 +45,15 @@ Overwatch supports three consumption modes. The graph, state, and tools are iden
 +----------------+              +-----------------+              +------------------------+
 ```
 
-- Claude Code invokes `overwatch` commands via its bash tool
-- CLI handles session caching between invocations (transparent)
+- Claude Code invokes `overwatch` shell commands via its bash tool
+- CLI handles MCP session caching between invocations (transparent)
 - Output is JSON by default (machine-readable for Claude)
+- Requires the server running in HTTP mode (Mode B)
+- **Env:** `OVERWATCH_URL=http://127.0.0.1:3000`
 - **Use when:** MCP is blocked by policy, or you want shell-level auditability
 
-### Mode C: Manual Operator
-
-```
-+----------------+              +-----------------+              +------------------------+
-|  Human         | --terminal-> |  overwatch CLI  | --HTTP-----> |  Overwatch MCP Server  |
-|  Operator      | <--stdout--- |  (thin relay)   | <--JSON----- |  (graph + inference)   |
-+----------------+              +-----------------+              +------------------------+
-```
-
-- Human types commands directly in a terminal
-- Use `--human` flag for readable output
-- Same commands, same graph — just a different consumer
-- **Use when:** debugging, spot-checking, or operating without an LLM
+!!! note "Manual operator use"
+    The CLI adapter also works for humans typing commands in a terminal. Add `--human` for readable output. Same commands, same graph — just a different consumer.
 
 ## Do I Need a Skill File?
 
