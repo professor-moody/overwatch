@@ -130,6 +130,82 @@ export function inferCidrFromIps(ips: string[]): string[] {
     .map(prefix => `${prefix}.0/24`);
 }
 
+// --- URL scope matching (glob-like patterns) ---
+
+/**
+ * Convert a glob-like URL pattern to a RegExp.
+ * Supports: `*` (any non-/ chars), `**` (anything), literal `.` escaped.
+ * Examples: "*.example.com" matches "app.example.com"
+ *           "app.corp.io/api/*" matches "app.corp.io/api/v1"
+ */
+function globToRegex(pattern: string): RegExp {
+  // Escape regex-special chars except * which we handle
+  let re = pattern
+    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')  // escape specials (. becomes \.)
+    .replace(/\*\*/g, '\0GLOBSTAR\0')            // protect ** before * replacement
+    .replace(/\*/g, '[^/]*')                      // * → match non-slash
+    .replace(/\0GLOBSTAR\0/g, '.*');              // restore ** → match anything
+  return new RegExp(`^${re}$`, 'i');
+}
+
+export function isUrlInScope(url: string, patterns: string[]): boolean {
+  // Strip protocol for matching — patterns are host/path only
+  const normalized = url.replace(/^https?:\/\//, '');
+  for (const pattern of patterns) {
+    const normalizedPattern = pattern.replace(/^https?:\/\//, '');
+    if (globToRegex(normalizedPattern).test(normalized)) return true;
+  }
+  return false;
+}
+
+// --- Cloud resource scope matching ---
+
+export function isCloudResourceInScope(
+  resource: string,
+  scope: { aws_accounts?: string[]; azure_subscriptions?: string[]; gcp_projects?: string[] }
+): { in_scope: boolean; reason: string } {
+  // AWS ARN: arn:aws:SERVICE:REGION:ACCOUNT_ID:...
+  const arnMatch = resource.match(/^arn:aws[^:]*:[^:]*:[^:]*:(\d{12}):/);
+  if (arnMatch) {
+    const accountId = arnMatch[1];
+    if (!scope.aws_accounts?.length) {
+      return { in_scope: false, reason: `AWS account ${accountId} — no aws_accounts defined in scope` };
+    }
+    if (scope.aws_accounts.includes(accountId)) {
+      return { in_scope: true, reason: '' };
+    }
+    return { in_scope: false, reason: `AWS account ${accountId} not in scope` };
+  }
+
+  // Azure: /subscriptions/SUBSCRIPTION_ID/...
+  const azureMatch = resource.match(/^\/subscriptions\/([^/]+)/i);
+  if (azureMatch) {
+    const subId = azureMatch[1].toLowerCase();
+    if (!scope.azure_subscriptions?.length) {
+      return { in_scope: false, reason: `Azure subscription ${subId} — no azure_subscriptions defined in scope` };
+    }
+    if (scope.azure_subscriptions.some(s => s.toLowerCase() === subId)) {
+      return { in_scope: true, reason: '' };
+    }
+    return { in_scope: false, reason: `Azure subscription ${subId} not in scope` };
+  }
+
+  // GCP: projects/PROJECT_ID/...
+  const gcpMatch = resource.match(/^projects\/([^/]+)/i);
+  if (gcpMatch) {
+    const projectId = gcpMatch[1];
+    if (!scope.gcp_projects?.length) {
+      return { in_scope: false, reason: `GCP project ${projectId} — no gcp_projects defined in scope` };
+    }
+    if (scope.gcp_projects.includes(projectId)) {
+      return { in_scope: true, reason: '' };
+    }
+    return { in_scope: false, reason: `GCP project ${projectId} not in scope` };
+  }
+
+  return { in_scope: false, reason: `Unrecognized cloud resource format: ${resource}` };
+}
+
 function ipToNum(ip: string): number {
   const parts = ip.split('.').map(Number);
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;

@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { EngineContext } from './engine-context.js';
-import type { NodeProperties, EdgeProperties, FrontierItem } from '../types.js';
+import type { NodeProperties, EdgeProperties, FrontierItem, NodeType } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
 import { isCredentialStaleOrExpired } from './credential-utils.js';
 import { isIpInCidr } from './cidr.js';
@@ -23,6 +23,38 @@ const FAN_OUT_ESTIMATES: Record<string, number> = {
   snmp: 5,
   winrm: 4,
   default: 5
+};
+
+// --- Declarative required-properties map ---
+// Each entry returns the list of missing properties for a given node.
+// New node types added in later sprints automatically participate in
+// frontier computation by adding an entry here — no switch needed.
+type MissingPropertyChecker = (node: NodeProperties, ctx: EngineContext) => string[];
+
+const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
+  host: (node, ctx) => {
+    const m: string[] = [];
+    if (node.alive === undefined) m.push('alive');
+    else if (node.alive) {
+      if (!node.os) m.push('os');
+      const hasServices = ctx.graph.outEdges(node.id).some((e: string) =>
+        ctx.graph.getEdgeAttributes(e).type === 'RUNS'
+      );
+      if (!hasServices) m.push('services');
+    }
+    return m;
+  },
+  service: (node) => node.version ? [] : ['version'],
+  user: (node) => node.privileged === undefined ? ['privilege_level'] : [],
+  domain: (node) => node.functional_level ? [] : ['functional_level'],
+};
+
+// --- Noise estimates by missing property ---
+const NOISE_ESTIMATES: Record<string, number> = {
+  alive: 0.2,
+  services: 0.5,
+  version: 0.3,
+  default: 0.3,
 };
 
 export type HopsToObjectiveFn = (fromNodeId: string) => number | null;
@@ -129,30 +161,8 @@ export class FrontierComputer {
   }
 
   private getMissingProperties(node: NodeProperties): string[] {
-    const missing: string[] = [];
-    switch (node.type) {
-      case 'host':
-        if (node.alive === undefined) missing.push('alive');
-        else if (node.alive) {
-          if (!node.os) missing.push('os');
-          // Services missing is captured by lack of RUNS edges
-          const hasServices = this.ctx.graph.outEdges(node.id).some((e: string) =>
-            this.ctx.graph.getEdgeAttributes(e).type === 'RUNS'
-          );
-          if (!hasServices) missing.push('services');
-        }
-        break;
-      case 'service':
-        if (!node.version) missing.push('version');
-        break;
-      case 'user':
-        if (node.privileged === undefined) missing.push('privilege_level');
-        break;
-      case 'domain':
-        if (!node.functional_level) missing.push('functional_level');
-        break;
-    }
-    return missing;
+    const checker = REQUIRED_PROPERTIES[node.type];
+    return checker ? checker(node, this.ctx) : [];
   }
 
   private estimateFanOut(node: NodeProperties): number {
@@ -178,10 +188,10 @@ export class FrontierComputer {
     return ips;
   }
 
-  private estimateNoiseForNode(node: NodeProperties, missing: string[]): number {
-    if (missing.includes('alive')) return 0.2;
-    if (missing.includes('services')) return 0.5;
-    if (missing.includes('version')) return 0.3;
-    return 0.3;
+  private estimateNoiseForNode(_node: NodeProperties, missing: string[]): number {
+    for (const prop of missing) {
+      if (prop in NOISE_ESTIMATES) return NOISE_ESTIMATES[prop];
+    }
+    return NOISE_ESTIMATES['default'];
   }
 }

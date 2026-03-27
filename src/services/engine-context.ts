@@ -37,6 +37,7 @@ export type ActivityEventType =
   | 'session_signaled'
   | 'session_closed'
   | 'session_error'
+  | 'session_access_confirmed'
   | 'scope_updated'
   | 'system';
 

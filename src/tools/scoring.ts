@@ -91,6 +91,8 @@ Call this before every significant action. Returns valid/invalid with specific e
         edge_source: z.string().optional().describe('Source node of the edge being tested'),
         edge_target: z.string().optional().describe('Target node of the edge being tested'),
         technique: z.string().optional().describe('Technique name (e.g. kerberoast, ntlmrelay, portscan)'),
+        target_url: z.string().optional().describe('URL to validate against scope url_patterns (e.g. https://app.corp.io/api/v1)'),
+        cloud_resource: z.string().optional().describe('Cloud resource identifier to validate against scope (AWS ARN, Azure subscription path, GCP project path)'),
         action_id: z.string().optional().describe('Stable action ID to correlate validation with execution and findings'),
         tool_name: z.string().optional().describe('Tool expected to be used for this action'),
         frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
@@ -103,9 +105,9 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, action_id, tool_name, frontier_item_id, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name, frontier_item_id, description }) => {
       const normalizedActionId = action_id || uuidv4();
-      const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique });
+      const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource });
       const validationResult = !result.valid
         ? 'invalid'
         : result.warnings.length > 0

@@ -82,6 +82,26 @@ export function runLabPreflight(engine: GraphEngine, options: LabPreflightOption
     checks.push(hasCidrScope
       ? { name: 'scope_shape', status: 'pass', message: 'Network CIDR scope is configured.', details: { cidrs: config.scope.cidrs } }
       : { name: 'scope_shape', status: 'warning', message: 'Network profile has no CIDR scope yet.' });
+  } else if (profile === 'web_app') {
+    const hasUrlScope = (config.scope.url_patterns?.length || 0) > 0;
+    checks.push(hasUrlScope
+      ? { name: 'scope_shape', status: 'pass', message: 'URL scope patterns are configured.', details: { url_patterns: config.scope.url_patterns } }
+      : { name: 'scope_shape', status: 'warning', message: 'Web app profile has no url_patterns in scope yet.' });
+  } else if (profile === 'cloud') {
+    const hasCloudScope = (config.scope.aws_accounts?.length || 0) > 0
+      || (config.scope.azure_subscriptions?.length || 0) > 0
+      || (config.scope.gcp_projects?.length || 0) > 0;
+    checks.push(hasCloudScope
+      ? { name: 'scope_shape', status: 'pass', message: 'Cloud account scope is configured.' }
+      : { name: 'scope_shape', status: 'warning', message: 'Cloud profile has no cloud accounts/subscriptions/projects in scope yet.' });
+  } else if (profile === 'hybrid') {
+    const hasDomainScope = config.scope.domains.length > 0;
+    const hasCloudScope = (config.scope.aws_accounts?.length || 0) > 0
+      || (config.scope.azure_subscriptions?.length || 0) > 0
+      || (config.scope.gcp_projects?.length || 0) > 0;
+    checks.push(hasDomainScope && hasCloudScope
+      ? { name: 'scope_shape', status: 'pass', message: 'Hybrid scope covers both AD domains and cloud accounts.' }
+      : { name: 'scope_shape', status: 'warning', message: `Hybrid profile is missing ${!hasDomainScope ? 'domain' : ''}${!hasDomainScope && !hasCloudScope ? ' and ' : ''}${!hasCloudScope ? 'cloud account' : ''} scope.` });
   } else {
     checks.push({
       name: 'scope_shape',
@@ -260,6 +280,15 @@ function evaluateToolReadiness(profile: LabProfile, toolStatuses: ToolStatus[]):
     requireSingle('nmap');
     requireOne(['netexec'], 'netexec_or_nxc', 'NetExec/NXC is required for GOAD-first SMB validation.');
     requireSingle('bloodhound-python');
+  } else if (profile === 'web_app') {
+    requireOne(['nuclei', 'nikto'], 'web_scanner', 'A web vulnerability scanner (nuclei or nikto) is recommended for web_app profile.');
+    requireOne(['gobuster', 'feroxbuster', 'ffuf'], 'dir_enum', 'A directory enumeration tool (gobuster, feroxbuster, or ffuf) is recommended for web_app profile.');
+  } else if (profile === 'cloud') {
+    requireOne(['pacu', 'prowler', 'scoutsuite'], 'cloud_audit', 'A cloud audit/exploitation tool (pacu, prowler, or scoutsuite) is recommended for cloud profile.');
+  } else if (profile === 'hybrid') {
+    requireSingle('nmap');
+    requireOne(['netexec'], 'netexec_or_nxc', 'NetExec/NXC is required for AD validation in hybrid environments.');
+    requireOne(['pacu', 'prowler', 'scoutsuite'], 'cloud_audit', 'A cloud audit tool is recommended for the cloud component of hybrid profile.');
   } else {
     requireSingle('nmap');
   }

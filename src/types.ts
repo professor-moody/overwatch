@@ -160,6 +160,11 @@ export interface ParseContext {
   domain?: string;
   source_host?: string;
   domain_aliases?: Record<string, string>;
+  // Cloud context (Sprint 11+)
+  cloud_account?: string;
+  cloud_region?: string;
+  // Network context (Sprint 9+)
+  network_zone?: string;
   [key: string]: unknown;
 }
 
@@ -196,6 +201,10 @@ export interface EngagementConfig {
     domains: string[];
     exclusions: string[];
     hosts?: string[];
+    aws_accounts?: string[];
+    azure_subscriptions?: string[];
+    gcp_projects?: string[];
+    url_patterns?: string[];   // glob-like: "*.example.com", "app.corp.io/api/*"
   };
   objectives: EngagementObjective[];
   opsec: OpsecProfile;
@@ -225,12 +234,16 @@ export const engagementConfigSchema = z.object({
   id: nonEmptyString,
   name: nonEmptyString,
   created_at: nonEmptyString,
-  profile: z.enum(['goad_ad', 'single_host', 'network']).optional(),
+  profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
   scope: z.object({
     cidrs: z.array(z.string()),
     domains: z.array(z.string()),
     exclusions: z.array(z.string()),
     hosts: z.array(z.string()).optional(),
+    aws_accounts: z.array(z.string()).optional(),
+    azure_subscriptions: z.array(z.string()).optional(),
+    gcp_projects: z.array(z.string()).optional(),
+    url_patterns: z.array(z.string()).optional(),
   }),
   objectives: z.array(engagementObjectiveSchema),
   opsec: opsecProfileSchema,
@@ -373,11 +386,19 @@ export interface ScopeSuggestion {
   source_descriptions: string[];
 }
 
-export type LabProfile = 'goad_ad' | 'single_host' | 'network';
+export type LabProfile = 'goad_ad' | 'single_host' | 'network' | 'web_app' | 'cloud' | 'hybrid';
 
 export function inferProfile(config: EngagementConfig): LabProfile {
   if (config.profile) return config.profile;
-  if (config.scope.domains.length > 0) return 'goad_ad';
+  const hasCloud = !!(config.scope.aws_accounts?.length
+    || config.scope.azure_subscriptions?.length
+    || config.scope.gcp_projects?.length);
+  const hasDomains = config.scope.domains.length > 0;
+  const hasUrls = !!(config.scope.url_patterns?.length);
+  if (hasCloud && hasDomains) return 'hybrid';
+  if (hasCloud) return 'cloud';
+  if (hasUrls) return 'web_app';
+  if (hasDomains) return 'goad_ad';
   return 'single_host';
 }
 export type LabReadinessStatus = 'ready' | 'warning' | 'blocked';
@@ -615,6 +636,8 @@ export interface SessionMetadata {
   pid?: number;
   agent_id?: string;
   target_node?: string;
+  principal_node?: string;
+  credential_node?: string;
   claimed_by?: string;
   started_at: string;
   last_activity_at: string;

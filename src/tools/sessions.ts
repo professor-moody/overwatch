@@ -43,6 +43,10 @@ The session is claimed by the opening agent — other agents can read but not wr
         rows: z.number().int().optional().describe('Terminal rows (default: 30)'),
         agent_id: z.string().optional().describe('Agent that owns this session'),
         target_node: z.string().optional().describe('Graph node ID this session targets'),
+        principal_node: z.string().optional().describe('Graph node ID of the authenticating user/group/credential (enables HAS_SESSION edge creation on success)'),
+        credential_node: z.string().optional().describe('Graph node ID of the credential used for authentication'),
+        action_id: z.string().optional().describe('Action ID to correlate session result with planned action'),
+        frontier_item_id: z.string().optional().describe('Frontier item this session attempt came from'),
       },
       annotations: {
         readOnlyHint: false,
@@ -68,6 +72,10 @@ The session is claimed by the opening agent — other agents can read but not wr
         rows: params.rows,
         agent_id: params.agent_id,
         target_node: params.target_node,
+        principal_node: params.principal_node,
+        credential_node: params.credential_node,
+        action_id: params.action_id,
+        frontier_item_id: params.frontier_item_id,
       });
 
       return {

@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from './cidr.js';
+import { isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -1013,7 +1013,12 @@ export class GraphEngine {
   // Validation (Layer 3 — post-LLM sanity check)
   // =============================================
 
-  validateAction(action: { target_node?: string; target_ip?: string; edge_source?: string; edge_target?: string; technique?: string }): {
+  validateAction(action: {
+    target_node?: string; target_ip?: string;
+    edge_source?: string; edge_target?: string;
+    technique?: string;
+    target_url?: string; cloud_resource?: string;
+  }): {
     valid: boolean;
     errors: string[];
     warnings: string[];
@@ -1036,6 +1041,26 @@ export class GraphEngine {
     if (action.target_ip) {
       if (!isIpInScope(action.target_ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions)) {
         errors.push(`Target IP is out of scope: ${action.target_ip}`);
+      }
+    }
+
+    // URL scope check (glob matching)
+    if (action.target_url) {
+      const patterns = this.ctx.config.scope.url_patterns;
+      if (patterns && patterns.length > 0) {
+        if (!isUrlInScope(action.target_url, patterns)) {
+          errors.push(`Target URL is out of scope: ${action.target_url}`);
+        }
+      } else {
+        warnings.push(`Target URL provided but no url_patterns defined in scope`);
+      }
+    }
+
+    // Cloud resource scope check
+    if (action.cloud_resource) {
+      const scopeResult = isCloudResourceInScope(action.cloud_resource, this.ctx.config.scope);
+      if (!scopeResult.in_scope) {
+        errors.push(`Cloud resource is out of scope: ${scopeResult.reason}`);
       }
     }
 
@@ -1078,6 +1103,122 @@ export class GraphEngine {
     }
 
     return { valid: errors.length === 0, errors, warnings };
+  }
+
+  // =============================================
+  // Session → Graph Integration
+  // =============================================
+
+  ingestSessionResult(result: {
+    success: boolean;
+    target_node: string;
+    principal_node?: string;
+    credential_node?: string;
+    session_id?: string;
+    agent_id?: string;
+    action_id?: string;
+    frontier_item_id?: string;
+  }): void {
+    const { success, target_node, principal_node, credential_node, session_id, agent_id, action_id, frontier_item_id } = result;
+
+    if (success) {
+      // Create HAS_SESSION edge only if principal_node is a known graph node
+      // of type user, group, or credential (per graph-schema.ts constraints)
+      if (principal_node && this.ctx.graph.hasNode(principal_node)) {
+        const principalAttrs = this.ctx.graph.getNodeAttributes(principal_node);
+        const validSourceTypes = new Set(['user', 'group', 'credential']);
+        if (validSourceTypes.has(principalAttrs.type)) {
+          const edgeId = `session-${principal_node}-${target_node}`;
+          if (!this.ctx.graph.hasEdge(edgeId)) {
+            this.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
+              type: 'HAS_SESSION',
+              confidence: 1.0,
+              discovered_at: new Date().toISOString(),
+              discovered_by: 'session-manager',
+              tested: true,
+              test_result: 'success',
+              confirmed_at: new Date().toISOString(),
+            });
+            this.invalidateFrontierCache();
+          } else {
+            // Update existing edge
+            this.ctx.graph.mergeEdgeAttributes(edgeId, {
+              confidence: 1.0,
+              tested: true,
+              test_result: 'success',
+              confirmed_at: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      // Mark the specific frontier item's edge as tested (not all edges to host)
+      this.markFrontierEdgeTested(frontier_item_id, action_id, 'success');
+
+      // Log operational event regardless of whether HAS_SESSION was created
+      this.logActionEvent({
+        event_type: 'session_access_confirmed',
+        description: `SSH session ${session_id || '(unknown)'} to ${target_node} succeeded${principal_node ? ` as ${principal_node}` : ''}`,
+        agent_id,
+        category: 'system',
+        details: {
+          session_id,
+          target_node,
+          principal_node,
+          credential_node,
+          action_id,
+          frontier_item_id,
+          has_session_edge_created: !!principal_node && this.ctx.graph.hasNode(principal_node || ''),
+        },
+      });
+    } else {
+      // Failure: mark only the specific frontier item's edge
+      this.markFrontierEdgeTested(frontier_item_id, action_id, 'failure');
+
+      this.logActionEvent({
+        event_type: 'session_access_confirmed',
+        description: `SSH session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
+        agent_id,
+        category: 'system',
+        outcome: 'failure',
+        details: {
+          session_id,
+          target_node,
+          principal_node,
+          credential_node,
+          action_id,
+          frontier_item_id,
+        },
+      });
+    }
+  }
+
+  private markFrontierEdgeTested(
+    frontier_item_id: string | undefined,
+    action_id: string | undefined,
+    test_result: 'success' | 'failure'
+  ): void {
+    if (!frontier_item_id && !action_id) return;
+
+    // If frontier_item_id is present, find the edge it refers to
+    if (frontier_item_id) {
+      // Frontier edge IDs follow pattern "frontier-edge-{edgeId}"
+      const edgeId = frontier_item_id.replace(/^frontier-edge-/, '');
+      if (edgeId !== frontier_item_id && this.ctx.graph.hasEdge(edgeId)) {
+        this.ctx.graph.mergeEdgeAttributes(edgeId, {
+          tested: true,
+          test_result,
+        });
+        this.invalidateFrontierCache();
+        return;
+      }
+    }
+
+    // Fallback: if action_id is set, check the action→frontier mapping
+    if (action_id && frontier_item_id) {
+      // The frontier_item_id itself encodes the edge — already tried above
+      // No additional blanket marking — this is intentionally scoped
+    }
   }
 
   // =============================================

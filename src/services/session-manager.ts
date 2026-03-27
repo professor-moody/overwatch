@@ -152,6 +152,10 @@ export interface SessionCreateOptions {
   port?: number;
   agent_id?: string;
   target_node?: string;
+  principal_node?: string;
+  credential_node?: string;
+  action_id?: string;
+  frontier_item_id?: string;
   cols?: number;
   rows?: number;
   // SSH-specific
@@ -211,6 +215,8 @@ export class SessionManager {
       port: options.port,
       agent_id: options.agent_id,
       target_node: options.target_node,
+      principal_node: options.principal_node,
+      credential_node: options.credential_node,
       claimed_by: options.agent_id,
       started_at: now,
       last_activity_at: now,
@@ -274,6 +280,20 @@ export class SessionManager {
       this.logSessionEvent(id, 'session_opened',
         `Session "${options.title}" opened (${options.kind}, ${transport})`);
 
+      // Session → graph integration: SSH sessions with target_node
+      if (this.engine && options.kind === 'ssh' && options.target_node) {
+        this.engine.ingestSessionResult({
+          success: true,
+          target_node: options.target_node,
+          principal_node: options.principal_node,
+          credential_node: options.credential_node,
+          session_id: id,
+          agent_id: options.agent_id,
+          action_id: options.action_id,
+          frontier_item_id: options.frontier_item_id,
+        });
+      }
+
       // Wait briefly for initial output (e.g. shell prompt, SSH banner)
       const waitMs = options.initial_wait_ms !== undefined ? options.initial_wait_ms : 2000;
       if (waitMs > 0) {
@@ -296,6 +316,21 @@ export class SessionManager {
       session.metadata.closed_at = new Date().toISOString();
       this.logSessionEvent(id, 'session_error',
         `Session "${options.title}" failed to open: ${err instanceof Error ? err.message : String(err)}`);
+
+      // Session → graph integration: mark failure on specific frontier item
+      if (this.engine && options.kind === 'ssh' && options.target_node) {
+        this.engine.ingestSessionResult({
+          success: false,
+          target_node: options.target_node,
+          principal_node: options.principal_node,
+          credential_node: options.credential_node,
+          session_id: id,
+          agent_id: options.agent_id,
+          action_id: options.action_id,
+          frontier_item_id: options.frontier_item_id,
+        });
+      }
+
       throw err;
     }
   }
