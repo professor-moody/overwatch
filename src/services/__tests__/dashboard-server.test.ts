@@ -457,6 +457,49 @@ describe('DashboardServer', () => {
     expect((dashboard as any).fileCache.size).toBe(0);
   });
 
+  it('delta nodes contain fresh community_id after graph topology change', () => {
+    const mockClient = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    (dashboard as any).clients = new Set([mockClient]);
+
+    // Seed two connected hosts so Louvain has edges to work with
+    engine.ingestFinding({
+      id: 'community-delta-seed',
+      agent_id: 'test-agent',
+      timestamp: '2026-03-27T10:00:00Z',
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+        { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+      ],
+      edges: [
+        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 1.0, discovered_at: '2026-03-27T10:00:00Z' } },
+      ],
+    });
+
+    dashboard.onGraphUpdate({
+      new_nodes: ['host-10-10-10-1', 'host-10-10-10-2'],
+      new_edges: ['host-10-10-10-1--REACHABLE--host-10-10-10-2'],
+    });
+    dashboard.flush();
+
+    expect(mockClient.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    const deltaNodes = payload.data.delta.nodes;
+
+    // Every delta node should have community_id materialized
+    const hostNodes = deltaNodes.filter((n: any) => n.id.startsWith('host-'));
+    expect(hostNodes.length).toBe(2);
+    for (const node of hostNodes) {
+      expect(typeof node.properties.community_id).toBe('number');
+    }
+
+    // Both hosts in the same connected component should share community_id
+    expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
+  });
+
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));

@@ -2378,14 +2378,15 @@ function drawCommunityHulls() {
   const ctx = labelsCanvas.getContext('2d');
   if (!ctx) return;
 
-  // Group visible nodes by community_id
+  // Group visible nodes by community_id using sigma's display data (respects filters/zoom)
   const communityNodes = new Map();
   graph.forEachNode((id, attrs) => {
-    if (attrs.hidden) return;
+    const dd = renderer.getNodeDisplayData(id);
+    if (!dd || dd.hidden) return;
     const cid = attrs._props && attrs._props.community_id;
     if (cid === undefined || cid === null) return;
     if (!communityNodes.has(cid)) communityNodes.set(cid, []);
-    const vp = renderer.graphToViewport({ x: attrs.x, y: attrs.y });
+    const vp = renderer.graphToViewport({ x: dd.x, y: dd.y });
     communityNodes.get(cid).push(vp);
   });
 

@@ -622,6 +622,37 @@ describe('dashboard graph helpers', () => {
     expect(hull.length).toBeLessThanOrEqual(3);
   });
 
+  it('nodeReducer hides filtered-out node types so hull rendering skips them', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    // Add nodes of different types — both in same community
+    graph.addNode('host-a', { label: '10.10.10.1', nodeType: 'host', color: '#fff', x: 0, y: 0, size: 5, _props: { type: 'host', community_id: 0 } });
+    graph.addNode('svc-a', { label: 'SSH', nodeType: 'service', color: '#fff', x: 1, y: 0, size: 5, _props: { type: 'service', community_id: 0 } });
+
+    // Use raw mode so zoom-based detail gating doesn't interfere
+    graphModule.setGraphMode('raw');
+
+    // With all filters active in raw mode, both should be visible
+    const visHost = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    const visSvc = graphModule.nodeReducer('svc-a', graph.getNodeAttributes('svc-a'));
+    expect(visHost.hidden).toBeUndefined();
+    expect(visSvc.hidden).toBeUndefined();
+
+    // Disable service filter via setActiveFilters — service nodes should be hidden
+    graphModule.setActiveFilters(['host', 'domain', 'user', 'group', 'credential', 'share', 'objective']);
+    const hiddenSvc = graphModule.nodeReducer('svc-a', graph.getNodeAttributes('svc-a'));
+    expect(hiddenSvc.hidden).toBe(true);
+
+    // Host should still be visible
+    const stillVisHost = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    expect(stillVisHost.hidden).toBeUndefined();
+
+    // Restore defaults
+    graphModule.resetFilters();
+    graphModule.setGraphMode('overview');
+  });
+
   it('community hulls toggle works', async () => {
     const graphModule = await loadGraphModule();
     expect(graphModule.communityHullsEnabled).toBe(true);

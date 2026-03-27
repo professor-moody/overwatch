@@ -51,7 +51,7 @@ export class DashboardServer {
 
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
-      // Send full state on connect
+      // Send full state on connect — getState() first to materialize community_id on nodes
       const state = this.engine.getState();
       const graph = this.engine.exportGraph();
       const historyCount = this.engine.getFullHistory().length;
@@ -149,12 +149,13 @@ export class DashboardServer {
     const changedNodeIds = new Set([...(detail.new_nodes || []), ...(detail.updated_nodes || [])]);
     const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
 
+    // getState() first — materializes community_id on nodes before exportGraph() reads them
+    const state = this.engine.getState();
+    const historyCount = this.engine.getFullHistory().length;
+
     const fullGraph = this.engine.exportGraph();
     const deltaNodes = fullGraph.nodes.filter(n => changedNodeIds.has(n.id));
     const deltaEdges = fullGraph.edges.filter(e => e.id !== undefined && changedEdgeIds.has(e.id));
-
-    const state = this.engine.getState();
-    const historyCount = this.engine.getFullHistory().length;
 
     this.broadcast({
       type: 'graph_update',
