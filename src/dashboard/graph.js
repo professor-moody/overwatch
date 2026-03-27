@@ -2386,8 +2386,7 @@ function drawCommunityHulls() {
     const cid = attrs._props && attrs._props.community_id;
     if (cid === undefined || cid === null) return;
     if (!communityNodes.has(cid)) communityNodes.set(cid, []);
-    const vp = renderer.graphToViewport({ x: dd.x, y: dd.y });
-    communityNodes.get(cid).push(vp);
+    communityNodes.get(cid).push({ x: dd.x, y: dd.y });
   });
 
   const HULL_PADDING = 24;
