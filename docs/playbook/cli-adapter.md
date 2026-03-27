@@ -76,33 +76,9 @@ OVERWATCH_TRANSPORT=http node dist/index.js
 
 The server binds to `http://127.0.0.1:3000/mcp` by default.
 
-### 2. Verify connectivity
+### 2. Place the AGENTS.md template
 
-```bash
-overwatch health
-```
-
-Expected output:
-
-```
-Connected to Overwatch at http://127.0.0.1:3000
-Engagement: Dante Run (dante-1)
-Nodes: 0, Edges: 0
-```
-
-This also migrates the session cache to an engagement-aware key.
-
-### 3. Fetch dynamic instructions (for Claude Code)
-
-```bash
-overwatch get-system-prompt --role primary
-```
-
-Returns the full system prompt with core loop, tool table, state snapshot, and OPSEC profile. Claude Code should call this at session start.
-
-### 4. Drop the AGENTS.md template
-
-Create this file in your project root. Claude Code reads it automatically:
+Create this file in your project root **before starting Claude Code**. Claude reads it automatically at session start:
 
 ```markdown
 # Overwatch — CLI Adapter Mode
@@ -161,6 +137,14 @@ invocations. If things go wrong:
 All output is JSON. Parse it directly. Do not add --human flag.
 ```
 
+### 3. Start Claude Code
+
+```bash
+claude
+```
+
+Claude reads the AGENTS.md, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
+
 ## What's Manual vs. Automatic
 
 Once the AGENTS.md is in place and Claude Code starts, **everything is autonomous**. Claude reads the AGENTS.md, bootstraps via `get-system-prompt`, then drives the entire engagement loop through bash.
@@ -181,7 +165,7 @@ What Claude Code actually does during a Dante-style network engagement, step by 
 
 ### Phase 0 — Human Setup (one-time)
 
-The human creates `engagement.json` in the Overwatch directory:
+The human creates `engagement.json` in the Overwatch directory, places the AGENTS.md template (see [Bootstrap Sequence](#bootstrap-sequence) above), then:
 
 ```json
 {
