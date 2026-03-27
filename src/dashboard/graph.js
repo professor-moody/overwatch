@@ -1585,29 +1585,45 @@ function settleNewNodes(addedNodeIds) {
   const fa2 = window.graphologyLayoutForceAtlas2 || globalThis.graphologyLayoutForceAtlas2;
   if (!fa2 || !fa2.assign) return;
 
-  // Pin all pre-existing nodes
   const addedSet = new Set(addedNodeIds);
-  graph.forEachNode((id) => {
-    if (!addedSet.has(id)) {
-      graph.setNodeAttribute(id, 'fixed', true);
-    }
+
+  // Remember which nodes the user had pinned BEFORE we touch anything
+  const userPinned = new Set();
+  graph.forEachNode((id, attrs) => {
+    if (attrs.fixed) userPinned.add(id);
   });
 
   applyNodeMass();
   const settings = getLayoutSettings(2);
 
-  // Run a short burst to settle new nodes only
+  // Run a short burst to settle new nodes.
+  // FA2 ignores the 'fixed' attribute, so we use the same save/restore
+  // pattern as the main frame() loop to keep existing nodes in place.
   const itersPerStep = LAYOUT_ITERS_PER_FRAME;
   let settled = 0;
   while (settled < SETTLE_ITERATIONS) {
+    // Save positions of all pre-existing nodes
+    const pinned = new Map();
+    graph.forEachNode((id, attrs) => {
+      if (!addedSet.has(id)) {
+        pinned.set(id, { x: attrs.x, y: attrs.y });
+      }
+    });
+
     fa2.assign(graph, { iterations: itersPerStep, settings });
     settled += itersPerStep;
+
+    // Restore pre-existing node positions
+    for (const [id, pos] of pinned) {
+      graph.setNodeAttribute(id, 'x', pos.x);
+      graph.setNodeAttribute(id, 'y', pos.y);
+    }
   }
 
-  // Unpin all nodes
-  graph.forEachNode((id, attrs) => {
-    if (!addedSet.has(id) && attrs.fixed === true) {
-      graph.setNodeAttribute(id, 'fixed', false);
+  // Restore original fixed state — only user-pinned nodes stay fixed
+  graph.forEachNode((id) => {
+    if (!addedSet.has(id)) {
+      graph.setNodeAttribute(id, 'fixed', userPinned.has(id));
     }
   });
 
