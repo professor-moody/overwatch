@@ -114,6 +114,30 @@ Create a wrapper script as your FIRST action. This persists across bash calls:
 
 Then use `./ow <command>` for ALL subsequent Overwatch calls.
 
+## Execution Model — READ THIS CAREFULLY
+
+There are TWO execution contexts. Confusing them is the #1 failure mode.
+
+**`./ow` commands** run locally and talk to the Overwatch server via HTTP.
+Use `./ow` for ALL Overwatch API calls (get-state, validate-action, report-finding, etc.).
+
+**Offensive tools** (nmap, nxc, ldapsearch, smbclient, etc.) must run on the
+**target VM**, not on your local machine. You have two options:
+
+Option A — SSH into the VM and run tools there:
+
+    ssh op@<VM_IP> "nmap -Pn -sT -oX - 10.0.0.1"
+
+Option B — Use Overwatch sessions for a persistent remote shell:
+
+    ./ow open-session --type local_pty --title "recon-shell"
+    # Returns a session_id
+    ./ow send-to-session --session-id SESSION_ID --command "nmap -Pn -sT -oX - 10.0.0.1" --timeout 60
+    ./ow read-session --session-id SESSION_ID
+
+`check-tools` reports what is installed on the **Overwatch server**, not locally.
+Use it to plan which tools are available, then execute them on the VM.
+
 ## Session Start
 
 Run these commands at the start of every session (including after compaction):
@@ -131,33 +155,111 @@ Scalar inputs use flags:
 
     ./ow get-state
     ./ow next-task --count 5
-    ./ow log-action --action-id ID --type action_started --description "Starting nmap scan"
+    ./ow log-action --action-id ID --type action_started --frontier-item-id FRONTIER_ID
 
-Complex payloads use --stdin or --file:
+Complex payloads use --stdin:
 
-    echo '{"description":"Scan host for open ports","target_ip":"10.0.0.1","technique":"portscan","frontier_item_id":"frontier-..."}' | ./ow validate-action --stdin
-    ./ow report-finding --file finding.json
-    ./ow parse-output --stdin
+    cat << 'EOF' | ./ow validate-action --stdin
+    {
+      "description": "Port scan host for open services",
+      "target_ip": "10.0.0.1",
+      "technique": "portscan",
+      "frontier_item_id": "frontier-abc123"
+    }
+    EOF
+
+## JSON Cheat Sheet — Exact Field Names
+
+### validate-action
+
+    cat << 'EOF' | ./ow validate-action --stdin
+    {
+      "description": "Enumerate SMB shares on DC",
+      "target_ip": "10.0.0.1",
+      "technique": "smb_enum",
+      "frontier_item_id": "frontier-abc123"
+    }
+    EOF
+
+### report-finding (edges use `source`/`target`, NOT `from`/`to`)
+
+    cat << 'EOF' | ./ow report-finding --stdin
+    {
+      "action_id": "ACTION_ID",
+      "frontier_item_id": "frontier-abc123",
+      "nodes": [
+        {"id": "host-10-0-0-1", "type": "host", "label": "10.0.0.1", "properties": {"ip": "10.0.0.1"}},
+        {"id": "svc-10-0-0-1-445", "type": "service", "label": "SMB:445", "properties": {"port": 445, "protocol": "tcp", "service_name": "smb"}}
+      ],
+      "edges": [
+        {"source": "host-10-0-0-1", "target": "svc-10-0-0-1-445", "type": "RUNS"}
+      ]
+    }
+    EOF
+
+### parse-output (field is `tool_name`, NOT `parser`)
+
+    cat << 'EOF' | ./ow parse-output --stdin
+    {
+      "tool_name": "nmap",
+      "output": "<xml nmap output here>",
+      "action_id": "ACTION_ID",
+      "frontier_item_id": "frontier-abc123"
+    }
+    EOF
+
+### update-scope (`reason` is required)
+
+    cat << 'EOF' | ./ow update-scope --stdin
+    {
+      "add_cidrs": ["10.0.0.0/24"],
+      "reason": "Discovered subnet via DNS enumeration",
+      "confirm": false
+    }
+    EOF
+
+Set `confirm: false` first to preview, then `confirm: true` to apply.
+
+### log-action (flags only)
+
+    ./ow log-action --action-id ACTION_ID --type action_started --frontier-item-id FRONTIER_ID
+    ./ow log-action --action-id ACTION_ID --type action_completed
+    ./ow log-action --action-id ACTION_ID --type action_failed --description "Connection refused"
+
+## Common Mistakes
+
+- ❌ `from`/`to` on edges → ✅ `source`/`target`
+- ❌ `parser` in parse-output → ✅ `tool_name`
+- ❌ Running nmap/nxc locally → ✅ Run on VM via SSH or `open-session`
+- ❌ Omitting `frontier_item_id` → ✅ Thread it from `next-task` through every call
+- ❌ `nmap -sT 10.0.0.1` (text) → ✅ `nmap -oX - 10.0.0.1` (XML for parser)
+- ❌ `update-scope` without `reason` → ✅ Always include `reason`
+- ❌ Observations for structured data → ✅ Use `nodes`/`edges` arrays
+
+## Parser Tips
+
+- **nmap**: Output MUST be XML. Use `-oX -` to write XML to stdout.
+  `nmap -Pn -sT -oX - 10.0.0.1` then pipe the XML into `parse-output`.
+- **nxc / netexec**: Raw terminal output works directly as `tool_name: "nxc"`.
+- **ldapsearch**: Not a supported parser — use `report-finding` manually.
+- **certipy, secretsdump, kerbrute, hashcat, responder, enum4linux, rubeus**:
+  All supported. Use the tool name as `tool_name`.
+- Run `./ow tools` to see the full list of supported parsers.
 
 ## Key Commands
 
     ./ow get-state              # Load engagement briefing
-    ./ow next-task              # Get frontier candidates
-    ./ow validate-action --stdin # Validate before executing
-    ./ow log-action             # Log action lifecycle
-    ./ow parse-output --stdin   # Parse tool output (nmap, nxc, etc.)
-    ./ow report-finding --stdin # Report findings (use nodes/edges, not observations)
+    ./ow next-task              # Get frontier candidates (returns frontier_item_id)
+    ./ow validate-action --stdin # Validate before executing (pass frontier_item_id)
+    ./ow log-action             # Log action lifecycle (pass frontier_item_id)
+    ./ow parse-output --stdin   # Parse tool output (use tool_name, not parser)
+    ./ow report-finding --stdin # Report findings (nodes/edges with source/target)
     ./ow query-graph --stdin    # Query the graph
-    ./ow tools                  # List all available tools
+    ./ow check-tools            # List tools installed on the SERVER
+    ./ow open-session           # Open remote shell for tool execution
+    ./ow send-to-session        # Run command in remote session
+    ./ow read-session           # Read output from remote session
     ./ow health                 # Verify connectivity
-
-## Findings Format
-
-To create graph topology, report-finding must include nodes and edges arrays:
-
-    echo '{"agent_id":"primary","action_id":"...","frontier_item_id":"...","nodes":[{"id":"host-10-0-0-1","type":"host","label":"10.0.0.1","properties":{"ip":"10.0.0.1"}}],"edges":[]}' | ./ow report-finding --stdin
-
-Do NOT use observations for structured data — observations are freetext annotations only.
 
 ## Session Management
 
@@ -178,7 +280,7 @@ All output is JSON. Parse it directly. Do not add --human flag.
 claude
 ```
 
-Claude reads the CLAUDE.md, defines the shell function, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
+Claude reads the CLAUDE.md, creates the wrapper script, calls `./ow get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
 
 ## What's Manual vs. Automatic
 
@@ -268,11 +370,15 @@ echo '{
 # 2. Log execution start
 ./ow log-action --action-id act-xxx --type action_started --frontier-item-id fi-yyy
 
-# 3. Run nmap (Claude executes this directly via bash)
-nmap -sS -sV -sC -O -p- --min-rate=1000 -oX /tmp/scan.xml 10.10.110.0/24
+# 3. Run nmap ON THE VM (not locally — tools live on the server)
+#    Option A: SSH
+ssh op@<VM_IP> "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX - 10.10.110.0/24" > /tmp/scan.xml
+#    Option B: Overwatch session
+#    ./ow open-session --type local_pty --title "nmap-scan"
+#    ./ow send-to-session --session-id SID --command "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX - 10.10.110.0/24" --timeout 300
 
-# 4. Feed results into the graph
-./ow parse-output --stdin <<< "{\"tool_name\": \"nmap\", \"file_path\": \"/tmp/scan.xml\", \"agent_id\": \"primary\", \"action_id\": \"act-xxx\", \"frontier_item_id\": \"fi-yyy\"}"
+# 4. Feed results into the graph (use tool_name, not parser)
+cat /tmp/scan.xml | jq -Rs '{tool_name: "nmap", output: ., agent_id: "primary", action_id: "act-xxx", frontier_item_id: "fi-yyy"}' | ./ow parse-output --stdin
 
 # 5. Log completion
 ./ow log-action --action-id act-xxx --type action_completed
@@ -296,11 +402,11 @@ echo '{
 
 ./ow log-action --action-id act-002 --type action_started
 
-# Run nxc (Claude executes this directly)
-NXC_OUTPUT=$(nxc smb 10.10.110.10 --shares -u '' -p '' 2>&1)
+# Run nxc ON THE VM (not locally)
+NXC_OUTPUT=$(ssh op@<VM_IP> "nxc smb 10.10.110.10 --shares -u '' -p ''" 2>&1)
 
-# Parse results into the graph
-echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\"}" | ./ow parse-output --stdin
+# Parse results into the graph (field is tool_name, not parser)
+echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\", \"frontier_item_id\": \"fi-zzz\"}" | ./ow parse-output --stdin
 
 ./ow log-action --action-id act-002 --type action_completed
 ```
