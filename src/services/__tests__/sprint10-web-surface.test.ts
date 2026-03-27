@@ -630,6 +630,103 @@ describe('10.7 — Frontier awareness', () => {
 });
 
 // ============================================================
+// Regression: P1-a — Non-HTTP Nuclei targets get distinct service IDs
+// ============================================================
+describe('regression — Nuclei non-HTTP service ID attribution', () => {
+  it('produces distinct service IDs for different host:port targets', () => {
+    const output = [
+      JSON.stringify({ 'template-id': 'redis-unauth', host: '10.10.10.5:6379', type: 'tcp', 'matched-at': '10.10.10.5:6379', info: { name: 'Redis Unauth', severity: 'high' } }),
+      JSON.stringify({ 'template-id': 'ftp-anon', host: '10.10.10.6:21', type: 'tcp', 'matched-at': '10.10.10.6:21', info: { name: 'FTP Anon', severity: 'medium' } }),
+    ].join('\n');
+    const result = parseNuclei(output);
+    const svcNodes = result.nodes.filter(n => n.type === 'service');
+    const svcIds = svcNodes.map(n => n.id);
+    expect(svcIds).toContain('svc-10-10-10-5-6379');
+    expect(svcIds).toContain('svc-10-10-10-6-21');
+    expect(svcIds).not.toContain('svc-unknown-http');
+  });
+
+  it('does not collapse different TCP services onto svc-unknown-http', () => {
+    const output = JSON.stringify({ 'template-id': 'redis-unauth', host: '10.10.10.5:6379', type: 'tcp', 'matched-at': '10.10.10.5:6379', info: { name: 'Redis Unauth', severity: 'high' } });
+    const result = parseNuclei(output);
+    const svcNode = result.nodes.find(n => n.type === 'service');
+    expect(svcNode).toBeDefined();
+    expect(svcNode!.id).not.toBe('svc-unknown-http');
+    expect(svcNode!.id).toBe('svc-10-10-10-5-6379');
+  });
+});
+
+// ============================================================
+// Regression: P1-b — New parsers use canonical service ID format
+// ============================================================
+describe('regression — canonical service ID format alignment', () => {
+  it('Nuclei HTTP service ID matches web-enum format (no -proto suffix)', () => {
+    const output = JSON.stringify({
+      'template-id': 'tech-detect', host: 'http://10.10.10.50:8080',
+      type: 'http', 'matched-at': 'http://10.10.10.50:8080/login',
+      info: { name: 'Tech detect', severity: 'info' },
+    });
+    const result = parseNuclei(output);
+    const svcNode = result.nodes.find(n => n.type === 'service');
+    expect(svcNode).toBeDefined();
+    // Canonical format: svc-{ip-dashed}-{port} — no protocol suffix
+    expect(svcNode!.id).toBe('svc-10-10-10-50-8080');
+  });
+
+  it('Nikto service ID matches nmap format', () => {
+    const output = [
+      '+ Target IP:          10.10.10.50',
+      '+ Target Port:        80',
+      '+ Server: Apache/2.4.41',
+      '+ /admin: Admin panel found',
+    ].join('\n');
+    const result = parseNikto(output);
+    const svcNode = result.nodes.find(n => n.type === 'service');
+    expect(svcNode).toBeDefined();
+    expect(svcNode!.id).toBe('svc-10-10-10-50-80');
+  });
+
+  it('testssl service ID matches nmap format', () => {
+    const output = JSON.stringify([
+      { id: 'cert_commonname', ip: '10.10.10.50', port: '443', severity: 'INFO', finding: 'test.local' },
+    ]);
+    const result = parseTestssl(output);
+    const svcNode = result.nodes.find(n => n.type === 'service');
+    expect(svcNode).toBeDefined();
+    expect(svcNode!.id).toBe('svc-10-10-10-50-443');
+  });
+});
+
+// ============================================================
+// Regression: P2 — Login-spray rule only fans out plaintext credentials
+// ============================================================
+describe('regression — login-spray credential filtering', () => {
+  afterEach(cleanup);
+
+  it('creates POTENTIAL_AUTH only from plaintext credentials, not SSH keys or tokens', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'webapp-login', type: 'webapp' as const, label: 'Login App', discovered_at: now, confidence: 1.0, url: 'http://10.10.10.50/login', has_login_form: true },
+        { id: 'cred-plaintext', type: 'credential' as const, label: 'admin:pass', discovered_at: now, confidence: 1.0, cred_type: 'plaintext', cred_material_kind: 'plaintext_password', cred_usable_for_auth: true, credential_status: 'active' },
+        { id: 'cred-sshkey', type: 'credential' as const, label: 'id_rsa', discovered_at: now, confidence: 1.0, cred_type: 'ssh_key', cred_material_kind: 'ssh_key', cred_usable_for_auth: true, credential_status: 'active' },
+        { id: 'cred-token', type: 'credential' as const, label: 'jwt-token', discovered_at: now, confidence: 1.0, cred_type: 'token', cred_material_kind: 'token', cred_usable_for_auth: true, credential_status: 'active' },
+        { id: 'cred-ntlm', type: 'credential' as const, label: 'ntlm-hash', discovered_at: now, confidence: 1.0, cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, credential_status: 'active' },
+      ],
+    ));
+
+    // Check edges targeting the webapp (inbound to webapp-login)
+    const edges = engine.queryGraph({ from_node: 'webapp-login', direction: 'inbound', edge_type: 'POTENTIAL_AUTH' });
+    const sources = edges.edges.map(e => e.source);
+    // Only plaintext_password credential should have POTENTIAL_AUTH to webapp
+    expect(sources).toContain('cred-plaintext');
+    expect(sources).not.toContain('cred-sshkey');
+    expect(sources).not.toContain('cred-token');
+    expect(sources).not.toContain('cred-ntlm');
+  });
+});
+
+// ============================================================
 // Parser Registry
 // ============================================================
 describe('Parser registry — new aliases', () => {

@@ -271,7 +271,7 @@ const BUILTIN_RULES: InferenceRule[] = [
     trigger: { node_type: 'webapp', property_match: { has_login_form: true } },
     produces: [{
       edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'all_usable_credentials',
+      source_selector: 'web_form_credentials',
       target_selector: 'trigger_node',
       confidence: 0.3
     }]

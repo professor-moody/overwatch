@@ -366,6 +366,11 @@ export class InferenceEngine {
           .filter(c => isCredentialUsableForAuth(c))
           .map(n => n.id);
 
+      case 'web_form_credentials':
+        return this.getNodesByType('credential')
+          .filter(c => isCredentialUsableForAuth(c) && getCredentialMaterialKind(c) === 'plaintext_password')
+          .map(n => n.id);
+
       case 'linked_server_hosts': {
         // Resolve linked_servers array on trigger service node to host nodes
         const triggerSvc = this.getNode(triggerNodeId);

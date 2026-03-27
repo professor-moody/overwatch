@@ -2280,9 +2280,13 @@ function serviceIdFromUrl(urlStr: string): string {
     const url = new URL(urlStr);
     const ip = url.hostname;
     const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-    const proto = url.protocol === 'https:' ? 'https' : 'http';
-    return `svc-${ip.replace(/\./g, '-')}-${port}-${proto}`;
+    return `svc-${ip.replace(/\./g, '-')}-${port}`;
   } catch {
+    // Handle plain host:port (e.g. 10.10.10.5:6379 from non-HTTP Nuclei)
+    const hostPortMatch = urlStr.match(/^([\d.]+|[\w.-]+):(\d+)$/);
+    if (hostPortMatch) {
+      return `svc-${hostPortMatch[1].replace(/\./g, '-')}-${hostPortMatch[2]}`;
+    }
     return `svc-unknown-http`;
   }
 }
@@ -2579,8 +2583,8 @@ function processNiktoTarget(
     } as Finding['nodes'][0]);
   }
 
-  // Service node
-  const svcId = `svc-${ip.replace(/\./g, '-')}-${port}-${proto}`;
+  // Service node — canonical format: svc-{ip-dashed}-{port} (no proto suffix)
+  const svcId = `svc-${ip.replace(/\./g, '-')}-${port}`;
   if (!seenNodes.has(svcId)) {
     seenNodes.add(svcId);
     const svcProps: Record<string, unknown> = {
@@ -2756,7 +2760,7 @@ export function parseTestssl(output: string, agentId: string = 'testssl-parser',
       }
 
       const proto = 'https';
-      const svcId = `svc-${ip.replace(/\./g, '-')}-${port}-${proto}`;
+      const svcId = `svc-${ip.replace(/\./g, '-')}-${port}`;
       const svcProps: Record<string, unknown> = {
         id: svcId,
         type: 'service',
@@ -2875,7 +2879,7 @@ function processTestsslFindings(
   }
 
   const proto = 'https';
-  const svcId = `svc-${ip.replace(/\./g, '-')}-${port}-${proto}`;
+  const svcId = `svc-${ip.replace(/\./g, '-')}-${port}`;
   const svcProps: Record<string, unknown> = {
     id: svcId,
     type: 'service',
