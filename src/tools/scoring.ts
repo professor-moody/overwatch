@@ -94,7 +94,7 @@ Call this before every significant action. Returns valid/invalid with specific e
         action_id: z.string().optional().describe('Stable action ID to correlate validation with execution and findings'),
         tool_name: z.string().optional().describe('Tool expected to be used for this action'),
         frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
-        description: z.string().describe('Human-readable description of the planned action')
+        description: z.string().optional().describe('Human-readable description of the planned action')
       },
       annotations: {
         readOnlyHint: false,
@@ -115,8 +115,9 @@ Call this before every significant action. Returns valid/invalid with specific e
       const targetIps = target_ip ? [target_ip] : undefined;
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
 
+      const resolvedDescription = description || 'Validate action';
       engine.logActionEvent({
-        description,
+        description: resolvedDescription,
         action_id: normalizedActionId,
         event_type: 'action_validated',
         category: 'frontier',
@@ -141,7 +142,7 @@ Call this before every significant action. Returns valid/invalid with specific e
           type: 'text',
           text: JSON.stringify({
             action_id: normalizedActionId,
-            action: description,
+            action: resolvedDescription,
             validation_result: validationResult,
             ...result
           }, null, 2)

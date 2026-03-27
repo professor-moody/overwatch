@@ -93,7 +93,7 @@ Create `CLAUDE.md` in your project root **before starting Claude Code**. Claude 
 !!! note "Windsurf uses AGENTS.md"
     If you're using Windsurf instead of Claude Code, save this template as `AGENTS.md` instead of `CLAUDE.md`. The content is identical — only the filename differs.
 
-Replace `/home/op/overwatch-adapter` with the actual absolute path from step 2:
+Replace `/home/op/overwatch-adapter` and `<OVERWATCH_SERVER>` with the actual values from steps 1-2:
 
 ```markdown
 # Overwatch — CLI Adapter Mode
@@ -101,61 +101,71 @@ Replace `/home/op/overwatch-adapter` with the actual absolute path from step 2:
 MCP is not available in this environment. Use the Overwatch CLI adapter instead.
 All Overwatch tools are available as shell commands. Output is JSON by default.
 
-The CLI adapter is invoked as:
+## Bootstrap
 
-    node /home/op/overwatch-adapter/dist/cli.js <command> [args] [--flags]
+Create a wrapper script as your FIRST action. This persists across bash calls:
 
-For brevity, define a shell function at session start:
+    cat > ./ow << 'WRAPPER'
+    #!/bin/bash
+    export OVERWATCH_URL="http://<OVERWATCH_SERVER>:3000"
+    exec node /home/op/overwatch-adapter/dist/cli.js "$@"
+    WRAPPER
+    chmod +x ./ow
 
-    overwatch() { node /home/op/overwatch-adapter/dist/cli.js "$@"; }
-
-Then use `overwatch <command>` for all subsequent calls.
+Then use `./ow <command>` for ALL subsequent Overwatch calls.
 
 ## Session Start
 
-Run these two commands at the start of every session (including after compaction):
+Run these commands at the start of every session (including after compaction):
 
-    overwatch get-system-prompt --role primary
+    ./ow get-system-prompt --role primary
 
 Read the returned instructions carefully — they contain the engagement briefing,
 core loop, tool table, and OPSEC constraints. Then:
 
-    overwatch get-state
+    ./ow get-state
 
 ## Command Patterns
 
 Scalar inputs use flags:
 
-    overwatch get-state
-    overwatch next-task --count 5
-    overwatch get-system-prompt --role primary
-    overwatch log-action --action-id act-001 --type action_started
+    ./ow get-state
+    ./ow next-task --count 5
+    ./ow log-action --action-id ID --type action_started --description "Starting nmap scan"
 
 Complex payloads use --stdin or --file:
 
-    echo '{"action_type":"network_scan","target_node_id":"host-1","command":"nmap -sV 10.0.0.1"}' | overwatch validate-action --stdin
-    overwatch report-finding --file finding.json
-    overwatch parse-output --stdin
+    echo '{"description":"Scan host for open ports","target_ip":"10.0.0.1","technique":"portscan","frontier_item_id":"frontier-..."}' | ./ow validate-action --stdin
+    ./ow report-finding --file finding.json
+    ./ow parse-output --stdin
 
 ## Key Commands
 
-    overwatch get-state              # Load engagement briefing
-    overwatch next-task              # Get frontier candidates
-    overwatch validate-action --stdin # Validate before executing
-    overwatch log-action             # Log action lifecycle
-    overwatch parse-output --stdin   # Parse tool output (nmap, nxc, etc.)
-    overwatch report-finding --stdin # Report manual observations
-    overwatch query-graph --stdin    # Query the graph
-    overwatch tools                  # List all available tools
-    overwatch health                 # Verify connectivity
+    ./ow get-state              # Load engagement briefing
+    ./ow next-task              # Get frontier candidates
+    ./ow validate-action --stdin # Validate before executing
+    ./ow log-action             # Log action lifecycle
+    ./ow parse-output --stdin   # Parse tool output (nmap, nxc, etc.)
+    ./ow report-finding --stdin # Report findings (use nodes/edges, not observations)
+    ./ow query-graph --stdin    # Query the graph
+    ./ow tools                  # List all available tools
+    ./ow health                 # Verify connectivity
+
+## Findings Format
+
+To create graph topology, report-finding must include nodes and edges arrays:
+
+    echo '{"agent_id":"primary","action_id":"...","frontier_item_id":"...","nodes":[{"id":"host-10-0-0-1","type":"host","label":"10.0.0.1","properties":{"ip":"10.0.0.1"}}],"edges":[]}' | ./ow report-finding --stdin
+
+Do NOT use observations for structured data — observations are freetext annotations only.
 
 ## Session Management
 
 Session continuity is automatic — the CLI caches the MCP session ID between
 invocations. If things go wrong:
 
-    overwatch reset-session          # Clear local cache (no network)
-    overwatch close                  # Terminate server session + clear cache
+    ./ow reset-session          # Clear local cache (no network)
+    ./ow close                  # Terminate server session + clear cache
 
 ## Output Convention
 
@@ -218,17 +228,25 @@ claude
 Claude reads the CLAUDE.md, then:
 
 ```bash
+# Create the wrapper script (see CLAUDE.md template)
+cat > ./ow << 'WRAPPER'
+#!/bin/bash
+export OVERWATCH_URL="http://<VM_IP>:3000"
+exec node /home/op/overwatch-adapter/dist/cli.js "$@"
+WRAPPER
+chmod +x ./ow
+
 # Fetch full dynamic instructions (core loop, tool table, state, OPSEC)
-overwatch get-system-prompt --role primary
+./ow get-system-prompt --role primary
 
 # Load engagement state
-overwatch get-state
+./ow get-state
 
 # Run preflight — checks tools, config, graph health
-echo '{"profile":"network"}' | overwatch call run_lab_preflight --stdin
+echo '{"profile":"network"}' | ./ow call run_lab_preflight --stdin
 
 # See what offensive tools are available on PATH
-overwatch call check_tools
+./ow call check_tools
 ```
 
 Claude now has the engagement briefing, knows the scope, and has the full tool table.
@@ -240,23 +258,24 @@ Claude validates, runs nmap, and parses — all in one flow:
 ```bash
 # 1. Validate the scan
 echo '{
-  "action_type": "network_scan",
-  "target_node_id": "cidr-10-10-110-0-24",
-  "command": "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX /tmp/scan.xml 10.10.110.0/24"
-}' | overwatch validate-action --stdin
+  "description": "Full port scan of target subnet",
+  "target_ip": "10.10.110.0",
+  "technique": "portscan",
+  "frontier_item_id": "fi-yyy"
+}' | ./ow validate-action --stdin
 # → returns action_id: "act-xxx"
 
 # 2. Log execution start
-overwatch log-action --action-id act-xxx --type action_started --frontier-item-id fi-yyy
+./ow log-action --action-id act-xxx --type action_started --frontier-item-id fi-yyy
 
 # 3. Run nmap (Claude executes this directly via bash)
 nmap -sS -sV -sC -O -p- --min-rate=1000 -oX /tmp/scan.xml 10.10.110.0/24
 
 # 4. Feed results into the graph
-echo '{"tool_name": "nmap", "output": "'$(cat /tmp/scan.xml | jq -Rs .| tr -d '"')'", "agent_id": "primary", "action_id": "act-xxx", "frontier_item_id": "fi-yyy"}' | overwatch parse-output --stdin
+./ow parse-output --stdin <<< "{\"tool_name\": \"nmap\", \"file_path\": \"/tmp/scan.xml\", \"agent_id\": \"primary\", \"action_id\": \"act-xxx\", \"frontier_item_id\": \"fi-yyy\"}"
 
 # 5. Log completion
-overwatch log-action --action-id act-xxx --type action_completed
+./ow log-action --action-id act-xxx --type action_completed
 ```
 
 ### Phase 3 — Claude Enumerates Services
@@ -265,24 +284,25 @@ Claude checks the frontier, picks the highest-priority target, and works it:
 
 ```bash
 # See what the frontier suggests
-overwatch next-task --count 10
+./ow next-task --count 10
 
 # Validate SMB enumeration on the top candidate
 echo '{
-  "action_type": "smb_enum",
-  "target_node_id": "svc-10-10-110-10-445",
-  "command": "nxc smb 10.10.110.10 --shares -u \"\" -p \"\""
-}' | overwatch validate-action --stdin
+  "description": "Enumerate SMB shares with null session",
+  "target_node": "svc-10-10-110-10-445",
+  "technique": "smb_enum",
+  "frontier_item_id": "fi-zzz"
+}' | ./ow validate-action --stdin
 
-overwatch log-action --action-id act-002 --type action_started
+./ow log-action --action-id act-002 --type action_started
 
 # Run nxc (Claude executes this directly)
 NXC_OUTPUT=$(nxc smb 10.10.110.10 --shares -u '' -p '' 2>&1)
 
 # Parse results into the graph
-echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\"}" | overwatch parse-output --stdin
+echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\"}" | ./ow parse-output --stdin
 
-overwatch log-action --action-id act-002 --type action_completed
+./ow log-action --action-id act-002 --type action_completed
 ```
 
 Claude repeats this loop for each frontier candidate — validate, execute, parse, log.
@@ -295,13 +315,14 @@ When Claude uses a tool without a built-in parser, it structures the findings ma
 echo '{
   "agent_id": "primary",
   "action_id": "act-003",
+  "frontier_item_id": "fi-aaa",
   "nodes": [
-    {"id": "cred-plaintext-sql-svc", "type": "credential", "label": "sql_svc:Password123!", "cred_type": "plaintext", "username": "sql_svc", "cred_value": "Password123!"}
+    {"id": "cred-plaintext-sql-svc", "type": "credential", "label": "sql_svc:Password123!", "properties": {"cred_type": "plaintext", "username": "sql_svc", "cred_value": "Password123!"}}
   ],
   "edges": [
     {"source": "user-north-sql-svc", "target": "cred-plaintext-sql-svc", "type": "OWNS_CRED", "confidence": 1.0}
   ]
-}' | overwatch report-finding --stdin
+}' | ./ow report-finding --stdin
 ```
 
 ### Phase 5 — Claude Explores the Graph
@@ -310,13 +331,13 @@ Claude queries the graph to plan attack paths:
 
 ```bash
 # Query all hosts
-echo '{"node_type": "host"}' | overwatch query-graph --stdin
+echo '{"node_type": "host"}' | ./ow query-graph --stdin
 
 # Find paths from a credential to the objective
-echo '{"source_id": "cred-plaintext-sql-svc", "target_id": "obj-compromise"}' | overwatch call find_paths --stdin
+echo '{"source_id": "cred-plaintext-sql-svc", "target_id": "obj-compromise"}' | ./ow call find_paths --stdin
 
 # Look up methodology for a technique
-echo '{"query": "kerberoasting"}' | overwatch call get_skill --stdin
+echo '{"query": "kerberoasting"}' | ./ow call get_skill --stdin
 ```
 
 ### Phase 6 — Session Recovery
@@ -325,67 +346,67 @@ If the server restarts or the session expires, Claude handles it transparently. 
 
 ```bash
 # Clear stale local cache
-overwatch reset-session
+./ow reset-session
 
 # Reconnect
-overwatch health
+./ow health
 
 # Resume — graph state is intact on the server
-overwatch get-state
+./ow get-state
 ```
 
 When the engagement is complete:
 
 ```bash
-overwatch close
+./ow close
 ```
 
 ## Quick Reference Card
 
 ```
 SESSION
-  overwatch health                          # verify connectivity
-  overwatch get-system-prompt --role primary # fetch dynamic instructions
-  overwatch reset-session                   # clear local cache (no network)
-  overwatch close                           # terminate session + clear cache
-  overwatch --version                       # show adapter version
+  ./ow health                          # verify connectivity
+  ./ow get-system-prompt --role primary # fetch dynamic instructions
+  ./ow reset-session                   # clear local cache (no network)
+  ./ow close                           # terminate session + clear cache
+  ./ow --version                       # show adapter version
 
 STATE
-  overwatch get-state                       # full engagement briefing
-  overwatch next-task                       # frontier candidates
-  overwatch next-task --count 5             # limit results
+  ./ow get-state                       # full engagement briefing
+  ./ow next-task                       # frontier candidates
+  ./ow next-task --count 5             # limit results
 
 ACTIONS
-  ... | overwatch validate-action --stdin   # validate before executing
-  overwatch log-action --action-id ID --type action_started
-  overwatch log-action --action-id ID --type action_completed
-  overwatch log-action --action-id ID --type action_failed
+  ... | ./ow validate-action --stdin   # validate before executing
+  ./ow log-action --action-id ID --type action_started
+  ./ow log-action --action-id ID --type action_completed
+  ./ow log-action --action-id ID --type action_failed
 
 FINDINGS
-  ... | overwatch parse-output --stdin      # deterministic parser (nmap, nxc, etc.)
-  ... | overwatch report-finding --stdin    # manual observations
-  overwatch report-finding --file f.json    # from file
+  ... | ./ow parse-output --stdin      # deterministic parser (nmap, nxc, etc.)
+  ... | ./ow report-finding --stdin    # structured findings (nodes + edges)
+  ./ow report-finding --file f.json    # from file
 
 GRAPH
-  ... | overwatch query-graph --stdin       # query nodes/edges
-  overwatch call find_paths --stdin         # shortest path analysis
-  overwatch call export_graph               # full graph dump
+  ... | ./ow query-graph --stdin       # query nodes/edges
+  ./ow call find_paths --stdin         # shortest path analysis
+  ./ow call export_graph               # full graph dump
 
 TOOLS
-  overwatch tools                           # list all available tools
-  overwatch call <tool_name> --stdin        # generic escape hatch
-  overwatch call <tool_name> --file p.json  # from file
-  overwatch call <tool_name>                # no args
+  ./ow tools                           # list all available tools
+  ./ow call <tool_name> --stdin        # generic escape hatch
+  ./ow call <tool_name> --file p.json  # from file
+  ./ow call <tool_name>                # no args
 
 SESSIONS (managed shells)
-  overwatch open-session --kind pty --target 10.0.0.1 --port 22
-  overwatch write-session --id SID --data "whoami\n"
-  overwatch read-session --id SID --from-pos 0
-  overwatch send-to-session --id SID --command "id" --wait-ms 2000
-  overwatch list-sessions
-  overwatch close-session --id SID
+  ./ow open-session --kind pty --target 10.0.0.1 --port 22
+  ./ow write-session --id SID --data "whoami\n"
+  ./ow read-session --id SID --from-pos 0
+  ./ow send-to-session --id SID --command "id" --wait-ms 2000
+  ./ow list-sessions
+  ./ow close-session --id SID
 
 OUTPUT
-  overwatch get-state                       # JSON (default, for Claude)
-  overwatch get-state --human               # human-readable (for operator)
+  ./ow get-state                       # JSON (default, for Claude)
+  ./ow get-state --human               # human-readable (for operator)
 ```

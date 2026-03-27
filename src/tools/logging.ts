@@ -34,7 +34,7 @@ Recommended flow:
       inputSchema: {
         action_id: z.string().optional().describe('Stable action ID. Required for non-planned events.'),
         event_type: actionEventTypeSchema.describe('Lifecycle event to record.'),
-        description: z.string().describe('Human-readable description of the action event.'),
+        description: z.string().optional().describe('Human-readable description of the action event. Auto-defaults from event_type if omitted.'),
         agent_id: z.string().optional().describe('Agent or session responsible for the action.'),
         tool_name: z.string().optional().describe('Tool actually used, e.g. nmap, nxc, bloodhound-python.'),
         technique: z.string().optional().describe('Technique category, e.g. password-spray, smb-enum.'),
@@ -77,9 +77,16 @@ Recommended flow:
       }
 
       const normalizedActionId = action_id || uuidv4();
+      const defaultDescriptions: Record<string, string> = {
+        action_planned: 'Action planned',
+        action_started: 'Action started',
+        action_completed: 'Action completed',
+        action_failed: 'Action failed',
+      };
+      const resolvedDescription = description || defaultDescriptions[event_type] || event_type;
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
       const event = engine.logActionEvent({
-        description,
+        description: resolvedDescription,
         agent_id,
         action_id: normalizedActionId,
         event_type,

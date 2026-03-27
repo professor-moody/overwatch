@@ -84,6 +84,37 @@ describe('structured activity logging tools', () => {
     expect(entry?.tool_name).toBe('nmap');
   });
 
+  it('log_action_event auto-defaults description when omitted', async () => {
+    const result = await handlers.log_action_event({
+      action_id: 'act-no-desc',
+      event_type: 'action_started',
+      target_node_ids: [],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.event_id).toBeDefined();
+    expect(payload.action_id).toBe('act-no-desc');
+
+    const history = engine.getFullHistory();
+    const entry = history.find(e => e.action_id === 'act-no-desc' && e.event_type === 'action_started');
+    expect(entry).toBeDefined();
+    expect(entry?.description).toBe('Action started');
+  });
+
+  it('validate_action succeeds without description', async () => {
+    const result = await handlers.validate_action({
+      target_ip: '10.10.10.1',
+      technique: 'portscan',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.action_id).toBeDefined();
+    expect(payload.valid).toBe(true);
+    expect(payload.action).toBe('Validate action');
+  });
+
   it('validate_action logs a structured validation event and returns action_id', async () => {
     const result = await handlers.validate_action({
       target_node: 'host-10-10-10-1',
