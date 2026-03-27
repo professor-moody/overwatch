@@ -130,10 +130,13 @@ Option A — SSH into the VM and run tools there:
 
 Option B — Use Overwatch sessions for a persistent remote shell:
 
-    ./ow open-session --type local_pty --title "recon-shell"
-    # Returns a session_id
-    ./ow send-to-session --session-id SESSION_ID --command "nmap -Pn -sT -oX - 10.0.0.1" --timeout 60
-    ./ow read-session --session-id SESSION_ID
+    ./ow open-session --kind ssh --target <VM_IP> --title "recon-shell"
+    # Returns a session_id (SID)
+    ./ow send-to-session --id SID --command "nmap -Pn -sT -oX - 10.0.0.1" --wait-ms 60000
+    ./ow read-session --id SID
+
+Note: `--kind ssh` opens a shell on the remote VM. `--kind local_pty` opens a
+shell on the Overwatch server itself — only use that if the server IS the VM.
 
 `check-tools` reports what is installed on the **Overwatch server**, not locally.
 Use it to plan which tools are available, then execute them on the VM.
@@ -256,9 +259,9 @@ Set `confirm: false` first to preview, then `confirm: true` to apply.
     ./ow report-finding --stdin # Report findings (nodes/edges with source/target)
     ./ow query-graph --stdin    # Query the graph
     ./ow check-tools            # List tools installed on the SERVER
-    ./ow open-session           # Open remote shell for tool execution
-    ./ow send-to-session        # Run command in remote session
-    ./ow read-session           # Read output from remote session
+    ./ow open-session           # Open shell (--kind ssh for remote VM, local_pty for server)
+    ./ow send-to-session        # Run command in session (--id SID --command "...")
+    ./ow read-session           # Read session output (--id SID)
     ./ow health                 # Verify connectivity
 
 ## Session Management
@@ -505,7 +508,8 @@ TOOLS
   ./ow call <tool_name>                # no args
 
 SESSIONS (managed shells)
-  ./ow open-session --kind pty --target 10.0.0.1 --port 22
+  ./ow open-session --kind ssh --target <VM_IP> --title "recon"  # remote shell
+  ./ow open-session --kind local_pty --title "local"             # local server shell
   ./ow write-session --id SID --data "whoami\n"
   ./ow read-session --id SID --from-pos 0
   ./ow send-to-session --id SID --command "id" --wait-ms 2000
