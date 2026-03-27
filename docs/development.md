@@ -92,10 +92,10 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **807 tests across 31 files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **865 tests across 31 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
-npm test                        # Fast source tests (801 tests)
+npm test                        # Fast source tests (862 tests)
 npm run test:integration:stdio  # Stdio integration (24 tests)
 npm run test:integration:http   # HTTP transport integration (6 tests)
 npm run verify                  # All of the above + dist freshness check
@@ -127,7 +127,16 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `error-boundary.test.ts` | Error handling wrapper |
 | `processes.test.ts` | Process tool integration |
 | `session-manager.test.ts` | RingBuffer, SessionManager, ownership enforcement, adapters |
+| `sprint8-architecture-prep.test.ts` | Scope expansion (URL glob, cloud resource), profile inference, frontier REQUIRED_PROPERTIES, session→graph integration |
+| `community-detection.test.ts` | Louvain community detection, stats, undirected projection |
 | `prompt-generator.test.ts` | Primary and sub-agent prompt generation, state reflection |
+| `config.test.ts` | Config parsing and Zod schema validation |
+| `boot.test.ts` | Dashboard boot and module wiring |
+| `graph.test.ts` | Dashboard graph: shortest path, attack path, credential flow, community hulls |
+| `main.test.ts` | Dashboard main entry point |
+| `ui.test.ts` | Dashboard UI: sidebar, detail panel, derivation chains |
+| `ws.test.ts` | Dashboard WebSocket client, reconnect logic |
+| `lab-smoke.test.ts` | Lab smoke test CLI harness |
 | `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (36 tools) |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
 | `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
