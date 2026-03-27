@@ -200,6 +200,9 @@ export class FrontierComputer {
           const pivotItemId = `frontier-pivot-${host.id}-${peer.id}`;
           if (frontier.some(f => f.id === pivotItemId)) continue;
 
+          // Skip if an inferred_edge item already targets this peer via REACHABLE
+          if (frontier.some(f => f.type === 'inferred_edge' && f.edge_target === peer.id && f.edge_type === 'REACHABLE')) continue;
+
           frontier.push({
             id: pivotItemId,
             type: 'network_pivot',

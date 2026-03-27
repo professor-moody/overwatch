@@ -149,7 +149,11 @@ export class PathAnalyzer {
     }
 
     return paths
-      .sort((a, b) => b.total_confidence - a.total_confidence)
+      .sort((a, b) => {
+        if (optimize === 'stealth') return a.total_opsec_noise - b.total_opsec_noise;
+        if (optimize === 'balanced') return (b.total_confidence - b.total_opsec_noise) - (a.total_confidence - a.total_opsec_noise);
+        return b.total_confidence - a.total_confidence;
+      })
       .slice(0, maxPaths);
   }
 

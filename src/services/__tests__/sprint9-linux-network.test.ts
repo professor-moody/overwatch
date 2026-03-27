@@ -352,9 +352,9 @@ describe('9.4 — Network pivot tracking', () => {
     expect(pivotEdge).toBeUndefined();
   });
 
-  it('FrontierItem type includes network_pivot', () => {
+  it('pivot peer is represented in frontier (inferred_edge or network_pivot, not both)', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-    // Host A has session, host B does not → should produce network_pivot frontier item
+    // Host A has session, host B does not → peer should appear in frontier exactly once
     engine.ingestFinding(makeFinding(
       [
         { id: 'host-10-10-10-60', type: 'host', label: 'fp-a', ip: '10.10.10.60', discovered_at: now, confidence: 1.0, alive: true },
@@ -364,10 +364,11 @@ describe('9.4 — Network pivot tracking', () => {
       [{ source: 'user-fp-user', target: 'host-10-10-10-60', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: now } }],
     ));
     const frontier = engine.computeFrontier();
-    const pivotItem = frontier.find(f => f.type === 'network_pivot' && f.node_id === 'host-10-10-10-61');
-    expect(pivotItem).toBeDefined();
-    expect(pivotItem!.pivot_host_id).toBe('host-10-10-10-60');
-    expect(pivotItem!.via_pivot).toBe('user-fp-user');
+    const coveringItems = frontier.filter(f =>
+      (f.type === 'network_pivot' && f.node_id === 'host-10-10-10-61') ||
+      (f.type === 'inferred_edge' && f.edge_target === 'host-10-10-10-61' && f.edge_type === 'REACHABLE')
+    );
+    expect(coveringItems.length).toBe(1);
   });
 
   it('network_pivot not generated for hosts that already have sessions', () => {
@@ -589,5 +590,126 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
     // No matching objectives for test — just verify it doesn't throw
     const paths = engine.findPathsToObjective('obj-1', 5, 'stealth');
     expect(Array.isArray(paths)).toBe(true);
+  });
+});
+
+// ============================================================
+// Regression: P1 — Linpeas parser must not corrupt existing host metadata
+// ============================================================
+describe('regression — Linpeas parser host metadata preservation', () => {
+  afterEach(cleanup);
+
+  it('does not overwrite label when context.source_host is provided', () => {
+    const result = parseLinpeas('Linux version 5.15.0\n', 'agent', { source_host: 'host-10-10-10-5' });
+    const hostNode = result.nodes.find(n => n.id === 'host-10-10-10-5');
+    expect(hostNode).toBeDefined();
+    // label should be the node ID (pass-through), not a generic string
+    expect(hostNode!.label).toBe('host-10-10-10-5');
+  });
+
+  it('does not emit confidence when enriching an existing host', () => {
+    const result = parseLinpeas('Linux version 5.15.0\n', 'agent', { source_host: 'host-10-10-10-5' });
+    const hostNode = result.nodes.find(n => n.id === 'host-10-10-10-5');
+    expect(hostNode).toBeDefined();
+    expect(hostNode!.confidence).toBeUndefined();
+  });
+
+  it('emits confidence 0.9 for new hosts without source_host', () => {
+    const result = parseLinpeas('Linux version 5.15.0\n', 'agent');
+    expect(result.nodes[0].confidence).toBe(0.9);
+  });
+
+  it('preserves existing host label and confidence after ingestion', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding(makeFinding([{
+      id: 'host-10-10-10-40', type: 'host', label: 'my-server', ip: '10.10.10.40',
+      discovered_at: now, confidence: 1.0, alive: true, os: 'Linux',
+    }]));
+    // Parse linpeas targeting this host
+    const linpeasResult = parseLinpeas(
+      '═══════════════════╣ SUID\n-rwsr-xr-x root /usr/bin/python3\n',
+      'agent', { source_host: 'host-10-10-10-40' }
+    );
+    engine.ingestFinding(linpeasResult);
+    const node = engine.getNode('host-10-10-10-40');
+    expect(node).toBeDefined();
+    expect(node!.label).toBe('my-server');
+    expect(node!.confidence).toBe(1.0);
+  });
+});
+
+// ============================================================
+// Regression: P2 — Frontier deduplication (no double pivot items)
+// ============================================================
+describe('regression — frontier pivot deduplication', () => {
+  afterEach(cleanup);
+
+  it('does not emit network_pivot for hosts already covered by inferred_edge REACHABLE', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'host-10-10-10-130', type: 'host', label: 'pivot-src', ip: '10.10.10.130', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-131', type: 'host', label: 'pivot-dst', ip: '10.10.10.131', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'user-pivoter', type: 'user', label: 'pivoter', username: 'pivoter', discovered_at: now, confidence: 1.0 },
+      ],
+      [{ source: 'user-pivoter', target: 'host-10-10-10-130', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: now } }],
+    ));
+    const frontier = engine.computeFrontier();
+    // Count how many frontier items target the pivot destination
+    const targetingDst = frontier.filter(f =>
+      (f.type === 'network_pivot' && f.node_id === 'host-10-10-10-131') ||
+      (f.type === 'inferred_edge' && f.edge_target === 'host-10-10-10-131' && f.edge_type === 'REACHABLE')
+    );
+    // Should be exactly 1, not 2
+    expect(targetingDst.length).toBe(1);
+  });
+});
+
+// ============================================================
+// Regression: P2 — Path sort respects optimize strategy
+// ============================================================
+describe('regression — path sort by strategy', () => {
+  afterEach(cleanup);
+
+  it('findPathsToObjective stealth mode sorts by lowest noise', () => {
+    const config = makeConfig({
+      objectives: [{
+        id: 'obj-sort',
+        description: 'test sort',
+        target_node_type: 'credential',
+        target_criteria: { cred_type: 'ntlm' },
+        achieved: false,
+      }],
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+    // Create two paths to the same credential: one noisy+high-confidence, one quiet+low-confidence
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'host-10-10-10-140', type: 'host', label: 'start-a', ip: '10.10.10.140', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-141', type: 'host', label: 'start-b', ip: '10.10.10.141', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'user-sort-a', type: 'user', label: 'sort-a', username: 'sort-a', discovered_at: now, confidence: 1.0 },
+        { id: 'user-sort-b', type: 'user', label: 'sort-b', username: 'sort-b', discovered_at: now, confidence: 1.0 },
+        { id: 'cred-target-sort', type: 'credential', label: 'target-cred', cred_type: 'ntlm', discovered_at: now, confidence: 1.0 },
+      ],
+      [
+        // Access on both hosts
+        { source: 'user-sort-a', target: 'host-10-10-10-140', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: now } },
+        { source: 'user-sort-b', target: 'host-10-10-10-141', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: now } },
+        // Path A: high confidence, high noise
+        { source: 'host-10-10-10-140', target: 'cred-target-sort', properties: { type: 'OWNS_CRED', confidence: 0.95, discovered_at: now, opsec_noise: 0.9 } },
+        // Path B: lower confidence, low noise
+        { source: 'host-10-10-10-141', target: 'cred-target-sort', properties: { type: 'OWNS_CRED', confidence: 0.6, discovered_at: now, opsec_noise: 0.1 } },
+      ],
+    ));
+
+    const stealthPaths = engine.findPathsToObjective('obj-sort', 5, 'stealth');
+    expect(stealthPaths.length).toBe(2);
+    // First result should be lowest noise
+    expect(stealthPaths[0].total_opsec_noise).toBeLessThanOrEqual(stealthPaths[1].total_opsec_noise);
+
+    const confPaths = engine.findPathsToObjective('obj-sort', 5, 'confidence');
+    expect(confPaths.length).toBe(2);
+    // First result should be highest confidence
+    expect(confPaths[0].total_confidence).toBeGreaterThanOrEqual(confPaths[1].total_confidence);
   });
 });

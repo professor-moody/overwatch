@@ -2100,12 +2100,15 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
   const hostProps: Record<string, unknown> = {
     id: hostNodeId,
     type: 'host' as NodeType,
-    label: context?.source_host || 'linpeas-target',
+    label: context?.source_host ? hostNodeId : 'linpeas-target',
     discovered_by: agentId,
     discovered_at: now,
-    confidence: 0.9,
     os: 'Linux',
   };
+  // Only set confidence on new hosts; omit when enriching an existing node to avoid downgrade
+  if (!context?.source_host) {
+    hostProps.confidence = 0.9;
+  }
 
   // Section detection
   let currentSection = '';
