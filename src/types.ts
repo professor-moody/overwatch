@@ -41,6 +41,18 @@ export interface NodeProperties {
   alive?: boolean;
   edr?: string;
   domain_joined?: boolean;
+  // Linux host enrichment
+  users_enumerated?: boolean;
+  suid_checked?: boolean;
+  has_suid_root?: boolean;
+  suid_binaries?: string[];
+  cron_checked?: boolean;
+  cron_jobs?: string[];
+  capabilities_checked?: boolean;
+  interesting_capabilities?: string[];
+  docker_socket_accessible?: boolean;
+  kernel_version?: string;
+  writable_paths?: string[];
 
   // Service
   port?: number;
@@ -48,6 +60,7 @@ export interface NodeProperties {
   service_name?: string;        // smb, http, ldap, kerberos, mssql, etc.
   version?: string;
   banner?: string;
+  linked_servers?: string[];    // MSSQL linked server hostnames
 
   // Domain
   domain_name?: string;
@@ -84,6 +97,7 @@ export interface NodeProperties {
   share_path?: string;
   readable?: boolean;
   writable?: boolean;
+  no_root_squash?: boolean;
 
   // Certificate
   template_name?: string;
@@ -92,6 +106,9 @@ export interface NodeProperties {
   pki_store_kind?: 'ntauth_store' | 'issuance_policy';
   eku?: string[];
   enrollee_supplies_subject?: boolean;
+
+  // Subnet
+  subnet_cidr?: string;
 
   // Objective
   objective_description?: string;
@@ -151,6 +168,8 @@ export interface EdgeProperties {
   inferred_by_rule?: string;    // rule ID that created this edge
   inferred_at?: string;         // ISO timestamp when inferred
   confirmed_at?: string;        // ISO timestamp when confidence raised to 1.0
+  // Pivot tracking
+  via_pivot?: string;           // node ID of principal enabling pivot (on REACHABLE edges)
   [key: string]: unknown;
 }
 
@@ -270,13 +289,15 @@ export interface ExportedGraph {
 
 export interface FrontierItem {
   id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery';
+  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'network_pivot';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;
   edge_type?: EdgeType;
   target_cidr?: string;
   missing_properties?: string[];
+  via_pivot?: string;           // principal node ID enabling pivot
+  pivot_host_id?: string;       // host with session enabling pivot
   description: string;
   graph_metrics: {
     hops_to_objective: number | null;

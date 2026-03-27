@@ -47,7 +47,7 @@ export type ActivityLogEntry = {
   description: string;
   agent_id?: string;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
-  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery';
+  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot';
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;
   event_type?: ActivityEventType;
@@ -86,7 +86,7 @@ export class EngineContext {
   stateFilePath: string;
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
-  pathGraphCache: OverwatchGraph | null;  // cached undirected projection for pathfinding
+  pathGraphCache: Map<string, OverwatchGraph>;  // cached undirected projections keyed by optimize mode
   communityCache: Map<string, number> | null;  // cached Louvain community assignments
   trackedProcesses: TrackedProcess[];
   actionFrontierMap: Map<string, { frontier_item_id: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
@@ -100,7 +100,7 @@ export class EngineContext {
     this.stateFilePath = stateFilePath;
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;
-    this.pathGraphCache = null;
+    this.pathGraphCache = new Map();
     this.communityCache = null;
     this.trackedProcesses = [];
     this.actionFrontierMap = new Map();
@@ -158,7 +158,7 @@ export class EngineContext {
   }
 
   invalidatePathGraph(): void {
-    this.pathGraphCache = null;
+    this.pathGraphCache.clear();
     this.communityCache = null;
   }
 

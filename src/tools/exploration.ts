@@ -121,7 +121,8 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         objective_id: z.string().optional().describe('Find paths to this objective node'),
         from_node: z.string().optional().describe('Find paths from this specific node'),
         to_node: z.string().optional().describe('Find paths to this specific node'),
-        max_paths: z.number().int().min(1).max(20).default(5)
+        max_paths: z.number().int().min(1).max(20).default(5),
+        optimize: z.enum(['confidence', 'stealth', 'balanced']).default('confidence').describe('Path optimization strategy: confidence (default) picks highest-confidence paths, stealth picks lowest-noise paths, balanced weighs both equally')
       },
       annotations: {
         readOnlyHint: true,
@@ -130,18 +131,18 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths }) => {
+    withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths, optimize }) => {
       let paths;
       if (objective_id) {
-        paths = engine.findPathsToObjective(objective_id, max_paths);
+        paths = engine.findPathsToObjective(objective_id, max_paths, optimize);
       } else if (from_node && to_node) {
-        paths = engine.findPaths(from_node, to_node, max_paths);
+        paths = engine.findPaths(from_node, to_node, max_paths, optimize);
       } else {
         // Find paths to all active objectives
         const state = engine.getState();
         paths = [];
         for (const obj of state.objectives.filter(o => !o.achieved)) {
-          const objPaths = engine.findPathsToObjective(obj.id, max_paths);
+          const objPaths = engine.findPathsToObjective(obj.id, max_paths, optimize);
           paths.push(...objPaths.map(p => ({ ...p, objective: obj.description })));
         }
       }

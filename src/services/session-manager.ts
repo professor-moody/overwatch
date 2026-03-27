@@ -280,10 +280,24 @@ export class SessionManager {
       this.logSessionEvent(id, 'session_opened',
         `Session "${options.title}" opened (${options.kind}, ${transport})`);
 
+      // Wait briefly for initial output (e.g. shell prompt, SSH banner)
+      const waitMs = options.initial_wait_ms !== undefined ? options.initial_wait_ms : 2000;
+      if (waitMs > 0) {
+        await this.waitForInitialOutput(session, waitMs);
+      }
+
       // Session → graph integration: SSH sessions with target_node
+      // Deferred until after waitForInitialOutput so we can check for auth failures
       if (this.engine && options.kind === 'ssh' && options.target_node) {
+        const authFailed = this.detectSshAuthFailure(session);
+        if (authFailed) {
+          session.metadata.state = 'error';
+          session.metadata.closed_at = new Date().toISOString();
+          this.logSessionEvent(id, 'session_error',
+            `SSH auth failed for "${options.title}": ${authFailed}`);
+        }
         this.engine.ingestSessionResult({
-          success: true,
+          success: !authFailed,
           target_node: options.target_node,
           principal_node: options.principal_node,
           credential_node: options.credential_node,
@@ -292,12 +306,6 @@ export class SessionManager {
           action_id: options.action_id,
           frontier_item_id: options.frontier_item_id,
         });
-      }
-
-      // Wait briefly for initial output (e.g. shell prompt, SSH banner)
-      const waitMs = options.initial_wait_ms !== undefined ? options.initial_wait_ms : 2000;
-      if (waitMs > 0) {
-        await this.waitForInitialOutput(session, waitMs);
       }
 
       const initial = session.buffer.tail(4096);
@@ -581,6 +589,23 @@ export class SessionManager {
         session_state: session?.metadata.state,
       },
     });
+  }
+
+  private detectSshAuthFailure(session: Session): string | null {
+    const output = session.buffer.tail(4096).text.toLowerCase();
+    const patterns: Array<[RegExp, string]> = [
+      [/permission denied/i, 'Permission denied'],
+      [/authentication failed/i, 'Authentication failed'],
+      [/host key verification failed/i, 'Host key verification failed'],
+      [/connection refused/i, 'Connection refused'],
+      [/connection reset by peer/i, 'Connection reset by peer'],
+      [/no route to host/i, 'No route to host'],
+      [/connection timed out/i, 'Connection timed out'],
+    ];
+    for (const [re, label] of patterns) {
+      if (re.test(output)) return label;
+    }
+    return null;
   }
 
   private waitForInitialOutput(session: Session, maxMs: number): Promise<void> {

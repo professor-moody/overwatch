@@ -470,6 +470,63 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     }
   }
 
+  // --- MSSQL linked server detection ---
+  // NXC mssql module: MSSQL  IP  PORT  HOST  [*] Linked SQL Servers: SERVER1, SERVER2
+  const mssqlLineRe = /^MSSQL\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+(.*)/i;
+  const mssqlLinkedServers = new Map<string, string[]>(); // ip -> linked server names
+  for (const line of lines) {
+    const mssqlLine = line.match(mssqlLineRe);
+    if (!mssqlLine) continue;
+    const [, mssqlIp, mssqlPort, mssqlHostname, mssqlRest] = mssqlLine;
+
+    // Ensure MSSQL host + service nodes exist
+    const mssqlHostId = hostId(mssqlIp);
+    if (!seenNodes.has(mssqlHostId)) {
+      nodes.push({
+        id: mssqlHostId,
+        type: 'host',
+        label: mssqlHostname || mssqlIp,
+        ip: mssqlIp,
+        hostname: mssqlHostname,
+        alive: true,
+      });
+      seenNodes.add(mssqlHostId);
+    }
+    const mssqlSvcId = `svc-${mssqlIp.replace(/\./g, '-')}-${mssqlPort}`;
+    if (!seenNodes.has(mssqlSvcId)) {
+      nodes.push({
+        id: mssqlSvcId,
+        type: 'service',
+        label: `mssql/${mssqlPort}`,
+        port: parseInt(mssqlPort, 10),
+        protocol: 'tcp',
+        service_name: 'mssql',
+      });
+      seenNodes.add(mssqlSvcId);
+      addEdgeOnce(mssqlHostId, mssqlSvcId, 'RUNS', 1.0);
+    }
+
+    // Detect linked server lines
+    const linkedMatch = mssqlRest.match(/\[\*\]\s*(?:Linked\s+(?:SQL\s+)?Servers?|Link):\s*(.*)/i);
+    if (linkedMatch) {
+      const serverNames = linkedMatch[1].split(/[,;]/).map(s => s.trim()).filter(Boolean);
+      if (serverNames.length > 0) {
+        const existing = mssqlLinkedServers.get(mssqlSvcId) || [];
+        for (const name of serverNames) {
+          if (!existing.includes(name)) existing.push(name);
+        }
+        mssqlLinkedServers.set(mssqlSvcId, existing);
+      }
+    }
+  }
+  // Apply linked_servers to MSSQL service nodes
+  for (const [svcId, servers] of mssqlLinkedServers) {
+    const svcNode = nodes.find(n => n.id === svcId);
+    if (svcNode) {
+      svcNode.linked_servers = servers;
+    }
+  }
+
   // Post-processing: create NULL_SESSION edges for hosts with null auth
   for (const [ip, meta] of hostMeta) {
     if (!meta.nullAuth) continue;
@@ -2015,6 +2072,172 @@ function buildWebDirEnumFinding(
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 
+// --- Linpeas / LinEnum Parser ---
+
+// Known dangerous SUID binaries (GTFOBins intersection)
+const DANGEROUS_SUID_BINARIES = new Set([
+  'python', 'python2', 'python3', 'perl', 'ruby', 'bash', 'sh', 'dash', 'zsh',
+  'env', 'find', 'nmap', 'vim', 'vi', 'less', 'more', 'awk', 'gawk', 'nawk',
+  'sed', 'cp', 'mv', 'dd', 'tar', 'zip', 'gcc', 'make', 'strace', 'ltrace',
+  'gdb', 'node', 'php', 'lua', 'tclsh', 'wish', 'expect', 'docker',
+  'pkexec', 'doas', 'mount', 'umount', 'screen', 'tmux',
+]);
+
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\x1B\][^\x07]*\x07/g, '');
+}
+
+export function parseLinpeas(output: string, agentId: string = 'linpeas-parser', context?: ParseContext): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const now = new Date().toISOString();
+  const clean = stripAnsi(output);
+  const lines = clean.split('\n');
+
+  // Host node to enrich
+  const hostNodeId = context?.source_host || `host-linpeas-${uuidv4().slice(0, 8)}`;
+  const hostProps: Record<string, unknown> = {
+    id: hostNodeId,
+    type: 'host' as NodeType,
+    label: context?.source_host || 'linpeas-target',
+    discovered_by: agentId,
+    discovered_at: now,
+    confidence: 0.9,
+    os: 'Linux',
+  };
+
+  // Section detection
+  let currentSection = '';
+  const suidBinaries: string[] = [];
+  const interestingCapabilities: string[] = [];
+  const cronJobs: string[] = [];
+  const writablePaths: string[] = [];
+  let kernelVersion: string | undefined;
+  let dockerSocketAccessible = false;
+  let usersEnumerated = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Section headers: linpeas uses box-drawing chars or ═══ delimiters
+    if (line.includes('═══') || line.includes('╔══') || line.includes('╚══')) {
+      const headerLine = line.replace(/[═╔╚╗╝║│┌┐└┘─]/g, '').trim();
+      if (headerLine) currentSection = headerLine.toLowerCase();
+      continue;
+    }
+
+    // Kernel version
+    if (!kernelVersion) {
+      const kvMatch = line.match(/Linux version (\S+)/i) || line.match(/^(\d+\.\d+\.\d+[-.\w]*)\s/);
+      if (kvMatch) {
+        kernelVersion = kvMatch[1];
+      }
+    }
+
+    // SUID binaries section
+    if (currentSection.includes('suid') || currentSection.includes('sgid') || currentSection.includes('permissions')) {
+      const suidMatch = line.match(/-[rwxsStT]{9}\s+\d+\s+root\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)/);
+      if (suidMatch) {
+        const binaryPath = suidMatch[1].trim();
+        const binaryName = binaryPath.split('/').pop() || '';
+        suidBinaries.push(binaryPath);
+        if (DANGEROUS_SUID_BINARIES.has(binaryName.toLowerCase())) {
+          hostProps.has_suid_root = true;
+        }
+      }
+      // Also match simpler format: -rwsr-xr-x path
+      const simpleSuid = line.match(/-[rwx]{2}s[rwxsStT-]{6}\s+.*?(\/.+)/);
+      if (simpleSuid) {
+        const binaryPath = simpleSuid[1].trim();
+        const binaryName = binaryPath.split('/').pop() || '';
+        if (!suidBinaries.includes(binaryPath)) suidBinaries.push(binaryPath);
+        if (DANGEROUS_SUID_BINARIES.has(binaryName.toLowerCase())) {
+          hostProps.has_suid_root = true;
+        }
+      }
+    }
+
+    // Capabilities section
+    if (currentSection.includes('capabilit')) {
+      const capMatch = line.match(/(\S+)\s+=\s+(.*)/);
+      if (capMatch) {
+        interestingCapabilities.push(`${capMatch[1]} = ${capMatch[2]}`);
+      }
+    }
+
+    // Cron jobs section
+    if (currentSection.includes('cron') || currentSection.includes('timer')) {
+      if (line.startsWith('/') || line.startsWith('*') || line.match(/^\d+\s/)) {
+        cronJobs.push(line);
+      }
+    }
+
+    // Writable paths
+    if (currentSection.includes('writable') || currentSection.includes('interesting')) {
+      if (line.startsWith('/') && !line.includes('proc') && !line.includes('/sys/')) {
+        writablePaths.push(line);
+      }
+    }
+
+    // Docker detection
+    if (line.includes('/var/run/docker.sock') || line.includes('docker.sock')) {
+      dockerSocketAccessible = true;
+    }
+    if (line.match(/docker\s*:/i) && currentSection.includes('group')) {
+      dockerSocketAccessible = true;
+    }
+
+    // Users section
+    if (currentSection.includes('user') || currentSection.includes('passwd')) {
+      usersEnumerated = true;
+    }
+  }
+
+  // Apply collected properties
+  if (suidBinaries.length > 0) {
+    hostProps.suid_binaries = suidBinaries;
+    hostProps.suid_checked = true;
+  } else if (currentSection || lines.length > 10) {
+    // If we processed content but found no SUID, still mark as checked
+    hostProps.suid_checked = true;
+  }
+
+  if (interestingCapabilities.length > 0) {
+    hostProps.interesting_capabilities = interestingCapabilities;
+    hostProps.capabilities_checked = true;
+  } else if (clean.toLowerCase().includes('capabilit')) {
+    hostProps.capabilities_checked = true;
+  }
+
+  if (cronJobs.length > 0) {
+    hostProps.cron_jobs = cronJobs;
+    hostProps.cron_checked = true;
+  } else if (clean.toLowerCase().includes('cron')) {
+    hostProps.cron_checked = true;
+  }
+
+  if (writablePaths.length > 0) {
+    hostProps.writable_paths = writablePaths;
+  }
+
+  if (kernelVersion) {
+    hostProps.kernel_version = kernelVersion;
+  }
+
+  if (dockerSocketAccessible) {
+    hostProps.docker_socket_accessible = true;
+  }
+
+  if (usersEnumerated) {
+    hostProps.users_enumerated = true;
+  }
+
+  nodes.push(hostProps as Finding['nodes'][0]);
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
 // --- Registry ---
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -2038,6 +2261,9 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'feroxbuster': parseWebDirEnum,
   'ffuf': parseWebDirEnum,
   'dirbuster': parseWebDirEnum,
+  'linpeas': parseLinpeas,
+  'linenum': parseLinpeas,
+  'linpeas.sh': parseLinpeas,
 };
 
 export function getSupportedParsers(): string[] {

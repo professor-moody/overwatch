@@ -37,7 +37,7 @@ const DEFAULT_DASHBOARD_STATUS: DashboardStatus = {
   running: false,
 };
 
-const SEED_NODE_TYPES = new Set(['host', 'domain', 'objective']);
+const SEED_NODE_TYPES = new Set(['host', 'domain', 'objective', 'subnet']);
 
 export function summarizeInlineLabReadiness(engine: GraphEngine): LabReadinessSummary {
   const inputs = getSyncReadinessInputs(engine);

@@ -14,6 +14,9 @@ const Graph = (GraphConstructor as any).default || GraphConstructor;
 
 type PathEdgeAttrs = { weight: number };
 
+export type PathOptimize = 'confidence' | 'stealth' | 'balanced';
+export type PathResult = { nodes: string[]; total_confidence: number; total_opsec_noise: number };
+
 export type QueryGraphFn = (query: GraphQuery) => GraphQueryResult;
 
 export class PathAnalyzer {
@@ -31,10 +34,11 @@ export class PathAnalyzer {
    * Build an undirected projection of the graph for pathfinding.
    * Edges in bidirectionalEdgeTypes are added as undirected (both directions).
    * All other edges keep their original direction only.
-   * Cached and invalidated when the graph changes.
+   * Cached per optimize mode and invalidated when the graph changes.
    */
-  private buildPathGraph(): OverwatchGraph {
-    if (this.ctx.pathGraphCache) return this.ctx.pathGraphCache;
+  private buildPathGraph(optimize: PathOptimize = 'confidence'): OverwatchGraph {
+    const cached = this.ctx.pathGraphCache.get(optimize);
+    if (cached) return cached;
 
     const pg = new Graph({ type: 'directed', multi: false, allowSelfLoops: false }) as OverwatchGraph;
 
@@ -45,7 +49,7 @@ export class PathAnalyzer {
 
     // Copy edges with directionality semantics
     this.ctx.graph.forEachEdge((edgeId: string, attrs, source: string, target: string) => {
-      const weight = 1.0 - Math.min(attrs.confidence, 0.99);
+      const weight = this.computeEdgeWeight(attrs, optimize);
 
       const fwdKey = `${source}--${attrs.type}--${target}`;
       if (!pg.hasEdge(fwdKey)) {
@@ -60,12 +64,24 @@ export class PathAnalyzer {
       }
     });
 
-    this.ctx.pathGraphCache = pg;
+    this.ctx.pathGraphCache.set(optimize, pg);
     return pg;
   }
 
-  findShortestPath(fromNode: string, toNode: string): string[] | null {
-    const pg = this.buildPathGraph();
+  private computeEdgeWeight(attrs: EdgeProperties, optimize: PathOptimize): number {
+    switch (optimize) {
+      case 'stealth':
+        return attrs.opsec_noise ?? 0.3;
+      case 'balanced':
+        return (1.0 - Math.min(attrs.confidence, 0.99)) * 0.5 + (attrs.opsec_noise ?? 0.3) * 0.5;
+      case 'confidence':
+      default:
+        return 1.0 - Math.min(attrs.confidence, 0.99);
+    }
+  }
+
+  findShortestPath(fromNode: string, toNode: string, optimize: PathOptimize = 'confidence'): string[] | null {
+    const pg = this.buildPathGraph(optimize);
     if (!pg.hasNode(fromNode) || !pg.hasNode(toNode)) return null;
     try {
       return dijkstra.bidirectional(pg, fromNode, toNode, 'weight');
@@ -74,7 +90,7 @@ export class PathAnalyzer {
     }
   }
 
-  hopsToNearestObjective(fromNodeId: string): number | null {
+  hopsToNearestObjective(fromNodeId: string, optimize: PathOptimize = 'confidence'): number | null {
     if (!this.ctx.graph.hasNode(fromNodeId)) return null;
 
     const targetNodeIds = this.resolveObjectiveTargets();
@@ -85,7 +101,7 @@ export class PathAnalyzer {
     for (const targetId of targetNodeIds) {
       if (targetId === fromNodeId) return 0;
       try {
-        const path = this.findShortestPath(fromNodeId, targetId);
+        const path = this.findShortestPath(fromNodeId, targetId, optimize);
         if (path && (minHops === null || path.length - 1 < minHops)) {
           minHops = path.length - 1;
         }
@@ -97,8 +113,8 @@ export class PathAnalyzer {
     return minHops;
   }
 
-  findPathsToObjective(objectiveId: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
-    const paths: Array<{ nodes: string[]; total_confidence: number }> = [];
+  findPathsToObjective(objectiveId: string, maxPaths: number = 5, optimize: PathOptimize = 'confidence'): Array<PathResult> {
+    const paths: Array<PathResult> = [];
 
     const obj = this.ctx.config.objectives.find(o => o.id === objectiveId);
     const targetNodeIds = obj?.target_criteria
@@ -121,9 +137,10 @@ export class PathAnalyzer {
     for (const start of startNodes) {
       for (const targetId of targetNodeIds) {
         try {
-          const path = this.findShortestPath(start, targetId);
+          const path = this.findShortestPath(start, targetId, optimize);
           if (path) {
-            paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
+            const { total_confidence, total_opsec_noise } = this.computePathConfidence(path);
+            paths.push({ nodes: path, total_confidence, total_opsec_noise });
           }
         } catch (err) {
           this.ctx.log(`Path analysis error (${start} → ${targetId}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
@@ -136,14 +153,15 @@ export class PathAnalyzer {
       .slice(0, maxPaths);
   }
 
-  findPaths(fromNode: string, toNode: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
+  findPaths(fromNode: string, toNode: string, maxPaths: number = 5, optimize: PathOptimize = 'confidence'): Array<PathResult> {
     if (!this.ctx.graph.hasNode(fromNode) || !this.ctx.graph.hasNode(toNode)) return [];
 
-    const paths: Array<{ nodes: string[]; total_confidence: number }> = [];
+    const paths: Array<PathResult> = [];
     try {
-      const path = this.findShortestPath(fromNode, toNode);
+      const path = this.findShortestPath(fromNode, toNode, optimize);
       if (path) {
-        paths.push({ nodes: path, total_confidence: this.computePathConfidence(path) });
+        const { total_confidence, total_opsec_noise } = this.computePathConfidence(path);
+        paths.push({ nodes: path, total_confidence, total_opsec_noise });
       }
     } catch (err) {
       this.ctx.log(`Path analysis error (${fromNode} → ${toNode}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
@@ -167,24 +185,32 @@ export class PathAnalyzer {
     return Array.from(targetIds);
   }
 
-  private computePathConfidence(path: string[]): number {
+  private computePathConfidence(path: string[]): { total_confidence: number; total_opsec_noise: number } {
     let totalConfidence = 1.0;
+    let totalOpsecNoise = 0;
     for (let i = 0; i < path.length - 1; i++) {
-      const edges = this.ctx.graph.edges(path[i], path[i + 1]);
-      if (edges.length === 0) {
-        const reverseEdges = this.ctx.graph.edges(path[i + 1], path[i]);
-        if (reverseEdges.length === 0) { totalConfidence *= 0.1; continue; }
-        const bestConfidence = Math.max(
-          ...reverseEdges.map((e: string) => this.ctx.graph.getEdgeAttributes(e).confidence)
-        );
-        totalConfidence *= bestConfidence;
-      } else {
-        const bestConfidence = Math.max(
-          ...edges.map((e: string) => this.ctx.graph.getEdgeAttributes(e).confidence)
-        );
-        totalConfidence *= bestConfidence;
+      let edgeList = this.ctx.graph.edges(path[i], path[i + 1]);
+      if (edgeList.length === 0) {
+        edgeList = this.ctx.graph.edges(path[i + 1], path[i]);
       }
+      if (edgeList.length === 0) {
+        totalConfidence *= 0.1;
+        totalOpsecNoise += 0.3; // default noise for missing edges
+        continue;
+      }
+      // Pick the best (highest confidence) edge
+      let bestConfidence = 0;
+      let bestNoise = 0.3;
+      for (const e of edgeList) {
+        const attrs = this.ctx.graph.getEdgeAttributes(e);
+        if (attrs.confidence > bestConfidence) {
+          bestConfidence = attrs.confidence;
+          bestNoise = attrs.opsec_noise ?? 0.3;
+        }
+      }
+      totalConfidence *= bestConfidence;
+      totalOpsecNoise += bestNoise;
     }
-    return totalConfidence;
+    return { total_confidence: totalConfidence, total_opsec_noise: totalOpsecNoise };
   }
 }

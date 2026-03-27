@@ -6,13 +6,14 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
+import { isIpInScope, isIpInCidr, isHostnameInScope, isValidCidr, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { AgentManager } from './agent-manager.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
+import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired, inferCredentialDomain } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport, hasADContext, contextualFilterHealthReport } from './graph-health.js';
@@ -212,7 +213,69 @@ const BUILTIN_RULES: InferenceRule[] = [
       target_selector: 'trigger_node',
       confidence: 0.7
     }]
-  }
+  },
+  // --- Linux inference rules ---
+  {
+    id: 'rule-suid-privesc',
+    name: 'SUID root binary enables privilege escalation',
+    description: 'Host with dangerous SUID root binaries allows session holders to escalate to root',
+    trigger: { node_type: 'host', property_match: { has_suid_root: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.6
+    }]
+  },
+  {
+    id: 'rule-ssh-key-reuse',
+    name: 'SSH key reuse across services',
+    description: 'SSH key credential can authenticate to any SSH service',
+    trigger: { node_type: 'credential', property_match: { cred_type: 'ssh_key' } },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'trigger_node',
+      target_selector: 'ssh_services',
+      confidence: 0.5
+    }]
+  },
+  {
+    id: 'rule-docker-escape',
+    name: 'Docker socket enables container escape',
+    description: 'Host with accessible Docker socket allows session holders to escape to root',
+    trigger: { node_type: 'host', property_match: { docker_socket_accessible: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-nfs-root-squash',
+    name: 'NFS no_root_squash enables privilege escalation',
+    description: 'Host with NFS no_root_squash allows session holders to escalate via NFS write',
+    trigger: { node_type: 'host', property_match: { no_root_squash: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  // --- MSSQL linked server ---
+  {
+    id: 'rule-mssql-linked-server',
+    name: 'MSSQL linked server implies host reachability',
+    description: 'MSSQL service with linked servers implies network reachability to the linked host',
+    trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
+    produces: [{
+      edge_type: 'REACHABLE',
+      source_selector: 'parent_host',
+      target_selector: 'linked_server_hosts',
+      confidence: 0.8
+    }]
+  },
 ];
 
 // --- Edge types traversable in both directions for attack-path planning ---
@@ -335,6 +398,23 @@ export class GraphEngine {
         last_seen_at: now,
         confidence: 1.0
       });
+    }
+
+    // Create subnet nodes from scoped CIDRs
+    for (const cidr of this.ctx.config.scope.cidrs) {
+      const subnetId = `subnet-${cidr.replace(/[./]/g, '-')}`;
+      if (!this.ctx.graph.hasNode(subnetId)) {
+        this.addNode({
+          id: subnetId,
+          type: 'subnet',
+          label: cidr,
+          subnet_cidr: cidr,
+          discovered_at: now,
+          first_seen_at: now,
+          last_seen_at: now,
+          confidence: 1.0
+        });
+      }
     }
 
     // Create objective nodes
@@ -615,6 +695,15 @@ export class GraphEngine {
       inferredEdges.push(...inferred);
     }
 
+    // Pivot reachability — imperative handler for subnet-based pivot inference
+    for (const nodeId of inferenceTargets) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
+      if (attrs.type === 'host') {
+        inferredEdges.push(...this.inferPivotReachability(nodeId));
+      }
+    }
+
     // Backfill cred_domain from graph ownership paths for credentials missing domain qualification.
     // Include credentials owned by users in edgeEndpoints — handles incremental ingestion where
     // a MEMBER_OF_DOMAIN edge arrives after the credential was already created.
@@ -697,6 +786,64 @@ export class GraphEngine {
 
   private runInferenceRules(triggerNodeId: string): string[] {
     return this.inference.runRules(triggerNodeId);
+  }
+
+  // TODO: First candidate for future dynamic_properties support on inference rule productions
+  private inferPivotReachability(triggerHostId: string): string[] {
+    const inferred: string[] = [];
+    const hostNode = this.getNode(triggerHostId);
+    if (!hostNode || hostNode.type !== 'host' || !hostNode.ip) return inferred;
+
+    // Check if this host has any confirmed sessions
+    const sessionHolders: string[] = [];
+    for (const edge of this.ctx.graph.inEdges(triggerHostId) as string[]) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edge);
+      if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
+        sessionHolders.push(this.ctx.graph.source(edge));
+      }
+    }
+    if (sessionHolders.length === 0) return inferred;
+
+    // Find which subnets this host belongs to
+    const matchingSubnets: string[] = [];
+    this.ctx.graph.forEachNode((nodeId: string, attrs) => {
+      if (attrs.type === 'subnet' && attrs.subnet_cidr && isIpInCidr(hostNode.ip!, attrs.subnet_cidr)) {
+        matchingSubnets.push(nodeId);
+      }
+    });
+    if (matchingSubnets.length === 0) return inferred;
+
+    // For each subnet, find peer hosts and create REACHABLE edges
+    const now = new Date().toISOString();
+    for (const subnetId of matchingSubnets) {
+      const subnetCidr = this.ctx.graph.getNodeAttributes(subnetId).subnet_cidr as string;
+      this.ctx.graph.forEachNode((peerId: string, peerAttrs) => {
+        if (peerId === triggerHostId) return;
+        if (peerAttrs.type !== 'host' || !peerAttrs.ip) return;
+        if (!isIpInCidr(peerAttrs.ip, subnetCidr)) return;
+
+        // Skip if REACHABLE edge already exists
+        const existing = this.ctx.graph.edges(triggerHostId, peerId);
+        if (existing.some((e: string) => this.ctx.graph.getEdgeAttributes(e).type === 'REACHABLE')) return;
+
+        const { id: edgeId } = this.addEdge(triggerHostId, peerId, {
+          type: 'REACHABLE',
+          confidence: 0.6,
+          discovered_at: now,
+          discovered_by: 'inference:pivot-reachability',
+          tested: false,
+          inferred_by_rule: 'pivot-reachability',
+          inferred_at: now,
+          via_pivot: sessionHolders[0],
+        });
+        inferred.push(edgeId);
+        this.log(`Inferred pivot reachability: ${triggerHostId} → ${peerId} via ${sessionHolders[0]}`, undefined, {
+          category: 'inference',
+          event_type: 'inference_generated',
+        });
+      });
+    }
+    return inferred;
   }
 
   degradeExpiredCredentialEdges(credNodeId: string): string[] {
@@ -782,12 +929,12 @@ export class GraphEngine {
     return this.paths.hopsToNearestObjective(fromNodeId);
   }
 
-  findPathsToObjective(objectiveId: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
-    return this.paths.findPathsToObjective(objectiveId, maxPaths);
+  findPathsToObjective(objectiveId: string, maxPaths: number = 5, optimize?: PathOptimize): Array<PathResult> {
+    return this.paths.findPathsToObjective(objectiveId, maxPaths, optimize);
   }
 
-  findPaths(fromNode: string, toNode: string, maxPaths: number = 5): Array<{ nodes: string[]; total_confidence: number }> {
-    return this.paths.findPaths(fromNode, toNode, maxPaths);
+  findPaths(fromNode: string, toNode: string, maxPaths: number = 5, optimize?: PathOptimize): Array<PathResult> {
+    return this.paths.findPaths(fromNode, toNode, maxPaths, optimize);
   }
 
   // =============================================

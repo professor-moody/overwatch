@@ -41,6 +41,12 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
         ctx.graph.getEdgeAttributes(e).type === 'RUNS'
       );
       if (!hasServices) m.push('services');
+      // Linux-specific enrichment
+      if (node.os && node.os.toLowerCase().includes('linux')) {
+        if (node.suid_checked === undefined) m.push('suid_checked');
+        if (node.cron_checked === undefined) m.push('cron_checked');
+        if (node.capabilities_checked === undefined) m.push('capabilities_checked');
+      }
     }
     return m;
   },
@@ -54,6 +60,9 @@ const NOISE_ESTIMATES: Record<string, number> = {
   alive: 0.2,
   services: 0.5,
   version: 0.3,
+  suid_checked: 0.3,
+  cron_checked: 0.2,
+  capabilities_checked: 0.3,
   default: 0.3,
 };
 
@@ -156,6 +165,60 @@ export class FrontierComputer {
         staleness_seconds: 0,
       });
     }
+
+    // 4. Network pivot items: hosts reachable via pivot in same subnet
+    this.ctx.graph.forEachNode((subnetId: string, subnetAttrs) => {
+      if (subnetAttrs.type !== 'subnet' || !subnetAttrs.subnet_cidr) return;
+      const cidr = subnetAttrs.subnet_cidr as string;
+
+      const hostsInSubnet: Array<{ id: string; attrs: NodeProperties }> = [];
+      this.ctx.graph.forEachNode((hId: string, hAttrs) => {
+        if (hAttrs.type === 'host' && hAttrs.ip && isIpInCidr(hAttrs.ip, cidr)) {
+          hostsInSubnet.push({ id: hId, attrs: hAttrs });
+        }
+      });
+
+      for (const host of hostsInSubnet) {
+        let pivotPrincipal: string | undefined;
+        for (const edge of this.ctx.graph.inEdges(host.id) as string[]) {
+          const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
+          if (eAttrs.type === 'HAS_SESSION' && eAttrs.confidence >= 0.9) {
+            pivotPrincipal = this.ctx.graph.source(edge);
+            break;
+          }
+        }
+        if (!pivotPrincipal) continue;
+
+        for (const peer of hostsInSubnet) {
+          if (peer.id === host.id) continue;
+          const peerHasSession = this.ctx.graph.inEdges(peer.id).some((e: string) => {
+            const ea = this.ctx.graph.getEdgeAttributes(e);
+            return ea.type === 'HAS_SESSION' && ea.confidence >= 0.9;
+          });
+          if (peerHasSession) continue;
+
+          const pivotItemId = `frontier-pivot-${host.id}-${peer.id}`;
+          if (frontier.some(f => f.id === pivotItemId)) continue;
+
+          frontier.push({
+            id: pivotItemId,
+            type: 'network_pivot',
+            node_id: peer.id,
+            pivot_host_id: host.id,
+            via_pivot: pivotPrincipal,
+            description: `Host "${peer.attrs.label}" in ${cidr} reachable via pivot on "${host.attrs.label}"`,
+            graph_metrics: {
+              hops_to_objective: this.hopsToObjective(peer.id),
+              fan_out_estimate: 5,
+              node_degree: this.ctx.graph.degree(peer.id),
+              confidence: 0.6,
+            },
+            opsec_noise: 0.4,
+            staleness_seconds: (now - new Date(peer.attrs.discovered_at).getTime()) / 1000,
+          });
+        }
+      }
+    });
 
     return frontier;
   }

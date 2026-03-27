@@ -345,6 +345,41 @@ export class InferenceEngine {
         return this.resolveEdgePeers(triggerNodeId, rule.trigger.requires_edge);
       }
 
+      case 'session_holders_on_host': {
+        // For the trigger host, find source nodes of inbound HAS_SESSION edges
+        const holders: string[] = [];
+        this.ctx.graph.forEachInEdge(triggerNodeId, (edge: string, attrs, src: string) => {
+          if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
+            holders.push(src);
+          }
+        });
+        return holders;
+      }
+
+      case 'ssh_services':
+        return this.getNodesByType('service')
+          .filter(s => s.service_name === 'ssh')
+          .map(n => n.id);
+
+      case 'linked_server_hosts': {
+        // Resolve linked_servers array on trigger service node to host nodes
+        const triggerSvc = this.getNode(triggerNodeId);
+        if (!triggerSvc?.linked_servers?.length) return [];
+        const allHosts = this.getNodesByType('host');
+        const matched = new Set<string>();
+        for (const linked of triggerSvc.linked_servers) {
+          const linkedLower = linked.toLowerCase();
+          for (const h of allHosts) {
+            const hn = (h.hostname || h.label || '').toLowerCase();
+            const ip = h.ip || '';
+            if ((hn && hn === linkedLower) || (ip && ip === linked)) {
+              matched.add(h.id);
+            }
+          }
+        }
+        return Array.from(matched);
+      }
+
       default:
         console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);
         return [];
