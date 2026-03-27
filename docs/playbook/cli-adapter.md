@@ -138,8 +138,9 @@ Option B — Use Overwatch sessions for a persistent remote shell:
 Note: `--kind ssh` opens a shell on the remote VM. `--kind local_pty` opens a
 shell on the Overwatch server itself — only use that if the server IS the VM.
 
-`check-tools` reports what is installed on the **Overwatch server**, not locally.
-Use it to plan which tools are available, then execute them on the VM.
+`check-tools` reports what is installed on the **Overwatch server**, not locally
+and not on the SSH target. If the server and target VM are different machines,
+verify tool availability on the VM itself (e.g. `which nmap` via a session).
 
 ## Session Start
 
