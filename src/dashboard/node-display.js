@@ -18,6 +18,8 @@ const FRIENDLY_TYPE_LABELS = {
   ou: 'OUs',
   subnet: 'Subnets',
   objective: 'Objectives',
+  webapp: 'Web Apps',
+  vulnerability: 'Vulnerabilities',
 };
 
 function getNodeDisplayLabel(props = {}, fallbackId = '') {
@@ -37,6 +39,8 @@ function getNodeDisplayLabel(props = {}, fallbackId = '') {
   if (type === 'ou') return props.label || props.name || fallbackId;
   if (type === 'subnet') return props.cidr || props.label || fallbackId;
   if (type === 'objective') return props.objective_description || props.label || fallbackId;
+  if (type === 'webapp') return props.url || props.label || fallbackId;
+  if (type === 'vulnerability') return props.cve || props.vuln_type || props.label || fallbackId;
   return props.label || fallbackId;
 }
 
@@ -87,6 +91,16 @@ function getNodeIdentityEntries(props = {}, fallbackId = '') {
   } else if (type === 'pki_store') {
     push('pki_store_kind', props.pki_store_kind);
     push('label', props.label);
+  } else if (type === 'webapp') {
+    push('url', props.url);
+    push('technology', props.technology);
+    push('cms_type', props.cms_type);
+    push('auth_type', props.auth_type);
+  } else if (type === 'vulnerability') {
+    push('cve', props.cve);
+    push('cvss', props.cvss);
+    push('vuln_type', props.vuln_type);
+    push('affected_component', props.affected_component);
   } else if (type === 'gpo' || type === 'ou' || type === 'subnet' || type === 'objective') {
     push(type === 'subnet' ? 'cidr' : 'label', props.cidr || props.label || props.objective_description);
   }

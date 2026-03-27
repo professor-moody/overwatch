@@ -20,6 +20,8 @@ const NODE_COLORS = {
   gpo:         '#d08770',
   ou:          '#7fb1a8',
   subnet:      '#8fabb8',
+  webapp:      '#4ecdc4',
+  vulnerability:'#e05555',
 };
 
 const NODE_BASE_SIZES = {
@@ -38,6 +40,8 @@ const NODE_BASE_SIZES = {
   gpo: 5,
   ou: 5,
   subnet: 5,
+  webapp: 7,
+  vulnerability: 6,
 };
 
 // Edge colors by category
@@ -63,6 +67,9 @@ const EDGE_CATEGORIES = {
   // Domain
   MEMBER_OF: '#6b6977', MEMBER_OF_DOMAIN: '#6b6977', TRUSTS: '#97c459',
   SAME_DOMAIN: '#6b6977',
+  // Web application surface
+  HOSTS: '#6e9eff', AUTHENTICATED_AS: '#f0b54a',
+  VULNERABLE_TO: '#e05555', EXPLOITS: '#e05555',
 };
 
 const DEFAULT_EDGE_COLOR = 'rgba(110,158,255,0.25)';

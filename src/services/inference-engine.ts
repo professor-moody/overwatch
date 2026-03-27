@@ -361,6 +361,11 @@ export class InferenceEngine {
           .filter(s => s.service_name === 'ssh')
           .map(n => n.id);
 
+      case 'all_usable_credentials':
+        return this.getNodesByType('credential')
+          .filter(c => isCredentialUsableForAuth(c))
+          .map(n => n.id);
+
       case 'linked_server_hosts': {
         // Resolve linked_servers array on trigger service node to host nodes
         const triggerSvc = this.getNode(triggerNodeId);

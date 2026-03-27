@@ -78,6 +78,22 @@ export function resolveDomainName(raw: string, aliases?: Record<string, string>)
   return trimmed.toLowerCase();
 }
 
+export function webappId(url: string): string {
+  let normalized = url.trim().toLowerCase();
+  // Remove trailing slash
+  normalized = normalized.replace(/\/+$/, '');
+  // Strip default ports
+  normalized = normalized.replace(/^(https?:\/\/[^/:]+):80(\/|$)/, '$1$2');
+  normalized = normalized.replace(/^(https:\/\/[^/:]+):443(\/|$)/, '$1$2');
+  return `webapp-${normalizeKeyPart(normalized)}`;
+}
+
+export function vulnerabilityId(identifier: string, targetNodeId: string): string {
+  const idPart = normalizeKeyPart(identifier);
+  const targetPart = normalizeKeyPart(targetNodeId);
+  return `vuln-${idPart}-${targetPart}`;
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {

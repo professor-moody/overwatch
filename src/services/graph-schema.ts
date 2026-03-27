@@ -73,7 +73,12 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Lateral movement
   RELAY_TARGET: { source: ['host', 'user', 'credential'], target: ['host'] },
   NULL_SESSION: { source: ['host'], target: ['host', 'service'] },
-  POTENTIAL_AUTH: { source: ['credential', 'user'], target: ['service', 'host'] },
+  POTENTIAL_AUTH: { source: ['credential', 'user'], target: ['service', 'host', 'webapp'] },
+  // Web application surface
+  HOSTS: { source: ['service'], target: ['webapp'] },
+  AUTHENTICATED_AS: { source: ['credential'], target: ['webapp'] },
+  VULNERABLE_TO: { source: ['webapp', 'service'], target: ['vulnerability'] },
+  EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp'] },
   // Objective
   PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group'], target: ['objective'] },
   // RELATED is intentionally unconstrained

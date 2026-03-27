@@ -8,7 +8,8 @@ import { z } from 'zod';
 
 export const NODE_TYPES = [
   'host', 'service', 'domain', 'user', 'group', 'credential',
-  'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective'
+  'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
+  'webapp', 'vulnerability'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
@@ -107,8 +108,31 @@ export interface NodeProperties {
   eku?: string[];
   enrollee_supplies_subject?: boolean;
 
+  // Service — TLS enrichment
+  tls_version?: string;
+  cipher_suites?: string[];
+  cert_subject?: string;
+  cert_expiry?: string;
+  cert_issuer?: string;
+
   // Subnet
   subnet_cidr?: string;
+
+  // Webapp
+  url?: string;
+  technology?: string;
+  framework?: string;
+  auth_type?: string;
+  has_api?: boolean;
+  cms_type?: string;
+
+  // Vulnerability
+  cve?: string;
+  cvss?: number;
+  vuln_type?: string;
+  exploitable?: boolean;
+  exploit_available?: boolean;
+  affected_component?: string;
 
   // Objective
   objective_description?: string;
@@ -146,6 +170,8 @@ export const EDGE_TYPES = [
   'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
   // Lateral movement
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH',
+  // Web application surface
+  'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS',
   // Objective
   'PATH_TO_OBJECTIVE',
   // Generic

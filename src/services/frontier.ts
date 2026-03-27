@@ -53,6 +53,12 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
   service: (node) => node.version ? [] : ['version'],
   user: (node) => node.privileged === undefined ? ['privilege_level'] : [],
   domain: (node) => node.functional_level ? [] : ['functional_level'],
+  webapp: (node) => {
+    const m: string[] = [];
+    if (!node.technology) m.push('technology');
+    if (!node.auth_type) m.push('auth_type');
+    return m;
+  },
 };
 
 // --- Noise estimates by missing property ---
@@ -63,6 +69,8 @@ const NOISE_ESTIMATES: Record<string, number> = {
   suid_checked: 0.3,
   cron_checked: 0.2,
   capabilities_checked: 0.3,
+  technology: 0.3,
+  auth_type: 0.2,
   default: 0.3,
 };
 
@@ -243,6 +251,7 @@ export class FrontierComputer {
       return FAN_OUT_ESTIMATES[node.service_name || 'default'] || FAN_OUT_ESTIMATES['default'];
     }
     if (node.type === 'credential') return 15;
+    if (node.type === 'webapp') return 8;
     return FAN_OUT_ESTIMATES['default'];
   }
 

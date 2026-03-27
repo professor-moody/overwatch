@@ -263,6 +263,19 @@ const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.7
     }]
   },
+  // --- Web application surface ---
+  {
+    id: 'rule-login-spray-candidate',
+    name: 'Webapp login form is a credential spray target',
+    description: 'Web application with a login form should be tested with all known credentials',
+    trigger: { node_type: 'webapp', property_match: { has_login_form: true } },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'all_usable_credentials',
+      target_selector: 'trigger_node',
+      confidence: 0.3
+    }]
+  },
   // --- MSSQL linked server ---
   {
     id: 'rule-mssql-linked-server',
@@ -704,6 +717,18 @@ export class GraphEngine {
       }
     }
 
+    // Default credentials for known CMS webapps — imperative handler
+    const webappTargets = new Set<string>();
+    for (const nodeId of inferenceTargets) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      if (this.ctx.graph.getNodeAttributes(nodeId).type === 'webapp') {
+        webappTargets.add(nodeId);
+      }
+    }
+    if (webappTargets.size > 0) {
+      inferredEdges.push(...this.inferDefaultCredentials(webappTargets));
+    }
+
     // Backfill cred_domain from graph ownership paths for credentials missing domain qualification.
     // Include credentials owned by users in edgeEndpoints — handles incremental ingestion where
     // a MEMBER_OF_DOMAIN edge arrives after the credential was already created.
@@ -843,6 +868,71 @@ export class GraphEngine {
         });
       });
     }
+    return inferred;
+  }
+
+  // Default credentials for known CMS types — imperative helper like inferPivotReachability
+  private static readonly CMS_DEFAULT_CREDS: Record<string, { user: string; type: string }> = {
+    wordpress: { user: 'admin', type: 'plaintext' },
+    tomcat: { user: 'tomcat', type: 'plaintext' },
+    jenkins: { user: 'admin', type: 'plaintext' },
+    grafana: { user: 'admin', type: 'plaintext' },
+    phpmyadmin: { user: 'root', type: 'plaintext' },
+  };
+
+  private inferDefaultCredentials(webappNodeIds: Set<string>): string[] {
+    const inferred: string[] = [];
+    const now = new Date().toISOString();
+
+    for (const nodeId of webappNodeIds) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
+      if (attrs.type !== 'webapp' || !attrs.cms_type) continue;
+
+      const cmsKey = (attrs.cms_type as string).toLowerCase();
+      const defaults = GraphEngine.CMS_DEFAULT_CREDS[cmsKey];
+      if (!defaults) continue;
+
+      const credId = `cred-default-${cmsKey}`;
+
+      // Create the default credential node if it doesn't exist
+      if (!this.ctx.graph.hasNode(credId)) {
+        this.addNode({
+          id: credId,
+          type: 'credential',
+          label: `Default ${cmsKey} credential (${defaults.user})`,
+          discovered_at: now,
+          discovered_by: 'inference:default-creds',
+          confidence: 0.3,
+          cred_type: 'plaintext',
+          cred_user: defaults.user,
+          cred_material_kind: 'plaintext_password',
+          cred_usable_for_auth: true,
+          cred_evidence_kind: 'manual',
+          credential_status: 'active',
+        });
+      }
+
+      // Create POTENTIAL_AUTH edge from credential → webapp if not already present
+      const existing = this.ctx.graph.edges(credId, nodeId);
+      if (existing.some((e: string) => this.ctx.graph.getEdgeAttributes(e).type === 'POTENTIAL_AUTH')) continue;
+
+      const { id: edgeId } = this.addEdge(credId, nodeId, {
+        type: 'POTENTIAL_AUTH',
+        confidence: 0.3,
+        discovered_at: now,
+        discovered_by: 'inference:default-creds',
+        tested: false,
+        inferred_by_rule: 'default-creds',
+        inferred_at: now,
+      });
+      inferred.push(edgeId);
+      this.log(`Inferred default credentials for ${cmsKey} webapp: ${credId} → ${nodeId}`, undefined, {
+        category: 'inference',
+        event_type: 'inference_generated',
+      });
+    }
+
     return inferred;
   }
 
