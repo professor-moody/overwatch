@@ -86,9 +86,12 @@ npm run build
 
 Note the absolute path to the built adapter (e.g., `/home/op/overwatch-adapter`). Claude Code will invoke it as `node /home/op/overwatch-adapter/dist/cli.js <command>`.
 
-### 3. Place the AGENTS.md template
+### 3. Place the CLAUDE.md template
 
-Create this file in your project root **before starting Claude Code**. Claude reads it automatically at session start.
+Create `CLAUDE.md` in your project root **before starting Claude Code**. Claude Code reads it automatically at session start.
+
+!!! note "Windsurf uses AGENTS.md"
+    If you're using Windsurf instead of Claude Code, save this template as `AGENTS.md` instead of `CLAUDE.md`. The content is identical — only the filename differs.
 
 Replace `/home/op/overwatch-adapter` with the actual absolute path from step 2:
 
@@ -165,18 +168,18 @@ All output is JSON. Parse it directly. Do not add --human flag.
 claude
 ```
 
-Claude reads the AGENTS.md, defines the shell function, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
+Claude reads the CLAUDE.md, defines the shell function, calls `overwatch get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
 
 ## What's Manual vs. Automatic
 
-Once the AGENTS.md is in place and Claude Code starts, **everything is autonomous**. Claude reads the AGENTS.md, bootstraps via `get-system-prompt`, then drives the entire engagement loop through bash.
+Once the CLAUDE.md is in place and Claude Code starts, **everything is autonomous**. Claude reads the CLAUDE.md, bootstraps via `get-system-prompt`, then drives the entire engagement loop through bash.
 
 | Step | Who | When |
 |------|-----|------|
 | Write `engagement.json` | Human | Once, before engagement |
 | Start Overwatch HTTP server | Human | Once, before engagement |
 | Build CLI adapter (`npm install && npm run build`) | Human | Once, before engagement |
-| Place `AGENTS.md` in project root (with adapter path) | Human | Once, before engagement |
+| Place `CLAUDE.md` in project root (with adapter path) | Human | Once, before engagement |
 | Start Claude Code | Human | Once |
 | Everything else below | Claude Code | Autonomous |
 
@@ -188,7 +191,7 @@ What Claude Code actually does during a Dante-style network engagement, step by 
 
 ### Phase 0 — Human Setup (one-time)
 
-The human creates `engagement.json` in the Overwatch directory, places the AGENTS.md template (see [Bootstrap Sequence](#bootstrap-sequence) above), then:
+The human creates `engagement.json` in the Overwatch directory, places the CLAUDE.md template (see [Bootstrap Sequence](#bootstrap-sequence) above), then:
 
 ```json
 {
@@ -212,7 +215,7 @@ claude
 
 ### Phase 1 — Claude Bootstraps
 
-Claude reads the AGENTS.md, then:
+Claude reads the CLAUDE.md, then:
 
 ```bash
 # Fetch full dynamic instructions (core loop, tool table, state, OPSEC)
