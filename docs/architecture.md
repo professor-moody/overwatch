@@ -37,7 +37,12 @@ Every step is traceable: `action_id` links `validate_action` → `log_action_eve
 
 Engagements are directed property graphs — hosts, services, credentials, and the relationships between them. The graph structure means "credential X is valid on service Y which runs on host Z" is a traversable path, not three rows in a table.
 
-The graph is powered by [graphology](https://graphology.github.io/), a robust JavaScript graph library, with shortest-path analysis via `graphology-shortest-path`.
+The graph is powered by [graphology](https://graphology.github.io/), a robust JavaScript graph library, with shortest-path analysis via `graphology-shortest-path` and community detection via `graphology-communities-louvain`.
+
+**Community detection** runs Louvain modularity optimization on an undirected projection of the graph. Each node gets a `community_id` attribute, materialized lazily and cached until the next topology change. Communities feed two consumers:
+
+- **Frontier** — each `FrontierItem` carries `community_id` and `community_unexplored_count`, letting the LLM reason about cluster coverage
+- **Dashboard** — convex hull overlays color-code communities in the graph visualization
 
 ### MCP Server, Not a Prompt
 

@@ -128,8 +128,9 @@ The **Layers** dropdown provides three mutually exclusive visualization overlays
 | **Attack Path** | Shows the actual attack path taken during the engagement (gold). Reconstructed from the activity history. |
 | **Compare Shortest** | Overlays the theoretical shortest path (cyan) alongside the actual attack path for comparison. |
 | **Credential Flow** | Highlights credential relationships: `DERIVED_FROM`, `OWNS_CRED`, `VALID_ON`, `POTENTIAL_AUTH`, `DUMPED_FROM`. Credential nodes show status badges (active=green, stale=amber, expired=red, rotated=purple). |
+| **Community Hulls** | Color-coded convex hull overlays grouping nodes by Louvain community. On by default. Communities are detected automatically from graph topology. |
 
-Activating one layer clears the others.
+Activating Attack Path, Compare Shortest, or Credential Flow clears the others. Community Hulls is independent and can be toggled separately.
 
 ### Keyboard Shortcuts
 

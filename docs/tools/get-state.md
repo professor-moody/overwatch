@@ -31,7 +31,7 @@ An `EngagementState` object containing:
 | Field | Type | Description |
 |-------|------|-------------|
 | `config` | `EngagementConfig` | Scope, objectives, OPSEC profile |
-| `graph_summary` | `object` | Node/edge counts by type, confirmed vs inferred |
+| `graph_summary` | `object` | Node/edge counts by type, confirmed vs inferred, community stats |
 | `objectives` | `EngagementObjective[]` | All objectives with achievement status |
 | `frontier` | `FrontierItem[]` | Candidate next actions with graph metrics |
 | `active_agents` | `AgentTask[]` | Currently running sub-agents |
@@ -39,6 +39,16 @@ An `EngagementState` object containing:
 | `access_summary` | `object` | Compromised hosts, valid credentials, access level |
 | `warnings` | `HealthSummary` | Graph health warnings |
 | `lab_readiness` | `LabReadinessSummary` | Lab readiness status |
+
+### graph_summary community fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `community_count` | `number` | Number of communities detected via Louvain algorithm |
+| `largest_community_size` | `number` | Node count in the biggest community |
+| `unexplored_community_count` | `number` | Communities with at least one unexplored frontier item |
+
+These are computed lazily from the graph topology and cached until the next topology change.
 
 ## Example
 

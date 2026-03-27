@@ -52,6 +52,8 @@ The LLM's job is to:
 | `graph_metrics.confidence` | `number` | Current confidence |
 | `opsec_noise` | `number` | Estimated noise (0.0–1.0) |
 | `staleness_seconds` | `number` | Time since last update |
+| `community_id` | `number` | Louvain community this node belongs to |
+| `community_unexplored_count` | `number` | Unexplored frontier items in the same community |
 
 ## Usage Notes
 

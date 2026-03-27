@@ -653,6 +653,73 @@ describe('dashboard graph helpers', () => {
     graphModule.setGraphMode('overview');
   });
 
+  it('collectCommunityHullPoints groups nodes by community_id', async () => {
+    const graphModule = await loadGraphModule();
+    const g = new Graph();
+    g.addNode('a', { _props: { community_id: 0 } });
+    g.addNode('b', { _props: { community_id: 0 } });
+    g.addNode('c', { _props: { community_id: 0 } });
+    g.addNode('d', { _props: { community_id: 1 } });
+    g.addNode('e', { _props: { community_id: 1 } });
+    g.addNode('f', { _props: { community_id: 1 } });
+
+    const displayData: Record<string, any> = {
+      a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 },
+      d: { x: 5, y: 5 }, e: { x: 6, y: 5 }, f: { x: 5, y: 6 },
+    };
+    const result = graphModule.collectCommunityHullPoints(g, (id: string) => displayData[id]);
+
+    expect(result.size).toBe(2);
+    expect(result.get(0)).toHaveLength(3);
+    expect(result.get(1)).toHaveLength(3);
+    expect(result.get(0)).toEqual([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }]);
+  });
+
+  it('collectCommunityHullPoints skips hidden nodes', async () => {
+    const graphModule = await loadGraphModule();
+    const g = new Graph();
+    g.addNode('a', { _props: { community_id: 0 } });
+    g.addNode('b', { _props: { community_id: 0 } });
+    g.addNode('c', { _props: { community_id: 0 } });
+
+    const displayData: Record<string, any> = {
+      a: { x: 0, y: 0 },
+      b: { x: 1, y: 0, hidden: true },
+      c: { x: 0, y: 1 },
+    };
+    const result = graphModule.collectCommunityHullPoints(g, (id: string) => displayData[id]);
+
+    expect(result.get(0)).toHaveLength(2);
+    expect(result.get(0)!.some((p: any) => p.x === 1)).toBe(false);
+  });
+
+  it('collectCommunityHullPoints skips nodes without community_id', async () => {
+    const graphModule = await loadGraphModule();
+    const g = new Graph();
+    g.addNode('a', { _props: { community_id: 0 } });
+    g.addNode('b', { _props: {} });
+    g.addNode('c', { _props: { community_id: null } });
+    g.addNode('d', {}); // no _props at all
+
+    const displayData: Record<string, any> = {
+      a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 2, y: 0 }, d: { x: 3, y: 0 },
+    };
+    const result = graphModule.collectCommunityHullPoints(g, (id: string) => displayData[id]);
+
+    expect(result.size).toBe(1);
+    expect(result.get(0)).toHaveLength(1);
+  });
+
+  it('collectCommunityHullPoints returns empty map for null display data', async () => {
+    const graphModule = await loadGraphModule();
+    const g = new Graph();
+    g.addNode('a', { _props: { community_id: 0 } });
+    g.addNode('b', { _props: { community_id: 0 } });
+
+    const result = graphModule.collectCommunityHullPoints(g, () => null);
+    expect(result.size).toBe(0);
+  });
+
   it('community hulls toggle works', async () => {
     const graphModule = await loadGraphModule();
     expect(graphModule.communityHullsEnabled).toBe(true);

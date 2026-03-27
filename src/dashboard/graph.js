@@ -2369,6 +2369,26 @@ function expandHull(hull, padding) {
   });
 }
 
+/**
+ * Collect visible node positions grouped by community_id.
+ * Pure function — decoupled from sigma renderer for testability.
+ * @param {object} g - graphology graph instance
+ * @param {function} getDisplayData - (nodeId) => { x, y, hidden? } | null
+ * @returns {Map<number, {x: number, y: number}[]>}
+ */
+function collectCommunityHullPoints(g, getDisplayData) {
+  const communityNodes = new Map();
+  g.forEachNode((id, attrs) => {
+    const dd = getDisplayData(id);
+    if (!dd || dd.hidden) return;
+    const cid = attrs._props && attrs._props.community_id;
+    if (cid === undefined || cid === null) return;
+    if (!communityNodes.has(cid)) communityNodes.set(cid, []);
+    communityNodes.get(cid).push({ x: dd.x, y: dd.y });
+  });
+  return communityNodes;
+}
+
 function drawCommunityHulls() {
   if (!communityHullsEnabled || !renderer || !graph || graph.order === 0) return;
 
@@ -2378,16 +2398,7 @@ function drawCommunityHulls() {
   const ctx = labelsCanvas.getContext('2d');
   if (!ctx) return;
 
-  // Group visible nodes by community_id using sigma's display data (respects filters/zoom)
-  const communityNodes = new Map();
-  graph.forEachNode((id, attrs) => {
-    const dd = renderer.getNodeDisplayData(id);
-    if (!dd || dd.hidden) return;
-    const cid = attrs._props && attrs._props.community_id;
-    if (cid === undefined || cid === null) return;
-    if (!communityNodes.has(cid)) communityNodes.set(cid, []);
-    communityNodes.get(cid).push({ x: dd.x, y: dd.y });
-  });
+  const communityNodes = collectCommunityHullPoints(graph, (id) => renderer.getNodeDisplayData(id));
 
   const HULL_PADDING = 24;
   const CORNER_RADIUS = 12;
@@ -2731,6 +2742,7 @@ window.OverwatchGraph = {
   buildCredentialFlowData,
   // Community hulls
   drawCommunityHulls,
+  collectCommunityHullPoints,
   convexHull,
   // Path helpers
   findShortestPath,
