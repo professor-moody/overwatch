@@ -361,6 +361,8 @@ its CIDR as its scoped subgraph.`,
       const dispatched: Array<{ task_id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
       const skipped: Array<{ cidr: string; reason: string }> = [];
 
+      const graphSnapshot = engine.exportGraph();
+
       for (const cidr of cidrs) {
         if (dispatched.length >= max_agents) break;
 
@@ -390,8 +392,7 @@ its CIDR as its scoped subgraph.`,
 
         // Collect already-discovered node IDs in this CIDR
         const nodesInCidr: string[] = [];
-        const graph = engine.exportGraph();
-        for (const node of graph.nodes) {
+        for (const node of graphSnapshot.nodes) {
           if (node.properties.type === 'host' && node.properties.ip && isIpInCidr(node.properties.ip, cidr)) {
             nodesInCidr.push(node.id);
           }

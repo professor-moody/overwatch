@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolve } from 'path';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
@@ -30,6 +30,7 @@ const MOCK_TOOLS: ToolEntry[] = [
 ];
 
 describe('prompt-generator', () => {
+  beforeEach(cleanup);
   afterEach(cleanup);
 
   describe('primary prompt', () => {

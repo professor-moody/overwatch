@@ -1,6 +1,12 @@
 // ============================================================
 // Output Parsers
 // Parse common offensive tool outputs into structured Findings
+//
+// NOTE (L6): This file is ~3400 lines and growing. Consider splitting
+// into a `parsers/` directory with one file per tool family (e.g.
+// parsers/nxc.ts, parsers/nmap.ts, parsers/ldap.ts) in a future
+// refactor. The PARSERS registry and parseOutput() entry point would
+// stay here or move to a thin parsers/index.ts barrel.
 // ============================================================
 
 import type { Finding, NodeType, EdgeType, ParseContext } from '../types.js';
@@ -1153,13 +1159,14 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
   function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
     const key = `${source}--${type}--${target}`;
-    if (seenNodes.has(key)) return;
+    if (seenEdges.has(key)) return;
     edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
-    seenNodes.add(key);
+    seenEdges.add(key);
   }
 
   // Try ldapdomaindump JSON first
@@ -1290,13 +1297,14 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
   function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
     const key = `${source}--${type}--${target}`;
-    if (seenNodes.has(key)) return;
+    if (seenEdges.has(key)) return;
     edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
-    seenNodes.add(key);
+    seenEdges.add(key);
   }
 
   for (const entry of data) {
@@ -1407,13 +1415,14 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
   function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
     const key = `${source}--${type}--${target}`;
-    if (seenNodes.has(key)) return;
+    if (seenEdges.has(key)) return;
     edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
-    seenNodes.add(key);
+    seenEdges.add(key);
   }
 
   // Try JSON first (enum4linux-ng -oJ)
@@ -1557,13 +1566,14 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
   function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
     const key = `${source}--${type}--${target}`;
-    if (seenNodes.has(key)) return;
+    if (seenEdges.has(key)) return;
     edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
-    seenNodes.add(key);
+    seenEdges.add(key);
   }
 
   const targetIp = data.target?.host || data.target?.ip || data.os_info?.target;
@@ -3329,7 +3339,7 @@ export function getSupportedParsers(): string[] {
 export function parseOutput(toolName: string, output: string, agentId?: string, context?: ParseContext): Finding | null {
   const parser = PARSERS[toolName.toLowerCase()];
   if (!parser) return null;
-  return parser(output, agentId, context);
+  return parser(stripAnsi(output), agentId, context);
 }
 
 function parseUpn(value: string): { username: string; domain: string } | null {

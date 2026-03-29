@@ -330,7 +330,14 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     // Detect frontier item executions — structured path
     let frontierType: string | null = entry.frontier_type || null;
 
-    // Fallback: text-based detection for legacy entries
+    // Fallback: text-based detection for legacy entries.
+    // NOTE (M6): This heuristic is intentionally brittle — it only fires when
+    // structured fields (frontier_type, category, outcome) are absent, which
+    // limits it to pre-v0.3 activity log entries. False positives are possible
+    // when description text contains matching keywords in a different context
+    // (e.g. "test" matching 'untested_edge'). The logging quality report in
+    // generateRetrospective() already flags entries lacking structured fields,
+    // so the long-term fix is better structured logging, not a smarter regex.
     if (!frontierType) {
       const desc = entry.description.toLowerCase();
       if (desc.includes('discover hosts') || desc.includes('continue discovery') || desc.includes('host discovery') || desc.includes('network discovery') || desc.includes('network scan')) {

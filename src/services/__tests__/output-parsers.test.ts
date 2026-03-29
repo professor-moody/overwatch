@@ -1120,6 +1120,25 @@ describe('Output Parsers', () => {
       expect(parseEnum4linux('').nodes.length).toBe(0);
       expect(parseEnum4linux('no useful data').nodes.length).toBe(0);
     });
+
+    it('emits both node and edge when node ID matches edge key pattern (M5 regression)', () => {
+      // Craft input where a node ID like "user-admin--MEMBER_OF_DOMAIN--domain-acme-local"
+      // could collide with an edge dedup key if seenNodes was used for both.
+      // With the fix, seenEdges is separate so no collision occurs.
+      const jsonData = {
+        target: { host: '10.10.10.5' },
+        domain_info: { domain: 'ACME.LOCAL' },
+        users: {
+          '500': { username: 'Administrator' },
+        },
+      };
+      const finding = parseEnum4linux(JSON.stringify(jsonData));
+      // Must have user node AND MEMBER_OF_DOMAIN edge
+      const users = finding.nodes.filter(n => n.type === 'user');
+      const memberEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
+      expect(users.length).toBe(1);
+      expect(memberEdges.length).toBe(1);
+    });
   });
 
   // =============================================
@@ -1437,6 +1456,20 @@ describe('Output Parsers', () => {
       const groups = finding.nodes.filter(n => n.type === 'group');
       expect(groups.length).toBe(1);
       expect(groups[0].domain_name).toBe('north.sevenkingdoms.local');
+    });
+
+    it('parseOutput strips ANSI escape codes before parsing (L5 regression)', () => {
+      // NXC output with ANSI color codes embedded
+      const ansiOutput = [
+        '\x1B[32mSMB\x1B[0m  10.10.10.1  445  DC01  \x1B[32m[*]\x1B[0m Windows Server 2019 Build 17763 x64 (name:DC01) (domain:acme.local) (signing:True) (SMBv1:False)',
+        '\x1B[32mSMB\x1B[0m  10.10.10.1  445  DC01  \x1B[32m[+]\x1B[0m acme.local\\admin:Password1 (Pwn3d!)',
+      ].join('\n');
+
+      const finding = parseOutput('nxc', ansiOutput);
+      expect(finding).not.toBeNull();
+      const hosts = finding!.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBeGreaterThanOrEqual(1);
+      expect(hosts[0].ip).toBe('10.10.10.1');
     });
 
     it('enum4linux resolves RID-cycled domain via domain_aliases', () => {

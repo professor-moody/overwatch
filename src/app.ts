@@ -51,6 +51,20 @@ type DashboardStatusProvider = () => {
 
 export type OverwatchToolRegistrar = Pick<McpServer, 'registerTool'>;
 
+/**
+ * Wrapper around McpServer that intercepts registerTool calls to collect
+ * tool metadata (name + description) without monkey-patching the server.
+ */
+export class ToolRegistrar implements OverwatchToolRegistrar {
+  private entries: ToolEntry[] = [];
+  constructor(private server: McpServer) {}
+  registerTool(name: string, config: any, cb: any): any {
+    this.entries.push({ name, description: config?.description || '' });
+    return this.server.registerTool(name, config, cb);
+  }
+  getEntries(): ToolEntry[] { return this.entries; }
+}
+
 export type OverwatchApp = {
   config: EngagementConfig;
   engine: GraphEngine;
@@ -97,43 +111,34 @@ export function registerAllTools(
     getDashboardStatus: DashboardStatusProvider;
   },
 ): ToolEntry[] {
-  const toolEntries: ToolEntry[] = [];
+  const registrar = new ToolRegistrar(server as McpServer);
+  const s = registrar as unknown as McpServer;
 
-  // Wrap registerTool to collect name+description for the prompt generator
-  const originalRegisterTool = (server as McpServer).registerTool.bind(server as McpServer);
-  (server as McpServer).registerTool = function (name: string, config: any, cb: any) {
-    toolEntries.push({ name, description: config?.description || '' });
-    return originalRegisterTool(name, config, cb);
-  };
-
-  registerStateTools(server as McpServer, deps.engine, {
+  registerStateTools(s, deps.engine, {
     getDashboardStatus: deps.getDashboardStatus,
   });
-  registerFindingTools(server as McpServer, deps.engine);
-  registerScoringTools(server as McpServer, deps.engine);
-  registerExplorationTools(server as McpServer, deps.engine);
-  registerAgentTools(server as McpServer, deps.engine);
-  registerSkillTools(server as McpServer, deps.skills);
-  registerBloodHoundTools(server as McpServer, deps.engine);
-  registerAzureHoundTools(server as McpServer, deps.engine);
-  registerToolCheckTools(server as McpServer);
-  registerProcessTools(server as McpServer, deps.processTracker, deps.engine);
-  registerInferenceTools(server as McpServer, deps.engine);
-  registerParseOutputTools(server as McpServer, deps.engine);
-  registerLoggingTools(server as McpServer, deps.engine);
-  registerRetrospectiveTools(server as McpServer, deps.engine, deps.skills);
-  registerReportingTools(server as McpServer, deps.engine, deps.skills);
-  registerRemediationTools(server as McpServer, deps.engine);
-  registerSessionTools(server as McpServer, deps.sessionManager, deps.engine);
-  registerScopeTools(server as McpServer, deps.engine);
+  registerFindingTools(s, deps.engine);
+  registerScoringTools(s, deps.engine);
+  registerExplorationTools(s, deps.engine);
+  registerAgentTools(s, deps.engine);
+  registerSkillTools(s, deps.skills);
+  registerBloodHoundTools(s, deps.engine);
+  registerAzureHoundTools(s, deps.engine);
+  registerToolCheckTools(s);
+  registerProcessTools(s, deps.processTracker, deps.engine);
+  registerInferenceTools(s, deps.engine);
+  registerParseOutputTools(s, deps.engine);
+  registerLoggingTools(s, deps.engine);
+  registerRetrospectiveTools(s, deps.engine, deps.skills);
+  registerReportingTools(s, deps.engine, deps.skills);
+  registerRemediationTools(s, deps.engine);
+  registerSessionTools(s, deps.sessionManager, deps.engine);
+  registerScopeTools(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
-  registerInstructionTools(server as McpServer, deps.engine, () => toolEntries);
+  registerInstructionTools(s, deps.engine, () => registrar.getEntries());
 
-  // Restore original registerTool
-  (server as McpServer).registerTool = originalRegisterTool;
-
-  return toolEntries;
+  return registrar.getEntries();
 }
 
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {
@@ -198,9 +203,12 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
   console.error('Overwatch MCP server running on stdio');
 }
 
+export const MAX_HTTP_SESSIONS = 50;
+
 export type StartHttpAppOptions = {
   port?: number;
   host?: string;
+  maxSessions?: number;
 };
 
 export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptions = {}): Promise<Express> {
@@ -242,6 +250,15 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
+      const maxSessions = options.maxSessions ?? MAX_HTTP_SESSIONS;
+      if (Object.keys(transports).length >= maxSessions) {
+        res.status(503).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: `Too many active sessions (limit: ${maxSessions}). Close existing sessions before opening new ones.` },
+          id: null,
+        });
+        return;
+      }
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
