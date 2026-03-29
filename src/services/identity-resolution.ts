@@ -2,6 +2,10 @@ import type { NodeProperties, NodeType } from '../types.js';
 import {
   caId,
   certTemplateId,
+  cloudIdentityId,
+  cloudNetworkId,
+  cloudPolicyId,
+  cloudResourceId,
   credentialId,
   domainId,
   groupId,
@@ -116,6 +120,29 @@ export function resolveNodeIdentity(
       const kind = normalizeString(node.pki_store_kind);
       const name = firstDefinedString(node.label, node.display_name);
       if (kind && name) return { id: pkiStoreId(kind, name), status: 'canonical', markers, family };
+      return { id: node.id, status: 'unresolved', markers, family };
+    }
+    case 'cloud_identity': {
+      const arnVal = normalizeString(node.arn);
+      if (arnVal) return { id: cloudIdentityId(arnVal), status: 'canonical', markers, family };
+      return { id: node.id, status: 'unresolved', markers, family };
+    }
+    case 'cloud_resource': {
+      const arnVal = normalizeString(node.arn);
+      if (arnVal) return { id: cloudResourceId(arnVal), status: 'canonical', markers, family };
+      return { id: node.id, status: 'unresolved', markers, family };
+    }
+    case 'cloud_policy': {
+      const prov = normalizeString(node.provider);
+      const pName = normalizeString(node.policy_name);
+      if (prov && pName) return { id: cloudPolicyId(prov, pName), status: 'canonical', markers, family };
+      return { id: node.id, status: 'unresolved', markers, family };
+    }
+    case 'cloud_network': {
+      const arnVal = normalizeString(node.arn);
+      if (arnVal) return { id: cloudNetworkId(arnVal), status: 'canonical', markers, family };
+      const name = firstDefinedString(node.label);
+      if (name) return { id: cloudNetworkId(name), status: 'canonical', markers, family };
       return { id: node.id, status: 'unresolved', markers, family };
     }
     default:

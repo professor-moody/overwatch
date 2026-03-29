@@ -32,6 +32,10 @@ const NODE_COLORS = {
   subnet:      '#8fabb8',
   webapp:      '#4ecdc4',
   vulnerability:'#e05555',
+  cloud_identity:'#59b8e6',
+  cloud_resource:'#e6a459',
+  cloud_policy:  '#a8d65c',
+  cloud_network: '#8fabb8',
 };
 
 const NODE_BASE_SIZES = {
@@ -52,6 +56,10 @@ const NODE_BASE_SIZES = {
   subnet: 5,
   webapp: 7,
   vulnerability: 6,
+  cloud_identity: 7,
+  cloud_resource: 7,
+  cloud_policy: 5,
+  cloud_network: 6,
 };
 
 // Edge colors by category
@@ -80,6 +88,10 @@ const EDGE_CATEGORIES = {
   // Web application surface
   HOSTS: '#6e9eff', AUTHENTICATED_AS: '#f0b54a',
   VULNERABLE_TO: '#e05555', EXPLOITS: '#e05555',
+  // Cloud infrastructure
+  ASSUMES_ROLE: '#59b8e6', HAS_POLICY: '#59b8e6',
+  POLICY_ALLOWS: '#a8d65c', MANAGED_BY: '#a8d65c',
+  EXPOSED_TO: '#6e9eff', RUNS_ON: '#6e9eff',
 };
 
 const DEFAULT_EDGE_COLOR = 'rgba(110,158,255,0.25)';
@@ -1499,6 +1511,7 @@ function hideTooltip() {
 const NODE_MASS = {
   domain: 10, objective: 8, host: 3, credential: 2,
   user: 1.5, group: 1.5, service: 1, share: 1,
+  cloud_identity: 3, cloud_resource: 3, cloud_policy: 2, cloud_network: 3,
 };
 const SETTLE_ITERATIONS = 80;
 

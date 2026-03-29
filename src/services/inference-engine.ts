@@ -390,6 +390,32 @@ export class InferenceEngine {
         return Array.from(matched);
       }
 
+      case 'nearest_objective': {
+        // Return objective nodes — used by cloud rules that create PATH_TO_OBJECTIVE edges.
+        // For overprivileged_policy rule, also gate on the trigger having wildcard actions.
+        if (rule?.id === 'rule-overprivileged-policy') {
+          const actions = (node.actions as string[] | undefined) || [];
+          const hasWildcard = actions.some(a => a === '*:*' || a === '*' || a.endsWith(':*'));
+          if (!hasWildcard) return [];
+        }
+        return this.getNodesByType('objective').map(n => n.id);
+      }
+
+      case 'cross_account_roles': {
+        // Find cloud_identity nodes reachable via ASSUMES_ROLE that have a different cloud_account
+        const srcAccount = node.cloud_account;
+        if (!srcAccount) return [];
+        const targets: string[] = [];
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type !== 'ASSUMES_ROLE') return;
+          const tgtNode = this.getNode(tgt);
+          if (tgtNode?.cloud_account && tgtNode.cloud_account !== srcAccount) {
+            targets.push(tgt);
+          }
+        });
+        return targets;
+      }
+
       default:
         console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);
         return [];

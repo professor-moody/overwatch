@@ -79,8 +79,15 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   AUTHENTICATED_AS: { source: ['credential'], target: ['webapp'] },
   VULNERABLE_TO: { source: ['webapp', 'service'], target: ['vulnerability'] },
   EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp'] },
+  // Cloud infrastructure
+  ASSUMES_ROLE: { source: ['cloud_identity'], target: ['cloud_identity'] },
+  HAS_POLICY: { source: ['cloud_identity'], target: ['cloud_policy'] },
+  POLICY_ALLOWS: { source: ['cloud_policy'], target: ['cloud_resource'] },
+  EXPOSED_TO: { source: ['cloud_resource'], target: ['cloud_network', 'subnet'] },
+  RUNS_ON: { source: ['service', 'host'], target: ['cloud_resource'] },
+  MANAGED_BY: { source: ['cloud_resource'], target: ['cloud_identity'] },
   // Objective
-  PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group'], target: ['objective'] },
+  PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource'], target: ['objective'] },
   // RELATED is intentionally unconstrained
 };
 

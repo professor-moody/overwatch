@@ -2,7 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { FrontierComputer } from '../frontier.js';
 import { DashboardServer } from '../dashboard-server.js';
-import type { EngagementConfig, Finding } from '../../types.js';
+import { SessionManager, RingBuffer } from '../session-manager.js';
+import type { Session } from '../session-manager.js';
+import type { EngagementConfig, Finding, SessionMetadata } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
 
 const TEST_STATE_FILE = './state-test-hardening.json';
@@ -277,5 +279,149 @@ describe('H.6 — SSH session confirmation', () => {
     const unconfirmedEvents = history.filter(e => e.event_type === 'session_access_unconfirmed');
     expect(unconfirmedEvents.length).toBeGreaterThanOrEqual(1);
     expect(unconfirmedEvents[0].description).toContain('unconfirmed');
+  });
+});
+
+// ============================================================
+// H.7: SSH probe guard — do not write into non-shell prompts
+// ============================================================
+describe('H.7 — SSH probe guard for non-shell prompts', () => {
+  function makeSession(tailText: string): Session {
+    const buf = new RingBuffer(4096);
+    buf.write(tailText);
+    return {
+      metadata: {
+        id: 'sess-guard-test',
+        kind: 'ssh',
+        title: 'test',
+        state: 'connected',
+        started_at: now,
+        last_activity_at: now,
+        transport: 'pty',
+        capabilities: { tty_quality: 'full', has_stdin: true, has_stdout: true, supports_resize: true, supports_signals: true },
+        buffer_end_pos: 0,
+      } as SessionMetadata,
+      handle: {
+        capabilities: { tty_quality: 'full' as const, has_stdin: true, has_stdout: true, supports_resize: true, supports_signals: true },
+        write: () => { throw new Error('should not write'); },
+        resize: () => {},
+        kill: () => {},
+        close: () => {},
+        onData: () => {},
+        onExit: () => {},
+      },
+      buffer: buf,
+    };
+  }
+
+  it('returns false without probing when output ends with password prompt', async () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('user@10.10.10.5\'s password: ');
+    const result = await manager.detectSshAuthSuccess(session);
+    expect(result).toBe(false);
+  });
+
+  it('returns false without probing when output ends with passphrase prompt', async () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Enter passphrase for key \'/home/user/.ssh/id_rsa\': ');
+    const result = await manager.detectSshAuthSuccess(session);
+    expect(result).toBe(false);
+  });
+
+  it('returns false without probing when output ends with host-key prompt', async () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Are you sure you want to continue connecting (yes/no/[fingerprint])? ');
+    const result = await manager.detectSshAuthSuccess(session);
+    expect(result).toBe(false);
+  });
+
+  it('returns false without probing when output ends with MFA prompt', async () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Verification code: ');
+    const result = await manager.detectSshAuthSuccess(session);
+    expect(result).toBe(false);
+  });
+
+  it('returns true immediately for shell prompt without probing', async () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('user@host:~$ ');
+    const result = await manager.detectSshAuthSuccess(session);
+    expect(result).toBe(true);
+  });
+});
+
+// ============================================================
+// H.8: CORS exact hostname match
+// ============================================================
+describe('H.8 — CORS exact hostname match', () => {
+  afterEach(cleanup);
+
+  it('rejects malicious origin containing allowed host as substring', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const dashboard = new DashboardServer(engine, 0);
+
+    // Access the private handleHttp via a mock request/response
+    const mockRes = {
+      headers: {} as Record<string, string>,
+      setHeader(key: string, val: string) { this.headers[key] = val; },
+      end() {},
+      writeHead() { return this; },
+    };
+    const mockReq = {
+      url: '/api/state',
+      headers: { origin: 'https://evil127.0.0.1.attacker.com' },
+    };
+
+    // Call handleHttp directly
+    (dashboard as any).handleHttp(mockReq, mockRes);
+    expect(mockRes.headers['Access-Control-Allow-Origin']).toBeUndefined();
+  });
+
+  it('accepts legitimate localhost origin', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const dashboard = new DashboardServer(engine, 0);
+
+    const mockRes = {
+      headers: {} as Record<string, string>,
+      setHeader(key: string, val: string) { this.headers[key] = val; },
+      end() {},
+      writeHead() { return this; },
+    };
+    const mockReq = {
+      url: '/api/state',
+      headers: { origin: 'http://127.0.0.1:8384' },
+    };
+
+    (dashboard as any).handleHttp(mockReq, mockRes);
+    expect(mockRes.headers['Access-Control-Allow-Origin']).toBe('http://127.0.0.1:8384');
+  });
+});
+
+// ============================================================
+// H.9: Default-credential flag migration on state reload
+// ============================================================
+describe('H.9 — Default-credential migration on reload', () => {
+  afterEach(cleanup);
+
+  it('backfills cred_is_default_guess on persisted cred-default-* nodes after reload', () => {
+    // Phase 1: create engine, ingest webapp so default cred is created
+    const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine1.ingestFinding(makeFinding([{
+      id: 'webapp-wp', type: 'webapp' as const, label: 'http://10.10.10.5/wp',
+      discovered_at: now, confidence: 1.0, cms_type: 'wordpress',
+    }]));
+    const cred1 = engine1.getNode('cred-default-wordpress');
+    expect(cred1).toBeTruthy();
+    expect(cred1!.cred_is_default_guess).toBe(true);
+
+    // Simulate pre-migration state: remove the flag from the persisted node
+    (engine1 as any).ctx.graph.mergeNodeAttributes('cred-default-wordpress', { cred_is_default_guess: undefined });
+    (engine1 as any).persistence.persist();
+
+    // Phase 2: reload from persisted state — migration should backfill the flag
+    const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const cred2 = engine2.getNode('cred-default-wordpress');
+    expect(cred2).toBeTruthy();
+    expect(cred2!.cred_is_default_guess).toBe(true);
   });
 });

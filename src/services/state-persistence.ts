@@ -95,6 +95,7 @@ export class StatePersistence {
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
+    this.migrateDefaultCredentialFlags();
     this.ctx.invalidatePathGraph();
     this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
     this.ctx.agents = new Map(data.agents || []);
@@ -119,6 +120,7 @@ export class StatePersistence {
     this.ctx.graph.clear();
     this.ctx.graph.import(data.graph);
     this.normalizeLoadedNodeProvenance();
+    this.migrateDefaultCredentialFlags();
     this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
@@ -141,6 +143,7 @@ export class StatePersistence {
         this.ctx.config = data.config;
         this.ctx.graph.import(data.graph);
         this.normalizeLoadedNodeProvenance();
+        this.migrateDefaultCredentialFlags();
         this.ctx.invalidatePathGraph();
         this.ctx.activityLog = (data.activityLog || []).map((entry: any) => normalizeActivityLogEntry(entry));
         this.ctx.agents = new Map(data.agents || []);
@@ -165,6 +168,14 @@ export class StatePersistence {
   private normalizeLoadedNodeProvenance(): void {
     this.ctx.graph.forEachNode((nodeId, attrs) => {
       this.ctx.graph.mergeNodeAttributes(nodeId, normalizeNodeProvenance(attrs) as Partial<NodeProperties>);
+    });
+  }
+
+  private migrateDefaultCredentialFlags(): void {
+    this.ctx.graph.forEachNode((nodeId, attrs) => {
+      if (nodeId.startsWith('cred-default-') && attrs.type === 'credential' && !attrs.cred_is_default_guess) {
+        this.ctx.graph.mergeNodeAttributes(nodeId, { cred_is_default_guess: true } as Partial<NodeProperties>);
+      }
     });
   }
 }

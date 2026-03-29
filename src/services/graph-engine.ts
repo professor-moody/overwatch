@@ -289,6 +289,46 @@ const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.8
     }]
   },
+  // --- Cloud infrastructure ---
+  {
+    id: 'rule-overprivileged-policy',
+    name: 'Overprivileged cloud policy is a high-value target',
+    description: 'Cloud policy with wildcard actions (iam:*, s3:*, *:*) is high-value — identity holders can escalate',
+    trigger: { node_type: 'cloud_policy' },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node',
+      target_selector: 'nearest_objective',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-public-bucket',
+    name: 'Public S3 bucket is a data exfiltration target',
+    description: 'S3 bucket with public access is a direct objective candidate',
+    trigger: { node_type: 'cloud_resource', property_match: { resource_type: 's3_bucket', public: true } },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node',
+      target_selector: 'nearest_objective',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-cross-account-role',
+    name: 'Cross-account role assumption enables lateral movement',
+    description: 'ASSUMES_ROLE edge crossing cloud account boundaries indicates lateral movement opportunity',
+    trigger: {
+      node_type: 'cloud_identity',
+      requires_edge: { type: 'ASSUMES_ROLE', direction: 'outbound' }
+    },
+    produces: [{
+      edge_type: 'REACHABLE',
+      source_selector: 'trigger_node',
+      target_selector: 'cross_account_roles',
+      confidence: 0.7
+    }]
+  },
 ];
 
 // --- Edge types traversable in both directions for attack-path planning ---
@@ -300,6 +340,7 @@ const BIDIRECTIONAL_EDGE_TYPES: Set<EdgeType> = new Set([
   'OWNS_CRED', 'VALID_ON',
   'MEMBER_OF', 'MEMBER_OF_DOMAIN',
   'RELATED', 'SAME_DOMAIN', 'TRUSTS',
+  'ASSUMES_ROLE', 'MANAGED_BY',
 ]);
 
 export { GraphUpdateCallback };
@@ -727,6 +768,19 @@ export class GraphEngine {
     }
     if (webappTargets.size > 0) {
       inferredEdges.push(...this.inferDefaultCredentials(webappTargets));
+      inferredEdges.push(...this.inferImdsv1Ssrf(webappTargets));
+    }
+
+    // Cloud managed identity pivot — imperative handler for host→RUNS_ON→cloud_resource→MANAGED_BY→cloud_identity
+    const hostTargets = new Set<string>();
+    for (const nodeId of inferenceTargets) {
+      if (!this.ctx.graph.hasNode(nodeId)) continue;
+      if (this.ctx.graph.getNodeAttributes(nodeId).type === 'host') {
+        hostTargets.add(nodeId);
+      }
+    }
+    if (hostTargets.size > 0) {
+      inferredEdges.push(...this.inferManagedIdentityPivot(hostTargets));
     }
 
     // Backfill cred_domain from graph ownership paths for credentials missing domain qualification.
@@ -934,6 +988,119 @@ export class GraphEngine {
       });
     }
 
+    return inferred;
+  }
+
+  // SSRF → IMDSv1 credential capture: webapp with SSRF vuln on host running on EC2 without IMDSv2
+  private inferImdsv1Ssrf(webappNodeIds: Set<string>): string[] {
+    const inferred: string[] = [];
+    const now = new Date().toISOString();
+
+    for (const webappId of webappNodeIds) {
+      if (!this.ctx.graph.hasNode(webappId)) continue;
+      // Find vulnerability nodes linked to this webapp with vuln_type 'ssrf'
+      const vulnEdges = (this.ctx.graph.outEdges(webappId) as string[]).filter(e =>
+        this.ctx.graph.getEdgeAttributes(e).type === 'VULNERABLE_TO'
+      );
+      const ssrfVulns = vulnEdges.map(e => this.ctx.graph.target(e)).filter(vId => {
+        const v = this.ctx.graph.getNodeAttributes(vId);
+        return v.vuln_type === 'ssrf';
+      });
+      if (ssrfVulns.length === 0) continue;
+
+      // Walk: webapp ←HOSTS← service ←RUNS← host →RUNS_ON→ cloud_resource (EC2)
+      const hostingServices: string[] = [];
+      this.ctx.graph.forEachInEdge(webappId, (e: string, attrs, src: string) => {
+        if (attrs.type === 'HOSTS') hostingServices.push(src);
+      });
+
+      for (const svcId of hostingServices) {
+        const hostIds: string[] = [];
+        this.ctx.graph.forEachInEdge(svcId, (e: string, attrs, src: string) => {
+          if (attrs.type === 'RUNS') hostIds.push(src);
+        });
+
+        for (const hostId of hostIds) {
+          // Find EC2 cloud_resource via RUNS_ON
+          this.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, tgt: string) => {
+            if (attrs.type !== 'RUNS_ON') return;
+            const cr = this.ctx.graph.getNodeAttributes(tgt);
+            if (cr.type !== 'cloud_resource' || cr.resource_type !== 'ec2') return;
+            if (cr.imdsv2_required === true) return; // IMDSv2 blocks SSRF
+
+            // Find MANAGED_BY identity on this EC2
+            this.ctx.graph.forEachOutEdge(tgt, (e2: string, a2, _s2: string, identityId: string) => {
+              if (a2.type !== 'MANAGED_BY') return;
+              for (const vulnId of ssrfVulns) {
+                const existing = this.ctx.graph.edges(vulnId, identityId);
+                if (existing.some((ex: string) => this.ctx.graph.getEdgeAttributes(ex).type === 'EXPLOITS')) return;
+
+                const { id: edgeId } = this.addEdge(vulnId, identityId, {
+                  type: 'EXPLOITS',
+                  confidence: 0.85,
+                  discovered_at: now,
+                  discovered_by: 'inference:imdsv1-ssrf',
+                  tested: false,
+                  inferred_by_rule: 'imdsv1-ssrf',
+                  inferred_at: now,
+                });
+                inferred.push(edgeId);
+                this.log(`Inferred SSRF→IMDS credential capture: ${vulnId} → ${identityId}`, undefined, {
+                  category: 'inference', event_type: 'inference_generated',
+                });
+              }
+            });
+          });
+        }
+      }
+    }
+    return inferred;
+  }
+
+  // Managed identity pivot: host →RUNS_ON→ cloud_resource →MANAGED_BY→ cloud_identity
+  private inferManagedIdentityPivot(hostNodeIds: Set<string>): string[] {
+    const inferred: string[] = [];
+    const now = new Date().toISOString();
+
+    for (const hostId of hostNodeIds) {
+      if (!this.ctx.graph.hasNode(hostId)) continue;
+      const hostAttrs = this.ctx.graph.getNodeAttributes(hostId);
+      if (hostAttrs.type !== 'host') continue;
+
+      // Check if host has any sessions
+      const sessionHolders: string[] = [];
+      this.ctx.graph.forEachInEdge(hostId, (e: string, attrs, src: string) => {
+        if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) sessionHolders.push(src);
+      });
+      if (sessionHolders.length === 0) continue;
+
+      // Walk: host →RUNS_ON→ cloud_resource →MANAGED_BY→ cloud_identity
+      this.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, crId: string) => {
+        if (attrs.type !== 'RUNS_ON') return;
+        this.ctx.graph.forEachOutEdge(crId, (e2: string, a2, _s2: string, identityId: string) => {
+          if (a2.type !== 'MANAGED_BY') return;
+
+          for (const holder of sessionHolders) {
+            const existing = this.ctx.graph.edges(holder, identityId);
+            if (existing.some((ex: string) => this.ctx.graph.getEdgeAttributes(ex).type === 'POTENTIAL_AUTH')) continue;
+
+            const { id: edgeId } = this.addEdge(holder, identityId, {
+              type: 'POTENTIAL_AUTH',
+              confidence: 0.75,
+              discovered_at: now,
+              discovered_by: 'inference:managed-identity-pivot',
+              tested: false,
+              inferred_by_rule: 'managed-identity-pivot',
+              inferred_at: now,
+            });
+            inferred.push(edgeId);
+            this.log(`Inferred managed identity pivot: ${holder} → ${identityId} via ${crId}`, undefined, {
+              category: 'inference', event_type: 'inference_generated',
+            });
+          }
+        });
+      });
+    }
     return inferred;
   }
 

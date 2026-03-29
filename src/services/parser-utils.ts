@@ -94,6 +94,22 @@ export function vulnerabilityId(identifier: string, targetNodeId: string): strin
   return `vuln-${idPart}-${targetPart}`;
 }
 
+export function cloudIdentityId(arn: string): string {
+  return `cloud-identity-${normalizeKeyPart(arn)}`;
+}
+
+export function cloudResourceId(arn: string): string {
+  return `cloud-resource-${normalizeKeyPart(arn)}`;
+}
+
+export function cloudPolicyId(provider: string, policyName: string): string {
+  return `cloud-policy-${normalizeKeyPart(provider)}-${normalizeKeyPart(policyName)}`;
+}
+
+export function cloudNetworkId(arnOrLabel: string): string {
+  return `cloud-network-${normalizeKeyPart(arnOrLabel)}`;
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {

@@ -217,7 +217,10 @@ export class DashboardServer {
     const origin = req.headers.origin || '';
     const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-    const isAllowedOrigin = isLocalOrigin || origin.includes(allowedHost);
+    let isAllowedOrigin = isLocalOrigin;
+    if (!isAllowedOrigin && origin) {
+      try { isAllowedOrigin = new URL(origin).hostname === allowedHost; } catch { /* malformed origin */ }
+    }
     if (isAllowedOrigin && origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }

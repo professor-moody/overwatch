@@ -9,7 +9,8 @@ import { z } from 'zod';
 export const NODE_TYPES = [
   'host', 'service', 'domain', 'user', 'group', 'credential',
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
-  'webapp', 'vulnerability'
+  'webapp', 'vulnerability',
+  'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
@@ -135,6 +136,36 @@ export interface NodeProperties {
   exploit_available?: boolean;
   affected_component?: string;
 
+  // Cloud Identity (IAM user, role, service account, managed identity)
+  provider?: 'aws' | 'azure' | 'gcp';
+  arn?: string;
+  principal_type?: 'user' | 'role' | 'service_account' | 'managed_identity' | 'app';
+  policies?: string[];
+  mfa_enabled?: boolean;
+  last_used?: string;
+  cloud_account?: string;
+  policies_enumerated?: boolean;
+
+  // Cloud Resource (S3 bucket, EC2, Lambda, Azure VM, etc.)
+  resource_type?: string;
+  region?: string;
+  public?: boolean;
+  encrypted?: boolean;
+  tags?: Record<string, string>;
+  imdsv2_required?: boolean;
+
+  // Cloud Policy (IAM policy, RBAC role assignment)
+  policy_name?: string;
+  effect?: 'allow' | 'deny';
+  actions?: string[];
+  resources?: string[];
+  conditions?: string[];
+
+  // Cloud Network (VPC, security group, subnet, firewall rule)
+  network_type?: 'vpc' | 'security_group' | 'subnet' | 'firewall_rule';
+  ingress_rules?: string[];
+  egress_rules?: string[];
+
   // Objective
   objective_description?: string;
   objective_achieved?: boolean;
@@ -173,6 +204,8 @@ export const EDGE_TYPES = [
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH',
   // Web application surface
   'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS',
+  // Cloud infrastructure
+  'ASSUMES_ROLE', 'HAS_POLICY', 'POLICY_ALLOWS', 'EXPOSED_TO', 'RUNS_ON', 'MANAGED_BY',
   // Objective
   'PATH_TO_OBJECTIVE',
   // Generic

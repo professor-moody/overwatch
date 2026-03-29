@@ -90,3 +90,4 @@ When dispatching agents, give them these instructions:
 | `close_session` | Close and destroy a session | When done with a session — returns final output |
 | `update_scope` | Expand or contract engagement scope at runtime | When a pivot network or new domain is discovered outside original scope |
 | `get_system_prompt` | Generate dynamic agent instructions from engagement state | Session initialization, agent dispatch — replaces static AGENTS.md |
+| `generate_report` | Full pentest report with per-finding detail, narrative, evidence, remediation | End of engagement — produces client-deliverable markdown or HTML report |

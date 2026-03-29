@@ -59,6 +59,18 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
     if (!node.auth_type) m.push('auth_type');
     return m;
   },
+  cloud_identity: (node) => {
+    const m: string[] = [];
+    if (!node.policies_enumerated) m.push('policies_enumerated');
+    if (node.mfa_enabled === undefined) m.push('mfa_enabled');
+    return m;
+  },
+  cloud_resource: (node) => {
+    const m: string[] = [];
+    if (node.public === undefined) m.push('public_access_checked');
+    if (node.encrypted === undefined) m.push('encryption_checked');
+    return m;
+  },
 };
 
 // --- Noise estimates by missing property ---
@@ -71,6 +83,10 @@ const NOISE_ESTIMATES: Record<string, number> = {
   capabilities_checked: 0.3,
   technology: 0.3,
   auth_type: 0.2,
+  policies_enumerated: 0.6,
+  mfa_enabled: 0.2,
+  public_access_checked: 0.3,
+  encryption_checked: 0.2,
   default: 0.3,
 };
 

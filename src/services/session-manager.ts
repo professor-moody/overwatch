@@ -631,6 +631,24 @@ export class SessionManager {
       return true;
     }
 
+    // Guard: Do not probe if session appears to be at a non-shell prompt
+    // (password, passphrase, host-key, MFA, or appliance/menu prompt)
+    const NON_SHELL_PROMPTS = [
+      /password\s*:/i,
+      /password for\s/i,
+      /enter passphrase/i,
+      /are you sure you want to continue connecting/i,
+      /verification code\s*:/i,
+      /otp\s*:/i,
+      /enter.*token/i,
+      /enter.*selection/i,
+      /press.*to continue/i,
+      /choice\s*:/i,
+    ];
+    if (NON_SHELL_PROMPTS.some(re => re.test(lastLine))) {
+      return false;
+    }
+
     // Phase 2: Send an echo probe and wait for it
     if (!session.handle) return false;
     const marker = `__OW_READY_${session.metadata.id.slice(0, 8)}__`;
