@@ -531,11 +531,11 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   // Severity distribution table
   lines.push('| Severity | Count |');
   lines.push('|----------|-------|');
-  lines.push(`| 🔴 Critical | ${criticalFindings.length} |`);
-  lines.push(`| 🟠 High | ${highFindings.length} |`);
-  lines.push(`| 🟡 Medium | ${mediumFindings.length} |`);
-  lines.push(`| 🔵 Low | ${lowFindings.length} |`);
-  lines.push(`| ⚪ Info | ${infoFindings.length} |`);
+  lines.push(`| Critical | ${criticalFindings.length} |`);
+  lines.push(`| High | ${highFindings.length} |`);
+  lines.push(`| Medium | ${mediumFindings.length} |`);
+  lines.push(`| Low | ${lowFindings.length} |`);
+  lines.push(`| Info | ${infoFindings.length} |`);
   lines.push('');
 
   // === Scope ===
@@ -652,7 +652,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   lines.push('| Objective | Status | Achieved At |');
   lines.push('|-----------|--------|-------------|');
   for (const obj of config.objectives) {
-    const status = obj.achieved ? '✅ Achieved' : '❌ Pending';
+    const status = obj.achieved ? 'Achieved' : 'Pending';
     const at = obj.achieved_at ? formatTimestamp(obj.achieved_at) : '—';
     lines.push(`| ${obj.description} | ${status} | ${at} |`);
   }
@@ -890,11 +890,11 @@ function cvssToSeverity(cvss?: number): FindingSeverity {
 
 function severityBadge(severity: FindingSeverity): string {
   switch (severity) {
-    case 'critical': return '🔴 Critical';
-    case 'high': return '🟠 High';
-    case 'medium': return '🟡 Medium';
-    case 'low': return '🔵 Low';
-    case 'info': return '⚪ Info';
+    case 'critical': return 'Critical';
+    case 'high': return 'High';
+    case 'medium': return 'Medium';
+    case 'low': return 'Low';
+    case 'info': return 'Info';
   }
 }
 

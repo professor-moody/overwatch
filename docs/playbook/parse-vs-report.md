@@ -27,6 +27,12 @@ The raw output comes from one of these supported tools:
 | Enum4linux | `enum4linux`, `enum4linux-ng` |
 | Rubeus | `rubeus` |
 | Web Dir Enum | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` |
+| Linpeas/LinEnum | `linpeas`, `linenum` |
+| Nuclei | `nuclei` |
+| Nikto | `nikto` |
+| TLS Testing | `testssl`, `sslscan` |
+| AWS Cloud | `pacu` |
+| Cloud Audit | `prowler`, `scoutsuite` |
 
 ### Why
 
@@ -112,10 +118,16 @@ For parsers that benefit from ambient context (secretsdump, hashcat), pass the `
 | Rubeus Kerberoast | `parse_output` with `tool_name: "rubeus"` |
 | Gobuster/Feroxbuster scan | `parse_output` with `tool_name: "gobuster"` or `"feroxbuster"` |
 | ffuf fuzzing results | `parse_output` with `tool_name: "ffuf"` |
+| Linpeas/LinEnum output | `parse_output` with `tool_name: "linpeas"` + `context.source_host` |
+| Nuclei scan results | `parse_output` with `tool_name: "nuclei"` |
+| Nikto scan results | `parse_output` with `tool_name: "nikto"` |
+| TLS/SSL testing | `parse_output` with `tool_name: "testssl"` or `"sslscan"` |
+| AWS Pacu output | `parse_output` with `tool_name: "pacu"` |
+| Prowler/ScoutSuite audit | `parse_output` with `tool_name: "prowler"` or `"scoutsuite"` |
 
 ## Tips
 
-- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (32 aliases across 16 parsers)
+- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (31 aliases across 17 parsers)
 - Use `parse_output` with `ingest: false` to preview what would be parsed without modifying the graph
 - Always include `action_id` from `validate_action` for traceability
 - Pass `context` with `domain` and `source_host` when available for better credential attribution

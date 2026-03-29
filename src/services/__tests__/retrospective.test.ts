@@ -509,8 +509,8 @@ describe('Retrospective', () => {
     it('shows objective status correctly', () => {
       const input = makeInput();
       const report = generateReport(input);
-      expect(report).toContain('✅ Achieved');
-      expect(report).toContain('❌ Pending');
+      expect(report).toContain('Achieved');
+      expect(report).toContain('Pending');
     });
 
     it('lists compromised hosts and credentials', () => {

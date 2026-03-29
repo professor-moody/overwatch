@@ -472,12 +472,12 @@ In `graph-engine.ts`, add to the BUILTIN_RULES array:
 
 All items from the original v0.1 roadmap have been implemented except #7:
 
-1. ~~**BloodHound JSON ingestion**~~ — ✅ `ingest_bloodhound` tool + `bloodhound-ingest.ts` parser. Handles computers, users, groups, domains, GPOs with ACE/session/delegation edge extraction.
-2. ~~**Tool availability health check**~~ — ✅ `check_tools` tool + `tool-check.ts`. Verifies nmap, nxc, certipy, impacket, etc.
-3. ~~**Process tracking**~~ — ✅ `track_process` + `check_processes` tools + `process-tracker.ts`.
-4. ~~**Richer subgraph scoping**~~ — ✅ N-hop BFS, auto-compute from frontier, credential/service enrichment in `get_agent_context`.
-5. ~~**`suggest_inference_rule` tool**~~ — ✅ With `backfillRule` for retroactive application to existing graph.
-6. ~~**Output parsing helpers**~~ — ✅ `parse_output` tool with nmap XML, nxc, and certipy parsers. Nmap service names normalized to match inference rules.
+1. ~~**BloodHound JSON ingestion**~~ — [Done] `ingest_bloodhound` tool + `bloodhound-ingest.ts` parser. Handles computers, users, groups, domains, GPOs with ACE/session/delegation edge extraction.
+2. ~~**Tool availability health check**~~ — [Done] `check_tools` tool + `tool-check.ts`. Verifies nmap, nxc, certipy, impacket, etc.
+3. ~~**Process tracking**~~ — [Done] `track_process` + `check_processes` tools + `process-tracker.ts`.
+4. ~~**Richer subgraph scoping**~~ — [Done] N-hop BFS, auto-compute from frontier, credential/service enrichment in `get_agent_context`.
+5. ~~**`suggest_inference_rule` tool**~~ — [Done] With `backfillRule` for retroactive application to existing graph.
+6. ~~**Output parsing helpers**~~ — [Done] `parse_output` tool with nmap XML, nxc, and certipy parsers. Nmap service names normalized to match inference rules.
 
 Additional v0.2 work:
 - **29 offensive security skills** — full methodology library with exact commands, OPSEC noise ratings, graph reporting, detection signatures, and sequencing dependencies. All commands reference nxc (NetExec).
@@ -502,19 +502,19 @@ Additional v0.2 work:
 
 Priority items for the next iteration:
 
-1. ~~**Retrospective tool**~~ — ✅ `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, context-improvement recommendations, attack path report (markdown), and heuristic RLVR trace telemetry. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
+1. ~~**Retrospective tool**~~ — [Done] `run_retrospective` MCP tool + `npm run retrospective` CLI. Produces 5 outputs: inference rule suggestions, skill gap analysis, context-improvement recommendations, attack path report (markdown), and heuristic RLVR trace telemetry. Core logic in `retrospective.ts` service, thin wrappers for MCP and CLI.
 
 2. **Live engagement dry-run** — end-to-end test against a controlled lab (e.g., GOAD, Offshore) to validate the full loop: get_state → next_task → get_skill → validate_action → log_action_event(started) → bash execution → parse_output/report_finding → log_action_event(completed|failed) → inference → repeat. This will surface integration gaps that unit tests can't catch.
 
 3. **Multi-engagement support** — ability to run multiple engagements simultaneously with isolated graph state. Currently single-engagement per server instance.
 
-4. ~~**Web dashboard**~~ — ✅ Live real-time dashboard using sigma.js (WebGL) + graphology. Served from same MCP server process on port 8384 (configurable via `OVERWATCH_DASHBOARD_PORT`). Features: force-directed graph layout, node filtering by type, search, objective tracker, frontier panel, agent activity, WebSocket push updates with HTTP poll fallback. Read-only.
+4. ~~**Web dashboard**~~ — [Done] Live real-time dashboard using sigma.js (WebGL) + graphology. Served from same MCP server process on port 8384 (configurable via `OVERWATCH_DASHBOARD_PORT`). Features: force-directed graph layout, node filtering by type, search, objective tracker, frontier panel, agent activity, WebSocket push updates with HTTP poll fallback. Read-only.
 
 5. **Operator-selected engagement presets** — if presets remain, use them as operator-facing contextual guardrails or display defaults by engagement type, not as retrospective-tuned frontier-ranking weights.
 
 6. **RLVR export** — structured engagement traces (state, action, outcome triplets) exportable for reinforcement learning from verifiable rewards. Each graph transition is a natural training signal.
 
-7. ~~**Additional parsers**~~ — ✅ Added 4 parsers to `parse_output`: `secretsdump` (SAM/NTDS hash extraction → credential + user nodes), `kerbrute` (user enumeration + password spray → user + domain + credential nodes), `hashcat` (cracked NTLM/Kerberoast/AS-REP/NTLMv2 → credential nodes), `responder` (captured NTLMv2 hashes → credential + user + host capture evidence). BloodHound-python stdout and ldapdomaindump deferred (already covered by `ingest_bloodhound` JSON parser).
+7. ~~**Additional parsers**~~ — [Done] Added 4 parsers to `parse_output`: `secretsdump` (SAM/NTDS hash extraction → credential + user nodes), `kerbrute` (user enumeration + password spray → user + domain + credential nodes), `hashcat` (cracked NTLM/Kerberoast/AS-REP/NTLMv2 → credential nodes), `responder` (captured NTLMv2 hashes → credential + user + host capture evidence). BloodHound-python stdout and ldapdomaindump deferred (already covered by `ingest_bloodhound` JSON parser).
 
 ---
 

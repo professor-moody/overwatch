@@ -131,7 +131,7 @@ function generateIdentitySection(config: EngagementConfig): string {
   if (config.objectives && config.objectives.length > 0) {
     lines.push('', '### Objectives');
     for (const obj of config.objectives) {
-      const status = obj.achieved ? '✅' : '⬜';
+      const status = obj.achieved ? '[DONE]' : '[    ]';
       lines.push(`- ${status} **${obj.description}**`);
     }
   }

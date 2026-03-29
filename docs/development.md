@@ -56,7 +56,7 @@ overwatch/
 │   │   ├── finding-validation.ts # Input validation for findings
 │   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── output-parsers.ts # 16 parsers / 32 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler
+│   │   ├── output-parsers.ts # 17 parsers / 31 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler
 │   │   ├── parser-utils.ts   # Shared parsing helpers
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
@@ -118,7 +118,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `cidr.test.ts` | CIDR parsing, scope matching, hostname resolution |
 | `skill-index.test.ts` | Skill search and indexing |
 | `bloodhound-ingest.test.ts` | BloodHound JSON parsing, SharpHound CE adapter |
-| `output-parsers.test.ts` | All 16 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler |
+| `output-parsers.test.ts` | All 17 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler |
 | `parser-utils.test.ts` | Shared parsing utilities, canonical ID generation |
 | `credential-utils.test.ts` | Credential normalization, lifecycle, domain inference |
 | `credential-lifecycle.test.ts` | Credential status, expiry, derivation chains, degradation |

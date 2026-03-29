@@ -232,13 +232,13 @@ Set `confirm: false` first to preview, then `confirm: true` to apply.
 
 ## Common Mistakes
 
-- ❌ `from`/`to` on edges → ✅ `source`/`target`
-- ❌ `parser` in parse-output → ✅ `tool_name`
-- ❌ Running nmap/nxc locally → ✅ Run on VM via SSH or `open-session`
-- ❌ Omitting `frontier_item_id` → ✅ Thread it from `next-task` through every call
-- ❌ `nmap -sT 10.0.0.1` (text) → ✅ `nmap -oX - 10.0.0.1` (XML for parser)
-- ❌ `update-scope` without `reason` → ✅ Always include `reason`
-- ❌ Observations for structured data → ✅ Use `nodes`/`edges` arrays
+- **Wrong:** `from`/`to` on edges — **Right:** `source`/`target`
+- **Wrong:** `parser` in parse-output — **Right:** `tool_name`
+- **Wrong:** Running nmap/nxc locally — **Right:** Run on VM via SSH or `open-session`
+- **Wrong:** Omitting `frontier_item_id` — **Right:** Thread it from `next-task` through every call
+- **Wrong:** `nmap -sT 10.0.0.1` (text) — **Right:** `nmap -oX - 10.0.0.1` (XML for parser)
+- **Wrong:** `update-scope` without `reason` — **Right:** Always include `reason`
+- **Wrong:** Observations for structured data — **Right:** Use `nodes`/`edges` arrays
 
 ## Parser Tips
 

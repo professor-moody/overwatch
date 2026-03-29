@@ -731,7 +731,7 @@ export function generateReport(
   lines.push('| Objective | Status | Achieved At |');
   lines.push('|-----------|--------|-------------|');
   for (const obj of config.objectives) {
-    const status = obj.achieved ? '✅ Achieved' : '❌ Pending';
+    const status = obj.achieved ? 'Achieved' : 'Pending';
     const at = obj.achieved_at ? formatTimestamp(obj.achieved_at) : '—';
     lines.push(`| ${obj.description} | ${status} | ${at} |`);
   }

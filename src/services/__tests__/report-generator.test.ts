@@ -396,8 +396,8 @@ describe('generateFullReport', () => {
     };
     const report = generateFullReport(input);
     expect(report).toContain('Get domain admin');
-    expect(report).toContain('✅ Achieved');
-    expect(report).toContain('❌ Pending');
+    expect(report).toContain('Achieved');
+    expect(report).toContain('Pending');
   });
 
   it('includes cloud scope when present', () => {
