@@ -95,7 +95,7 @@ Create `CLAUDE.md` in your project root **before starting Claude Code**. Claude 
 
 Replace `/home/op/overwatch-adapter` and `<OVERWATCH_SERVER>` with the actual values from steps 1-2:
 
-```markdown
+```text
 # Overwatch — CLI Adapter Mode
 
 MCP is not available in this environment. Use the Overwatch CLI adapter instead.
