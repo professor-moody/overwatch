@@ -54,7 +54,7 @@ describe('DashboardServer', () => {
   });
 
   it('reports address property', () => {
-    expect(dashboard.address).toBe('http://localhost:8384');
+    expect(dashboard.address).toBe('http://127.0.0.1:8384');
   });
 
   it('onGraphUpdate skips getState/exportGraph with zero clients', () => {

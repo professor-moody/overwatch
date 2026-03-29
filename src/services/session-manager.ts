@@ -296,8 +296,16 @@ export class SessionManager {
           this.logSessionEvent(id, 'session_error',
             `SSH auth failed for "${options.title}": ${authFailed}`);
         }
+
+        // Positive confirmation: only if no auth failure detected
+        let confirmed = false;
+        if (!authFailed) {
+          confirmed = await this.detectSshAuthSuccess(session);
+        }
+
         this.engine.ingestSessionResult({
           success: !authFailed,
+          confirmed,
           target_node: options.target_node,
           principal_node: options.principal_node,
           credential_node: options.credential_node,
@@ -606,6 +614,46 @@ export class SessionManager {
       if (re.test(output)) return label;
     }
     return null;
+  }
+
+  /**
+   * Positive confirmation that an SSH session has an interactive shell.
+   * Phase 1: Check if output already ends with a common shell prompt.
+   * Phase 2: Send an echo probe and check for the expected response.
+   * Returns true if confirmed, false if unconfirmed (session may still be live).
+   */
+  async detectSshAuthSuccess(session: Session): Promise<boolean> {
+    // Phase 1: Look for common shell prompt at end of current output
+    const tail = session.buffer.tail(1024).text;
+    const lastLine = tail.split('\n').filter(l => l.trim().length > 0).pop() || '';
+    // Common prompt endings: $, #, >, % (with optional trailing whitespace)
+    if (/[$#>%]\s*$/.test(lastLine)) {
+      return true;
+    }
+
+    // Phase 2: Send an echo probe and wait for it
+    if (!session.handle) return false;
+    const marker = `__OW_READY_${session.metadata.id.slice(0, 8)}__`;
+    const probeCmd = `echo ${marker}\n`;
+    const preProbePos = session.buffer.endPos;
+
+    try {
+      session.handle.write(probeCmd);
+    } catch {
+      return false;
+    }
+
+    // Wait up to 3 seconds for the marker to appear
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 200));
+      const newOutput = session.buffer.read(preProbePos).text;
+      if (newOutput.includes(marker)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private waitForInitialOutput(session: Session, maxMs: number): Promise<void> {

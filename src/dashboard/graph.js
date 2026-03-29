@@ -4,6 +4,16 @@
 // ============================================================
 
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const NODE_COLORS = {
   host:        '#6e9eff',
   service:     '#5dcaa5',
@@ -1450,13 +1460,13 @@ function showTooltip(node) {
   const degree = graph.degree(node);
 
   let infoHtml = `${degree} connection${degree !== 1 ? 's' : ''}`;
-  if (props.ip) infoHtml = `${props.ip} · ${infoHtml}`;
-  if (props.port) infoHtml = `Port ${props.port} · ${infoHtml}`;
-  if (props.hostname && props.hostname !== props.label) infoHtml = `${props.hostname} · ${infoHtml}`;
+  if (props.ip) infoHtml = `${escapeHtml(props.ip)} · ${infoHtml}`;
+  if (props.port) infoHtml = `Port ${escapeHtml(props.port)} · ${infoHtml}`;
+  if (props.hostname && props.hostname !== props.label) infoHtml = `${escapeHtml(props.hostname)} · ${infoHtml}`;
 
   tooltip.innerHTML = `
-    <div class="tt-type" style="background:${color}22;color:${color}">${nodeType}</div>
-    <div class="tt-label">${props.label || node}</div>
+    <div class="tt-type" style="background:${color}22;color:${color}">${escapeHtml(nodeType)}</div>
+    <div class="tt-label">${escapeHtml(props.label || node)}</div>
     <div class="tt-info">${infoHtml}</div>
   `;
 

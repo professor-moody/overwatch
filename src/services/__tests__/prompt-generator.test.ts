@@ -1,13 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { resolve } from 'path';
+import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { generateSystemPrompt, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.json'));
+const TEST_STATE_FILE = './state-test-prompt-gen.json';
+
+function cleanup() {
+  if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+}
 
 function createTestEngine() {
-  return new GraphEngine(config);
+  return new GraphEngine(config, TEST_STATE_FILE);
 }
 
 const MOCK_TOOLS: ToolEntry[] = [
@@ -24,6 +30,8 @@ const MOCK_TOOLS: ToolEntry[] = [
 ];
 
 describe('prompt-generator', () => {
+  afterEach(cleanup);
+
   describe('primary prompt', () => {
     it('includes identity and engagement briefing', () => {
       const engine = createTestEngine();

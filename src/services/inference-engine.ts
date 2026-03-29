@@ -368,7 +368,7 @@ export class InferenceEngine {
 
       case 'web_form_credentials':
         return this.getNodesByType('credential')
-          .filter(c => isCredentialUsableForAuth(c) && getCredentialMaterialKind(c) === 'plaintext_password')
+          .filter(c => isCredentialUsableForAuth(c) && getCredentialMaterialKind(c) === 'plaintext_password' && !c.cred_is_default_guess)
           .map(n => n.id);
 
       case 'linked_server_hosts': {

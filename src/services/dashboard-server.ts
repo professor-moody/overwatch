@@ -37,9 +37,12 @@ export class DashboardServer {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
 
-  constructor(engine: GraphEngine, port: number = 8384) {
+  private host: string;
+
+  constructor(engine: GraphEngine, port: number = 8384, host?: string) {
     this.engine = engine;
     this.port = port;
+    this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
@@ -79,14 +82,15 @@ export class DashboardServer {
         resolve({ started: false, error: err.code || err.message });
       });
 
-      this.httpServer.listen(this.port, () => {
+      this.httpServer.listen(this.port, this.host, () => {
         // Read the actual port (supports port 0 for ephemeral)
         const addr = this.httpServer.address();
         if (addr && typeof addr === 'object') {
           this.port = addr.port;
+          this.host = addr.address;
         }
         this._running = true;
-        console.error(`Dashboard running at http://localhost:${this.port}`);
+        console.error(`Dashboard running at http://${this.host}:${this.port}`);
         resolve({ started: true });
       });
     });
@@ -209,8 +213,14 @@ export class DashboardServer {
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = req.url || '/';
 
-    // CORS headers for local dev
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS: restrict to localhost origins (or env override)
+    const origin = req.headers.origin || '';
+    const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    const isAllowedOrigin = isLocalOrigin || origin.includes(allowedHost);
+    if (isAllowedOrigin && origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
     const pathname = url.split('?')[0];
@@ -321,7 +331,11 @@ export class DashboardServer {
   }
 
   get address(): string {
-    return `http://localhost:${this.port}`;
+    return `http://${this.host}:${this.port}`;
+  }
+
+  get boundHost(): string {
+    return this.host;
   }
 
   get clientCount(): number {

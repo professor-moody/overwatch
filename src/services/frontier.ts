@@ -91,6 +91,7 @@ export class FrontierComputer {
 
     // 1. Incomplete nodes (missing key properties)
     this.ctx.graph.forEachNode((id: string, attrs) => {
+      if (attrs.identity_status === 'superseded') return;
       const missing = this.getMissingProperties(attrs);
       if (missing.length === 0) return;
 

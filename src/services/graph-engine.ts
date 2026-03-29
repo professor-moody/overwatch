@@ -909,6 +909,7 @@ export class GraphEngine {
           cred_material_kind: 'plaintext_password',
           cred_usable_for_auth: true,
           cred_evidence_kind: 'manual',
+          cred_is_default_guess: true,
           credential_status: 'active',
         });
       }
@@ -1133,6 +1134,10 @@ export class GraphEngine {
         if (result.edges.length >= limit) return;
         if (query.edge_type && attrs.type !== query.edge_type) return;
         if (!this.matchesFilter(attrs, query.edge_filter)) return;
+        // Suppress edges attached to superseded identity nodes
+        const srcAttrs = this.ctx.graph.getNodeAttributes(source);
+        const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
+        if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
         result.edges.push({ source, target, properties: attrs });
       });
     }
@@ -1348,6 +1353,7 @@ export class GraphEngine {
 
   ingestSessionResult(result: {
     success: boolean;
+    confirmed?: boolean;
     target_node: string;
     principal_node?: string;
     credential_node?: string;
@@ -1357,8 +1363,10 @@ export class GraphEngine {
     frontier_item_id?: string;
   }): void {
     const { success, target_node, principal_node, credential_node, session_id, agent_id, action_id, frontier_item_id } = result;
+    const confirmed = result.confirmed !== false; // default true for backward compat
 
     if (success) {
+      const edgeConfidence = confirmed ? 1.0 : 0.5;
       // Create HAS_SESSION edge only if principal_node is a known graph node
       // of type user, group, or credential (per graph-schema.ts constraints)
       if (principal_node && this.ctx.graph.hasNode(principal_node)) {
@@ -1369,21 +1377,25 @@ export class GraphEngine {
           if (!this.ctx.graph.hasEdge(edgeId)) {
             this.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
               type: 'HAS_SESSION',
-              confidence: 1.0,
+              confidence: edgeConfidence,
               discovered_at: new Date().toISOString(),
               discovered_by: 'session-manager',
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
+              ...(confirmed ? {} : { session_unconfirmed: true }),
             });
             this.invalidateFrontierCache();
           } else {
-            // Update existing edge
+            // Update existing edge — upgrade to confirmed if higher confidence
+            const existing = this.ctx.graph.getEdgeAttributes(edgeId);
+            const newConfidence = Math.max(existing.confidence ?? 0, edgeConfidence);
             this.ctx.graph.mergeEdgeAttributes(edgeId, {
-              confidence: 1.0,
+              confidence: newConfidence,
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
+              ...(newConfidence >= 1.0 ? { session_unconfirmed: undefined } : {}),
             });
           }
         }
@@ -1393,9 +1405,10 @@ export class GraphEngine {
       this.markFrontierEdgeTested(frontier_item_id, action_id, 'success');
 
       // Log operational event regardless of whether HAS_SESSION was created
+      const eventType = confirmed ? 'session_access_confirmed' : 'session_access_unconfirmed';
       this.logActionEvent({
-        event_type: 'session_access_confirmed',
-        description: `SSH session ${session_id || '(unknown)'} to ${target_node} succeeded${principal_node ? ` as ${principal_node}` : ''}`,
+        event_type: eventType,
+        description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed'}${principal_node ? ` as ${principal_node}` : ''}`,
         agent_id,
         category: 'system',
         details: {
@@ -1405,6 +1418,7 @@ export class GraphEngine {
           credential_node,
           action_id,
           frontier_item_id,
+          confirmed,
           has_session_edge_created: !!principal_node && this.ctx.graph.hasNode(principal_node || ''),
         },
       });
@@ -1729,15 +1743,18 @@ export class GraphEngine {
       }
     }
 
-    // Collect nodes
+    // Collect nodes (skip superseded identities)
     for (const id of nodeSet) {
       const node = this.getNode(id);
-      if (node) result.nodes.push({ id, properties: node });
+      if (node && node.identity_status !== 'superseded') {
+        result.nodes.push({ id, properties: node });
+      }
     }
 
-    // Collect all edges between collected nodes
+    // Collect all edges between collected (non-superseded) nodes
+    const liveNodeIds = new Set(result.nodes.map(n => n.id));
     this.ctx.graph.forEachEdge((_, attrs, source, target) => {
-      if (nodeSet.has(source) && nodeSet.has(target)) {
+      if (liveNodeIds.has(source) && liveNodeIds.has(target)) {
         result.edges.push({ source, target, properties: attrs });
       }
     });

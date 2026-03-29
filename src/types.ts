@@ -86,6 +86,7 @@ export interface NodeProperties {
   cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
+  cred_is_default_guess?: boolean;
   observed_from_ip?: string;
   valid_until?: string;         // ISO timestamp — expiry for time-limited creds (TGT/TGS, tokens, certs)
   rotated_at?: string;          // ISO timestamp — when credential was observed as changed
