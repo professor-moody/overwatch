@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **38 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **39 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,10 +31,11 @@ The server exposes **38 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              38 MCP Tools (Zod-validated)                  │  │
+│  │              39 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
-│  │  logging · parsing · bloodhound · inference · remediation  │  │
-│  │  skills · toolcheck · processes · retrospective · sessions │  │
+│  │  logging · parsing · bloodhound · azurehound · inference   │  │
+│  │  remediation · skills · toolcheck · processes · sessions   │  │
+│  │  retrospective · scope · instructions · reporting          │  │
 │  └──────────────────────────┬────────────────────────────────┘  │
 │                              │                                   │
 │  ┌───────────────────────────▼───────────────────────────────┐  │
@@ -60,7 +61,7 @@ The server exposes **38 MCP tools** covering the full engagement lifecycle — f
 
 ## Graph Model
 
-### Node Types (15)
+### Node Types (21)
 
 | Type | Description |
 |------|-------------|
@@ -79,10 +80,29 @@ The server exposes **38 MCP tools** covering the full engagement lifecycle — f
 | `ou` | Organizational Unit / container |
 | `subnet` | Network subnet |
 | `objective` | Engagement objective (virtual node) |
+| `webapp` | Web application (URL, technology, framework, auth type) |
+| `vulnerability` | Discovered vulnerability (CVE, CVSS, type, exploitability) |
+| `cloud_identity` | Cloud IAM principal (user, role, service account) |
+| `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, Azure VM, etc.) |
+| `cloud_policy` | Cloud IAM policy or RBAC role assignment |
+| `cloud_network` | Cloud network construct (VPC, security group, subnet) |
 
-### Edge Types (37)
+### Edge Types (52)
 
-Relationship types include: `REACHABLE`, `RUNS`, `MEMBER_OF`, `MEMBER_OF_DOMAIN`, `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`, `CAN_DCSYNC`, `OWNS_CRED`, `VALID_ON`, `DERIVED_FROM`, `DUMPED_FROM`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_ENROLL`, `ESC1`–`ESC8`, `TRUSTS`, `SAME_DOMAIN`, `AS_REP_ROASTABLE`, `KERBEROASTABLE`, `CAN_DELEGATE_TO`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`, `RELAY_TARGET`, `NULL_SESSION`, `POTENTIAL_AUTH`, `PATH_TO_OBJECTIVE`, and `RELATED`.
+Organized by domain:
+
+- **Network** — `REACHABLE`, `RUNS`
+- **Domain membership** — `MEMBER_OF`, `MEMBER_OF_DOMAIN`, `TRUSTS`, `SAME_DOMAIN`
+- **Access** — `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`
+- **Credentials** — `VALID_ON`, `OWNS_CRED`, `DERIVED_FROM`, `DUMPED_FROM`, `POTENTIAL_AUTH`
+- **AD attack paths** — `CAN_DCSYNC`, `DELEGATES_TO`, `CAN_DELEGATE_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`
+- **ADCS** — `CAN_ENROLL`, `ESC1`–`ESC4`, `ESC6`, `ESC8`
+- **Roasting** — `AS_REP_ROASTABLE`, `KERBEROASTABLE`
+- **Lateral movement** — `RELAY_TARGET`, `NULL_SESSION`
+- **Web application** — `HOSTS`, `AUTHENTICATED_AS`, `VULNERABLE_TO`, `EXPLOITS`
+- **Cloud infrastructure** — `ASSUMES_ROLE`, `HAS_POLICY`, `POLICY_ALLOWS`, `EXPOSED_TO`, `RUNS_ON`, `MANAGED_BY`
+- **Objective** — `PATH_TO_OBJECTIVE`
+- **Generic** — `RELATED`
 
 All edges carry `confidence`, `discovered_at`, `discovered_by`, and optional `inferred` flag. Edge endpoints are validated against a schema defining valid (source_type → target_type) combinations.
 
@@ -90,7 +110,7 @@ All edges carry `confidence`, `discovered_at`, `discovered_by`, and optional `in
 
 Rules fire automatically when nodes are ingested. Each rule has:
 - **Trigger** — node type + optional property match + optional `requires_edge` (for edge-triggered rules)
-- **Selectors** — how to find related nodes (12 selector types: `trigger_node`, `parent_host`, `domain_nodes`, `domain_users`, `domain_credentials`, `all_compromised`, `compatible_services`, `compatible_services_same_domain`, `matching_domain`, `edge_peers`, `enrollable_users`, `trigger_service`)
+- **Selectors** — how to find related nodes (15 selector types: `trigger_node`, `trigger_service`, `parent_host`, `domain_nodes`, `domain_users`, `domain_credentials`, `all_compromised`, `compatible_services`, `compatible_services_same_domain`, `matching_domain`, `edge_peers`, `enrollable_users`, `session_holders_on_host`, `all_ssh_services`, `linked_server_hosts`)
 - **Produces** — edge type + confidence + condition
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
@@ -126,7 +146,7 @@ Atomic write-rename persistence with snapshot rotation (max 5 snapshots, every 3
 
 ### InferenceEngine (`src/services/inference-engine.ts`)
 
-Rule-based edge production. When nodes are ingested, matching rules fire to create hypothetical edges with confidence scores. Supports 9 selector types for relating trigger nodes to targets.
+Rule-based edge production. When nodes are ingested, matching rules fire to create hypothetical edges with confidence scores. Supports 15 selector types for relating trigger nodes to targets. Includes edge-triggered rules (`requires_edge`) for cross-node patterns like LAPS/gMSA readability and RBCD targeting.
 
 ### FrontierComputer (`src/services/frontier.ts`)
 
@@ -162,12 +182,12 @@ Eight integrity checks:
 
 ### Output Parsers (`src/services/output-parsers.ts`)
 
-Eleven deterministic parsers with 21 aliases:
+Seventeen deterministic parsers with 31 aliases:
 
 | Parser | Input | Output |
 |--------|-------|--------|
 | `nmap` | Nmap XML | host + service nodes, RUNS edges, OS detection |
-| `nxc` / `netexec` | NXC stdout | host + SMB services + shares + users, access edges, NULL_SESSION |
+| `nxc` / `netexec` | NXC stdout | host + SMB services + shares + users, access edges, NULL_SESSION, linked SQL servers |
 | `certipy` | Certipy JSON | CA + cert_template nodes, ESC vulnerability edges |
 | `secretsdump` | SAM/NTDS dump | credential + user nodes, OWNS_CRED + DUMPED_FROM + MEMBER_OF_DOMAIN edges |
 | `kerbrute` | User enum / spray | user + domain + credential nodes |
@@ -177,8 +197,14 @@ Eleven deterministic parsers with 21 aliases:
 | `enum4linux` | JSON (-oJ) or text | host + SMB service + user + group + share nodes, null session detection |
 | `rubeus` | Kerberoast / AS-REP / monitor | user + credential nodes, OWNS_CRED edges (TGT/TGS detection) |
 | `gobuster` / `feroxbuster` / `ffuf` | Text or JSON | service node enrichment with discovered_paths, login form detection |
+| `linpeas` / `linenum` | ANSI text | host enrichment: kernel version, SUID binaries, docker socket, capabilities, cron jobs |
+| `nuclei` | JSON or text | vulnerability + service nodes, VULNERABLE_TO edges |
+| `nikto` | Text or CSV | vulnerability + service nodes |
+| `testssl` / `sslscan` | JSON or text | TLS vulnerability detection (Heartbleed, POODLE, DROWN, etc.) |
+| `pacu` | JSON | cloud_identity + cloud_resource + cloud_policy nodes, IAM edges |
+| `prowler` / `scoutsuite` | JSON | cloud_resource nodes, compliance findings, EXPOSED_TO edges |
 
-All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication. Parsers accept optional `ParseContext` (`domain`, `source_host`) for ambient context.
+All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication. Parsers accept optional `ParseContext` (`domain`, `source_host`, `cloud_account`, `cloud_region`, `network_zone`) for ambient context.
 
 ### BloodHound Ingestion (`src/services/bloodhound-ingest.ts` — 701 lines)
 
@@ -186,7 +212,7 @@ Full SharpHound v4/v5 JSON parser. Maps all BH object types (computers, users, g
 
 ### Skill Index (`src/services/skill-index.ts`)
 
-Local TF-IDF search over 32 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
+Local TF-IDF search over 33 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
 
 ### Dashboard Server (`src/services/dashboard-server.ts`)
 
@@ -206,7 +232,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (34)
+## MCP Tools (39)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -226,8 +252,9 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | Tool | Purpose |
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
-| `parse_output` | Deterministic tool output parsing (16 parsers, 32 aliases) |
+| `parse_output` | Deterministic tool output parsing (17 parsers, 31 aliases) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
+| `ingest_azurehound` | AzureHound / ROADtools JSON ingestion |
 
 ### Scoring & Planning
 
@@ -250,6 +277,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 |------|---------|
 | `register_agent` | Dispatch sub-agent with scoped subgraph |
 | `dispatch_agents` | Batch agent dispatch from frontier items |
+| `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration |
 | `get_agent_context` | Scoped subgraph view for agents |
 | `update_agent` | Mark agent task completed/failed |
 
@@ -257,12 +285,15 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 
 | Tool | Purpose |
 |------|---------|
-| `get_skill` | RAG skill search and retrieval (32 skills) |
+| `get_skill` | RAG skill search and retrieval (33 skills) |
 | `check_tools` | Offensive tool availability detection |
 | `track_process` | Register long-running scan for tracking |
 | `check_processes` | Check tracked process status |
 | `suggest_inference_rule` | Custom inference rule creation + backfill |
 | `correct_graph` | Transactional graph repair (drop/replace edges, patch nodes) |
+| `update_scope` | Confirmation-gated runtime scope expansion/contraction |
+| `get_system_prompt` | Dynamic agent instructions from engagement state |
+| `generate_report` | Full pentest report with findings, narrative, evidence, remediation |
 | `run_retrospective` | Post-engagement analysis (5 structured outputs) |
 
 ### Sessions
@@ -347,19 +378,19 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**28 test files** across the codebase:
+**39 test files** across the codebase:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap |
-| Integration | `mcp-server.integration.test.ts` | All 34 tools via stdio transport |
-| Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity |
-| Services | 15 test files | CIDR, BloodHound, parsers (11), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (39 tools) |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 39 tools via stdio + HTTP/SSE transport |
+| Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
+| Services | 24 test files | CIDR, BloodHound, parsers (17), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 3 test files | Error boundary, activity logging, process tracking |
-| Dashboard | 4 test files | Boot, graph rendering, UI, WebSocket |
+| Dashboard | 5 test files | Boot, graph rendering, UI, WebSocket, main |
 | CLI | `lab-smoke.test.ts` | End-to-end lab workflow |
 
-The integration test spawns the actual MCP server via stdio and validates tool registration, state retrieval, health checks, BloodHound ingestion, output parsing, graph queries, agent lifecycle, and retrospective analysis.
+The integration tests spawn the actual MCP server (stdio and HTTP) and validate tool registration, state retrieval, health checks, BloodHound ingestion, output parsing, graph queries, agent lifecycle, retrospective analysis, and concurrent sessions.
 
 ---
 
@@ -386,18 +417,20 @@ The integration test spawns the actual MCP server via stdio and validates tool r
 ```
 overwatch/
 ├── src/
-│   ├── index.ts                    # Thin entrypoint (~137 lines)
+│   ├── app.ts                      # Core bootstrap + transport-neutral tool registration
+│   ├── index.ts                    # Stdio entrypoint + graceful shutdown
 │   ├── config.ts                   # Config loading + validation
-│   ├── types.ts                    # Zod schemas + TypeScript types (535 lines)
-│   ├── tools/                      # 16 MCP tool modules
-│   │   ├── state.ts                # get_state, preflight, health, history, export
+│   ├── types.ts                    # Zod schemas + TypeScript types
+│   ├── tools/                      # 19 MCP tool modules
+│   │   ├── state.ts                # get_state, preflight, health, history, export, recompute_objectives
 │   │   ├── findings.ts             # report_finding
 │   │   ├── scoring.ts              # next_task, validate_action
 │   │   ├── exploration.ts          # query_graph, find_paths
-│   │   ├── agents.ts               # register, dispatch, context, update
+│   │   ├── agents.ts               # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent
 │   │   ├── logging.ts              # log_action_event
 │   │   ├── parse-output.ts         # parse_output
 │   │   ├── bloodhound.ts           # ingest_bloodhound
+│   │   ├── azurehound.ts           # ingest_azurehound
 │   │   ├── inference.ts            # suggest_inference_rule
 │   │   ├── remediation.ts          # correct_graph
 │   │   ├── retrospective.ts        # run_retrospective
@@ -405,43 +438,56 @@ overwatch/
 │   │   ├── toolcheck.ts            # check_tools
 │   │   ├── processes.ts            # track_process, check_processes
 │   │   ├── sessions.ts             # open/write/read/send_to/list/update/resize/signal/close_session
+│   │   ├── scope.ts                # update_scope
+│   │   ├── instructions.ts         # get_system_prompt
+│   │   ├── reporting.ts            # generate_report
 │   │   └── error-boundary.ts       # withErrorBoundary wrapper
-│   ├── services/                   # Core business logic
-│   │   ├── graph-engine.ts         # Central orchestrator (~1,415 lines)
-│   │   ├── engine-context.ts       # Shared mutable state
-│   │   ├── state-persistence.ts    # Atomic persistence + snapshots
-│   │   ├── inference-engine.ts     # Rule-based edge production
-│   │   ├── frontier.ts             # Frontier computation
-│   │   ├── path-analyzer.ts        # BFS shortest paths
+│   ├── services/                   # Core business logic (33 modules)
+│   │   ├── graph-engine.ts         # Central orchestrator
+│   │   ├── engine-context.ts       # Shared mutable state (graph, config, rules, cold store)
+│   │   ├── state-persistence.ts    # Atomic persistence + snapshots + cold store serialization
+│   │   ├── inference-engine.ts     # Rule-based edge production (22 built-in rules)
+│   │   ├── frontier.ts             # Frontier computation (5 item types)
+│   │   ├── path-analyzer.ts        # OPSEC-weighted shortest paths (confidence/stealth/balanced)
 │   │   ├── identity-resolution.ts  # Canonical ID generation
 │   │   ├── identity-reconciliation.ts # Alias node merging
 │   │   ├── finding-validation.ts   # Pre-ingest validation
 │   │   ├── graph-schema.ts         # Edge endpoint constraints
-│   │   ├── graph-health.ts         # 8 integrity checks
+│   │   ├── graph-health.ts         # 8 integrity checks + contextual AD filtering
 │   │   ├── credential-utils.ts     # Credential classification + lifecycle
-│   │   ├── output-parsers.ts       # 11 deterministic parsers (21 aliases)
-│   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
-│   │   ├── skill-index.ts          # TF-IDF skill search
-│   │   ├── dashboard-server.ts     # HTTP + WebSocket server
-│   │   ├── lab-preflight.ts        # Lab readiness checks
-│   │   ├── agent-manager.ts        # Agent CRUD
-│   │   ├── delta-accumulator.ts    # Graph delta batching
+│   │   ├── output-parsers.ts       # 17 deterministic parsers (31 aliases)
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization
-│   │   ├── retrospective.ts        # Post-engagement analysis (~1,186 lines)
+│   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
+│   │   ├── azurehound-ingest.ts    # AzureHound / ROADtools JSON parser
+│   │   ├── cold-store.ts           # Promotion-only compaction for large network sweeps
+│   │   ├── community-detection.ts  # Louvain modularity for graph clustering
+│   │   ├── skill-index.ts          # TF-IDF skill search
+│   │   ├── dashboard-server.ts     # HTTP + WebSocket server
+│   │   ├── delta-accumulator.ts    # Graph delta batching
+│   │   ├── lab-preflight.ts        # Lab readiness checks (6 profiles)
+│   │   ├── agent-manager.ts        # Agent CRUD
+│   │   ├── retrospective.ts        # Post-engagement analysis
+│   │   ├── cidr.ts                 # CIDR parsing, expansion, scope matching
 │   │   ├── tool-check.ts           # Tool availability detection
+│   │   ├── process-tracker.ts      # PID tracking for long-running scans
 │   │   ├── session-manager.ts      # Persistent sessions, RingBuffer, ownership
-│   │   └── session-adapters.ts     # LocalPty, SSH, Socket transport adapters
-│   ├── dashboard/                  # Browser SPA
-│   │   ├── index.html              # sigma.js WebGL graph
-│   │   ├── main.js                 # Dashboard logic
-│   │   ├── graph.js                # Graph rendering
-│   │   └── styles.css              # Dark theme
+│   │   ├── session-adapters.ts     # LocalPty, SSH, Socket transport adapters
+│   │   ├── prompt-generator.ts     # Dynamic system prompt generation
+│   │   ├── report-generator.ts     # Per-finding sections, evidence chains, narrative, remediation
+│   │   └── report-html.ts          # Self-contained HTML report renderer
+│   ├── dashboard/                  # Browser SPA (6 files)
+│   │   ├── index.html              # Slim HTML shell loading CDN deps + local scripts
+│   │   ├── styles.css              # Dark theme, animations, responsive layout
+│   │   ├── graph.js                # Sigma.js, FA2, drag, hover, path/attack/credential overlays, community hulls
+│   │   ├── ui.js                   # Sidebar panels, node detail, search, keyboard shortcuts
+│   │   ├── ws.js                   # WebSocket + HTTP polling, reconnect
+│   │   └── main.js                 # Entry point wiring modules
 │   └── cli/                        # CLI tools
 │       ├── lab-smoke.ts            # Lab smoke test harness
 │       ├── lab-smoke-lib.ts        # Smoke test library
 │       └── retrospective.ts        # CLI retrospective runner
-├── skills/                         # 32 offensive methodology guides
+├── skills/                         # 33 offensive methodology guides
 ├── fixtures/                       # Test fixtures (GOAD synth data)
 ├── engagement.json                 # Example engagement config
 ├── package.json                    # Dependencies + scripts
@@ -458,7 +504,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 16 parsers (32 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 17 parsers (31 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.
@@ -467,4 +513,4 @@ overwatch/
 
 - **GraphEngine is the largest module** (~1,415 lines). It delegates well to submodules but acts as a facade for 40+ methods. Could benefit from interface segregation if it grows further.
 - **BFS path analysis** is appropriate for pentest-scale graphs (hundreds to low thousands of nodes). For enterprise-scale BloodHound imports (tens of thousands), the undirected projection cache will be important.
-- **Inference rule selectors are string-based** — The 12 selectors are resolved at runtime. Rule definitions rely on convention rather than compile-time safety.
+- **Inference rule selectors are string-based** — The 15 selectors are resolved at runtime. Rule definitions rely on convention rather than compile-time safety.

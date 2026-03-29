@@ -64,4 +64,4 @@ Hosts discovered by subnet agents that respond to ping but have no open services
 - [`register_agent`](register-agent.md) — manual single-agent dispatch
 - [`get_agent_context`](get-agent-context.md) — agent subgraph retrieval
 - [`update_agent`](update-agent.md) — mark agent complete/failed
-- [Subnet Enumeration skill](../../skills/subnet-enumeration.md) — default methodology
+- Subnet Enumeration skill (`skills/subnet-enumeration.md`) — default methodology

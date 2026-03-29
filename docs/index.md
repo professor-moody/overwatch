@@ -23,8 +23,8 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 - **[Hybrid scoring](architecture.md#hybrid-scoring)** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
 - **[Inference rules](architecture.md#inference-rules)** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
 - **[Full graph access](tools/query-graph.md)** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
-- **[38 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation.
-- **[32 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
+- **[39 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation.
+- **[33 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking.
 - **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
 - **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, and RLVR training traces.
@@ -33,9 +33,9 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 
 | | |
 |---|---|
-| **38** MCP tools | **32** offensive skills |
+| **39** MCP tools | **33** offensive skills |
 | **16** output parsers with 32 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler) | **22** built-in inference rules |
-| **1070+** tests across **36** files | **19** node types, **50** edge types |
+| **1105+** tests across **39** files | **21** node types, **52** edge types |
 
 ## Quick Start
 

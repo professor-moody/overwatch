@@ -76,6 +76,7 @@ When dispatching agents, give them these instructions:
 | `register_agent` | Dispatch a sub-agent | When frontier diverges into parallel tasks |
 | `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |
 | `update_agent` | Mark agent task done/failed | When a sub-agent finishes |
+| `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration | When network sweep needs parallelization across CIDRs |
 | `get_skill` | RAG skill lookup | When you need methodology for a specific scenario |
 | `get_history` | Full activity log | During retrospectives |
 | `export_graph` | Complete graph dump | For reporting and retrospectives |

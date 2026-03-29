@@ -27,7 +27,7 @@ overwatch/
 │   │   ├── scoring.ts        # next_task, validate_action
 │   │   ├── findings.ts       # report_finding
 │   │   ├── exploration.ts    # query_graph, find_paths
-│   │   ├── agents.ts         # register_agent, get_agent_context, update_agent
+│   │   ├── agents.ts         # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent
 │   │   ├── skills.ts         # get_skill
 │   │   ├── bloodhound.ts     # ingest_bloodhound
 │   │   ├── toolcheck.ts      # check_tools
@@ -40,8 +40,10 @@ overwatch/
 │   │   ├── sessions.ts       # open_session, write/read/send_to/list/update/resize/signal/close_session
 │   │   ├── scope.ts          # update_scope
 │   │   ├── instructions.ts   # get_system_prompt
+│   │   ├── reporting.ts      # generate_report
+│   │   ├── azurehound.ts     # ingest_azurehound
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic (29 modules)
+│   ├── services/             # Core business logic (33 modules)
 │   │   ├── graph-engine.ts   # Graph operations, state coordination
 │   │   ├── engine-context.ts # Mutable state container, update callbacks
 │   │   ├── frontier.ts       # Frontier item generation and filtering
@@ -59,6 +61,9 @@ overwatch/
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
 │   │   ├── bloodhound-ingest.ts # SharpHound v4/v5 (CE) JSON → graph
+│   │   ├── azurehound-ingest.ts # AzureHound / ROADtools JSON → graph
+│   │   ├── cold-store.ts     # Promotion-only compaction for large network sweeps
+│   │   ├── community-detection.ts # Louvain modularity for graph clustering
 │   │   ├── dashboard-server.ts  # HTTP + WebSocket server (static file serving)
 │   │   ├── delta-accumulator.ts # Debounced graph change tracking
 │   │   ├── agent-manager.ts  # Agent task lifecycle
@@ -69,7 +74,9 @@ overwatch/
 │   │   ├── lab-preflight.ts  # Lab readiness validation
 │   │   ├── session-manager.ts # Persistent sessions, RingBuffer, ownership
 │   │   ├── session-adapters.ts # LocalPty (node-pty), SSH, Socket adapters
-│   │   └── prompt-generator.ts # Dynamic system prompt generation
+│   │   ├── prompt-generator.ts # Dynamic system prompt generation
+│   │   ├── report-generator.ts # Per-finding sections, evidence chains, narrative, remediation
+│   │   └── report-html.ts    # Self-contained HTML report renderer
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke
@@ -84,7 +91,7 @@ overwatch/
 │       ├── app-bootstrap.test.ts
 │       ├── mcp-server.integration.test.ts
 │       └── http-transport.integration.test.ts
-├── skills/                   # 32 offensive methodology guides
+├── skills/                   # 33 offensive methodology guides
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
 └── docs/                     # Documentation source
@@ -92,10 +99,10 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **865 tests across 31 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1105+ tests across 39 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
-npm test                        # Fast source tests (862 tests)
+npm test                        # Fast source tests (1105+ tests)
 npm run test:integration:stdio  # Stdio integration (24 tests)
 npm run test:integration:http   # HTTP transport integration (6 tests)
 npm run verify                  # All of the above + dist freshness check
@@ -128,6 +135,12 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `processes.test.ts` | Process tool integration |
 | `session-manager.test.ts` | RingBuffer, SessionManager, ownership enforcement, adapters |
 | `sprint8-architecture-prep.test.ts` | Scope expansion (URL glob, cloud resource), profile inference, frontier REQUIRED_PROPERTIES, session→graph integration |
+| `sprint9-linux-network.test.ts` | Linux host enrichment, Linux inference rules, MSSQL linked servers, pivot tracking, linpeas parser, OPSEC-weighted paths |
+| `sprint10-web-surface.test.ts` | Web application node types, webapp edges, nuclei/nikto parsers |
+| `sprint10-5-hardening.test.ts` | Edge constraint hardening, validation pipeline, error resilience |
+| `sprint11-cloud-graph.test.ts` | Cloud node types, IAM edges, pacu/prowler parsers, cross-account rules |
+| `sprint-compaction.test.ts` | Cold store temperature classification, promotion, persistence, dispatch_subnet_agents |
+| `report-generator.test.ts` | Report findings, evidence chains, attack narrative, HTML rendering, risk scoring |
 | `community-detection.test.ts` | Louvain community detection, stats, undirected projection |
 | `prompt-generator.test.ts` | Primary and sub-agent prompt generation, state reflection |
 | `config.test.ts` | Config parsing and Zod schema validation |
@@ -137,7 +150,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `ui.test.ts` | Dashboard UI: sidebar, detail panel, derivation chains |
 | `ws.test.ts` | Dashboard WebSocket client, reconnect logic |
 | `lab-smoke.test.ts` | Lab smoke test CLI harness |
-| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (36 tools) |
+| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (39 tools) |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
 | `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
 

@@ -245,9 +245,11 @@ Set `confirm: false` first to preview, then `confirm: true` to apply.
 - **nmap**: Output MUST be XML. Use `-oX -` to write XML to stdout.
   `nmap -Pn -sT -oX - 10.0.0.1` then pipe the XML into `parse-output`.
 - **nxc / netexec**: Raw terminal output works directly as `tool_name: "nxc"`.
-- **ldapsearch**: Not a supported parser — use `report-finding` manually.
+- **ldapsearch**: Supported (aliases: `ldapsearch`, `ldapdomaindump`, `ldap`). Parses LDIF and ldapdomaindump JSON.
 - **certipy, secretsdump, kerbrute, hashcat, responder, enum4linux, rubeus**:
   All supported. Use the tool name as `tool_name`.
+- **linpeas / linenum**: ANSI text output. Set `source_host` in context.
+- **nuclei, nikto, testssl / sslscan, pacu, prowler / scoutsuite**: All supported.
 - Run `./ow tools` to see the full list of supported parsers.
 
 ## Key Commands
