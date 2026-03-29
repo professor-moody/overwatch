@@ -277,6 +277,10 @@ export class FrontierComputer {
     this.ctx.graph.forEachNode((_id: string, attrs) => {
       if (attrs.type === 'host' && attrs.ip) ips.push(attrs.ip);
     });
+    // Include cold store hosts — they were discovered but demoted from the hot graph
+    this.ctx.coldStore.forEach((record) => {
+      if (record.ip) ips.push(record.ip);
+    });
     return ips;
   }
 

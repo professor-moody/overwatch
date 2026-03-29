@@ -356,17 +356,24 @@ its CIDR as its scoped subgraph.`,
         };
       }
 
-      const frontier = engine.computeFrontier();
+      const rawFrontier = engine.computeFrontier();
+      const { passed: frontier, filtered } = engine.filterFrontier(rawFrontier);
       const dispatched: Array<{ task_id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
       const skipped: Array<{ cidr: string; reason: string }> = [];
 
       for (const cidr of cidrs) {
         if (dispatched.length >= max_agents) break;
 
-        // Check if a network_discovery frontier item exists for this CIDR
+        // Check if a network_discovery frontier item exists AND passed OPSEC filtering
         const slug = cidr.replace(/[./]/g, '-');
         const frontierItemId = `frontier-discovery-${slug}`;
         const frontierItem = frontier.find(f => f.id === frontierItemId);
+
+        // Check if it was filtered (e.g. OPSEC veto)
+        if (!frontierItem && filtered.some(f => f.item.id === frontierItemId)) {
+          skipped.push({ cidr, reason: 'filtered_by_opsec' });
+          continue;
+        }
 
         // Skip fully-discovered CIDRs (no frontier item means fully explored)
         if (!frontierItem) {

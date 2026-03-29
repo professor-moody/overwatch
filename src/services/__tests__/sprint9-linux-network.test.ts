@@ -513,8 +513,8 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     engine.ingestFinding(makeFinding(
       [
-        { id: 'host-10-10-10-90', type: 'host', label: 'pa-a', ip: '10.10.10.90', discovered_at: now, confidence: 1.0, alive: true },
-        { id: 'host-10-10-10-91', type: 'host', label: 'pa-b', ip: '10.10.10.91', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-90', type: 'host', label: 'pa-a', ip: '10.10.10.90', hostname: 'pa-a', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-91', type: 'host', label: 'pa-b', ip: '10.10.10.91', hostname: 'pa-b', discovered_at: now, confidence: 1.0, alive: true },
       ],
       [{ source: 'host-10-10-10-90', target: 'host-10-10-10-91', properties: { type: 'REACHABLE', confidence: 0.9, discovered_at: now, opsec_noise: 0.5 } }],
     ));
@@ -531,9 +531,9 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
     const targetId = 'host-10-10-10-102';
     engine.ingestFinding(makeFinding(
       [
-        { id: startId, type: 'host', label: 'start', ip: '10.10.10.100', discovered_at: now, confidence: 1.0, alive: true },
-        { id: relayId, type: 'host', label: 'relay', ip: '10.10.10.101', discovered_at: now, confidence: 1.0, alive: true },
-        { id: targetId, type: 'host', label: 'target', ip: '10.10.10.102', discovered_at: now, confidence: 1.0, alive: true },
+        { id: startId, type: 'host', label: 'start', ip: '10.10.10.100', hostname: 'start', discovered_at: now, confidence: 1.0, alive: true },
+        { id: relayId, type: 'host', label: 'relay', ip: '10.10.10.101', hostname: 'relay', discovered_at: now, confidence: 1.0, alive: true },
+        { id: targetId, type: 'host', label: 'target', ip: '10.10.10.102', hostname: 'target', discovered_at: now, confidence: 1.0, alive: true },
       ],
       [
         // Direct: high noise
@@ -559,8 +559,8 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     engine.ingestFinding(makeFinding(
       [
-        { id: 'host-10-10-10-110', type: 'host', label: 'bal-a', ip: '10.10.10.110', discovered_at: now, confidence: 1.0, alive: true },
-        { id: 'host-10-10-10-111', type: 'host', label: 'bal-b', ip: '10.10.10.111', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-110', type: 'host', label: 'bal-a', ip: '10.10.10.110', hostname: 'bal-a', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-111', type: 'host', label: 'bal-b', ip: '10.10.10.111', hostname: 'bal-b', discovered_at: now, confidence: 1.0, alive: true },
       ],
       [{ source: 'host-10-10-10-110', target: 'host-10-10-10-111', properties: { type: 'REACHABLE', confidence: 0.9, discovered_at: now, opsec_noise: 0.5 } }],
     ));
@@ -574,8 +574,8 @@ describe('9.6 — OPSEC-weighted path analysis', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     engine.ingestFinding(makeFinding(
       [
-        { id: 'host-10-10-10-120', type: 'host', label: 'def-a', ip: '10.10.10.120', discovered_at: now, confidence: 1.0, alive: true },
-        { id: 'host-10-10-10-121', type: 'host', label: 'def-b', ip: '10.10.10.121', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-120', type: 'host', label: 'def-a', ip: '10.10.10.120', hostname: 'def-a', discovered_at: now, confidence: 1.0, alive: true },
+        { id: 'host-10-10-10-121', type: 'host', label: 'def-b', ip: '10.10.10.121', hostname: 'def-b', discovered_at: now, confidence: 1.0, alive: true },
       ],
       [{ source: 'host-10-10-10-120', target: 'host-10-10-10-121', properties: { type: 'REACHABLE', confidence: 0.9, discovered_at: now } }],
     ));

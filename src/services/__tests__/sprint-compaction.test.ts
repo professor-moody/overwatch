@@ -377,7 +377,7 @@ describe('Graph compaction integration', () => {
     expect(state.graph_summary.cold_nodes_by_subnet).toBeUndefined();
   });
 
-  it('edge promotion works for both source and target cold nodes', () => {
+  it('edge promotion works for interesting edge types on both endpoints', () => {
     const engine = createEngine();
 
     // Ingest two cold hosts
@@ -387,16 +387,58 @@ describe('Graph compaction integration', () => {
     ]));
     expect(engine.getState().graph_summary.cold_node_count).toBe(2);
 
-    // Connect them with a REACHABLE edge → both should promote
+    // Connect them with an ADMIN_TO edge (interesting) → both should promote
     engine.ingestFinding(makeFinding(
       [],
       [
-        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'REACHABLE', confidence: 0.8 } },
+        { source: 'host-10-10-10-1', target: 'host-10-10-10-2', properties: { type: 'ADMIN_TO', confidence: 0.8 } },
       ],
     ));
     expect(engine.getNode('host-10-10-10-1')).not.toBeNull();
     expect(engine.getNode('host-10-10-10-2')).not.toBeNull();
     expect(engine.getState().graph_summary.cold_node_count).toBe(0);
+  });
+
+  it('non-interesting edges do NOT promote cold hosts', () => {
+    const engine = createEngine();
+
+    // Ingest cold host
+    engine.ingestFinding(makeFinding([
+      { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', alive: true },
+    ]));
+    expect(engine.getState().graph_summary.cold_node_count).toBe(1);
+
+    // Attach a REACHABLE edge (non-interesting) → should NOT promote
+    engine.ingestFinding(makeFinding(
+      [{ id: 'host-10-10-10-5', type: 'host', label: '10.10.10.5', ip: '10.10.10.5', alive: true, hostname: 'box5' }],
+      [
+        { source: 'host-10-10-10-5', target: 'host-10-10-10-1', properties: { type: 'REACHABLE', confidence: 0.6 } },
+      ],
+    ));
+    // host-10-10-10-5 is hot (has hostname), but host-10-10-10-1 stays cold
+    expect(engine.getNode('host-10-10-10-5')).not.toBeNull();
+    expect(engine.getNode('host-10-10-10-1')).toBeNull();
+    expect(engine.getState().graph_summary.cold_node_count).toBe(1);
+  });
+
+  it('cold hosts count toward CIDR completion in frontier', () => {
+    const engine = createEngine();
+
+    // Fill the /24 with 254 cold (ping-only) hosts
+    const nodes: Finding['nodes'] = [];
+    for (let i = 1; i <= 254; i++) {
+      const ip = `192.168.1.${i}`;
+      nodes.push({ id: `host-192-168-1-${i}`, type: 'host', label: ip, ip, alive: true });
+    }
+    engine.ingestFinding(makeFinding(nodes));
+
+    // All 254 should be cold
+    expect(engine.getState().graph_summary.cold_node_count).toBe(254);
+
+    // But the CIDR should be fully discovered (no frontier item)
+    const frontier = engine.computeFrontier();
+    const item192 = frontier.find(f => f.id === 'frontier-discovery-192-168-1-0-24');
+    expect(item192).toBeUndefined();
   });
 });
 
@@ -445,16 +487,15 @@ describe('dispatch_subnet_agents', () => {
     expect(item!.target_cidr).toBe('10.10.10.0/24');
   });
 
-  it('fully-discovered CIDRs have no frontier item', () => {
+  it('fully-discovered CIDRs have no frontier item (hot hosts)', () => {
     const engine = createEngine();
-    // Fill the /24 with 254 hosts → frontier should suppress that CIDR
+    // Fill the /24 with 254 hosts with services → hot, fully discovered
     const nodes: Finding['nodes'] = [];
     const edges: Finding['edges'] = [];
     for (let i = 1; i <= 254; i++) {
       const ip = `192.168.1.${i}`;
       const id = `host-192-168-1-${i}`;
       nodes.push({ id, type: 'host', label: ip, ip, alive: true });
-      // Add a service so they stay hot
       const svcId = `svc-${id}`;
       nodes.push({ id: svcId, type: 'service', label: `ssh-${i}`, port: 22, service_name: 'ssh' });
       edges.push({ source: id, target: svcId, properties: { type: 'RUNS', confidence: 1.0 } });
@@ -464,7 +505,24 @@ describe('dispatch_subnet_agents', () => {
     const frontier = engine.computeFrontier();
     const item192 = frontier.find(f => f.id === 'frontier-discovery-192-168-1-0-24');
     expect(item192).toBeUndefined(); // fully discovered
-    // But the 10.10.10.0/24 should still have a discovery item
+    const item10 = frontier.find(f => f.id === 'frontier-discovery-10-10-10-0-24');
+    expect(item10).toBeDefined();
+  });
+
+  it('fully-discovered CIDRs have no frontier item (cold hosts)', () => {
+    const engine = createEngine();
+    // Fill the /24 with 254 ping-only hosts → all cold, but CIDR still fully discovered
+    const nodes: Finding['nodes'] = [];
+    for (let i = 1; i <= 254; i++) {
+      const ip = `192.168.1.${i}`;
+      nodes.push({ id: `host-192-168-1-${i}`, type: 'host', label: ip, ip, alive: true });
+    }
+    engine.ingestFinding(makeFinding(nodes));
+
+    expect(engine.getState().graph_summary.cold_node_count).toBe(254);
+    const frontier = engine.computeFrontier();
+    const item192 = frontier.find(f => f.id === 'frontier-discovery-192-168-1-0-24');
+    expect(item192).toBeUndefined(); // cold hosts count toward completion
     const item10 = frontier.find(f => f.id === 'frontier-discovery-10-10-10-0-24');
     expect(item10).toBeDefined();
   });

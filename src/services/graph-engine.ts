@@ -763,25 +763,32 @@ export class GraphEngine {
       const sourceId = idRemap.get(edge.source) || edge.source;
       const targetId = idRemap.get(edge.target) || edge.target;
 
-      // Edge promotion guard: if either endpoint is cold, promote it before attaching
-      for (const endpointId of [sourceId, targetId]) {
-        if (!this.ctx.graph.hasNode(endpointId) && this.ctx.coldStore.has(endpointId)) {
-          const coldRecord = this.ctx.coldStore.promote(endpointId);
-          if (coldRecord) {
-            this.addNode({
-              id: coldRecord.id,
-              type: coldRecord.type as NodeType,
-              label: coldRecord.label,
-              ip: coldRecord.ip,
-              hostname: coldRecord.hostname,
-              discovered_at: coldRecord.discovered_at,
-              last_seen_at: coldRecord.last_seen_at,
-              alive: coldRecord.alive,
-              discovered_by: coldRecord.provenance,
-              confidence: 1.0,
-            });
-            newNodes.push(endpointId);
-            this.log(`Promoted cold host to hot graph (edge requires it): ${coldRecord.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
+      // Edge promotion guard: only promote cold endpoints for interesting edge types.
+      // Non-interesting edges (RELATED, MEMBER_OF, etc.) skip cold endpoints silently
+      // to preserve the scaling benefit of compaction.
+      const edgeType = edge.properties?.type as EdgeType | undefined;
+      const shouldPromoteCold = edgeType ? isInterestingEdgeType(edgeType) : false;
+
+      if (shouldPromoteCold) {
+        for (const endpointId of [sourceId, targetId]) {
+          if (!this.ctx.graph.hasNode(endpointId) && this.ctx.coldStore.has(endpointId)) {
+            const coldRecord = this.ctx.coldStore.promote(endpointId);
+            if (coldRecord) {
+              this.addNode({
+                id: coldRecord.id,
+                type: coldRecord.type as NodeType,
+                label: coldRecord.label,
+                ip: coldRecord.ip,
+                hostname: coldRecord.hostname,
+                discovered_at: coldRecord.discovered_at,
+                last_seen_at: coldRecord.last_seen_at,
+                alive: coldRecord.alive,
+                discovered_by: coldRecord.provenance,
+                confidence: 1.0,
+              });
+              newNodes.push(endpointId);
+              this.log(`Promoted cold host to hot graph (${edgeType} edge requires it): ${coldRecord.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
+            }
           }
         }
       }
