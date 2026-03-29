@@ -91,6 +91,7 @@ nav:
       - suggest_inference_rule: tools/suggest-inference-rule.md
     - Ingestion:
       - ingest_bloodhound: tools/ingest-bloodhound.md
+      - ingest_azurehound: tools/ingest-azurehound.md
     - Remediation:
       - correct_graph: tools/correct-graph.md
     - Utilities:
@@ -99,6 +100,8 @@ nav:
       - check_processes: tools/check-processes.md
     - Sessions:
       - Session Management: tools/sessions.md
+    - Reporting:
+      - generate_report: tools/generate-report.md
     - Analysis:
       - run_retrospective: tools/run-retrospective.md
   - Skills:

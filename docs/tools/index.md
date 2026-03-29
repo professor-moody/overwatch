@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 36 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 38 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -42,6 +42,8 @@ Overwatch exposes 36 MCP tools organized by function. Each tool uses Zod schemas
 | [`close_session`](sessions.md) | Close and destroy a session | :x: |
 | [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | :x: |
 | [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | :white_check_mark: |
+| [`generate_report`](generate-report.md) | Full pentest report with findings, narrative, evidence, remediation | :white_check_mark: |
+| [`ingest_azurehound`](ingest-azurehound.md) | Import AzureHound / ROADtools JSON collections | :x: |
 
 ## Tool Categories
 
@@ -64,13 +66,16 @@ Sub-agent lifecycle — register, scope, and track parallel work.
 Methodology guidance and dynamic rule creation.
 
 ### Ingestion
-Bulk data import from external tools.
+Bulk data import from external tools (BloodHound, AzureHound/ROADtools).
 
 ### Utilities
 System-level checks and process tracking.
 
 ### Sessions
 Persistent interactive sessions — SSH, local PTY, and TCP socket (reverse shell). Cursor-based I/O with ownership enforcement.
+
+### Reporting
+Pentest report generation with per-finding detail, attack narrative, evidence chains, and HTML export.
 
 ### Analysis
 Post-engagement retrospective and training data export.

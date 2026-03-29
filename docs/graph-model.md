@@ -19,8 +19,14 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `pki_store` | A PKI store | `pki_store_kind` (`ntauth_store`, `issuance_policy`) |
 | `gpo` | A Group Policy Object | `label` |
 | `ou` | An Organizational Unit | `label` |
-| `subnet` | A network subnet | `label` |
+| `subnet` | A network subnet | `subnet_cidr` |
 | `objective` | An engagement objective | `objective_description`, `objective_achieved` |
+| `webapp` | A web application | `url`, `technology`, `framework`, `auth_type` |
+| `vulnerability` | A discovered vulnerability | `cve`, `cvss`, `vuln_type`, `exploitable` |
+| `cloud_identity` | Cloud IAM principal (user, role, service account) | `provider`, `arn`, `principal_type`, `mfa_enabled` |
+| `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, etc.) | `resource_type`, `region`, `public`, `encrypted` |
+| `cloud_policy` | Cloud IAM policy or RBAC role assignment | `policy_name`, `effect`, `actions`, `resources` |
+| `cloud_network` | Cloud network construct (VPC, security group) | `network_type`, `ingress_rules`, `egress_rules` |
 
 ### Common Node Properties
 
@@ -78,6 +84,84 @@ Stale or expired credentials have their outbound `POTENTIAL_AUTH` edges degraded
 | `superseded_by` | `string` | Node ID that superseded this one |
 
 Identity resolution runs automatically on ingest. Alias nodes sharing identity markers are merged into canonicals — edges are retargeted and properties merged.
+
+### Host Enrichment Properties (Linux)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `suid_checked` | `boolean` | Whether SUID binaries have been enumerated |
+| `has_suid_root` | `boolean` | Dangerous SUID root binaries found |
+| `suid_binaries` | `string[]` | List of SUID root binary paths |
+| `cron_checked` | `boolean` | Whether cron jobs have been enumerated |
+| `cron_jobs` | `string[]` | Discovered cron job entries |
+| `capabilities_checked` | `boolean` | Whether capabilities have been checked |
+| `interesting_capabilities` | `string[]` | Capabilities of interest |
+| `docker_socket_accessible` | `boolean` | Docker socket is accessible |
+| `kernel_version` | `string` | Kernel version string |
+
+### Web Application Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `url` | `string` | Application URL |
+| `technology` | `string` | Detected technology stack |
+| `framework` | `string` | Web framework (e.g., Django, Rails) |
+| `auth_type` | `string` | Authentication type (form, basic, oauth) |
+| `has_api` | `boolean` | Exposes an API |
+| `cms_type` | `string` | CMS type (WordPress, Drupal, etc.) |
+
+### Vulnerability Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cve` | `string` | CVE identifier |
+| `cvss` | `number` | CVSS score (0.0–10.0) |
+| `vuln_type` | `string` | Vulnerability class (e.g., `sqli`, `xss`, `ssrf`, `rce`) |
+| `exploitable` | `boolean` | Whether the vulnerability is exploitable |
+| `exploit_available` | `boolean` | Public exploit exists |
+| `affected_component` | `string` | Affected software component |
+
+### Cloud Identity Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `provider` | `string` | `aws`, `azure`, or `gcp` |
+| `arn` | `string` | Amazon Resource Name (AWS) or equivalent identifier |
+| `principal_type` | `string` | `user`, `role`, `service_account`, `managed_identity`, `app` |
+| `policies` | `string[]` | Attached policy names |
+| `mfa_enabled` | `boolean` | Multi-factor authentication status |
+| `last_used` | `string` | ISO timestamp of last use |
+| `cloud_account` | `string` | Account/subscription/project ID |
+| `policies_enumerated` | `boolean` | Whether policies have been fully enumerated |
+
+### Cloud Resource Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `resource_type` | `string` | e.g., `s3_bucket`, `ec2_instance`, `lambda_function`, `azure_vm` |
+| `region` | `string` | Cloud region |
+| `public` | `boolean` | Publicly accessible |
+| `encrypted` | `boolean` | Encryption at rest enabled |
+| `tags` | `object` | Cloud resource tags |
+| `imdsv2_required` | `boolean` | IMDSv2 enforcement (EC2) |
+
+### Cloud Policy Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `policy_name` | `string` | Policy display name |
+| `effect` | `string` | `allow` or `deny` |
+| `actions` | `string[]` | Allowed/denied API actions (e.g., `s3:*`, `iam:PassRole`) |
+| `resources` | `string[]` | Resource ARN patterns |
+| `conditions` | `string[]` | Policy conditions |
+
+### Cloud Network Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `network_type` | `string` | `vpc`, `security_group`, `subnet`, `firewall_rule` |
+| `ingress_rules` | `string[]` | Inbound access rules |
+| `egress_rules` | `string[]` | Outbound access rules |
 
 ## Edge Types
 
@@ -158,6 +242,26 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | `RELAY_TARGET` | NTLM relay target |
 | `NULL_SESSION` | Null session access |
 
+### Web Application Surface
+
+| Edge | Description |
+|------|-------------|
+| `HOSTS` | Host/service hosts a web application |
+| `AUTHENTICATED_AS` | Web application authenticated as a user/identity |
+| `VULNERABLE_TO` | Web application or service is vulnerable to a vulnerability |
+| `EXPLOITS` | Credential or access exploits a vulnerability |
+
+### Cloud Infrastructure
+
+| Edge | Description |
+|------|-------------|
+| `ASSUMES_ROLE` | Cloud identity can assume a role (cross-account or same-account) |
+| `HAS_POLICY` | Cloud identity has an attached policy |
+| `POLICY_ALLOWS` | Cloud policy allows actions on a resource |
+| `EXPOSED_TO` | Cloud resource is exposed to a network/internet |
+| `RUNS_ON` | Cloud resource runs on infrastructure (e.g., Lambda on VPC) |
+| `MANAGED_BY` | Cloud resource is managed by an identity (managed identity, service account) |
+
 ### Objective
 
 | Edge | Description |
@@ -188,7 +292,9 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Thirteen built-in rules fire automatically when matching nodes are ingested:
+Twenty-two built-in rules fire automatically when matching nodes are ingested:
+
+#### AD & Service Rules
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -206,7 +312,36 @@ Thirteen built-in rules fire automatically when matching nodes are ingested:
 | gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
 | RBCD Target | Host with `maq_gt_zero: true` + inbound `WRITEABLE_BY` | `RBCD_TARGET` from edge peers |
 
-The last three rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
+The last three use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
+
+#### Linux Privilege Escalation Rules
+
+| Rule | Trigger | Produces |
+|------|---------|----------|
+| SUID Privesc | Host with `has_suid_root: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.85) |
+| SSH Key Reuse | Credential with `cred_type: ssh_key` | `POTENTIAL_AUTH` to all SSH services (confidence 0.5) |
+| Docker Escape | Host with `docker_socket_accessible: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.8) |
+| NFS Root Squash | Host with `no_root_squash: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.7) |
+
+#### Web Application Rules
+
+| Rule | Trigger | Produces |
+|------|---------|----------|
+| Webapp Login Spray | Webapp with `has_login_form: true` | `POTENTIAL_AUTH` from all credentials (confidence 0.3) |
+
+#### MSSQL Rules
+
+| Rule | Trigger | Produces |
+|------|---------|----------|
+| MSSQL Linked Server | MSSQL service with `linked_servers` | `REACHABLE` edges to linked hosts (confidence 0.8) |
+
+#### Cloud Rules
+
+| Rule | Trigger | Produces |
+|------|---------|----------|
+| Overprivileged Policy | Cloud policy with wildcard actions (`iam:*`, `s3:*`, `*:*`) | `POTENTIAL_AUTH` from policy holders (confidence 0.7) |
+| Public Bucket | Cloud resource (`s3_bucket`, `public: true`) | `EXPOSED_TO` internet (confidence 0.9) |
+| Cross-Account Role | Cloud identity with `ASSUMES_ROLE` crossing accounts | `POTENTIAL_AUTH` lateral movement (confidence 0.6) |
 
 Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md).
 
@@ -226,5 +361,8 @@ Selectors resolve graph context when inference rules fire:
 | `compatible_services` | Services accepting the credential type |
 | `compatible_services_same_domain` | Like `compatible_services` but filtered to same domain as credential |
 | `matching_domain` | Domain nodes matching host hostname suffix |
-| `edge_peers` | Peer nodes from the rule’s `requires_edge` (for edge-triggered rules) |
+| `edge_peers` | Peer nodes from the rule's `requires_edge` (for edge-triggered rules) |
 | `enrollable_users` | All user nodes (for ADCS rules) |
+| `session_holders_on_host` | Users/groups with `HAS_SESSION` to the triggering host |
+| `all_ssh_services` | All services with `service_name: ssh` |
+| `linked_server_hosts` | Hosts matching the `linked_servers` array by hostname/label |

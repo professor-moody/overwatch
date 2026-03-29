@@ -16,7 +16,11 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
     "cidrs": ["CIDR notation strings"],
     "domains": ["domain names"],
     "exclusions": ["IPs or hostnames to exclude"],
-    "hosts": ["additional in-scope hostnames"]
+    "hosts": ["additional in-scope hostnames"],
+    "aws_accounts": ["AWS account IDs"],
+    "azure_subscriptions": ["Azure subscription IDs"],
+    "gcp_projects": ["GCP project IDs"],
+    "url_patterns": ["URL glob patterns"]
   },
   "objectives": [
     {
@@ -48,6 +52,10 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
 | `domains` | `string[]` | Domain names in scope (e.g., `target.local`) |
 | `exclusions` | `string[]` | IPs or hostnames explicitly excluded |
 | `hosts` | `string[]` | Additional in-scope hostnames not covered by CIDRs |
+| `aws_accounts` | `string[]` | AWS account IDs in scope |
+| `azure_subscriptions` | `string[]` | Azure subscription IDs in scope |
+| `gcp_projects` | `string[]` | GCP project IDs in scope |
+| `url_patterns` | `string[]` | URL glob patterns in scope (e.g., `https://app.target.com/**`) |
 
 ### Lab Profile
 
@@ -58,8 +66,11 @@ The optional `profile` field selects the lab preflight profile, which controls w
 | `goad_ad` | Active Directory lab — requires BloodHound, NXC, nmap. Checks domain scope. |
 | `single_host` | Single-target HTB machine — minimal scope, focused checks. |
 | `network` | Network-only engagement — requires nmap. BH/NXC optional. Checks CIDR scope, not domains. |
+| `web_app` | Web application assessment — checks URL patterns, recommends web scanners. |
+| `cloud` | Cloud-only engagement — checks cloud account scope, recommends cloud tools (pacu, prowler). |
+| `hybrid` | Combined infrastructure + cloud — checks all scope types. |
 
-If omitted, the profile is **inferred**: `goad_ad` when `scope.domains` is non-empty, `single_host` otherwise.
+If omitted, the profile is **inferred**: `goad_ad` when `scope.domains` is non-empty, `cloud` when only cloud accounts are scoped, `web_app` when only URL patterns are scoped, `network` otherwise.
 
 ### Objectives
 

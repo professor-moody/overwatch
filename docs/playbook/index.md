@@ -5,7 +5,7 @@ Step-by-step guides for running engagements with Overwatch.
 ## Engagement Lifecycle
 
 ```
-Init → Bootstrap → Main Loop → Recovery → Retrospective
+Init → Bootstrap → Main Loop → Recovery → Report → Retrospective
 ```
 
 ### 1. Init
@@ -49,7 +49,17 @@ After context compaction, `get_state()` rebuilds the full engagement context fro
 
 Graph path analysis detects when objectives are achieved. The engine matches graph nodes against objective criteria and updates status automatically.
 
-### 6. Retrospective
+### 6. Report Generation
+
+Generate a client-deliverable pentest report with [`generate_report`](../tools/generate-report.md):
+
+- Per-finding sections with evidence and auto-remediation
+- Attack narrative by phase (Recon → Access → Lateral → PrivEsc → Objective)
+- Evidence chains linking actions to graph mutations
+- Severity distribution and risk scoring
+- Markdown or self-contained HTML output
+
+### 7. Retrospective
 
 Post-engagement analysis produces:
 
@@ -65,6 +75,7 @@ See [Retrospectives](retrospective.md) for details.
 
 - [GOAD AD Lab](goad-lab.md) — multi-host Active Directory lab
 - [HTB / Single Host](htb-single.md) — standalone target VM
+- [HTB / Network](htb-network.md) — network-only engagement without AD
 
 ## Guides
 

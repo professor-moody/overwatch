@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **34 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **38 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,7 +31,7 @@ The server exposes **34 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              34 MCP Tools (Zod-validated)                  │  │
+│  │              38 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · inference · remediation  │  │
 │  │  skills · toolcheck · processes · retrospective · sessions │  │
@@ -95,7 +95,7 @@ Rules fire automatically when nodes are ingested. Each rule has:
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
 
-Thirteen built-in rules cover: Kerberos→Domain, SMB Relay, MSSQL domain auth, credential fanout (domain-scoped), ADCS ESC1, unconstrained delegation, AS-REP roasting, Kerberoasting, constrained delegation, web login forms, LAPS/gMSA readable, and RBCD targets. Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes.
+Twenty-two built-in rules span AD & service (13), Linux privilege escalation (4), web application (1), MSSQL (1), and cloud infrastructure (3). Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference.
 
 ---
 
@@ -226,7 +226,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | Tool | Purpose |
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
-| `parse_output` | Deterministic tool output parsing (11 parsers, 21 aliases) |
+| `parse_output` | Deterministic tool output parsing (16 parsers, 32 aliases) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
 
 ### Scoring & Planning
@@ -458,7 +458,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 11 parsers (21 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 16 parsers (32 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.

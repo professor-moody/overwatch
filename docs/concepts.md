@@ -17,6 +17,7 @@ A **candidate next action** generated from the graph. The deterministic layer pr
 | `incomplete_node` | A node missing expected properties or relationships | Host with no service enumeration |
 | `untested_edge` | An edge that exists but hasn't been validated | `POTENTIAL_AUTH` credential → service |
 | `inferred_edge` | A hypothesis edge created by an inference rule | `RELAY_TARGET` from SMB signing disabled |
+| `network_pivot` | Host reachable via pivot but without a session | Host in same subnet as session-holder |
 
 Frontier items include **graph metrics** (hops to objective, fan-out estimate, node degree) but are **not scored** — scoring is the LLM's job. The deterministic layer only filters out items that are out-of-scope, duplicated, or exceed the OPSEC noise ceiling.
 
@@ -39,9 +40,9 @@ Deterministic rules that fire automatically when matching nodes are ingested. Th
 
 **Example:** When a service node with `smb_signing: false` is ingested, the "SMB Signing → Relay" rule fires and creates `RELAY_TARGET` edges from all compromised hosts to that service.
 
-Thirteen built-in rules ship with Overwatch, including **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
+Twenty-two built-in rules ship with Overwatch across five domains: AD & service (13), Linux privilege escalation (4), web application (1), MSSQL (1), and cloud infrastructure (3). This includes **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
 
-Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Architecture](architecture.md#inference-rules) for the full list.
+Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference with triggers and productions.
 
 ## Confidence
 

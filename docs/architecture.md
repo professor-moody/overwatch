@@ -73,27 +73,19 @@ The LLM handles nuanced reasoning:
 
 ### Inference Rules
 
-When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Thirteen built-in rules:
+When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Twenty-two built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
 
-| Rule | Trigger | Produces |
-|------|---------|----------|
-| Kerberos → Domain | Service with `service_name: kerberos` | `MEMBER_OF_DOMAIN` to matching domain (hostname suffix) |
-| SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` from compromised hosts |
-| MSSQL + Domain | MSSQL on domain host | `POTENTIAL_AUTH` from domain credentials |
-| Credential Fanout | New credential node | `POTENTIAL_AUTH` to compatible services in same domain |
-| ADCS ESC1 | cert_template with enrollee-supplied subject | `ESC1` from enrollable users |
-| Unconstrained Delegation | Host with `unconstrained_delegation: true` | `DELEGATES_TO` from domain users |
-| AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to domain nodes |
-| Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to domain nodes |
-| Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to domain nodes |
-| Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
-| LAPS Readable | Host with `laps: true` + inbound `GENERIC_ALL` | `CAN_READ_LAPS` from edge peers |
-| gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
-| RBCD Target | Host with `maq_gt_zero: true` + inbound `WRITEABLE_BY` | `RBCD_TARGET` from edge peers |
+| Domain | Rules | Examples |
+|--------|-------|----------|
+| **AD & Service** | 13 | Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1, Delegation, Roasting, LAPS/gMSA, RBCD |
+| **Linux Privesc** | 4 | SUID root, SSH key reuse, Docker escape, NFS no_root_squash |
+| **Web** | 1 | Webapp login spray |
+| **MSSQL** | 1 | Linked server → REACHABLE |
+| **Cloud** | 3 | Overprivileged policy, public bucket, cross-account role |
 
-The last three use **edge-triggered inference** — they require a matching inbound edge in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
+Three AD rules use **edge-triggered inference** — they require a matching inbound edge in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
 
-These become frontier items for the LLM to evaluate. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Concepts](concepts.md#inference-rules) for how the rule lifecycle works.
+See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference with triggers and productions. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Concepts](concepts.md#inference-rules) for how the rule lifecycle works.
 
 ### Full Graph Access
 
@@ -125,11 +117,13 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
 | **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/output-parsers.ts` | 11 parsers / 21 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum |
+| **Output Parsers** | `src/services/output-parsers.ts` | 16 parsers / 32 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu/prowler/scoutsuite |
 | **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
 | **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization, lifecycle, and domain inference |
 | **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |
 | **BloodHound Ingest** | `src/services/bloodhound-ingest.ts` | SharpHound v4/v5 (CE) JSON → graph |
+| **AzureHound Ingest** | `src/services/azurehound-ingest.ts` | AzureHound / ROADtools JSON → graph |
+| **Community Detection** | `src/services/community-detection.ts` | Louvain modularity for graph clustering |
 | **Dashboard Server** | `src/services/dashboard-server.ts` | HTTP + WebSocket for live visualization |
 | **Delta Accumulator** | `src/services/delta-accumulator.ts` | Debounced graph change tracking for broadcasts |
 | **Agent Manager** | `src/services/agent-manager.ts` | Sub-agent task lifecycle |
@@ -141,6 +135,8 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Session Manager** | `src/services/session-manager.ts` | Persistent interactive sessions, RingBuffer, ownership enforcement |
 | **Session Adapters** | `src/services/session-adapters.ts` | LocalPty (node-pty), SSH, and Socket transport adapters |
 | **Prompt Generator** | `src/services/prompt-generator.ts` | Dynamic system prompt generation for primary and sub-agent roles |
+| **Report Generator** | `src/services/report-generator.ts` | Per-finding sections, evidence chains, attack narrative, auto-remediation |
+| **Report HTML** | `src/services/report-html.ts` | Self-contained HTML report renderer with themes and print CSS |
 
 ### Tools
 
@@ -163,6 +159,8 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Sessions** | `src/tools/sessions.ts` | `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `update_session`, `resize_session`, `signal_session`, `close_session` |
 | **Scope** | `src/tools/scope.ts` | `update_scope` |
 | **Instructions** | `src/tools/instructions.ts` | `get_system_prompt` |
+| **Reporting** | `src/tools/reporting.ts` | `generate_report` |
+| **AzureHound** | `src/tools/azurehound.ts` | `ingest_azurehound` |
 
 ### Dashboard
 

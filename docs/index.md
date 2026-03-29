@@ -23,7 +23,7 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 - **[Hybrid scoring](architecture.md#hybrid-scoring)** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
 - **[Inference rules](architecture.md#inference-rules)** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
 - **[Full graph access](tools/query-graph.md)** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
-- **[34 MCP tools](tools/index.md)** — From state management to BloodHound ingestion to structured output parsing to persistent interactive sessions.
+- **[38 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation.
 - **[32 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking.
 - **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
@@ -33,9 +33,9 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 
 | | |
 |---|---|
-| **34** MCP tools | **32** offensive skills |
-| **11** output parsers with 21 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum) | **13** built-in inference rules |
-| **773** tests across **28** files | **15** node types, **37** edge types |
+| **38** MCP tools | **32** offensive skills |
+| **16** output parsers with 32 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler) | **22** built-in inference rules |
+| **1070+** tests across **36** files | **19** node types, **50** edge types |
 
 ## Quick Start
 

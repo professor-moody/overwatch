@@ -23,6 +23,12 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **Enum4linux** | `enum4linux`, `enum4linux-ng` | JSON (`-oJ`) or text | Host + SMB service + user + group + share nodes, null session detection |
 | **Rubeus** | `rubeus` | Kerberoast/AS-REP/monitor output | User + credential nodes, `OWNS_CRED` edges (TGT/TGS detection) |
 | **Web Dir Enum** | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` | Text or JSON | Service node enrichment with `discovered_paths`, login form detection |
+| **Linpeas** | `linpeas`, `linenum`, `linpeas.sh` | Text output | Host enrichment: kernel version, SUID binaries, docker socket, capabilities, cron jobs |
+| **Nuclei** | `nuclei` | JSON or text output | Vulnerability nodes, `VULNERABLE_TO` edges |
+| **Nikto** | `nikto` | Text output | Web vulnerability findings |
+| **TestSSL** | `testssl`, `testssl.sh`, `sslscan` | Text or JSON output | TLS enrichment: version, cipher suites, certificate details |
+| **Pacu** | `pacu` | JSON output | Cloud identity + resource + policy nodes, `HAS_POLICY` / `ASSUMES_ROLE` edges |
+| **Prowler** | `prowler`, `scoutsuite` | JSON output | Cloud resource + policy nodes, security findings |
 
 ## Parameters
 
@@ -61,6 +67,6 @@ The `context` parameter provides ambient information that parsers use as fallbac
 
 - Prefer this over `report_finding` when you have raw output from a supported tool
 - Set `ingest: false` to preview what would be parsed without modifying the graph
-- Set `list_parsers: true` to get the current list of supported parser names (21 aliases across 11 parsers)
+- Set `list_parsers: true` to get the current list of supported parser names (32 aliases across 16 parsers)
 - Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance
 - See [parse_output vs report_finding](../playbook/parse-vs-report.md) for detailed guidance
