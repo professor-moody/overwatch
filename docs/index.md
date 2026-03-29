@@ -67,6 +67,7 @@ Then just run `claude` — see the full [Getting Started](getting-started.md) gu
 
 ## Architecture at a Glance
 
-![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
+![System Architecture](assets/system-architecture-light.svg#only-light)
+![System Architecture](assets/system-architecture-dark.svg#only-dark)
 
 Learn more in [Architecture](architecture.md), explore [Key Concepts](concepts.md), or jump to the [Tool Reference](tools/index.md).

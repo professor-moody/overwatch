@@ -1,0 +1,56 @@
+<svg viewBox="0 0 680 460" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+  .th{font-size:13px;font-weight:500;fill:#e0e0e0}
+  .ts{font-size:11px;fill:#9ca3af}
+  .arr{stroke:#6b7280;stroke-width:1}
+  .n-purple rect{fill:#26215C;stroke:#534AB7;stroke-width:.5}
+  .n-purple .th{fill:#CCFFCC}.n-purple .ts{fill:#AFA9EC}
+  .n-blue rect{fill:#0C3A6E;stroke:#378ADD;stroke-width:.5}
+  .n-blue .th{fill:#B5D4F4}.n-blue .ts{fill:#85B7EB}
+  .n-teal rect{fill:#053B30;stroke:#1D9E75;stroke-width:.5}
+  .n-teal .th{fill:#9FE1CB}.n-teal .ts{fill:#5DCAA5}
+  .n-amber rect{fill:#3A2800;stroke:#BA7517;stroke-width:.5}
+  .n-amber .th{fill:#FAC775}.n-amber .ts{fill:#EF9F27}
+  .n-coral rect{fill:#3E1508;stroke:#D85A30;stroke-width:.5}
+  .n-coral .th{fill:#F5C4B3}.n-coral .ts{fill:#F0997B}
+  .n-pink rect{fill:#3E1028;stroke:#D4537E;stroke-width:.5}
+  .n-pink .th{fill:#F4C0D1}.n-pink .ts{fill:#ED93B1}
+  .n-gray rect{fill:#1e1e1c;stroke:#5F5E5A;stroke-width:.5}
+  .n-gray .th{fill:#D3D1C7}.n-gray .ts{fill:#B4B2A9}
+  .n-red rect{fill:#3A0F0F;stroke:#A32D2D;stroke-width:.5}
+  .n-red .th{fill:#F7C1C1}.n-red .ts{fill:#F09595}
+</style>
+<rect width="100%" height="100%" fill="transparent" rx="6"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+  <g class="n-amber"><rect x="200" y="10" width="280" height="36" rx="7"/><text class="th" x="340" y="28" text-anchor="middle" dominant-baseline="central">GraphEngine (thin facade)</text></g>
+  <line x1="340" y1="46" x2="340" y2="64" class="arr" marker-end="url(#arr)"/>
+  <g class="n-gray"><rect x="100" y="64" width="480" height="44" rx="8"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">EngineContext (shared mutable state)</text><text class="ts" x="340" y="96" text-anchor="middle" dominant-baseline="central">graph, config, rules, agents, activity log, callbacks, coldStore</text></g>
+  <line x1="130" y1="108" x2="130" y2="126" class="arr" marker-end="url(#arr)"/><line x1="270" y1="108" x2="270" y2="126" class="arr" marker-end="url(#arr)"/><line x1="410" y1="108" x2="410" y2="126" class="arr" marker-end="url(#arr)"/><line x1="540" y1="108" x2="540" y2="126" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="68" y="126" width="130" height="44" rx="6"/><text class="th" x="133" y="142" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="133" y="158" text-anchor="middle" dominant-baseline="central">22 rules, selectors</text></g>
+  <g class="n-blue"><rect x="210" y="126" width="120" height="44" rx="6"/><text class="th" x="270" y="142" text-anchor="middle" dominant-baseline="central">Frontier</text><text class="ts" x="270" y="158" text-anchor="middle" dominant-baseline="central">5 item types</text></g>
+  <g class="n-purple"><rect x="342" y="126" width="130" height="44" rx="6"/><text class="th" x="407" y="142" text-anchor="middle" dominant-baseline="central">Path analyzer</text><text class="ts" x="407" y="158" text-anchor="middle" dominant-baseline="central">BFS, objectives</text></g>
+  <g class="n-coral"><rect x="484" y="126" width="140" height="44" rx="6"/><text class="th" x="554" y="142" text-anchor="middle" dominant-baseline="central">State persistence</text><text class="ts" x="554" y="158" text-anchor="middle" dominant-baseline="central">Atomic write</text></g>
+  <text class="th" x="340" y="196" text-anchor="middle" dominant-baseline="central">Supporting services</text>
+  <g class="n-gray"><rect x="44" y="210" width="120" height="36" rx="5"/><text class="ts" x="104" y="228" text-anchor="middle" dominant-baseline="central">Identity resolution</text></g>
+  <g class="n-gray"><rect x="176" y="210" width="120" height="36" rx="5"/><text class="ts" x="236" y="228" text-anchor="middle" dominant-baseline="central">Identity reconcile</text></g>
+  <g class="n-gray"><rect x="308" y="210" width="100" height="36" rx="5"/><text class="ts" x="358" y="228" text-anchor="middle" dominant-baseline="central">Cold store</text></g>
+  <g class="n-gray"><rect x="420" y="210" width="100" height="36" rx="5"/><text class="ts" x="470" y="228" text-anchor="middle" dominant-baseline="central">Graph health</text></g>
+  <g class="n-gray"><rect x="532" y="210" width="100" height="36" rx="5"/><text class="ts" x="582" y="228" text-anchor="middle" dominant-baseline="central">Graph schema</text></g>
+  <text class="th" x="340" y="272" text-anchor="middle" dominant-baseline="central">Operational services</text>
+  <g class="n-pink"><rect x="44" y="286" width="100" height="36" rx="5"/><text class="ts" x="94" y="304" text-anchor="middle" dominant-baseline="central">Session mgr</text></g>
+  <g class="n-pink"><rect x="156" y="286" width="100" height="36" rx="5"/><text class="ts" x="206" y="304" text-anchor="middle" dominant-baseline="central">Agent mgr</text></g>
+  <g class="n-pink"><rect x="268" y="286" width="100" height="36" rx="5"/><text class="ts" x="318" y="304" text-anchor="middle" dominant-baseline="central">Output parsers</text></g>
+  <g class="n-pink"><rect x="380" y="286" width="100" height="36" rx="5"/><text class="ts" x="430" y="304" text-anchor="middle" dominant-baseline="central">Skill index</text></g>
+  <g class="n-pink"><rect x="492" y="286" width="100" height="36" rx="5"/><text class="ts" x="542" y="304" text-anchor="middle" dominant-baseline="central">Prompt gen</text></g>
+  <g class="n-pink"><rect x="44" y="334" width="100" height="36" rx="5"/><text class="ts" x="94" y="352" text-anchor="middle" dominant-baseline="central">Report gen</text></g>
+  <g class="n-pink"><rect x="156" y="334" width="100" height="36" rx="5"/><text class="ts" x="206" y="352" text-anchor="middle" dominant-baseline="central">Retrospective</text></g>
+  <g class="n-pink"><rect x="268" y="334" width="100" height="36" rx="5"/><text class="ts" x="318" y="352" text-anchor="middle" dominant-baseline="central">Community det.</text></g>
+  <g class="n-pink"><rect x="380" y="334" width="100" height="36" rx="5"/><text class="ts" x="430" y="352" text-anchor="middle" dominant-baseline="central">Credential utils</text></g>
+  <g class="n-pink"><rect x="492" y="334" width="100" height="36" rx="5"/><text class="ts" x="542" y="352" text-anchor="middle" dominant-baseline="central">Process tracker</text></g>
+  <text class="th" x="340" y="396" text-anchor="middle" dominant-baseline="central">Transport + UI</text>
+  <g class="n-blue"><rect x="68" y="410" width="160" height="36" rx="6"/><text class="ts" x="148" y="428" text-anchor="middle" dominant-baseline="central">stdio (MCP default)</text></g>
+  <g class="n-blue"><rect x="248" y="410" width="180" height="36" rx="6"/><text class="ts" x="338" y="428" text-anchor="middle" dominant-baseline="central">HTTP/SSE (streamable)</text></g>
+  <g class="n-blue"><rect x="448" y="410" width="190" height="36" rx="6"/><text class="ts" x="543" y="428" text-anchor="middle" dominant-baseline="central">Dashboard (WS + sigma.js)</text></g>
+</svg>

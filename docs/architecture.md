@@ -4,32 +4,15 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 
 ## System Diagram
 
-![Overwatch E2E Flow](assets/overwatch-e2e-flow.svg)
+![System Architecture](assets/system-architecture-light.svg#only-light)
+![System Architecture](assets/system-architecture-dark.svg#only-dark)
 
 ## Data Flow Example
 
 Here's a concrete walkthrough of how data flows through the system during a typical engagement step:
 
-```
-1. Operator runs nmap against 10.10.10.0/24
-2. LLM calls parse_output(tool_name="nmap", output="<xml>...")
-3. Output parser extracts 5 hosts, 12 services
-4. Engine ingests nodes: host-10-10-10-5, svc-10-10-10-5-445, ...
-   └─ Ping-only hosts (alive, IP-only, no services) → cold store census
-   └─ Hosts with services or hostnames → hot graph
-5. Inference rules fire:
-   └─ SMB service with smb_signing: false → RELAY_TARGET edges created
-   └─ Kerberos service detected → MEMBER_OF_DOMAIN edge to domain node
-6. Frontier recomputed:
-   └─ "Enumerate SMB shares on 10.10.10.5" (incomplete_node)
-   └─ "Test relay to 10.10.10.5:445" (inferred_edge, confidence: 0.6)
-7. State persisted to disk (atomic write-rename)
-8. Dashboard broadcast:
-   └─ WebSocket delta with 5 new nodes, 12 edges, 2 inferred edges
-   └─ UI panels update: frontier, graph summary, activity
-9. LLM calls next_task → sees new frontier items
-10. LLM dispatches sub-agent to enumerate SMB shares
-```
+![Data Flow Lifecycle](assets/data-flow-lifecycle-light.svg#only-light)
+![Data Flow Lifecycle](assets/data-flow-lifecycle-dark.svg#only-dark)
 
 Every step is traceable: `action_id` links `validate_action` → `log_action_event` → `parse_output` → `report_finding`. The activity log records the full causal chain.
 
@@ -94,6 +77,9 @@ See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the fu
 The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-graph.md) gives unrestricted access to the entire graph for creative path discovery. [`find_paths`](tools/find-paths.md) provides shortest-path analysis between any nodes or toward objectives.
 
 ## Component Overview
+
+![Service Decomposition](assets/service-decomposition-light.svg#only-light)
+![Service Decomposition](assets/service-decomposition-dark.svg#only-dark)
 
 ### Core
 
@@ -194,22 +180,13 @@ Features:
 - **Resume anywhere** — restart Claude Code, restart the server, come back days later
 - **Post-engagement analysis** — persisted state feeds retrospective analysis
 
+## Session + Transport Architecture
+
+![Session Transport](assets/session-transport-light.svg#only-light)
+![Session Transport](assets/session-transport-dark.svg#only-dark)
+
+Two MCP transports (stdio default, HTTP/SSE for remote). Persistent interactive sessions with 3 adapters (LocalPty, SSH, Socket), 128KB ring buffers, cursor-based I/O, and TTY quality tracking.
+
 ## Broadcast Pipeline
 
-When the graph changes, updates flow to the dashboard in real time:
-
-```
-GraphEngine.persist()
-  → onUpdate callback fires
-  → DeltaAccumulator collects changes (debounced)
-  → DashboardServer broadcasts via WebSocket:
-      - New connections: full_state message (complete graph + engagement state)
-      - Existing connections: graph_update message (delta only)
-  → Browser receives:
-      - graph.js merges delta into graphology instance
-      - ui.js updates sidebar panels
-      - New nodes pulse for 2 seconds
-      - Minimap redraws
-```
-
-The dashboard also polls `/api/state` every 5 seconds as a fallback when WebSocket is disconnected.
+When the graph changes, updates flow to the dashboard in real time. The dashboard also polls `/api/state` every 5 seconds as a fallback when WebSocket is disconnected.

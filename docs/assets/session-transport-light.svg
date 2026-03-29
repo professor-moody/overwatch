@@ -1,0 +1,49 @@
+<svg viewBox="0 0 680 420" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+  .th{font-size:13px;font-weight:500;fill:#1e293b}
+  .ts{font-size:11px;fill:#475569}
+  .arr{stroke:#94a3b8;stroke-width:1}
+  .n-purple rect{fill:#ede9fe;stroke:#8b5cf6;stroke-width:.5}
+  .n-purple .th{fill:#5b21b6}.n-purple .ts{fill:#7c3aed}
+  .n-blue rect{fill:#dbeafe;stroke:#3b82f6;stroke-width:.5}
+  .n-blue .th{fill:#1e40af}.n-blue .ts{fill:#2563eb}
+  .n-teal rect{fill:#d1fae5;stroke:#10b981;stroke-width:.5}
+  .n-teal .th{fill:#065f46}.n-teal .ts{fill:#059669}
+  .n-amber rect{fill:#fef3c7;stroke:#f59e0b;stroke-width:.5}
+  .n-amber .th{fill:#92400e}.n-amber .ts{fill:#b45309}
+  .n-coral rect{fill:#fff7ed;stroke:#f97316;stroke-width:.5}
+  .n-coral .th{fill:#9a3412}.n-coral .ts{fill:#ea580c}
+  .n-pink rect{fill:#fce7f3;stroke:#ec4899;stroke-width:.5}
+  .n-pink .th{fill:#9d174d}.n-pink .ts{fill:#db2777}
+  .n-gray rect{fill:#f1f5f9;stroke:#94a3b8;stroke-width:.5}
+  .n-gray .th{fill:#334155}.n-gray .ts{fill:#475569}
+  .n-red rect{fill:#fee2e2;stroke:#ef4444;stroke-width:.5}
+  .n-red .th{fill:#991b1b}.n-red .ts{fill:#dc2626}
+</style>
+<rect width="100%" height="100%" fill="#ffffff" rx="6"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+  <g class="n-purple"><rect x="60" y="10" width="250" height="48" rx="7"/><text class="th" x="185" y="28" text-anchor="middle" dominant-baseline="central">stdio transport</text><text class="ts" x="185" y="44" text-anchor="middle" dominant-baseline="central">Claude Code default</text></g>
+  <g class="n-blue"><rect x="370" y="10" width="250" height="48" rx="7"/><text class="th" x="495" y="28" text-anchor="middle" dominant-baseline="central">HTTP/SSE transport</text><text class="ts" x="495" y="44" text-anchor="middle" dominant-baseline="central">Multi-client, remote</text></g>
+  <line x1="185" y1="58" x2="185" y2="74" stroke="#94a3b8" stroke-width=".5"/><line x1="495" y1="58" x2="495" y2="74" stroke="#94a3b8" stroke-width=".5"/>
+  <line x1="185" y1="74" x2="495" y2="74" stroke="#94a3b8" stroke-width=".5"/><line x1="340" y1="74" x2="340" y2="90" class="arr" marker-end="url(#arr)"/>
+  <g class="n-amber"><rect x="140" y="90" width="400" height="40" rx="7"/><text class="th" x="340" y="110" text-anchor="middle" dominant-baseline="central">app.ts (transport-neutral, 39 tools)</text></g>
+  <line x1="340" y1="130" x2="340" y2="152" class="arr" marker-end="url(#arr)"/>
+  <text class="th" x="340" y="166" text-anchor="middle" dominant-baseline="central">Session manager</text>
+  <g class="n-teal"><rect x="44" y="180" width="180" height="48" rx="7"/><text class="th" x="134" y="198" text-anchor="middle" dominant-baseline="central">LocalPty adapter</text><text class="ts" x="134" y="214" text-anchor="middle" dominant-baseline="central">node-pty, full TTY</text></g>
+  <g class="n-teal"><rect x="250" y="180" width="180" height="48" rx="7"/><text class="th" x="340" y="198" text-anchor="middle" dominant-baseline="central">SSH adapter</text><text class="ts" x="340" y="214" text-anchor="middle" dominant-baseline="central">Key/password auth</text></g>
+  <g class="n-teal"><rect x="456" y="180" width="180" height="48" rx="7"/><text class="th" x="546" y="198" text-anchor="middle" dominant-baseline="central">Socket adapter</text><text class="ts" x="546" y="214" text-anchor="middle" dominant-baseline="central">Reverse shells</text></g>
+  <line x1="134" y1="228" x2="134" y2="250" stroke="#94a3b8" stroke-width=".5"/><line x1="340" y1="228" x2="340" y2="250" stroke="#94a3b8" stroke-width=".5"/><line x1="546" y1="228" x2="546" y2="250" stroke="#94a3b8" stroke-width=".5"/>
+  <line x1="134" y1="250" x2="546" y2="250" stroke="#94a3b8" stroke-width=".5"/><line x1="340" y1="250" x2="340" y2="268" class="arr" marker-end="url(#arr)"/>
+  <g class="n-coral"><rect x="140" y="268" width="400" height="48" rx="7"/><text class="th" x="340" y="286" text-anchor="middle" dominant-baseline="central">128KB ring buffer per session</text><text class="ts" x="340" y="302" text-anchor="middle" dominant-baseline="central">Cursor-based, monotonic positions</text></g>
+  <line x1="340" y1="316" x2="340" y2="338" class="arr" marker-end="url(#arr)"/>
+  <g class="n-gray"><rect x="100" y="338" width="90" height="32" rx="6"/><text class="ts" x="145" y="354" text-anchor="middle" dominant-baseline="central">pending</text></g>
+  <line x1="190" y1="354" x2="240" y2="354" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="240" y="338" width="110" height="32" rx="6"/><text class="ts" x="295" y="354" text-anchor="middle" dominant-baseline="central">connected</text></g>
+  <line x1="350" y1="354" x2="406" y2="354" class="arr" marker-end="url(#arr)"/>
+  <g class="n-gray"><rect x="406" y="338" width="80" height="32" rx="6"/><text class="ts" x="446" y="354" text-anchor="middle" dominant-baseline="central">closed</text></g>
+  <line x1="295" y1="370" x2="295" y2="390" class="arr" marker-end="url(#arr)"/>
+  <g class="n-red"><rect x="258" y="390" width="74" height="26" rx="5"/><text class="ts" x="295" y="403" text-anchor="middle" dominant-baseline="central">error</text></g>
+  <text class="ts" x="530" y="354" text-anchor="start">TTY: none → dumb → partial → full</text>
+</svg>

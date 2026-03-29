@@ -28,6 +28,9 @@ Access frontier items via [`next_task`](tools/next-task.md).
 
 Deterministic rules that fire automatically when matching nodes are ingested. They generate **hypothesis edges** — low-confidence relationships the LLM should evaluate.
 
+![Inference Lifecycle](assets/inference-lifecycle-light.svg#only-light)
+![Inference Lifecycle](assets/inference-lifecycle-dark.svg#only-dark)
+
 **Lifecycle:**
 
 ```
@@ -82,6 +85,9 @@ See [Configuration](configuration.md#opsec-profiles) for profile options.
 ## Compaction
 
 When the LLM's context window overflows, Claude Code **compacts** — summarizing the conversation history to free up space. This would normally lose engagement state.
+
+![Compaction Persistence](assets/compaction-persistence-light.svg#only-light)
+![Compaction Persistence](assets/compaction-persistence-dark.svg#only-dark)
 
 Overwatch survives compaction because the graph lives outside the context window. After compaction:
 
@@ -148,6 +154,9 @@ The `action_id` links all steps together. This enables:
 ## Deterministic Layer vs LLM Layer
 
 Overwatch splits decision-making into two layers:
+
+![Hybrid Scoring](assets/hybrid-scoring-light.svg#only-light)
+![Hybrid Scoring](assets/hybrid-scoring-dark.svg#only-dark)
 
 **Deterministic layer** (the server) handles:
 

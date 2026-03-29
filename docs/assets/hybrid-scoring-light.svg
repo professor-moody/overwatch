@@ -1,0 +1,43 @@
+<svg viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+  .th{font-size:13px;font-weight:500;fill:#1e293b}
+  .ts{font-size:11px;fill:#475569}
+  .arr{stroke:#94a3b8;stroke-width:1}
+  .n-purple rect{fill:#ede9fe;stroke:#8b5cf6;stroke-width:.5}
+  .n-purple .th{fill:#5b21b6}.n-purple .ts{fill:#7c3aed}
+  .n-blue rect{fill:#dbeafe;stroke:#3b82f6;stroke-width:.5}
+  .n-blue .th{fill:#1e40af}.n-blue .ts{fill:#2563eb}
+  .n-teal rect{fill:#d1fae5;stroke:#10b981;stroke-width:.5}
+  .n-teal .th{fill:#065f46}.n-teal .ts{fill:#059669}
+  .n-amber rect{fill:#fef3c7;stroke:#f59e0b;stroke-width:.5}
+  .n-amber .th{fill:#92400e}.n-amber .ts{fill:#b45309}
+  .n-coral rect{fill:#fff7ed;stroke:#f97316;stroke-width:.5}
+  .n-coral .th{fill:#9a3412}.n-coral .ts{fill:#ea580c}
+  .n-pink rect{fill:#fce7f3;stroke:#ec4899;stroke-width:.5}
+  .n-pink .th{fill:#9d174d}.n-pink .ts{fill:#db2777}
+  .n-gray rect{fill:#f1f5f9;stroke:#94a3b8;stroke-width:.5}
+  .n-gray .th{fill:#334155}.n-gray .ts{fill:#475569}
+  .n-red rect{fill:#fee2e2;stroke:#ef4444;stroke-width:.5}
+  .n-red .th{fill:#991b1b}.n-red .ts{fill:#dc2626}
+</style>
+<rect width="100%" height="100%" fill="#ffffff" rx="6"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+  <g class="n-blue"><rect x="40" y="40" width="280" height="280" rx="14"/><text class="th" x="180" y="64" text-anchor="middle" dominant-baseline="central">Deterministic layer</text><text class="ts" x="180" y="80" text-anchor="middle" dominant-baseline="central">Guardrail, not brain</text></g>
+  <g class="n-blue"><rect x="70" y="98" width="220" height="30" rx="5"/><text class="ts" x="180" y="113" text-anchor="middle" dominant-baseline="central">Scope enforcement (CIDR/domain)</text></g>
+  <g class="n-blue"><rect x="70" y="136" width="220" height="30" rx="5"/><text class="ts" x="180" y="151" text-anchor="middle" dominant-baseline="central">Deduplication (tested edges)</text></g>
+  <g class="n-blue"><rect x="70" y="174" width="220" height="30" rx="5"/><text class="ts" x="180" y="189" text-anchor="middle" dominant-baseline="central">OPSEC vetoes (noise ceiling)</text></g>
+  <g class="n-blue"><rect x="70" y="212" width="220" height="30" rx="5"/><text class="ts" x="180" y="227" text-anchor="middle" dominant-baseline="central">Inference rule execution</text></g>
+  <g class="n-blue"><rect x="70" y="250" width="220" height="30" rx="5"/><text class="ts" x="180" y="265" text-anchor="middle" dominant-baseline="central">Frontier generation</text></g>
+  <g class="n-blue"><rect x="70" y="288" width="220" height="30" rx="5"/><text class="ts" x="180" y="303" text-anchor="middle" dominant-baseline="central">Dead host pruning</text></g>
+  <g class="n-purple"><rect x="360" y="40" width="280" height="280" rx="14"/><text class="th" x="500" y="64" text-anchor="middle" dominant-baseline="central">LLM layer</text><text class="ts" x="500" y="80" text-anchor="middle" dominant-baseline="central">Offensive reasoning</text></g>
+  <g class="n-purple"><rect x="390" y="98" width="220" height="30" rx="5"/><text class="ts" x="500" y="113" text-anchor="middle" dominant-baseline="central">Attack chain spotting</text></g>
+  <g class="n-purple"><rect x="390" y="136" width="220" height="30" rx="5"/><text class="ts" x="500" y="151" text-anchor="middle" dominant-baseline="central">Sequencing decisions</text></g>
+  <g class="n-purple"><rect x="390" y="174" width="220" height="30" rx="5"/><text class="ts" x="500" y="189" text-anchor="middle" dominant-baseline="central">Risk/reward assessment</text></g>
+  <g class="n-purple"><rect x="390" y="212" width="220" height="30" rx="5"/><text class="ts" x="500" y="227" text-anchor="middle" dominant-baseline="central">Creative path discovery</text></g>
+  <g class="n-purple"><rect x="390" y="250" width="220" height="30" rx="5"/><text class="ts" x="500" y="265" text-anchor="middle" dominant-baseline="central">Tool command construction</text></g>
+  <g class="n-purple"><rect x="390" y="288" width="220" height="30" rx="5"/><text class="ts" x="500" y="303" text-anchor="middle" dominant-baseline="central">Agent dispatch decisions</text></g>
+  <g class="n-amber"><rect x="160" y="354" width="360" height="34" rx="7"/><text class="th" x="340" y="371" text-anchor="middle" dominant-baseline="central">Directed property graph (shared interface)</text></g>
+  <line x1="180" y1="320" x2="260" y2="354" class="arr" marker-end="url(#arr)"/><line x1="500" y1="320" x2="420" y2="354" class="arr" marker-end="url(#arr)"/>
+</svg>

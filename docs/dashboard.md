@@ -160,14 +160,8 @@ A 160×110px minimap in the bottom-right corner shows the full graph at a glance
 
 ## Architecture
 
-```
-Browser ◄──── WebSocket ────► DashboardServer
-  │                                 │
-  ├─ graph.js (sigma + FA2)   onUpdate callback
-  ├─ ui.js (sidebar + detail)      │
-  ├─ ws.js (reconnect logic)  GraphEngine.persist()
-  └─ main.js (wiring)
-```
+![Dashboard Pipeline](assets/dashboard-pipeline-light.svg#only-light)
+![Dashboard Pipeline](assets/dashboard-pipeline-dark.svg#only-dark)
 
 - **HTTP** serves static files from the `dashboard/` directory with MIME types and file caching
 - **WebSocket** broadcasts graph deltas on every `persist()` call; full state on connect
