@@ -86,6 +86,7 @@ nav:
       - register_agent: tools/register-agent.md
       - get_agent_context: tools/get-agent-context.md
       - update_agent: tools/update-agent.md
+      - dispatch_subnet_agents: tools/dispatch-subnet-agents.md
     - Skills & Inference:
       - get_skill: tools/get-skill.md
       - suggest_inference_rule: tools/suggest-inference-rule.md

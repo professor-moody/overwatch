@@ -433,6 +433,8 @@ export interface EngagementState {
     community_count: number;
     largest_community_size: number;
     unexplored_community_count: number;
+    cold_node_count: number;
+    cold_nodes_by_subnet?: Record<string, number>;
   };
   objectives: EngagementObjective[];
   frontier: FrontierItem[];

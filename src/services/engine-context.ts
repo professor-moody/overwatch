@@ -13,6 +13,7 @@ import type {
   NodeProperties, EdgeProperties,
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
+import { ColdStore } from './cold-store.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -91,6 +92,7 @@ export class EngineContext {
   communityCache: Map<string, number> | null;  // cached Louvain community assignments
   trackedProcesses: TrackedProcess[];
   actionFrontierMap: Map<string, { frontier_item_id: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
+  coldStore: ColdStore;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -105,6 +107,7 @@ export class EngineContext {
     this.communityCache = null;
     this.trackedProcesses = [];
     this.actionFrontierMap = new Map();
+    this.coldStore = new ColdStore();
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {

@@ -39,7 +39,7 @@ describe('app bootstrap', () => {
       getDashboardStatus: () => ({ enabled: false, running: false }),
     });
 
-    expect(toolNames).toHaveLength(38);
+    expect(toolNames).toHaveLength(39);
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('run_retrospective');
     expect(toolNames).toContain('generate_report');
@@ -48,5 +48,6 @@ describe('app bootstrap', () => {
     expect(toolNames).toContain('update_scope');
     expect(toolNames).toContain('get_system_prompt');
     expect(toolNames).toContain('ingest_azurehound');
+    expect(toolNames).toContain('dispatch_subnet_agents');
   });
 });

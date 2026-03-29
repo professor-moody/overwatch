@@ -24,6 +24,7 @@ import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './p
 import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNodeIdentity } from './identity-resolution.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
+import { classifyNodeTemperature, isInterestingEdgeType, toColdRecord } from './cold-store.js';
 import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -491,6 +492,18 @@ export class GraphEngine {
   }
 
   // =============================================
+  // Cold Store Helpers
+  // =============================================
+
+  private findSubnetCidr(ip?: string): string | undefined {
+    if (!ip) return undefined;
+    for (const cidr of this.ctx.config.scope.cidrs) {
+      if (isIpInCidr(ip, cidr)) return cidr;
+    }
+    return undefined;
+  }
+
+  // =============================================
   // Node / Edge Operations
   // =============================================
 
@@ -682,8 +695,41 @@ export class GraphEngine {
         fullProps.confirmed_at = existingNode.confirmed_at;
       }
 
+      // --- Graph compaction: classify new nodes as hot or cold ---
+      // Cold = alive host with no services and no interesting edges (yet).
+      // Already-hot nodes (in graphology) are never demoted.
+      const alreadyHot = !isNew; // existing graph node stays hot
+      const wasCold = !alreadyHot && this.ctx.coldStore.has(node.id);
+      const temperature = alreadyHot ? 'hot' : classifyNodeTemperature(fullProps, false);
+
+      if (temperature === 'cold' && !wasCold) {
+        // New cold node — store in census, skip graphology
+        const subnetCidr = this.findSubnetCidr(fullProps.ip);
+        this.ctx.coldStore.add(toColdRecord(fullProps, subnetCidr));
+        continue; // skip addNode, newNodes, reconciliation
+      } else if (wasCold) {
+        // Node was cold but is being re-ingested — promote it.
+        // Merge cold record timestamps so first_seen_at / discovered_at are preserved.
+        const coldRecord = this.ctx.coldStore.promote(node.id);
+        if (coldRecord) {
+          if (coldRecord.discovered_at < fullProps.discovered_at) {
+            fullProps.discovered_at = coldRecord.discovered_at;
+          }
+          fullProps.first_seen_at = coldRecord.discovered_at < (fullProps.first_seen_at || fullProps.discovered_at)
+            ? coldRecord.discovered_at
+            : (fullProps.first_seen_at || fullProps.discovered_at);
+          // Merge provenance sources
+          if (coldRecord.provenance && coldRecord.provenance !== finding.agent_id) {
+            const existingSources = fullProps.sources || [];
+            if (!existingSources.includes(coldRecord.provenance)) {
+              fullProps.sources = [coldRecord.provenance, ...existingSources];
+            }
+          }
+        }
+      }
+
       this.addNode(fullProps);
-      if (isNew) {
+      if (isNew || wasCold) {
         newNodes.push(node.id);
         this.log(`New ${node.type} discovered: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
       } else if (oldProps && this.propertiesChanged(oldProps, fullProps)) {
@@ -716,6 +762,30 @@ export class GraphEngine {
     for (const edge of finding.edges) {
       const sourceId = idRemap.get(edge.source) || edge.source;
       const targetId = idRemap.get(edge.target) || edge.target;
+
+      // Edge promotion guard: if either endpoint is cold, promote it before attaching
+      for (const endpointId of [sourceId, targetId]) {
+        if (!this.ctx.graph.hasNode(endpointId) && this.ctx.coldStore.has(endpointId)) {
+          const coldRecord = this.ctx.coldStore.promote(endpointId);
+          if (coldRecord) {
+            this.addNode({
+              id: coldRecord.id,
+              type: coldRecord.type as NodeType,
+              label: coldRecord.label,
+              ip: coldRecord.ip,
+              hostname: coldRecord.hostname,
+              discovered_at: coldRecord.discovered_at,
+              last_seen_at: coldRecord.last_seen_at,
+              alive: coldRecord.alive,
+              discovered_by: coldRecord.provenance,
+              confidence: 1.0,
+            });
+            newNodes.push(endpointId);
+            this.log(`Promoted cold host to hot graph (edge requires it): ${coldRecord.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
+          }
+        }
+      }
+
       if (!this.ctx.graph.hasNode(sourceId) || !this.ctx.graph.hasNode(targetId)) continue;
       const fullProps: EdgeProperties = {
         discovered_at: finding.timestamp,
@@ -896,6 +966,31 @@ export class GraphEngine {
     const now = new Date().toISOString();
     for (const subnetId of matchingSubnets) {
       const subnetCidr = this.ctx.graph.getNodeAttributes(subnetId).subnet_cidr as string;
+
+      // Promote cold peers in the same subnet so pivot edges can be created
+      const coldPeersToPromote: string[] = [];
+      this.ctx.coldStore.forEach((record) => {
+        if (!record.ip || record.id === triggerHostId) return;
+        if (isIpInCidr(record.ip, subnetCidr)) coldPeersToPromote.push(record.id);
+      });
+      for (const coldPeerId of coldPeersToPromote) {
+        const coldRecord = this.ctx.coldStore.promote(coldPeerId);
+        if (coldRecord) {
+          this.addNode({
+            id: coldRecord.id,
+            type: coldRecord.type as NodeType,
+            label: coldRecord.label,
+            ip: coldRecord.ip,
+            hostname: coldRecord.hostname,
+            discovered_at: coldRecord.discovered_at,
+            last_seen_at: coldRecord.last_seen_at,
+            alive: coldRecord.alive,
+            discovered_by: coldRecord.provenance,
+            confidence: 1.0,
+          });
+        }
+      }
+
       this.ctx.graph.forEachNode((peerId: string, peerAttrs) => {
         if (peerId === triggerHostId) return;
         if (peerAttrs.type !== 'host' || !peerAttrs.ip) return;
@@ -2014,6 +2109,14 @@ export class GraphEngine {
         confirmed_edges: confirmedEdges,
         inferred_edges: inferredEdges,
         ...this.getCommunityStats(),
+        cold_node_count: this.ctx.coldStore.count(),
+        cold_nodes_by_subnet: this.ctx.coldStore.count() > 0
+          ? Object.fromEntries(
+              Object.entries(this.ctx.coldStore.countBySubnet())
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 5)
+            )
+          : undefined,
       },
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),
@@ -2142,6 +2245,33 @@ export class GraphEngine {
       const nowInScope = isIpInScope(ip, after.cidrs, after.exclusions);
       if (!wasInScope && nowInScope) affectedNodeCount++;
     });
+
+    // Also promote cold nodes that are now in scope
+    const coldToPromote: string[] = [];
+    this.ctx.coldStore.forEach((record) => {
+      if (!record.ip) return;
+      const wasInScope = isIpInScope(record.ip, before.cidrs, before.exclusions);
+      const nowInScope = isIpInScope(record.ip, after.cidrs, after.exclusions);
+      if (!wasInScope && nowInScope) coldToPromote.push(record.id);
+    });
+    for (const id of coldToPromote) {
+      const coldRecord = this.ctx.coldStore.promote(id);
+      if (coldRecord) {
+        this.addNode({
+          id: coldRecord.id,
+          type: coldRecord.type as NodeType,
+          label: coldRecord.label,
+          ip: coldRecord.ip,
+          hostname: coldRecord.hostname,
+          discovered_at: coldRecord.discovered_at,
+          last_seen_at: coldRecord.last_seen_at,
+          alive: coldRecord.alive,
+          discovered_by: coldRecord.provenance,
+          confidence: 1.0,
+        });
+        affectedNodeCount++;
+      }
+    }
 
     // Invalidate caches
     this.invalidateFrontierCache();

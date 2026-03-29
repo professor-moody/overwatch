@@ -31,7 +31,7 @@ An `EngagementState` object containing:
 | Field | Type | Description |
 |-------|------|-------------|
 | `config` | `EngagementConfig` | Scope, objectives, OPSEC profile |
-| `graph_summary` | `object` | Node/edge counts by type, confirmed vs inferred, community stats |
+| `graph_summary` | `object` | Node/edge counts by type, confirmed vs inferred, community stats, cold store census |
 | `objectives` | `EngagementObjective[]` | All objectives with achievement status |
 | `frontier` | `FrontierItem[]` | Candidate next actions with graph metrics |
 | `active_agents` | `AgentTask[]` | Currently running sub-agents |
@@ -49,6 +49,15 @@ An `EngagementState` object containing:
 | `unexplored_community_count` | `number` | Communities with at least one unexplored frontier item |
 
 These are computed lazily from the graph topology and cached until the next topology change.
+
+### graph_summary cold store fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cold_node_count` | `number` | Number of hosts in the cold store census (alive, IP-only, no services) |
+| `cold_nodes_by_subnet` | `Record<string, number>` | Top 5 subnets by cold node count (omitted when 0) |
+
+See [Concepts — Graph Compaction](../concepts.md#graph-compaction-cold-store) for details on hot/cold classification.
 
 ## Example
 

@@ -2696,10 +2696,10 @@ describe('GraphEngine', () => {
         nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5', alive: true }],
       }));
 
-      // Before expansion — filtered out
+      // Before expansion — node is cold (alive IP-only out-of-scope) so not in frontier
       const frontier1 = engine.computeFrontier();
       const { passed: p1, filtered: f1 } = engine.filterFrontier(frontier1);
-      expect(f1.some(f => f.item.node_id === 'host-172-16-1-5')).toBe(true);
+      expect(p1.some(f => f.node_id === 'host-172-16-1-5')).toBe(false);
 
       // Expand scope
       engine.updateScope({ add_cidrs: ['172.16.1.0/24'], reason: 'Pivot' });

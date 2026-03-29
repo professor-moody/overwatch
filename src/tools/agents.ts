@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { isIpInCidr } from '../services/cidr.js';
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery'] as const;
@@ -311,6 +312,106 @@ auto-computed from the frontier item's target node(s).`,
         content: [{
           type: 'text',
           text: JSON.stringify({ task_id, status, summary, updated: true }, null, 2)
+        }]
+      };
+    })
+  );
+
+  // ============================================================
+  // Tool: dispatch_subnet_agents
+  // Dispatch one sub-agent per scope CIDR for parallel enumeration.
+  // ============================================================
+  server.registerTool(
+    'dispatch_subnet_agents',
+    {
+      title: 'Dispatch Subnet Agents',
+      description: `Dispatch one sub-agent per scope CIDR for parallel network enumeration.
+
+For each CIDR in the engagement scope, registers a sub-agent whose task is to
+sweep and enumerate that subnet. Skips CIDRs that already have a running agent
+or are fully discovered. Each agent receives the already-discovered nodes in
+its CIDR as its scoped subgraph.`,
+      inputSchema: {
+        max_agents: z.number().int().min(1).max(20).default(8).describe('Maximum number of agents to dispatch'),
+        skill: z.string().default('subnet-enumeration').describe('Skill/methodology to assign to each agent'),
+        hops: z.number().int().min(1).max(5).default(2).describe('Hops for subgraph scope computation'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      }
+    },
+    withErrorBoundary('dispatch_subnet_agents', async ({ max_agents, skill, hops }) => {
+      const state = engine.getState();
+      const cidrs = state.config.scope.cidrs;
+      if (cidrs.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'No CIDRs in engagement scope' }, null, 2)
+          }],
+          isError: true
+        };
+      }
+
+      const frontier = engine.computeFrontier();
+      const dispatched: Array<{ task_id: string; agent_id: string; cidr: string; existing_nodes: number; skill: string }> = [];
+      const skipped: Array<{ cidr: string; reason: string }> = [];
+
+      for (const cidr of cidrs) {
+        if (dispatched.length >= max_agents) break;
+
+        // Check if a network_discovery frontier item exists for this CIDR
+        const slug = cidr.replace(/[./]/g, '-');
+        const frontierItemId = `frontier-discovery-${slug}`;
+        const frontierItem = frontier.find(f => f.id === frontierItemId);
+
+        // Skip fully-discovered CIDRs (no frontier item means fully explored)
+        if (!frontierItem) {
+          skipped.push({ cidr, reason: 'fully_discovered' });
+          continue;
+        }
+
+        // Skip CIDRs with a running agent
+        const existing = engine.getRunningTaskForFrontierItem(frontierItemId);
+        if (existing) {
+          skipped.push({ cidr, reason: `running_agent: ${existing.agent_id}` });
+          continue;
+        }
+
+        // Collect already-discovered node IDs in this CIDR
+        const nodesInCidr: string[] = [];
+        const graph = engine.exportGraph();
+        for (const node of graph.nodes) {
+          if (node.properties.type === 'host' && node.properties.ip && isIpInCidr(node.properties.ip, cidr)) {
+            nodesInCidr.push(node.id);
+          }
+        }
+
+        const agent_id = `agent-subnet-${slug}-${uuidv4().slice(0, 8)}`;
+        const task = buildTask(agent_id, frontierItemId, nodesInCidr, skill);
+        engine.registerAgent(task);
+
+        dispatched.push({
+          task_id: task.id,
+          agent_id,
+          cidr,
+          existing_nodes: nodesInCidr.length,
+          skill,
+        });
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            requested: max_agents,
+            total_cidrs: cidrs.length,
+            dispatched,
+            skipped,
+          }, null, 2)
         }]
       };
     })

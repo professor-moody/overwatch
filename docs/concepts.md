@@ -17,6 +17,7 @@ A **candidate next action** generated from the graph. The deterministic layer pr
 | `incomplete_node` | A node missing expected properties or relationships | Host with no service enumeration |
 | `untested_edge` | An edge that exists but hasn't been validated | `POTENTIAL_AUTH` credential → service |
 | `inferred_edge` | A hypothesis edge created by an inference rule | `RELAY_TARGET` from SMB signing disabled |
+| `network_discovery` | CIDR scope with undiscovered hosts | Network sweep of 10.10.10.0/24 |
 | `network_pivot` | Host reachable via pivot but without a session | Host in same subnet as session-holder |
 
 Frontier items include **graph metrics** (hops to objective, fan-out estimate, node degree) but are **not scored** — scoring is the LLM's job. The deterministic layer only filters out items that are out-of-scope, duplicated, or exceed the OPSEC noise ceiling.
@@ -240,6 +241,37 @@ pending → connected → closed
 Socket sessions (reverse shells, listeners) start in `pending` and transition to `connected` when a connection is established. PTY and SSH sessions connect immediately. Sessions are ephemeral across server restarts — PTY file descriptors cannot be serialized.
 
 See [Session Tools](tools/sessions.md) for the full API reference.
+
+## Graph Compaction (Cold Store)
+
+During large network sweeps, hundreds of hosts may respond to ping without offering any services. To keep the **hot graph** focused on actionable targets, Overwatch uses a **cold store** — an in-memory census that tracks these low-interest hosts outside the main graphology graph.
+
+### Temperature Classification
+
+Every host ingested into the graph is classified as **hot** or **cold**:
+
+| Condition | Temperature | Reason |
+|-----------|-------------|--------|
+| Non-host node type | Hot | Always — services, users, credentials, etc. need full graph participation |
+| Host with `alive !== true` | Hot | Dead or unconfirmed hosts need scope tracking |
+| Host with hostname or OS | Hot | Identity-bearing — needed for reconciliation |
+| Host with interesting edges | Hot | HAS_SESSION, ADMIN_TO, RUNS, HOSTS, etc. |
+| Alive IP-only host, no services | **Cold** | Pure ping response — census only |
+
+### Promotion
+
+Cold nodes are **promoted** to the hot graph automatically when:
+
+- A new edge references them (edge promotion guard)
+- A later finding adds services, hostname, or OS
+- A pivot session makes them reachable (pivot reachability inference)
+- A scope expansion brings them into scope (`update_scope`)
+
+Promotion is **one-way** — hot nodes are never demoted back to cold. This avoids cache invalidation complexity.
+
+### Visibility
+
+`get_state()` includes `cold_node_count` and `cold_nodes_by_subnet` (top 5) in the graph summary, giving the LLM awareness of the census without cluttering the frontier.
 
 ## Engagement State vs Graph State
 

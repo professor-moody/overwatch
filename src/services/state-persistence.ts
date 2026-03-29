@@ -32,6 +32,7 @@ export class StatePersistence {
       agents: Array.from(this.ctx.agents.entries()),
       inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
       trackedProcesses: this.ctx.trackedProcesses,
+      coldStore: this.ctx.coldStore.export(),
     };
     const json = JSON.stringify(data, null, 2);
 
@@ -107,6 +108,9 @@ export class StatePersistence {
         this.ctx.inferenceRules.push(rule);
       }
     }
+    if (data.coldStore) {
+      this.ctx.coldStore.import(data.coldStore);
+    }
     this.ctx.rebuildActionFrontierMap();
     this.ctx.log('Rolled back to snapshot: ' + snapshotName, undefined, { category: 'system' });
     this.persist();
@@ -128,6 +132,9 @@ export class StatePersistence {
       for (const rule of data.inferenceRules) {
         this.ctx.inferenceRules.push(rule);
       }
+    }
+    if (data.coldStore) {
+      this.ctx.coldStore.import(data.coldStore);
     }
     this.ctx.rebuildActionFrontierMap();
   }
@@ -153,6 +160,9 @@ export class StatePersistence {
           for (const rule of data.inferenceRules) {
             this.ctx.inferenceRules.push(rule);
           }
+        }
+        if (data.coldStore) {
+          this.ctx.coldStore.import(data.coldStore);
         }
         this.ctx.rebuildActionFrontierMap();
         // Overwrite corrupted state file with valid snapshot data

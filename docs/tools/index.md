@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 38 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 39 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -23,6 +23,7 @@ Overwatch exposes 38 MCP tools organized by function. Each tool uses Zod schemas
 | [`dispatch_agents`](#) | Batch-dispatch agents from frontier | :x: |
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | :white_check_mark: |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | :x: |
+| [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | :x: |
 | [`get_skill`](get-skill.md) | RAG search over skill library | :white_check_mark: |
 | [`suggest_inference_rule`](suggest-inference-rule.md) | Add a custom inference rule | :x: |
 | [`ingest_bloodhound`](ingest-bloodhound.md) | Import BloodHound JSON collections | :x: |

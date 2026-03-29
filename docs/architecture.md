@@ -15,6 +15,8 @@ Here's a concrete walkthrough of how data flows through the system during a typi
 2. LLM calls parse_output(tool_name="nmap", output="<xml>...")
 3. Output parser extracts 5 hosts, 12 services
 4. Engine ingests nodes: host-10-10-10-5, svc-10-10-10-5-445, ...
+   └─ Ping-only hosts (alive, IP-only, no services) → cold store census
+   └─ Hosts with services or hostnames → hot graph
 5. Inference rules fire:
    └─ SMB service with smb_signing: false → RELAY_TARGET edges created
    └─ Kerberos service detected → MEMBER_OF_DOMAIN edge to domain node
@@ -126,6 +128,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Community Detection** | `src/services/community-detection.ts` | Louvain modularity for graph clustering |
 | **Dashboard Server** | `src/services/dashboard-server.ts` | HTTP + WebSocket for live visualization |
 | **Delta Accumulator** | `src/services/delta-accumulator.ts` | Debounced graph change tracking for broadcasts |
+| **Cold Store** | `src/services/cold-store.ts` | Promotion-only compaction for large network sweeps |
 | **Agent Manager** | `src/services/agent-manager.ts` | Sub-agent task lifecycle |
 | **Retrospective** | `src/services/retrospective.ts` | Post-engagement analysis and RLVR traces |
 | **CIDR** | `src/services/cidr.ts` | CIDR parsing, expansion, and scope matching |
@@ -146,7 +149,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
 | **Findings** | `src/tools/findings.ts` | `report_finding` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
-| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent` |
+| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents` |
 | **Skills** | `src/tools/skills.ts` | `get_skill` |
 | **Logging** | `src/tools/logging.ts` | `log_action_event` |
 | **Parse Output** | `src/tools/parse-output.ts` | `parse_output` |
