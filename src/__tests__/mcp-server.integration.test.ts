@@ -693,8 +693,7 @@ describe('MCP Server Integration', () => {
     });
 
     const retro = await callToolJson('run_retrospective', {});
-    expect(retro.training_traces).toBeInstanceOf(Array);
-    expect(retro.training_traces.some((trace: any) =>
-      ['session_opened', 'session_signaled', 'session_closed'].includes(trace.action?.type))).toBe(true);
+    expect(retro.training_traces_count).toBeTypeOf('number');
+    expect(retro.training_traces_count).toBeGreaterThanOrEqual(1);
   });
 });
