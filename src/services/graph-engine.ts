@@ -1203,7 +1203,10 @@ export class GraphEngine {
       nodesByType[attrs.type] = (nodesByType[attrs.type] || 0) + 1;
     });
 
-    this.ctx.graph.forEachEdge((_, attrs) => {
+    this.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
+      const srcAttrs = this.ctx.graph.getNodeAttributes(source);
+      const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
+      if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       edgesByType[attrs.type] = (edgesByType[attrs.type] || 0) + 1;
       if (attrs.confidence >= 1.0) confirmedEdges++;
       else inferredEdges++;
@@ -1236,9 +1239,9 @@ export class GraphEngine {
     return {
       config: this.ctx.config,
       graph_summary: {
-        total_nodes: this.ctx.graph.order,
+        total_nodes: Object.values(nodesByType).reduce((a, b) => a + b, 0),
         nodes_by_type: nodesByType,
-        total_edges: this.ctx.graph.size,
+        total_edges: confirmedEdges + inferredEdges,
         edges_by_type: edgesByType,
         confirmed_edges: confirmedEdges,
         inferred_edges: inferredEdges,
@@ -1401,15 +1404,22 @@ export class GraphEngine {
     this.ctx.trackedProcesses = processes;
   }
 
-  exportGraph(): ExportedGraph {
+  exportGraph(options?: { includeSuperseded?: boolean }): ExportedGraph {
+    const includeSuperseded = options?.includeSuperseded ?? false;
     const nodes: ExportedGraph['nodes'] = [];
     const edges: ExportedGraph['edges'] = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
+      if (!includeSuperseded && attrs.identity_status === 'superseded') return;
       nodes.push({ id, properties: attrs });
     });
 
     this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
+      if (!includeSuperseded) {
+        const srcAttrs = this.ctx.graph.getNodeAttributes(source);
+        const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
+        if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
+      }
       edges.push({ id: edgeId, source, target, properties: attrs });
     });
 

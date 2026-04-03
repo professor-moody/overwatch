@@ -6,7 +6,7 @@ import { withErrorBoundary } from './error-boundary.js';
 import { isIpInCidr } from '../services/cidr.js';
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
-  const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery'] as const;
+  const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot'] as const;
 
   function buildTask(agent_id: string, frontier_item_id: string, subgraph_node_ids: string[], skill?: string) {
     return {

@@ -211,6 +211,7 @@ export class SocketAdapter implements SessionAdapterFactory {
   }
 
   private spawnListener(host: string, port: number, sessionId: string, onConnect?: () => void): Promise<AdapterHandle> {
+    const self = this;
     return new Promise((resolve, reject) => {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
@@ -252,7 +253,7 @@ export class SocketAdapter implements SessionAdapterFactory {
             }
             server.close();
             if (sessionId) {
-              // Use arrow to capture `this` from outer class, but we stored ref
+              self.activeServers.delete(sessionId);
             }
           },
           onData(cb: (chunk: string) => void) {
