@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers } from '../parsers/index.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei } from '../parsers/index.js';
 
 describe('Output Parsers', () => {
 
@@ -130,6 +130,29 @@ describe('Output Parsers', () => {
       const finding = parseNmapXml(sampleNmap);
       const host = finding.nodes.find(n => n.ip === '10.10.10.5');
       expect(host?.os).toBe('Windows Server 2019');
+    });
+
+    it('parses IPv6-only hosts', () => {
+      const ipv6Nmap = `<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="fe80::1" addrtype="ipv6"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>`;
+      const finding = parseNmapXml(ipv6Nmap);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].ip).toBe('fe80::1');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].port).toBe(22);
     });
   });
 
@@ -421,6 +444,30 @@ describe('Output Parsers', () => {
     it('handles empty JSON', () => {
       const finding = parseCertipy('{}');
       expect(finding.nodes.length).toBe(0);
+    });
+
+    it('creates edges for ESC5 and ESC13 vulnerability types', () => {
+      const data = {
+        'Certificate Templates': {
+          'MisconfigTemplate': {
+            'Enrollee Supplies Subject': false,
+            '[!] Vulnerabilities': {
+              'ESC5': { 'Description': 'PKI object misconfiguration' },
+              'ESC13': { 'Description': 'Issuance policy abuse' },
+            },
+            'Enrollment Permissions': {
+              'Enrollment Rights': ['ACME\\Domain Users'],
+            },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const esc5Edges = finding.edges.filter(e => e.properties.type === 'ESC5');
+      const esc13Edges = finding.edges.filter(e => e.properties.type === 'ESC13');
+      expect(esc5Edges.length).toBe(1);
+      expect(esc13Edges.length).toBe(1);
+      expect(esc5Edges[0].target).toBe('cert-template-misconfigtemplate');
+      expect(esc13Edges[0].target).toBe('cert-template-misconfigtemplate');
     });
   });
 
@@ -810,6 +857,13 @@ describe('Output Parsers', () => {
       expect(creds.length).toBe(2);
       expect(creds[0].cred_domain).toBeUndefined();
     });
+
+    it('rejects long non-hashcat input via preamble check', () => {
+      const junkLines = Array.from({ length: 25 }, (_, i) => `This is irrelevant log line ${i + 1}`);
+      const finding = parseHashcat(junkLines.join('\n'));
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
   });
 
   // =============================================
@@ -913,6 +967,34 @@ describe('Output Parsers', () => {
       const finding = parseResponder('');
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
+    });
+
+    it('parses NTLMv1-SSP captures', () => {
+      const v1Output = [
+        '[SMB] NTLMv1-SSP Client   : 10.10.10.7',
+        '[SMB] NTLMv1-SSP Username : CORP\\legacy_svc',
+        '[SMB] NTLMv1-SSP Hash     : legacy_svc::CORP:aabb:ccdd:0101',
+      ].join('\n');
+      const finding = parseResponder(v1Output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].label).toMatch(/^NTLMv1:/);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].username).toBe('legacy_svc');
+    });
+
+    it('parses UPN format usernames (user@domain)', () => {
+      const upnOutput = [
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.8',
+        '[SMB] NTLMv2-SSP Username : jdoe@acme.local',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::acme.local:1122:3344:5566',
+      ].join('\n');
+      const finding = parseResponder(upnOutput);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].username).toBe('jdoe');
+      expect(users[0].domain_name).toBe('acme.local');
     });
   });
 
@@ -1119,6 +1201,25 @@ describe('Output Parsers', () => {
     it('handles empty/malformed input', () => {
       expect(parseEnum4linux('').nodes.length).toBe(0);
       expect(parseEnum4linux('no useful data').nodes.length).toBe(0);
+    });
+
+    it('creates user nodes for group members not in data.users', () => {
+      const jsonData = JSON.stringify({
+        target: { host: '10.10.10.5' },
+        domain_info: { domain: 'ACME' },
+        users: {
+          '500': { username: 'Administrator' },
+        },
+        groups: {
+          '512': { groupname: 'Domain Admins', members: [{ name: 'Administrator' }, { name: 'sneaky_admin' }] },
+        },
+      });
+      const finding = parseEnum4linux(jsonData);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      const usernames = users.map(u => u.username);
+      expect(usernames).toContain('sneaky_admin');
+      const memberEdges = finding.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      expect(memberEdges.length).toBe(2);
     });
 
     it('emits both node and edge when node ID matches edge key pattern (M5 regression)', () => {
@@ -1489,6 +1590,53 @@ describe('Output Parsers', () => {
       const groups = finding.nodes.filter(n => n.type === 'group');
       expect(groups.length).toBe(1);
       expect(groups[0].domain_name).toBe('north.sevenkingdoms.local');
+    });
+  });
+
+  // =============================================
+  // testssl Text-Mode Fallback
+  // =============================================
+  describe('parseTestssl — text mode fallback', () => {
+    it('extracts target and vulnerabilities from raw text output', () => {
+      const textOutput = [
+        'Start 2026-04-01 10:00:00        -->> 10.10.10.5:443 (10.10.10.5) <<--',
+        '',
+        'Testing protocols via sockets',
+        'Testing vulnerabilities',
+        '',
+        'heartbleed (CVE-2014-0160)                     VULNERABLE',
+        'CCS (CVE-2014-0224)                            NOT ok',
+        '',
+        'Testing 10.10.10.5 on 10.10.10.5:443',
+      ].join('\n');
+      const finding = parseTestssl(textOutput);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].ip).toBe('10.10.10.5');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].port).toBe(443);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBeGreaterThanOrEqual(1);
+      expect(vulns.some(v => v.cve === 'CVE-2014-0160')).toBe(true);
+      const vulnEdges = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(vulnEdges.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // =============================================
+  // Nuclei JSON Array Format
+  // =============================================
+  describe('parseNuclei — JSON array format', () => {
+    it('parses a single JSON array containing multiple findings', () => {
+      const entries = [
+        { 'template-id': 'tech-detect', host: 'https://10.10.10.5', 'matched-at': 'https://10.10.10.5', type: 'http', info: { name: 'Nginx Detect', severity: 'info' } },
+        { 'template-id': 'cve-2021-1234', host: 'https://10.10.10.5', 'matched-at': 'https://10.10.10.5/vuln', type: 'http', info: { name: 'Test CVE', severity: 'high' }, 'matcher-name': 'CVE-2021-1234' },
+      ];
+      const finding = parseNuclei(JSON.stringify(entries));
+      expect(finding.nodes.length).toBeGreaterThan(0);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

@@ -333,6 +333,9 @@ export class SessionManager {
     } catch (err) {
       session.metadata.state = 'error';
       session.metadata.closed_at = new Date().toISOString();
+      if (session.handle) {
+        try { session.handle.close(); } catch { /* ignore cleanup errors */ }
+      }
       this.logSessionEvent(id, 'session_error',
         `Session "${options.title}" failed to open: ${err instanceof Error ? err.message : String(err)}`);
 
@@ -391,7 +394,17 @@ export class SessionManager {
 
     const timeoutMs = options.timeout_ms || 10000;
     const idleMs = options.idle_ms || 500;
-    const waitForRegex = options.wait_for ? new RegExp(options.wait_for) : null;
+    let waitForRegex: RegExp | null = null;
+    if (options.wait_for) {
+      if (options.wait_for.length > 1000) {
+        throw new Error('wait_for pattern too long (max 1000 chars)');
+      }
+      try {
+        waitForRegex = new RegExp(options.wait_for);
+      } catch (e) {
+        throw new Error(`Invalid wait_for regex: ${(e as Error).message}`);
+      }
+    }
 
     // Record position before sending
     const startPos = session.buffer.endPos;

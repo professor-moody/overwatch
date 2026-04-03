@@ -151,8 +151,8 @@ describe('isHostnameInScope', () => {
     expect(isHostnameInScope('BAD.TEST.LOCAL', domains, exclusions)).toBe(false);
   });
 
-  it('returns true when no domains configured (cannot determine)', () => {
-    expect(isHostnameInScope('anything.random.com', [], [])).toBe(true);
+  it('returns false when no domains configured (closed-by-default scope)', () => {
+    expect(isHostnameInScope('anything.random.com', [], [])).toBe(false);
   });
 
   it('ignores CIDR exclusions (only hostname matching)', () => {

@@ -501,6 +501,19 @@ describe('9.5 — Linpeas parser', () => {
     expect(host!.cron_checked).toBe(true);
     expect((host!.cron_jobs as string[]).length).toBeGreaterThanOrEqual(1);
   });
+
+  it('extracts hostname from header when source_host is not provided', () => {
+    const output = [
+      '════════════════════════════════════════════════════════',
+      '                  Hostname: web01',
+      '════════════════════════════════════════════════════════',
+      'Linux version 5.15.0-generic (buildd@lcy02-amd64-102)',
+    ].join('\n');
+    const result = parseLinpeas(output, 'test');
+    const host = result.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.id).toBe('host-web01');
+  });
 });
 
 // ============================================================

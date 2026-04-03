@@ -8,8 +8,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SessionManager } from '../services/session-manager.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { isIpInScope, isHostnameInScope } from '../services/cidr.js';
 
-export function registerSessionTools(server: McpServer, sessionManager: SessionManager, _engine: GraphEngine): void {
+export function registerSessionTools(server: McpServer, sessionManager: SessionManager, engine: GraphEngine): void {
 
   // ============================================================
   // Tool: open_session
@@ -56,6 +57,16 @@ The session is claimed by the opening agent — other agents can read but not wr
       },
     },
     withErrorBoundary('open_session', async (params) => {
+      const warnings: string[] = [];
+      if (params.host && engine) {
+        const scope = engine.getConfig().scope;
+        const hostInScope = isIpInScope(params.host, scope.cidrs, scope.exclusions)
+          || isHostnameInScope(params.host, scope.domains, scope.exclusions);
+        if (!hostInScope) {
+          warnings.push(`Warning: host "${params.host}" is not in engagement scope`);
+        }
+      }
+
       const result = await sessionManager.create({
         kind: params.kind,
         title: params.title,
@@ -84,6 +95,7 @@ The session is claimed by the opening agent — other agents can read but not wr
           text: JSON.stringify({
             session: result.metadata,
             initial_output: result.initial,
+            ...(warnings.length > 0 ? { warnings } : {}),
           }, null, 2),
         }],
       };

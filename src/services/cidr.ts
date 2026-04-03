@@ -94,8 +94,7 @@ export function isHostnameInScope(hostname: string, domains: string[], exclusion
       if (lower === exclLower || lower.endsWith('.' + exclLower)) return false;
     }
   }
-  // If no scope domains configured, can't determine — allow
-  if (domains.length === 0) return true;
+  if (domains.length === 0) return false;
   // Check if hostname belongs to any scope domain
   for (const domain of domains) {
     const domainLower = domain.toLowerCase();

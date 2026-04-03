@@ -2358,6 +2358,39 @@ describe('GraphEngine', () => {
       const result = engine.validateAction({ target_node: resolvedId });
       expect(result.valid).toBe(true);
     });
+
+    it('allows node with out-of-scope IP but in-scope hostname (hostname fallback)', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-external', type: 'host', label: 'dc02.test.local', hostname: 'dc02.test.local', ip: '192.168.99.1' },
+        ],
+      }));
+      const resolvedId = 'host-192-168-99-1';
+      const result = engine.validateAction({ target_node: resolvedId });
+      expect(result.valid).toBe(true);
+    });
+
+    it('annotates frontier items with scope_unverified when node has no IP or hostname', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'domain-mystery', type: 'domain', label: 'mystery.local' },
+        ],
+      }));
+      const frontier = [{
+        id: 'frontier-test',
+        type: 'incomplete_node' as const,
+        node_id: 'domain-mystery',
+        description: 'Domain with no IP or hostname',
+        graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 0, confidence: 1.0 },
+        opsec_noise: 0.1,
+        staleness_seconds: 0,
+      }];
+      const result = engine.filterFrontier(frontier);
+      expect(result.passed.length).toBe(1);
+      expect(result.passed[0].scope_unverified).toBe(true);
+    });
   });
 
   // =============================================

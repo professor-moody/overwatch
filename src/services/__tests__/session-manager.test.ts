@@ -395,6 +395,60 @@ describe('SessionManager', () => {
       expect(elapsed).toBeLessThan(1000);
       expect(result.session_id).toBe(metadata.id);
     });
+
+    it('throws on invalid wait_for regex', async () => {
+      const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
+      await expect(manager.sendCommand(metadata.id, 'ls', {
+        wait_for: '[invalid(',
+      })).rejects.toThrow('Invalid wait_for regex');
+    });
+
+    it('throws when wait_for regex exceeds length limit', async () => {
+      const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
+      const longPattern = 'a'.repeat(1001);
+      await expect(manager.sendCommand(metadata.id, 'ls', {
+        wait_for: longPattern,
+      })).rejects.toThrow('wait_for pattern too long');
+    });
+  });
+
+  describe('create() error handling', () => {
+    it('closes adapter handle when create fails after handle is attached', async () => {
+      let handleClosed = false;
+      const failingAdapter: SessionAdapterFactory = {
+        kind: 'ssh' as any,
+        async spawn() {
+          return {
+            pid: 99999,
+            capabilities: { has_stdin: true, has_stdout: true, supports_resize: false, supports_signals: false, tty_quality: 'full' as const },
+            write() {},
+            resize() {},
+            kill() {},
+            close() { handleClosed = true; },
+            onData() {},
+            onExit() {},
+          };
+        },
+      };
+
+      const fakeEngine = {
+        logActionEvent() {},
+        ingestSessionResult() { throw new Error('Injected engine failure'); },
+      };
+      const engineManager = new SessionManager(fakeEngine as any);
+      engineManager.registerAdapter(failingAdapter);
+
+      await expect(engineManager.create({
+        kind: 'ssh' as any,
+        title: 'fail-test',
+        host: 'nonexistent.invalid',
+        target_node: 'host-target',
+        initial_wait_ms: 0,
+      })).rejects.toThrow('Injected engine failure');
+
+      expect(handleClosed).toBe(true);
+      await engineManager.shutdown();
+    });
   });
 
   describe('session exit handling', () => {
