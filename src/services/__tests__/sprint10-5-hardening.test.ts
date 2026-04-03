@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { FrontierComputer } from '../frontier.js';
 import { DashboardServer } from '../dashboard-server.js';
 import { SessionManager, RingBuffer } from '../session-manager.js';
 import type { Session } from '../session-manager.js';

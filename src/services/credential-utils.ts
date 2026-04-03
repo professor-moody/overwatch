@@ -102,7 +102,7 @@ export function inferCredentialDomain(credNodeId: string, graph: OverwatchGraph)
   const candidateDomains = new Set<string>();
 
   // Walk inbound OWNS_CRED edges to find owner user(s)
-  graph.forEachInEdge(credNodeId, (edgeId, edgeAttrs, source) => {
+  graph.forEachInEdge(credNodeId, (_edgeId, edgeAttrs, source) => {
     if (edgeAttrs.type !== 'OWNS_CRED') return;
     const sourceAttrs = graph.getNodeAttributes(source);
     if (sourceAttrs.type !== 'user') return;

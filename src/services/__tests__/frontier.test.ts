@@ -189,7 +189,6 @@ describe('FrontierComputer', () => {
 
     it('penalizes stale credential edges', () => {
       const graph = makeGraph();
-      const oldDate = new Date(Date.now() - 100 * 24 * 3600 * 1000).toISOString();
       addNode(graph, 'cred-1', {
         type: 'credential',
         cred_type: 'ntlm',

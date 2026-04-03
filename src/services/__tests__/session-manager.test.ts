@@ -1,10 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RingBuffer, SessionManager } from '../session-manager.js';
-import { LocalPtyAdapter, SocketAdapter } from '../session-adapters.js';
+import { LocalPtyAdapter } from '../session-adapters.js';
 import type { AdapterHandle, SessionCapabilities } from '../../types.js';
 import type { SessionAdapterFactory } from '../session-manager.js';
-import { createServer } from 'net';
-
 // ============================================================
 // RingBuffer Tests
 // ============================================================
@@ -610,19 +608,13 @@ describe('SessionManager — ownership enforcement', () => {
 // ============================================================
 
 describe('SocketAdapter — dumb session', () => {
-  let socketAdapter: SocketAdapter;
-
-  beforeEach(() => {
-    socketAdapter = new SocketAdapter();
-  });
-
   it('creates a listener that starts in pending state', async () => {
     const manager = new SessionManager(null);
 
     // Create a mock socket adapter that resolves immediately for testing
     const mockSocketAdapter: SessionAdapterFactory = {
       kind: 'socket',
-      async spawn(options) {
+      async spawn(_options) {
         const dataCbs: Array<(chunk: string) => void> = [];
         const exitCbs: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
 

@@ -48,7 +48,7 @@ export class PathAnalyzer {
     });
 
     // Copy edges with directionality semantics
-    this.ctx.graph.forEachEdge((edgeId: string, attrs, source: string, target: string) => {
+    this.ctx.graph.forEachEdge((_edgeId: string, attrs, source: string, target: string) => {
       const weight = this.computeEdgeWeight(attrs, optimize);
 
       const fwdKey = `${source}--${attrs.type}--${target}`;

@@ -7,14 +7,14 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   const now = new Date().toISOString();
   const seenNodes = new Set<string>();
 
-  let data: any;
+  let data: Record<string, unknown>;
   try {
-    data = JSON.parse(output);
+    data = JSON.parse(output) as Record<string, unknown>;
   } catch {
     return { id: `pacu-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [] };
   }
 
-  const accountId = context?.cloud_account || data.AccountId || data.account_id || '';
+  const accountId = (context?.cloud_account || data.AccountId || data.account_id || '') as string;
 
   // IAM Users
   if (Array.isArray(data.IAMUsers)) {
@@ -243,23 +243,30 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
   const lines = output.split('\n').filter(l => l.trim());
 
   for (const line of lines) {
-    let finding: any;
+    let finding: Record<string, unknown>;
     try {
-      finding = JSON.parse(line);
+      finding = JSON.parse(line) as Record<string, unknown>;
     } catch {
       continue;
     }
 
+    // Extract nested structures for safe access
+    const resources = Array.isArray(finding.resources) ? finding.resources as Record<string, unknown>[] : [];
+    const resource0 = resources[0] as Record<string, unknown> | undefined;
+    const cloud = finding.cloud as Record<string, unknown> | undefined;
+    const cloudAccount = cloud?.account as Record<string, unknown> | undefined;
+    const findingInfo = finding.finding_info as Record<string, unknown> | undefined;
+
     // Extract resource info
-    const resourceArn = finding.ResourceArn || finding.resource_arn
-      || finding.resources?.[0]?.uid || finding.resources?.[0]?.arn || '';
-    const resourceId = finding.ResourceId || finding.resource_id
-      || finding.resources?.[0]?.name || '';
-    const accountIdVal = finding.AccountId || finding.account_id
-      || finding.cloud?.account?.uid || context?.cloud_account || '';
-    const regionVal = finding.Region || finding.region
-      || finding.cloud?.region || context?.cloud_region || '';
-    const provider = (finding.Provider || finding.provider || 'aws').toLowerCase() as 'aws' | 'azure' | 'gcp';
+    const resourceArn = (finding.ResourceArn || finding.resource_arn
+      || resource0?.uid || resource0?.arn || '') as string;
+    const resourceId = (finding.ResourceId || finding.resource_id
+      || resource0?.name || '') as string;
+    const accountIdVal = (finding.AccountId || finding.account_id
+      || cloudAccount?.uid || context?.cloud_account || '') as string;
+    const regionVal = (finding.Region || finding.region
+      || cloud?.region || context?.cloud_region || '') as string;
+    const provider = String(finding.Provider || finding.provider || 'aws').toLowerCase() as 'aws' | 'azure' | 'gcp';
 
     if (!resourceArn && !resourceId) continue;
 
@@ -267,7 +274,7 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
     const crNodeId = cloudResourceId(arnForId);
 
     // Determine resource_type from service or check_type
-    const serviceName = (finding.ServiceName || finding.service_name || finding.resources?.[0]?.type || '').toLowerCase();
+    const serviceName = String(finding.ServiceName || finding.service_name || resource0?.type || '').toLowerCase();
     const resourceType = serviceName.replace(/^aws\./, '').replace(/\./g, '_') || 'unknown';
 
     if (!seenNodes.has(crNodeId)) {
@@ -282,16 +289,16 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
     }
 
     // Map failed/high-severity checks to vulnerability nodes
-    const status = (finding.Status || finding.status_code || finding.status || '').toUpperCase();
-    const severity = (finding.Severity || finding.severity || finding.finding_info?.severity || '').toUpperCase();
+    const status = String(finding.Status || finding.status_code || finding.status || '').toUpperCase();
+    const severity = String(finding.Severity || finding.severity || findingInfo?.severity || '').toUpperCase();
 
     if (status === 'FAIL' && (severity === 'HIGH' || severity === 'CRITICAL')) {
-      const checkId = finding.CheckID || finding.check_id || finding.finding_info?.uid || `prowler-${Date.now()}`;
+      const checkId = (finding.CheckID || finding.check_id || findingInfo?.uid || `prowler-${Date.now()}`) as string;
       const vulnNodeId = vulnerabilityId(checkId, crNodeId);
       if (!seenNodes.has(vulnNodeId)) {
         seenNodes.add(vulnNodeId);
-        const description = finding.StatusExtended || finding.status_extended
-          || finding.finding_info?.desc || finding.Description || '';
+        const description = (finding.StatusExtended || finding.status_extended
+          || findingInfo?.desc || finding.Description || '') as string;
         nodes.push({
           id: vulnNodeId, type: 'vulnerability',
           label: `${checkId}: ${description}`.slice(0, 120),

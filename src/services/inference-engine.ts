@@ -250,7 +250,7 @@ export class InferenceEngine {
 
       case 'parent_host': {
         const hosts: string[] = [];
-        this.ctx.graph.forEachInEdge(triggerNodeId, (edge: string, attrs, src: string) => {
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
           if (attrs.type === 'RUNS') hosts.push(src);
         });
         if (node.type === 'host') hosts.push(triggerNodeId);
@@ -348,7 +348,7 @@ export class InferenceEngine {
       case 'session_holders_on_host': {
         // For the trigger host, find source nodes of inbound HAS_SESSION edges
         const holders: string[] = [];
-        this.ctx.graph.forEachInEdge(triggerNodeId, (edge: string, attrs, src: string) => {
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
           if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
             holders.push(src);
           }
@@ -406,7 +406,7 @@ export class InferenceEngine {
         const srcAccount = node.cloud_account;
         if (!srcAccount) return [];
         const targets: string[] = [];
-        this.ctx.graph.forEachOutEdge(triggerNodeId, (edge: string, attrs, _src: string, tgt: string) => {
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
           if (attrs.type !== 'ASSUMES_ROLE') return;
           const tgtNode = this.getNode(tgt);
           if (tgtNode?.cloud_account && tgtNode.cloud_account !== srcAccount) {

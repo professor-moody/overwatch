@@ -13,7 +13,6 @@ const DANGEROUS_SUID_BINARIES = new Set([
 ]);
 
 export function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex
   return text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\x1B\][^\x07]*\x07/g, '');
 }
 

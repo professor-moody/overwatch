@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
 import { unlinkSync, existsSync, readFileSync } from 'fs';
@@ -263,7 +263,7 @@ describe('GraphEngine', () => {
     it('does NOT infer MEMBER_OF_DOMAIN for Kerberos host without matching hostname', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       // Host has no hostname — matching_domain should produce nothing
-      const result = engine.ingestFinding(makeFinding({
+      engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
           { id: 'svc-10-10-10-1-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
@@ -273,10 +273,6 @@ describe('GraphEngine', () => {
         ],
       }));
       // No hostname = no domain match = no inferred MEMBER_OF_DOMAIN
-      const domEdges = result.inferred_edges.filter(eId => {
-        const attrs = engine.getNode(eId);
-        return false; // edge IDs, check via graph
-      });
       const state = engine.getState();
       expect(state.graph_summary.edges_by_type['MEMBER_OF_DOMAIN'] || 0).toBe(0);
     });
@@ -290,7 +286,7 @@ describe('GraphEngine', () => {
           { id: 'host-10-10-10-3', type: 'host', label: 'dc01.eviltest.local', ip: '10.10.10.3', hostname: 'dc01.eviltest.local' },
         ],
       }));
-      const result = engine.ingestFinding(makeFinding({
+      engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'svc-10-10-10-3-88', type: 'service', label: 'Kerberos', port: 88, service_name: 'kerberos' },
         ],
@@ -470,7 +466,7 @@ describe('GraphEngine', () => {
         ],
       }));
       // Add a credential in "test.local" domain
-      const result = engine.ingestFinding(makeFinding({
+      engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-test-jdoe', type: 'user', label: 'test.local\\jdoe', username: 'jdoe', domain_name: 'test.local' },
           { id: 'cred-test-jdoe', type: 'credential', label: 'NTLM:jdoe', cred_type: 'ntlm', cred_material_kind: 'ntlm_hash', cred_usable_for_auth: true, cred_value: 'aabbccdd', cred_user: 'jdoe' },
@@ -2698,7 +2694,7 @@ describe('GraphEngine', () => {
 
       // Before expansion — node is cold (alive IP-only out-of-scope) so not in frontier
       const frontier1 = engine.computeFrontier();
-      const { passed: p1, filtered: f1 } = engine.filterFrontier(frontier1);
+      const { passed: p1, filtered: _f1 } = engine.filterFrontier(frontier1);
       expect(p1.some(f => f.node_id === 'host-172-16-1-5')).toBe(false);
 
       // Expand scope

@@ -91,7 +91,7 @@ export function updateScope(
   };
 
   let affectedNodeCount = 0;
-  host.ctx.graph.forEachNode((id, attrs) => {
+  host.ctx.graph.forEachNode((_id, attrs) => {
     if (attrs.type !== 'host') return;
     const ip = attrs.ip;
     if (!ip) return;

@@ -295,6 +295,7 @@ export class SessionManager {
         if (authFailed) {
           session.metadata.state = 'error';
           session.metadata.closed_at = new Date().toISOString();
+          try { session.handle?.close(); } catch { /* best-effort */ }
           this.logSessionEvent(id, 'session_error',
             `SSH auth failed for "${options.title}": ${authFailed}`);
         }
@@ -687,8 +688,9 @@ export class SessionManager {
       const check = () => {
         if (settled) return;
         if (session.buffer.endPos > startPos) {
-          // Got some output, wait a bit more for prompt to finish
           settled = true;
+          clearInterval(interval);
+          if (timer) clearTimeout(timer);
           setTimeout(resolve, 200);
           return;
         }
@@ -704,6 +706,7 @@ export class SessionManager {
 
       // Also resolve if already have output
       if (session.buffer.endPos > startPos) {
+        settled = true;
         clearInterval(interval);
         if (timer) clearTimeout(timer);
         setTimeout(resolve, 200);

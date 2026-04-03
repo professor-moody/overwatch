@@ -2,7 +2,7 @@ import type { Finding, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { hostId, vulnerabilityId, webappId } from '../parser-utils.js';
 
-export function parseNikto(output: string, agentId: string = 'nikto-parser', context?: ParseContext): Finding {
+export function parseNikto(output: string, agentId: string = 'nikto-parser', _context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const now = new Date().toISOString();

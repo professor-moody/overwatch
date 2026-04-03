@@ -1,6 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { promisify } from 'util';
-
 // Build a callback-style mock that has a proper custom promisify symbol
 // so that util.promisify returns { stdout, stderr } like the real execFile.
 let execImpl: (cmd: string, args: string[], opts: any) => { stdout: string; stderr: string };

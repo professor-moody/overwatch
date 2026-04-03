@@ -3,7 +3,7 @@
 // Parses SharpHound/bloodhound-python JSON output into Overwatch Findings
 // ============================================================
 
-import type { Finding, NodeType, EdgeType, NodeProperties } from '../types.js';
+import type { Finding, NodeType, EdgeType } from '../types.js';
 import { caId, certTemplateId, domainId, groupId, hostId, normalizeKeyPart, pkiStoreId, splitQualifiedAccount, userId } from './parser-utils.js';
 import { resolveNodeIdentity, resolveTypedRelationRef } from './identity-resolution.js';
 

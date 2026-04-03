@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
-import type { SkillIndex } from '../services/skill-index.js';
 import { generateSystemPrompt, type ToolEntry } from '../services/prompt-generator.js';
 import { withErrorBoundary } from './error-boundary.js';
 

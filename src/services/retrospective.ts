@@ -4,7 +4,7 @@
 // ============================================================
 
 import type {
-  EngagementConfig, NodeProperties, EdgeProperties, EdgeType, NodeType, ExportedGraph,
+  EngagementConfig, NodeProperties, EdgeType, NodeType, ExportedGraph,
   InferenceRule, AgentTask, InferenceRuleSuggestion,
   SkillGapReport, ContextImprovementReport, RLVRTrace, RetrospectiveResult,
   LoggingQualityReport, TraceQualityReport, AnalysisConfidence,
@@ -1064,7 +1064,6 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     let newEdges = 0;
     let objAchieved = false;
     let usedStructuredOutcome = false;
-    let usedHeuristicOutcome = false;
 
     // Parse node/edge counts from the next few entries
     for (let j = i + 1; j < Math.min(i + 3, history.length); j++) {
@@ -1076,9 +1075,6 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
       if (edgeMatch) newEdges += parseInt(edgeMatch[1]);
       if (nextEntry.category === 'finding' || nextEntry.outcome === 'success') {
         usedStructuredOutcome = true;
-      }
-      if (nodeMatch || edgeMatch || next.includes('objective achieved')) {
-        usedHeuristicOutcome = true;
       }
       if (next.includes('objective achieved')) objAchieved = true;
     }

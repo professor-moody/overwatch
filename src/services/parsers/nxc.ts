@@ -1,6 +1,6 @@
 import type { Finding, EdgeType, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { credentialId, domainId, groupId, hostId, resolveDomainName, userId } from '../parser-utils.js';
+import { credentialId, domainId, hostId, resolveDomainName, userId } from '../parser-utils.js';
 
 // --- NetExec (NXC) Parser ---
 
@@ -106,7 +106,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       continue;
     }
 
-    const [, ip, port, hostname, rest] = smbLine;
+    const [, ip, port, _hostname, rest] = smbLine;
     if (port !== '445') continue;
 
     // --- [*] Info line: extract host metadata ---

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import Graph from 'graphology';
-import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import {
   EngineContext,

@@ -65,7 +65,7 @@ export function parseTestssl(output: string, agentId: string = 'testssl-parser',
       byTarget.get(key)!.push(entry);
     }
 
-    for (const [target, findings] of byTarget) {
+    for (const [_target, findings] of byTarget) {
       const firstWithIp = findings.find(f => f.ip || f.IP);
       const ip = (firstWithIp?.ip || firstWithIp?.IP || context?.source_host || 'unknown') as string;
       const port = parseInt((firstWithIp?.port || '443') as string) || 443;

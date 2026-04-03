@@ -42,7 +42,6 @@ function parseRubeusKerberoast(
 
   for (const block of blocks) {
     const samMatch = block.match(/SamAccountName\s*:\s*(\S+)/i);
-    const spnMatch = block.match(/ServicePrincipalName\s*:\s*(\S+)/i);
     const hashMatch = block.match(/Hash\s*:\s*(\$krb5tgs\$[^\s]+)/i);
     // Handle multi-line hashes (Rubeus wraps long hashes)
     const multiLineHash = block.match(/Hash\s*:\s*([\s\S]*?)(?=\n\s*\n|\[\*\]|$)/i);

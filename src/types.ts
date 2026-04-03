@@ -294,6 +294,7 @@ export const engagementObjectiveSchema = z.object({
   description: nonEmptyString,
   target_node_type: nodeTypeSchema.optional(),
   target_criteria: z.record(z.unknown()).optional(),
+  achievement_edge_types: z.array(edgeTypeSchema).optional(),
   achieved: z.boolean(),
   achieved_at: z.string().optional(),
 });

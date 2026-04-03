@@ -14,7 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { Express } from 'express';
+import type { Express, Request, Response } from 'express';
 import type { Server } from 'http';
 import { GraphEngine } from './services/graph-engine.js';
 import { SkillIndex } from './services/skill-index.js';
@@ -248,7 +248,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   }
 
   // MCP POST — initialize new session or route to existing
-  expressApp.post('/mcp', async (req: any, res: any) => {
+  expressApp.post('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId && transports[sessionId]) {
@@ -292,7 +292,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   });
 
   // MCP GET — SSE stream for server-initiated messages
-  expressApp.get('/mcp', async (req: any, res: any) => {
+  expressApp.get('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !transports[sessionId]) {
       res.status(400).send('Invalid or missing session ID');
@@ -302,7 +302,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   });
 
   // MCP DELETE — session termination
-  expressApp.delete('/mcp', async (req: any, res: any) => {
+  expressApp.delete('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !transports[sessionId]) {
       res.status(400).send('Invalid or missing session ID');

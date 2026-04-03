@@ -1,5 +1,5 @@
 import type { OverwatchGraph } from './engine-context.js';
-import type { EdgeType, HealthIssue, HealthReport, HealthSeverity, HealthSummary, LabProfile, NodeProperties } from '../types.js';
+import type { HealthIssue, HealthReport, HealthSeverity, HealthSummary, LabProfile, NodeProperties } from '../types.js';
 import { normalizeKeyPart } from './parser-utils.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 import { getIdentityMarkers, isCanonicalIdentityNode, isIdentityType, isUnresolvedIdentityNode } from './identity-resolution.js';
@@ -173,7 +173,7 @@ function findSplitHostIdentities(graph: OverwatchGraph): HealthIssue[] {
 function findDanglingEdgeIssues(graph: OverwatchGraph): HealthIssue[] {
   const issues: HealthIssue[] = [];
 
-  graph.forEachEdge((edgeId, attrs, source, target) => {
+  graph.forEachEdge((edgeId, _attrs, source, target) => {
     const missing: string[] = [];
     if (!graph.hasNode(source)) missing.push(`source:${source}`);
     if (!graph.hasNode(target)) missing.push(`target:${target}`);

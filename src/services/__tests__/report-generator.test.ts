@@ -6,7 +6,7 @@ import {
   buildAttackNarrative,
   generateFullReport,
 } from '../report-generator.js';
-import type { ReportInput, ReportFinding, EvidenceChain, NarrativePhase } from '../report-generator.js';
+import type { ReportInput } from '../report-generator.js';
 import { renderReportHtml } from '../report-html.js';
 import type { EngagementConfig, NodeProperties, EdgeProperties, ExportedGraph } from '../../types.js';
 import type { ActivityLogEntry } from '../engine-context.js';
@@ -485,13 +485,6 @@ describe('generateFullReport', () => {
 // ============================================================
 
 describe('renderReportHtml', () => {
-  const defaultInput: ReportInput = {
-    config: makeConfig(),
-    graph: makeGraph(),
-    history: makeHistory(),
-    agents: [],
-  };
-
   it('produces valid HTML document', () => {
     const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
     const narrative = buildAttackNarrative(makeGraph(), makeHistory(), makeConfig());

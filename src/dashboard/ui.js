@@ -153,8 +153,8 @@ function updateStats(state) {
     const color = colors[type] || '#888';
     const clickable = clickableTypes.has(type);
     const label = window.OverwatchNodeDisplay.getFriendlyNodeTypeLabel(type);
-    html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${color}">
-      <div class="stat-value" style="color:${color}">${count}</div>
+    html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${escapeHtml(color)}">
+      <div class="stat-value" style="color:${escapeHtml(color)}">${count}</div>
       <div class="stat-label">${escapeHtml(label)}</div>
     </button>`;
   }
@@ -346,8 +346,8 @@ function renderFrontierFilterBadge() {
   if (!frontierTypeFilter) return '';
   const colors = G().NODE_COLORS;
   const color = colors[frontierTypeFilter] || '#888';
-  return `<div class="frontier-filter-badge" style="border-color:${color}">
-    <span>Showing: <strong>${frontierTypeFilter}s</strong></span>
+  return `<div class="frontier-filter-badge" style="border-color:${escapeHtml(color)}">
+    <span>Showing: <strong>${escapeHtml(frontierTypeFilter)}s</strong></span>
     <button onclick="clearFrontierTypeFilter()" title="Clear filter">&times;</button>
   </div>`;
 }
@@ -1097,7 +1097,8 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function toggleConnectionGroup(btn, event) {

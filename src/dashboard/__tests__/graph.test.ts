@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Graph from 'graphology';
+import GraphImport from 'graphology';
+const Graph = (GraphImport as any).default || GraphImport;
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 

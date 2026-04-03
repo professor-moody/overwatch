@@ -56,7 +56,8 @@ function handleStateSnapshot(data) {
 
 function doConnect() {
   const host = window.location?.host || 'localhost';
-  const wsUrl = `ws://${host}/ws`;
+  const scheme = window.location?.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = `${scheme}://${host}/ws`;
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {

@@ -2224,7 +2224,7 @@ function buildFilterButtons() {
     const count = typeCounts[type] || 0;
     const btn = document.createElement('button');
     btn.className = activeFilters.has(type) ? 'active' : '';
-    btn.innerHTML = `<span class="dot" style="background:${color}"></span>${type}<span class="count">${count}</span>`;
+    btn.innerHTML = `<span class="dot" style="background:${escapeHtml(color)}"></span>${escapeHtml(type)}<span class="count">${count}</span>`;
     btn.onclick = () => toggleFilter(type, btn);
     container.appendChild(btn);
   }
@@ -2800,4 +2800,5 @@ window.OverwatchGraph = {
   EDGE_CATEGORIES,
   NODE_COLORS,
   NODE_BASE_SIZES,
+  escapeHtml,
 };

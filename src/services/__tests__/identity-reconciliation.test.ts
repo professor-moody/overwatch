@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Graph from 'graphology';
+import GraphImport from 'graphology';
+const Graph = (GraphImport as any).default || GraphImport;
 import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph, ActivityLogEntry } from '../engine-context.js';
 import { IdentityReconciler } from '../identity-reconciliation.js';

@@ -268,7 +268,7 @@ export class SocketAdapter implements SessionAdapterFactory {
     });
   }
 
-  private spawnConnect(host: string, port: number, sessionId: string, onConnect?: () => void): Promise<AdapterHandle> {
+  private spawnConnect(host: string, port: number, _sessionId: string, onConnect?: () => void): Promise<AdapterHandle> {
     return new Promise((resolve, reject) => {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];

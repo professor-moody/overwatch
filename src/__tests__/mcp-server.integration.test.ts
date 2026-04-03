@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
-import { resolve, basename } from 'path';
+import { resolve } from 'path';
 import { createConnection, createServer, type Socket } from 'net';
 import { setTimeout as delay } from 'timers/promises';
 import * as pty from 'node-pty';
@@ -137,9 +137,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 36 tools including the session toolset', async () => {
+  it('lists all 39 tools including the session toolset', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(36);
+    expect(result.tools.length).toBe(39);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');

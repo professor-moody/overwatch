@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
@@ -39,7 +39,7 @@ function buildEngine(graph: OverwatchGraph, rules: InferenceRule[]) {
     graph.hasNode(id) ? graph.getNodeAttributes(id) as NodeProperties : null;
   const getNodesByType = (type: string): NodeProperties[] => {
     const nodes: NodeProperties[] = [];
-    graph.forEachNode((id: string, attrs) => {
+    graph.forEachNode((_id: string, attrs) => {
       if (attrs.type === type) nodes.push(attrs as NodeProperties);
     });
     return nodes;
@@ -166,7 +166,7 @@ describe('InferenceEngine', () => {
       addEdge(graph, 'host-10-10-10-3', 'svc-kerb', 'RUNS');
 
       const engine = buildEngine(graph, [RULE_KERBEROS_DOMAIN]);
-      const inferred = engine.runRules('svc-kerb');
+      engine.runRules('svc-kerb');
 
       // Should match eviltest.local, NOT test.local
       const edges = graph.edges('host-10-10-10-3', 'domain-eviltest-local');
@@ -271,7 +271,7 @@ describe('InferenceEngine', () => {
       addEdge(graph, 'user-jdoe', 'domain-test-local', 'MEMBER_OF_DOMAIN');
 
       const engine = buildEngine(graph, [RULE_CRED_FANOUT]);
-      const inferred = engine.runRules('cred-jdoe');
+      engine.runRules('cred-jdoe');
 
       // Should NOT create edge to other.local service
       const edges = graph.edges('cred-jdoe', 'svc-other-smb');

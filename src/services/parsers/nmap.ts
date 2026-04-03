@@ -140,59 +140,68 @@ const nmapXmlParser = new XMLParser({
 
 function extractNmapHosts(xml: string): NmapHost[] {
   const hosts: NmapHost[] = [];
-  let parsed: any;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = nmapXmlParser.parse(xml);
+    parsed = nmapXmlParser.parse(xml) as Record<string, unknown>;
   } catch {
     return hosts;
   }
 
-  const nmaprun = parsed.nmaprun || parsed;
-  const hostEntries: any[] = nmaprun?.host || [];
+  const nmaprun = (parsed.nmaprun ?? parsed) as Record<string, unknown>;
+  const rawHostEntries = nmaprun.host;
+  const hostEntries = Array.isArray(rawHostEntries) ? rawHostEntries as Record<string, unknown>[] : [];
 
   for (const h of hostEntries) {
     // IP address — find the ipv4 address entry
-    const addresses: any[] = Array.isArray(h.address) ? h.address : h.address ? [h.address] : [];
-    const ipv4 = addresses.find((a: any) => a['@_addrtype'] === 'ipv4');
+    const addresses: Record<string, unknown>[] = Array.isArray(h.address)
+      ? h.address as Record<string, unknown>[]
+      : h.address ? [h.address as Record<string, unknown>] : [];
+    const ipv4 = addresses.find((a) => a['@_addrtype'] === 'ipv4');
     if (!ipv4) continue;
-    const ip = ipv4['@_addr'];
+    const ip = ipv4['@_addr'] as string;
 
     // Status
-    const alive = h.status ? h.status['@_state'] === 'up' : true;
+    const statusObj = h.status as Record<string, unknown> | undefined;
+    const alive = statusObj ? statusObj['@_state'] === 'up' : true;
 
     // Hostname
-    const hostnames = h.hostnames?.hostname;
-    const hostnameEntry = Array.isArray(hostnames) ? hostnames[0] : hostnames;
-    const hostname = hostnameEntry?.['@_name'] || undefined;
+    const hostnamesObj = h.hostnames as Record<string, unknown> | undefined;
+    const hostnames = hostnamesObj?.hostname;
+    const hostnameEntry = (Array.isArray(hostnames) ? hostnames[0] : hostnames) as Record<string, unknown> | undefined;
+    const hostname = (hostnameEntry?.['@_name'] as string) || undefined;
 
     // OS
-    const osmatches = h.os?.osmatch;
-    const osEntry = Array.isArray(osmatches) ? osmatches[0] : osmatches;
-    const os = osEntry?.['@_name'] || undefined;
+    const osObj = h.os as Record<string, unknown> | undefined;
+    const osmatches = osObj?.osmatch;
+    const osEntry = (Array.isArray(osmatches) ? osmatches[0] : osmatches) as Record<string, unknown> | undefined;
+    const os = (osEntry?.['@_name'] as string) || undefined;
 
     // Ports
     const ports: NmapHost['ports'] = [];
-    const portEntries: any[] = h.ports?.port || [];
-    const portList = Array.isArray(portEntries) ? portEntries : [portEntries];
+    const portsObj = h.ports as Record<string, unknown> | undefined;
+    const rawPortEntries = portsObj?.port;
+    const portList: Record<string, unknown>[] = Array.isArray(rawPortEntries)
+      ? rawPortEntries as Record<string, unknown>[]
+      : rawPortEntries ? [rawPortEntries as Record<string, unknown>] : [];
 
     for (const p of portList) {
       if (!p['@_protocol'] || !p['@_portid']) continue;
 
-      const svc = p.service;
+      const svc = p.service as Record<string, unknown> | undefined;
       let service: string | undefined;
       let version: string | undefined;
       let banner: string | undefined;
 
       if (svc) {
-        service = svc['@_name'] || undefined;
+        service = (svc['@_name'] as string) || undefined;
         version = [svc['@_product'], svc['@_version']].filter(Boolean).join(' ') || undefined;
-        banner = svc['@_extrainfo'] || undefined;
+        banner = (svc['@_extrainfo'] as string) || undefined;
       }
 
       ports.push({
-        port: parseInt(p['@_portid']),
-        protocol: p['@_protocol'],
-        state: p.state?.['@_state'] || 'unknown',
+        port: parseInt(p['@_portid'] as string),
+        protocol: p['@_protocol'] as string,
+        state: (p.state as Record<string, unknown>)?.['@_state'] as string || 'unknown',
         service,
         version,
         banner,

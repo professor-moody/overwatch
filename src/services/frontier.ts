@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { EngineContext } from './engine-context.js';
-import type { NodeProperties, EdgeProperties, FrontierItem, NodeType } from '../types.js';
+import type { NodeProperties, FrontierItem, NodeType } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
 import { isCredentialStaleOrExpired } from './credential-utils.js';
 import { isIpInCidr } from './cidr.js';
@@ -192,7 +192,7 @@ export class FrontierComputer {
     }
 
     // 4. Network pivot items: hosts reachable via pivot in same subnet
-    this.ctx.graph.forEachNode((subnetId: string, subnetAttrs) => {
+    this.ctx.graph.forEachNode((_subnetId: string, subnetAttrs) => {
       if (subnetAttrs.type !== 'subnet' || !subnetAttrs.subnet_cidr) return;
       const cidr = subnetAttrs.subnet_cidr as string;
 

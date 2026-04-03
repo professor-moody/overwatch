@@ -200,7 +200,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 
-function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
+function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: string): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
@@ -215,10 +215,10 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
   }
 
   for (const entry of data) {
-    const attrs = entry.attributes || entry;
-    const objectClass = (attrs.objectClass || []).map((c: string) => c.toLowerCase());
-    const sam = (Array.isArray(attrs.sAMAccountName) ? attrs.sAMAccountName[0] : attrs.sAMAccountName) || '';
-    const dn = (Array.isArray(attrs.distinguishedName) ? attrs.distinguishedName[0] : attrs.distinguishedName) || '';
+    const attrs = (entry.attributes ?? entry) as Record<string, unknown>;
+    const objectClass = (Array.isArray(attrs.objectClass) ? attrs.objectClass as string[] : []).map((c: string) => c.toLowerCase());
+    const sam = ((Array.isArray(attrs.sAMAccountName) ? attrs.sAMAccountName[0] : attrs.sAMAccountName) || '') as string;
+    const dn = ((Array.isArray(attrs.distinguishedName) ? attrs.distinguishedName[0] : attrs.distinguishedName) || '') as string;
     const domain = domainFromDn(dn);
 
     if (!sam) continue;
@@ -227,7 +227,7 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
       const resolvedUserId = userId(sam, domain);
       if (seenNodes.has(resolvedUserId)) continue;
 
-      const uac = parseInt(attrs.userAccountControl || '0', 10) || 0;
+      const uac = parseInt(String(attrs.userAccountControl || '0'), 10) || 0;
       const spns = attrs.servicePrincipalName || [];
       const adminCount = String(attrs.adminCount || '0');
 
@@ -237,12 +237,12 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
         label: domain ? `${domain}\\${sam}` : sam,
         username: sam,
         domain_name: domain,
-        display_name: attrs.displayName || undefined,
+        display_name: (attrs.displayName as string) || undefined,
         enabled: !(uac & UAC_ACCOUNTDISABLE),
         has_spn: (Array.isArray(spns) ? spns.length > 0 : !!spns) || undefined,
         asrep_roastable: !!(uac & UAC_DONT_REQUIRE_PREAUTH) || undefined,
         privileged: adminCount === '1' || undefined,
-        sid: attrs.objectSid || undefined,
+        sid: (attrs.objectSid as string) || undefined,
       });
       seenNodes.add(resolvedUserId);
 
@@ -255,7 +255,7 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
         addEdgeOnce(resolvedUserId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
       }
 
-      for (const memberOf of (attrs.memberOf || [])) {
+      for (const memberOf of (Array.isArray(attrs.memberOf) ? attrs.memberOf as string[] : [])) {
         const groupCn = memberOf.match(/^CN=([^,]+)/i);
         if (groupCn) {
           const resolvedGroupId = groupId(groupCn[1], domain);
@@ -270,8 +270,8 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
     }
 
     if (objectClass.includes('computer')) {
-      const dnsHostname = attrs.dNSHostName || attrs.dnshostname || '';
-      const osVal = attrs.operatingSystem || undefined;
+      const dnsHostname = (attrs.dNSHostName || attrs.dnshostname || '') as string;
+      const osVal = (attrs.operatingSystem as string) || undefined;
       const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : `host-${normalizeKeyPart(sam)}`;
       if (seenNodes.has(resolvedHostId)) continue;
 
@@ -305,7 +305,7 @@ function parseLdapdomaindumpJson(data: any[], agentId: string): Finding {
         type: 'group',
         label: sam,
         domain_name: domain,
-        sid: attrs.objectSid || undefined,
+        sid: (attrs.objectSid as string) || undefined,
         privileged: String(attrs.adminCount || '0') === '1' || undefined,
       });
       seenNodes.add(resolvedGroupId);

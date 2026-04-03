@@ -153,7 +153,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 
-function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext): Finding {
+function parseEnum4linuxJson(data: Record<string, unknown>, agentId: string, context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
@@ -167,13 +167,18 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
     seenEdges.add(key);
   }
 
-  const targetIp = data.target?.host || data.target?.ip || data.os_info?.target;
-  const rawDomain = data.domain_info?.domain || data.target?.domain;
+  const target = data.target as Record<string, unknown> | undefined;
+  const domainInfoObj = data.domain_info as Record<string, unknown> | undefined;
+  const osInfo = data.os_info as Record<string, unknown> | undefined;
+  const sessionCheck = data.session_check as Record<string, unknown> | undefined;
+  const smbInfo = data.smb_info as Record<string, unknown> | undefined;
+
+  const targetIp = (target?.host || target?.ip || osInfo?.target) as string | undefined;
+  const rawDomain = (domainInfoObj?.domain || target?.domain) as string | undefined;
   const domain = rawDomain ? resolveDomainName(rawDomain, context?.domain_aliases) : undefined;
-  const osInfo = data.os_info;
-  const nullSession = data.session_check?.null_session_allowed === true ||
-                       data.session_check?.null_session === true;
-  const smbSigning = data.smb_info?.signing_required;
+  const nullSession = sessionCheck?.null_session_allowed === true ||
+                       sessionCheck?.null_session === true;
+  const smbSigning = smbInfo?.signing_required;
 
   // Host + service
   if (targetIp) {
@@ -185,8 +190,8 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
       type: 'host',
       label: targetIp,
       ip: targetIp,
-      hostname: osInfo?.hostname || undefined,
-      os: osInfo?.os || osInfo?.os_version || undefined,
+      hostname: (osInfo?.hostname as string) || undefined,
+      os: (osInfo?.os || osInfo?.os_version) as string | undefined,
       alive: true,
       domain_joined: domain ? true : undefined,
       null_session: nullSession || undefined,
@@ -212,8 +217,9 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
 
   // Users
   const users = data.users || {};
-  for (const [rid, userObj] of Object.entries(users as Record<string, any>)) {
-    const username = userObj.username || userObj.name;
+  for (const [_rid, rawUser] of Object.entries(users as Record<string, unknown>)) {
+    const userObj = rawUser as Record<string, unknown>;
+    const username = (userObj.username || userObj.name) as string | undefined;
     if (!username) continue;
     const resolvedUserId = userId(username, domain);
     if (seenNodes.has(resolvedUserId)) continue;
@@ -239,8 +245,9 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
 
   // Groups
   const groups = data.groups || {};
-  for (const [rid, grpObj] of Object.entries(groups as Record<string, any>)) {
-    const gName = grpObj.groupname || grpObj.name;
+  for (const [_rid, rawGroup] of Object.entries(groups as Record<string, unknown>)) {
+    const grpObj = rawGroup as Record<string, unknown>;
+    const gName = (grpObj.groupname || grpObj.name) as string | undefined;
     if (!gName) continue;
     const resolvedGroupId = groupId(gName, domain);
     if (seenNodes.has(resolvedGroupId)) continue;
@@ -254,8 +261,9 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
     seenNodes.add(resolvedGroupId);
 
     // Members
-    for (const member of (grpObj.members || [])) {
-      const memberName = typeof member === 'string' ? member : member.name || member.username;
+    for (const member of (Array.isArray(grpObj.members) ? grpObj.members as unknown[] : [])) {
+      const mObj = typeof member !== 'string' ? member as Record<string, unknown> : null;
+      const memberName = (typeof member === 'string' ? member : mObj?.name || mObj?.username) as string | undefined;
       if (!memberName) continue;
       const resolvedUserId = userId(memberName, domain);
       if (seenNodes.has(resolvedUserId)) {
@@ -266,12 +274,13 @@ function parseEnum4linuxJson(data: any, agentId: string, context?: ParseContext)
 
   // Shares
   const shares = data.shares || {};
-  for (const [shareName, shareObj] of Object.entries(shares as Record<string, any>)) {
+  for (const [shareName, rawShare] of Object.entries(shares as Record<string, unknown>)) {
+    const shareObj = rawShare as Record<string, unknown>;
     if (!targetIp) continue;
     const shareNodeId = `share-${targetIp.replace(/\./g, '-')}-${normalizeKeyPart(shareName)}`;
     if (seenNodes.has(shareNodeId)) continue;
 
-    const access = shareObj.access || {};
+    const access = (shareObj.access || {}) as Record<string, unknown>;
     nodes.push({
       id: shareNodeId,
       type: 'share',

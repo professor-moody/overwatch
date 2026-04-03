@@ -174,24 +174,24 @@ export function inferImdsv1Ssrf(host: ImperativeInferenceHost, webappNodeIds: Se
     if (ssrfVulns.length === 0) continue;
 
     const hostingServices: string[] = [];
-    host.ctx.graph.forEachInEdge(webappId, (e: string, attrs, src: string) => {
+    host.ctx.graph.forEachInEdge(webappId, (_e: string, attrs, src: string) => {
       if (attrs.type === 'HOSTS') hostingServices.push(src);
     });
 
     for (const svcId of hostingServices) {
       const hostIds: string[] = [];
-      host.ctx.graph.forEachInEdge(svcId, (e: string, attrs, src: string) => {
+      host.ctx.graph.forEachInEdge(svcId, (_e: string, attrs, src: string) => {
         if (attrs.type === 'RUNS') hostIds.push(src);
       });
 
       for (const hostId of hostIds) {
-        host.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, tgt: string) => {
+        host.ctx.graph.forEachOutEdge(hostId, (_e: string, attrs, _src: string, tgt: string) => {
           if (attrs.type !== 'RUNS_ON') return;
           const cr = host.ctx.graph.getNodeAttributes(tgt);
           if (cr.type !== 'cloud_resource' || cr.resource_type !== 'ec2') return;
           if (cr.imdsv2_required === true) return;
 
-          host.ctx.graph.forEachOutEdge(tgt, (e2: string, a2, _s2: string, identityId: string) => {
+          host.ctx.graph.forEachOutEdge(tgt, (_e2: string, a2, _s2: string, identityId: string) => {
             if (a2.type !== 'MANAGED_BY') return;
             for (const vulnId of ssrfVulns) {
               const existing = host.ctx.graph.edges(vulnId, identityId);
@@ -229,14 +229,14 @@ export function inferManagedIdentityPivot(host: ImperativeInferenceHost, hostNod
     if (hostAttrs.type !== 'host') continue;
 
     const sessionHolders: string[] = [];
-    host.ctx.graph.forEachInEdge(hostId, (e: string, attrs, src: string) => {
+    host.ctx.graph.forEachInEdge(hostId, (_e: string, attrs, src: string) => {
       if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) sessionHolders.push(src);
     });
     if (sessionHolders.length === 0) continue;
 
-    host.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, crId: string) => {
+    host.ctx.graph.forEachOutEdge(hostId, (_e: string, attrs, _src: string, crId: string) => {
       if (attrs.type !== 'RUNS_ON') return;
-      host.ctx.graph.forEachOutEdge(crId, (e2: string, a2, _s2: string, identityId: string) => {
+      host.ctx.graph.forEachOutEdge(crId, (_e2: string, a2, _s2: string, identityId: string) => {
         if (a2.type !== 'MANAGED_BY') return;
 
         for (const holder of sessionHolders) {

@@ -343,7 +343,7 @@ its CIDR as its scoped subgraph.`,
         openWorldHint: false,
       }
     },
-    withErrorBoundary('dispatch_subnet_agents', async ({ max_agents, skill, hops }) => {
+    withErrorBoundary('dispatch_subnet_agents', async ({ max_agents, skill, hops: _hops }) => {
       const state = engine.getState();
       const cidrs = state.config.scope.cidrs;
       if (cidrs.length === 0) {

@@ -11,7 +11,7 @@ import type {
   LabReadinessSummary,
 } from '../types.js';
 import type { GraphEngine } from './graph-engine.js';
-import { contextualFilterHealthReport, hasADContext } from './graph-health.js';
+import { contextualFilterHealthReport } from './graph-health.js';
 import type { ToolStatus } from './tool-check.js';
 
 type DashboardStatus = {

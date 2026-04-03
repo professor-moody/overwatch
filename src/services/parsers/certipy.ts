@@ -14,7 +14,7 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
 
     // Certificate Authorities
     if (data['Certificate Authorities']) {
-      for (const [caName, caData] of Object.entries(data['Certificate Authorities'] as Record<string, any>)) {
+      for (const [caName, _caData] of Object.entries(data['Certificate Authorities'] as Record<string, unknown>)) {
         const caNodeId = caId(caName);
         if (!seenNodes.has(caNodeId)) {
           nodes.push({
@@ -31,9 +31,9 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
 
     // Certificate Templates
     if (data['Certificate Templates']) {
-      for (const [templateName, templateData] of Object.entries(data['Certificate Templates'] as Record<string, any>)) {
+      for (const [templateName, templateData] of Object.entries(data['Certificate Templates'] as Record<string, unknown>)) {
         const tmplId = certTemplateId(templateName);
-        const tmpl = templateData as Record<string, any>;
+        const tmpl = templateData as Record<string, unknown>;
 
         if (!seenNodes.has(tmplId)) {
           nodes.push({
@@ -49,13 +49,13 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
 
         // Check for ESC vulnerabilities
         if (tmpl['[!] Vulnerabilities']) {
-          const vulns = tmpl['[!] Vulnerabilities'] as Record<string, any>;
+          const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
           for (const [escName] of Object.entries(vulns)) {
             const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
             if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC6', 'ESC8'].includes(escType)) {
-              // Create ESC edge from enrollable entities to template
-              if (tmpl['Enrollment Permissions'] && tmpl['Enrollment Permissions']['Enrollment Rights']) {
-                for (const principal of tmpl['Enrollment Permissions']['Enrollment Rights'] as string[]) {
+              const enrollPerms = tmpl['Enrollment Permissions'] as Record<string, unknown> | undefined;
+              if (enrollPerms?.['Enrollment Rights']) {
+                for (const principal of enrollPerms['Enrollment Rights'] as string[]) {
                   const principalIdentity = classifyPrincipalIdentity(principal);
                   const principalId = principalIdentity.id;
                   const resolution = resolveNodeIdentity({

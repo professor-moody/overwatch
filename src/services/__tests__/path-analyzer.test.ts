@@ -1,11 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import Graph from 'graphology';
 import type { NodeProperties, EdgeProperties, EdgeType } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { PathAnalyzer } from '../path-analyzer.js';
-import type { PathOptimize } from '../path-analyzer.js';
-
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
 }

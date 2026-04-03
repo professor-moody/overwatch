@@ -56,9 +56,9 @@ describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
     cleanup();
   });
 
-  it('lists all 36 tools over HTTP transport', async () => {
+  it('lists all 39 tools over HTTP transport', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(36);
+    expect(result.tools.length).toBe(39);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('update_scope');
@@ -107,7 +107,7 @@ describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
     await client2.connect(transport2);
 
     const result = await client2.listTools();
-    expect(result.tools.length).toBe(36);
+    expect(result.tools.length).toBe(39);
 
     // Second client sees the same graph state (shared engine)
     const query = await client2.callTool({

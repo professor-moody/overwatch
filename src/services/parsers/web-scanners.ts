@@ -1,6 +1,5 @@
 import type { Finding } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { hostId } from '../parser-utils.js';
 
 // --- gobuster / feroxbuster / ffuf Parser ---
 

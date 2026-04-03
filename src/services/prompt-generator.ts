@@ -4,7 +4,6 @@
 // ============================================================
 
 import type { GraphEngine } from './graph-engine.js';
-import type { SkillIndex } from './skill-index.js';
 import type { EngagementConfig, EngagementState, AgentTask } from '../types.js';
 
 export type PromptRole = 'primary' | 'sub_agent';

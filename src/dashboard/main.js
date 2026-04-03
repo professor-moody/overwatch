@@ -231,9 +231,10 @@ function refreshEdgeTypeList() {
     const color = categories[edgeType] || 'rgba(110,158,255,0.25)';
     const activeClass = activeType === edgeType ? ' active' : '';
     const inferLabel = c.inferred > 0 ? ` (${c.inferred} inf)` : '';
-    return `<div class="edge-type-row${activeClass}" data-edge-type="${edgeType}">
-      <span class="edge-type-dot" style="background:${color}"></span>
-      <span class="edge-type-name">${edgeType}</span>
+    const esc = window.OverwatchGraph.escapeHtml;
+    return `<div class="edge-type-row${activeClass}" data-edge-type="${esc(edgeType)}">
+      <span class="edge-type-dot" style="background:${esc(color)}"></span>
+      <span class="edge-type-name">${esc(edgeType)}</span>
       <span class="edge-type-count">${c.total}${inferLabel}</span>
     </div>`;
   }).join('');

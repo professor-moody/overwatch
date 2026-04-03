@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { isUrlInScope, isCloudResourceInScope } from '../cidr.js';
 import { inferProfile } from '../../types.js';

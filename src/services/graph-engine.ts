@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { isIpInScope, isIpInCidr, isHostnameInScope, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
+import { isIpInScope, isIpInCidr, isHostnameInScope, isUrlInScope, isCloudResourceInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -15,16 +15,15 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
-import { getCredentialDisplayKind, isCredentialUsableForAuth, inferCredentialDomain } from './credential-utils.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport, hasADContext, contextualFilterHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
-import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
-import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNodeIdentity } from './identity-resolution.js';
+import { normalizeNodeProvenance } from './provenance-utils.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
-import { classifyNodeTemperature, isInterestingEdgeType, toColdRecord } from './cold-store.js';
+import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import {
   inferPivotReachability as _inferPivotReachability,
   inferDefaultCredentials as _inferDefaultCredentials,
@@ -39,6 +38,9 @@ import {
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
 import type { ScopeManagerHost } from './scope-manager.js';
+import { ingestFindingImpl } from './finding-ingestion.js';
+import type { FindingIngestionHost } from './finding-ingestion.js';
+import { queryGraphImpl } from './graph-query.js';
 import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -58,293 +60,6 @@ if (typeof Graph !== 'function') {
 function createGraph(): OverwatchGraph {
   return new Graph({ type: 'directed', multi: true, allowSelfLoops: false }) as OverwatchGraph;
 }
-
-// --- Built-in inference rules ---
-const BUILTIN_RULES: InferenceRule[] = [
-  {
-    id: 'rule-kerberos-domain',
-    name: 'Kerberos implies domain membership',
-    description: 'Host running Kerberos (port 88) is likely a domain controller — matched by hostname suffix',
-    trigger: { node_type: 'service', property_match: { service_name: 'kerberos' } },
-    produces: [{
-      edge_type: 'MEMBER_OF_DOMAIN',
-      source_selector: 'parent_host',
-      target_selector: 'matching_domain',
-      confidence: 0.7
-    }]
-  },
-  {
-    id: 'rule-smb-signing-relay',
-    name: 'SMB signing disabled implies relay target',
-    description: 'Hosts with SMB signing disabled are relay targets',
-    trigger: { node_type: 'service', property_match: { service_name: 'smb', smb_signing: false } },
-    produces: [{
-      edge_type: 'RELAY_TARGET',
-      source_selector: 'all_compromised',
-      target_selector: 'parent_host',
-      confidence: 0.8
-    }]
-  },
-  {
-    id: 'rule-mssql-domain-auth',
-    name: 'Domain-joined MSSQL accepts domain creds',
-    description: 'MSSQL on domain-joined host likely accepts domain authentication',
-    trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
-    produces: [{
-      edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'domain_credentials',
-      target_selector: 'trigger_service',
-      confidence: 0.7
-    }]
-  },
-  {
-    id: 'rule-cred-fanout',
-    name: 'New credential tests against compatible services',
-    description: 'When a new credential is found, create POTENTIAL_AUTH edges to compatible services in the same domain',
-    trigger: { node_type: 'credential' },
-    produces: [{
-      edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'trigger_node',
-      target_selector: 'compatible_services_same_domain',
-      confidence: 0.4
-    }]
-  },
-  {
-    id: 'rule-adcs-esc1',
-    name: 'ADCS enrollment + subject supply = ESC1 candidate',
-    description: 'Certificate template allowing enrollee-supplied subject name',
-    trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
-    produces: [{
-      edge_type: 'ESC1',
-      source_selector: 'enrollable_users',
-      target_selector: 'trigger_node',
-      confidence: 0.75
-    }]
-  },
-  {
-    id: 'rule-unconstrained-delegation',
-    name: 'Unconstrained delegation target',
-    description: 'Hosts with unconstrained delegation can capture TGTs',
-    trigger: { node_type: 'host', property_match: { unconstrained_delegation: true } },
-    produces: [{
-      edge_type: 'DELEGATES_TO',
-      source_selector: 'domain_users',
-      target_selector: 'trigger_node',
-      confidence: 0.85
-    }]
-  },
-  {
-    id: 'rule-asrep-roastable',
-    name: 'AS-REP Roastable user',
-    description: 'User with Kerberos pre-auth disabled is AS-REP roastable',
-    trigger: { node_type: 'user', property_match: { asrep_roastable: true } },
-    produces: [{
-      edge_type: 'AS_REP_ROASTABLE',
-      source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
-      confidence: 0.85
-    }]
-  },
-  {
-    id: 'rule-kerberoastable',
-    name: 'Kerberoastable user',
-    description: 'User with SPN set is kerberoastable',
-    trigger: { node_type: 'user', property_match: { has_spn: true } },
-    produces: [{
-      edge_type: 'KERBEROASTABLE',
-      source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
-      confidence: 0.85
-    }]
-  },
-  {
-    id: 'rule-constrained-delegation',
-    name: 'Constrained delegation target',
-    description: 'Host with constrained delegation can impersonate users to target services',
-    trigger: { node_type: 'host', property_match: { constrained_delegation: true } },
-    produces: [{
-      edge_type: 'CAN_DELEGATE_TO',
-      source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
-      confidence: 0.8
-    }]
-  },
-  {
-    id: 'rule-web-login-form',
-    name: 'Web login form discovered',
-    description: 'HTTP service with login form is a candidate for credential testing',
-    trigger: { node_type: 'service', property_match: { has_login_form: true } },
-    produces: [{
-      edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'domain_credentials',
-      target_selector: 'trigger_service',
-      confidence: 0.5
-    }]
-  },
-  {
-    id: 'rule-laps-readable',
-    name: 'LAPS password readable via ACL',
-    description: 'Host with LAPS enabled and inbound GENERIC_ALL from a principal allows LAPS password read',
-    trigger: {
-      node_type: 'host',
-      property_match: { laps: true },
-      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
-    },
-    produces: [{
-      edge_type: 'CAN_READ_LAPS',
-      source_selector: 'edge_peers',
-      target_selector: 'trigger_node',
-      confidence: 0.75
-    }]
-  },
-  {
-    id: 'rule-gmsa-readable',
-    name: 'gMSA password readable via ACL',
-    description: 'gMSA service account with inbound GENERIC_ALL from a principal allows gMSA password read',
-    trigger: {
-      node_type: 'user',
-      property_match: { gmsa: true },
-      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
-    },
-    produces: [{
-      edge_type: 'CAN_READ_GMSA',
-      source_selector: 'edge_peers',
-      target_selector: 'trigger_node',
-      confidence: 0.75
-    }]
-  },
-  {
-    id: 'rule-rbcd-target',
-    name: 'RBCD eligible target',
-    description: 'Host writable by a principal is an RBCD target when MachineAccountQuota > 0',
-    trigger: {
-      node_type: 'host',
-      property_match: { maq_gt_zero: true },
-      requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' }
-    },
-    produces: [{
-      edge_type: 'RBCD_TARGET',
-      source_selector: 'edge_peers',
-      target_selector: 'trigger_node',
-      confidence: 0.7
-    }]
-  },
-  // --- Linux inference rules ---
-  {
-    id: 'rule-suid-privesc',
-    name: 'SUID root binary enables privilege escalation',
-    description: 'Host with dangerous SUID root binaries allows session holders to escalate to root',
-    trigger: { node_type: 'host', property_match: { has_suid_root: true } },
-    produces: [{
-      edge_type: 'ADMIN_TO',
-      source_selector: 'session_holders_on_host',
-      target_selector: 'trigger_node',
-      confidence: 0.6
-    }]
-  },
-  {
-    id: 'rule-ssh-key-reuse',
-    name: 'SSH key reuse across services',
-    description: 'SSH key credential can authenticate to any SSH service',
-    trigger: { node_type: 'credential', property_match: { cred_type: 'ssh_key' } },
-    produces: [{
-      edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'trigger_node',
-      target_selector: 'ssh_services',
-      confidence: 0.5
-    }]
-  },
-  {
-    id: 'rule-docker-escape',
-    name: 'Docker socket enables container escape',
-    description: 'Host with accessible Docker socket allows session holders to escape to root',
-    trigger: { node_type: 'host', property_match: { docker_socket_accessible: true } },
-    produces: [{
-      edge_type: 'ADMIN_TO',
-      source_selector: 'session_holders_on_host',
-      target_selector: 'trigger_node',
-      confidence: 0.8
-    }]
-  },
-  {
-    id: 'rule-nfs-root-squash',
-    name: 'NFS no_root_squash enables privilege escalation',
-    description: 'Host with NFS no_root_squash allows session holders to escalate via NFS write',
-    trigger: { node_type: 'host', property_match: { no_root_squash: true } },
-    produces: [{
-      edge_type: 'ADMIN_TO',
-      source_selector: 'session_holders_on_host',
-      target_selector: 'trigger_node',
-      confidence: 0.7
-    }]
-  },
-  // --- Web application surface ---
-  {
-    id: 'rule-login-spray-candidate',
-    name: 'Webapp login form is a credential spray target',
-    description: 'Web application with a login form should be tested with all known credentials',
-    trigger: { node_type: 'webapp', property_match: { has_login_form: true } },
-    produces: [{
-      edge_type: 'POTENTIAL_AUTH',
-      source_selector: 'web_form_credentials',
-      target_selector: 'trigger_node',
-      confidence: 0.3
-    }]
-  },
-  // --- MSSQL linked server ---
-  {
-    id: 'rule-mssql-linked-server',
-    name: 'MSSQL linked server implies host reachability',
-    description: 'MSSQL service with linked servers implies network reachability to the linked host',
-    trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
-    produces: [{
-      edge_type: 'REACHABLE',
-      source_selector: 'parent_host',
-      target_selector: 'linked_server_hosts',
-      confidence: 0.8
-    }]
-  },
-  // --- Cloud infrastructure ---
-  {
-    id: 'rule-overprivileged-policy',
-    name: 'Overprivileged cloud policy is a high-value target',
-    description: 'Cloud policy with wildcard actions (iam:*, s3:*, *:*) is high-value — identity holders can escalate',
-    trigger: { node_type: 'cloud_policy' },
-    produces: [{
-      edge_type: 'PATH_TO_OBJECTIVE',
-      source_selector: 'trigger_node',
-      target_selector: 'nearest_objective',
-      confidence: 0.7
-    }]
-  },
-  {
-    id: 'rule-public-bucket',
-    name: 'Public S3 bucket is a data exfiltration target',
-    description: 'S3 bucket with public access is a direct objective candidate',
-    trigger: { node_type: 'cloud_resource', property_match: { resource_type: 's3_bucket', public: true } },
-    produces: [{
-      edge_type: 'PATH_TO_OBJECTIVE',
-      source_selector: 'trigger_node',
-      target_selector: 'nearest_objective',
-      confidence: 0.8
-    }]
-  },
-  {
-    id: 'rule-cross-account-role',
-    name: 'Cross-account role assumption enables lateral movement',
-    description: 'ASSUMES_ROLE edge crossing cloud account boundaries indicates lateral movement opportunity',
-    trigger: {
-      node_type: 'cloud_identity',
-      requires_edge: { type: 'ASSUMES_ROLE', direction: 'outbound' }
-    },
-    produces: [{
-      edge_type: 'REACHABLE',
-      source_selector: 'trigger_node',
-      target_selector: 'cross_account_roles',
-      confidence: 0.7
-    }]
-  },
-];
 
 // --- Edge types traversable in both directions for attack-path planning ---
 // These represent relationships where the attacker can logically move in either
@@ -634,7 +349,7 @@ export class GraphEngine {
 
   getNodesByType(type: NodeType): NodeProperties[] {
     const results: NodeProperties[] = [];
-    this.ctx.graph.forEachNode((id, attrs) => {
+    this.ctx.graph.forEachNode((_id, attrs) => {
       if (attrs.type === type && attrs.identity_status !== 'superseded') {
         results.push(attrs);
       }
@@ -647,296 +362,7 @@ export class GraphEngine {
   // =============================================
 
   ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[] } {
-    const newNodes: string[] = [];
-    const newEdges: string[] = [];
-    const updatedNodes: string[] = [];
-    const updatedEdges: string[] = [];
-    const inferredEdges: string[] = [];
-    const removedNodes: string[] = [];
-    const removedEdges: string[] = [];
-    const idRemap = new Map<string, string>();
-    const reconciliationCandidates = new Set<string>();
-
-    const normalizedNodes = finding.nodes.map((node) => {
-      const identity = resolveNodeIdentity(node);
-      const resolvedId = identity.id || node.id;
-      idRemap.set(node.id, resolvedId);
-      return {
-        ...node,
-        id: resolvedId,
-        identity_status: identity.status,
-        identity_family: identity.family,
-        canonical_id: identity.status === 'canonical' ? resolvedId : undefined,
-        identity_markers: identity.markers,
-      };
-    });
-
-    for (const node of normalizedNodes) {
-      const isNew = !this.ctx.graph.hasNode(node.id);
-      const existingNode = isNew ? null : this.getNode(node.id);
-      const oldProps = existingNode ? { ...existingNode } : null;
-      const baseProps: NodeProperties = {
-        discovered_at: finding.timestamp,
-        confidence: 1.0,
-        label: node.id,
-        ...node,
-        discovered_by: finding.agent_id
-      };
-
-      const existingSources = existingNode ? getNodeSources(existingNode) : [];
-      const sources = finding.agent_id && !existingSources.includes(finding.agent_id)
-        ? [...existingSources, finding.agent_id]
-        : existingSources;
-      const firstSeenAt = existingNode ? getNodeFirstSeenAt(existingNode) || finding.timestamp : finding.timestamp;
-      const fullProps: NodeProperties = {
-        ...baseProps,
-        ...normalizeNodeProvenance(baseProps),
-        first_seen_at: firstSeenAt,
-        last_seen_at: finding.timestamp,
-        sources: sources.length > 0 ? sources : undefined,
-        discovered_at: existingNode?.discovered_at || finding.timestamp,
-        discovered_by: existingNode?.discovered_by || finding.agent_id,
-      };
-      if (baseProps.confidence >= 1.0) {
-        if (isNew) {
-          fullProps.confirmed_at = finding.timestamp;
-        } else if (!existingNode?.confirmed_at) {
-          fullProps.confirmed_at = finding.timestamp;
-        } else if (existingNode?.confirmed_at) {
-          fullProps.confirmed_at = existingNode.confirmed_at;
-        }
-      } else if (existingNode?.confirmed_at) {
-        fullProps.confirmed_at = existingNode.confirmed_at;
-      }
-
-      // --- Graph compaction: classify new nodes as hot or cold ---
-      // Cold = alive host with no services and no interesting edges (yet).
-      // Already-hot nodes (in graphology) are never demoted.
-      const alreadyHot = !isNew; // existing graph node stays hot
-      const wasCold = !alreadyHot && this.ctx.coldStore.has(node.id);
-      const temperature = alreadyHot ? 'hot' : classifyNodeTemperature(fullProps, false);
-
-      if (temperature === 'cold' && !wasCold) {
-        // New cold node — store in census, skip graphology
-        const subnetCidr = this.findSubnetCidr(fullProps.ip);
-        this.ctx.coldStore.add(toColdRecord(fullProps, subnetCidr));
-        continue; // skip addNode, newNodes, reconciliation
-      } else if (wasCold) {
-        // Node was cold but is being re-ingested — promote it.
-        // Merge cold record timestamps so first_seen_at / discovered_at are preserved.
-        const coldRecord = this.ctx.coldStore.promote(node.id);
-        if (coldRecord) {
-          if (coldRecord.discovered_at < fullProps.discovered_at) {
-            fullProps.discovered_at = coldRecord.discovered_at;
-          }
-          fullProps.first_seen_at = coldRecord.discovered_at < (fullProps.first_seen_at || fullProps.discovered_at)
-            ? coldRecord.discovered_at
-            : (fullProps.first_seen_at || fullProps.discovered_at);
-          // Merge provenance sources
-          if (coldRecord.provenance && coldRecord.provenance !== finding.agent_id) {
-            const existingSources = fullProps.sources || [];
-            if (!existingSources.includes(coldRecord.provenance)) {
-              fullProps.sources = [coldRecord.provenance, ...existingSources];
-            }
-          }
-        }
-      }
-
-      this.addNode(fullProps);
-      if (isNew || wasCold) {
-        newNodes.push(node.id);
-        this.log(`New ${node.type} discovered: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
-      } else if (oldProps && this.propertiesChanged(oldProps, fullProps)) {
-        updatedNodes.push(node.id);
-        this.log(`Updated ${node.type}: ${fullProps.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
-      }
-      if (fullProps.identity_status === 'canonical' && (fullProps.identity_markers?.length || 0) > 0) {
-        reconciliationCandidates.add(fullProps.id);
-      }
-    }
-
-    for (const canonicalNodeId of reconciliationCandidates) {
-      const reconciliation = this.reconciler.reconcileCanonicalNode(canonicalNodeId, finding.agent_id, finding.action_id);
-      if (reconciliation.updated_canonical) {
-        updatedNodes.push(canonicalNodeId);
-      }
-      removedNodes.push(...reconciliation.removed_nodes);
-      removedEdges.push(...reconciliation.removed_edges);
-      newEdges.push(...reconciliation.new_edges);
-      // Update idRemap so later edge processing uses the surviving node ID
-      for (const removedId of reconciliation.removed_nodes) {
-        const survivorId = reconciliation.removed_nodes.includes(canonicalNodeId)
-          ? reconciliation.reverse_target || canonicalNodeId
-          : canonicalNodeId;
-        idRemap.set(removedId, survivorId);
-      }
-    }
-
-    // Add/update edges
-    for (const edge of finding.edges) {
-      const sourceId = idRemap.get(edge.source) || edge.source;
-      const targetId = idRemap.get(edge.target) || edge.target;
-
-      // Edge promotion guard: only promote cold endpoints for interesting edge types.
-      // Non-interesting edges (RELATED, MEMBER_OF, etc.) skip cold endpoints silently
-      // to preserve the scaling benefit of compaction.
-      const edgeType = edge.properties?.type as EdgeType | undefined;
-      const shouldPromoteCold = edgeType ? isInterestingEdgeType(edgeType) : false;
-
-      if (shouldPromoteCold) {
-        for (const endpointId of [sourceId, targetId]) {
-          if (!this.ctx.graph.hasNode(endpointId) && this.ctx.coldStore.has(endpointId)) {
-            const coldRecord = this.ctx.coldStore.promote(endpointId);
-            if (coldRecord) {
-              this.addNode({
-                id: coldRecord.id,
-                type: coldRecord.type as NodeType,
-                label: coldRecord.label,
-                ip: coldRecord.ip,
-                hostname: coldRecord.hostname,
-                discovered_at: coldRecord.discovered_at,
-                last_seen_at: coldRecord.last_seen_at,
-                alive: coldRecord.alive,
-                discovered_by: coldRecord.provenance,
-                confidence: 1.0,
-              });
-              newNodes.push(endpointId);
-              this.log(`Promoted cold host to hot graph (${edgeType} edge requires it): ${coldRecord.label}`, finding.agent_id, { category: 'finding', outcome: 'success' });
-            }
-          }
-        }
-      }
-
-      if (!this.ctx.graph.hasNode(sourceId) || !this.ctx.graph.hasNode(targetId)) continue;
-      const fullProps: EdgeProperties = {
-        discovered_at: finding.timestamp,
-        confidence: 1.0,
-        ...edge.properties,
-        discovered_by: finding.agent_id
-      };
-      const { id: edgeId, isNew } = this.addEdge(sourceId, targetId, fullProps);
-      if (isNew) {
-        newEdges.push(edgeId);
-        this.log(`New edge: ${sourceId} --[${edge.properties.type}]--> ${targetId}`, finding.agent_id, { category: 'finding', outcome: 'success' });
-      } else {
-        updatedEdges.push(edgeId);
-        this.log(`Updated edge: ${sourceId} --[${edge.properties.type}]--> ${targetId}`, finding.agent_id, { category: 'finding', outcome: 'neutral' });
-      }
-    }
-
-    // Collect edge endpoint nodes so cross-node rules re-evaluate when edges arrive
-    const edgeEndpoints = new Set<string>();
-    for (const edgeId of newEdges) {
-      if (this.ctx.graph.hasEdge(edgeId)) {
-        edgeEndpoints.add(this.ctx.graph.source(edgeId));
-        edgeEndpoints.add(this.ctx.graph.target(edgeId));
-      }
-    }
-
-    // Run inference rules against new nodes, updated nodes, and edge endpoints
-    const inferenceTargets = new Set([...newNodes, ...updatedNodes, ...edgeEndpoints]);
-    for (const nodeId of inferenceTargets) {
-      const inferred = this.runInferenceRules(nodeId);
-      inferredEdges.push(...inferred);
-    }
-
-    // Pivot reachability — imperative handler for subnet-based pivot inference
-    for (const nodeId of inferenceTargets) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
-      if (attrs.type === 'host') {
-        inferredEdges.push(...this.inferPivotReachability(nodeId));
-      }
-    }
-
-    // Default credentials for known CMS webapps — imperative handler
-    const webappTargets = new Set<string>();
-    for (const nodeId of inferenceTargets) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      if (this.ctx.graph.getNodeAttributes(nodeId).type === 'webapp') {
-        webappTargets.add(nodeId);
-      }
-    }
-    if (webappTargets.size > 0) {
-      inferredEdges.push(...this.inferDefaultCredentials(webappTargets));
-      inferredEdges.push(...this.inferImdsv1Ssrf(webappTargets));
-    }
-
-    // Cloud managed identity pivot — imperative handler for host→RUNS_ON→cloud_resource→MANAGED_BY→cloud_identity
-    const hostTargets = new Set<string>();
-    for (const nodeId of inferenceTargets) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      if (this.ctx.graph.getNodeAttributes(nodeId).type === 'host') {
-        hostTargets.add(nodeId);
-      }
-    }
-    if (hostTargets.size > 0) {
-      inferredEdges.push(...this.inferManagedIdentityPivot(hostTargets));
-    }
-
-    // Backfill cred_domain from graph ownership paths for credentials missing domain qualification.
-    // Include credentials owned by users in edgeEndpoints — handles incremental ingestion where
-    // a MEMBER_OF_DOMAIN edge arrives after the credential was already created.
-    const backfillCandidates = new Set([...newNodes, ...updatedNodes]);
-    for (const nodeId of edgeEndpoints) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
-      if (attrs.type !== 'user') continue;
-      for (const edge of this.ctx.graph.outEdges(nodeId)) {
-        if (this.ctx.graph.getEdgeAttributes(edge).type === 'OWNS_CRED') {
-          backfillCandidates.add(this.ctx.graph.target(edge));
-        }
-      }
-    }
-    for (const nodeId of backfillCandidates) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
-      if (attrs.type !== 'credential') continue;
-      if (typeof attrs.cred_domain === 'string' && attrs.cred_domain.length > 0) continue;
-      const inferred = inferCredentialDomain(nodeId, this.ctx.graph);
-      if (inferred) {
-        this.ctx.graph.mergeNodeAttributes(nodeId, {
-          cred_domain: inferred.domain,
-          cred_domain_inferred: true,
-          cred_domain_source: 'graph_inference',
-        });
-      }
-    }
-
-    // Degrade POTENTIAL_AUTH edges from expired/stale credentials
-    for (const nodeId of [...new Set([...newNodes, ...updatedNodes])]) {
-      this.degradeExpiredCredentialEdges(nodeId);
-    }
-
-    // Check objectives
-    this.evaluateObjectives();
-
-    this.logActionEvent({
-      description: `Finding ingested: ${newNodes.length} new nodes, ${newEdges.length} new edges, ${inferredEdges.length} inferred edges`,
-      agent_id: finding.agent_id,
-      action_id: finding.action_id,
-      event_type: 'finding_ingested',
-      category: 'finding',
-      tool_name: finding.tool_name,
-      target_node_ids: finding.target_node_ids,
-      frontier_item_id: finding.frontier_item_id,
-      linked_finding_ids: [finding.id],
-      result_classification: newNodes.length > 0 || newEdges.length > 0 || inferredEdges.length > 0 ? 'success' : 'neutral',
-      details: {
-        finding_id: finding.id,
-        new_nodes: newNodes.length,
-        new_edges: newEdges.length,
-        updated_nodes: updatedNodes.length,
-        updated_edges: updatedEdges.length,
-        inferred_edges: inferredEdges.length,
-      },
-    });
-
-    // Persist with real delta detail for dashboard callbacks
-    const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
-    this.persist({ ...result, removed_nodes: removedNodes, removed_edges: removedEdges });
-
-    return result;
+    return ingestFindingImpl(this.findingIngestionHost, finding);
   }
 
   // =============================================
@@ -956,6 +382,29 @@ export class GraphEngine {
 
   private runInferenceRules(triggerNodeId: string): string[] {
     return this.inference.runRules(triggerNodeId);
+  }
+
+  private get findingIngestionHost(): FindingIngestionHost {
+    return {
+      ctx: this.ctx,
+      addNode: this.addNode.bind(this),
+      addEdge: this.addEdge.bind(this),
+      getNode: this.getNode.bind(this),
+      log: this.log.bind(this),
+      logActionEvent: this.logActionEvent.bind(this),
+      findSubnetCidr: this.findSubnetCidr.bind(this),
+      reconcileCanonicalNode: this.reconciler.reconcileCanonicalNode.bind(this.reconciler),
+      runInferenceRules: this.runInferenceRules.bind(this),
+      inferPivotReachability: this.inferPivotReachability.bind(this),
+      inferDefaultCredentials: this.inferDefaultCredentials.bind(this),
+      inferImdsv1Ssrf: this.inferImdsv1Ssrf.bind(this),
+      inferManagedIdentityPivot: this.inferManagedIdentityPivot.bind(this),
+      degradeExpiredCredentialEdges: this.degradeExpiredCredentialEdges.bind(this),
+      evaluateObjectives: this.evaluateObjectives.bind(this),
+      persist: this.persist.bind(this),
+      propertiesChanged: this.propertiesChanged.bind(this),
+      invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
+    };
   }
 
   private get imperativeHost(): ImperativeInferenceHost {
@@ -1093,90 +542,7 @@ export class GraphEngine {
   // =============================================
 
   queryGraph(query: GraphQuery): GraphQueryResult {
-    const result: GraphQueryResult = { nodes: [], edges: [] };
-    const limit = query.limit || 100;
-
-    // Node queries
-    if (query.node_type || query.node_filter || query.from_node) {
-      if (query.from_node && this.ctx.graph.hasNode(query.from_node)) {
-        // Traverse from node
-        const visited = new Set<string>();
-        const queue: Array<{ id: string; depth: number }> = [{ id: query.from_node, depth: 0 }];
-        const maxDepth = query.max_depth || 2;
-
-        while (queue.length > 0 && result.nodes.length < limit) {
-          const current = queue.shift()!;
-          if (visited.has(current.id)) continue;
-          visited.add(current.id);
-
-          const node = this.getNode(current.id);
-          if (node && node.identity_status !== 'superseded') {
-            if (!query.node_type || node.type === query.node_type) {
-              if (this.matchesFilter(node, query.node_filter)) {
-                result.nodes.push({ id: current.id, properties: node });
-              }
-            }
-          }
-
-          if (current.depth < maxDepth) {
-            const neighbors = query.direction === 'inbound'
-              ? this.ctx.graph.inNeighbors(current.id)
-              : query.direction === 'outbound'
-                ? this.ctx.graph.outNeighbors(current.id)
-                : this.ctx.graph.neighbors(current.id);
-
-            for (const neighbor of neighbors) {
-              if (!visited.has(neighbor)) {
-                queue.push({ id: neighbor, depth: current.depth + 1 });
-              }
-            }
-          }
-        }
-
-        // Also include edges between found nodes
-        const nodeIds = new Set(result.nodes.map(n => n.id));
-        this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
-          if (nodeIds.has(source) && nodeIds.has(target)) {
-            if (!query.edge_type || attrs.type === query.edge_type) {
-              result.edges.push({ source, target, properties: attrs });
-            }
-          }
-        });
-      } else {
-        // Filter all nodes
-        this.ctx.graph.forEachNode((id, attrs) => {
-          if (result.nodes.length >= limit) return;
-          if (attrs.identity_status === 'superseded') return;
-          if (query.node_type && attrs.type !== query.node_type) return;
-          if (!this.matchesFilter(attrs, query.node_filter)) return;
-          result.nodes.push({ id, properties: attrs });
-        });
-      }
-    }
-
-    // Edge queries
-    if (query.edge_type || query.edge_filter) {
-      this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
-        if (result.edges.length >= limit) return;
-        if (query.edge_type && attrs.type !== query.edge_type) return;
-        if (!this.matchesFilter(attrs, query.edge_filter)) return;
-        // Suppress edges attached to superseded identity nodes
-        const srcAttrs = this.ctx.graph.getNodeAttributes(source);
-        const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
-        if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
-        result.edges.push({ source, target, properties: attrs });
-      });
-    }
-
-    return result;
-  }
-
-  private matchesFilter(obj: Record<string, unknown>, filter?: Record<string, unknown>): boolean {
-    if (!filter) return true;
-    return Object.entries(filter).every(([key, val]) => {
-      if (val === undefined || val === null) return true;
-      return obj[key] === val;
-    });
+    return queryGraphImpl({ graph: this.ctx.graph, getNode: id => this.getNode(id) }, query);
   }
 
   // =============================================
@@ -1393,12 +759,14 @@ export class GraphEngine {
 
     if (success) {
       const edgeConfidence = confirmed ? 1.0 : 0.5;
+      let sessionEdgeCreated = false;
       // Create HAS_SESSION edge only if principal_node is a known graph node
       // of type user, group, or credential (per graph-schema.ts constraints)
       if (principal_node && this.ctx.graph.hasNode(principal_node)) {
         const principalAttrs = this.ctx.graph.getNodeAttributes(principal_node);
         const validSourceTypes = new Set(['user', 'group', 'credential']);
         if (validSourceTypes.has(principalAttrs.type)) {
+          sessionEdgeCreated = true;
           const edgeId = `session-${principal_node}-${target_node}`;
           if (!this.ctx.graph.hasEdge(edgeId)) {
             this.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
@@ -1445,7 +813,7 @@ export class GraphEngine {
           principal_node,
           credential_node,
           confirmed,
-          has_session_edge_created: !!principal_node && this.ctx.graph.hasNode(principal_node || ''),
+          has_session_edge_created: sessionEdgeCreated,
         },
       });
     } else {

@@ -10,5 +10,11 @@ export default defineConfig({
       'src/__tests__/mcp-server.integration.test.ts',
       'src/__tests__/http-transport.integration.test.ts',
     ],
+    testTimeout: 30000,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/__tests__/**'],
+    },
   },
 });

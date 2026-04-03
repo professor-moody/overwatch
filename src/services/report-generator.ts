@@ -5,8 +5,8 @@
 // ============================================================
 
 import type {
-  EngagementConfig, NodeProperties, EdgeProperties, EdgeType,
-  ExportedGraph, ExportedGraphNode, ExportedGraphEdge,
+  EngagementConfig, NodeProperties, EdgeType,
+  ExportedGraph, ExportedGraphEdge,
   AgentTask, InferenceRuleSuggestion, SkillGapReport,
   ContextImprovementReport, TraceQualityReport,
 } from '../types.js';
@@ -75,10 +75,6 @@ export interface ReportInput {
 // ============================================================
 
 const ACCESS_EDGES = new Set<EdgeType>(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
-const ATTACK_EDGES = new Set<EdgeType>([
-  'HAS_SESSION', 'ADMIN_TO', 'CAN_DCSYNC', 'CAN_RDPINTO', 'CAN_PSREMOTE',
-  'EXPLOITS', 'VALID_ON', 'POTENTIAL_AUTH', 'NULL_SESSION',
-]);
 
 // ============================================================
 // Per-Finding Sections
@@ -211,9 +207,6 @@ export function buildEvidenceChainsForNode(
 
   for (const [actionId, entries] of byAction) {
     const first = entries[0];
-    const terminal = [...entries].reverse().find(e =>
-      e.event_type === 'action_completed' || e.event_type === 'action_failed'
-    );
     chains.push({
       claim: first.description,
       action_id: actionId,
@@ -294,7 +287,6 @@ export function buildAttackNarrative(
 
   // Group history by action_id clusters, preserve chronological order
   const phases: NarrativePhase[] = [];
-  const actionClusters = groupByActionId(history);
 
   // Classify each cluster into engagement phases
   const reconEntries: ActivityLogEntry[] = [];
@@ -304,7 +296,7 @@ export function buildAttackNarrative(
   const objectiveEntries: ActivityLogEntry[] = [];
 
   for (const entry of history) {
-    const desc = entry.description.toLowerCase();
+    const desc = (entry.description || '').toLowerCase();
     const eventType = entry.event_type || '';
 
     if (eventType === 'objective_achieved' || desc.includes('objective achieved')) {
@@ -390,7 +382,7 @@ export function buildAttackNarrative(
 function buildPhaseNarrative(
   entries: ActivityLogEntry[],
   nodeMap: Map<string, NodeProperties>,
-  config: EngagementConfig,
+  _config: EngagementConfig,
   phase: string,
 ): string[] {
   const paragraphs: string[] = [];
@@ -401,7 +393,7 @@ function buildPhaseNarrative(
 
   // Build sentences from action clusters
   const sentences: string[] = [];
-  for (const [actionId, cluster] of grouped) {
+  for (const [_actionId, cluster] of grouped) {
     const first = cluster[0];
     const tool = first.tool_name;
     const targets = first.target_node_ids?.map(id => nodeMap.get(id)?.label || id) || [];
@@ -561,7 +553,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('| # | Severity | Title | Risk Score |');
     lines.push('|---|----------|-------|------------|');
     findings.forEach((f, i) => {
-      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${f.title} | ${f.risk_score.toFixed(1)} |`);
+      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${escapeTableCell(f.title)} | ${f.risk_score.toFixed(1)} |`);
     });
     lines.push('');
   }
@@ -654,7 +646,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   for (const obj of config.objectives) {
     const status = obj.achieved ? 'Achieved' : 'Pending';
     const at = obj.achieved_at ? formatTimestamp(obj.achieved_at) : '—';
-    lines.push(`| ${obj.description} | ${status} | ${at} |`);
+    lines.push(`| ${escapeTableCell(obj.description)} | ${status} | ${at} |`);
   }
   lines.push('');
 
@@ -906,7 +898,7 @@ function computeHostRiskScore(accessEdges: ExportedGraphEdge[], hopsToObjective:
   return Math.min(10, score);
 }
 
-function computeHopsToObjective(nodeId: string, graph: ExportedGraph, config: EngagementConfig): number | null {
+function computeHopsToObjective(nodeId: string, graph: ExportedGraph, _config: EngagementConfig): number | null {
   // Simple BFS from node to any objective node
   const objectiveNodeIds = new Set<string>();
   for (const n of graph.nodes) {
@@ -962,8 +954,9 @@ function formatTimestamp(ts: string): string {
   }
 }
 
-function escapeTableCell(text: string): string {
-  return text.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+function escapeTableCell(text: string | undefined): string {
+  if (!text) return '';
+  return text.replace(/\|/g, '\\|').replace(/\n/g, ' ').replace(/`/g, '\\`');
 }
 
 function capitalize(s: string): string {

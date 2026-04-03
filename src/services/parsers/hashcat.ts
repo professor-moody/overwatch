@@ -19,7 +19,6 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
     let domain: string | undefined;
     let plaintext: string | undefined;
     let hashValue: string | undefined;
-    let hashType: string = 'unknown';
 
     // Kerberoast: $krb5tgs$23$*user$REALM$spn*$...:plaintext
     const krbMatch = line.match(/^(\$krb5tgs\$\d+\$\*([^$*]+)\$([^$*]+)\$[^:]+):(.+)$/);
@@ -28,7 +27,6 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
       username = krbMatch[2];
       domain = krbMatch[3];
       plaintext = krbMatch[4];
-      hashType = 'kerberoast';
     }
 
     // AS-REP: $krb5asrep$23$user@REALM:...:plaintext
@@ -39,7 +37,6 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
         username = asrepMatch[2];
         domain = asrepMatch[3];
         plaintext = asrepMatch[4];
-        hashType = 'asrep';
       }
     }
 
@@ -51,7 +48,6 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
         domain = v2Match[2];
         hashValue = `${v2Match[1]}::${v2Match[2]}:${v2Match[3]}:${v2Match[4]}:${v2Match[5]}`;
         plaintext = v2Match[6];
-        hashType = 'ntlmv2';
       }
     }
 
@@ -61,7 +57,6 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
       if (ntlmMatch) {
         hashValue = ntlmMatch[1];
         plaintext = ntlmMatch[2];
-        hashType = 'ntlm';
       }
     }
 

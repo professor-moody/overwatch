@@ -52,7 +52,7 @@ function serviceIdFromUrl(urlStr: string): string {
   }
 }
 
-export function parseNuclei(output: string, agentId: string = 'nuclei-parser', context?: ParseContext): Finding {
+export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const now = new Date().toISOString();
