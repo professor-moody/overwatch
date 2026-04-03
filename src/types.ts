@@ -721,6 +721,8 @@ export interface SessionMetadata {
   target_node?: string;
   principal_node?: string;
   credential_node?: string;
+  action_id?: string;
+  frontier_item_id?: string;
   claimed_by?: string;
   started_at: string;
   last_activity_at: string;

@@ -25,8 +25,12 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   console.error('Shutting down Overwatch...');
-  await shutdownOverwatchApp(app);
-  process.exit(0);
+  const timer = setTimeout(() => process.exit(1), 5000);
+  try {
+    await shutdownOverwatchApp(app);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 process.on('SIGTERM', () => { void shutdown(); });
 process.on('SIGINT', () => { void shutdown(); });

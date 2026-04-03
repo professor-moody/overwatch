@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../output-parsers.js';
+import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
 import { unlinkSync, existsSync, readFileSync } from 'fs';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 

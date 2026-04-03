@@ -217,6 +217,8 @@ export class SessionManager {
       target_node: options.target_node,
       principal_node: options.principal_node,
       credential_node: options.credential_node,
+      action_id: options.action_id,
+      frontier_item_id: options.frontier_item_id,
       claimed_by: options.agent_id,
       started_at: now,
       last_activity_at: now,
@@ -590,6 +592,8 @@ export class SessionManager {
       event_type: eventType,
       description,
       agent_id: session?.metadata.agent_id,
+      action_id: session?.metadata.action_id,
+      frontier_item_id: session?.metadata.frontier_item_id,
       category: 'system',
       details: {
         session_id: sessionId,

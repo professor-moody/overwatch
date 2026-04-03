@@ -6,7 +6,7 @@
 import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync } from 'fs';
-import { isIpInScope, isIpInCidr, isHostnameInScope, isValidCidr, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
+import { isIpInScope, isIpInCidr, isHostnameInScope, inferCidrFromIps, isUrlInScope, isCloudResourceInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -15,7 +15,7 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
-import { getCredentialDisplayKind, isCredentialUsableForAuth, isCredentialStaleOrExpired, inferCredentialDomain } from './credential-utils.js';
+import { getCredentialDisplayKind, isCredentialUsableForAuth, inferCredentialDomain } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport, hasADContext, contextualFilterHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
 import { normalizeFindingNode, validateFindingNode } from './finding-validation.js';
@@ -25,6 +25,20 @@ import { getIdentityMarkers, isIdentityType, isUnresolvedIdentityNode, resolveNo
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { classifyNodeTemperature, isInterestingEdgeType, toColdRecord } from './cold-store.js';
+import {
+  inferPivotReachability as _inferPivotReachability,
+  inferDefaultCredentials as _inferDefaultCredentials,
+  inferImdsv1Ssrf as _inferImdsv1Ssrf,
+  inferManagedIdentityPivot as _inferManagedIdentityPivot,
+  degradeExpiredCredentialEdges as _degradeExpiredCredentialEdges,
+} from './imperative-inference.js';
+import type { ImperativeInferenceHost } from './imperative-inference.js';
+import {
+  updateScope as _updateScope,
+  collectScopeSuggestions as _collectScopeSuggestions,
+  previewScopeChange as _previewScopeChange,
+} from './scope-manager.js';
+import type { ScopeManagerHost } from './scope-manager.js';
 import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -944,292 +958,35 @@ export class GraphEngine {
     return this.inference.runRules(triggerNodeId);
   }
 
-  // TODO: First candidate for future dynamic_properties support on inference rule productions
-  private inferPivotReachability(triggerHostId: string): string[] {
-    const inferred: string[] = [];
-    const hostNode = this.getNode(triggerHostId);
-    if (!hostNode || hostNode.type !== 'host' || !hostNode.ip) return inferred;
-
-    // Check if this host has any confirmed sessions
-    const sessionHolders: string[] = [];
-    for (const edge of this.ctx.graph.inEdges(triggerHostId) as string[]) {
-      const attrs = this.ctx.graph.getEdgeAttributes(edge);
-      if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
-        sessionHolders.push(this.ctx.graph.source(edge));
-      }
-    }
-    if (sessionHolders.length === 0) return inferred;
-
-    // Find which subnets this host belongs to
-    const matchingSubnets: string[] = [];
-    this.ctx.graph.forEachNode((nodeId: string, attrs) => {
-      if (attrs.type === 'subnet' && attrs.subnet_cidr && isIpInCidr(hostNode.ip!, attrs.subnet_cidr)) {
-        matchingSubnets.push(nodeId);
-      }
-    });
-    if (matchingSubnets.length === 0) return inferred;
-
-    // For each subnet, find peer hosts and create REACHABLE edges
-    const now = new Date().toISOString();
-    for (const subnetId of matchingSubnets) {
-      const subnetCidr = this.ctx.graph.getNodeAttributes(subnetId).subnet_cidr as string;
-
-      // Promote cold peers in the same subnet so pivot edges can be created
-      const coldPeersToPromote: string[] = [];
-      this.ctx.coldStore.forEach((record) => {
-        if (!record.ip || record.id === triggerHostId) return;
-        if (isIpInCidr(record.ip, subnetCidr)) coldPeersToPromote.push(record.id);
-      });
-      for (const coldPeerId of coldPeersToPromote) {
-        const coldRecord = this.ctx.coldStore.promote(coldPeerId);
-        if (coldRecord) {
-          this.addNode({
-            id: coldRecord.id,
-            type: coldRecord.type as NodeType,
-            label: coldRecord.label,
-            ip: coldRecord.ip,
-            hostname: coldRecord.hostname,
-            discovered_at: coldRecord.discovered_at,
-            last_seen_at: coldRecord.last_seen_at,
-            alive: coldRecord.alive,
-            discovered_by: coldRecord.provenance,
-            confidence: 1.0,
-          });
-        }
-      }
-
-      this.ctx.graph.forEachNode((peerId: string, peerAttrs) => {
-        if (peerId === triggerHostId) return;
-        if (peerAttrs.type !== 'host' || !peerAttrs.ip) return;
-        if (!isIpInCidr(peerAttrs.ip, subnetCidr)) return;
-
-        // Skip if REACHABLE edge already exists
-        const existing = this.ctx.graph.edges(triggerHostId, peerId);
-        if (existing.some((e: string) => this.ctx.graph.getEdgeAttributes(e).type === 'REACHABLE')) return;
-
-        const { id: edgeId } = this.addEdge(triggerHostId, peerId, {
-          type: 'REACHABLE',
-          confidence: 0.6,
-          discovered_at: now,
-          discovered_by: 'inference:pivot-reachability',
-          tested: false,
-          inferred_by_rule: 'pivot-reachability',
-          inferred_at: now,
-          via_pivot: sessionHolders[0],
-        });
-        inferred.push(edgeId);
-        this.log(`Inferred pivot reachability: ${triggerHostId} → ${peerId} via ${sessionHolders[0]}`, undefined, {
-          category: 'inference',
-          event_type: 'inference_generated',
-        });
-      });
-    }
-    return inferred;
+  private get imperativeHost(): ImperativeInferenceHost {
+    return {
+      ctx: this.ctx,
+      addNode: this.addNode.bind(this),
+      addEdge: this.addEdge.bind(this),
+      getNode: this.getNode.bind(this),
+      log: this.log.bind(this),
+      invalidateHealthReport: this.invalidateHealthReport.bind(this),
+    };
   }
 
-  // Default credentials for known CMS types — imperative helper like inferPivotReachability
-  private static readonly CMS_DEFAULT_CREDS: Record<string, { user: string; type: string }> = {
-    wordpress: { user: 'admin', type: 'plaintext' },
-    tomcat: { user: 'tomcat', type: 'plaintext' },
-    jenkins: { user: 'admin', type: 'plaintext' },
-    grafana: { user: 'admin', type: 'plaintext' },
-    phpmyadmin: { user: 'root', type: 'plaintext' },
-  };
+  private inferPivotReachability(triggerHostId: string): string[] {
+    return _inferPivotReachability(this.imperativeHost, triggerHostId);
+  }
 
   private inferDefaultCredentials(webappNodeIds: Set<string>): string[] {
-    const inferred: string[] = [];
-    const now = new Date().toISOString();
-
-    for (const nodeId of webappNodeIds) {
-      if (!this.ctx.graph.hasNode(nodeId)) continue;
-      const attrs = this.ctx.graph.getNodeAttributes(nodeId);
-      if (attrs.type !== 'webapp' || !attrs.cms_type) continue;
-
-      const cmsKey = (attrs.cms_type as string).toLowerCase();
-      const defaults = GraphEngine.CMS_DEFAULT_CREDS[cmsKey];
-      if (!defaults) continue;
-
-      const credId = `cred-default-${cmsKey}`;
-
-      // Create the default credential node if it doesn't exist
-      if (!this.ctx.graph.hasNode(credId)) {
-        this.addNode({
-          id: credId,
-          type: 'credential',
-          label: `Default ${cmsKey} credential (${defaults.user})`,
-          discovered_at: now,
-          discovered_by: 'inference:default-creds',
-          confidence: 0.3,
-          cred_type: 'plaintext',
-          cred_user: defaults.user,
-          cred_material_kind: 'plaintext_password',
-          cred_usable_for_auth: true,
-          cred_evidence_kind: 'manual',
-          cred_is_default_guess: true,
-          credential_status: 'active',
-        });
-      }
-
-      // Create POTENTIAL_AUTH edge from credential → webapp if not already present
-      const existing = this.ctx.graph.edges(credId, nodeId);
-      if (existing.some((e: string) => this.ctx.graph.getEdgeAttributes(e).type === 'POTENTIAL_AUTH')) continue;
-
-      const { id: edgeId } = this.addEdge(credId, nodeId, {
-        type: 'POTENTIAL_AUTH',
-        confidence: 0.3,
-        discovered_at: now,
-        discovered_by: 'inference:default-creds',
-        tested: false,
-        inferred_by_rule: 'default-creds',
-        inferred_at: now,
-      });
-      inferred.push(edgeId);
-      this.log(`Inferred default credentials for ${cmsKey} webapp: ${credId} → ${nodeId}`, undefined, {
-        category: 'inference',
-        event_type: 'inference_generated',
-      });
-    }
-
-    return inferred;
+    return _inferDefaultCredentials(this.imperativeHost, webappNodeIds);
   }
 
-  // SSRF → IMDSv1 credential capture: webapp with SSRF vuln on host running on EC2 without IMDSv2
   private inferImdsv1Ssrf(webappNodeIds: Set<string>): string[] {
-    const inferred: string[] = [];
-    const now = new Date().toISOString();
-
-    for (const webappId of webappNodeIds) {
-      if (!this.ctx.graph.hasNode(webappId)) continue;
-      // Find vulnerability nodes linked to this webapp with vuln_type 'ssrf'
-      const vulnEdges = (this.ctx.graph.outEdges(webappId) as string[]).filter(e =>
-        this.ctx.graph.getEdgeAttributes(e).type === 'VULNERABLE_TO'
-      );
-      const ssrfVulns = vulnEdges.map(e => this.ctx.graph.target(e)).filter(vId => {
-        const v = this.ctx.graph.getNodeAttributes(vId);
-        return v.vuln_type === 'ssrf';
-      });
-      if (ssrfVulns.length === 0) continue;
-
-      // Walk: webapp ←HOSTS← service ←RUNS← host →RUNS_ON→ cloud_resource (EC2)
-      const hostingServices: string[] = [];
-      this.ctx.graph.forEachInEdge(webappId, (e: string, attrs, src: string) => {
-        if (attrs.type === 'HOSTS') hostingServices.push(src);
-      });
-
-      for (const svcId of hostingServices) {
-        const hostIds: string[] = [];
-        this.ctx.graph.forEachInEdge(svcId, (e: string, attrs, src: string) => {
-          if (attrs.type === 'RUNS') hostIds.push(src);
-        });
-
-        for (const hostId of hostIds) {
-          // Find EC2 cloud_resource via RUNS_ON
-          this.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, tgt: string) => {
-            if (attrs.type !== 'RUNS_ON') return;
-            const cr = this.ctx.graph.getNodeAttributes(tgt);
-            if (cr.type !== 'cloud_resource' || cr.resource_type !== 'ec2') return;
-            if (cr.imdsv2_required === true) return; // IMDSv2 blocks SSRF
-
-            // Find MANAGED_BY identity on this EC2
-            this.ctx.graph.forEachOutEdge(tgt, (e2: string, a2, _s2: string, identityId: string) => {
-              if (a2.type !== 'MANAGED_BY') return;
-              for (const vulnId of ssrfVulns) {
-                const existing = this.ctx.graph.edges(vulnId, identityId);
-                if (existing.some((ex: string) => this.ctx.graph.getEdgeAttributes(ex).type === 'EXPLOITS')) return;
-
-                const { id: edgeId } = this.addEdge(vulnId, identityId, {
-                  type: 'EXPLOITS',
-                  confidence: 0.85,
-                  discovered_at: now,
-                  discovered_by: 'inference:imdsv1-ssrf',
-                  tested: false,
-                  inferred_by_rule: 'imdsv1-ssrf',
-                  inferred_at: now,
-                });
-                inferred.push(edgeId);
-                this.log(`Inferred SSRF→IMDS credential capture: ${vulnId} → ${identityId}`, undefined, {
-                  category: 'inference', event_type: 'inference_generated',
-                });
-              }
-            });
-          });
-        }
-      }
-    }
-    return inferred;
+    return _inferImdsv1Ssrf(this.imperativeHost, webappNodeIds);
   }
 
-  // Managed identity pivot: host →RUNS_ON→ cloud_resource →MANAGED_BY→ cloud_identity
   private inferManagedIdentityPivot(hostNodeIds: Set<string>): string[] {
-    const inferred: string[] = [];
-    const now = new Date().toISOString();
-
-    for (const hostId of hostNodeIds) {
-      if (!this.ctx.graph.hasNode(hostId)) continue;
-      const hostAttrs = this.ctx.graph.getNodeAttributes(hostId);
-      if (hostAttrs.type !== 'host') continue;
-
-      // Check if host has any sessions
-      const sessionHolders: string[] = [];
-      this.ctx.graph.forEachInEdge(hostId, (e: string, attrs, src: string) => {
-        if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) sessionHolders.push(src);
-      });
-      if (sessionHolders.length === 0) continue;
-
-      // Walk: host →RUNS_ON→ cloud_resource →MANAGED_BY→ cloud_identity
-      this.ctx.graph.forEachOutEdge(hostId, (e: string, attrs, _src: string, crId: string) => {
-        if (attrs.type !== 'RUNS_ON') return;
-        this.ctx.graph.forEachOutEdge(crId, (e2: string, a2, _s2: string, identityId: string) => {
-          if (a2.type !== 'MANAGED_BY') return;
-
-          for (const holder of sessionHolders) {
-            const existing = this.ctx.graph.edges(holder, identityId);
-            if (existing.some((ex: string) => this.ctx.graph.getEdgeAttributes(ex).type === 'POTENTIAL_AUTH')) continue;
-
-            const { id: edgeId } = this.addEdge(holder, identityId, {
-              type: 'POTENTIAL_AUTH',
-              confidence: 0.75,
-              discovered_at: now,
-              discovered_by: 'inference:managed-identity-pivot',
-              tested: false,
-              inferred_by_rule: 'managed-identity-pivot',
-              inferred_at: now,
-            });
-            inferred.push(edgeId);
-            this.log(`Inferred managed identity pivot: ${holder} → ${identityId} via ${crId}`, undefined, {
-              category: 'inference', event_type: 'inference_generated',
-            });
-          }
-        });
-      });
-    }
-    return inferred;
+    return _inferManagedIdentityPivot(this.imperativeHost, hostNodeIds);
   }
 
   degradeExpiredCredentialEdges(credNodeId: string): string[] {
-    const node = this.getNode(credNodeId);
-    if (!node || node.type !== 'credential' || !isCredentialStaleOrExpired(node)) return [];
-
-    const degraded: string[] = [];
-    for (const edgeId of this.ctx.graph.outEdges(credNodeId) as string[]) {
-      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
-      if (attrs.type !== 'POTENTIAL_AUTH') continue;
-      const newConfidence = Math.max(0.1, attrs.confidence * 0.5);
-      if (newConfidence >= attrs.confidence) continue;
-      this.ctx.graph.mergeEdgeAttributes(edgeId, { confidence: newConfidence } as Partial<EdgeProperties>);
-      degraded.push(edgeId);
-    }
-
-    if (degraded.length > 0) {
-      this.log(`Degraded ${degraded.length} POTENTIAL_AUTH edge(s) from expired/stale credential ${credNodeId}`, undefined, {
-        category: 'inference',
-        event_type: 'credential_degradation',
-        details: { credential_node: credNodeId, degraded_edges: degraded.length, credential_status: node.credential_status },
-      });
-      this.invalidateHealthReport();
-    }
-
-    return degraded;
+    return _degradeExpiredCredentialEdges(this.imperativeHost, credNodeId);
   }
 
   // =============================================
@@ -1679,14 +1436,14 @@ export class GraphEngine {
         event_type: eventType,
         description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed'}${principal_node ? ` as ${principal_node}` : ''}`,
         agent_id,
+        action_id,
+        frontier_item_id,
         category: 'system',
         details: {
           session_id,
           target_node,
           principal_node,
           credential_node,
-          action_id,
-          frontier_item_id,
           confirmed,
           has_session_edge_created: !!principal_node && this.ctx.graph.hasNode(principal_node || ''),
         },
@@ -1696,9 +1453,11 @@ export class GraphEngine {
       this.markFrontierEdgeTested(frontier_item_id, action_id, 'failure');
 
       this.logActionEvent({
-        event_type: 'session_access_confirmed',
+        event_type: 'session_error',
         description: `SSH session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
         agent_id,
+        action_id,
+        frontier_item_id,
         category: 'system',
         outcome: 'failure',
         details: {
@@ -1706,11 +1465,11 @@ export class GraphEngine {
           target_node,
           principal_node,
           credential_node,
-          action_id,
-          frontier_item_id,
         },
       });
     }
+
+    this.persist();
   }
 
   private markFrontierEdgeTested(
@@ -2169,6 +1928,17 @@ export class GraphEngine {
   // Scope Management
   // =============================================
 
+  private get scopeHost(): ScopeManagerHost {
+    return {
+      ctx: this.ctx,
+      addNode: this.addNode.bind(this),
+      logActionEvent: this.logActionEvent.bind(this),
+      persist: (() => this.persist()) as () => void,
+      invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
+      invalidateHealthReport: this.invalidateHealthReport.bind(this),
+    };
+  }
+
   updateScope(changes: {
     add_cidrs?: string[];
     remove_cidrs?: string[];
@@ -2178,160 +1948,11 @@ export class GraphEngine {
     remove_exclusions?: string[];
     reason: string;
   }): { applied: boolean; errors: string[]; before: EngagementConfig['scope']; after: EngagementConfig['scope']; affected_node_count: number } {
-    const errors: string[] = [];
-
-    // Validate CIDRs
-    for (const cidr of changes.add_cidrs || []) {
-      if (!isValidCidr(cidr)) errors.push(`Invalid CIDR: ${cidr}`);
-    }
-    for (const cidr of changes.remove_cidrs || []) {
-      if (!isValidCidr(cidr)) errors.push(`Invalid CIDR to remove: ${cidr}`);
-    }
-    for (const cidr of changes.add_exclusions || []) {
-      if (!isValidCidr(cidr)) errors.push(`Invalid exclusion: ${cidr}`);
-    }
-    for (const cidr of changes.remove_exclusions || []) {
-      if (!isValidCidr(cidr)) errors.push(`Invalid exclusion to remove: ${cidr}`);
-    }
-
-    if (errors.length > 0) {
-      return { applied: false, errors, before: { ...this.ctx.config.scope }, after: { ...this.ctx.config.scope }, affected_node_count: 0 };
-    }
-
-    const before = {
-      cidrs: [...this.ctx.config.scope.cidrs],
-      domains: [...this.ctx.config.scope.domains],
-      exclusions: [...this.ctx.config.scope.exclusions],
-    };
-
-    // Apply mutations
-    if (changes.add_cidrs) {
-      for (const cidr of changes.add_cidrs) {
-        if (!this.ctx.config.scope.cidrs.includes(cidr)) {
-          this.ctx.config.scope.cidrs.push(cidr);
-        }
-      }
-    }
-    if (changes.remove_cidrs) {
-      this.ctx.config.scope.cidrs = this.ctx.config.scope.cidrs.filter(c => !changes.remove_cidrs!.includes(c));
-    }
-    if (changes.add_domains) {
-      for (const domain of changes.add_domains) {
-        if (!this.ctx.config.scope.domains.includes(domain)) {
-          this.ctx.config.scope.domains.push(domain);
-        }
-      }
-    }
-    if (changes.remove_domains) {
-      this.ctx.config.scope.domains = this.ctx.config.scope.domains.filter(d => !changes.remove_domains!.includes(d));
-    }
-    if (changes.add_exclusions) {
-      for (const excl of changes.add_exclusions) {
-        if (!this.ctx.config.scope.exclusions.includes(excl)) {
-          this.ctx.config.scope.exclusions.push(excl);
-        }
-      }
-    }
-    if (changes.remove_exclusions) {
-      this.ctx.config.scope.exclusions = this.ctx.config.scope.exclusions.filter(e => !changes.remove_exclusions!.includes(e));
-    }
-
-    const after = {
-      cidrs: [...this.ctx.config.scope.cidrs],
-      domains: [...this.ctx.config.scope.domains],
-      exclusions: [...this.ctx.config.scope.exclusions],
-    };
-
-    // Count nodes now in scope that were previously out of scope
-    let affectedNodeCount = 0;
-    this.ctx.graph.forEachNode((id, attrs) => {
-      if (attrs.type !== 'host') return;
-      const ip = attrs.ip;
-      if (!ip) return;
-      const wasInScope = isIpInScope(ip, before.cidrs, before.exclusions);
-      const nowInScope = isIpInScope(ip, after.cidrs, after.exclusions);
-      if (!wasInScope && nowInScope) affectedNodeCount++;
-    });
-
-    // Also promote cold nodes that are now in scope
-    const coldToPromote: string[] = [];
-    this.ctx.coldStore.forEach((record) => {
-      if (!record.ip) return;
-      const wasInScope = isIpInScope(record.ip, before.cidrs, before.exclusions);
-      const nowInScope = isIpInScope(record.ip, after.cidrs, after.exclusions);
-      if (!wasInScope && nowInScope) coldToPromote.push(record.id);
-    });
-    for (const id of coldToPromote) {
-      const coldRecord = this.ctx.coldStore.promote(id);
-      if (coldRecord) {
-        this.addNode({
-          id: coldRecord.id,
-          type: coldRecord.type as NodeType,
-          label: coldRecord.label,
-          ip: coldRecord.ip,
-          hostname: coldRecord.hostname,
-          discovered_at: coldRecord.discovered_at,
-          last_seen_at: coldRecord.last_seen_at,
-          alive: coldRecord.alive,
-          discovered_by: coldRecord.provenance,
-          confidence: 1.0,
-        });
-        affectedNodeCount++;
-      }
-    }
-
-    // Invalidate caches
-    this.invalidateFrontierCache();
-    this.invalidateHealthReport();
-
-    // Log the scope change
-    this.logActionEvent({
-      description: `Scope updated: ${changes.reason}`,
-      event_type: 'scope_updated',
-      category: 'system',
-      result_classification: 'success',
-      details: {
-        reason: changes.reason,
-        before,
-        after,
-        affected_node_count: affectedNodeCount,
-      },
-    });
-
-    this.persist();
-
-    return { applied: true, errors: [], before, after, affected_node_count: affectedNodeCount };
+    return _updateScope(this.scopeHost, changes);
   }
 
   collectScopeSuggestions(): ScopeSuggestion[] {
-    const outOfScopeIps = new Map<string, { ips: Set<string>; nodeIds: Set<string>; firstSeen: string; sources: Set<string> }>();
-
-    this.ctx.graph.forEachNode((id, attrs) => {
-      if (attrs.type !== 'host' || !attrs.ip) return;
-      if (isIpInScope(attrs.ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions)) return;
-
-      const parts = attrs.ip.split('.');
-      if (parts.length !== 4) return;
-      const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
-      const suggestedCidr = `${prefix}.0/24`;
-
-      if (!outOfScopeIps.has(suggestedCidr)) {
-        outOfScopeIps.set(suggestedCidr, { ips: new Set(), nodeIds: new Set(), firstSeen: attrs.discovered_at, sources: new Set() });
-      }
-      const entry = outOfScopeIps.get(suggestedCidr)!;
-      entry.ips.add(attrs.ip);
-      entry.nodeIds.add(id);
-      if (attrs.discovered_at < entry.firstSeen) entry.firstSeen = attrs.discovered_at;
-      if (attrs.discovered_by) entry.sources.add(attrs.discovered_by);
-    });
-
-    return Array.from(outOfScopeIps.entries()).map(([cidr, data]) => ({
-      suggested_cidr: cidr,
-      out_of_scope_ips: Array.from(data.ips).sort(),
-      node_ids: Array.from(data.nodeIds),
-      first_seen_at: data.firstSeen,
-      source_descriptions: Array.from(data.sources),
-    }));
+    return _collectScopeSuggestions(this.scopeHost);
   }
 
   previewScopeChange(changes: {
@@ -2342,63 +1963,7 @@ export class GraphEngine {
     add_exclusions?: string[];
     remove_exclusions?: string[];
   }): { before: EngagementConfig['scope']; after: EngagementConfig['scope']; nodes_entering_scope: number; nodes_leaving_scope: number; pending_suggestions_resolved: string[] } {
-    const before = {
-      cidrs: [...this.ctx.config.scope.cidrs],
-      domains: [...this.ctx.config.scope.domains],
-      exclusions: [...this.ctx.config.scope.exclusions],
-    };
-
-    // Compute hypothetical after state
-    const afterCidrs = [...before.cidrs];
-    for (const cidr of changes.add_cidrs || []) {
-      if (!afterCidrs.includes(cidr)) afterCidrs.push(cidr);
-    }
-    for (const cidr of changes.remove_cidrs || []) {
-      const idx = afterCidrs.indexOf(cidr);
-      if (idx >= 0) afterCidrs.splice(idx, 1);
-    }
-    const afterDomains = [...before.domains];
-    for (const d of changes.add_domains || []) {
-      if (!afterDomains.includes(d)) afterDomains.push(d);
-    }
-    for (const d of changes.remove_domains || []) {
-      const idx = afterDomains.indexOf(d);
-      if (idx >= 0) afterDomains.splice(idx, 1);
-    }
-    const afterExclusions = [...before.exclusions];
-    for (const e of changes.add_exclusions || []) {
-      if (!afterExclusions.includes(e)) afterExclusions.push(e);
-    }
-    for (const e of changes.remove_exclusions || []) {
-      const idx = afterExclusions.indexOf(e);
-      if (idx >= 0) afterExclusions.splice(idx, 1);
-    }
-
-    const after = { cidrs: afterCidrs, domains: afterDomains, exclusions: afterExclusions };
-
-    let entering = 0;
-    let leaving = 0;
-    this.ctx.graph.forEachNode((_id, attrs) => {
-      if (attrs.type !== 'host' || !attrs.ip) return;
-      const wasIn = isIpInScope(attrs.ip, before.cidrs, before.exclusions);
-      const nowIn = isIpInScope(attrs.ip, after.cidrs, after.exclusions);
-      if (!wasIn && nowIn) entering++;
-      if (wasIn && !nowIn) leaving++;
-    });
-
-    // Check which pending suggestions would be resolved
-    const suggestions = this.collectScopeSuggestions();
-    const resolved: string[] = [];
-    for (const s of suggestions) {
-      for (const ip of s.out_of_scope_ips) {
-        if (isIpInScope(ip, after.cidrs, after.exclusions)) {
-          resolved.push(s.suggested_cidr);
-          break;
-        }
-      }
-    }
-
-    return { before, after, nodes_entering_scope: entering, nodes_leaving_scope: leaving, pending_suggestions_resolved: [...new Set(resolved)] };
+    return _previewScopeChange(this.scopeHost, changes);
   }
 
   // =============================================

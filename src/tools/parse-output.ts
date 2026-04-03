@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { ParseContext } from '../types.js';
-import { parseOutput, getSupportedParsers } from '../services/output-parsers.js';
+import { parseOutput, getSupportedParsers } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
 

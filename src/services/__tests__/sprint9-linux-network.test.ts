@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { parseLinpeas } from '../output-parsers.js';
-import { parseOutput } from '../output-parsers.js';
+import { parseLinpeas } from '../parsers/index.js';
+import { parseOutput } from '../parsers/index.js';
 import type { EngagementConfig, Finding } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
 

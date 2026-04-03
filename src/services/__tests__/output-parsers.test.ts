@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers } from '../output-parsers.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers } from '../parsers/index.js';
 
 describe('Output Parsers', () => {
 

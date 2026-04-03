@@ -144,7 +144,7 @@ export class EngineContext {
       ...entry,
     });
     if (this.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
-      this.activityLog.splice(0, this.activityLog.length - MAX_ACTIVITY_LOG_ENTRIES);
+      this.activityLog = tieredTruncate(this.activityLog, MAX_ACTIVITY_LOG_ENTRIES);
     }
     return entry;
   }
@@ -214,4 +214,50 @@ function normalizeOutcome(
   if (validationResult === 'valid') return 'success';
 
   return undefined;
+}
+
+const MILESTONE_EVENT_TYPES: Set<ActivityEventType | undefined> = new Set([
+  'objective_achieved',
+  'action_completed',
+  'action_failed',
+  'finding_ingested',
+  'finding_reported',
+  'scope_updated',
+  'credential_degradation',
+  'session_access_confirmed',
+]);
+
+export function isMilestoneEntry(entry: ActivityLogEntry): boolean {
+  return MILESTONE_EVENT_TYPES.has(entry.event_type);
+}
+
+/**
+ * Tiered truncation: preserves all milestone events (objectives, completed
+ * actions, ingested findings) while trimming ephemeral events (action_started,
+ * inference_generated, system) to stay within the budget.
+ */
+export function tieredTruncate(log: ActivityLogEntry[], budget: number): ActivityLogEntry[] {
+  if (log.length <= budget) return log;
+
+  const milestones: ActivityLogEntry[] = [];
+  const ephemeral: ActivityLogEntry[] = [];
+
+  for (const entry of log) {
+    if (isMilestoneEntry(entry)) {
+      milestones.push(entry);
+    } else {
+      ephemeral.push(entry);
+    }
+  }
+
+  if (milestones.length >= budget) {
+    return milestones.slice(milestones.length - budget);
+  }
+
+  const ephemeralBudget = budget - milestones.length;
+  const keptEphemeral = ephemeral.slice(ephemeral.length - ephemeralBudget);
+
+  const result = [...milestones, ...keptEphemeral];
+  result.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return result;
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { parseNuclei, parseNikto, parseTestssl, parseOutput } from '../output-parsers.js';
+import { parseNuclei, parseNikto, parseTestssl, parseOutput } from '../parsers/index.js';
 import { webappId, vulnerabilityId } from '../parser-utils.js';
 import { validateEdgeEndpoints } from '../graph-schema.js';
 import type { EngagementConfig, Finding } from '../../types.js';

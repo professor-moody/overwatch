@@ -7,6 +7,9 @@ import { readFileSync, existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ToolCallback, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ZodRawShapeCompat, AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
@@ -58,7 +61,11 @@ export type OverwatchToolRegistrar = Pick<McpServer, 'registerTool'>;
 export class ToolRegistrar implements OverwatchToolRegistrar {
   private entries: ToolEntry[] = [];
   constructor(private server: McpServer) {}
-  registerTool(name: string, config: any, cb: any): any {
+  registerTool<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
+    name: string,
+    config: { title?: string; description?: string; inputSchema?: InputArgs; outputSchema?: OutputArgs; annotations?: ToolAnnotations; _meta?: Record<string, unknown> },
+    cb: ToolCallback<InputArgs>,
+  ): RegisteredTool {
     this.entries.push({ name, description: config?.description || '' });
     return this.server.registerTool(name, config, cb);
   }

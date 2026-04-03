@@ -3,7 +3,7 @@ import { unlinkSync, existsSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { hasADContext, contextualFilterHealthReport } from '../graph-health.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
-import { parseNmapXml, parseSecretsdump } from '../output-parsers.js';
+import { parseNmapXml, parseSecretsdump } from '../parsers/index.js';
 
 const TEST_STATE_FILE = './state-test-health.json';
 

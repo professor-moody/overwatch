@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { runLabPreflight, summarizeInlineLabReadiness } from '../lab-preflight.js';
 import { parseBloodHoundFile } from '../bloodhound-ingest.js';
-import { parseNmapXml, parseNxc, parseSecretsdump } from '../output-parsers.js';
+import { parseNmapXml, parseNxc, parseSecretsdump } from '../parsers/index.js';
 import type { EngagementConfig } from '../../types.js';
 import type { ToolStatus } from '../tool-check.js';
 

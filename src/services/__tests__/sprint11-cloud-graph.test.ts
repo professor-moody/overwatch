@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { parsePacu, parseProwler, parseOutput } from '../output-parsers.js';
+import { parsePacu, parseProwler, parseOutput } from '../parsers/index.js';
 import { parseAzureHoundFile } from '../azurehound-ingest.js';
 import { cloudIdentityId, cloudResourceId, cloudPolicyId, cloudNetworkId } from '../parser-utils.js';
 import { validateEdgeEndpoints } from '../graph-schema.js';
