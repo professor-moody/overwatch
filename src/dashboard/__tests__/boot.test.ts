@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 
-const DASHBOARD_DIR = resolve('/Users/keys/projects/overwatch/src/dashboard');
+const DASHBOARD_DIR = resolve(import.meta.dirname, '..');
 
 const SCRIPT_FILES = ['node-display.js', 'graph.js', 'ui.js', 'ws.js', 'main.js'];
 

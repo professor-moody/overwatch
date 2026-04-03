@@ -4,9 +4,10 @@ import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 
 async function loadGraphModule() {
-  const displayUrl = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/node-display.js')).href;
+  const dir = resolve(import.meta.dirname, '..');
+  const displayUrl = pathToFileURL(resolve(dir, 'node-display.js')).href;
   await import(`${displayUrl}?t=${Date.now()}-${Math.random()}`);
-  const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/graph.js')).href;
+  const url = pathToFileURL(resolve(dir, 'graph.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
   return (globalThis as any).window.OverwatchGraph;
 }

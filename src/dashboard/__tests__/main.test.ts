@@ -52,7 +52,7 @@ function makeElement(overrides: Record<string, unknown> = {}) {
 }
 
 async function loadMainModule() {
-  const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/main.js')).href;
+  const url = pathToFileURL(resolve(import.meta.dirname, '..', 'main.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
 }
 

@@ -4,9 +4,10 @@ import { pathToFileURL } from 'url';
 import { readFileSync } from 'fs';
 
 async function loadUiModule() {
-  const displayUrl = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/node-display.js')).href;
+  const dir = resolve(import.meta.dirname, '..');
+  const displayUrl = pathToFileURL(resolve(dir, 'node-display.js')).href;
   await import(`${displayUrl}?t=${Date.now()}-${Math.random()}`);
-  const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/ui.js')).href;
+  const url = pathToFileURL(resolve(dir, 'ui.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
   return (globalThis as any).window.OverwatchUI;
 }
@@ -425,7 +426,7 @@ describe('dashboard ui frontier helpers', () => {
   });
 
   it('does not reference Google Fonts in dashboard html', () => {
-    const html = readFileSync(resolve('/Users/keys/projects/overwatch/src/dashboard/index.html'), 'utf8');
+    const html = readFileSync(resolve(import.meta.dirname, '..', 'index.html'), 'utf8');
     expect(html).not.toContain('fonts.googleapis.com');
     expect(html).not.toContain('fonts.gstatic.com');
   });

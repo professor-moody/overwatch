@@ -3,7 +3,7 @@ import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 
 async function loadWsModule() {
-  const url = pathToFileURL(resolve('/Users/keys/projects/overwatch/src/dashboard/ws.js')).href;
+  const url = pathToFileURL(resolve(import.meta.dirname, '..', 'ws.js')).href;
   await import(`${url}?t=${Date.now()}-${Math.random()}`);
   return (globalThis as any).window.OverwatchWS;
 }
