@@ -192,6 +192,102 @@ export function parseTestssl(output: string, agentId: string = 'testssl-parser',
     // Not valid sslscan XML either
   }
 
+  // Text-mode fallback for human-readable testssl.sh output
+  return parseTestsslText(output, agentId, context);
+}
+
+function parseTestsslText(output: string, agentId: string, context?: ParseContext): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const now = new Date().toISOString();
+  const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
+
+  // Extract target from testssl header: "Testing ... on <host>:<port>"
+  const targetMatch = output.match(/Testing\s+\S+\s+on\s+(\S+):(\d+)/);
+  const ip = targetMatch?.[1] || context?.source_host || 'unknown';
+  const port = parseInt(targetMatch?.[2] || '443') || 443;
+
+  // Only proceed if we found recognizable testssl output
+  if (!targetMatch && !output.includes('Testing protocols') && !output.includes('Testing vulnerabilities')) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges,
+      raw_output: 'testssl text format detected but no structured data could be extracted' };
+  }
+
+  const hId = hostId(ip);
+  if (!seenNodes.has(hId)) {
+    seenNodes.add(hId);
+    const isIpAddr = /^\d+\.\d+\.\d+\.\d+$/.test(ip);
+    nodes.push({
+      id: hId, type: 'host', label: ip, discovered_at: now, confidence: 1.0,
+      ...(isIpAddr ? { ip } : { hostname: ip }),
+    } as Finding['nodes'][0]);
+  }
+
+  const svcId = `svc-${ip.replace(/[.:]/g, '-')}-${port}`;
+  if (!seenNodes.has(svcId)) {
+    seenNodes.add(svcId);
+    nodes.push({
+      id: svcId, type: 'service', label: `https/${port}`, discovered_at: now,
+      confidence: 1.0, port, protocol: 'tcp', service_name: 'https',
+    } as Finding['nodes'][0]);
+    edges.push({
+      source: hId, target: svcId,
+      properties: { type: 'RUNS', confidence: 1.0, discovered_at: now },
+    });
+  }
+
+  // Scan for known vulnerability markers in text output
+  for (const [vulnKey, known] of Object.entries(TLS_KNOWN_VULNS)) {
+    const vulnPattern = new RegExp(`${vulnKey}[^\\n]*(?:VULNERABLE|NOT ok)`, 'i');
+    if (vulnPattern.test(output)) {
+      const vId = vulnerabilityId(known.cve || vulnKey, svcId);
+      if (!seenNodes.has(vId)) {
+        seenNodes.add(vId);
+        nodes.push({
+          id: vId, type: 'vulnerability', label: known.cve || vulnKey,
+          discovered_at: now, confidence: 0.9,
+          cve: known.cve, cvss: TESTSSL_SEVERITY_CVSS[known.severity] || 5.0,
+          vuln_type: 'weak-crypto', affected_component: vulnKey,
+        } as Finding['nodes'][0]);
+      }
+      const edgeKey = `${svcId}->${vId}`;
+      if (!seenEdges.has(edgeKey)) {
+        seenEdges.add(edgeKey);
+        edges.push({
+          source: svcId, target: vId,
+          properties: { type: 'VULNERABLE_TO', confidence: 0.8, discovered_at: now },
+        });
+      }
+    }
+  }
+
+  // Check for weak protocols (SSLv2/SSLv3 offered)
+  const weakProtoPattern = /SSL[v ]?[23]\s+.*(?:offered|yes)/gi;
+  let weakMatch: RegExpExecArray | null;
+  while ((weakMatch = weakProtoPattern.exec(output)) !== null) {
+    const ver = weakMatch[0].includes('2') ? 'SSLv2' : 'SSLv3';
+    const known = TLS_KNOWN_VULNS[ver === 'SSLv3' ? 'POODLE_SSL' : 'POODLE_SSL'];
+    const vId = vulnerabilityId(known?.cve || ver, svcId);
+    if (!seenNodes.has(vId)) {
+      seenNodes.add(vId);
+      nodes.push({
+        id: vId, type: 'vulnerability', label: `Weak protocol: ${ver}`,
+        discovered_at: now, confidence: 0.9,
+        cve: known?.cve, cvss: TESTSSL_SEVERITY_CVSS[known?.severity || 'high'] || 7.5,
+        vuln_type: 'weak-crypto', affected_component: `Protocol ${ver}`,
+      } as Finding['nodes'][0]);
+    }
+    const edgeKey = `${svcId}->${vId}`;
+    if (!seenEdges.has(edgeKey)) {
+      seenEdges.add(edgeKey);
+      edges.push({
+        source: svcId, target: vId,
+        properties: { type: 'VULNERABLE_TO', confidence: 0.8, discovered_at: now },
+      });
+    }
+  }
+
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
 

@@ -27,7 +27,7 @@ export interface HtmlReportOptions {
 export function renderReportHtml(data: HtmlReportData, options: HtmlReportOptions = {}): string {
   const { theme = 'light', include_toc = true } = options;
   const config = data.config;
-  const findings = data.findings;
+  const findings = [...data.findings].sort((a, b) => b.risk_score - a.risk_score);
   const narrative = data.narrative;
 
   const criticalCount = findings.filter(f => f.severity === 'critical').length;
@@ -40,7 +40,7 @@ export function renderReportHtml(data: HtmlReportData, options: HtmlReportOption
   const generatedAt = new Date().toISOString();
 
   return `<!DOCTYPE html>
-<html lang="en" data-theme="${theme}">
+<html lang="en" data-theme="${theme === 'dark' ? 'dark' : 'light'}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -72,7 +72,8 @@ ${include_toc ? renderToc(findings, narrative) : ''}
       <div class="severity-card severity-low"><span class="sev-count">${lowCount}</span><span class="sev-label">Low</span></div>
       <div class="severity-card severity-info"><span class="sev-count">${infoCount}</span><span class="sev-label">Info</span></div>
     </div>
-    <p>Graph: ${data.graph.nodes.length} nodes, ${data.graph.edges.length} edges.</p>
+    <p>${objectivesAchieved} of ${config.objectives.length} objective(s) were achieved.
+    Graph: ${data.graph.nodes.length} nodes, ${data.graph.edges.length} edges.</p>
   </section>
 
   <section id="scope">
@@ -84,6 +85,9 @@ ${include_toc ? renderToc(findings, narrative) : ''}
         <tr><td>Domains</td><td>${esc(config.scope.domains.join(', ') || 'none')}</td></tr>
         <tr><td>Exclusions</td><td>${esc(config.scope.exclusions.join(', ') || 'none')}</td></tr>
         ${config.scope.aws_accounts?.length ? `<tr><td>AWS Accounts</td><td>${esc(config.scope.aws_accounts.join(', '))}</td></tr>` : ''}
+        ${config.scope.azure_subscriptions?.length ? `<tr><td>Azure Subscriptions</td><td>${esc(config.scope.azure_subscriptions.join(', '))}</td></tr>` : ''}
+        ${config.scope.gcp_projects?.length ? `<tr><td>GCP Projects</td><td>${esc(config.scope.gcp_projects.join(', '))}</td></tr>` : ''}
+        ${config.scope.url_patterns?.length ? `<tr><td>URL Patterns</td><td>${esc(config.scope.url_patterns.join(', '))}</td></tr>` : ''}
       </tbody>
     </table>
   </section>
@@ -201,8 +205,11 @@ function renderEvidenceHtml(ev: EvidenceChain): string {
   return html;
 }
 
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
+
 function severityHtml(severity: FindingSeverity): string {
-  return `<span class="badge severity-badge severity-${severity}">${severity.toUpperCase()}</span>`;
+  const safe = VALID_SEVERITIES.has(severity) ? severity : 'info';
+  return `<span class="badge severity-badge severity-${safe}">${esc(severity.toUpperCase())}</span>`;
 }
 
 // ============================================================
@@ -210,14 +217,14 @@ function severityHtml(severity: FindingSeverity): string {
 // ============================================================
 
 function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function formatTs(ts: string): string {
   try {
     return new Date(ts).toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
   } catch {
-    return ts;
+    return esc(ts);
   }
 }
 

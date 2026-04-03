@@ -16,12 +16,10 @@ export const MAX_SNAPSHOTS = 5;
 export class StatePersistence {
   private ctx: EngineContext;
   private builtinRuleIds: Set<string>;
-  private createGraph: () => OverwatchGraph;
 
-  constructor(ctx: EngineContext, builtinRules: InferenceRule[], createGraph: () => OverwatchGraph) {
+  constructor(ctx: EngineContext, builtinRules: InferenceRule[], _createGraph?: () => OverwatchGraph) {
     this.ctx = ctx;
     this.builtinRuleIds = new Set(builtinRules.map(r => r.id));
-    this.createGraph = createGraph;
   }
 
   persist(detail: GraphUpdateDetail = {}): void {
@@ -34,7 +32,7 @@ export class StatePersistence {
       trackedProcesses: this.ctx.trackedProcesses,
       coldStore: this.ctx.coldStore.export(),
     };
-    const json = JSON.stringify(data, null, 2);
+    const json = JSON.stringify(data);
 
     // Atomic write: write to temp, then rename (atomic on POSIX)
     const tmpPath = this.ctx.stateFilePath + '.tmp';
@@ -146,7 +144,7 @@ export class StatePersistence {
         const dir = dirname(this.ctx.stateFilePath);
         const raw = readFileSync(join(dir, snap), 'utf-8');
         const data = JSON.parse(raw);
-        this.ctx.graph = this.createGraph();
+        this.ctx.graph.clear();
         this.ctx.config = data.config;
         this.ctx.graph.import(data.graph);
         this.normalizeLoadedNodeProvenance();

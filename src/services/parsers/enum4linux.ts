@@ -260,15 +260,23 @@ function parseEnum4linuxJson(data: Record<string, unknown>, agentId: string, con
     });
     seenNodes.add(resolvedGroupId);
 
-    // Members
+    // Members — create user nodes for any members not already seen
     for (const member of (Array.isArray(grpObj.members) ? grpObj.members as unknown[] : [])) {
       const mObj = typeof member !== 'string' ? member as Record<string, unknown> : null;
       const memberName = (typeof member === 'string' ? member : mObj?.name || mObj?.username) as string | undefined;
       if (!memberName) continue;
       const resolvedUserId = userId(memberName, domain);
-      if (seenNodes.has(resolvedUserId)) {
-        addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
+      if (!seenNodes.has(resolvedUserId)) {
+        nodes.push({
+          id: resolvedUserId,
+          type: 'user',
+          label: domain ? `${domain}\\${memberName}` : memberName,
+          username: memberName,
+          domain_name: domain,
+        });
+        seenNodes.add(resolvedUserId);
       }
+      addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
     }
   }
 

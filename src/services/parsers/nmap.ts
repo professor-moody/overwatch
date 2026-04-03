@@ -96,7 +96,7 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
     for (const port of host.ports) {
       if (port.state !== 'open') continue;
 
-      const svcId = `svc-${host.ip.replace(/\./g, '-')}-${port.port}`;
+      const svcId = `svc-${host.ip.replace(/[.:]/g, '-')}-${port.port}`;
       nodes.push({
         id: svcId,
         type: 'service',
@@ -152,13 +152,15 @@ function extractNmapHosts(xml: string): NmapHost[] {
   const hostEntries = Array.isArray(rawHostEntries) ? rawHostEntries as Record<string, unknown>[] : [];
 
   for (const h of hostEntries) {
-    // IP address — find the ipv4 address entry
+    // IP address — prefer ipv4, fall back to ipv6
     const addresses: Record<string, unknown>[] = Array.isArray(h.address)
       ? h.address as Record<string, unknown>[]
       : h.address ? [h.address as Record<string, unknown>] : [];
     const ipv4 = addresses.find((a) => a['@_addrtype'] === 'ipv4');
-    if (!ipv4) continue;
-    const ip = ipv4['@_addr'] as string;
+    const ipv6 = addresses.find((a) => a['@_addrtype'] === 'ipv6');
+    const addrEntry = ipv4 || ipv6;
+    if (!addrEntry) continue;
+    const ip = addrEntry['@_addr'] as string;
 
     // Status
     const statusObj = h.status as Record<string, unknown> | undefined;

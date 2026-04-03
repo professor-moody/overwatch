@@ -52,6 +52,11 @@ export function credentialId(
 }
 
 export function hostId(ip: string): string {
+  // Handle IPv6: strip brackets, replace colons with dashes
+  if (ip.includes(':')) {
+    const stripped = ip.replace(/^\[|\]$/g, '');
+    return `host-${stripped.replace(/:/g, '-')}`;
+  }
   return `host-${ip.replace(/\./g, '-')}`;
 }
 

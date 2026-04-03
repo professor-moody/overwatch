@@ -401,8 +401,9 @@ describe('Sprint 3 — Credential Lifecycle & Provenance', () => {
 
       const chains = buildCredentialChains(graph);
       expect(chains.length).toBe(1);
-      expect(chains[0].chain).toEqual(['cred-a', 'cred-b', 'cred-c']);
-      expect(chains[0].methods).toEqual(['crack', 'dcsync']);
+      // Chains are now in attack-flow order: origin → derived
+      expect(chains[0].chain).toEqual(['cred-c', 'cred-b', 'cred-a']);
+      expect(chains[0].methods).toEqual(['dcsync', 'crack']);
       expect(chains[0].labels.length).toBe(3);
     });
 

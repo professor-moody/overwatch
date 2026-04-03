@@ -174,11 +174,24 @@ describe('FrontierComputer', () => {
       expect(edgeItems.length).toBe(0);
     });
 
-    it('excludes confirmed edges (confidence >= 1.0)', () => {
+    it('includes high-confidence untested edges in frontier', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user' });
       addNode(graph, 'host-1', { type: 'host' });
       addEdge(graph, 'user-1', 'host-1', 'HAS_SESSION', { confidence: 1.0, tested: false });
+
+      const { frontier } = buildFrontier(graph);
+      const items = frontier.compute();
+
+      const edgeItems = items.filter(i => i.type === 'inferred_edge');
+      expect(edgeItems.length).toBe(1);
+    });
+
+    it('excludes high-confidence tested edges from frontier', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user' });
+      addNode(graph, 'host-1', { type: 'host' });
+      addEdge(graph, 'user-1', 'host-1', 'HAS_SESSION', { confidence: 1.0, tested: true });
 
       const { frontier } = buildFrontier(graph);
       const items = frontier.compute();

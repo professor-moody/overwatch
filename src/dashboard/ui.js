@@ -153,7 +153,7 @@ function updateStats(state) {
     const color = colors[type] || '#888';
     const clickable = clickableTypes.has(type);
     const label = window.OverwatchNodeDisplay.getFriendlyNodeTypeLabel(type);
-    html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `onclick="handleGraphSummaryCardClick('${escapeHtml(type)}')"` : 'type="button" disabled'} style="border-left-color:${escapeHtml(color)}">
+    html += `<button class="stat-item ${clickable ? 'clickable' : 'telemetry'}" ${clickable ? `data-node-type="${escapeHtml(type)}" onclick="handleGraphSummaryCardClick(this.dataset.nodeType)"` : 'type="button" disabled'} style="border-left-color:${escapeHtml(color)}">
       <div class="stat-value" style="color:${escapeHtml(color)}">${count}</div>
       <div class="stat-label">${escapeHtml(label)}</div>
     </button>`;

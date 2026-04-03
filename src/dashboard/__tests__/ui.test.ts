@@ -369,10 +369,10 @@ describe('dashboard ui frontier helpers', () => {
       frontier: [],
     });
 
-    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('group')");
-    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('ca')");
-    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('subnet')");
-    expect(statGrid.innerHTML).toContain("handleGraphSummaryCardClick('gpo')");
+    expect(statGrid.innerHTML).toContain('data-node-type="group"');
+    expect(statGrid.innerHTML).toContain('data-node-type="ca"');
+    expect(statGrid.innerHTML).toContain('data-node-type="subnet"');
+    expect(statGrid.innerHTML).toContain('data-node-type="gpo"');
   });
 
   it('promotes readiness status when health report has warnings but inline readiness is ready', async () => {

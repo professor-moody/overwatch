@@ -23,8 +23,18 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
   const clean = stripAnsi(output);
   const lines = clean.split('\n');
 
-  // Host node to enrich
-  const hostNodeId = context?.source_host || `host-linpeas-${uuidv4().slice(0, 8)}`;
+  // Try to extract hostname from linpeas header if no context
+  let resolvedHostId = context?.source_host;
+  if (!resolvedHostId) {
+    const headerLines = lines.slice(0, 30).join('\n');
+    const hostnameMatch = headerLines.match(/Hostname:\s*(\S+)/i) ||
+                           headerLines.match(/hostname[=:]\s*(\S+)/i) ||
+                           headerLines.match(/uname.*\s(\S+)\s/);
+    if (hostnameMatch) {
+      resolvedHostId = `host-${hostnameMatch[1].toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+    }
+  }
+  const hostNodeId = resolvedHostId || `host-linpeas-${uuidv4().slice(0, 8)}`;
   const hostProps: Record<string, unknown> = {
     id: hostNodeId,
     type: 'host' as NodeType,
@@ -33,9 +43,11 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
     discovered_at: now,
     os: 'Linux',
   };
-  // Only set confidence on new hosts; omit when enriching an existing node to avoid downgrade
   if (!context?.source_host) {
     hostProps.confidence = 0.9;
+    if (!resolvedHostId) {
+      hostProps.notes = 'No source host context — manual merge may be needed';
+    }
   }
 
   // Section detection

@@ -52,7 +52,7 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
           const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
           for (const [escName] of Object.entries(vulns)) {
             const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
-            if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC6', 'ESC8'].includes(escType)) {
+            if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13'].includes(escType)) {
               const enrollPerms = tmpl['Enrollment Permissions'] as Record<string, unknown> | undefined;
               if (enrollPerms?.['Enrollment Rights']) {
                 for (const principal of enrollPerms['Enrollment Rights'] as string[]) {

@@ -99,12 +99,18 @@ describe('isIpInScope', () => {
     expect(isIpInScope('192.168.1.20', cidrs, exclusions)).toBe(true);
   });
 
-  it('returns true with empty CIDRs when IP is not excluded', () => {
-    expect(isIpInScope('10.10.10.5', [], [])).toBe(true);
+  it('returns false with empty CIDRs (closed-by-default scope)', () => {
+    expect(isIpInScope('10.10.10.5', [], [])).toBe(false);
   });
 
   it('still honors exclusions when CIDRs are empty', () => {
     expect(isIpInScope('10.10.10.5', [], ['10.10.10.5'])).toBe(false);
+  });
+
+  it('denies arbitrary IPs when no CIDRs are configured', () => {
+    expect(isIpInScope('10.0.0.1', [], [])).toBe(false);
+    expect(isIpInScope('192.168.1.1', [], [])).toBe(false);
+    expect(isIpInScope('172.16.0.1', [], [])).toBe(false);
   });
 
   it('returns true with empty exclusions', () => {

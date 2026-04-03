@@ -131,7 +131,6 @@ export class FrontierComputer {
     // 2. Untested inferred edges
     this.ctx.graph.forEachEdge((edgeId: string, attrs, source: string, target: string) => {
       if (attrs.tested) return;
-      if (attrs.confidence >= 1.0) return; // confirmed edges aren't frontier
 
       // Check if edge source is a stale/expired credential
       const sourceNode = this.ctx.graph.getNodeAttributes(source);
@@ -192,6 +191,12 @@ export class FrontierComputer {
     }
 
     // 4. Network pivot items: hosts reachable via pivot in same subnet
+    // Build dedup indexes for O(1) lookups instead of O(n) frontier.some()
+    const frontierIds = new Set(frontier.map(f => f.id));
+    const reachableTargets = new Set(
+      frontier.filter(f => f.type === 'inferred_edge' && f.edge_type === 'REACHABLE').map(f => f.edge_target)
+    );
+
     this.ctx.graph.forEachNode((_subnetId: string, subnetAttrs) => {
       if (subnetAttrs.type !== 'subnet' || !subnetAttrs.subnet_cidr) return;
       const cidr = subnetAttrs.subnet_cidr as string;
@@ -223,11 +228,10 @@ export class FrontierComputer {
           if (peerHasSession) continue;
 
           const pivotItemId = `frontier-pivot-${host.id}-${peer.id}`;
-          if (frontier.some(f => f.id === pivotItemId)) continue;
+          if (frontierIds.has(pivotItemId)) continue;
+          if (reachableTargets.has(peer.id)) continue;
 
-          // Skip if an inferred_edge item already targets this peer via REACHABLE
-          if (frontier.some(f => f.type === 'inferred_edge' && f.edge_target === peer.id && f.edge_type === 'REACHABLE')) continue;
-
+          frontierIds.add(pivotItemId);
           frontier.push({
             id: pivotItemId,
             type: 'network_pivot',

@@ -4,12 +4,30 @@ import { credentialId, userId } from '../parser-utils.js';
 
 // --- Hashcat Parser (--show / potfile) ---
 
+function looksLikeHashcatOutput(output: string): boolean {
+  const lines = output.split('\n');
+  const preamble = lines.slice(0, 30);
+  // Hashcat --show, potfile, or session output markers
+  const markers = [
+    /^Session\.*:/i, /^Status\.*:/i, /^Hash\.Mode\.*:/i, /^Hash\.Target/i,
+    /^\$krb5tgs\$/, /^\$krb5asrep\$/, /^\$HEX\[/,
+    /^[a-f0-9]{32}:.+$/i,
+  ];
+  // Short input (potfile snippet) is always accepted
+  if (lines.filter(l => l.trim()).length <= 20) return true;
+  return preamble.some(line => markers.some(m => m.test(line.trim())));
+}
+
 export function parseHashcat(output: string, agentId: string = 'hashcat-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
   const now = new Date().toISOString();
   const contextDomain = context?.domain;
+
+  if (!looksLikeHashcatOutput(output)) {
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  }
 
   for (const rawLine of output.split('\n')) {
     const line = rawLine.trim();

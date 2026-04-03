@@ -29,7 +29,11 @@ export const BUILTIN_RULES: InferenceRule[] = [
     id: 'rule-mssql-domain-auth',
     name: 'Domain-joined MSSQL accepts domain creds',
     description: 'MSSQL on domain-joined host likely accepts domain authentication',
-    trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
+    trigger: {
+      node_type: 'service',
+      property_match: { service_name: 'mssql' },
+      requires_edge: { type: 'RUNS', direction: 'inbound', peer_match: { domain_joined: true } },
+    },
     produces: [{
       edge_type: 'POTENTIAL_AUTH',
       source_selector: 'domain_credentials',

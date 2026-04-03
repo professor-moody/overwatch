@@ -191,7 +191,7 @@ export const EDGE_TYPES = [
   'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER',
   'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
   // ADCS
-  'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC6', 'ESC8',
+  'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13',
   // Trust
   'TRUSTS', 'SAME_DOMAIN',
   // Roasting
@@ -369,6 +369,7 @@ export interface FrontierItem {
   opsec_noise: number;
   staleness_seconds: number;
   stale_credential?: boolean;
+  scope_unverified?: boolean;
   community_id?: number;
   community_unexplored_count?: number;
 }

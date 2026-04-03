@@ -122,19 +122,21 @@ export class SshAdapter implements SessionAdapterFactory {
     const target = user ? `${user}@${host}` : host;
     args.push(target);
 
-    // If password is provided, use sshpass if available
+    // If password is provided, use sshpass with env var (-e) to avoid leaking in /proc/cmdline
     let command = 'ssh';
     const spawnArgs = args;
+    const spawnEnv: Record<string, string> = { ...process.env as Record<string, string> };
     if (password) {
       command = 'sshpass';
-      spawnArgs.unshift('-p', password, 'ssh');
+      spawnArgs.unshift('-e', 'ssh');
+      spawnEnv.SSHPASS = password;
     }
 
     const proc = pty.spawn(command, spawnArgs, {
       name: 'xterm-256color',
       cols,
       rows,
-      env: { ...process.env as Record<string, string> },
+      env: spawnEnv,
     });
 
     const dataCallbacks: Array<(chunk: string) => void> = [];
@@ -275,6 +277,10 @@ export class SocketAdapter implements SessionAdapterFactory {
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
       let closed = false;
 
+      // Buffer early data arriving before onData is registered by the caller
+      const earlyBuffer: string[] = [];
+      dataCallbacks.push((chunk: string) => { earlyBuffer.push(chunk); });
+
       const socket = connect({ host, port }, () => {
         if (onConnect) onConnect();
 
@@ -290,7 +296,14 @@ export class SocketAdapter implements SessionAdapterFactory {
             socket.destroy();
           },
           onData(cb: (chunk: string) => void) {
+            // Remove the early buffer callback on first real registration
+            if (earlyBuffer.length >= 0 && dataCallbacks[0] !== cb) {
+              dataCallbacks.length = 0;
+            }
             dataCallbacks.push(cb);
+            // Flush buffered early data to the new callback
+            for (const chunk of earlyBuffer) cb(chunk);
+            earlyBuffer.length = 0;
           },
           onExit(cb: (info: { exitCode?: number; signal?: number }) => void) {
             exitCallbacks.push(cb);
@@ -317,6 +330,7 @@ export class SocketAdapter implements SessionAdapterFactory {
     onClose: () => void,
   ): void {
     socket.setEncoding('utf-8');
+    let exited = false;
 
     socket.on('data', (data: Buffer | string) => {
       const chunk = typeof data === 'string' ? data : data.toString('utf-8');
@@ -324,11 +338,15 @@ export class SocketAdapter implements SessionAdapterFactory {
     });
 
     socket.on('close', () => {
+      if (exited) return;
+      exited = true;
       onClose();
       for (const cb of exitCallbacks) cb({ exitCode: 0 });
     });
 
     socket.on('error', () => {
+      if (exited) return;
+      exited = true;
       onClose();
       for (const cb of exitCallbacks) cb({ exitCode: 1 });
     });

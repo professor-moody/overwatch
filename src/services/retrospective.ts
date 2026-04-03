@@ -883,7 +883,8 @@ export function generateReport(
   for (const entry of timelineEntries) {
     const time = formatTimestamp(entry.timestamp);
     const agent = entry.agent_id ? ` [${entry.agent_id}]` : '';
-    lines.push(`| ${time} | ${entry.description}${agent} |`);
+    const desc = (entry.description + agent).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    lines.push(`| ${time} | ${desc} |`);
   }
   lines.push('');
 
@@ -967,8 +968,9 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
       nodeCount += newNodes;
       edgeCount += newEdges;
       if (objAchieved) objectivesAchieved++;
-      if (entries.some(candidate => /admin|session/i.test(candidate.description))) accessLevel = 'user';
-      if (entries.some(candidate => /domain admin|da /i.test(candidate.description))) accessLevel = 'domain_admin';
+      if (entries.some(candidate => /\bsession\b/i.test(candidate.description))) accessLevel = 'user';
+      if (entries.some(candidate => /\badmin\b/i.test(candidate.description))) accessLevel = 'admin';
+      if (entries.some(candidate => /\bdomain\s*admin\b|\bDA\b/i.test(candidate.description))) accessLevel = 'domain_admin';
 
       let reward = 0;
       reward += newNodes * 0.5;
@@ -1083,8 +1085,9 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
     nodeCount += newNodes;
     edgeCount += newEdges;
     if (objAchieved) objectivesAchieved++;
-    if (desc.includes('admin') || desc.includes('has_session')) accessLevel = 'user';
-    if (desc.includes('domain admin') || desc.includes('da ')) accessLevel = 'domain_admin';
+    if (/\bhas_session\b/i.test(desc)) accessLevel = 'user';
+    if (/\badmin\b/i.test(desc)) accessLevel = 'admin';
+    if (/\bdomain\s*admin\b|\bDA\b/i.test(desc)) accessLevel = 'domain_admin';
 
     // Compute reward
     let reward = 0;
@@ -1253,8 +1256,13 @@ export function buildCredentialChains(graph: ExportedGraph): CredentialChain[] {
     const nextEdges = derivedFrom.get(nodeId);
     if (!nextEdges || nextEdges.length === 0) {
       // End of chain — only emit if length > 1
+      // Reverse to show attack flow order: original → derived
       if (chain.length > 1) {
-        chains.push({ chain: [...chain], labels: [...labels], methods: [...methods] });
+        chains.push({
+          chain: [...chain].reverse(),
+          labels: [...labels].reverse(),
+          methods: [...methods].reverse(),
+        });
       }
       return;
     }

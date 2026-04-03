@@ -63,16 +63,30 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
     return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  for (const line of output.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue;
+  // Support both JSONL (one object per line) and single JSON array
+  let entries: Record<string, unknown>[];
+  try {
+    const parsed = JSON.parse(output);
+    if (Array.isArray(parsed)) {
+      entries = parsed;
+    } else {
+      entries = [parsed];
     }
+  } catch {
+    // Fall back to JSONL: one JSON object per line
+    entries = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        entries.push(JSON.parse(trimmed));
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  for (const entry of entries) {
 
     const info = (entry.info || {}) as Record<string, unknown>;
     const templateId = (entry['template-id'] || entry['templateID'] || 'unknown') as string;

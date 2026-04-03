@@ -139,13 +139,14 @@ Only the claiming agent can write (use force to override).`,
       description: `Read output from a session buffer using cursor-based positioning.
 
 Provide from_pos to read incrementally (returns everything since that position).
-Omit from_pos to read the last tail_bytes of output.
+Omit from_pos to read the last tail_chars of output.
 Returns start_pos/end_pos for stable cursor tracking across reads.
 truncated=true means the buffer wrapped past your requested from_pos.`,
       inputSchema: {
         session_id: z.string().describe('Session ID to read from'),
         from_pos: z.number().int().optional().describe('Absolute buffer position to read from (for incremental reads)'),
-        tail_bytes: z.number().int().default(4096).describe('Bytes to read from tail when from_pos is omitted'),
+        tail_chars: z.number().int().default(4096).describe('Characters to read from tail when from_pos is omitted'),
+        tail_bytes: z.number().int().optional().describe('Deprecated alias for tail_chars'),
       },
       annotations: {
         readOnlyHint: true,
@@ -154,8 +155,9 @@ truncated=true means the buffer wrapped past your requested from_pos.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('read_session', async ({ session_id, from_pos, tail_bytes }) => {
-      const result = sessionManager.read(session_id, from_pos, tail_bytes);
+    withErrorBoundary('read_session', async ({ session_id, from_pos, tail_chars, tail_bytes }) => {
+      const effectiveTailChars = tail_chars ?? tail_bytes ?? 4096;
+      const result = sessionManager.read(session_id, from_pos, effectiveTailChars);
 
       return {
         content: [{

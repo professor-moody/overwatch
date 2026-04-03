@@ -271,10 +271,13 @@ export class GraphEngine {
     const edgeId = `${source}--${props.type}--${target}`;
     try {
       return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
-    } catch {
-      // Edge key might already exist for a different source/target pair
-      const fallbackId = `${edgeId}-${uuidv4().slice(0, 8)}`;
-      return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already exists')) {
+        const fallbackId = `${edgeId}-${uuidv4().slice(0, 8)}`;
+        return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
+      }
+      throw err;
     }
   }
 
@@ -593,6 +596,12 @@ export class GraphEngine {
         }
       }
 
+      // 4. Annotate items whose scope cannot be verified (no resolvable IP or hostname)
+      const nodeIds = [item.node_id, item.edge_source, item.edge_target].filter(Boolean) as string[];
+      if (nodeIds.length > 0 && nodeIds.every(nid => !this.resolveHostIp(nid) && !this.resolveHostname(nid))) {
+        item.scope_unverified = true;
+      }
+
       // Everything else passes through to LLM
       passed.push(item);
     }
@@ -632,13 +641,19 @@ export class GraphEngine {
 
   private isNodeExcluded(nodeId: string): string | null {
     const ip = this.resolveHostIp(nodeId);
-    if (ip && this.isExcluded(ip)) return ip;
-    // Fall back to hostname-based scope check for nodes without IPs
-    if (!ip) {
-      const hostname = this.resolveHostname(nodeId);
-      if (hostname && !isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
-        return hostname;
+    const hostname = this.resolveHostname(nodeId);
+
+    if (ip && this.isExcluded(ip)) {
+      // IP not in scope CIDRs — but allow if hostname matches a scoped domain
+      // (handles domain-only engagements where cidrs is empty)
+      if (hostname && isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
+        return null;
       }
+      return ip;
+    }
+    // No IP: fall back to hostname-based scope check
+    if (!ip && hostname && !isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
+      return hostname;
     }
     return null;
   }
@@ -780,6 +795,7 @@ export class GraphEngine {
               ...(confirmed ? {} : { session_unconfirmed: true }),
             });
             this.invalidateFrontierCache();
+            this.invalidatePathGraph();
           } else {
             // Update existing edge — upgrade to confirmed if higher confidence
             const existing = this.ctx.graph.getEdgeAttributes(edgeId);
@@ -857,6 +873,7 @@ export class GraphEngine {
           test_result,
         });
         this.invalidateFrontierCache();
+        this.invalidatePathGraph();
         return;
       }
     }

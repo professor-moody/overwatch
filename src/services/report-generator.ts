@@ -237,8 +237,8 @@ export function buildEvidenceChainsForNode(
     (e.properties.type === 'DERIVED_FROM' || e.properties.type === 'DUMPED_FROM') &&
     (e.source === nodeId || e.target === nodeId)
   );
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
   for (const edge of derivationEdges) {
-    const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
     const sourceLabel = nodeMap.get(edge.source)?.label || edge.source;
     const targetLabel = nodeMap.get(edge.target)?.label || edge.target;
     chains.push({
