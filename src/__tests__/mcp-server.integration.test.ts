@@ -138,9 +138,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 39 tools including the session toolset', async () => {
+  it('lists all 40 tools including the session toolset', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(39);
+    expect(result.tools.length).toBe(40);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
