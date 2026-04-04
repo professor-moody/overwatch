@@ -89,7 +89,8 @@ async function waitForSessionState(sessionId: string, expectedState: string, tim
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const body = await callToolJson('list_sessions', { session_id: sessionId });
-    if (body.state === expectedState) return body;
+    const session = body.sessions?.[0];
+    if (session?.state === expectedState) return session;
     await delay(50);
   }
   throw new Error(`Timed out waiting for session ${sessionId} to reach state ${expectedState}`);
@@ -195,6 +196,25 @@ describe('MCP Server Integration', () => {
     expect(state.lab_readiness).toBeDefined();
   });
 
+  it('get_state honors activity_count', async () => {
+    await client.callTool({
+      name: 'log_action_event',
+      arguments: {
+        action_id: `activity-count-${Date.now()}`,
+        event_type: 'action_started',
+        description: 'Seed recent activity for get_state contract coverage',
+      },
+    });
+
+    const result = await client.callTool({
+      name: 'get_state',
+      arguments: { activity_count: 1 },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const state = JSON.parse(content[0].text);
+    expect(state.recent_activity).toHaveLength(1);
+  });
+
   it('run_lab_preflight returns a readiness report', async () => {
     const result = await client.callTool({
       name: 'run_lab_preflight',
@@ -240,6 +260,17 @@ describe('MCP Server Integration', () => {
     const body = JSON.parse(content[0].text);
     expect(body.candidates).toBeDefined();
     expect(body.candidates.length).toBeGreaterThan(0);
+  });
+
+  it('next_task honors max_items', async () => {
+    const result = await client.callTool({
+      name: 'next_task',
+      arguments: { max_items: 1 },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const body = JSON.parse(content[0].text);
+    expect(body.candidates).toHaveLength(1);
+    expect(body.candidate_count).toBeGreaterThanOrEqual(1);
   });
 
   it('validate_action rejects bad input', async () => {
@@ -321,8 +352,11 @@ describe('MCP Server Integration', () => {
     expect(opened.session.claimed_by).toBe('owner-agent');
 
     const listed = await callToolJson('list_sessions', { session_id: opened.session.id });
-    expect(listed.id).toBe(opened.session.id);
-    expect(listed.title).toBe('integration-local-shell');
+    expect(listed.total).toBe(1);
+    expect(listed.active).toBe(1);
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0].id).toBe(opened.session.id);
+    expect(listed.sessions[0].title).toBe('integration-local-shell');
 
     const sent = await callToolJson('send_to_session', {
       session_id: opened.session.id,
@@ -481,6 +515,37 @@ describe('MCP Server Integration', () => {
     socketClient.destroy();
   });
 
+  it('list_sessions returns a normalized envelope in list mode', async () => {
+    const result = await client.callTool({ name: 'list_sessions', arguments: {} });
+    const body = parseToolBody(result);
+    expect(typeof body.total).toBe('number');
+    expect(typeof body.active).toBe('number');
+    expect(body.sessions).toBeInstanceOf(Array);
+  });
+
+  it('open_session rejects out-of-scope remote targets without creating a session', async () => {
+    const before = await callToolJson('list_sessions', {});
+
+    const result = await client.callTool({
+      name: 'open_session',
+      arguments: {
+        kind: 'ssh',
+        title: 'out-of-scope-ssh',
+        host: '10.10.110.2',
+        user: 'operator',
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    const body = parseToolBody(result);
+    expect(body.error).toContain('out-of-scope');
+    expect(body.host).toBe('10.10.110.2');
+    expect(body.scope_reason).toBe('host_out_of_scope');
+
+    const after = await callToolJson('list_sessions', {});
+    expect(after.total).toBe(before.total);
+  });
+
   it.skipIf(!supportsLocalPty)('session activity does not distort inline lab readiness', async () => {
     const before = await callToolJson('get_state', {});
     const baseline = JSON.stringify(before.lab_readiness);
@@ -625,6 +690,77 @@ describe('MCP Server Integration', () => {
     const linkedEntries = historyBody.entries.filter((entry: any) => entry.action_id === body.action_id);
     expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_reported')).toBe(true);
     expect(linkedEntries.some((entry: any) => entry.event_type === 'finding_ingested')).toBe(true);
+  });
+
+  it('parse_output ingests supported parser output and preserves normalized credential material', async () => {
+    const result = await client.callTool({
+      name: 'parse_output',
+      arguments: {
+        tool_name: 'secretsdump',
+        output: 'ACME/jdoe:1103:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+        ingest: true,
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = parseToolBody(result);
+    expect(body.parsed).toBe(true);
+    expect(body.ingested.new_nodes).toBeGreaterThan(0);
+
+    const graph = await callToolJson('export_graph', {});
+    const credNode = graph.nodes.find((node: any) =>
+      node.properties?.type === 'credential'
+      && node.properties?.cred_user === 'jdoe'
+      && node.properties?.cred_domain === 'acme',
+    );
+    expect(credNode).toBeDefined();
+    expect(credNode.properties.cred_material_kind).toBe('ntlm_hash');
+    expect(credNode.properties.cred_usable_for_auth).toBe(true);
+    expect(credNode.properties.cred_hash || credNode.properties.cred_value).toBe('abcdef0123456789abcdef0123456789');
+  });
+
+  it('parse_output supports parse-only mode without ingesting graph changes', async () => {
+    const uniqueIp = '10.10.110.250';
+    const result = await client.callTool({
+      name: 'parse_output',
+      arguments: {
+        tool_name: 'nmap',
+        output: `<nmaprun><host><status state="up"/><address addr="${uniqueIp}" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open"/><service name="http"/></port></ports></host></nmaprun>`,
+        ingest: false,
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const body = parseToolBody(result);
+    expect(body.parsed).toBe(true);
+    expect(body.ingested).toBeUndefined();
+
+    const graph = await callToolJson('export_graph', {});
+    const hostNode = graph.nodes.find((node: any) => node.id === 'host-10-10-110-250');
+    expect(hostNode).toBeUndefined();
+  });
+
+  it('parse_output returns MCP errors for unsupported parsers and invalid input combinations', async () => {
+    const unsupported = await client.callTool({
+      name: 'parse_output',
+      arguments: {
+        tool_name: 'unsupported-tool',
+        output: 'raw output',
+      },
+    });
+    expect(unsupported.isError).toBe(true);
+    expect(parseToolBody(unsupported).error).toContain('No parser found');
+
+    const invalid = await client.callTool({
+      name: 'parse_output',
+      arguments: {
+        tool_name: 'nmap',
+        output: '<nmaprun></nmaprun>',
+        file_path: './does-not-matter.xml',
+      },
+    });
+    expect(invalid.isError).toBe(true);
+    expect(parseToolBody(invalid).error).toContain('exactly one');
   });
 
   it('get_skill returns skill content', async () => {

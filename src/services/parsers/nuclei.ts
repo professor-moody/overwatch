@@ -1,8 +1,6 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { hostId, vulnerabilityId, webappId } from '../parser-utils.js';
-
-// --- Nuclei JSONL Parser ---
+import { hostId, vulnerabilityId, webappOriginId } from '../parser-utils.js';
 
 const NUCLEI_SEVERITY_CVSS: Record<string, number> = {
   critical: 9.5,
@@ -63,7 +61,7 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
     return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  // Support both JSONL (one object per line) and single JSON array
+  // Support JSON array, JSONL, and plain text output
   let entries: Record<string, unknown>[];
   try {
     const parsed = JSON.parse(output);
@@ -73,15 +71,22 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
       entries = [parsed];
     }
   } catch {
-    // Fall back to JSONL: one JSON object per line
+    // Try JSONL first, then fall back to text parsing
     entries = [];
+    const textLines: string[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
         entries.push(JSON.parse(trimmed));
       } catch {
-        continue;
+        textLines.push(trimmed);
+      }
+    }
+    // If no JSON was parsed, try Nuclei text format
+    if (entries.length === 0 && textLines.length > 0) {
+      for (const textEntry of parseNucleiTextLines(textLines)) {
+        entries.push(textEntry);
       }
     }
   }
@@ -100,25 +105,25 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
     let targetNodeId: string;
 
     if (isHttp && matchedAt) {
-      // Create webapp node from matched-at URL
-      const waId = webappId(matchedAt);
+      // Webapp keyed by origin (scheme+host+port), path stored as attribute
+      const waId = webappOriginId(matchedAt);
       targetNodeId = waId;
       if (!seenNodes.has(waId)) {
         seenNodes.add(waId);
-        let waUrl: string;
+        let originUrl: string;
         try {
           const parsed = new URL(matchedAt);
-          waUrl = `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+          originUrl = `${parsed.protocol}//${parsed.host}`;
         } catch {
-          waUrl = matchedAt;
+          originUrl = matchedAt;
         }
         nodes.push({
           id: waId,
           type: 'webapp',
-          label: waUrl,
+          label: originUrl,
           discovered_at: now,
           confidence: 1.0,
-          url: waUrl,
+          url: originUrl,
         } as Finding['nodes'][0]);
       }
 
@@ -241,4 +246,42 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
   }
 
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+// Nuclei text output format: [template-id] [protocol] [severity] matched-url [extra-info]
+// Examples:
+//   [CVE-2021-41773] [http] [critical] http://10.10.10.5/cgi-bin/.%2e/...
+//   [tech-detect:nginx] [http] [info] http://10.10.10.5
+const NUCLEI_TEXT_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(\S+)(.*)$/;
+
+function parseNucleiTextLines(lines: string[]): Record<string, unknown>[] {
+  const entries: Record<string, unknown>[] = [];
+  for (const line of lines) {
+    const m = line.match(NUCLEI_TEXT_RE);
+    if (!m) continue;
+
+    const templateId = m[1];
+    const protocol = m[2].toLowerCase();
+    const severity = m[3].toLowerCase();
+    const matchedUrl = m[4];
+    const extraInfo = m[5]?.trim() || '';
+
+    const cveMatch = templateId.match(/^(CVE-\d{4}-\d+)/i);
+    const tags: string[] = [];
+    if (cveMatch) tags.push(cveMatch[1].toUpperCase());
+
+    entries.push({
+      'template-id': templateId,
+      type: protocol,
+      host: matchedUrl,
+      'matched-at': matchedUrl,
+      info: {
+        name: extraInfo || templateId,
+        severity,
+        tags,
+        ...(cveMatch ? { classification: { 'cve-id': cveMatch[1].toUpperCase() } } : {}),
+      },
+    });
+  }
+  return entries;
 }

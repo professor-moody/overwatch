@@ -750,3 +750,121 @@ describe('Parser registry — new aliases', () => {
     expect(parseOutput('sslscan', '', 'test')).toBeDefined();
   });
 });
+
+// ============================================================
+// Regression: P1 — Nuclei text output parsing
+// ============================================================
+describe('regression — Nuclei text output parsing', () => {
+  it('parses standard Nuclei text-mode output lines', () => {
+    const input = [
+      '[CVE-2021-41773] [http] [critical] http://10.10.10.5/cgi-bin/.%2e/%2e%2e/etc/passwd',
+      '[tech-detect:nginx] [http] [info] http://10.10.10.5',
+    ].join('\n');
+    const result = parseNuclei(input);
+
+    expect(result.nodes.length).toBeGreaterThan(0);
+    const vulns = result.nodes.filter(n => n.type === 'vulnerability');
+    expect(vulns.length).toBe(2);
+    const cveVuln = vulns.find(v => v.cve === 'CVE-2021-41773');
+    expect(cveVuln).toBeDefined();
+    expect(cveVuln!.cvss).toBe(9.5);
+    expect(cveVuln!.exploitable).toBe(true);
+  });
+
+  it('handles mixed text lines with non-matching lines', () => {
+    const input = [
+      '                   __     _',
+      '   ____  __  _____/ /__  (_)',
+      '[CVE-2024-1234] [http] [high] http://10.10.10.5/vuln',
+      'some other garbage line',
+      '',
+    ].join('\n');
+    const result = parseNuclei(input);
+    const vulns = result.nodes.filter(n => n.type === 'vulnerability');
+    expect(vulns.length).toBe(1);
+  });
+
+  it('text-mode output produces host, service, webapp, and vulnerability nodes', () => {
+    const input = '[sqli-detect] [http] [high] http://10.10.10.5:8080/search?q=1';
+    const result = parseNuclei(input);
+    const types = result.nodes.map(n => n.type);
+    expect(types).toContain('host');
+    expect(types).toContain('service');
+    expect(types).toContain('webapp');
+    expect(types).toContain('vulnerability');
+
+    const edgeTypes = result.edges.map(e => e.properties.type);
+    expect(edgeTypes).toContain('RUNS');
+    expect(edgeTypes).toContain('HOSTS');
+    expect(edgeTypes).toContain('VULNERABLE_TO');
+  });
+});
+
+// ============================================================
+// Regression: P1 — Nikto path-aware vulnerability identity
+// ============================================================
+describe('regression — Nikto per-path vulnerability identity', () => {
+  it('produces distinct vulnerability nodes for same OSVDB on different paths', () => {
+    const input = [
+      '+ Target IP: 10.10.10.5',
+      '+ Target Port: 80',
+      '+ OSVDB-3268: /admin: Directory indexing found.',
+      '+ OSVDB-3268: /backup-admin: Directory indexing found.',
+    ].join('\n');
+    const result = parseNikto(input);
+
+    const vulns = result.nodes.filter(n => n.type === 'vulnerability');
+    expect(vulns.length).toBe(2);
+    expect(vulns[0].id).not.toBe(vulns[1].id);
+
+    const labels = vulns.map(v => v.label);
+    expect(labels.some(l => l!.includes('/admin'))).toBe(true);
+    expect(labels.some(l => l!.includes('/backup-admin'))).toBe(true);
+
+    const vulnEdges = result.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+    expect(vulnEdges.length).toBe(2);
+  });
+
+  it('stores affected_path on vulnerability node', () => {
+    const input = JSON.stringify({
+      ip: '10.10.10.5',
+      port: 80,
+      vulnerabilities: [
+        { id: 'OSVDB-561', OSVDB: '561', msg: 'Default page detected', path: '/index.html' },
+      ],
+    });
+    const result = parseNikto(input);
+    const vuln = result.nodes.find(n => n.type === 'vulnerability');
+    expect(vuln).toBeDefined();
+    expect(vuln!.affected_path).toBe('/index.html');
+  });
+});
+
+// ============================================================
+// Regression: P2 — Nuclei and Nikto produce same webapp ID for same origin
+// ============================================================
+describe('regression — cross-tool webapp identity convergence', () => {
+  it('Nuclei and Nikto produce the same webapp node ID for the same origin', () => {
+    const nucleiInput = JSON.stringify({
+      'template-id': 'xss-test',
+      type: 'http',
+      host: 'http://10.10.10.5:8080',
+      'matched-at': 'http://10.10.10.5:8080/login?q=1',
+      info: { name: 'XSS', severity: 'medium', tags: 'xss' },
+    });
+    const nucleiResult = parseNuclei(nucleiInput);
+
+    const niktoInput = [
+      '+ Target IP: 10.10.10.5',
+      '+ Target Port: 8080',
+      '+ OSVDB-3268: /icons/: Directory indexing found.',
+    ].join('\n');
+    const niktoResult = parseNikto(niktoInput);
+
+    const nucleiWebapp = nucleiResult.nodes.find(n => n.type === 'webapp');
+    const niktoWebapp = niktoResult.nodes.find(n => n.type === 'webapp');
+    expect(nucleiWebapp).toBeDefined();
+    expect(niktoWebapp).toBeDefined();
+    expect(nucleiWebapp!.id).toBe(niktoWebapp!.id);
+  });
+});

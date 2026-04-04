@@ -24,11 +24,11 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **Rubeus** | `rubeus` | Kerberoast/AS-REP/monitor output | User + credential nodes, `OWNS_CRED` edges (TGT/TGS detection) |
 | **Web Dir Enum** | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` | Text or JSON | Service node enrichment with `discovered_paths`, login form detection |
 | **Linpeas** | `linpeas`, `linenum`, `linpeas.sh` | Text output | Host enrichment: kernel version, SUID binaries, docker socket, capabilities, cron jobs |
-| **Nuclei** | `nuclei` | JSON or text output | Vulnerability nodes, `VULNERABLE_TO` edges |
-| **Nikto** | `nikto` | Text output | Web vulnerability findings |
+| **Nuclei** | `nuclei` | JSON, JSONL, or text output | Vulnerability + webapp nodes, `VULNERABLE_TO` edges. Text format: `[template-id] [protocol] [severity] url` |
+| **Nikto** | `nikto` | Text or JSON output | Per-path web vulnerability findings with `affected_path` metadata |
 | **TestSSL** | `testssl`, `testssl.sh`, `sslscan` | Text or JSON output | TLS enrichment: version, cipher suites, certificate details |
 | **Pacu** | `pacu` | JSON output | Cloud identity + resource + policy nodes, `HAS_POLICY` / `ASSUMES_ROLE` edges |
-| **Prowler** | `prowler` | OCSF JSON-lines output | Cloud resource nodes, security findings as vulnerability nodes |
+| **Prowler** | `prowler` | OCSF JSON-lines output | Cloud resource nodes, all FAIL findings as vulnerability nodes (any severity) |
 
 ## Parameters
 

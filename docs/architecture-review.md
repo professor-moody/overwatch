@@ -198,8 +198,8 @@ Seventeen deterministic parsers with 31 aliases:
 | `rubeus` | Kerberoast / AS-REP / monitor | user + credential nodes, OWNS_CRED edges (TGT/TGS detection) |
 | `gobuster` / `feroxbuster` / `ffuf` | Text or JSON | service node enrichment with discovered_paths, login form detection |
 | `linpeas` / `linenum` | ANSI text | host enrichment: kernel version, SUID binaries, docker socket, capabilities, cron jobs |
-| `nuclei` | JSON or text | vulnerability + service nodes, VULNERABLE_TO edges |
-| `nikto` | Text or CSV | vulnerability + service nodes |
+| `nuclei` | JSON, JSONL, or text | vulnerability + webapp nodes, VULNERABLE_TO edges (text: `[id] [proto] [severity] url`) |
+| `nikto` | Text or JSON | per-path vulnerability + webapp nodes |
 | `testssl` / `sslscan` | JSON or text | TLS vulnerability detection (Heartbleed, POODLE, DROWN, etc.) |
 | `pacu` | JSON | cloud_identity + cloud_resource + cloud_policy nodes, IAM edges |
 | `prowler` | OCSF JSON-lines | cloud_resource nodes, compliance findings, VULNERABLE_TO edges |

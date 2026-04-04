@@ -304,11 +304,20 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
       } as Finding['nodes'][0]);
     }
 
-    // Map failed/high-severity checks to vulnerability nodes
+    // Map all failed checks to vulnerability nodes regardless of severity.
+    // Severity is carried on the node so reporting/filtering can decide emphasis.
     const status = String(finding.Status || finding.status_code || finding.status || '').toUpperCase();
     const severity = String(finding.Severity || finding.severity || findingInfo?.severity || '').toUpperCase();
 
-    if (status === 'FAIL' && (severity === 'HIGH' || severity === 'CRITICAL')) {
+    const PROWLER_SEVERITY_CVSS: Record<string, number> = {
+      CRITICAL: 9.0,
+      HIGH: 7.5,
+      MEDIUM: 5.0,
+      LOW: 2.5,
+      INFORMATIONAL: 0,
+    };
+
+    if (status === 'FAIL') {
       const checkId = (finding.CheckID || finding.check_id || findingInfo?.uid || `prowler-${Date.now()}`) as string;
       const vulnNodeId = vulnerabilityId(checkId, crNodeId);
       if (!seenNodes.has(vulnNodeId)) {
@@ -321,9 +330,10 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
           discovered_at: now, discovered_by: agentId,
           confidence: 1.0,
           vuln_type: 'cloud_misconfiguration',
-          cvss: severity === 'CRITICAL' ? 9.0 : 7.5,
-          exploitable: true,
+          cvss: PROWLER_SEVERITY_CVSS[severity] ?? 5.0,
+          exploitable: severity === 'CRITICAL' || severity === 'HIGH',
           affected_component: resourceType,
+          prowler_severity: severity.toLowerCase(),
         } as Finding['nodes'][0]);
         edges.push({
           source: crNodeId, target: vulnNodeId,

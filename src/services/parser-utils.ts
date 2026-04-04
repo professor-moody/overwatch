@@ -93,6 +93,23 @@ export function webappId(url: string): string {
   return `webapp-${normalizeKeyPart(normalized)}`;
 }
 
+/**
+ * Origin-level webapp ID (scheme + host + port only, path stripped).
+ * Produces the same ID regardless of path, so cross-tool correlation
+ * converges on a single webapp node per origin.
+ */
+export function webappOriginId(url: string): string {
+  try {
+    const parsed = new URL(url.trim());
+    const origin = `${parsed.protocol}//${parsed.host}`;
+    return webappId(origin);
+  } catch {
+    // If URL parsing fails, strip anything after the third slash
+    const m = url.match(/^(https?:\/\/[^/]+)/i);
+    return webappId(m ? m[1] : url);
+  }
+}
+
 export function vulnerabilityId(identifier: string, targetNodeId: string): string {
   const idPart = normalizeKeyPart(identifier);
   const targetPart = normalizeKeyPart(targetNodeId);

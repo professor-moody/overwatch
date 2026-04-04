@@ -10,6 +10,16 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isIpInScope, isHostnameInScope } from '../services/cidr.js';
 
+function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'connect' | 'listen'): boolean {
+  return kind === 'ssh' || (kind === 'socket' && mode !== 'listen');
+}
+
+function isHostInScope(host: string, engine: GraphEngine): boolean {
+  const scope = engine.getConfig().scope;
+  return isIpInScope(host, scope.cidrs, scope.exclusions)
+    || isHostnameInScope(host, scope.domains, scope.exclusions);
+}
+
 export function registerSessionTools(server: McpServer, sessionManager: SessionManager, engine: GraphEngine): void {
 
   // ============================================================
@@ -27,6 +37,7 @@ Supports three session kinds:
 - **socket**: TCP socket for bind/reverse shells (dumb TTY, upgradeable)
 
 Sessions persist across MCP tool calls. Use write_session/read_session for I/O.
+Remote target sessions (SSH and socket connect mode) are scope-enforced and fail closed for out-of-scope hosts.
 The session is claimed by the opening agent — other agents can read but not write without force.`,
       inputSchema: {
         kind: z.enum(['ssh', 'local_pty', 'socket']).describe('Session transport type'),
@@ -58,12 +69,21 @@ The session is claimed by the opening agent — other agents can read but not wr
     },
     withErrorBoundary('open_session', async (params) => {
       const warnings: string[] = [];
-      if (params.host && engine) {
-        const scope = engine.getConfig().scope;
-        const hostInScope = isIpInScope(params.host, scope.cidrs, scope.exclusions)
-          || isHostnameInScope(params.host, scope.domains, scope.exclusions);
-        if (!hostInScope) {
-          warnings.push(`Warning: host "${params.host}" is not in engagement scope`);
+      if (params.host && isRemoteScopedSession(params.kind, params.mode)) {
+        if (!isHostInScope(params.host, engine)) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Refusing to open remote session to out-of-scope host "${params.host}"`,
+                host: params.host,
+                kind: params.kind,
+                mode: params.mode ?? 'connect',
+                scope_reason: 'host_out_of_scope',
+              }, null, 2),
+            }],
+            isError: true,
+          };
         }
       }
 
@@ -255,12 +275,25 @@ Use session_id to get details for a specific session.`,
         const session = sessionManager.getSession(session_id);
         if (!session) {
           return {
-            content: [{ type: 'text', text: JSON.stringify({ error: `Session not found: ${session_id}` }, null, 2) }],
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Session not found: ${session_id}`,
+                session_id,
+              }, null, 2),
+            }],
             isError: true,
           };
         }
         return {
-          content: [{ type: 'text', text: JSON.stringify(session, null, 2) }],
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              total: 1,
+              active: session.state === 'connected' || session.state === 'pending' ? 1 : 0,
+              sessions: [session],
+            }, null, 2),
+          }],
         };
       }
 

@@ -1,6 +1,6 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { hostId, vulnerabilityId, webappId } from '../parser-utils.js';
+import { hostId, vulnerabilityId, webappOriginId, normalizeKeyPart } from '../parser-utils.js';
 
 export function parseNikto(output: string, agentId: string = 'nikto-parser', _context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
@@ -141,8 +141,8 @@ function processNiktoTarget(
     });
   }
 
-  // Webapp node
-  const waId = webappId(targetUrl);
+  // Webapp node — keyed by origin (scheme+host+port) for cross-tool correlation
+  const waId = webappOriginId(targetUrl);
   if (!seenNodes.has(waId)) {
     seenNodes.add(waId);
     nodes.push({
@@ -160,23 +160,30 @@ function processNiktoTarget(
     });
   }
 
-  // Vulnerability nodes
+  // Vulnerability nodes — include path in identity to prevent collapsing
+  // distinct endpoints with the same OSVDB/id
   for (const v of vulns) {
     const osvdb = v.osvdb || v.OSVDB || '';
+    const path = v.url || v.path || '';
     const vId = v.id || (osvdb ? `OSVDB-${osvdb}` : `nikto-finding`);
     const msg = v.msg || v.message || vId;
-    const vulnId = vulnerabilityId(vId, waId);
+
+    // Include path in the vulnerability ID so /admin and /backup-admin
+    // with the same OSVDB produce distinct nodes
+    const pathSuffix = path ? `-${normalizeKeyPart(path)}` : '';
+    const vulnId = vulnerabilityId(vId + pathSuffix, waId);
 
     if (!seenNodes.has(vulnId)) {
       seenNodes.add(vulnId);
       nodes.push({
         id: vulnId,
         type: 'vulnerability',
-        label: msg,
+        label: path ? `${msg} (${path})` : msg,
         discovered_at: now,
         confidence: 1.0,
         vuln_type: 'misc',
         affected_component: msg,
+        affected_path: path || undefined,
       } as Finding['nodes'][0]);
     }
 
@@ -186,7 +193,12 @@ function processNiktoTarget(
       edges.push({
         source: waId,
         target: vulnId,
-        properties: { type: 'VULNERABLE_TO', confidence: 0.7, discovered_at: now },
+        properties: {
+          type: 'VULNERABLE_TO',
+          confidence: 0.7,
+          discovered_at: now,
+          ...(path ? { affected_path: path } : {}),
+        },
       });
     }
   }

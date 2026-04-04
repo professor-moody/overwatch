@@ -601,6 +601,59 @@ describe('11.5 — Prowler parser', () => {
     expect(finding.nodes.filter(n => n.type === 'cloud_resource')).toHaveLength(2);
     expect(finding.nodes.filter(n => n.type === 'vulnerability')).toHaveLength(1);
   });
+
+  it('creates vulnerability nodes for FAIL + MEDIUM severity (not just HIGH/CRITICAL)', () => {
+    const line = JSON.stringify({
+      ResourceArn: 'arn:aws:s3:::medium-bucket',
+      ResourceId: 'medium-bucket',
+      AccountId: '123',
+      Region: 'us-east-1',
+      ServiceName: 's3',
+      Status: 'FAIL',
+      Severity: 'MEDIUM',
+      CheckID: 's3_versioning_disabled',
+      StatusExtended: 'Bucket versioning is not enabled',
+    });
+    const finding = parseProwler(line);
+    const vulnNode = finding.nodes.find(n => n.type === 'vulnerability');
+    expect(vulnNode).toBeTruthy();
+    expect(vulnNode!.cvss).toBe(5.0);
+    expect(vulnNode!.exploitable).toBe(false);
+    expect(vulnNode!.prowler_severity).toBe('medium');
+    expect(finding.edges.some(e => e.properties.type === 'VULNERABLE_TO')).toBe(true);
+  });
+
+  it('creates vulnerability nodes for FAIL + LOW severity', () => {
+    const line = JSON.stringify({
+      ResourceArn: 'arn:aws:ec2:us-east-1:123:instance/i-low',
+      ResourceId: 'i-low',
+      AccountId: '123',
+      Region: 'us-east-1',
+      ServiceName: 'ec2',
+      Status: 'FAIL',
+      Severity: 'LOW',
+      CheckID: 'ec2_tag_missing',
+      StatusExtended: 'Required tags are missing',
+    });
+    const finding = parseProwler(line);
+    const vulnNode = finding.nodes.find(n => n.type === 'vulnerability');
+    expect(vulnNode).toBeTruthy();
+    expect(vulnNode!.cvss).toBe(2.5);
+    expect(vulnNode!.prowler_severity).toBe('low');
+  });
+
+  it('preserves all FAIL findings across mixed severities', () => {
+    const lines = [
+      JSON.stringify({ ResourceArn: 'arn:aws:s3:::b1', ResourceId: 'b1', Status: 'FAIL', Severity: 'CRITICAL', CheckID: 'c1', ServiceName: 's3' }),
+      JSON.stringify({ ResourceArn: 'arn:aws:s3:::b2', ResourceId: 'b2', Status: 'FAIL', Severity: 'HIGH', CheckID: 'c2', ServiceName: 's3' }),
+      JSON.stringify({ ResourceArn: 'arn:aws:s3:::b3', ResourceId: 'b3', Status: 'FAIL', Severity: 'MEDIUM', CheckID: 'c3', ServiceName: 's3' }),
+      JSON.stringify({ ResourceArn: 'arn:aws:s3:::b4', ResourceId: 'b4', Status: 'FAIL', Severity: 'LOW', CheckID: 'c4', ServiceName: 's3' }),
+      JSON.stringify({ ResourceArn: 'arn:aws:s3:::b5', ResourceId: 'b5', Status: 'PASS', Severity: 'HIGH', CheckID: 'c5', ServiceName: 's3' }),
+    ].join('\n');
+    const finding = parseProwler(lines);
+    expect(finding.nodes.filter(n => n.type === 'vulnerability')).toHaveLength(4);
+    expect(finding.nodes.filter(n => n.type === 'cloud_resource')).toHaveLength(5);
+  });
 });
 
 // ============================================================
