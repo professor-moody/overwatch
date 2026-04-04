@@ -14,6 +14,7 @@ export interface ScopeManagerHost {
   persist(): void;
   invalidateFrontierCache(): void;
   invalidateHealthReport(): void;
+  runInferenceRules(nodeId: string): string[];
 }
 
 export function isValidDomain(domain: string): boolean {
@@ -119,6 +120,7 @@ export function updateScope(
     const nowInScope = isIpInScope(record.ip, after.cidrs, after.exclusions);
     if (!wasInScope && nowInScope) coldToPromote.push(record.id);
   });
+  const promotedIds: string[] = [];
   for (const id of coldToPromote) {
     const coldRecord = host.ctx.coldStore.promote(id);
     if (coldRecord) {
@@ -134,8 +136,13 @@ export function updateScope(
         discovered_by: coldRecord.provenance,
         confidence: 1.0,
       });
+      promotedIds.push(coldRecord.id);
       affectedNodeCount++;
     }
+  }
+
+  for (const promotedId of promotedIds) {
+    host.runInferenceRules(promotedId);
   }
 
   host.invalidateFrontierCache();

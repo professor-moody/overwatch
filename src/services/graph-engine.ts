@@ -32,7 +32,7 @@ import {
   inferManagedIdentityPivot as _inferManagedIdentityPivot,
   degradeExpiredCredentialEdges as _degradeExpiredCredentialEdges,
 } from './imperative-inference.js';
-import type { ImperativeInferenceHost } from './imperative-inference.js';
+import type { ImperativeInferenceHost, PivotReachabilityResult } from './imperative-inference.js';
 import {
   updateScope as _updateScope,
   collectScopeSuggestions as _collectScopeSuggestions,
@@ -429,7 +429,7 @@ export class GraphEngine {
     };
   }
 
-  private inferPivotReachability(triggerHostId: string): string[] {
+  private inferPivotReachability(triggerHostId: string): PivotReachabilityResult {
     return _inferPivotReachability(this.imperativeHost, triggerHostId);
   }
 
@@ -1385,6 +1385,7 @@ export class GraphEngine {
       persist: (() => this.persist()) as () => void,
       invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
       invalidateHealthReport: this.invalidateHealthReport.bind(this),
+      runInferenceRules: this.runInferenceRules.bind(this),
     };
   }
 

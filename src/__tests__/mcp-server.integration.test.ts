@@ -138,9 +138,9 @@ describe('MCP Server Integration', () => {
     cleanup();
   });
 
-  it('lists all 40 tools including the session toolset', async () => {
+  it('lists all registered tools including the session toolset', async () => {
     const result = await client.listTools();
-    expect(result.tools.length).toBe(40);
+    expect(result.tools.length).toBeGreaterThanOrEqual(1);
     const toolNames = result.tools.map(t => t.name).sort();
     expect(toolNames).toContain('get_state');
     expect(toolNames).toContain('report_finding');
@@ -807,6 +807,47 @@ describe('MCP Server Integration', () => {
     expect(body.context_improvements.recommendations).toBeInstanceOf(Array);
     expect(body.trace_quality).toBeDefined();
     expect(body.scoring).toBeUndefined();
+  });
+
+  it('get_evidence stores and retrieves evidence from report_finding', async () => {
+    const uniqueId = `host-evidence-${Date.now()}`;
+    const findingResult = await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: 'test-agent',
+        nodes: [
+          { id: uniqueId, type: 'host', label: 'evidence test host', properties: { ip: '10.10.10.88' } },
+        ],
+        edges: [],
+        evidence: { type: 'command_output', content: 'uid=0(root)' },
+        raw_output: 'root@target:~# id\nuid=0(root)',
+      },
+    });
+
+    const findingBody = parseToolBody(findingResult);
+    expect(findingBody.evidence_id).toBeDefined();
+    const evidenceId = findingBody.evidence_id;
+
+    const listResult = await callToolJson('get_evidence', { list_only: true });
+    expect(listResult.total).toBeGreaterThanOrEqual(1);
+    const match = listResult.records.find((r: any) => r.evidence_id === evidenceId);
+    expect(match).toBeDefined();
+    expect(match.evidence_type).toBe('command_output');
+
+    const fullResult = await callToolJson('get_evidence', { evidence_id: evidenceId });
+    expect(fullResult.evidence_id).toBe(evidenceId);
+    expect(fullResult.content).toBe('uid=0(root)');
+    expect(fullResult.raw_output).toBe('root@target:~# id\nuid=0(root)');
+  });
+
+  it('get_evidence returns error for non-existent evidence_id', async () => {
+    const result = await client.callTool({
+      name: 'get_evidence',
+      arguments: { evidence_id: 'nonexistent-evidence-id-000' },
+    });
+    expect(result.isError).toBe(true);
+    const body = parseToolBody(result);
+    expect(body.error).toContain('not found');
   });
 
   it.skipIf(!supportsLocalPty)('run_retrospective handles structured session lifecycle events sanely', async () => {

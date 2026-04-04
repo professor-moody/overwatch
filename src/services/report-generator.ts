@@ -659,6 +659,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   lines.push(`| Exclusions | ${config.scope.exclusions.join(', ') || 'none'} |`);
   if (config.scope.aws_accounts?.length) lines.push(`| AWS Accounts | ${config.scope.aws_accounts.join(', ')} |`);
   if (config.scope.azure_subscriptions?.length) lines.push(`| Azure Subscriptions | ${config.scope.azure_subscriptions.join(', ')} |`);
+  if (config.scope.gcp_projects?.length) lines.push(`| GCP Projects | ${config.scope.gcp_projects.join(', ')} |`);
   if (config.scope.url_patterns?.length) lines.push(`| URL Patterns | ${config.scope.url_patterns.join(', ')} |`);
   lines.push('');
 

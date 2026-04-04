@@ -82,7 +82,8 @@ function generateSubAgentPrompt(
     'get_agent_context', 'validate_action', 'log_action_event',
     'parse_output', 'report_finding', 'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
-    'list_sessions', 'close_session',
+    'list_sessions', 'close_session', 'resize_session', 'signal_session',
+    'update_session', 'get_evidence',
   ]);
   const scopedTools = tools.filter(t => subAgentToolNames.has(t.name));
 

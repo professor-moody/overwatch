@@ -207,7 +207,7 @@ function buildInlineIssues(inputs: SyncReadinessInputs, profile: LabProfile): st
   const graphStage = determineGraphStage(inputs.graph);
 
   if (inputs.health.counts_by_severity.critical > 0) {
-    issues.push(`${inputs.health.counts_by_severity.critical} critical graph health issue(s) need attention.`);
+    issues.push(`[CRITICAL] ${inputs.health.counts_by_severity.critical} graph health issue(s) need attention.`);
   } else if (inputs.health.counts_by_severity.warning > 0) {
     issues.push(`${inputs.health.counts_by_severity.warning} graph health warning(s) are present.`);
   }
@@ -226,7 +226,7 @@ function buildInlineIssues(inputs: SyncReadinessInputs, profile: LabProfile): st
 }
 
 function deriveStatusFromIssues(issues: string[]): LabReadinessStatus {
-  if (issues.some(issue => issue.includes('critical'))) return 'blocked';
+  if (issues.some(issue => issue.startsWith('[CRITICAL]'))) return 'blocked';
   return issues.length > 0 ? 'warning' : 'ready';
 }
 

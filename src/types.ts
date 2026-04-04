@@ -655,6 +655,7 @@ export interface OpsecObservation {
 export interface LoggingQualityReport {
   status: 'good' | 'mixed' | 'weak';
   issues: string[];
+  observations?: string[];
   recommendation: string;
 }
 

@@ -28,7 +28,7 @@
   <line x1="290" y1="70" x2="290" y2="110" class="arr" marker-end="url(#arr)"/><line x1="390" y1="110" x2="390" y2="70" class="arr" marker-end="url(#arr)"/>
   <text class="ts" x="252" y="94" text-anchor="end">stdio / HTTP+SSE</text>
   <g class="n-teal"><rect x="60" y="110" width="560" height="290" rx="14"/><text class="th" x="340" y="134" text-anchor="middle" dominant-baseline="central">MCP orchestrator server</text></g>
-  <g class="n-blue"><rect x="90" y="150" width="500" height="36" rx="7"/><text class="th" x="340" y="168" text-anchor="middle" dominant-baseline="central">39 MCP tools (Zod-validated)</text></g>
+  <g class="n-blue"><rect x="90" y="150" width="500" height="36" rx="7"/><text class="th" x="340" y="168" text-anchor="middle" dominant-baseline="central">40 MCP tools (Zod-validated)</text></g>
   <g class="n-amber"><rect x="90" y="200" width="150" height="50" rx="7"/><text class="th" x="165" y="218" text-anchor="middle" dominant-baseline="central">Graph engine</text><text class="ts" x="165" y="234" text-anchor="middle" dominant-baseline="central">graphology</text></g>
   <g class="n-coral"><rect x="262" y="200" width="150" height="50" rx="7"/><text class="th" x="337" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="337" y="234" text-anchor="middle" dominant-baseline="central">22 rules</text></g>
   <g class="n-pink"><rect x="434" y="200" width="150" height="50" rx="7"/><text class="th" x="509" y="218" text-anchor="middle" dominant-baseline="central">Frontier computer</text><text class="ts" x="509" y="234" text-anchor="middle" dominant-baseline="central">Next actions</text></g>

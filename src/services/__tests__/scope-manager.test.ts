@@ -40,6 +40,7 @@ function makeHost(graph: OverwatchGraph, ctx: EngineContext): ScopeManagerHost {
   let persistCalled = false;
   let frontierInvalidated = false;
   let healthInvalidated = false;
+  const inferenceRanFor: string[] = [];
   return {
     ctx,
     addNode(props: NodeProperties) {
@@ -50,10 +51,12 @@ function makeHost(graph: OverwatchGraph, ctx: EngineContext): ScopeManagerHost {
     persist() { persistCalled = true; },
     invalidateFrontierCache() { frontierInvalidated = true; },
     invalidateHealthReport() { healthInvalidated = true; },
+    runInferenceRules(nodeId: string) { inferenceRanFor.push(nodeId); return []; },
     get _persistCalled() { return persistCalled; },
     get _frontierInvalidated() { return frontierInvalidated; },
     get _healthInvalidated() { return healthInvalidated; },
-  } as ScopeManagerHost & { _persistCalled: boolean; _frontierInvalidated: boolean; _healthInvalidated: boolean };
+    get _inferenceRanFor() { return inferenceRanFor; },
+  } as ScopeManagerHost & { _persistCalled: boolean; _frontierInvalidated: boolean; _healthInvalidated: boolean; _inferenceRanFor: string[] };
 }
 
 describe('scope-manager', () => {
@@ -208,6 +211,36 @@ describe('scope-manager', () => {
       expect(result.affected_node_count).toBe(1);
       expect(graph.hasNode('cold-host-1')).toBe(true);
       expect(ctx.coldStore.has('cold-host-1')).toBe(false);
+    });
+
+    it('runs inference rules on each promoted cold host during scope expansion', () => {
+      const graph = makeGraph();
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      ctx.coldStore.add({
+        id: 'cold-host-a',
+        type: 'host',
+        label: '172.16.2.10',
+        ip: '172.16.2.10',
+        discovered_at: now,
+        last_seen_at: now,
+        alive: true,
+      });
+      ctx.coldStore.add({
+        id: 'cold-host-b',
+        type: 'host',
+        label: '172.16.2.11',
+        ip: '172.16.2.11',
+        discovered_at: now,
+        last_seen_at: now,
+        alive: true,
+      });
+      const host = makeHost(graph, ctx) as ScopeManagerHost & { _inferenceRanFor: string[] };
+
+      updateScope(host, { add_cidrs: ['172.16.2.0/24'], reason: 'Pivot network' });
+
+      expect(host._inferenceRanFor).toContain('cold-host-a');
+      expect(host._inferenceRanFor).toContain('cold-host-b');
+      expect(host._inferenceRanFor).toHaveLength(2);
     });
 
     it('does not promote cold records that remain out of scope', () => {

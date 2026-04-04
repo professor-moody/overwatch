@@ -12,7 +12,6 @@ export interface HtmlReportData {
   graph: ExportedGraph;
   findings: ReportFinding[];
   narrative: NarrativePhase[];
-  markdown: string;
 }
 
 export interface HtmlReportOptions {
@@ -182,7 +181,7 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
       </div>
       <div class="finding-body">
         <h4>Description</h4>
-        <p>${esc(finding.description)}</p>
+        <p>${inlineMarkdownToHtml(finding.description)}</p>
         <h4>Affected Assets</h4>
         <ul>${finding.affected_assets.slice(0, 10).map(a => `<li>${esc(a)}</li>`).join('')}${finding.affected_assets.length > 10 ? `<li>... and ${finding.affected_assets.length - 10} more</li>` : ''}</ul>
         ${finding.evidence.length > 0 ? `
@@ -192,7 +191,7 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
           <ul>${finding.evidence.slice(0, 10).map(ev => `<li>${renderEvidenceHtml(ev)}</li>`).join('')}</ul>
         </div>` : ''}
         <h4>Remediation</h4>
-        <div class="remediation">${esc(finding.remediation).replace(/\n/g, '<br>')}</div>
+        <div class="remediation">${inlineMarkdownToHtml(finding.remediation).replace(/\n/g, '<br>')}</div>
       </div>
     </div>`;
 }
@@ -202,6 +201,15 @@ function renderEvidenceHtml(ev: EvidenceChain): string {
   if (ev.tool) html += ` <span class="evidence-tool">(${esc(ev.tool)})</span>`;
   if (ev.timestamp) html += ` <span class="evidence-time">${formatTs(ev.timestamp)}</span>`;
   if (ev.action_id) html += ` <code class="evidence-action">${esc(ev.action_id.slice(0, 8))}</code>`;
+  if (ev.evidence_filename) html += `\n<div class="evidence-file">File: ${esc(ev.evidence_filename)}</div>`;
+  if (ev.evidence_content) {
+    const truncated = truncateText(ev.evidence_content, 2048, 30);
+    html += `\n<pre class="evidence-content">${esc(truncated)}</pre>`;
+  }
+  if (ev.raw_output) {
+    const truncated = truncateText(ev.raw_output, 2048, 30);
+    html += `\n<details><summary>Raw Output</summary><pre>${esc(truncated)}</pre></details>`;
+  }
   return html;
 }
 
@@ -218,6 +226,47 @@ function severityHtml(severity: FindingSeverity): string {
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+export function inlineMarkdownToHtml(text: string): string {
+  let result = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '`') {
+      const end = text.indexOf('`', i + 1);
+      if (end !== -1) {
+        result += `<code>${esc(text.slice(i + 1, end))}</code>`;
+        i = end + 1;
+        continue;
+      }
+    }
+    if (text[i] === '*' && text[i + 1] === '*') {
+      const end = text.indexOf('**', i + 2);
+      if (end !== -1) {
+        result += `<strong>${esc(text.slice(i + 2, end))}</strong>`;
+        i = end + 2;
+        continue;
+      }
+    }
+    if (text[i] === '*' && text[i + 1] !== '*') {
+      const end = text.indexOf('*', i + 1);
+      if (end !== -1 && text[end + 1] !== '*') {
+        result += `<em>${esc(text.slice(i + 1, end))}</em>`;
+        i = end + 1;
+        continue;
+      }
+    }
+    result += esc(text[i]);
+    i++;
+  }
+  return result;
+}
+
+function truncateText(text: string, maxChars: number, maxLines: number): string {
+  const charSlice = text.slice(0, maxChars);
+  const lines = charSlice.split('\n');
+  if (lines.length > maxLines) return lines.slice(0, maxLines).join('\n');
+  return charSlice;
 }
 
 function formatTs(ts: string): string {
@@ -285,6 +334,10 @@ const CSS_STYLES = `
   .evidence-section.collapsed { display: none; }
   .evidence-tool { color: var(--accent); font-size: 0.85rem; } .evidence-time { color: var(--info); font-size: 0.85rem; }
   .evidence-action { background: var(--card-bg); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem; }
+  .evidence-file { font-size: 0.85rem; color: var(--accent); margin-top: 0.25rem; }
+  .evidence-content { background: var(--card-bg); border: 1px solid var(--border); padding: 0.75rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; margin-top: 0.25rem; }
+  .evidence-section details { margin-top: 0.25rem; } .evidence-section details summary { cursor: pointer; font-size: 0.85rem; color: var(--accent); }
+  .evidence-section details pre { background: var(--card-bg); border: 1px solid var(--border); padding: 0.75rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; }
   .remediation { background: var(--card-bg); padding: 1rem; border-radius: 4px; border-left: 4px solid var(--success); font-size: 0.9rem; }
   .narrative-phase { margin: 1.5rem 0; padding: 1rem 1.25rem; border-left: 3px solid var(--accent); }
   .phase-time { font-style: italic; color: var(--info); font-size: 0.9rem; }

@@ -94,7 +94,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         const findings = buildFindings(graph, history, config);
         const narrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
         html = renderReportHtml(
-          { config, graph, findings, narrative, markdown },
+          { config, graph, findings, narrative },
           { theme, include_toc: true },
         );
       }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { renderReportHtml, type HtmlReportData } from '../report-html.js';
-import type { ReportFinding, NarrativePhase } from '../report-generator.js';
+import { renderReportHtml, inlineMarkdownToHtml, type HtmlReportData } from '../report-html.js';
+import type { ReportFinding, NarrativePhase, EvidenceChain } from '../report-generator.js';
 
 function makeFinding(overrides: Partial<ReportFinding> = {}): ReportFinding {
   return {
@@ -33,7 +33,6 @@ function makeReportData(overrides: Partial<HtmlReportData> = {}): HtmlReportData
     graph: { nodes: [], edges: [] },
     findings: [],
     narrative: [],
-    markdown: '',
     ...overrides,
   };
 }
@@ -197,5 +196,154 @@ describe('narrative rendering', () => {
   it('omits narrative section when no phases exist', () => {
     const html = renderReportHtml(makeReportData({ narrative: [] }));
     expect(html).not.toContain('id="attack-narrative"');
+  });
+});
+
+describe('evidence content rendering', () => {
+  function makeEvidenceChain(overrides: Partial<EvidenceChain> = {}): EvidenceChain {
+    return {
+      claim: 'Found open port',
+      source_nodes: ['n1'],
+      target_nodes: ['n2'],
+      ...overrides,
+    };
+  }
+
+  it('renders evidence_content in a pre block when present', () => {
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({
+          evidence_content: 'uid=0(root) gid=0(root)',
+          tool: 'ssh',
+        })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).toContain('<pre class="evidence-content">');
+    expect(html).toContain('uid=0(root)');
+  });
+
+  it('renders raw_output in a collapsible details block', () => {
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({
+          raw_output: 'root@target:~# id\nuid=0(root)',
+          tool: 'ssh',
+        })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).toContain('<details>');
+    expect(html).toContain('<summary>Raw Output</summary>');
+    expect(html).toContain('root@target:~# id');
+  });
+
+  it('renders evidence_filename as a label', () => {
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({
+          evidence_filename: 'id-output.txt',
+          tool: 'ssh',
+        })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).toContain('<div class="evidence-file">File: id-output.txt</div>');
+  });
+
+  it('truncates evidence_content beyond 2048 chars', () => {
+    const longContent = 'A'.repeat(3000);
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({ evidence_content: longContent })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    const preMatch = html.match(/<pre class="evidence-content">([\s\S]*?)<\/pre>/);
+    expect(preMatch).toBeDefined();
+    expect(preMatch![1].length).toBeLessThanOrEqual(2048 + 50);
+  });
+
+  it('truncates evidence_content beyond 30 lines', () => {
+    const manyLines = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({ evidence_content: manyLines })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    const preMatch = html.match(/<pre class="evidence-content">([\s\S]*?)<\/pre>/);
+    expect(preMatch).toBeDefined();
+    const renderedLines = preMatch![1].split('\n');
+    expect(renderedLines.length).toBeLessThanOrEqual(30);
+  });
+
+  it('escapes HTML in evidence_content', () => {
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({
+          evidence_content: '<script>alert("xss")</script>',
+        })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).not.toContain('<script>alert("xss")</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('escapes HTML in raw_output', () => {
+    const findings = [
+      makeFinding({
+        evidence: [makeEvidenceChain({
+          raw_output: '<img onerror=alert(1) src=x>',
+        })],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).not.toContain('<img onerror');
+    expect(html).toContain('&lt;img onerror');
+  });
+});
+
+describe('inlineMarkdownToHtml', () => {
+  it('converts **bold** to <strong>', () => {
+    expect(inlineMarkdownToHtml('Use **strong** auth')).toBe('Use <strong>strong</strong> auth');
+  });
+
+  it('converts *italic* to <em>', () => {
+    expect(inlineMarkdownToHtml('This is *important*')).toBe('This is <em>important</em>');
+  });
+
+  it('converts `code` to <code>', () => {
+    expect(inlineMarkdownToHtml('Run `whoami` first')).toBe('Run <code>whoami</code> first');
+  });
+
+  it('handles mixed bold, italic, and code', () => {
+    const result = inlineMarkdownToHtml('**bold** and *italic* and `code`');
+    expect(result).toContain('<strong>bold</strong>');
+    expect(result).toContain('<em>italic</em>');
+    expect(result).toContain('<code>code</code>');
+  });
+
+  it('escapes HTML in plain text portions', () => {
+    const result = inlineMarkdownToHtml('Use <script> tag');
+    expect(result).not.toContain('<script>');
+    expect(result).toContain('&lt;script&gt;');
+  });
+
+  it('escapes HTML inside bold markers', () => {
+    const result = inlineMarkdownToHtml('**<script>alert(1)</script>**');
+    expect(result).not.toContain('<script>');
+    expect(result).toContain('<strong>&lt;script&gt;');
+  });
+
+  it('escapes HTML inside code markers', () => {
+    const result = inlineMarkdownToHtml('`<img onerror=alert(1)>`');
+    expect(result).not.toContain('<img');
+    expect(result).toContain('<code>&lt;img');
+  });
+
+  it('returns plain escaped text when no markdown present', () => {
+    expect(inlineMarkdownToHtml('no markdown here')).toBe('no markdown here');
   });
 });

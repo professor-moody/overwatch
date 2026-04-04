@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 39 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 40 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -16,6 +16,7 @@ Overwatch exposes 39 MCP tools organized by function. Each tool uses Zod schemas
 | [`validate_action`](validate-action.md) | Pre-execution sanity check | No |
 | [`log_action_event`](log-action-event.md) | Record action lifecycle events | No |
 | [`report_finding`](report-finding.md) | Submit new nodes/edges to the graph | No |
+| [`get_evidence`](#) | Retrieve full-fidelity evidence by ID or list stored evidence records | Yes |
 | [`parse_output`](parse-output.md) | Parse supported tool output into findings | No |
 | [`query_graph`](query-graph.md) | Open-ended graph exploration | Yes |
 | [`find_paths`](find-paths.md) | Shortest paths to objectives | Yes |

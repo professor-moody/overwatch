@@ -6,7 +6,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname, extname } from 'path';
+import { join, dirname, extname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
@@ -165,7 +165,8 @@ export class DashboardServer {
       type: 'graph_update',
       timestamp: new Date().toISOString(),
       data: {
-        state: { ...state, history_count: historyCount },
+        state,
+        history_count: historyCount,
         detail,
         delta: {
           nodes: deltaNodes,
@@ -266,7 +267,8 @@ export class DashboardServer {
       const fullPath = join(dashDir, cleanPath);
 
       // Security: ensure resolved path is within dashboard dir
-      if (!fullPath.startsWith(dashDir)) {
+      const rel = relative(dashDir, fullPath);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
         res.writeHead(403, { 'Content-Type': 'text/plain' });
         res.end('Forbidden');
         return;

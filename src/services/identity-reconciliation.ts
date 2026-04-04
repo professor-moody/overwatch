@@ -36,6 +36,9 @@ export class IdentityReconciler {
     agentId?: string,
     actionId?: string,
   ): ReconciliationResult {
+    // Two resolved same-type nodes with shared identity markers are intentionally
+    // NOT auto-merged. Graph health checks flag these overlaps for operator review
+    // instead of risking incorrect automatic merges.
     const canonicalNode = this.callbacks.getNode(canonicalNodeId);
     if (!canonicalNode || !isIdentityType(canonicalNode.type) || isUnresolvedIdentityNode(canonicalNode)) {
       return { removed_nodes: [], removed_edges: [], new_edges: [], updated_canonical: false };

@@ -106,4 +106,33 @@ describe('SkillIndex', () => {
     expect(stem('impacket')).toBe('impacket');
     expect(stem('certipy')).toBe('certipy');
   });
+
+  it('IDF is positive even when a term appears in all documents', () => {
+    const idfMap = (skills as any).idf as Map<string, number>;
+    for (const [, value] of idfMap) {
+      expect(value).toBeGreaterThan(0);
+    }
+  });
+
+  it('constructor with non-existent custom path does not throw and produces empty results', () => {
+    const idx = new SkillIndex('/tmp/overwatch-nonexistent-skills-dir-test-' + Date.now());
+    expect(idx.count).toBe(0);
+    expect(idx.listSkills()).toEqual([]);
+    expect(idx.search('nmap')).toEqual([]);
+  });
+
+  it('excerpt matching works with stemmed terms', () => {
+    const getExcerpt = (content: string, queryTokens: string[]) =>
+      (skills as any).getExcerpt(content, queryTokens);
+
+    const content = 'Short\nThis line discusses scanning vulnerabilities in the network infrastructure\nAnother line here';
+    // "scanning" stems to "scann", "vulnerabilities" stems to "vulnerability"
+    const stemmedTokens = [(skills as any).stem('scanning')];
+    const excerpt = getExcerpt(content, stemmedTokens);
+    expect(excerpt).toContain('scanning');
+
+    // Also verify that the inflected form "vulnerabilities" matches the stemmed query "vulnerability"
+    const excerpt2 = getExcerpt(content, [(skills as any).stem('vulnerabilities')]);
+    expect(excerpt2).toContain('vulnerabilities');
+  });
 });

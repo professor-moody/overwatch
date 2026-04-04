@@ -527,3 +527,101 @@ describe('dispatch_subnet_agents', () => {
     expect(item10).toBeDefined();
   });
 });
+
+// ============================================================
+// Tier 1C: Cold store promotion inference gaps
+// ============================================================
+
+describe('Cold store promotion inference', () => {
+  afterEach(cleanup);
+
+  it('pivot-promoted host gets inference rules run — RELAY_TARGET after adding SMB service', () => {
+    const engine = createEngine();
+
+    // Step 1: Create compromised host in 10.10.10.0/24 with a user session
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', hostname: 'attacker-box' },
+        { id: 'user-attacker', type: 'user', label: 'attacker' },
+      ],
+      [
+        { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0 } },
+      ],
+    ));
+
+    // Step 2: Ingest a ping-only host in the same subnet → goes cold
+    engine.ingestFinding(makeFinding([
+      { id: 'host-10-10-10-5', type: 'host', label: '10.10.10.5', ip: '10.10.10.5', alive: true },
+    ]));
+    expect(engine.getNode('host-10-10-10-5')).toBeNull();
+    expect(engine.getState().graph_summary.cold_node_count).toBe(1);
+
+    // Step 3: Update the compromised host with new info → triggers pivot reachability → cold host promoted
+    engine.ingestFinding(makeFinding(
+      [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', hostname: 'attacker-box', os: 'Linux' }],
+    ));
+
+    // Verify host-10-10-10-5 was promoted from cold via pivot reachability
+    expect(engine.getNode('host-10-10-10-5')).not.toBeNull();
+    expect(engine.getState().graph_summary.cold_node_count).toBe(0);
+
+    // Step 4: Add SMB service with signing disabled to the now-hot host
+    const result = engine.ingestFinding(makeFinding(
+      [
+        { id: 'svc-10-10-10-5-445', type: 'service', label: 'SMB .5', port: 445, service_name: 'smb', smb_signing: false },
+      ],
+      [
+        { source: 'host-10-10-10-5', target: 'svc-10-10-10-5-445', properties: { type: 'RUNS', confidence: 1.0 } },
+      ],
+    ));
+
+    // RELAY_TARGET should be inferred (user-attacker has session → attacker-box,
+    // so user-attacker is compromised and host-10-10-10-5 is a relay target)
+    expect(result.inferred_edges.some(e => e.includes('RELAY_TARGET'))).toBe(true);
+  });
+
+  it('scope-expanded host gets inference rules applied after promotion', () => {
+    const engine = createEngine();
+
+    // Step 1: Ingest compromised host + user with session
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', hostname: 'attacker-box' },
+        { id: 'user-attacker', type: 'user', label: 'attacker' },
+      ],
+      [
+        { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0 } },
+      ],
+    ));
+
+    // Step 2: Ingest a ping-only host in an out-of-scope subnet → goes cold
+    engine.ingestFinding(makeFinding([
+      { id: 'host-172-16-1-10', type: 'host', label: '172.16.1.10', ip: '172.16.1.10', alive: true },
+    ]));
+    expect(engine.getNode('host-172-16-1-10')).toBeNull();
+    expect(engine.getState().graph_summary.cold_node_count).toBe(1);
+
+    // Step 3: Expand scope to include 172.16.1.0/24 → cold host promoted
+    const scopeResult = engine.updateScope({
+      add_cidrs: ['172.16.1.0/24'],
+      reason: 'Pivot network discovered',
+    });
+    expect(scopeResult.applied).toBe(true);
+    expect(scopeResult.affected_node_count).toBe(1);
+
+    // Promoted host should now be in the hot graph
+    expect(engine.getNode('host-172-16-1-10')).not.toBeNull();
+
+    // Step 4: Add SMB service to the promoted host → inference fires
+    const result = engine.ingestFinding(makeFinding(
+      [
+        { id: 'svc-172-16-1-10-445', type: 'service', label: 'SMB', port: 445, service_name: 'smb', smb_signing: false },
+      ],
+      [
+        { source: 'host-172-16-1-10', target: 'svc-172-16-1-10-445', properties: { type: 'RUNS', confidence: 1.0 } },
+      ],
+    ));
+
+    expect(result.inferred_edges.some(e => e.includes('RELAY_TARGET'))).toBe(true);
+  });
+});

@@ -26,10 +26,16 @@ const CMS_DEFAULT_CREDS: Record<string, { user: string; type: string }> = {
   phpmyadmin: { user: 'root', type: 'plaintext' },
 };
 
-export function inferPivotReachability(host: ImperativeInferenceHost, triggerHostId: string): string[] {
+export interface PivotReachabilityResult {
+  edges: string[];
+  promotedNodeIds: string[];
+}
+
+export function inferPivotReachability(host: ImperativeInferenceHost, triggerHostId: string): PivotReachabilityResult {
   const inferred: string[] = [];
+  const promotedNodeIds: string[] = [];
   const hostNode = host.getNode(triggerHostId);
-  if (!hostNode || hostNode.type !== 'host' || !hostNode.ip) return inferred;
+  if (!hostNode || hostNode.type !== 'host' || !hostNode.ip) return { edges: inferred, promotedNodeIds };
 
   const sessionHolders: string[] = [];
   for (const edge of host.ctx.graph.inEdges(triggerHostId) as string[]) {
@@ -38,7 +44,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
       sessionHolders.push(host.ctx.graph.source(edge));
     }
   }
-  if (sessionHolders.length === 0) return inferred;
+  if (sessionHolders.length === 0) return { edges: inferred, promotedNodeIds };
 
   const matchingSubnets: string[] = [];
   host.ctx.graph.forEachNode((nodeId: string, attrs) => {
@@ -46,7 +52,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
       matchingSubnets.push(nodeId);
     }
   });
-  if (matchingSubnets.length === 0) return inferred;
+  if (matchingSubnets.length === 0) return { edges: inferred, promotedNodeIds };
 
   const now = new Date().toISOString();
   for (const subnetId of matchingSubnets) {
@@ -72,6 +78,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
           discovered_by: coldRecord.provenance,
           confidence: 1.0,
         });
+        promotedNodeIds.push(coldRecord.id);
       }
     }
 
@@ -100,7 +107,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
       });
     });
   }
-  return inferred;
+  return { edges: inferred, promotedNodeIds };
 }
 
 export function inferDefaultCredentials(host: ImperativeInferenceHost, webappNodeIds: Set<string>): string[] {

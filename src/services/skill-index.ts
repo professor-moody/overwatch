@@ -33,7 +33,13 @@ export class SkillIndex {
   constructor(skillDir?: string) {
     this.skillDir = skillDir || './skills';
     if (!existsSync(this.skillDir)) {
-      mkdirSync(this.skillDir, { recursive: true });
+      if (this.skillDir === './skills') {
+        mkdirSync(this.skillDir, { recursive: true });
+      } else {
+        process.stderr.write(`[SkillIndex] Warning: skill directory "${this.skillDir}" does not exist; starting with empty index.\n`);
+        this.skills = [];
+        return;
+      }
     }
     this.loadSkills();
     this.computeIDF();
@@ -142,7 +148,7 @@ export class SkillIndex {
     }
 
     for (const [term, freq] of docFreq) {
-      this.idf.set(term, Math.log(docCount / freq));
+      this.idf.set(term, Math.log(1 + (docCount + 1) / (freq + 1)));
     }
   }
 
@@ -205,10 +211,16 @@ export class SkillIndex {
 
   private getExcerpt(content: string, queryTokens: string[]): string {
     const lines = content.split('\n');
-    // Find the first line containing a query token
+    const querySet = new Set(queryTokens);
+    // Find the first line containing a query token (using stemmed comparison)
     for (const line of lines) {
-      const lower = line.toLowerCase();
-      if (queryTokens.some(t => lower.includes(t)) && line.trim().length > 10) {
+      const lineTokens = line
+        .toLowerCase()
+        .replace(/[^a-z0-9\-_.]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length > 2)
+        .map(t => this.stem(t));
+      if (lineTokens.some(t => querySet.has(t)) && line.trim().length > 10) {
         return line.trim().substring(0, 200);
       }
     }

@@ -99,7 +99,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1105+ tests across 39 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1105+ tests across 61 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
 npm test                        # Fast source tests (1105+ tests)
@@ -150,7 +150,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `ui.test.ts` | Dashboard UI: sidebar, detail panel, derivation chains |
 | `ws.test.ts` | Dashboard WebSocket client, reconnect logic |
 | `lab-smoke.test.ts` | Lab smoke test CLI harness |
-| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (39 tools) |
+| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (40 tools) |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
 | `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
 

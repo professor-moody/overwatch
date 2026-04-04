@@ -7,6 +7,9 @@ state-*.json
 *.js.map
 .DS_Store
 tmp-review-*.json
+tmp-bh-review-*.json
+test-debug.json
+evidence/
 AGENTS.md
 CLAUDE.md
 HANDOFF.md

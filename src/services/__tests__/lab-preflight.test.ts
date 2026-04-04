@@ -337,4 +337,63 @@ describe('lab preflight', () => {
 
     expect(summary.top_issues.some(issue => issue.includes('No scoped domains'))).toBe(false);
   });
+
+  it('web_app profile passes scope check with url_patterns and checks for web tools', () => {
+    const config = makeConfig({
+      profile: 'web_app' as const,
+      scope: { cidrs: [], domains: [], exclusions: [], url_patterns: ['*.example.com', 'app.corp.io/api/*'] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const webTools: ToolStatus[] = [
+      { name: 'nuclei', installed: true, version: '3.0.0', path: '/usr/bin/nuclei' },
+      { name: 'nikto', installed: false },
+      { name: 'gobuster', installed: true, version: '3.6.0', path: '/usr/bin/gobuster' },
+      { name: 'feroxbuster', installed: false },
+      { name: 'ffuf', installed: false },
+      { name: 'nmap', installed: true, version: '7.94', path: '/usr/bin/nmap' },
+    ];
+
+    const report = runLabPreflight(engine, {
+      profile: 'web_app',
+      toolStatuses: webTools,
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.profile).toBe('web_app');
+    const scopeCheck = report.checks.find(c => c.name === 'scope_shape');
+    expect(scopeCheck?.status).toBe('pass');
+    expect(scopeCheck?.message).toContain('URL scope');
+    const scannerCheck = report.checks.find(c => c.name === 'tool_web_scanner');
+    expect(scannerCheck?.status).toBe('pass');
+    const dirCheck = report.checks.find(c => c.name === 'tool_dir_enum');
+    expect(dirCheck?.status).toBe('pass');
+  });
+
+  it('cloud profile passes scope check with aws_accounts and checks for cloud tools', () => {
+    const config = makeConfig({
+      profile: 'cloud' as const,
+      scope: { cidrs: [], domains: [], exclusions: [], aws_accounts: ['123456789012'] },
+    });
+    const engine = new GraphEngine(config, TEST_STATE_FILE);
+
+    const cloudTools: ToolStatus[] = [
+      { name: 'pacu', installed: true, version: '1.0.0', path: '/usr/bin/pacu' },
+      { name: 'prowler', installed: false },
+      { name: 'nmap', installed: true, version: '7.94', path: '/usr/bin/nmap' },
+    ];
+
+    const report = runLabPreflight(engine, {
+      profile: 'cloud',
+      toolStatuses: cloudTools,
+      dashboard: { enabled: false, running: false },
+    });
+
+    expect(report.profile).toBe('cloud');
+    const scopeCheck = report.checks.find(c => c.name === 'scope_shape');
+    expect(scopeCheck?.status).toBe('pass');
+    expect(scopeCheck?.message).toContain('Cloud account scope');
+    const auditCheck = report.checks.find(c => c.name === 'tool_cloud_audit');
+    expect(auditCheck?.status).toBe('pass');
+  });
 });

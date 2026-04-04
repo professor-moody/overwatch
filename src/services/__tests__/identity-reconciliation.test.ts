@@ -353,6 +353,104 @@ describe('IdentityReconciler', () => {
   });
 
   // =============================================
+  // reverseTarget + non-empty aliases
+  // =============================================
+  describe('reverseTarget suppressed when aliases exist', () => {
+    it('performs only the forward alias merge when both an alias and a reverse target are present', () => {
+      // Canonical: hostname-only host (no IP) being reconciled
+      graph.addNode('host-dc01-corp-local', makeNode('host-dc01-corp-local', {
+        type: 'host',
+        label: 'dc01.corp.local',
+        hostname: 'dc01.corp.local',
+      }));
+
+      // Reverse target candidate: IP-bearing host with overlapping hostname marker
+      graph.addNode('host-10-10-10-1', makeNode('host-10-10-10-1', {
+        type: 'host',
+        label: '10.10.10.1',
+        ip: '10.10.10.1',
+        hostname: 'dc01.corp.local',
+      }));
+
+      // Forward alias candidate: unresolved hostname-only host with marker overlap
+      graph.addNode('bh-host-dc01-old', makeNode('bh-host-dc01-old', {
+        type: 'host',
+        label: 'DC01',
+        hostname: 'DC01',
+        identity_status: 'unresolved',
+        smb_signing: false,
+      }));
+
+      const reconciler = new IdentityReconciler(graph, callbacks);
+      const result = reconciler.reconcileCanonicalNode('host-dc01-corp-local');
+
+      // The unresolved alias was merged (forward merge)
+      expect(result.removed_nodes).toContain('bh-host-dc01-old');
+      expect(graph.hasNode('bh-host-dc01-old')).toBe(false);
+
+      // The reverse target was NOT merged — still exists
+      expect(result.removed_nodes).not.toContain('host-10-10-10-1');
+      expect(graph.hasNode('host-10-10-10-1')).toBe(true);
+
+      // Canonical absorbed alias properties
+      const canonical = graph.getNodeAttributes('host-dc01-corp-local') as NodeProperties;
+      expect(canonical.smb_signing).toBe(false);
+
+      // reverse_target is still surfaced for visibility even though it wasn't acted on
+      expect(result.reverse_target).toBe('host-10-10-10-1');
+    });
+  });
+
+  // =============================================
+  // Multi-hop alias closure (transitive reconciliation)
+  // =============================================
+  describe('multi-hop alias closure', () => {
+    it('merges transitively via markers accumulated from prior merges', () => {
+      // A: canonical user with marker user:acct:test:alice
+      graph.addNode('user-test-alice', makeNode('user-test-alice', {
+        type: 'user',
+        label: 'ALICE@TEST',
+        username: 'alice',
+        domain_name: 'test',
+      }));
+
+      // B: unresolved user sharing a marker with A, plus an extra marker linking to C
+      graph.addNode('bh-user-sid-b', makeNode('bh-user-sid-b', {
+        type: 'user',
+        label: 'sid-b',
+        identity_status: 'unresolved',
+        identity_markers: ['user:acct:test:alice', 'user:sid:s-1-5-21-9999'],
+      }));
+
+      // C: unresolved user sharing a marker with B only (not A)
+      graph.addNode('bh-user-sid-c', makeNode('bh-user-sid-c', {
+        type: 'user',
+        label: 'sid-c',
+        identity_status: 'unresolved',
+        identity_markers: ['user:sid:s-1-5-21-9999'],
+      }));
+
+      const reconciler = new IdentityReconciler(graph, callbacks);
+
+      // First pass: B merges into A (shared user:acct:test:alice)
+      const pass1 = reconciler.reconcileCanonicalNode('user-test-alice');
+      expect(pass1.removed_nodes).toContain('bh-user-sid-b');
+      expect(pass1.removed_nodes).not.toContain('bh-user-sid-c');
+      expect(graph.hasNode('bh-user-sid-b')).toBe(false);
+      expect(graph.hasNode('bh-user-sid-c')).toBe(true);
+
+      // A now carries B's markers including user:sid:s-1-5-21-9999
+      const afterPass1 = graph.getNodeAttributes('user-test-alice') as NodeProperties;
+      expect(afterPass1.identity_markers).toContain('user:sid:s-1-5-21-9999');
+
+      // Second pass: C now matches A via the accumulated marker
+      const pass2 = reconciler.reconcileCanonicalNode('user-test-alice');
+      expect(pass2.removed_nodes).toContain('bh-user-sid-c');
+      expect(graph.hasNode('bh-user-sid-c')).toBe(false);
+    });
+  });
+
+  // =============================================
   // Edge retargeting
   // =============================================
   describe('edge retargeting', () => {

@@ -493,7 +493,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings,
       narrative,
-      markdown: '',
     });
 
     expect(html).toContain('<!DOCTYPE html>');
@@ -508,7 +507,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings,
       narrative: [],
-      markdown: '',
     }, { include_toc: true });
 
     expect(html).toContain('id="toc"');
@@ -522,7 +520,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings,
       narrative: [],
-      markdown: '',
     });
 
     expect(html).toContain('severity-critical');
@@ -536,7 +533,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings,
       narrative: [],
-      markdown: '',
     });
 
     expect(html).toContain('evidence-toggle');
@@ -550,7 +546,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings: [],
       narrative: [],
-      markdown: '',
     }, { theme: 'dark' });
 
     expect(html).toContain('data-theme="dark"');
@@ -563,7 +558,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings: [],
       narrative,
-      markdown: '',
     });
 
     expect(html).toContain('id="attack-narrative"');
@@ -576,7 +570,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings: [],
       narrative: [],
-      markdown: '',
     });
     expect(html).toContain('@media print');
   });
@@ -588,7 +581,6 @@ describe('renderReportHtml', () => {
       graph: makeGraph(),
       findings: [],
       narrative: [],
-      markdown: '',
     });
 
     expect(html).not.toContain('<script>alert(1)</script>');

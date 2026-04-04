@@ -737,4 +737,166 @@ describe('Retrospective', () => {
       expect(result.context_improvements.opsec_observations.length).toBeGreaterThan(0);
     });
   });
+
+  // =============================================
+  // Tier 1A: Retrospective improvements
+  // =============================================
+  describe('Tier 1A improvements', () => {
+    describe('logging quality: new event type metrics', () => {
+      it('flags underutilized parsers when parse_output events exist but ratio to findings is low', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', action_id: 'a1', event_type: 'action_validated', description: 'validate', category: 'frontier', outcome: 'success' },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', action_id: 'a1', event_type: 'action_started', description: 'start', category: 'frontier' },
+            { timestamp: '2026-01-01T01:02:00Z', event_id: 'evt-3', action_id: 'a1', event_type: 'parse_output', description: 'parsed nmap output', category: 'finding' },
+            { timestamp: '2026-01-01T01:03:00Z', event_id: 'evt-4', action_id: 'a1', event_type: 'finding_ingested', description: 'finding 1', category: 'finding', linked_finding_ids: ['f1'], result_classification: 'success', details: { new_nodes: 1, new_edges: 0 } },
+            { timestamp: '2026-01-01T01:04:00Z', event_id: 'evt-5', action_id: 'a1', event_type: 'action_completed', description: 'done', category: 'frontier', result_classification: 'success', outcome: 'success' },
+            // Many manual findings without parse_output
+            { timestamp: '2026-01-01T02:00:00Z', event_id: 'evt-6', action_id: 'a2', event_type: 'finding_ingested', description: 'manual finding 2', category: 'finding', result_classification: 'success' },
+            { timestamp: '2026-01-01T02:01:00Z', event_id: 'evt-7', action_id: 'a3', event_type: 'finding_ingested', description: 'manual finding 3', category: 'finding', result_classification: 'success' },
+            { timestamp: '2026-01-01T02:02:00Z', event_id: 'evt-8', action_id: 'a4', event_type: 'finding_ingested', description: 'manual finding 4', category: 'finding', result_classification: 'success' },
+            { timestamp: '2026-01-01T02:03:00Z', event_id: 'evt-9', action_id: 'a5', event_type: 'finding_ingested', description: 'manual finding 5', category: 'finding', result_classification: 'success' },
+            { timestamp: '2026-01-01T02:04:00Z', event_id: 'evt-10', action_id: 'a6', event_type: 'finding_ingested', description: 'manual finding 6', category: 'finding', result_classification: 'success' },
+          ],
+        });
+        const quality = analyzeLoggingQuality(input);
+        const parserIssue = quality.issues.find(i => i.includes('parse_output') && i.includes('underutilized'));
+        expect(parserIssue).toBeDefined();
+      });
+
+      it('records graph_corrected as a neutral observation, not an issue', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', event_type: 'graph_corrected', description: 'Removed duplicate edge', category: 'system', outcome: 'neutral' },
+            { timestamp: '2026-01-01T01:05:00Z', event_id: 'evt-2', event_type: 'graph_corrected', description: 'Merged overlapping nodes', category: 'system', outcome: 'neutral' },
+          ],
+        });
+        const quality = analyzeLoggingQuality(input);
+        expect(quality.observations).toBeDefined();
+        expect(quality.observations!.length).toBe(1);
+        expect(quality.observations![0]).toContain('2 graph_corrected');
+        const graphIssue = quality.issues.find(i => i.includes('graph_corrected'));
+        expect(graphIssue).toBeUndefined();
+      });
+
+      it('flags high unconfirmed session ratio', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', event_type: 'session_access_unconfirmed', description: 'unconfirmed session 1', category: 'system' },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', event_type: 'session_access_unconfirmed', description: 'unconfirmed session 2', category: 'system' },
+            { timestamp: '2026-01-01T01:02:00Z', event_id: 'evt-3', event_type: 'session_access_unconfirmed', description: 'unconfirmed session 3', category: 'system' },
+            { timestamp: '2026-01-01T01:03:00Z', event_id: 'evt-4', event_type: 'session_access_confirmed', description: 'confirmed session 1', category: 'system' },
+          ],
+        });
+        const quality = analyzeLoggingQuality(input);
+        const sessionIssue = quality.issues.find(i => i.includes('unconfirmed session'));
+        expect(sessionIssue).toBeDefined();
+        expect(sessionIssue).toContain('3 unconfirmed');
+        expect(sessionIssue).toContain('1 confirmed');
+      });
+
+      it('does not flag session ratio when confirmed >= unconfirmed', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', event_type: 'session_access_unconfirmed', description: 'unconfirmed 1', category: 'system' },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', event_type: 'session_access_confirmed', description: 'confirmed 1', category: 'system' },
+            { timestamp: '2026-01-01T01:02:00Z', event_id: 'evt-3', event_type: 'session_access_confirmed', description: 'confirmed 2', category: 'system' },
+          ],
+        });
+        const quality = analyzeLoggingQuality(input);
+        const sessionIssue = quality.issues.find(i => i.includes('unconfirmed session'));
+        expect(sessionIssue).toBeUndefined();
+      });
+    });
+
+    describe('RLVR structured classification with finding_ingested but no linked_finding_ids', () => {
+      it('classifies as structured when action_validated + terminal + finding_ingested without linked_finding_ids', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', action_id: 'action-1', event_type: 'action_validated', description: 'Validate scan', category: 'frontier', frontier_type: 'incomplete_node', validation_result: 'valid', outcome: 'success' },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', action_id: 'action-1', event_type: 'finding_ingested', description: 'Finding ingested: 2 new nodes', category: 'finding', details: { new_nodes: 2, new_edges: 0 } },
+            { timestamp: '2026-01-01T01:02:00Z', event_id: 'evt-3', action_id: 'action-1', event_type: 'action_completed', description: 'Scan completed', category: 'frontier', result_classification: 'success', outcome: 'success' },
+          ],
+        });
+        const { traces } = exportTrainingTraces(input);
+        expect(traces.length).toBe(1);
+        expect(traces[0].derived_from).toBe('structured');
+        expect(traces[0].confidence).toBe('high');
+      });
+    });
+
+    describe('confirmed/inferred edge counting uses inferred_by_rule flag', () => {
+      it('counts edges with inferred_by_rule as inferred regardless of confidence', () => {
+        const input = makeInput({
+          graph: {
+            nodes: makeInput().graph.nodes,
+            edges: [
+              { source: 'host-10-10-10-1', target: 'svc-smb-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as any },
+              { source: 'host-10-10-10-2', target: 'svc-smb-2', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as any },
+              { source: 'cred-da', target: 'svc-smb-1', properties: { type: 'POTENTIAL_AUTH', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-cred-fanout' } as any },
+              { source: 'cred-da', target: 'svc-smb-2', properties: { type: 'POTENTIAL_AUTH', confidence: 0.6, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-cred-fanout' } as any },
+            ],
+          },
+        });
+        const report = generateReport(input);
+        expect(report).toContain('2 confirmed, 2 inferred');
+      });
+
+      it('counts edges without inferred_by_rule as confirmed even at low confidence', () => {
+        const input = makeInput({
+          graph: {
+            nodes: makeInput().graph.nodes,
+            edges: [
+              { source: 'host-10-10-10-1', target: 'svc-smb-1', properties: { type: 'RUNS', confidence: 0.5, discovered_at: '2026-01-01T01:00:00Z' } as any },
+              { source: 'cred-da', target: 'svc-smb-1', properties: { type: 'POTENTIAL_AUTH', confidence: 0.6, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-cred-fanout' } as any },
+            ],
+          },
+        });
+        const report = generateReport(input);
+        expect(report).toContain('1 confirmed, 1 inferred');
+      });
+    });
+
+    describe('frontier success stats prefers structured result_classification', () => {
+      it('uses result_classification directly instead of text heuristics', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', description: 'some text about scanning', frontier_type: 'incomplete_node', result_classification: 'success' as const },
+            { timestamp: '2026-01-01T01:05:00Z', event_id: 'evt-2', description: 'another action with partial result', frontier_type: 'incomplete_node', result_classification: 'partial' as const },
+            { timestamp: '2026-01-01T01:10:00Z', event_id: 'evt-3', description: 'a failed action', frontier_type: 'incomplete_node', result_classification: 'failure' as const },
+          ],
+        });
+        const improvements = analyzeContextImprovements(input);
+        const stats = improvements.success_by_frontier_type['incomplete_node'];
+        expect(stats.total).toBe(3);
+        expect(stats.successful).toBe(2);
+      });
+
+      it('does not apply text heuristics when result_classification is present', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', description: 'untested edge exploration', frontier_type: 'untested_edge', result_classification: 'failure' as const },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', description: 'Finding ingested: 2 new nodes' },
+          ],
+        });
+        const improvements = analyzeContextImprovements(input);
+        const stats = improvements.success_by_frontier_type['untested_edge'];
+        expect(stats.total).toBe(1);
+        expect(stats.successful).toBe(0);
+      });
+
+      it('falls back to text heuristics when result_classification is absent', () => {
+        const input = makeInput({
+          history: [
+            { timestamp: '2026-01-01T01:00:00Z', event_id: 'evt-1', description: 'network discovery scan on 10.0.0.0/24', frontier_type: 'network_discovery' },
+            { timestamp: '2026-01-01T01:01:00Z', event_id: 'evt-2', description: 'Finding ingested: 3 new nodes discovered' },
+          ],
+        });
+        const improvements = analyzeContextImprovements(input);
+        const stats = improvements.success_by_frontier_type['network_discovery'];
+        expect(stats.total).toBe(1);
+        expect(stats.successful).toBe(1);
+      });
+    });
+  });
 });

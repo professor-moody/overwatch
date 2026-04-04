@@ -9,6 +9,7 @@ import { resolveNodeIdentity } from './identity-resolution.js';
 import { getNodeFirstSeenAt, getNodeSources, normalizeNodeProvenance } from './provenance-utils.js';
 import { classifyNodeTemperature, isInterestingEdgeType, toColdRecord } from './cold-store.js';
 import { inferCredentialDomain } from './credential-utils.js';
+import type { PivotReachabilityResult } from './imperative-inference.js';
 
 export interface FindingIngestionHost {
   ctx: EngineContext;
@@ -26,7 +27,7 @@ export interface FindingIngestionHost {
     reverse_target?: string;
   };
   runInferenceRules(nodeId: string): string[];
-  inferPivotReachability(nodeId: string): string[];
+  inferPivotReachability(nodeId: string): PivotReachabilityResult;
   inferDefaultCredentials(nodeIds: Set<string>): string[];
   inferImdsv1Ssrf(nodeIds: Set<string>): string[];
   inferManagedIdentityPivot(nodeIds: Set<string>): string[];
@@ -227,12 +228,22 @@ export function ingestFindingImpl(
   }
 
   // Pivot reachability — imperative handler for subnet-based pivot inference
+  const pivotPromotedNodes: string[] = [];
   for (const nodeId of inferenceTargets) {
     if (!host.ctx.graph.hasNode(nodeId)) continue;
     const attrs = host.ctx.graph.getNodeAttributes(nodeId);
     if (attrs.type === 'host') {
-      inferredEdges.push(...host.inferPivotReachability(nodeId));
+      const result = host.inferPivotReachability(nodeId);
+      inferredEdges.push(...result.edges);
+      pivotPromotedNodes.push(...result.promotedNodeIds);
     }
+  }
+
+  // Run inference rules on cold-store hosts promoted during pivot reachability
+  for (const promotedId of pivotPromotedNodes) {
+    if (!host.ctx.graph.hasNode(promotedId)) continue;
+    const inferred = host.runInferenceRules(promotedId);
+    inferredEdges.push(...inferred);
   }
 
   // Default credentials for known CMS webapps — imperative handler

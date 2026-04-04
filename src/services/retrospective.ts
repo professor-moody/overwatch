@@ -327,6 +327,17 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
     const entry = input.history[i];
     if (entry.action_id && actionIdsWithStructuredAttribution.has(entry.action_id)) continue;
 
+    if (entry.result_classification) {
+      const frontierType = entry.frontier_type || null;
+      if (frontierType && successByType[frontierType]) {
+        successByType[frontierType].total++;
+        if (entry.result_classification === 'success' || entry.result_classification === 'partial') {
+          successByType[frontierType].successful++;
+        }
+      }
+      continue;
+    }
+
     // Detect frontier item executions — structured path
     let frontierType: string | null = entry.frontier_type || null;
 
@@ -463,6 +474,24 @@ export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQuality
   if (heuristicRate > 0.5) issues.push(`About ${(heuristicRate * 100).toFixed(0)}% of retrospective judgments depend on text heuristics.`);
   if (ambiguousRate > 0.2) issues.push('Nearby multi-agent findings make action/result attribution ambiguous in several windows.');
 
+  const parseOutputEvents = input.history.filter(entry => entry.event_type === 'parse_output');
+  if (parseOutputEvents.length > 0 && findingEvents.length > 0 && parseOutputEvents.length / findingEvents.length < 0.2) {
+    issues.push(`Only ${parseOutputEvents.length} parse_output event(s) vs ${findingEvents.length} finding event(s) — parsers appear underutilized.`);
+  }
+
+  const graphCorrectedEvents = input.history.filter(entry => entry.event_type === 'graph_corrected');
+
+  const sessionUnconfirmedEvents = input.history.filter(entry => entry.event_type === 'session_access_unconfirmed');
+  const sessionConfirmedEvents = input.history.filter(entry => entry.event_type === 'session_access_confirmed');
+  if (sessionUnconfirmedEvents.length > 0 && sessionUnconfirmedEvents.length > sessionConfirmedEvents.length) {
+    issues.push(`${sessionUnconfirmedEvents.length} unconfirmed session access event(s) vs ${sessionConfirmedEvents.length} confirmed — unconfirmed session ratio is high.`);
+  }
+
+  const observations: string[] = [];
+  if (graphCorrectedEvents.length > 0) {
+    observations.push(`${graphCorrectedEvents.length} graph_corrected event(s) recorded — the graph self-healed during the run.`);
+  }
+
   const status = issues.length === 0
     ? 'good'
     : (categoryRate < 0.35 || frontierRate < 0.2 || outcomeRate < 0.25 || heuristicRate > 0.75 || (actionEvents.length > 0 && actionIdRate < 0.5))
@@ -475,7 +504,7 @@ export function analyzeLoggingQuality(input: RetrospectiveInput): LoggingQuality
       ? 'Increase structured logging on action validation, execution, and finding correlation so retrospective guidance relies less on text heuristics.'
       : 'Prioritize instrumentation: record action_id, event_type, frontier_type, and explicit result linkage for key actions before relying heavily on retrospective guidance.';
 
-  return { status, issues, recommendation };
+  return { status, issues, ...(observations.length > 0 ? { observations } : {}), recommendation };
 }
 
 export function analyzeContextImprovements(input: RetrospectiveInput): ContextImprovementReport {
@@ -668,8 +697,8 @@ export function generateReport(
   let inferredEdges = 0;
   for (const e of graph.edges) {
     edgesByType[e.properties.type] = (edgesByType[e.properties.type] || 0) + 1;
-    if (e.properties.confidence >= 1.0) confirmedEdges++;
-    else inferredEdges++;
+    if (e.properties.inferred_by_rule) inferredEdges++;
+    else confirmedEdges++;
   }
 
   // Compute access summary
@@ -730,6 +759,10 @@ export function generateReport(
   lines.push(`| CIDRs | ${config.scope.cidrs.join(', ') || 'none'} |`);
   lines.push(`| Domains | ${config.scope.domains.join(', ') || 'none'} |`);
   lines.push(`| Exclusions | ${config.scope.exclusions.join(', ') || 'none'} |`);
+  if (config.scope.aws_accounts?.length) lines.push(`| AWS Accounts | ${config.scope.aws_accounts.join(', ')} |`);
+  if (config.scope.azure_subscriptions?.length) lines.push(`| Azure Subscriptions | ${config.scope.azure_subscriptions.join(', ')} |`);
+  if (config.scope.gcp_projects?.length) lines.push(`| GCP Projects | ${config.scope.gcp_projects.join(', ')} |`);
+  if (config.scope.url_patterns?.length) lines.push(`| URL Patterns | ${config.scope.url_patterns.join(', ')} |`);
   lines.push('');
 
   // Objectives
@@ -981,7 +1014,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
 
       const hasStructuredLifecycle = entries.some(candidate => candidate.event_type === 'action_validated')
         && !!terminal;
-      const hasFindingLinkage = findingEvents.some(candidate => (candidate.linked_finding_ids?.length || 0) > 0);
+      const hasFindingLinkage = findingEvents.length > 0;
       const derived_from: RLVRTrace['derived_from'] = hasStructuredLifecycle && hasFindingLinkage
         ? 'structured'
         : (hasStructuredLifecycle || hasFindingLinkage)

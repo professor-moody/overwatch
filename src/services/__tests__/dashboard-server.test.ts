@@ -346,8 +346,8 @@ describe('DashboardServer', () => {
     expect(mockClient.send).toHaveBeenCalledTimes(1);
     const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
     expect(payload.type).toBe('graph_update');
-    expect(typeof payload.data.state.history_count).toBe('number');
-    expect(payload.data.state.history_count).toBeGreaterThan(0);
+    expect(typeof payload.data.history_count).toBe('number');
+    expect(payload.data.history_count).toBeGreaterThan(0);
   });
 
   it('serveHistory ignores invalid limit parameter', () => {
@@ -498,6 +498,42 @@ describe('DashboardServer', () => {
 
     // Both hosts in the same connected component should share community_id
     expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
+  });
+
+  it('rejects path traversal attempts in static file serving', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-trav-'));
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | Buffer | undefined,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string | Buffer) {
+        this.body = body;
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).dashboardDir = tempDir;
+
+    const traversalPaths = [
+      '/../../../etc/passwd',
+      '/..%2F..%2Fetc/passwd',
+      '/assets/../../etc/shadow',
+    ];
+
+    for (const p of traversalPaths) {
+      res.statusCode = 0;
+      (dashboard as any).fileCache.clear();
+      (dashboard as any).serveStaticFile(p, res);
+      expect(res.statusCode).toBe(403);
+    }
+
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('serves binary assets without UTF-8 corruption', () => {
