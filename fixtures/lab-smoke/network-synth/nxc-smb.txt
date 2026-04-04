@@ -1,1 +1,2 @@
-SMB 10.10.110.2 445 [*] Windows 10 / Server 2019 Build 17763 x64 (signing:False) (SMBv1:True)
+SMB         10.10.110.2      445    FILESERV         [*] Windows 10 / Server 2019 Build 17763 x64 (name:FILESERV) (signing:False) (SMBv1:True)
+SMB         10.10.110.2      445    FILESERV         [-] WORKGROUP\admin:password123 STATUS_LOGON_FAILURE

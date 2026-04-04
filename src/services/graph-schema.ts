@@ -83,7 +83,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Web application surface
   HOSTS: { source: ['service'], target: ['webapp'] },
   AUTHENTICATED_AS: { source: ['credential'], target: ['webapp'] },
-  VULNERABLE_TO: { source: ['webapp', 'service'], target: ['vulnerability'] },
+  VULNERABLE_TO: { source: ['webapp', 'service', 'cloud_resource'], target: ['vulnerability'] },
   EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp'] },
   // Cloud infrastructure
   ASSUMES_ROLE: { source: ['cloud_identity'], target: ['cloud_identity'] },

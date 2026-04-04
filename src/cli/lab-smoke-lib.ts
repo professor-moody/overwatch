@@ -252,7 +252,7 @@ const SMOKE_PROFILES: Record<string, SmokeProfile> = {
   web_app: {
     configId: 'eng-smoke-webapp',
     fixtureName: 'webapp-synth',
-    fakeToolCommands: ['nuclei', 'nikto'],
+    fakeToolCommands: ['nuclei', 'nikto', 'gobuster'],
     requiredMcpTools: BASE_MCP_TOOLS,
     provenanceHostId: 'host-10-10-50-1',
     expectedProvenanceSources: ['nuclei-parser', 'nikto-parser'],
