@@ -52,15 +52,19 @@ The `context` parameter provides ambient information that parsers use as fallbac
 
 ## Returns
 
+All successful responses share a stable schema, including zero-artifact parses:
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `parsed` | `boolean` | Whether parsing succeeded |
 | `tool` | `string` | Tool name |
 | `action_id` | `string` | Action ID |
 | `finding_id` | `string` | Finding identifier |
-| `nodes_parsed` | `number` | Nodes extracted |
-| `edges_parsed` | `number` | Edges extracted |
-| `ingested` | `object` | Ingestion results (if `ingest: true`) |
+| `parsed_from` | `string` | `"output"` or `"file_path"` |
+| `nodes_parsed` | `number` | Nodes extracted (0 if nothing found) |
+| `edges_parsed` | `number` | Edges extracted (0 if nothing found) |
+| `ingested` | `object?` | Ingestion results (present only when `ingest: true` and nodes > 0) |
+| `warnings` | `string[]?` | Instrumentation warnings (e.g. missing action context) |
 | `message` | `string` | Summary |
 
 ## Usage Notes

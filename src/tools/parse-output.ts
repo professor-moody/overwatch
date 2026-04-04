@@ -192,8 +192,13 @@ Pass either the raw output content or a local file path for large artifacts.`,
             type: 'text',
             text: JSON.stringify({
               parsed: true,
-              nodes: 0,
-              edges: 0,
+              tool: tool_name,
+              action_id: normalizedActionId,
+              finding_id: finding.id,
+              parsed_from: filePathProvided ? 'file_path' : 'output',
+              nodes_parsed: 0,
+              edges_parsed: 0,
+              warnings: warnings.length > 0 ? warnings : undefined,
               message: 'Output parsed but no data extracted. Check the output format.',
             }, null, 2)
           }]

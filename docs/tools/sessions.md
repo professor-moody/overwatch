@@ -34,9 +34,9 @@ Create a new persistent session.
 | `agent_id` | string? | Owning agent (sets `claimed_by`) |
 | `target_node` | string? | Graph node ID this session targets |
 
-Returns session metadata + initial output as `SessionReadResult`.
+Returns `{ session, initial_output }` — `session` is the full session metadata object and `initial_output` is a `SessionReadResult` with the first bytes of output.
 
-> **Scope check:** If `host` resolves to an out-of-scope address, the session is still created but the response includes a `scope_warning` field. This is advisory — sessions are never blocked by scope.
+> **Scope check:** Remote sessions (SSH and socket connect mode) are **scope-enforced and fail closed**. If `host` resolves to an out-of-scope address, the request is rejected with an error containing `scope_reason: "host_out_of_scope"`. Local PTY and socket listen sessions are not scope-checked.
 
 ### `write_session`
 
@@ -86,7 +86,7 @@ For password prompts, REPLs, or streaming tools (`tail -f`, `tcpdump`), use `wri
 
 ### `list_sessions`
 
-List sessions with metadata.
+List sessions with metadata. Always returns an envelope `{ total, active, sessions }`, even for single-session lookups via `session_id`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

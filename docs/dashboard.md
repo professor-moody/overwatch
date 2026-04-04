@@ -206,4 +206,4 @@ Use [`run_lab_preflight`](tools/run-lab-preflight.md) to check dashboard readine
 }
 ```
 
-Or check via [`get_state`](tools/get-state.md) which includes dashboard status in its response.
+Note: [`get_state`](tools/get-state.md) returns engagement state only and does not include dashboard status. Use `run_lab_preflight` for dashboard readiness checks.
