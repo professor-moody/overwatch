@@ -91,7 +91,7 @@ export class EngineContext {
   pathGraphCache: Map<string, OverwatchGraph>;  // cached undirected projections keyed by optimize mode
   communityCache: Map<string, number> | null;  // cached Louvain community assignments
   trackedProcesses: TrackedProcess[];
-  actionFrontierMap: Map<string, { frontier_item_id: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
+  actionFrontierMap: Map<string, { frontier_item_id: string; agent_id?: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
   coldStore: ColdStore;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
@@ -119,21 +119,40 @@ export class EngineContext {
   }
 
   logEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
-    // Auto-thread frontier_item_id from action_id mapping when caller omits it
+    // Auto-thread frontier_item_id from action_id mapping when caller omits it.
+    // Guard against cross-agent action_id collisions: only cache/inherit when
+    // the agent_id is consistent with the first writer.
     let enriched = event;
     if (event.action_id && event.frontier_item_id) {
-      this.actionFrontierMap.set(event.action_id, {
-        frontier_item_id: event.frontier_item_id,
-        frontier_type: event.frontier_type,
-      });
+      const existing = this.actionFrontierMap.get(event.action_id);
+      if (existing && existing.agent_id && event.agent_id && existing.agent_id !== event.agent_id) {
+        // Different agent reusing the same action_id — log a warning instead of overwriting
+        this.logEvent({
+          description: `action_id ${event.action_id} collision: agent "${event.agent_id}" tried to associate fi "${event.frontier_item_id}" but it is already mapped to fi "${existing.frontier_item_id}" by agent "${existing.agent_id}"`,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          action_id: event.action_id,
+          agent_id: event.agent_id,
+        });
+      } else {
+        this.actionFrontierMap.set(event.action_id, {
+          frontier_item_id: event.frontier_item_id,
+          agent_id: event.agent_id,
+          frontier_type: event.frontier_type,
+        });
+      }
     } else if (event.action_id && !event.frontier_item_id) {
       const cached = this.actionFrontierMap.get(event.action_id);
       if (cached) {
-        enriched = {
-          ...event,
-          frontier_item_id: cached.frontier_item_id,
-          frontier_type: event.frontier_type || cached.frontier_type,
-        };
+        // Only auto-thread if the agent_id matches (or one side is undefined)
+        const agentMatch = !cached.agent_id || !event.agent_id || cached.agent_id === event.agent_id;
+        if (agentMatch) {
+          enriched = {
+            ...event,
+            frontier_item_id: cached.frontier_item_id,
+            frontier_type: event.frontier_type || cached.frontier_type,
+          };
+        }
       }
     }
     const entry = normalizeActivityLogEntry({
@@ -155,6 +174,7 @@ export class EngineContext {
       if (entry.action_id && entry.frontier_item_id) {
         this.actionFrontierMap.set(entry.action_id, {
           frontier_item_id: entry.frontier_item_id,
+          agent_id: entry.agent_id,
           frontier_type: entry.frontier_type,
         });
       }

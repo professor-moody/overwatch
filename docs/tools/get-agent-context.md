@@ -8,7 +8,7 @@ Returns the scoped subgraph view for a registered agent.
 
 Agents call this to receive only the nodes and edges relevant to their task, plus N-hop neighbors for context. Automatically includes credentials and services connected to hosts in the subgraph. This keeps agent context focused and prevents scope creep.
 
-If the agent was registered without explicit `subgraph_node_ids`, the subgraph is auto-computed from the frontier item's target node(s).
+Seed nodes are snapshotted at `register_agent` time when `subgraph_node_ids` is omitted, so the scope survives frontier changes between registration and context retrieval. If the snapshotted scope is empty for a non-discovery task, the response includes a `warning` field explaining that the frontier item no longer resolves to graph nodes.
 
 ## Parameters
 

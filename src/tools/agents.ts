@@ -62,18 +62,33 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         };
       }
 
-      const task = buildTask(agent_id, frontier_item_id, subgraph_node_ids || [], skill);
+      // Eagerly snapshot seed node IDs when caller omits them, so the scope
+      // survives frontier changes between registration and get_agent_context.
+      let resolvedNodeIds = subgraph_node_ids || [];
+      let scope_warning: string | undefined;
+      if (resolvedNodeIds.length === 0 && !frontier_item_id.startsWith('frontier-discovery-')) {
+        resolvedNodeIds = engine.computeSubgraphNodeIds(frontier_item_id, 2);
+        if (resolvedNodeIds.length === 0) {
+          scope_warning = `Frontier item ${frontier_item_id} resolved to zero seed nodes — the agent may lack graph context`;
+        }
+      }
+
+      const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill);
       engine.registerAgent(task);
+
+      const response: Record<string, unknown> = {
+        task_id: task.id,
+        agent_id,
+        status: 'running',
+        scope_node_count: resolvedNodeIds.length,
+        message: `Agent ${agent_id} registered for task ${frontier_item_id}`,
+      };
+      if (scope_warning) response.scope_warning = scope_warning;
 
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
-            task_id: task.id,
-            agent_id,
-            status: 'running',
-            message: `Agent ${agent_id} registered for task ${frontier_item_id}`
-          }, null, 2)
+          text: JSON.stringify(response, null, 2)
         }]
       };
     })
@@ -231,7 +246,7 @@ auto-computed from the frontier item's target node(s).`,
         };
       }
 
-      // Auto-compute subgraph if no explicit node IDs were provided
+      // Use snapshotted seeds, falling back to live computation for backward compat
       const seedIds = task.subgraph_node_ids.length > 0
         ? task.subgraph_node_ids
         : engine.computeSubgraphNodeIds(task.frontier_item_id, hops);
@@ -253,6 +268,23 @@ auto-computed from the frontier item's target node(s).`,
               },
               subgraph: { nodes: [], edges: [] },
               message: `Network discovery task for ${frontierItem?.target_cidr || 'unknown CIDR'}`,
+            }, null, 2)
+          }]
+        };
+      }
+
+      // Warn when a non-discovery task has no scope (frontier may have changed since registration)
+      if (seedIds.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              task_id: task.id,
+              agent_id: task.agent_id,
+              frontier_item_id: task.frontier_item_id,
+              skill: task.skill,
+              subgraph: { nodes: [], edges: [] },
+              warning: `Frontier item ${task.frontier_item_id} no longer resolves to any graph nodes. The frontier may have changed since task registration. Report this to the primary session.`,
             }, null, 2)
           }]
         };

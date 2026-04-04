@@ -47,3 +47,4 @@ Recommended flow:
 - For all other event types, `action_id` is required (links back to the planned/validated action)
 - These events feed into `get_history` and `run_retrospective`
 - Use `result_classification` on `action_completed`/`action_failed` for retrospective analysis
+- **Collision guard:** The server tracks which `agent_id` established each `action_id` → `frontier_item_id` mapping. If a different agent reuses the same `action_id`, the auto-threading is suppressed and an `instrumentation_warning` is logged instead of silently overwriting the mapping

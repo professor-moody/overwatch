@@ -57,7 +57,7 @@ describe('EngineContext', () => {
         frontier_type: 'inferred_edge',
       });
       const cached = ctx.actionFrontierMap.get('act-1');
-      expect(cached).toEqual({ frontier_item_id: 'fi-1', frontier_type: 'inferred_edge' });
+      expect(cached).toEqual({ frontier_item_id: 'fi-1', agent_id: undefined, frontier_type: 'inferred_edge' });
     });
 
     it('auto-threads frontier_item_id from actionFrontierMap when only action_id is given', () => {
@@ -138,10 +138,12 @@ describe('EngineContext', () => {
       expect(ctx.actionFrontierMap.size).toBe(2);
       expect(ctx.actionFrontierMap.get('act-a')).toEqual({
         frontier_item_id: 'fi-a',
+        agent_id: undefined,
         frontier_type: undefined,
       });
       expect(ctx.actionFrontierMap.get('act-b')).toEqual({
         frontier_item_id: 'fi-b',
+        agent_id: undefined,
         frontier_type: 'incomplete_node',
       });
     });
@@ -156,6 +158,7 @@ describe('EngineContext', () => {
 
       expect(ctx.actionFrontierMap.get('dup')).toEqual({
         frontier_item_id: 'fi-new',
+        agent_id: undefined,
         frontier_type: 'untested_edge',
       });
     });
@@ -497,5 +500,120 @@ describe('tieredTruncate — preserves causal-linkage events', () => {
     expect(result).toHaveLength(2);
     const descs = result.map(e => e.description);
     expect(descs).toContain('po');
+  });
+});
+
+describe('actionFrontierMap — cross-agent collision guard', () => {
+  it('caches agent_id alongside frontier mapping', () => {
+    const ctx = makeCtx();
+    ctx.logEvent({
+      description: 'validated',
+      action_id: 'act-x',
+      frontier_item_id: 'fi-x',
+      agent_id: 'agent-A',
+    });
+    const cached = ctx.actionFrontierMap.get('act-x');
+    expect(cached?.agent_id).toBe('agent-A');
+    expect(cached?.frontier_item_id).toBe('fi-x');
+  });
+
+  it('does not auto-thread when a different agent reuses the same action_id', () => {
+    const ctx = makeCtx();
+    // Agent A establishes mapping
+    ctx.logEvent({
+      description: 'validated by A',
+      action_id: 'act-shared',
+      frontier_item_id: 'fi-1',
+      agent_id: 'agent-A',
+    });
+
+    // Agent B logs with same action_id but no frontier_item_id — should NOT inherit fi-1
+    const entry = ctx.logEvent({
+      description: 'completed by B',
+      action_id: 'act-shared',
+      agent_id: 'agent-B',
+    });
+
+    expect(entry.frontier_item_id).toBeUndefined();
+  });
+
+  it('auto-threads when the same agent logs with the same action_id', () => {
+    const ctx = makeCtx();
+    ctx.logEvent({
+      description: 'validated by A',
+      action_id: 'act-mine',
+      frontier_item_id: 'fi-mine',
+      agent_id: 'agent-A',
+    });
+
+    const entry = ctx.logEvent({
+      description: 'completed by A',
+      action_id: 'act-mine',
+      agent_id: 'agent-A',
+    });
+
+    expect(entry.frontier_item_id).toBe('fi-mine');
+  });
+
+  it('logs instrumentation_warning when different agent overwrites frontier mapping', () => {
+    const ctx = makeCtx();
+    ctx.logEvent({
+      description: 'validated by A',
+      action_id: 'act-collision',
+      frontier_item_id: 'fi-1',
+      agent_id: 'agent-A',
+    });
+
+    // Agent B tries to associate a different frontier_item_id
+    ctx.logEvent({
+      description: 'validated by B',
+      action_id: 'act-collision',
+      frontier_item_id: 'fi-2',
+      agent_id: 'agent-B',
+    });
+
+    // Original mapping should be preserved
+    expect(ctx.actionFrontierMap.get('act-collision')?.frontier_item_id).toBe('fi-1');
+    expect(ctx.actionFrontierMap.get('act-collision')?.agent_id).toBe('agent-A');
+
+    // An instrumentation warning should have been logged
+    const warnings = ctx.activityLog.filter(e => e.event_type === 'instrumentation_warning');
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings[0].description).toContain('collision');
+  });
+
+  it('allows same agent to update its own frontier mapping', () => {
+    const ctx = makeCtx();
+    ctx.logEvent({
+      description: 'first',
+      action_id: 'act-update',
+      frontier_item_id: 'fi-old',
+      agent_id: 'agent-A',
+    });
+    ctx.logEvent({
+      description: 'second',
+      action_id: 'act-update',
+      frontier_item_id: 'fi-new',
+      agent_id: 'agent-A',
+    });
+
+    expect(ctx.actionFrontierMap.get('act-update')?.frontier_item_id).toBe('fi-new');
+  });
+
+  it('auto-threads when agent_id is undefined on one side', () => {
+    const ctx = makeCtx();
+    // Cache without agent_id (e.g., from a tool that doesn't track it)
+    ctx.logEvent({
+      description: 'validated',
+      action_id: 'act-noagent',
+      frontier_item_id: 'fi-noagent',
+    });
+
+    // Subsequent event without agent_id should inherit
+    const entry = ctx.logEvent({
+      description: 'completed',
+      action_id: 'act-noagent',
+    });
+    expect(entry.frontier_item_id).toBe('fi-noagent');
   });
 });
