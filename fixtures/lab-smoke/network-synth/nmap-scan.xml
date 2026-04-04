@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun>
+  <host>
+    <status state="up" />
+    <address addr="10.10.110.1" addrtype="ipv4" />
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open" /><service name="ssh" product="OpenSSH" version="8.9" /></port>
+      <port protocol="tcp" portid="80"><state state="open" /><service name="http" product="nginx" version="1.18" /></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up" />
+    <address addr="10.10.110.2" addrtype="ipv4" />
+    <ports>
+      <port protocol="tcp" portid="445"><state state="open" /><service name="microsoft-ds" product="Samba" version="4.15" /></port>
+      <port protocol="tcp" portid="139"><state state="open" /><service name="netbios-ssn" product="Samba smbd" version="4.15" /></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up" />
+    <address addr="10.10.110.3" addrtype="ipv4" />
+    <ports>
+      <port protocol="tcp" portid="3306"><state state="open" /><service name="mysql" product="MySQL" version="8.0" /></port>
+      <port protocol="tcp" portid="22"><state state="open" /><service name="ssh" product="OpenSSH" version="7.4" /></port>
+    </ports>
+  </host>
+</nmaprun>

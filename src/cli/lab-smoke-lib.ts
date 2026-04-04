@@ -10,13 +10,14 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join, resolve } from 'path';
-import type { ExportedGraph, EngagementConfig, ExportedGraphNode } from '../types.js';
+import type { ExportedGraph, EngagementConfig, ExportedGraphNode, LabProfile } from '../types.js';
 import { callJsonTool, startMcpStdioSession, stopMcpStdioSession } from '../test-support/mcp-stdio.js';
 import type { McpStdioSession } from '../test-support/mcp-stdio.js';
 
 export type LabSmokeOptions = {
   keepState?: boolean;
   verbose?: boolean;
+  profile?: LabProfile;
 };
 
 export type ProvenanceCheckResult = {
@@ -103,32 +104,279 @@ type SmokeWorkspace = {
   reportFile: string;
 };
 
-const FIXTURE_CONFIG_ID = 'eng-lab-smoke';
-const FIXTURE_NAME = 'goad-synth';
-const FAKE_TOOL_COMMANDS = ['nmap', 'nxc', 'bloodhound-python', 'impacket-secretsdump'];
-const REQUIRED_MCP_TOOLS = [
+// ---------------------------------------------------------------------------
+// Profile-aware smoke test configuration
+// ---------------------------------------------------------------------------
+
+export type SmokeProfile = {
+  configId: string;
+  fixtureName: string;
+  fakeToolCommands: string[];
+  requiredMcpTools: string[];
+  provenanceHostId: string | undefined;
+  expectedProvenanceSources: string[];
+  engagementConfig: EngagementConfig;
+  ingestSteps: (
+    client: McpStdioSession['client'],
+    fixtureDir: string,
+  ) => Promise<LabSmokeReport['ingest_steps']>;
+};
+
+const BASE_MCP_TOOLS = [
   'get_state',
   'run_lab_preflight',
-  'ingest_bloodhound',
   'parse_output',
   'run_graph_health',
   'run_retrospective',
   'export_graph',
 ];
-const PROVENANCE_HOST_ID = 'host-10-10-10-20';
-const EXPECTED_PROVENANCE_SOURCES = ['bloodhound-ingest', 'nmap-parser', 'nxc-parser'];
+
+const SMOKE_PROFILES: Record<string, SmokeProfile> = {
+  goad_ad: {
+    configId: 'eng-lab-smoke',
+    fixtureName: 'goad-synth',
+    fakeToolCommands: ['nmap', 'nxc', 'bloodhound-python', 'impacket-secretsdump'],
+    requiredMcpTools: [...BASE_MCP_TOOLS, 'ingest_bloodhound'],
+    provenanceHostId: 'host-10-10-10-20',
+    expectedProvenanceSources: ['bloodhound-ingest', 'nmap-parser', 'nxc-parser'],
+    engagementConfig: {
+      id: 'eng-lab-smoke',
+      name: 'Lab Smoke Harness',
+      created_at: '2026-03-22T00:00:00Z',
+      scope: {
+        cidrs: [],
+        domains: ['acme.local'],
+        exclusions: [],
+      },
+      objectives: [
+        {
+          id: 'obj-da-credential',
+          description: 'Obtain a privileged credential in acme.local',
+          target_node_type: 'credential',
+          target_criteria: { privileged: true, cred_domain: 'ACME.LOCAL' },
+          achieved: false,
+        },
+      ],
+      opsec: { name: 'pentest', max_noise: 0.7 },
+    },
+    ingestSteps: async (client, fixtureDir) => {
+      const steps: LabSmokeReport['ingest_steps'] = [];
+
+      const bloodhoundResult = await callJsonTool<Record<string, unknown>>(client, 'ingest_bloodhound', {
+        path: join(fixtureDir, 'bloodhound'),
+        max_files: 10,
+      });
+      steps.push({ step: 'ingest_bloodhound', summary: bloodhoundResult });
+
+      const nmapResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nmap',
+        output: readFileSync(join(fixtureDir, 'nmap-scan.xml'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nmap', summary: nmapResult });
+
+      const nxcResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nxc',
+        output: readFileSync(join(fixtureDir, 'nxc-smb.txt'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nxc', summary: nxcResult });
+
+      const secretsdumpResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'secretsdump',
+        output: readFileSync(join(fixtureDir, 'secretsdump.txt'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_secretsdump', summary: secretsdumpResult });
+
+      return steps;
+    },
+  },
+
+  network: {
+    configId: 'eng-smoke-network',
+    fixtureName: 'network-synth',
+    fakeToolCommands: ['nmap', 'nxc', 'impacket-secretsdump'],
+    requiredMcpTools: BASE_MCP_TOOLS,
+    provenanceHostId: 'host-10-10-110-2',
+    expectedProvenanceSources: ['nmap-parser', 'nxc-parser'],
+    engagementConfig: {
+      id: 'eng-smoke-network',
+      name: 'Network Smoke Harness',
+      created_at: '2026-03-22T00:00:00Z',
+      profile: 'network',
+      scope: {
+        cidrs: ['10.10.110.0/24'],
+        domains: [],
+        exclusions: [],
+      },
+      objectives: [
+        {
+          id: 'obj-root-shell',
+          description: 'Obtain root-level access on any host',
+          target_node_type: 'credential',
+          target_criteria: { privileged: true },
+          achieved: false,
+        },
+      ],
+      opsec: { name: 'pentest', max_noise: 0.8 },
+    },
+    ingestSteps: async (client, fixtureDir) => {
+      const steps: LabSmokeReport['ingest_steps'] = [];
+
+      const nmapResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nmap',
+        output: readFileSync(join(fixtureDir, 'nmap-scan.xml'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nmap', summary: nmapResult });
+
+      const nxcResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nxc',
+        output: readFileSync(join(fixtureDir, 'nxc-smb.txt'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nxc', summary: nxcResult });
+
+      const secretsdumpResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'secretsdump',
+        output: readFileSync(join(fixtureDir, 'secretsdump.txt'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_secretsdump', summary: secretsdumpResult });
+
+      return steps;
+    },
+  },
+
+  web_app: {
+    configId: 'eng-smoke-webapp',
+    fixtureName: 'webapp-synth',
+    fakeToolCommands: ['nuclei', 'nikto'],
+    requiredMcpTools: BASE_MCP_TOOLS,
+    provenanceHostId: 'host-10-10-50-1',
+    expectedProvenanceSources: ['nuclei-parser', 'nikto-parser'],
+    engagementConfig: {
+      id: 'eng-smoke-webapp',
+      name: 'Web App Smoke Harness',
+      created_at: '2026-03-22T00:00:00Z',
+      profile: 'web_app',
+      scope: {
+        cidrs: [],
+        domains: [],
+        exclusions: [],
+        url_patterns: ['https://app.example.com/*'],
+      },
+      objectives: [
+        {
+          id: 'obj-rce',
+          description: 'Achieve remote code execution via web vulnerability',
+          target_node_type: 'vulnerability',
+          target_criteria: { exploitable: true },
+          achieved: false,
+        },
+      ],
+      opsec: { name: 'pentest', max_noise: 0.5 },
+    },
+    ingestSteps: async (client, fixtureDir) => {
+      const steps: LabSmokeReport['ingest_steps'] = [];
+
+      const nucleiResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nuclei',
+        output: readFileSync(join(fixtureDir, 'nuclei.jsonl'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nuclei', summary: nucleiResult });
+
+      const niktoResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'nikto',
+        output: readFileSync(join(fixtureDir, 'nikto.json'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_nikto', summary: niktoResult });
+
+      return steps;
+    },
+  },
+
+  cloud: {
+    configId: 'eng-smoke-cloud',
+    fixtureName: 'cloud-synth',
+    fakeToolCommands: ['pacu', 'prowler'],
+    requiredMcpTools: BASE_MCP_TOOLS,
+    provenanceHostId: undefined,
+    expectedProvenanceSources: [],
+    engagementConfig: {
+      id: 'eng-smoke-cloud',
+      name: 'Cloud Smoke Harness',
+      created_at: '2026-03-22T00:00:00Z',
+      profile: 'cloud',
+      scope: {
+        cidrs: [],
+        domains: [],
+        exclusions: [],
+        aws_accounts: ['123456789012'],
+      },
+      objectives: [
+        {
+          id: 'obj-admin-access',
+          description: 'Obtain admin-level AWS access',
+          target_node_type: 'cloud_identity',
+          target_criteria: { privileged: true },
+          achieved: false,
+        },
+      ],
+      opsec: { name: 'pentest', max_noise: 0.3 },
+    },
+    ingestSteps: async (client, fixtureDir) => {
+      const steps: LabSmokeReport['ingest_steps'] = [];
+
+      const prowlerResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'prowler',
+        output: readFileSync(join(fixtureDir, 'prowler.jsonl'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_prowler', summary: prowlerResult });
+
+      const pacuResult = await callJsonTool<Record<string, unknown>>(client, 'parse_output', {
+        tool_name: 'pacu',
+        output: readFileSync(join(fixtureDir, 'pacu.json'), 'utf-8'),
+        ingest: true,
+      });
+      steps.push({ step: 'parse_pacu', summary: pacuResult });
+
+      return steps;
+    },
+  },
+};
+
+function getSmokeProfile(profileName: string): SmokeProfile {
+  const profile = SMOKE_PROFILES[profileName];
+  if (!profile) {
+    const valid = Object.keys(SMOKE_PROFILES).join(', ');
+    throw new Error(`Unknown smoke profile '${profileName}'. Valid profiles: ${valid}`);
+  }
+  return profile;
+}
 
 export function parseLabSmokeArgs(args: string[]): LabSmokeOptions {
+  let profile: LabProfile | undefined;
+  const profileIdx = args.indexOf('--profile');
+  if (profileIdx !== -1 && profileIdx + 1 < args.length) {
+    profile = args[profileIdx + 1] as LabProfile;
+  }
   return {
     keepState: args.includes('--keep-state'),
     verbose: args.includes('--verbose'),
+    profile,
   };
 }
 
 export function validateProvenanceForHost(
   graphAfterIngest: ExportedGraph,
   graphAfterRestart: ExportedGraph,
-  hostId: string = PROVENANCE_HOST_ID,
+  hostId: string,
+  expectedSources: string[],
 ): ProvenanceCheckResult {
   const afterIngest = getExportedNode(graphAfterIngest, hostId);
   const afterRestart = getExportedNode(graphAfterRestart, hostId);
@@ -137,7 +385,7 @@ export function validateProvenanceForHost(
       host_id: hostId,
       host_label: hostId,
       sources: [],
-      expected_sources: EXPECTED_PROVENANCE_SOURCES,
+      expected_sources: expectedSources,
       checks: {
         first_seen_present: false,
         last_seen_present: false,
@@ -161,7 +409,7 @@ export function validateProvenanceForHost(
     first_seen_present: Boolean(firstSeen),
     last_seen_present: Boolean(lastSeen),
     last_seen_not_before_first_seen: Boolean(firstSeen && lastSeen && lastSeen >= firstSeen),
-    sources_complete: EXPECTED_PROVENANCE_SOURCES.every(source => sources.includes(source)),
+    sources_complete: expectedSources.every(source => sources.includes(source)),
     confirmed_at_valid: Boolean(confirmedAt && firstSeen && confirmedAt >= firstSeen && (!lastSeen || confirmedAt <= lastSeen)),
     preserved_after_restart: jsonEqual(props, restartProps),
   };
@@ -173,14 +421,16 @@ export function validateProvenanceForHost(
     last_seen_at: lastSeen,
     confirmed_at: confirmedAt,
     sources,
-    expected_sources: EXPECTED_PROVENANCE_SOURCES,
+    expected_sources: expectedSources,
     checks,
     passed: Object.values(checks).every(Boolean),
   };
 }
 
 export async function runLabSmoke(options: LabSmokeOptions = {}): Promise<LabSmokeReport> {
-  const workspace = createWorkspace();
+  const profileName = options.profile || 'goad_ad';
+  const profile = getSmokeProfile(profileName);
+  const workspace = createWorkspace(profile);
   const serverEntry = resolve(process.cwd(), 'dist/index.js');
   if (!existsSync(serverEntry)) {
     throw new Error(`Built server entrypoint not found: ${serverEntry}. Run npm run build first.`);
@@ -190,43 +440,16 @@ export async function runLabSmoke(options: LabSmokeOptions = {}): Promise<LabSmo
   let restartedSession: McpStdioSession | null = null;
 
   try {
-    const toolNames = await listAndValidateTools(session.client);
+    const toolNames = await listAndValidateTools(session.client, profile.requiredMcpTools);
     const initialState = await callJsonTool<Record<string, any>>(session.client, 'get_state', {});
     const preflight = await callJsonTool<Record<string, any>>(session.client, 'run_lab_preflight', {
-      profile: 'goad_ad',
+      profile: profileName,
     });
     if (preflight.status === 'blocked') {
       throw new Error(`Lab preflight blocked smoke run: ${String((preflight.missing_required_tools || []).join(', '))}`);
     }
 
-    const ingestSteps: LabSmokeReport['ingest_steps'] = [];
-
-    const bloodhoundResult = await callJsonTool<Record<string, unknown>>(session.client, 'ingest_bloodhound', {
-      path: join(workspace.fixtureDir, 'bloodhound'),
-      max_files: 10,
-    });
-    ingestSteps.push({ step: 'ingest_bloodhound', summary: bloodhoundResult });
-
-    const nmapResult = await callJsonTool<Record<string, unknown>>(session.client, 'parse_output', {
-      tool_name: 'nmap',
-      output: readFileSync(join(workspace.fixtureDir, 'nmap-scan.xml'), 'utf-8'),
-      ingest: true,
-    });
-    ingestSteps.push({ step: 'parse_nmap', summary: nmapResult });
-
-    const nxcResult = await callJsonTool<Record<string, unknown>>(session.client, 'parse_output', {
-      tool_name: 'nxc',
-      output: readFileSync(join(workspace.fixtureDir, 'nxc-smb.txt'), 'utf-8'),
-      ingest: true,
-    });
-    ingestSteps.push({ step: 'parse_nxc', summary: nxcResult });
-
-    const secretsdumpResult = await callJsonTool<Record<string, unknown>>(session.client, 'parse_output', {
-      tool_name: 'secretsdump',
-      output: readFileSync(join(workspace.fixtureDir, 'secretsdump.txt'), 'utf-8'),
-      ingest: true,
-    });
-    ingestSteps.push({ step: 'parse_secretsdump', summary: secretsdumpResult });
+    const ingestSteps = await profile.ingestSteps(session.client, workspace.fixtureDir);
 
     const healthAfterIngest = await callJsonTool<Record<string, any>>(session.client, 'run_graph_health', {});
     assertHealthyGraph(healthAfterIngest, 'after ingest');
@@ -237,7 +460,7 @@ export async function runLabSmoke(options: LabSmokeOptions = {}): Promise<LabSmo
     session = null;
 
     restartedSession = await restartSession(serverEntry, workspace);
-    await listAndValidateTools(restartedSession.client);
+    await listAndValidateTools(restartedSession.client, profile.requiredMcpTools);
 
     const stateAfterRestart = await callJsonTool<Record<string, any>>(restartedSession.client, 'get_state', {});
     const healthAfterRestart = await callJsonTool<Record<string, any>>(restartedSession.client, 'run_graph_health', {});
@@ -260,9 +483,33 @@ export async function runLabSmoke(options: LabSmokeOptions = {}): Promise<LabSmo
       throw new Error('Restart/load materially changed graph summary or graph health.');
     }
 
-    const provenance = validateProvenanceForHost(graphAfterIngest, graphAfterRestart);
-    if (!provenance.passed) {
-      throw new Error(`Provenance assertions failed for ${provenance.host_id}`);
+    let provenance: ProvenanceCheckResult;
+    if (profile.provenanceHostId) {
+      provenance = validateProvenanceForHost(
+        graphAfterIngest,
+        graphAfterRestart,
+        profile.provenanceHostId,
+        profile.expectedProvenanceSources,
+      );
+      if (!provenance.passed) {
+        throw new Error(`Provenance assertions failed for ${provenance.host_id}`);
+      }
+    } else {
+      provenance = {
+        host_id: 'n/a',
+        host_label: 'skipped (no provenance host for this profile)',
+        sources: [],
+        expected_sources: [],
+        checks: {
+          first_seen_present: true,
+          last_seen_present: true,
+          last_seen_not_before_first_seen: true,
+          sources_complete: true,
+          confirmed_at_valid: true,
+          preserved_after_restart: true,
+        },
+        passed: true,
+      };
     }
 
     const report: LabSmokeReport = {
@@ -347,10 +594,13 @@ async function restartSession(serverEntry: string, workspace: SmokeWorkspace): P
   return startSession(serverEntry, workspace, 'lab-smoke-restart');
 }
 
-async function listAndValidateTools(sessionClient: McpStdioSession['client']): Promise<string[]> {
+async function listAndValidateTools(
+  sessionClient: McpStdioSession['client'],
+  requiredTools: string[],
+): Promise<string[]> {
   const listedTools = await sessionClient.listTools();
   const toolNames = listedTools.tools.map(tool => tool.name).sort();
-  for (const requiredTool of REQUIRED_MCP_TOOLS) {
+  for (const requiredTool of requiredTools) {
     if (!toolNames.includes(requiredTool)) {
       throw new Error(`Required MCP tool missing from server: ${requiredTool}`);
     }
@@ -358,56 +608,25 @@ async function listAndValidateTools(sessionClient: McpStdioSession['client']): P
   return toolNames;
 }
 
-function createWorkspace(): SmokeWorkspace {
+function createWorkspace(profile: SmokeProfile): SmokeWorkspace {
   const rootDir = mkdtempSync(join(tmpdir(), 'overwatch-lab-smoke-'));
   mkdirSync(rootDir, { recursive: true });
 
-  const fixtureDir = resolve(process.cwd(), 'fixtures', 'lab-smoke', FIXTURE_NAME);
+  const fixtureDir = resolve(process.cwd(), 'fixtures', 'lab-smoke', profile.fixtureName);
   if (!existsSync(fixtureDir)) {
     throw new Error(`Fixture not found: ${fixtureDir}`);
   }
 
   const configPath = join(rootDir, 'engagement.smoke.json');
-  const stateFile = join(rootDir, `state-${FIXTURE_CONFIG_ID}.json`);
+  const stateFile = join(rootDir, `state-${profile.configId}.json`);
   const fakeToolBin = join(rootDir, 'fake-bin');
   const reportFile = join(rootDir, 'lab-smoke-report.json');
 
   mkdirSync(fakeToolBin, { recursive: true });
-  writeFixtureConfig(configPath);
-  installFakeTools(fakeToolBin, FAKE_TOOL_COMMANDS);
+  writeFileSync(configPath, JSON.stringify(profile.engagementConfig, null, 2));
+  installFakeTools(fakeToolBin, profile.fakeToolCommands);
 
   return { rootDir, configPath, stateFile, fakeToolBin, fixtureDir, reportFile };
-}
-
-function writeFixtureConfig(configPath: string): void {
-  const config: EngagementConfig = {
-    id: FIXTURE_CONFIG_ID,
-    name: 'Lab Smoke Harness',
-    created_at: '2026-03-22T00:00:00Z',
-    scope: {
-      cidrs: [],
-      domains: ['acme.local'],
-      exclusions: [],
-    },
-    objectives: [
-      {
-        id: 'obj-da-credential',
-        description: 'Obtain a privileged credential in acme.local',
-        target_node_type: 'credential',
-        target_criteria: {
-          privileged: true,
-          cred_domain: 'ACME.LOCAL',
-        },
-        achieved: false,
-      },
-    ],
-    opsec: {
-      name: 'pentest',
-      max_noise: 0.7,
-    },
-  };
-
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
 function installFakeTools(binDir: string, commands: string[]): void {

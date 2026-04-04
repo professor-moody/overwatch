@@ -8,9 +8,10 @@ if (process.argv.includes('--help')) {
   console.log(`Usage: npm run lab:smoke [-- OPTIONS]
 
 Options:
-  --keep-state   Preserve state files after the smoke run (default: cleaned up)
-  --verbose      Print the retrospective summary to stdout
-  --help         Show this help message`);
+  --profile <name>  Smoke profile to run: goad_ad | network | web_app | cloud (default: goad_ad)
+  --keep-state      Preserve state files after the smoke run (default: cleaned up)
+  --verbose         Print the retrospective summary to stdout
+  --help            Show this help message`);
   process.exit(0);
 }
 
@@ -24,9 +25,10 @@ function summarizeCounts(summary: Record<string, unknown>): string {
 
 async function main(): Promise<void> {
   const options = parseLabSmokeArgs(process.argv.slice(2));
+  const profileName = options.profile || 'goad_ad';
   const report = await runLabSmoke(options);
 
-  console.log('Fixture: goad-synth');
+  console.log(`Profile: ${profileName}`);
   console.log(`Preflight: ${report.preflight.status}`);
   console.log(`Graph before ingest: ${report.graph_stage.before_ingest} (${summarizeCounts(report.graph_summary.before_ingest)})`);
   console.log(`Graph after ingest: ${report.graph_stage.after_ingest} (${summarizeCounts(report.graph_summary.after_ingest)})`);

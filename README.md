@@ -47,7 +47,7 @@ Add to your Claude Code MCP config:
 }
 ```
 
-Then run `claude` — see the full [Getting Started](https://keys.github.io/overwatch/getting-started/) guide.
+Then run `claude` — see the full [Getting Started](https://keys.github.io/overwatch/getting-started/) guide. Sample engagement configs for each profile type are in [`examples/`](examples/).
 
 ## Architecture
 

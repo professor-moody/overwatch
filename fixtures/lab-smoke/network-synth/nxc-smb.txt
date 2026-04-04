@@ -1,0 +1,1 @@
+SMB 10.10.110.2 445 [*] Windows 10 / Server 2019 Build 17763 x64 (signing:False) (SMBv1:True)

@@ -4,13 +4,10 @@
 // All state access goes through the shared EngineContext.
 // ============================================================
 
-import GraphConstructor from 'graphology';
 import { dijkstra } from 'graphology-shortest-path';
+import { createDirectedSimpleGraph } from './graphology-types.js';
 import type { EngineContext, OverwatchGraph } from './engine-context.js';
 import type { EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../types.js';
-
-// Handle CJS/ESM interop for graphology
-const Graph = (GraphConstructor as any).default || GraphConstructor;
 
 type PathEdgeAttrs = { weight: number };
 
@@ -40,7 +37,7 @@ export class PathAnalyzer {
     const cached = this.ctx.pathGraphCache.get(optimize);
     if (cached) return cached;
 
-    const pg = new Graph({ type: 'directed', multi: false, allowSelfLoops: false }) as OverwatchGraph;
+    const pg = createDirectedSimpleGraph();
 
     // Copy all nodes (IDs only)
     this.ctx.graph.forEachNode((id: string) => {

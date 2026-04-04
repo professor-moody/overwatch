@@ -43,6 +43,13 @@ export type ActivityEventType =
   | 'scope_updated'
   | 'system';
 
+export type ActivityLogDetails =
+  | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }
+  | { validation_errors: string[]; [key: string]: unknown }
+  | { evidence_type?: string; evidence_id?: string; evidence_content?: string; raw_output?: string; [key: string]: unknown }
+  | { warning: string; [key: string]: unknown }
+  | Record<string, unknown>;
+
 export type ActivityLogEntry = {
   event_id: string;
   timestamp: string;
@@ -63,7 +70,7 @@ export type ActivityLogEntry = {
   result_classification?: 'success' | 'failure' | 'partial' | 'neutral';
   linked_finding_ids?: string[];
   linked_agent_task_id?: string;
-  details?: Record<string, unknown>;
+  details?: ActivityLogDetails;
 };
 
 export type GraphUpdateDetail = {

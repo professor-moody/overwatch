@@ -1,0 +1,1 @@
+[{"ip":"10.10.50.1","port":"443","hostname":"app.example.com","banner":"nginx/1.18","vulnerabilities":[{"id":"999100","OSVDB":"0","method":"GET","url":"/admin","msg":"Admin panel found"},{"id":"999101","OSVDB":"3092","method":"GET","url":"/backup","msg":"Backup directory found"},{"id":"999102","OSVDB":"0","method":"GET","url":"/login","msg":"Login page detected"}]}]

@@ -82,12 +82,15 @@ Profiles:
 - **goad_ad**: GOAD-style multi-host AD lab validation (requires scoped domains)
 - **network**: Multi-host CIDR-scoped lab (HTB ProLabs, etc.) — domains discovered organically
 - **single_host**: Standalone single-target host validation
+- **web_app**: Web application assessment (URL-scoped, checks for web tooling)
+- **cloud**: Cloud environment assessment (AWS/Azure/GCP resource-scoped)
+- **hybrid**: Combined network + cloud + web assessment
 
 Use this before your first lab run, after major ingestion, or after restart to confirm the environment is trustworthy enough for operator testing.`,
       inputSchema: {
-        profile: z.enum(['goad_ad', 'single_host', 'network'])
+        profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid'])
           .optional()
-          .describe('Lab profile to validate against. If omitted, inferred from engagement config (goad_ad if domains configured, otherwise single_host). Set explicitly to network for multi-host CIDR engagements.'),
+          .describe('Lab profile to validate against. If omitted, inferred from engagement config. Set explicitly for web_app, cloud, or hybrid engagements.'),
       },
       annotations: {
         readOnlyHint: true,

@@ -115,3 +115,7 @@ Now start the main engagement loop:
 - **Monitor the dashboard** for visual context on graph growth
 - **Run `run_graph_health`** periodically, especially after large ingestions
 - **Dispatch sub-agents** for independent tasks to parallelize work
+
+## Example Config
+
+The repo-root `engagement.json` can be adapted for GOAD by changing `"profile"` to `"goad_ad"` and adding your lab's domains to `scope.domains`. See also `examples/` for cloud, web app, and hybrid engagement configs.

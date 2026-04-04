@@ -94,3 +94,7 @@ Follow the main loop:
 - **Use `get_skill`** to look up methodology for discovered services
 - **Pivot tracking**: As you compromise hosts and find credentials, the graph builds attack paths across the network automatically
 - **Track long-running scans** with `track_process` and check with `check_processes`
+
+## Example Config
+
+The `engagement.json` at the repo root is a network-profile config for an HTB ProLab (Dante). See also `examples/` for cloud, web app, and hybrid engagement configs.

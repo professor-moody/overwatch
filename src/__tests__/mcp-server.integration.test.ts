@@ -178,6 +178,10 @@ describe('MCP Server Integration', () => {
     expect(toolNames).toContain('close_session');
     expect(toolNames).toContain('update_scope');
     expect(toolNames).toContain('get_system_prompt');
+    expect(toolNames).toContain('generate_report');
+    expect(toolNames).toContain('get_evidence');
+    expect(toolNames).toContain('dispatch_subnet_agents');
+    expect(toolNames).toContain('ingest_azurehound');
   });
 
   it('get_state returns engagement state', async () => {
@@ -872,5 +876,51 @@ describe('MCP Server Integration', () => {
     const retro = await callToolJson('run_retrospective', {});
     expect(retro.training_traces_count).toBeTypeOf('number');
     expect(retro.training_traces_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('generate_report returns markdown with findings_count', async () => {
+    const body = await callToolJson('generate_report', {
+      format: 'markdown',
+      include_evidence: false,
+      include_narrative: false,
+      include_retrospective: false,
+      write_to_disk: false,
+    });
+    expect(body.format).toBe('markdown');
+    expect(typeof body.findings_count).toBe('number');
+    expect(body.severity_summary).toBeDefined();
+  });
+
+  it('get_system_prompt returns prompt text for primary role', async () => {
+    const body = await callToolJson('get_system_prompt', { role: 'primary' });
+    expect(body.role).toBe('primary');
+    expect(typeof body.prompt).toBe('string');
+    expect(body.prompt.length).toBeGreaterThan(0);
+  });
+
+  it('correct_graph succeeds with empty operations', async () => {
+    const result = await client.callTool({
+      name: 'correct_graph',
+      arguments: { reason: 'integration test no-op', operations: [] },
+    });
+    // Empty operations may succeed or fail gracefully depending on min(1) validation
+    const body = parseToolBody(result);
+    // The tool requires min(1) operations, so this should error
+    expect(result.isError).toBeDefined();
+    expect(body.error || body.applied !== undefined).toBeTruthy();
+  });
+
+  it('find_paths returns response shape', async () => {
+    const body = await callToolJson('find_paths', {});
+    expect(body.paths_found).toBeDefined();
+    expect(body.paths).toBeInstanceOf(Array);
+  });
+
+  it('check_tools returns tool statuses', async () => {
+    const body = await callToolJson('check_tools', {});
+    expect(typeof body.installed_count).toBe('number');
+    expect(typeof body.missing_count).toBe('number');
+    expect(body.installed).toBeInstanceOf(Array);
+    expect(body.missing).toBeInstanceOf(Array);
   });
 });

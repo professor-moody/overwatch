@@ -1,10 +1,5 @@
-import GraphConstructor from 'graphology';
-import louvainDefault from 'graphology-communities-louvain';
+import { createUndirectedSimpleGraph, assignLouvainCommunities } from './graphology-types.js';
 import type { OverwatchGraph } from './engine-context.js';
-
-// Handle CJS/ESM interop
-const Graph = (GraphConstructor as any).default || GraphConstructor;
-const louvain = (louvainDefault as any).default || louvainDefault;
 
 /**
  * Build an undirected simple projection of the engagement graph and run
@@ -17,7 +12,7 @@ export function detectCommunities(graph: OverwatchGraph): Map<string, number> {
   if (graph.order === 0) return new Map();
 
   // Build undirected simple projection
-  const ug = new Graph({ type: 'undirected', multi: false, allowSelfLoops: false });
+  const ug = createUndirectedSimpleGraph();
 
   graph.forEachNode((id: string) => {
     ug.addNode(id);
@@ -52,12 +47,12 @@ export function detectCommunities(graph: OverwatchGraph): Map<string, number> {
     return result;
   }
 
-  const mapping = louvain(ug, {
+  const mapping = assignLouvainCommunities(ug, {
     getEdgeWeight: 'weight',
     resolution: 1.0,
   });
 
-  return new Map(Object.entries(mapping).map(([k, v]) => [k, v as number]));
+  return new Map(Object.entries(mapping).map(([k, v]) => [k, v]));
 }
 
 /**

@@ -1,6 +1,6 @@
 # run_lab_preflight
 
-Aggregate lab-readiness checks for GOAD or single-host testing.
+Aggregate lab-readiness checks for any engagement profile.
 
 **Read-only:** Yes
 
@@ -19,12 +19,16 @@ Runs a comprehensive read-only lab-readiness check for the current engagement. A
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `profile` | `"goad_ad"` \| `"single_host"` | `"goad_ad"` | Lab profile to validate against |
+| `profile` | `"goad_ad"` \| `"single_host"` \| `"network"` \| `"web_app"` \| `"cloud"` \| `"hybrid"` | inferred | Lab profile to validate against. If omitted, inferred from engagement config. |
 
 ### Profiles
 
 - **`goad_ad`** — GOAD-style multi-host AD lab validation. Checks for AD-specific tools (BloodHound, NXC, Impacket, etc.).
 - **`single_host`** — HTB-style standalone host validation. Checks for basic reconnaissance tools.
+- **`network`** — Multi-host CIDR-scoped lab (HTB ProLabs, etc.). Domains discovered organically rather than pre-configured.
+- **`web_app`** — Web application assessment. URL-scoped, checks for web-specific tooling (gobuster, feroxbuster, nuclei, etc.).
+- **`cloud`** — Cloud environment assessment (AWS/Azure/GCP). Validates cloud resource scope and cloud-specific tooling.
+- **`hybrid`** — Combined network + cloud + web assessment. Validates tooling and scope across all surface types.
 
 ## Returns
 

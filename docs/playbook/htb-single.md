@@ -77,3 +77,7 @@ Follow the main loop:
 - Use `get_skill` to look up methodology for discovered services
 - The frontier will suggest service-specific enumeration based on discovered ports
 - Track long-running scans with `track_process` and check with `check_processes`
+
+## Example Config
+
+See `examples/` for sample engagement configs covering cloud, web app, and hybrid profiles. The repo-root `engagement.json` shows a network-profile config that can be simplified for single-host use by setting `"profile": "single_host"` and scoping to a single IP.

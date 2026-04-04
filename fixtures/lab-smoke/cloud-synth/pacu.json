@@ -1,0 +1,32 @@
+{
+  "IAMUsers": [
+    {
+      "UserName": "admin-user",
+      "UserId": "AIDA1234567890EXAMPLE",
+      "Arn": "arn:aws:iam::123456789012:user/admin-user",
+      "CreateDate": "2024-01-15T10:00:00Z",
+      "AttachedPolicies": [
+        {"PolicyName": "AdministratorAccess", "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"}
+      ]
+    },
+    {
+      "UserName": "readonly-user",
+      "UserId": "AIDA0987654321EXAMPLE",
+      "Arn": "arn:aws:iam::123456789012:user/readonly-user",
+      "CreateDate": "2024-06-01T10:00:00Z",
+      "AttachedPolicies": [
+        {"PolicyName": "ReadOnlyAccess", "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}
+      ]
+    }
+  ],
+  "IAMRoles": [
+    {
+      "RoleName": "lambda-exec-role",
+      "Arn": "arn:aws:iam::123456789012:role/lambda-exec-role",
+      "AssumeRolePolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}",
+      "AttachedPolicies": [
+        {"PolicyName": "AWSLambdaBasicExecutionRole", "PolicyArn": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"}
+      ]
+    }
+  ]
+}

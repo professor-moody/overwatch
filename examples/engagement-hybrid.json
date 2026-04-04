@@ -1,0 +1,33 @@
+{
+  "id": "hybrid-assessment-example",
+  "name": "Hybrid AD + Cloud Assessment",
+  "created_at": "2026-03-01T08:00:00Z",
+  "profile": "hybrid",
+  "scope": {
+    "cidrs": ["10.0.0.0/16"],
+    "domains": ["corp.example.com"],
+    "exclusions": ["10.0.255.0/24"],
+    "aws_accounts": ["111222333444"],
+    "azure_subscriptions": ["aaaabbbb-cccc-dddd-eeee-ffffffffffff"]
+  },
+  "objectives": [
+    {
+      "id": "obj-domain-admin",
+      "description": "Achieve Domain Admin in corp.example.com",
+      "target_node_type": "credential",
+      "target_criteria": { "privileged": true, "cred_domain": "CORP.EXAMPLE.COM" },
+      "achieved": false
+    },
+    {
+      "id": "obj-cloud-pivot",
+      "description": "Pivot from on-prem AD to cloud admin access",
+      "target_node_type": "cloud_identity",
+      "target_criteria": { "privileged": true },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "assumed_breach",
+    "max_noise": 0.6
+  }
+}

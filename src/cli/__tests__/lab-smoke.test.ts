@@ -7,10 +7,25 @@ describe('lab smoke harness helpers', () => {
     expect(parseLabSmokeArgs(['--keep-state', '--verbose'])).toEqual({
       keepState: true,
       verbose: true,
+      profile: undefined,
     });
     expect(parseLabSmokeArgs([])).toEqual({
       keepState: false,
       verbose: false,
+      profile: undefined,
+    });
+  });
+
+  it('parses --profile flag', () => {
+    expect(parseLabSmokeArgs(['--profile', 'network'])).toEqual({
+      keepState: false,
+      verbose: false,
+      profile: 'network',
+    });
+    expect(parseLabSmokeArgs(['--keep-state', '--profile', 'cloud', '--verbose'])).toEqual({
+      keepState: true,
+      verbose: true,
+      profile: 'cloud',
     });
   });
 
@@ -37,7 +52,8 @@ describe('lab smoke harness helpers', () => {
       edges: [],
     };
 
-    const result = validateProvenanceForHost(graph, graph);
+    const expectedSources = ['bloodhound-ingest', 'nmap-parser', 'nxc-parser'];
+    const result = validateProvenanceForHost(graph, graph, 'host-10-10-10-20', expectedSources);
     expect(result.passed).toBe(true);
     expect(result.checks.sources_complete).toBe(true);
     expect(result.sources).toContain('bloodhound-ingest');

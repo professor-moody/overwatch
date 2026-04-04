@@ -3,8 +3,8 @@
 // Engagement state as a directed property graph
 // ============================================================
 
-import GraphConstructor from 'graphology';
 import { v4 as uuidv4 } from 'uuid';
+import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
 import { isIpInScope, isIpInCidr, isHostnameInScope, isUrlInScope, isCloudResourceInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
@@ -51,15 +51,8 @@ import type {
   ScopeSuggestion
 } from '../types.js';
 
-// Handle CJS/ESM interop for graphology — graphology publishes CJS with a
-// default export that doesn't unwrap cleanly under Node16 module resolution.
-// This pattern safely handles both CJS (.default) and native ESM imports.
-const Graph = (GraphConstructor as any).default || GraphConstructor;
-if (typeof Graph !== 'function') {
-  throw new Error('Failed to import graphology Graph constructor — check CJS/ESM interop');
-}
 function createGraph(): OverwatchGraph {
-  return new Graph({ type: 'directed', multi: true, allowSelfLoops: false }) as OverwatchGraph;
+  return createOverwatchGraph();
 }
 
 // --- Edge types traversable in both directions for attack-path planning ---

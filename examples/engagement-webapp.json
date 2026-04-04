@@ -1,0 +1,32 @@
+{
+  "id": "webapp-assessment-example",
+  "name": "Web Application Penetration Test",
+  "created_at": "2026-02-01T10:00:00Z",
+  "profile": "web_app",
+  "scope": {
+    "cidrs": [],
+    "domains": ["app.example.com", "api.example.com"],
+    "exclusions": ["admin.example.com"],
+    "url_patterns": ["https://app.example.com/*", "https://api.example.com/v2/*"]
+  },
+  "objectives": [
+    {
+      "id": "obj-rce",
+      "description": "Achieve remote code execution via web vulnerability",
+      "target_node_type": "vulnerability",
+      "target_criteria": { "exploitable": true },
+      "achieved": false
+    },
+    {
+      "id": "obj-auth-bypass",
+      "description": "Bypass authentication on the admin panel",
+      "target_node_type": "webapp",
+      "target_criteria": { "auth_required": true },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "pentest",
+    "max_noise": 0.5
+  }
+}
