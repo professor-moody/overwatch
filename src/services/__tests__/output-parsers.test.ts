@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei } from '../parsers/index.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler } from '../parsers/index.js';
 
 describe('Output Parsers', () => {
 
@@ -1637,6 +1637,160 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBeGreaterThan(0);
       const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
       expect(vulns.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('parseLinpeas', () => {
+    it('parses host with SUID binaries', () => {
+      const output = [
+        'Hostname: target-box',
+        '═══════════════════════════════╣ SUID ╠═══════════════════════════════',
+        '-rwsr-xr-x 1 root root 12345 Jan 1 2024 /usr/bin/python3',
+      ].join('\n');
+
+      const finding = parseLinpeas(output, 'test');
+      expect(finding.nodes.length).toBe(1);
+      const host = finding.nodes[0];
+      expect(host.type).toBe('host');
+      expect(host.has_suid_root).toBe(true);
+      expect(host.suid_binaries).toContain('/usr/bin/python3');
+    });
+
+    it('extracts kernel version', () => {
+      const output = 'Linux version 5.15.0-91-generic (buildd@lcy02-amd64-116)\n';
+      const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+      const host = finding.nodes[0];
+      expect(host.kernel_version).toBe('5.15.0-91-generic');
+    });
+
+    it('detects docker socket access', () => {
+      const output = [
+        '═══════════════════════════════╣ Interesting ╠═══════════════════════════════',
+        '/var/run/docker.sock',
+      ].join('\n');
+      const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+      expect(finding.nodes[0].docker_socket_accessible).toBe(true);
+    });
+
+    it('returns empty finding for empty output', () => {
+      const finding = parseLinpeas('', 'test', { source_host: 'host-test' });
+      expect(finding.nodes.length).toBe(1);
+      expect(finding.nodes[0].type).toBe('host');
+    });
+  });
+
+  describe('parseNikto', () => {
+    it('parses text mode output', () => {
+      const output = [
+        '+ Target IP:          10.10.10.5',
+        '+ Target Port:        80',
+        '+ Server: Apache/2.4.49',
+        '+ OSVDB-3233: /icons/: Directory indexing found',
+        '+ OSVDB-3092: /admin/: Admin directory found',
+      ].join('\n');
+
+      const finding = parseNikto(output);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+
+      expect(hosts.length).toBeGreaterThanOrEqual(1);
+      expect(services.length).toBeGreaterThanOrEqual(1);
+      expect(vulns.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('parses JSON mode output', () => {
+      const data = {
+        ip: '10.10.10.5',
+        port: 443,
+        ssl: true,
+        banner: 'nginx/1.18.0',
+        vulnerabilities: [
+          { id: 'OSVDB-1234', msg: 'Test vulnerability', url: '/vuln' },
+        ],
+      };
+
+      const finding = parseNikto(JSON.stringify(data));
+      expect(finding.nodes.length).toBeGreaterThan(0);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns empty for empty input', () => {
+      const finding = parseNikto('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+  });
+
+  describe('parsePacu', () => {
+    it('parses IAM users and roles', () => {
+      const data = {
+        AccountId: '123456789012',
+        IAMUsers: [
+          { Arn: 'arn:aws:iam::123456789012:user/admin', UserName: 'admin' },
+        ],
+        IAMRoles: [
+          {
+            Arn: 'arn:aws:iam::123456789012:role/EC2Role', RoleName: 'EC2Role',
+            AssumeRolePolicyDocument: {
+              Statement: [{
+                Effect: 'Allow',
+                Principal: { AWS: 'arn:aws:iam::123456789012:user/admin' },
+                Action: 'sts:AssumeRole',
+              }],
+            },
+          },
+        ],
+      };
+
+      const finding = parsePacu(JSON.stringify(data));
+      const identities = finding.nodes.filter(n => n.type === 'cloud_identity');
+      expect(identities.length).toBeGreaterThanOrEqual(2);
+
+      const assumeEdges = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
+      expect(assumeEdges.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns empty for invalid JSON', () => {
+      const finding = parsePacu('not json');
+      expect(finding.nodes.length).toBe(0);
+    });
+  });
+
+  describe('parseProwler', () => {
+    it('parses prowler OCSF JSON-lines findings', () => {
+      const line = JSON.stringify({
+        StatusExtended: 'S3 bucket my-bucket is publicly accessible',
+        Severity: 'critical',
+        ServiceName: 's3',
+        ResourceArn: 'arn:aws:s3:::my-bucket',
+        ResourceId: 'my-bucket',
+        AccountId: '123456789012',
+        Region: 'us-east-1',
+        CheckID: 's3_bucket_public_access',
+        Status: 'FAIL',
+      });
+
+      const finding = parseProwler(line);
+      expect(finding.nodes.length).toBeGreaterThan(0);
+      const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+      expect(resources.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('parses multiple lines', () => {
+      const lines = [
+        JSON.stringify({ ResourceArn: 'arn:aws:s3:::bucket1', ResourceId: 'bucket1', Status: 'PASS', Severity: 'low', ServiceName: 's3' }),
+        JSON.stringify({ ResourceArn: 'arn:aws:s3:::bucket2', ResourceId: 'bucket2', Status: 'FAIL', Severity: 'high', ServiceName: 's3', CheckID: 'check-1' }),
+      ].join('\n');
+
+      const finding = parseProwler(lines);
+      expect(finding.nodes.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('returns empty for non-JSON', () => {
+      const finding = parseProwler('not json');
+      expect(finding.nodes.length).toBe(0);
     });
   });
 });

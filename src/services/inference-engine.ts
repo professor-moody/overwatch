@@ -494,6 +494,52 @@ export class InferenceEngine {
         return Array.from(matched);
       }
 
+      case 'target_user_credentials': {
+        // Find credentials owned by the trigger user (outbound OWNS_CRED edges)
+        const creds: string[] = [];
+        for (const edge of this.ctx.graph.outEdges(triggerNodeId) as string[]) {
+          if (this.ctx.graph.getEdgeAttributes(edge).type === 'OWNS_CRED') {
+            creds.push(this.ctx.graph.target(edge));
+          }
+        }
+        return creds;
+      }
+
+      case 'gpo_linked_hosts': {
+        // Traverse RELATED edges from the GPO to find linked OUs/containers,
+        // then find hosts that are MEMBER_OF those OUs (or directly linked).
+        const linkedHosts = new Set<string>();
+        const visited = new Set<string>();
+        const queue: string[] = [triggerNodeId];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (visited.has(current)) continue;
+          visited.add(current);
+          const currentNode = this.getNode(current);
+          if (currentNode?.type === 'host') {
+            linkedHosts.add(current);
+            continue;
+          }
+          // Follow RELATED (GPO→OU) and MEMBER_OF (OU contains child)
+          for (const edge of this.ctx.graph.outEdges(current) as string[]) {
+            const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
+            if (eAttrs.type === 'RELATED' || eAttrs.type === 'MEMBER_OF') {
+              queue.push(this.ctx.graph.target(edge));
+            }
+          }
+          // Also check inbound MEMBER_OF (child → container)
+          for (const edge of this.ctx.graph.inEdges(current) as string[]) {
+            const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
+            if (eAttrs.type === 'MEMBER_OF') {
+              const src = this.ctx.graph.source(edge);
+              const srcNode = this.getNode(src);
+              if (srcNode?.type === 'host') linkedHosts.add(src);
+            }
+          }
+        }
+        return Array.from(linkedHosts);
+      }
+
       case 'nearest_objective': {
         // Return objective nodes — used by cloud rules that create PATH_TO_OBJECTIVE edges.
         // For overprivileged_policy rule, also gate on the trigger having wildcard actions.

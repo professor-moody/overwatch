@@ -162,6 +162,9 @@ const BH_RELATION_ARRAY_MAP: Array<{
   { key: 'ADCSESC13', edgeType: 'ESC13', direction: 'inbound' },
   { key: 'ManageCertificates', edgeType: 'GENERIC_ALL', direction: 'inbound' },
   { key: 'ManageCA', edgeType: 'GENERIC_ALL', direction: 'inbound' },
+  { key: 'Links', edgeType: 'RELATED', direction: 'outbound' },
+  { key: 'ChildObjects', edgeType: 'MEMBER_OF', direction: 'inbound' },
+  { key: 'GPOChanges', edgeType: 'RELATED', direction: 'outbound' },
 ];
 
 const BH_STANDARD_ARRAY_KEYS = new Set([
@@ -382,6 +385,13 @@ export function parseBloodHoundFile(
             inherited: ace.IsInherited,
           },
         });
+        // Mark DCSync-capable principals for frontier visibility
+        if (edgeType === 'CAN_DCSYNC') {
+          const existingNode = nodes.find(n => n.id === sourceId);
+          if (existingNode) {
+            (existingNode as Record<string, unknown>).can_dcsync = true;
+          }
+        }
       }
     }
 

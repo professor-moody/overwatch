@@ -726,3 +726,97 @@ describe('regression — path sort by strategy', () => {
     expect(confPaths[0].total_confidence).toBeGreaterThanOrEqual(confPaths[1].total_confidence);
   });
 });
+
+// =============================================
+// Parser-to-property alignment tests
+// =============================================
+describe('LinPEAS parser property alignment', () => {
+  it('sets sudoers_nopasswd when NOPASSWD is found', () => {
+    const output = [
+      '═══════════════════════════════╣ Sudo ╠═══════════════════════════════',
+      'User www-data may run the following commands on target:',
+      '    (ALL) NOPASSWD: ALL',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.sudoers_nopasswd).toBe(true);
+  });
+
+  it('sets has_dangerous_capabilities when dangerous caps found', () => {
+    const output = [
+      '═══════════════════════════════╣ Capabilities ╠═══════════════════════════════',
+      '/usr/bin/python3 = cap_setuid+ep',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.has_dangerous_capabilities).toBe(true);
+    expect(host!.interesting_capabilities).toBeDefined();
+  });
+
+  it('does NOT set has_dangerous_capabilities for non-dangerous caps', () => {
+    const output = [
+      '═══════════════════════════════╣ Capabilities ╠═══════════════════════════════',
+      '/usr/bin/ping = cap_net_raw+ep',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.has_dangerous_capabilities).toBeUndefined();
+  });
+
+  it('sets writable_cron_or_systemd when writable cron path found', () => {
+    const output = [
+      '═══════════════════════════════╣ Writable Files ╠═══════════════════════════════',
+      '/etc/cron.d/backup',
+      '/tmp/test',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.writable_cron_or_systemd).toBe(true);
+  });
+
+  it('sets writable_cron_or_systemd when writable systemd path found', () => {
+    const output = [
+      '═══════════════════════════════╣ Writable Files ╠═══════════════════════════════',
+      '/etc/systemd/system/backup.service',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.writable_cron_or_systemd).toBe(true);
+  });
+
+  it('does NOT set writable_cron_or_systemd for non-cron writable paths', () => {
+    const output = [
+      '═══════════════════════════════╣ Writable Files ╠═══════════════════════════════',
+      '/tmp/test',
+      '/var/www/html/index.html',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.writable_cron_or_systemd).toBeUndefined();
+  });
+
+  it('does NOT set sudoers_nopasswd when no NOPASSWD entries exist', () => {
+    const output = [
+      '═══════════════════════════════╣ Sudo ╠═══════════════════════════════',
+      'User www-data may run the following commands on target:',
+      '    (ALL : ALL) ALL',
+    ].join('\n');
+
+    const finding = parseLinpeas(output, 'test', { source_host: 'host-test' });
+    const host = finding.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.sudoers_nopasswd).toBeUndefined();
+  });
+});

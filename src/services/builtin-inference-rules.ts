@@ -285,14 +285,90 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    id: 'rule-write-dacl-escalation',
+    name: 'WriteDACL implies effective GenericAll',
+    description: 'Principal with WriteDACL on an object can grant themselves GenericAll',
+    trigger: {
+      requires_edge: { type: 'WRITE_DACL', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'GENERIC_ALL',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-write-owner-escalation',
+    name: 'WriteOwner implies effective GenericAll',
+    description: 'Principal with WriteOwner on an object can set themselves as owner, then modify DACL to gain GenericAll',
+    trigger: {
+      requires_edge: { type: 'WRITE_OWNER', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'GENERIC_ALL',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-force-change-password',
+    name: 'ForceChangePassword enables credential takeover',
+    description: 'Principal with ForceChangePassword on a user can reset the password and take over the account',
+    trigger: {
+      node_type: 'user',
+      requires_edge: { type: 'FORCE_CHANGE_PASSWORD', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'OWNS_CRED',
+      source_selector: 'edge_peers',
+      target_selector: 'target_user_credentials',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-shadow-credentials',
+    name: 'GenericWrite on computer enables Shadow Credentials takeover',
+    description: 'Principal with GenericWrite on a computer can add msDS-KeyCredentialLink for PKINIT auth',
+    trigger: {
+      node_type: 'host',
+      requires_edge: { type: 'GENERIC_WRITE', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.65
+    }]
+  },
+  {
+    id: 'rule-gpo-abuse',
+    name: 'GPO write access enables host compromise',
+    description: 'Principal with write access to a GPO can modify it to execute code on linked hosts',
+    trigger: {
+      node_type: 'gpo',
+      requires_edge: { type: 'GENERIC_WRITE', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'edge_peers',
+      target_selector: 'gpo_linked_hosts',
+      confidence: 0.6
+    }]
+  },
+  {
     id: 'rule-dcsync',
     name: 'DCSync capable principal',
-    description: 'User/group with Replicating Directory Changes rights can perform DCSync against the domain',
-    trigger: { node_type: 'user', property_match: { can_dcsync: true } },
+    description: 'User with outbound CAN_DCSYNC edge is a high-value target — path to domain compromise',
+    trigger: {
+      node_type: 'user',
+      requires_edge: { type: 'CAN_DCSYNC', direction: 'outbound' }
+    },
     produces: [{
-      edge_type: 'CAN_DCSYNC',
+      edge_type: 'PATH_TO_OBJECTIVE',
       source_selector: 'trigger_node',
-      target_selector: 'matching_user_domain',
+      target_selector: 'nearest_objective',
       confidence: 0.9
     }]
   },

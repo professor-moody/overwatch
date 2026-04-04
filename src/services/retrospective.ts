@@ -679,7 +679,7 @@ export function generateReport(
   for (const n of graph.nodes) {
     if (n.properties.type === 'host') {
       const hasAccess = graph.edges.some(e =>
-        e.target === n.id && ACCESS_EDGES.has(e.properties.type) && e.properties.confidence >= 0.9
+        e.target === n.id && ACCESS_EDGES.has(e.properties.type) && e.properties.confidence >= 0.7
       );
       if (hasAccess) compromisedHosts.push(n.properties.label || n.id);
     }
@@ -1046,7 +1046,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
       actionType = 'dispatch_agent';
     } else if (desc.includes('objective achieved')) {
       actionType = 'objective_achieved';
-    } else if (desc.includes('inference rule')) {
+    } else if (desc.includes('inference rule') || desc.includes('Inferred edge')) {
       actionType = 'inference_rule';
     } else if (desc.includes('scan') || desc.includes('nmap')) {
       actionType = 'scan';

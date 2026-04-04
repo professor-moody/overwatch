@@ -135,8 +135,48 @@ const RULE_DCSYNC: InferenceRule = {
   id: 'rule-dcsync',
   name: 'DCSync capable principal',
   description: '',
-  trigger: { node_type: 'user', property_match: { can_dcsync: true } },
-  produces: [{ edge_type: 'CAN_DCSYNC', source_selector: 'trigger_node', target_selector: 'matching_user_domain', confidence: 0.9 }],
+  trigger: { node_type: 'user', requires_edge: { type: 'CAN_DCSYNC', direction: 'outbound' } },
+  produces: [{ edge_type: 'PATH_TO_OBJECTIVE', source_selector: 'trigger_node', target_selector: 'nearest_objective', confidence: 0.9 }],
+};
+
+const RULE_WRITE_DACL: InferenceRule = {
+  id: 'rule-write-dacl-escalation',
+  name: 'WriteDACL implies GenericAll',
+  description: '',
+  trigger: { requires_edge: { type: 'WRITE_DACL', direction: 'inbound' } },
+  produces: [{ edge_type: 'GENERIC_ALL', source_selector: 'edge_peers', target_selector: 'trigger_node', confidence: 0.7 }],
+};
+
+const RULE_WRITE_OWNER: InferenceRule = {
+  id: 'rule-write-owner-escalation',
+  name: 'WriteOwner implies GenericAll',
+  description: '',
+  trigger: { requires_edge: { type: 'WRITE_OWNER', direction: 'inbound' } },
+  produces: [{ edge_type: 'GENERIC_ALL', source_selector: 'edge_peers', target_selector: 'trigger_node', confidence: 0.7 }],
+};
+
+const RULE_FORCE_CHANGE_PWD: InferenceRule = {
+  id: 'rule-force-change-password',
+  name: 'ForceChangePassword enables credential takeover',
+  description: '',
+  trigger: { node_type: 'user', requires_edge: { type: 'FORCE_CHANGE_PASSWORD', direction: 'inbound' } },
+  produces: [{ edge_type: 'OWNS_CRED', source_selector: 'edge_peers', target_selector: 'target_user_credentials', confidence: 0.8 }],
+};
+
+const RULE_SHADOW_CREDS: InferenceRule = {
+  id: 'rule-shadow-credentials',
+  name: 'GenericWrite on computer enables Shadow Credentials',
+  description: '',
+  trigger: { node_type: 'host', requires_edge: { type: 'GENERIC_WRITE', direction: 'inbound' } },
+  produces: [{ edge_type: 'ADMIN_TO', source_selector: 'edge_peers', target_selector: 'trigger_node', confidence: 0.65 }],
+};
+
+const RULE_GPO_ABUSE: InferenceRule = {
+  id: 'rule-gpo-abuse',
+  name: 'GPO write access enables host compromise',
+  description: '',
+  trigger: { node_type: 'gpo', requires_edge: { type: 'GENERIC_WRITE', direction: 'inbound' } },
+  produces: [{ edge_type: 'ADMIN_TO', source_selector: 'edge_peers', target_selector: 'gpo_linked_hosts', confidence: 0.6 }],
 };
 
 const RULE_SUDO_NOPASSWD: InferenceRule = {
@@ -679,22 +719,168 @@ describe('InferenceEngine', () => {
   // =============================================
   // DCSync rule
   // =============================================
-  describe('rule-dcsync', () => {
-    it('creates CAN_DCSYNC edge from user to its domain', () => {
+  describe('rule-dcsync (edge-triggered)', () => {
+    it('creates PATH_TO_OBJECTIVE when user has outbound CAN_DCSYNC edge', () => {
       const graph = makeGraph();
       addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
-      addNode(graph, 'user-corp-local-repl', { type: 'user', username: 'repl_svc', can_dcsync: true });
-      addEdge(graph, 'user-corp-local-repl', 'domain-corp-local', 'MEMBER_OF_DOMAIN');
+      addNode(graph, 'user-repl', { type: 'user', username: 'repl_svc' });
+      addNode(graph, 'obj-da', { type: 'objective', objective_description: 'Get DA' });
+      addEdge(graph, 'user-repl', 'domain-corp-local', 'CAN_DCSYNC');
 
       const engine = buildEngine(graph, [RULE_DCSYNC]);
-      const inferred = engine.runRules('user-corp-local-repl');
+      const inferred = engine.runRules('user-repl');
 
       expect(inferred.length).toBe(1);
-      const edgeAttrs = graph.getEdgeAttributes(inferred[0]);
-      expect(edgeAttrs.type).toBe('CAN_DCSYNC');
-      expect(edgeAttrs.confidence).toBe(0.9);
-      expect(graph.source(inferred[0])).toBe('user-corp-local-repl');
-      expect(graph.target(inferred[0])).toBe('domain-corp-local');
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('PATH_TO_OBJECTIVE');
+      expect(attrs.confidence).toBe(0.9);
+      expect(graph.source(inferred[0])).toBe('user-repl');
+      expect(graph.target(inferred[0])).toBe('obj-da');
+    });
+
+    it('no PATH_TO_OBJECTIVE when no objectives exist', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
+      addNode(graph, 'user-repl', { type: 'user', username: 'repl_svc' });
+      addEdge(graph, 'user-repl', 'domain-corp-local', 'CAN_DCSYNC');
+
+      const engine = buildEngine(graph, [RULE_DCSYNC]);
+      const inferred = engine.runRules('user-repl');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // ACL chain escalation rules
+  // =============================================
+  describe('ACL chain rules', () => {
+    it('rule-write-dacl creates GENERIC_ALL from edge peers', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-target', { type: 'user', username: 'target' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'user-target', 'WRITE_DACL');
+
+      const engine = buildEngine(graph, [RULE_WRITE_DACL]);
+      const inferred = engine.runRules('user-target');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('GENERIC_ALL');
+      expect(attrs.confidence).toBe(0.7);
+      expect(graph.source(inferred[0])).toBe('user-attacker');
+    });
+
+    it('rule-write-dacl works on GPO nodes (no node_type restriction)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'gpo-test', { type: 'gpo', label: 'Test GPO' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'gpo-test', 'WRITE_DACL');
+
+      const engine = buildEngine(graph, [RULE_WRITE_DACL]);
+      const inferred = engine.runRules('gpo-test');
+
+      expect(inferred.length).toBe(1);
+      expect(graph.getEdgeAttributes(inferred[0]).type).toBe('GENERIC_ALL');
+    });
+
+    it('rule-write-owner creates GENERIC_ALL from edge peers', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-dc01', { type: 'host', hostname: 'dc01.corp.local' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'host-dc01', 'WRITE_OWNER');
+
+      const engine = buildEngine(graph, [RULE_WRITE_OWNER]);
+      const inferred = engine.runRules('host-dc01');
+
+      expect(inferred.length).toBe(1);
+      expect(graph.getEdgeAttributes(inferred[0]).type).toBe('GENERIC_ALL');
+      expect(graph.getEdgeAttributes(inferred[0]).confidence).toBe(0.7);
+    });
+
+    it('rule-force-change-password creates OWNS_CRED to target user credentials', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-victim', { type: 'user', username: 'victim' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addNode(graph, 'cred-victim', { type: 'credential', cred_type: 'ntlm', cred_user: 'victim' });
+      addEdge(graph, 'user-victim', 'cred-victim', 'OWNS_CRED');
+      addEdge(graph, 'user-attacker', 'user-victim', 'FORCE_CHANGE_PASSWORD');
+
+      const engine = buildEngine(graph, [RULE_FORCE_CHANGE_PWD]);
+      const inferred = engine.runRules('user-victim');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('OWNS_CRED');
+      expect(attrs.confidence).toBe(0.8);
+      expect(graph.source(inferred[0])).toBe('user-attacker');
+      expect(graph.target(inferred[0])).toBe('cred-victim');
+    });
+
+    it('rule-force-change-password produces nothing when user has no credentials', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-victim', { type: 'user', username: 'victim' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'user-victim', 'FORCE_CHANGE_PASSWORD');
+
+      const engine = buildEngine(graph, [RULE_FORCE_CHANGE_PWD]);
+      const inferred = engine.runRules('user-victim');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('rule-shadow-credentials creates ADMIN_TO from GenericWrite on host', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-srv01', { type: 'host', hostname: 'srv01.corp.local' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'host-srv01', 'GENERIC_WRITE');
+
+      const engine = buildEngine(graph, [RULE_SHADOW_CREDS]);
+      const inferred = engine.runRules('host-srv01');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('ADMIN_TO');
+      expect(attrs.confidence).toBe(0.65);
+      expect(graph.source(inferred[0])).toBe('user-attacker');
+    });
+  });
+
+  // =============================================
+  // GPO abuse rule
+  // =============================================
+  describe('rule-gpo-abuse', () => {
+    it('creates ADMIN_TO from edge peers to hosts linked via GPO', () => {
+      const graph = makeGraph();
+      addNode(graph, 'gpo-malicious', { type: 'gpo', label: 'Malicious GPO' });
+      addNode(graph, 'ou-servers', { type: 'ou', label: 'Servers OU' });
+      addNode(graph, 'host-srv01', { type: 'host', hostname: 'srv01.corp.local' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      // GPO -> OU link
+      addEdge(graph, 'gpo-malicious', 'ou-servers', 'RELATED');
+      // Host is member of OU
+      addEdge(graph, 'host-srv01', 'ou-servers', 'MEMBER_OF');
+      // Attacker has GenericWrite on GPO
+      addEdge(graph, 'user-attacker', 'gpo-malicious', 'GENERIC_WRITE');
+
+      const engine = buildEngine(graph, [RULE_GPO_ABUSE]);
+      const inferred = engine.runRules('gpo-malicious');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('ADMIN_TO');
+      expect(attrs.confidence).toBe(0.6);
+      expect(graph.source(inferred[0])).toBe('user-attacker');
+      expect(graph.target(inferred[0])).toBe('host-srv01');
+    });
+
+    it('no edges when GPO has no linked hosts', () => {
+      const graph = makeGraph();
+      addNode(graph, 'gpo-orphan', { type: 'gpo', label: 'Orphan GPO' });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'gpo-orphan', 'GENERIC_WRITE');
+
+      const engine = buildEngine(graph, [RULE_GPO_ABUSE]);
+      const inferred = engine.runRules('gpo-orphan');
+      expect(inferred.length).toBe(0);
     });
   });
 

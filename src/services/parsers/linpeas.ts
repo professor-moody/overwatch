@@ -50,6 +50,17 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
     }
   }
 
+  const DANGEROUS_CAPABILITIES = new Set([
+    'cap_setuid', 'cap_sys_admin', 'cap_dac_override',
+    'cap_dac_read_search', 'cap_sys_ptrace', 'cap_fowner',
+    'cap_sys_module', 'cap_net_admin', 'cap_chown',
+  ]);
+
+  const CRON_SYSTEMD_PATHS = [
+    '/etc/cron', '/var/spool/cron', '/etc/systemd', '/lib/systemd',
+    '/usr/lib/systemd', '/run/systemd',
+  ];
+
   // Section detection
   let currentSection = '';
   const suidBinaries: string[] = [];
@@ -59,6 +70,7 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
   let kernelVersion: string | undefined;
   let dockerSocketAccessible = false;
   let usersEnumerated = false;
+  let sudoersNopasswd = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -131,6 +143,13 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
       dockerSocketAccessible = true;
     }
 
+    // Sudoers / NOPASSWD detection
+    if (currentSection.includes('sudo') || currentSection.includes('sudoers') || line.includes('NOPASSWD')) {
+      if (/NOPASSWD/i.test(line) && !line.startsWith('#')) {
+        sudoersNopasswd = true;
+      }
+    }
+
     // Users section
     if (currentSection.includes('user') || currentSection.includes('passwd')) {
       usersEnumerated = true;
@@ -149,6 +168,13 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
   if (interestingCapabilities.length > 0) {
     hostProps.interesting_capabilities = interestingCapabilities;
     hostProps.capabilities_checked = true;
+    const hasDangerous = interestingCapabilities.some(cap => {
+      const capLower = cap.toLowerCase();
+      return Array.from(DANGEROUS_CAPABILITIES).some(dc => capLower.includes(dc));
+    });
+    if (hasDangerous) {
+      hostProps.has_dangerous_capabilities = true;
+    }
   } else if (clean.toLowerCase().includes('capabilit')) {
     hostProps.capabilities_checked = true;
   }
@@ -162,6 +188,16 @@ export function parseLinpeas(output: string, agentId: string = 'linpeas-parser',
 
   if (writablePaths.length > 0) {
     hostProps.writable_paths = writablePaths;
+    const hasWritableCronSystemd = writablePaths.some(p =>
+      CRON_SYSTEMD_PATHS.some(prefix => p.startsWith(prefix))
+    );
+    if (hasWritableCronSystemd) {
+      hostProps.writable_cron_or_systemd = true;
+    }
+  }
+
+  if (sudoersNopasswd) {
+    hostProps.sudoers_nopasswd = true;
   }
 
   if (kernelVersion) {

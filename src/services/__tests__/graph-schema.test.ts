@@ -1,13 +1,48 @@
 import { describe, it, expect } from 'vitest';
 import { validateEdgeEndpoints, EDGE_CONSTRAINTS } from '../graph-schema.js';
-import { EDGE_TYPES } from '../../types.js';
+import { EDGE_TYPES, NODE_TYPES } from '../../types.js';
+import { BUILTIN_RULES } from '../builtin-inference-rules.js';
 
 describe('edge constraints', () => {
   it('covers all edge types except RELATED', () => {
     const constrained = new Set(Object.keys(EDGE_CONSTRAINTS));
     const unconstrained = EDGE_TYPES.filter(t => !constrained.has(t));
-    // Only RELATED should be unconstrained
     expect(unconstrained).toEqual(['RELATED']);
+  });
+
+  it('every rule-produced edge type exists in EDGE_CONSTRAINTS', () => {
+    const constrained = new Set(Object.keys(EDGE_CONSTRAINTS));
+    const missing: string[] = [];
+    for (const rule of BUILTIN_RULES) {
+      for (const prod of rule.produces) {
+        if (!constrained.has(prod.edge_type) && prod.edge_type !== 'RELATED') {
+          missing.push(`${rule.id} produces ${prod.edge_type}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('every rule trigger node_type exists in NODE_TYPES', () => {
+    const validTypes = new Set(NODE_TYPES as readonly string[]);
+    const invalid: string[] = [];
+    for (const rule of BUILTIN_RULES) {
+      if (rule.trigger.node_type && !validTypes.has(rule.trigger.node_type)) {
+        invalid.push(`${rule.id} triggers on ${rule.trigger.node_type}`);
+      }
+    }
+    expect(invalid).toEqual([]);
+  });
+
+  it('every rule requires_edge type exists in EDGE_TYPES', () => {
+    const validEdges = new Set(EDGE_TYPES as readonly string[]);
+    const invalid: string[] = [];
+    for (const rule of BUILTIN_RULES) {
+      if (rule.trigger.requires_edge && !validEdges.has(rule.trigger.requires_edge.type)) {
+        invalid.push(`${rule.id} requires_edge ${rule.trigger.requires_edge.type}`);
+      }
+    }
+    expect(invalid).toEqual([]);
   });
 
   // --- Valid combos ---
