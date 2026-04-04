@@ -313,10 +313,16 @@ export const opsecProfileSchema = z.object({
 export const engagementConfigSchema = z.object({
   id: nonEmptyString,
   name: nonEmptyString,
-  created_at: nonEmptyString,
+  created_at: z.string().min(1).refine(
+    (val) => !isNaN(Date.parse(val)),
+    { message: 'created_at must be a valid ISO-8601 date string' },
+  ),
   profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
   scope: z.object({
-    cidrs: z.array(z.string()),
+    cidrs: z.array(z.string().regex(
+      /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,
+      { message: 'Each CIDR must be in format X.X.X.X/N' },
+    )).default([]),
     domains: z.array(z.string()),
     exclusions: z.array(z.string()),
     hosts: z.array(z.string()).optional(),

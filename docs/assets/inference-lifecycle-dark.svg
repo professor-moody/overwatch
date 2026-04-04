@@ -26,14 +26,14 @@
 
   <g class="n-coral"><rect x="180" y="10" width="320" height="48" rx="7"/><text class="th" x="340" y="28" text-anchor="middle" dominant-baseline="central">Finding ingested</text><text class="ts" x="340" y="44" text-anchor="middle" dominant-baseline="central">New node/edge enters graph</text></g>
   <line x1="340" y1="58" x2="340" y2="76" class="arr" marker-end="url(#arr)"/>
-  <g class="n-amber"><rect x="120" y="76" width="440" height="48" rx="7"/><text class="th" x="340" y="94" text-anchor="middle" dominant-baseline="central">Rule matching (22 built-in rules)</text><text class="ts" x="340" y="110" text-anchor="middle" dominant-baseline="central">Node type + property + edge-triggered</text></g>
+  <g class="n-amber"><rect x="120" y="76" width="440" height="48" rx="7"/><text class="th" x="340" y="94" text-anchor="middle" dominant-baseline="central">Rule matching (31 built-in rules)</text><text class="ts" x="340" y="110" text-anchor="middle" dominant-baseline="central">Node type + property + edge-triggered</text></g>
   <line x1="140" y1="124" x2="140" y2="148" class="arr" marker-end="url(#arr)"/>
   <line x1="290" y1="124" x2="290" y2="148" class="arr" marker-end="url(#arr)"/>
   <line x1="430" y1="124" x2="430" y2="148" class="arr" marker-end="url(#arr)"/>
   <line x1="560" y1="124" x2="560" y2="148" class="arr" marker-end="url(#arr)"/>
-  <g class="n-teal"><rect x="80" y="148" width="110" height="40" rx="6"/><text class="ts" x="135" y="163" text-anchor="middle" dominant-baseline="central">AD + service</text><text class="ts" x="135" y="178" text-anchor="middle" dominant-baseline="central">13 rules</text></g>
-  <g class="n-teal"><rect x="230" y="148" width="110" height="40" rx="6"/><text class="ts" x="285" y="163" text-anchor="middle" dominant-baseline="central">Linux privesc</text><text class="ts" x="285" y="178" text-anchor="middle" dominant-baseline="central">4 rules</text></g>
-  <g class="n-teal"><rect x="380" y="148" width="110" height="40" rx="6"/><text class="ts" x="435" y="163" text-anchor="middle" dominant-baseline="central">Web + MSSQL</text><text class="ts" x="435" y="178" text-anchor="middle" dominant-baseline="central">2 rules</text></g>
+  <g class="n-teal"><rect x="80" y="148" width="110" height="40" rx="6"/><text class="ts" x="135" y="163" text-anchor="middle" dominant-baseline="central">AD + service</text><text class="ts" x="135" y="178" text-anchor="middle" dominant-baseline="central">18 rules</text></g>
+  <g class="n-teal"><rect x="230" y="148" width="110" height="40" rx="6"/><text class="ts" x="285" y="163" text-anchor="middle" dominant-baseline="central">Linux privesc</text><text class="ts" x="285" y="178" text-anchor="middle" dominant-baseline="central">7 rules</text></g>
+  <g class="n-teal"><rect x="380" y="148" width="110" height="40" rx="6"/><text class="ts" x="435" y="163" text-anchor="middle" dominant-baseline="central">Web + MSSQL</text><text class="ts" x="435" y="178" text-anchor="middle" dominant-baseline="central">3 rules</text></g>
   <g class="n-teal"><rect x="520" y="148" width="90" height="40" rx="6"/><text class="ts" x="565" y="163" text-anchor="middle" dominant-baseline="central">Cloud</text><text class="ts" x="565" y="178" text-anchor="middle" dominant-baseline="central">3 rules</text></g>
   <line x1="135" y1="188" x2="135" y2="206" stroke="#6b7280" stroke-width=".5"/><line x1="285" y1="188" x2="285" y2="206" stroke="#6b7280" stroke-width=".5"/>
   <line x1="435" y1="188" x2="435" y2="206" stroke="#6b7280" stroke-width=".5"/><line x1="565" y1="188" x2="565" y2="206" stroke="#6b7280" stroke-width=".5"/>

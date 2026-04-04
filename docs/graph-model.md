@@ -194,7 +194,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 
 | Edge | Description |
 |------|-------------|
-| `VALID_ON` | Credential is valid on a service |
+| `VALID_ON` | Credential is valid on a host |
 | `OWNS_CRED` | User owns a credential |
 | `POTENTIAL_AUTH` | Credential might authenticate (hypothesis) |
 | `DERIVED_FROM` | Credential derived from another (e.g., cracked from hash) |
@@ -232,8 +232,14 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 |------|-------------|
 | `CAN_ENROLL` | Can enroll in a certificate template |
 | `ESC1` – `ESC4` | ADCS escalation paths 1–4 |
+| `ESC5` | ADCS escalation path 5 (vulnerable CA ACL) |
 | `ESC6` | ADCS escalation path 6 |
+| `ESC7` | ADCS escalation path 7 (CA agent approval bypass) |
 | `ESC8` | ADCS escalation path 8 (web enrollment relay) |
+| `ESC9` | ADCS escalation path 9 (no security extension) |
+| `ESC10` | ADCS escalation path 10 (weak certificate mapping) |
+| `ESC11` | ADCS escalation path 11 (certificate relay to AD CS) |
+| `ESC13` | ADCS escalation path 13 (issuance policy OID abuse) |
 
 ### Lateral Movement
 
@@ -272,7 +278,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 
 | Edge | Description |
 |------|-------------|
-| `RELATED` | Uncategorized relationship (unconstrained) |
+| `RELATED` | Uncategorized relationship (unconstrained). Generic relationship (no endpoint type constraints) |
 
 ### Edge Properties
 

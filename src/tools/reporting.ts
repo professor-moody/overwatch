@@ -5,7 +5,8 @@ import type { SkillIndex } from '../services/skill-index.js';
 import { generateFullReport, buildFindings, buildAttackNarrative } from '../services/report-generator.js';
 import type { ReportInput } from '../services/report-generator.js';
 import { renderReportHtml } from '../services/report-html.js';
-import { runRetrospective } from '../services/retrospective.js';
+import type { HtmlReportData, HtmlTimelineEntry } from '../services/report-html.js';
+import { runRetrospective, buildCredentialChains } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -91,12 +92,82 @@ Use this at the end of an engagement to produce the final deliverable report.`,
 
       let html: string | undefined;
       if (format === 'html') {
-        const findings = buildFindings(graph, history, config);
-        const narrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
-        html = renderReportHtml(
-          { config, graph, findings, narrative },
-          { theme, include_toc: true },
-        );
+        const htmlFindings = buildFindings(graph, history, config);
+        const htmlNarrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
+        const credentialChains = buildCredentialChains(graph);
+
+        const nodesByType: Record<string, number> = {};
+        for (const n of graph.nodes) {
+          nodesByType[n.properties.type] = (nodesByType[n.properties.type] || 0) + 1;
+        }
+        const edgesByType: Record<string, number> = {};
+        let confirmed = 0;
+        let inferred = 0;
+        for (const e of graph.edges) {
+          edgesByType[e.properties.type] = (edgesByType[e.properties.type] || 0) + 1;
+          if (e.properties.confidence >= 1.0) confirmed++;
+          else inferred++;
+        }
+
+        const completedAgents = agents.filter(a => a.status === 'completed').length;
+        const failedAgents = agents.filter(a => a.status === 'failed').length;
+
+        const maxTimeline = 50;
+        const timelineEntries: HtmlTimelineEntry[] = history.slice(-maxTimeline).map(entry => ({
+          timestamp: entry.timestamp,
+          description: entry.description,
+          agent_id: entry.agent_id,
+        }));
+
+        const recs: string[] = [];
+        const highPriority = htmlFindings
+          .filter(f => f.severity === 'critical' || f.severity === 'high')
+          .slice(0, 10);
+        for (const f of highPriority) {
+          recs.push(`**${f.title}:** ${f.remediation.split('\n')[0]}`);
+        }
+        const untestedInferred = graph.edges.filter(e => e.properties.confidence < 1.0 && !e.properties.tested);
+        if (untestedInferred.length > 0) {
+          recs.push(`**${untestedInferred.length} inferred edge(s) remain untested** — these represent potential attack paths not validated during the engagement.`);
+        }
+        const pendingObjectives = config.objectives.filter(o => !o.achieved);
+        if (pendingObjectives.length > 0) {
+          recs.push(`**${pendingObjectives.length} objective(s) not achieved** — ${pendingObjectives.map(o => o.description).join(', ')}.`);
+        }
+
+        const htmlData: HtmlReportData = {
+          config, graph,
+          findings: htmlFindings,
+          narrative: htmlNarrative,
+          credentialChains,
+          discoveryStats: { nodesByType, edgesByType, confirmed, inferred },
+          agents: { total: agents.length, completed: completedAgents, failed: failedAgents },
+          timeline: timelineEntries,
+          recommendations: recs,
+        };
+        if (retrospective) {
+          htmlData.retrospective = {
+            context_improvements: retrospective.context_improvements ? {
+              frontier_observations: retrospective.context_improvements.frontier_observations.map(o => ({
+                area: o.area, observation: o.observation, confidence: o.confidence,
+              })),
+              context_gaps: retrospective.context_improvements.context_gaps.map(g => ({
+                area: g.area, gap: g.gap, recommendation: g.recommendation,
+              })),
+            } : undefined,
+            inference_suggestions: retrospective.inference_suggestions?.map(s => ({
+              rule: { name: s.rule.name }, evidence: s.evidence,
+            })),
+            skill_gaps: retrospective.skill_gaps ? {
+              missing_skills: retrospective.skill_gaps.missing_skills,
+              failed_techniques: retrospective.skill_gaps.failed_techniques,
+            } : undefined,
+            trace_quality: retrospective.trace_quality ? {
+              total_actions: 0, with_frontier_id: 0, with_action_id: 0, coverage_pct: 0,
+            } : undefined,
+          };
+        }
+        html = renderReportHtml(htmlData, { theme, include_toc: true });
       }
 
       const output = format === 'html' ? html! : markdown;

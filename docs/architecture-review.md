@@ -115,7 +115,7 @@ Rules fire automatically when nodes are ingested. Each rule has:
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
 
-Twenty-two built-in rules span AD & service (13), Linux privilege escalation (4), web application (1), MSSQL (1), and cloud infrastructure (3). Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference.
+Thirty-one built-in rules span AD & service (18), Linux privilege escalation (7), web application (2), MSSQL (1), and cloud infrastructure (3). Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference.
 
 ---
 
@@ -447,7 +447,7 @@ overwatch/
 │   │   ├── graph-engine.ts         # Central orchestrator
 │   │   ├── engine-context.ts       # Shared mutable state (graph, config, rules, cold store)
 │   │   ├── state-persistence.ts    # Atomic persistence + snapshots + cold store serialization
-│   │   ├── inference-engine.ts     # Rule-based edge production (22 built-in rules)
+│   │   ├── inference-engine.ts     # Rule-based edge production (31 built-in rules)
 │   │   ├── frontier.ts             # Frontier computation (5 item types)
 │   │   ├── path-analyzer.ts        # OPSEC-weighted shortest paths (confidence/stealth/balanced)
 │   │   ├── identity-resolution.ts  # Canonical ID generation

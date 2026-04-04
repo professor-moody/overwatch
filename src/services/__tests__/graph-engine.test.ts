@@ -363,6 +363,47 @@ describe('GraphEngine', () => {
       expect(result.inferred_edges.some(e => e.includes('RELAY_TARGET'))).toBe(true);
     });
 
+    it('fires inference on edge-update endpoints (Tier 1B)', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+
+      // Host + SMB service with signing disabled + RUNS edge.
+      // No compromised host yet, so RELAY_TARGET rule finds no source — nothing inferred.
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-4', type: 'host', label: '10.10.10.4', ip: '10.10.10.4' },
+          { id: 'svc-10-10-10-4-445', type: 'service', label: 'SMB .4', port: 445, service_name: 'smb', smb_signing: false },
+        ],
+        edges: [
+          { source: 'host-10-10-10-4', target: 'svc-10-10-10-4-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // Compromised host for relay source — inference fires on these nodes, not the service
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+        ],
+        edges: [
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      // RELAY_TARGET should NOT exist yet — the service was never re-evaluated after a
+      // compromised host appeared
+      expect(engine.queryGraph({ edge_type: 'RELAY_TARGET' }).edges.length).toBe(0);
+
+      // Re-ingest the RUNS edge only (no node changes) — edge goes into updatedEdges.
+      // Before the fix, endpoints weren't added to inferenceTargets for updated edges.
+      const result = engine.ingestFinding(makeFinding({
+        edges: [
+          { source: 'host-10-10-10-4', target: 'svc-10-10-10-4-445', properties: { type: 'RUNS', confidence: 0.9, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      expect(result.inferred_edges.some(e => e.includes('RELAY_TARGET'))).toBe(true);
+    });
+
     it('infers POTENTIAL_AUTH for new credentials', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       // Add a service that accepts domain auth (host must be in same domain)

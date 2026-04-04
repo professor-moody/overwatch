@@ -58,13 +58,13 @@ The LLM handles nuanced reasoning:
 
 ### Inference Rules
 
-When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Twenty-two built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
+When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Thirty-one built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
 
 | Domain | Rules | Examples |
 |--------|-------|----------|
-| **AD & Service** | 13 | Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1, Delegation, Roasting, LAPS/gMSA, RBCD |
-| **Linux Privesc** | 4 | SUID root, SSH key reuse, Docker escape, NFS no_root_squash |
-| **Web** | 1 | Webapp login spray |
+| **AD & Service** | 18 | Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1, Delegation, Roasting, LAPS/gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync |
+| **Linux Privesc** | 7 | SUID root, SSH key reuse, Docker escape, NFS no_root_squash, sudo NOPASSWD, dangerous capabilities, writable cron/systemd |
+| **Web** | 2 | Webapp login spray, web login form |
 | **MSSQL** | 1 | Linked server → REACHABLE |
 | **Cloud** | 3 | Overprivileged policy, public bucket, cross-account role |
 

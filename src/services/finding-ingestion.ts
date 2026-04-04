@@ -211,9 +211,9 @@ export function ingestFindingImpl(
     }
   }
 
-  // Collect edge endpoint nodes so cross-node rules re-evaluate when edges arrive
+  // Collect edge endpoint nodes so cross-node rules re-evaluate when edges arrive or are updated
   const edgeEndpoints = new Set<string>();
-  for (const edgeId of newEdges) {
+  for (const edgeId of [...newEdges, ...updatedEdges]) {
     if (host.ctx.graph.hasEdge(edgeId)) {
       edgeEndpoints.add(host.ctx.graph.source(edgeId));
       edgeEndpoints.add(host.ctx.graph.target(edgeId));

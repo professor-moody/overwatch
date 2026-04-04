@@ -4,6 +4,16 @@
 // Usage: npm run lab:smoke [-- --keep-state --verbose]
 // ============================================================
 
+if (process.argv.includes('--help')) {
+  console.log(`Usage: npm run lab:smoke [-- OPTIONS]
+
+Options:
+  --keep-state   Preserve state files after the smoke run (default: cleaned up)
+  --verbose      Print the retrospective summary to stdout
+  --help         Show this help message`);
+  process.exit(0);
+}
+
 import { parseLabSmokeArgs, runLabSmoke } from './lab-smoke-lib.js';
 
 function summarizeCounts(summary: Record<string, unknown>): string {

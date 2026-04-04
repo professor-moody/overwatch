@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ============================================================
 // Overwatch — Retrospective CLI
-// Usage: npm run retrospective [-- --config path --output dir]
+// Usage: npm run retrospective [-- --config path --output dir --state path]
 // ============================================================
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
@@ -13,17 +13,44 @@ import type { RetrospectiveInput } from '../services/retrospective.js';
 import type { EngagementConfig } from '../types.js';
 import { formatConfigError, loadEngagementConfigFile } from '../config.js';
 
-// --- Parse args ---
-const args = process.argv.slice(2);
-function getArg(name: string, defaultValue: string): string {
-  const idx = args.indexOf(`--${name}`);
-  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
-  return defaultValue;
+// --- Help ---
+if (process.argv.includes('--help')) {
+  console.log(`Usage: npm run retrospective [-- OPTIONS]
+
+Options:
+  --config <path>   Path to engagement config file (default: $OVERWATCH_CONFIG or ./engagement.json)
+  --skills <path>   Path to skill library directory (default: $OVERWATCH_SKILLS or ./skills)
+  --output <dir>    Output directory for retrospective results (default: ./retrospective)
+  --state <path>    Path to state file (default: ./state-<config.id>.json)
+  --help            Show this help message`);
+  process.exit(0);
 }
 
-const configPath = getArg('config', process.env.OVERWATCH_CONFIG || './engagement.json');
-const skillDir = getArg('skills', process.env.OVERWATCH_SKILLS || './skills');
-const outputDir = getArg('output', './retrospective');
+// --- Parse args ---
+export function parseRetrospectiveArgs(args: string[]): {
+  configPath: string;
+  skillDir: string;
+  outputDir: string;
+  statePath: string | undefined;
+} {
+  function getArg(name: string, defaultValue: string): string {
+    const idx = args.indexOf(`--${name}`);
+    if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
+    return defaultValue;
+  }
+  const stateIdx = args.indexOf('--state');
+  return {
+    configPath: getArg('config', process.env.OVERWATCH_CONFIG || './engagement.json'),
+    skillDir: getArg('skills', process.env.OVERWATCH_SKILLS || './skills'),
+    outputDir: getArg('output', './retrospective'),
+    statePath: stateIdx >= 0 && stateIdx + 1 < args.length ? args[stateIdx + 1] : undefined,
+  };
+}
+
+const parsedArgs = parseRetrospectiveArgs(process.argv.slice(2));
+const configPath = parsedArgs.configPath;
+const skillDir = parsedArgs.skillDir;
+const outputDir = parsedArgs.outputDir;
 
 // --- Load config ---
 if (!existsSync(configPath)) {
@@ -41,7 +68,7 @@ try {
 console.log(`Loading engagement: ${config.name} (${config.id})`);
 
 // --- Load engine (reads persisted state) ---
-const stateFile = `./state-${config.id}.json`;
+const stateFile = parsedArgs.statePath ?? `./state-${config.id}.json`;
 if (!existsSync(stateFile)) {
   console.error(`State file not found: ${stateFile} — has the engagement been started?`);
   process.exit(1);

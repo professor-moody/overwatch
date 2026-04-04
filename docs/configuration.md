@@ -11,7 +11,7 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "id": "string (required)",
   "name": "string (required)",
   "created_at": "ISO 8601 timestamp (required)",
-  "profile": "goad_ad | single_host | network (optional, inferred if omitted)",
+  "profile": "goad_ad | single_host | cloud | web_app | hybrid | network (optional, inferred if omitted)",
   "scope": {
     "cidrs": ["CIDR notation strings"],
     "domains": ["domain names"],
@@ -70,7 +70,7 @@ The optional `profile` field selects the lab preflight profile, which controls w
 | `cloud` | Cloud-only engagement — checks cloud account scope, recommends cloud tools (pacu, prowler). |
 | `hybrid` | Combined infrastructure + cloud — checks all scope types. |
 
-If omitted, the profile is **inferred**: `goad_ad` when `scope.domains` is non-empty, `cloud` when only cloud accounts are scoped, `web_app` when only URL patterns are scoped, `network` otherwise.
+If omitted, the profile is **inferred**: `hybrid` when both domains and cloud accounts are present, `cloud` when only cloud accounts are scoped, `web_app` when only URL patterns are scoped, `goad_ad` when `scope.domains` is non-empty, `single_host` otherwise.
 
 ### Objectives
 
@@ -85,6 +85,8 @@ Each objective describes a goal. The engine tracks progress by matching graph no
 | `achieved` | `boolean` | Automatically set when criteria are met |
 
 ### OPSEC Profiles
+
+The `name` field is free-form text; common values include `ctf`, `pentest`, `assumed_breach`, `redteam`.
 
 | Profile | `max_noise` | Description |
 |---------|-------------|-------------|

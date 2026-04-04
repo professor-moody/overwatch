@@ -20,6 +20,10 @@ const FRIENDLY_TYPE_LABELS = {
   objective: 'Objectives',
   webapp: 'Web Apps',
   vulnerability: 'Vulnerabilities',
+  cloud_identity: 'Cloud Identities',
+  cloud_resource: 'Cloud Resources',
+  cloud_policy: 'Cloud Policies',
+  cloud_network: 'Cloud Networks',
 };
 
 function getNodeDisplayLabel(props = {}, fallbackId = '') {
@@ -41,6 +45,10 @@ function getNodeDisplayLabel(props = {}, fallbackId = '') {
   if (type === 'objective') return props.objective_description || props.label || fallbackId;
   if (type === 'webapp') return props.url || props.label || fallbackId;
   if (type === 'vulnerability') return props.cve || props.vuln_type || props.label || fallbackId;
+  if (type === 'cloud_identity') return props.arn || props.principal_name || props.label || fallbackId;
+  if (type === 'cloud_resource') return props.resource_name || props.arn || props.label || fallbackId;
+  if (type === 'cloud_policy') return props.policy_name || props.label || fallbackId;
+  if (type === 'cloud_network') return props.network_name || props.cidr || props.label || fallbackId;
   return props.label || fallbackId;
 }
 
@@ -103,6 +111,29 @@ function getNodeIdentityEntries(props = {}, fallbackId = '') {
     push('affected_component', props.affected_component);
   } else if (type === 'gpo' || type === 'ou' || type === 'subnet' || type === 'objective') {
     push(type === 'subnet' ? 'cidr' : 'label', props.cidr || props.label || props.objective_description);
+  } else if (type === 'cloud_identity') {
+    push('arn', props.arn);
+    push('principal_name', props.principal_name);
+    push('account', props.cloud_account);
+    push('provider', props.cloud_provider);
+    push('region', props.cloud_region);
+  } else if (type === 'cloud_resource') {
+    push('arn', props.arn);
+    push('resource_name', props.resource_name);
+    push('resource_type', props.resource_type);
+    push('account', props.cloud_account);
+    push('region', props.cloud_region);
+    push('public', props.public_access);
+  } else if (type === 'cloud_policy') {
+    push('policy_name', props.policy_name);
+    push('arn', props.arn);
+    push('account', props.cloud_account);
+  } else if (type === 'cloud_network') {
+    push('network_name', props.network_name);
+    push('cidr', props.cidr);
+    push('vpc_id', props.vpc_id);
+    push('account', props.cloud_account);
+    push('region', props.cloud_region);
   }
 
   if (props.canonical_id && props.canonical_id !== fallbackId) {

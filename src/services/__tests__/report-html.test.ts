@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { renderReportHtml, inlineMarkdownToHtml, type HtmlReportData } from '../report-html.js';
+import { renderReportHtml, inlineMarkdownToHtml, type HtmlReportData, type HtmlRetrospective } from '../report-html.js';
 import type { ReportFinding, NarrativePhase, EvidenceChain } from '../report-generator.js';
+import type { CredentialChain } from '../retrospective.js';
 
 function makeFinding(overrides: Partial<ReportFinding> = {}): ReportFinding {
   return {
@@ -345,5 +346,173 @@ describe('inlineMarkdownToHtml', () => {
 
   it('returns plain escaped text when no markdown present', () => {
     expect(inlineMarkdownToHtml('no markdown here')).toBe('no markdown here');
+  });
+});
+
+// ============================================================
+// New section tests
+// ============================================================
+
+describe('credential chains section', () => {
+  it('renders credential chains when present', () => {
+    const chains: CredentialChain[] = [
+      { chain: ['n1', 'n2', 'n3'], labels: ['admin', 'svc_acct', 'da_user'], methods: ['secretsdump', 'kerberoast'] },
+    ];
+    const html = renderReportHtml(makeReportData({ credentialChains: chains }));
+    expect(html).toContain('id="credential-chains"');
+    expect(html).toContain('Credential Chains');
+    expect(html).toContain('admin');
+    expect(html).toContain('secretsdump');
+    expect(html).toContain('da_user');
+  });
+
+  it('omits credential chains section when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="credential-chains"');
+  });
+
+  it('omits credential chains section when array is empty', () => {
+    const html = renderReportHtml(makeReportData({ credentialChains: [] }));
+    expect(html).not.toContain('id="credential-chains"');
+  });
+
+  it('adds TOC entry for credential chains', () => {
+    const chains: CredentialChain[] = [
+      { chain: ['n1', 'n2'], labels: ['a', 'b'], methods: ['dump'] },
+    ];
+    const html = renderReportHtml(makeReportData({ credentialChains: chains }));
+    expect(html).toContain('href="#credential-chains"');
+  });
+});
+
+describe('discovery summary section', () => {
+  it('renders node and edge type tables', () => {
+    const html = renderReportHtml(makeReportData({
+      discoveryStats: {
+        nodesByType: { host: 5, credential: 3 },
+        edgesByType: { HAS_SESSION: 2, OWNS_CRED: 4 },
+        confirmed: 4,
+        inferred: 2,
+      },
+    }));
+    expect(html).toContain('id="discovery-summary"');
+    expect(html).toContain('Discovery Summary');
+    expect(html).toContain('host');
+    expect(html).toContain('credential');
+    expect(html).toContain('HAS_SESSION');
+    expect(html).toContain('4 confirmed');
+    expect(html).toContain('2 inferred');
+  });
+
+  it('omits discovery summary when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="discovery-summary"');
+  });
+});
+
+describe('agent activity section', () => {
+  it('renders agent stats when total > 0', () => {
+    const html = renderReportHtml(makeReportData({
+      agents: { total: 10, completed: 8, failed: 2 },
+    }));
+    expect(html).toContain('id="agent-activity"');
+    expect(html).toContain('Agent Activity');
+    expect(html).toContain('10');
+    expect(html).toContain('8');
+    expect(html).toContain('2');
+  });
+
+  it('omits agent activity when total is 0', () => {
+    const html = renderReportHtml(makeReportData({
+      agents: { total: 0, completed: 0, failed: 0 },
+    }));
+    expect(html).not.toContain('id="agent-activity"');
+  });
+
+  it('omits agent activity when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="agent-activity"');
+  });
+});
+
+describe('retrospective section', () => {
+  it('renders context improvements and inference suggestions', () => {
+    const retro: HtmlRetrospective = {
+      context_improvements: {
+        frontier_observations: [{ area: 'network', observation: 'Sparse scanning', confidence: 'high' }],
+        context_gaps: [{ area: 'AD', gap: 'No LDAP enum', recommendation: 'Run ldapsearch' }],
+      },
+      inference_suggestions: [{ rule: { name: 'kerberoast_chain' }, evidence: 'SPN found but not roasted' }],
+      skill_gaps: { missing_skills: ['cloud_enum'], failed_techniques: ['zerologon'] },
+      trace_quality: { total_actions: 50, with_frontier_id: 45, with_action_id: 48, coverage_pct: 90.0 },
+    };
+    const html = renderReportHtml(makeReportData({ retrospective: retro }));
+    expect(html).toContain('id="retrospective"');
+    expect(html).toContain('Retrospective Findings');
+    expect(html).toContain('Sparse scanning');
+    expect(html).toContain('kerberoast_chain');
+    expect(html).toContain('cloud_enum');
+    expect(html).toContain('zerologon');
+    expect(html).toContain('90.0%');
+  });
+
+  it('omits retrospective when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="retrospective"');
+  });
+
+  it('renders empty string when retrospective has no content', () => {
+    const html = renderReportHtml(makeReportData({ retrospective: {} }));
+    expect(html).not.toContain('Retrospective Findings');
+  });
+});
+
+describe('activity timeline section', () => {
+  it('renders timeline table', () => {
+    const timeline = [
+      { timestamp: '2026-03-20T08:00:00Z', description: 'Started nmap scan', agent_id: 'agent-1' },
+      { timestamp: '2026-03-20T09:00:00Z', description: 'Found open port 22' },
+    ];
+    const html = renderReportHtml(makeReportData({ timeline }));
+    expect(html).toContain('id="activity-timeline"');
+    expect(html).toContain('Activity Timeline');
+    expect(html).toContain('Started nmap scan');
+    expect(html).toContain('agent-1');
+    expect(html).toContain('Found open port 22');
+  });
+
+  it('omits timeline when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="activity-timeline"');
+  });
+
+  it('omits timeline when array is empty', () => {
+    const html = renderReportHtml(makeReportData({ timeline: [] }));
+    expect(html).not.toContain('id="activity-timeline"');
+  });
+});
+
+describe('recommendations section', () => {
+  it('renders ordered list of recommendations', () => {
+    const recommendations = [
+      '**Patch CVE-2025-1234** on all affected hosts.',
+      '**Rotate all compromised credentials** immediately.',
+    ];
+    const html = renderReportHtml(makeReportData({ recommendations }));
+    expect(html).toContain('id="recommendations"');
+    expect(html).toContain('Recommendations');
+    expect(html).toContain('<ol>');
+    expect(html).toContain('Patch CVE-2025-1234');
+    expect(html).toContain('Rotate all compromised credentials');
+  });
+
+  it('omits recommendations when not provided', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).not.toContain('id="recommendations"');
+  });
+
+  it('omits recommendations when array is empty', () => {
+    const html = renderReportHtml(makeReportData({ recommendations: [] }));
+    expect(html).not.toContain('id="recommendations"');
   });
 });
