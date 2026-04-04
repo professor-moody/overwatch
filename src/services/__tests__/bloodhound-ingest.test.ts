@@ -1004,5 +1004,40 @@ describe('BloodHound Ingestion', () => {
       const domEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN');
       expect(domEdges.length).toBe(0);
     });
+
+    it('OU ChildObjects create RELATED edges (not MEMBER_OF) to avoid schema rejection', () => {
+      const bhData = {
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-OU-SERVERS',
+          Properties: {
+            name: 'SERVERS@ACME.LOCAL',
+            domain: 'acme.local',
+          },
+          Aces: [],
+          Links: [],
+          ChildObjects: [
+            { ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105', ObjectType: 'Computer' },
+            { ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1106', ObjectType: 'User' },
+          ],
+        }],
+        meta: { type: 'ous', count: 1, version: 4 },
+      };
+      const { finding, errors } = parseBloodHoundFile(JSON.stringify(bhData), 'ous.json');
+      expect(finding).not.toBeNull();
+
+      const childEdges = finding!.edges.filter(e =>
+        e.properties.type === 'RELATED' &&
+        e.properties.discovered_by === 'bloodhound-ingest'
+      );
+      expect(childEdges.length).toBe(2);
+
+      // Should NOT create MEMBER_OF edges from ChildObjects
+      const memberOfEdges = finding!.edges.filter(e => e.properties.type === 'MEMBER_OF');
+      expect(memberOfEdges.length).toBe(0);
+
+      // No validation errors from the edge type
+      const constraintErrors = errors.filter(e => e.includes('MEMBER_OF') && e.includes('cannot connect'));
+      expect(constraintErrors.length).toBe(0);
+    });
   });
 });

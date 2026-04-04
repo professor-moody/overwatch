@@ -26,7 +26,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   REACHABLE: { source: ['host'], target: ['host'] },
   RUNS: { source: ['host'], target: ['service'] },
   // Domain membership
-  MEMBER_OF: { source: ['user', 'group'], target: ['group'] },
+  MEMBER_OF: { source: ['user', 'group', 'cloud_identity'], target: ['group'] },
   MEMBER_OF_DOMAIN: { source: ['host', 'user', 'group'], target: ['domain'] },
   // Access
   ADMIN_TO: { source: ['user', 'group', 'credential'], target: ['host'] },
@@ -87,7 +87,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp'] },
   // Cloud infrastructure
   ASSUMES_ROLE: { source: ['cloud_identity'], target: ['cloud_identity'] },
-  HAS_POLICY: { source: ['cloud_identity'], target: ['cloud_policy'] },
+  HAS_POLICY: { source: ['cloud_identity', 'group'], target: ['cloud_policy'] },
   POLICY_ALLOWS: { source: ['cloud_policy'], target: ['cloud_resource'] },
   EXPOSED_TO: { source: ['cloud_resource'], target: ['cloud_network', 'subnet'] },
   RUNS_ON: { source: ['service', 'host'], target: ['cloud_resource'] },

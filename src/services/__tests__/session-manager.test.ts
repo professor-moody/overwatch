@@ -382,7 +382,7 @@ describe('SessionManager', () => {
       expect(result.text).toContain('file1');
     });
 
-    it('times out if no output', async () => {
+    it('waits for timeout_ms when no output arrives (not early idle return)', async () => {
       const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
 
       const start = Date.now();
@@ -392,8 +392,51 @@ describe('SessionManager', () => {
       });
       const elapsed = Date.now() - start;
 
+      // Should wait close to timeout_ms, NOT return early after idle_ms
+      expect(elapsed).toBeGreaterThanOrEqual(250);
       expect(elapsed).toBeLessThan(1000);
+      expect(result.text).toBe('');
       expect(result.session_id).toBe(metadata.id);
+    });
+
+    it('captures delayed first output (no early empty return)', async () => {
+      const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
+
+      const sendPromise = manager.sendCommand(metadata.id, 'slow-cmd', {
+        timeout_ms: 2000,
+        idle_ms: 200,
+      });
+
+      // Output arrives after 400ms — well past the old idle_ms window
+      setTimeout(() => {
+        for (const cb of mockAdapter.dataCbs) cb('delayed result\nprompt$ ');
+      }, 400);
+
+      const result = await sendPromise;
+      expect(result.text).toContain('delayed result');
+    });
+
+    it('captures sparse multi-burst output', async () => {
+      const { metadata } = await manager.create({ kind: 'local_pty', title: 'test', initial_wait_ms: 0 });
+
+      const sendPromise = manager.sendCommand(metadata.id, 'multi-burst', {
+        timeout_ms: 3000,
+        idle_ms: 300,
+      });
+
+      // First burst at 50ms
+      setTimeout(() => {
+        for (const cb of mockAdapter.dataCbs) cb('line1\n');
+      }, 50);
+
+      // Second burst at 250ms (within idle_ms of first burst)
+      setTimeout(() => {
+        for (const cb of mockAdapter.dataCbs) cb('line2\nprompt$ ');
+      }, 250);
+
+      const result = await sendPromise;
+      expect(result.text).toContain('line1');
+      expect(result.text).toContain('line2');
     });
 
     it('throws on invalid wait_for regex', async () => {

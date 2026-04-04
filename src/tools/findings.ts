@@ -137,6 +137,22 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         };
       }
 
+      // Persist evidence and raw_output so the report generator can reference them.
+      // Truncate raw_output to prevent activity log bloat (keep first 8KB).
+      const evidenceDetails: Record<string, unknown> = {
+        node_count: finding.nodes.length,
+        edge_count: finding.edges.length,
+        ingested_node_ids: finding.nodes.map(n => n.id),
+      };
+      if (evidence) {
+        evidenceDetails.evidence_type = evidence.type;
+        evidenceDetails.evidence_content = evidence.content?.slice(0, 8192);
+        if (evidence.filename) evidenceDetails.evidence_filename = evidence.filename;
+      }
+      if (raw_output) {
+        evidenceDetails.raw_output = raw_output.slice(0, 8192);
+      }
+
       engine.logActionEvent({
         description: `Finding reported: ${finding.nodes.length} nodes, ${finding.edges.length} edges`,
         agent_id,
@@ -145,15 +161,14 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         category: 'finding',
         frontier_type: frontierType,
         tool_name,
-        target_node_ids: target_node_ids.length > 0 ? target_node_ids : undefined,
+        target_node_ids: [
+          ...(target_node_ids.length > 0 ? target_node_ids : []),
+          ...finding.nodes.map(n => n.id),
+        ],
         frontier_item_id,
         linked_finding_ids: [finding.id],
         result_classification: 'success',
-        details: {
-          node_count: finding.nodes.length,
-          edge_count: finding.edges.length,
-          evidence_type: evidence?.type,
-        },
+        details: evidenceDetails,
       });
 
       const result = engine.ingestFinding(prepared.finding);

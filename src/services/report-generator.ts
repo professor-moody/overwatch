@@ -24,7 +24,7 @@ export interface ReportFinding {
   id: string;
   title: string;
   severity: FindingSeverity;
-  category: 'compromised_host' | 'credential' | 'vulnerability' | 'access_path';
+  category: 'compromised_host' | 'credential' | 'vulnerability' | 'access_path' | 'cloud_exposure' | 'webapp';
   description: string;
   affected_assets: string[];
   evidence: EvidenceChain[];
@@ -41,6 +41,10 @@ export interface EvidenceChain {
   source_nodes: string[];
   target_nodes: string[];
   linked_findings?: string[];
+  evidence_type?: string;
+  evidence_content?: string;
+  evidence_filename?: string;
+  raw_output?: string;
 }
 
 export interface NarrativePhase {
@@ -173,6 +177,111 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     });
   }
 
+  // 4. Cloud findings — IAM abuse, exposed resources, policy issues
+  for (const n of graph.nodes) {
+    if (n.properties.type !== 'cloud_identity' && n.properties.type !== 'cloud_resource') continue;
+
+    const isIdentity = n.properties.type === 'cloud_identity';
+    const isResource = n.properties.type === 'cloud_resource';
+
+    if (isIdentity) {
+      // IAM identities with dangerous policies or cross-account trust
+      const policyEdges = graph.edges.filter(e =>
+        e.source === n.id && e.properties.type === 'HAS_POLICY'
+      );
+      const assumedByEdges = graph.edges.filter(e =>
+        e.target === n.id && e.properties.type === 'ASSUMES_ROLE'
+      );
+      if (policyEdges.length === 0 && assumedByEdges.length === 0) continue;
+
+      const policyNames = policyEdges.map(e => nodeMap.get(e.target)?.label || e.target);
+      const trustedBy = assumedByEdges.map(e => nodeMap.get(e.source)?.label || e.source);
+      const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+
+      const isAdmin = policyNames.some(p =>
+        /administrator|admin|fullaccess|\*/i.test(p)
+      );
+
+      findings.push({
+        id: `finding-cloud-${n.id}`,
+        title: `Cloud Identity: ${n.properties.label || n.id}`,
+        severity: isAdmin ? 'critical' : 'high',
+        category: 'cloud_exposure',
+        description: `${n.properties.principal_type || 'Identity'} ${n.properties.label || n.id}` +
+          ` (${n.properties.provider || 'cloud'})` +
+          (policyNames.length > 0 ? `. Policies: ${policyNames.slice(0, 5).join(', ')}` : '') +
+          (trustedBy.length > 0 ? `. Trusted by: ${trustedBy.slice(0, 3).join(', ')}` : '') +
+          '.',
+        affected_assets: [n.properties.label || n.id, ...policyNames.slice(0, 5)],
+        evidence,
+        remediation: generateCloudIdentityRemediation(n.properties, policyNames),
+        risk_score: isAdmin ? 9.0 : 6.5,
+      });
+    }
+
+    if (isResource) {
+      // Exposed or misconfigured cloud resources
+      const isPublic = n.properties.public === true;
+      const vulnEdges = graph.edges.filter(e =>
+        e.source === n.id && e.properties.type === 'VULNERABLE_TO'
+      );
+      if (!isPublic && vulnEdges.length === 0) continue;
+
+      const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+
+      findings.push({
+        id: `finding-cloud-${n.id}`,
+        title: `Cloud Resource: ${n.properties.label || n.id}`,
+        severity: isPublic && vulnEdges.length > 0 ? 'critical' : isPublic ? 'high' : 'medium',
+        category: 'cloud_exposure',
+        description: `${n.properties.resource_type || 'Resource'} ${n.properties.label || n.id}` +
+          ` (${n.properties.provider || 'cloud'}, ${n.properties.region || 'unknown region'})` +
+          (isPublic ? '. **Publicly accessible.**' : '') +
+          (vulnEdges.length > 0 ? ` ${vulnEdges.length} misconfiguration(s) detected.` : '') +
+          '.',
+        affected_assets: [n.properties.label || n.id],
+        evidence,
+        remediation: generateCloudResourceRemediation(n.properties),
+        risk_score: isPublic ? 7.5 : 5.0,
+      });
+    }
+  }
+
+  // 5. Webapp findings — compromised web applications with auth/technology context
+  for (const n of graph.nodes) {
+    if (n.properties.type !== 'webapp') continue;
+
+    const vulnEdges = graph.edges.filter(e =>
+      e.source === n.id && e.properties.type === 'VULNERABLE_TO'
+    );
+    const authEdges = graph.edges.filter(e =>
+      e.properties.type === 'AUTHENTICATED_AS' && e.target === n.id
+    );
+    if (vulnEdges.length === 0 && authEdges.length === 0) continue;
+
+    const vulnLabels = vulnEdges.map(e => nodeMap.get(e.target)?.label || e.target);
+    const authSources = authEdges.map(e => nodeMap.get(e.source)?.label || e.source);
+    const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+    const url = n.properties.url || n.properties.label || n.id;
+
+    findings.push({
+      id: `finding-webapp-${n.id}`,
+      title: `Web Application: ${n.properties.label || url}`,
+      severity: vulnEdges.length > 0 ? 'high' : 'medium',
+      category: 'webapp',
+      description: `Web application at ${url}` +
+        (n.properties.has_login_form ? ' (has login form)' : '') +
+        (n.properties.technology ? `. Technology: ${n.properties.technology}` : '') +
+        (vulnLabels.length > 0 ? `. Vulnerabilities: ${vulnLabels.slice(0, 5).join(', ')}` : '') +
+        (authSources.length > 0 ? `. Authenticated via: ${authSources.join(', ')}` : '') +
+        '.',
+      affected_assets: [url, ...vulnLabels.slice(0, 5)],
+      evidence,
+      remediation: generateWebappRemediation(n.properties, vulnLabels),
+      risk_score: vulnEdges.length > 0 ? 7.0 : 4.0,
+    });
+  }
+
   // Sort by risk_score descending
   findings.sort((a, b) => b.risk_score - a.risk_score);
   return findings;
@@ -190,10 +299,13 @@ export function buildEvidenceChainsForNode(
   const chains: EvidenceChain[] = [];
 
   // 1. Find activity log entries that reference this node
-  const relatedEntries = history.filter(entry =>
-    entry.target_node_ids?.includes(nodeId) ||
-    entry.linked_finding_ids?.some(fid => fid.includes(nodeId))
-  );
+  const relatedEntries = history.filter(entry => {
+    if (entry.target_node_ids?.includes(nodeId)) return true;
+    // Check ingested_node_ids stored in details (from finding ingestion)
+    const d = entry.details as Record<string, unknown> | undefined;
+    if (Array.isArray(d?.ingested_node_ids) && (d!.ingested_node_ids as string[]).includes(nodeId)) return true;
+    return false;
+  });
 
   // Group by action_id for structured chains
   const byAction = new Map<string, ActivityLogEntry[]>();
@@ -207,7 +319,8 @@ export function buildEvidenceChainsForNode(
 
   for (const [actionId, entries] of byAction) {
     const first = entries[0];
-    chains.push({
+    const d = first.details as Record<string, unknown> | undefined;
+    const chain: EvidenceChain = {
       claim: first.description,
       action_id: actionId,
       tool: first.tool_name,
@@ -216,7 +329,12 @@ export function buildEvidenceChainsForNode(
       source_nodes: entries.flatMap(e => e.target_node_ids || []).filter(id => id !== nodeId),
       target_nodes: [nodeId],
       linked_findings: entries.flatMap(e => e.linked_finding_ids || []),
-    });
+    };
+    if (d?.evidence_type) chain.evidence_type = d.evidence_type as string;
+    if (d?.evidence_content) chain.evidence_content = d.evidence_content as string;
+    if (d?.evidence_filename) chain.evidence_filename = d.evidence_filename as string;
+    if (d?.raw_output) chain.raw_output = d.raw_output as string;
+    chains.push(chain);
   }
 
   // 2. Entries without action_id — direct mentions
@@ -259,10 +377,11 @@ export function buildAllEvidenceChains(
 ): Map<string, EvidenceChain[]> {
   const result = new Map<string, EvidenceChain[]>();
 
-  // Build chains for all compromised/interesting nodes
-  const interestingNodes = graph.nodes.filter(n =>
-    n.properties.type === 'host' || n.properties.type === 'credential' || n.properties.type === 'vulnerability'
-  );
+  const interestingTypes = new Set([
+    'host', 'credential', 'vulnerability',
+    'cloud_identity', 'cloud_resource', 'webapp',
+  ]);
+  const interestingNodes = graph.nodes.filter(n => interestingTypes.has(n.properties.type));
   for (const n of interestingNodes) {
     const chains = buildEvidenceChainsForNode(n.id, graph, history);
     if (chains.length > 0) {
@@ -591,6 +710,26 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
         if (ev.timestamp) evLine += ` — ${formatTimestamp(ev.timestamp)}`;
         if (ev.action_id) evLine += ` [action: ${ev.action_id.slice(0, 8)}]`;
         lines.push(evLine);
+        if (ev.evidence_filename) {
+          lines.push(`  - Attachment: ${ev.evidence_filename} (${ev.evidence_type})`);
+        }
+        if (ev.evidence_content) {
+          lines.push('  ```');
+          for (const cl of ev.evidence_content.slice(0, 2048).split('\n').slice(0, 30)) {
+            lines.push(`  ${cl}`);
+          }
+          lines.push('  ```');
+        }
+        if (ev.raw_output) {
+          lines.push('  <details><summary>Raw output (truncated)</summary>');
+          lines.push('');
+          lines.push('  ```');
+          for (const rl of ev.raw_output.slice(0, 2048).split('\n').slice(0, 30)) {
+            lines.push(`  ${rl}`);
+          }
+          lines.push('  ```');
+          lines.push('  </details>');
+        }
       }
       if (f.evidence.length > 5) {
         lines.push(`- ... and ${f.evidence.length - 5} more evidence entries`);
@@ -785,7 +924,10 @@ function generateHostRemediation(host: NodeProperties, accessEdges: ExportedGrap
   const lines: string[] = [];
 
   const hasAdmin = accessEdges.some(e => e.properties.type === 'ADMIN_TO');
-  const hasSession = accessEdges.some(e => e.properties.type === 'HAS_SESSION');
+  const confirmedSessions = accessEdges.filter(e =>
+    e.properties.type === 'HAS_SESSION' && (e.properties.confidence ?? 0) >= 0.7
+  );
+  const hasSession = confirmedSessions.length > 0;
 
   lines.push(`1. **Revoke all active sessions** on ${host.label || host.ip || host.id} and force re-authentication.`);
 
@@ -793,8 +935,7 @@ function generateHostRemediation(host: NodeProperties, accessEdges: ExportedGrap
     lines.push('2. **Reset local administrator credentials** and review local admin group membership.');
   }
   if (hasSession) {
-    const sessionSources = accessEdges
-      .filter(e => e.properties.type === 'HAS_SESSION')
+    const sessionSources = confirmedSessions
       .map(e => nodeMap.get(e.source)?.label || e.source);
     lines.push(`${hasAdmin ? '3' : '2'}. **Reset credentials** for principals with sessions: ${sessionSources.join(', ')}.`);
   }
@@ -867,6 +1008,62 @@ function generateVulnerabilityRemediation(vuln: NodeProperties, affectedAssets: 
   return lines.join('\n');
 }
 
+function generateCloudIdentityRemediation(identity: NodeProperties, policyNames: string[]): string {
+  const lines: string[] = [];
+  const label = identity.label || identity.id;
+  const isAdmin = policyNames.some(p => /administrator|admin|fullaccess|\*/i.test(p));
+
+  lines.push(`1. **Review permissions** for ${label} and apply least-privilege.`);
+  if (isAdmin) {
+    lines.push('2. **Remove or scope down administrative policies** — broad admin access enables full account takeover.');
+  }
+  if (policyNames.length > 0) {
+    lines.push(`${lines.length + 1}. **Audit attached policies:** ${policyNames.slice(0, 5).join(', ')}.`);
+  }
+  lines.push(`${lines.length + 1}. **Enable MFA** on this identity if not already enforced.`);
+  lines.push(`${lines.length + 1}. **Rotate credentials** (access keys, passwords) for this identity.`);
+
+  return lines.join('\n');
+}
+
+function generateCloudResourceRemediation(resource: NodeProperties): string {
+  const lines: string[] = [];
+  const label = resource.label || resource.id;
+  const isPublic = resource.public === true;
+
+  if (isPublic) {
+    lines.push(`1. **Restrict public access** to ${label} — configure private access or VPC endpoints.`);
+  }
+  if (resource.resource_type === 's3_bucket') {
+    lines.push(`${lines.length + 1}. **Enable S3 Block Public Access** at account and bucket level.`);
+    lines.push(`${lines.length + 1}. **Review bucket policy and ACLs** for overly permissive grants.`);
+  } else if (resource.resource_type === 'ec2') {
+    lines.push(`${lines.length + 1}. **Review security groups** — restrict inbound access to required ports and sources.`);
+    if (!resource.imdsv2_required) {
+      lines.push(`${lines.length + 1}. **Enforce IMDSv2** to prevent SSRF-based credential theft.`);
+    }
+  }
+  lines.push(`${lines.length + 1}. **Enable logging and monitoring** (CloudTrail, GuardDuty) for this resource.`);
+
+  return lines.join('\n');
+}
+
+function generateWebappRemediation(webapp: NodeProperties, vulnLabels: string[]): string {
+  const lines: string[] = [];
+  const url = webapp.url || webapp.label || webapp.id;
+
+  if (vulnLabels.length > 0) {
+    lines.push(`1. **Fix identified vulnerabilities** in ${url}: ${vulnLabels.slice(0, 5).join(', ')}.`);
+  }
+  if (webapp.has_login_form) {
+    lines.push(`${lines.length + 1}. **Harden authentication** — enforce MFA, rate limiting, and account lockout.`);
+  }
+  lines.push(`${lines.length + 1}. **Deploy a WAF** and ensure security headers (CSP, HSTS, X-Frame-Options).`);
+  lines.push(`${lines.length + 1}. **Conduct code review** for the identified vulnerability classes.`);
+
+  return lines.join('\n');
+}
+
 // ============================================================
 // Helpers
 // ============================================================
@@ -893,7 +1090,8 @@ function severityBadge(severity: FindingSeverity): string {
 function computeHostRiskScore(accessEdges: ExportedGraphEdge[], hopsToObjective: number | null): number {
   let score = 5.0;
   if (accessEdges.some(e => e.properties.type === 'ADMIN_TO')) score += 3.0;
-  if (accessEdges.some(e => e.properties.type === 'HAS_SESSION')) score += 1.5;
+  // Only count confirmed sessions (confidence >= 0.7) for risk scoring
+  if (accessEdges.some(e => e.properties.type === 'HAS_SESSION' && (e.properties.confidence ?? 0) >= 0.7)) score += 1.5;
   if (hopsToObjective !== null && hopsToObjective <= 2) score += 1.0;
   return Math.min(10, score);
 }

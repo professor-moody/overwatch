@@ -163,7 +163,7 @@ const BH_RELATION_ARRAY_MAP: Array<{
   { key: 'ManageCertificates', edgeType: 'GENERIC_ALL', direction: 'inbound' },
   { key: 'ManageCA', edgeType: 'GENERIC_ALL', direction: 'inbound' },
   { key: 'Links', edgeType: 'RELATED', direction: 'outbound' },
-  { key: 'ChildObjects', edgeType: 'MEMBER_OF', direction: 'inbound' },
+  { key: 'ChildObjects', edgeType: 'RELATED', direction: 'inbound' },
   { key: 'GPOChanges', edgeType: 'RELATED', direction: 'outbound' },
 ];
 

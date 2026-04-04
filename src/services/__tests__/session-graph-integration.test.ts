@@ -113,7 +113,7 @@ describe('ingestSessionResult success path', () => {
     expect(event!.description).toContain('succeeded');
   });
 
-  it('creates HAS_SESSION with confidence 0.5 when confirmed=false', () => {
+  it('does NOT create HAS_SESSION edge when confirmed=false', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     seedHostAndUser(engine);
 
@@ -127,9 +127,14 @@ describe('ingestSessionResult success path', () => {
 
     const graph = engine.exportGraph();
     const sessionEdge = graph.edges.find(e => e.properties.type === 'HAS_SESSION');
-    expect(sessionEdge).toBeDefined();
-    expect(sessionEdge!.properties.confidence).toBe(0.5);
-    expect(sessionEdge!.properties.session_unconfirmed).toBe(true);
+    expect(sessionEdge).toBeUndefined();
+
+    // Should still log event as unconfirmed
+    const events = engine.getFullHistory();
+    const unconfirmedEvent = events.find(e =>
+      e.event_type === 'session_access_unconfirmed'
+    );
+    expect(unconfirmedEvent).toBeDefined();
   });
 
   it('creates HAS_SESSION edge when principal_node is a credential', () => {

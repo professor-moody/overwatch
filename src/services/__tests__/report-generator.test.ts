@@ -650,3 +650,236 @@ describe('vulnerability-specific remediation', () => {
     expect(ssrfFinding!.remediation).toContain('IMDSv2');
   });
 });
+
+// ============================================================
+// Cloud-only engagement report coverage
+// ============================================================
+
+describe('buildFindings — cloud engagement', () => {
+  it('produces findings for cloud_identity nodes with policies', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'ci-admin', properties: { id: 'ci-admin', type: 'cloud_identity', label: 'arn:aws:iam::123:user/admin', principal_type: 'user', provider: 'aws', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'cp-admin', properties: { id: 'cp-admin', type: 'cloud_policy', label: 'AdministratorAccess', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'ci-admin', target: 'cp-admin', properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const cloudFindings = findings.filter(f => f.category === 'cloud_exposure');
+    expect(cloudFindings.length).toBe(1);
+    expect(cloudFindings[0].title).toContain('arn:aws:iam');
+    expect(cloudFindings[0].severity).toBe('critical');
+    expect(cloudFindings[0].description).toContain('AdministratorAccess');
+    expect(cloudFindings[0].remediation).toContain('least-privilege');
+  });
+
+  it('produces findings for public cloud_resource nodes', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'cr-bucket', properties: { id: 'cr-bucket', type: 'cloud_resource', label: 's3://public-data', resource_type: 's3_bucket', provider: 'aws', region: 'us-east-1', public: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const cloudFindings = findings.filter(f => f.category === 'cloud_exposure');
+    expect(cloudFindings.length).toBe(1);
+    expect(cloudFindings[0].title).toContain('s3://public-data');
+    expect(cloudFindings[0].severity).toBe('high');
+    expect(cloudFindings[0].description).toContain('Publicly accessible');
+    expect(cloudFindings[0].remediation).toContain('Block Public Access');
+  });
+
+  it('cloud-only engagement does NOT produce zero findings', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'ci-user', properties: { id: 'ci-user', type: 'cloud_identity', label: 'arn:aws:iam::123:user/dev', principal_type: 'user', provider: 'aws', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'cp-s3full', properties: { id: 'cp-s3full', type: 'cloud_policy', label: 'AmazonS3FullAccess', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'cr-bucket', properties: { id: 'cr-bucket', type: 'cloud_resource', label: 's3://sensitive-logs', resource_type: 's3_bucket', provider: 'aws', region: 'us-east-1', public: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'ci-user', target: 'cp-s3full', properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    expect(findings.length).toBeGreaterThan(0);
+    const categories = new Set(findings.map(f => f.category));
+    expect(categories.has('cloud_exposure')).toBe(true);
+  });
+});
+
+// ============================================================
+// Webapp finding coverage
+// ============================================================
+
+describe('buildFindings — webapp engagement', () => {
+  it('produces webapp findings with URL/technology context', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'webapp-login', properties: { id: 'webapp-login', type: 'webapp', label: 'https://app.corp.io/login', url: 'https://app.corp.io/login', has_login_form: true, technology: 'Django 4.2', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'vuln-sqli', properties: { id: 'vuln-sqli', type: 'vulnerability', label: 'SQL Injection in /search', vuln_type: 'sqli', cvss: 8.5, exploitable: true, exploit_available: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'webapp-login', target: 'vuln-sqli', properties: { type: 'VULNERABLE_TO', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const webFindings = findings.filter(f => f.category === 'webapp');
+    expect(webFindings.length).toBe(1);
+    expect(webFindings[0].title).toContain('https://app.corp.io/login');
+    expect(webFindings[0].description).toContain('Django 4.2');
+    expect(webFindings[0].description).toContain('has login form');
+    expect(webFindings[0].remediation).toContain('Harden authentication');
+  });
+
+  it('webapp with auth edges gets its own finding', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'webapp-portal', properties: { id: 'webapp-portal', type: 'webapp', label: 'https://portal.corp.io', url: 'https://portal.corp.io', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'user-attacker', properties: { id: 'user-attacker', type: 'user', label: 'attacker', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-attacker', target: 'webapp-portal', properties: { type: 'AUTHENTICATED_AS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const webFindings = findings.filter(f => f.category === 'webapp');
+    expect(webFindings.length).toBe(1);
+    expect(webFindings[0].description).toContain('Authenticated via');
+  });
+});
+
+// ============================================================
+// Evidence chain linkage for nodes created inside findings
+// ============================================================
+
+describe('buildEvidenceChainsForNode — finding-created nodes', () => {
+  it('finds evidence via ingested_node_ids in details', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'vuln-new', properties: { id: 'vuln-new', type: 'vulnerability', label: 'New RCE', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [],
+    };
+    const history: ActivityLogEntry[] = [{
+      event_id: 'e-finding-1',
+      timestamp: '2026-01-01T06:00:00Z',
+      description: 'Finding reported: 1 nodes, 0 edges',
+      action_id: 'act-scan',
+      event_type: 'finding_reported' as any,
+      tool_name: 'nuclei',
+      target_node_ids: [],
+      linked_finding_ids: ['finding-uuid-abc'],
+      details: {
+        ingested_node_ids: ['vuln-new'],
+        evidence_type: 'command_output',
+        evidence_content: 'GET /vuln HTTP/1.1\n200 OK',
+        raw_output: '[nuclei] vuln-new detected at /vuln',
+      },
+    }];
+
+    const chains = buildEvidenceChainsForNode('vuln-new', graph, history);
+    expect(chains.length).toBeGreaterThanOrEqual(1);
+    const chain = chains.find(c => c.action_id === 'act-scan');
+    expect(chain).toBeDefined();
+    expect(chain!.tool).toBe('nuclei');
+    expect(chain!.evidence_content).toContain('GET /vuln');
+    expect(chain!.raw_output).toContain('nuclei');
+  });
+
+  it('finds evidence via target_node_ids when finding populates them', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'ci-role', properties: { id: 'ci-role', type: 'cloud_identity', label: 'role/S3Admin', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [],
+    };
+    const history: ActivityLogEntry[] = [{
+      event_id: 'e-finding-2',
+      timestamp: '2026-01-01T07:00:00Z',
+      description: 'Finding reported: 1 nodes, 1 edges',
+      action_id: 'act-pacu',
+      event_type: 'finding_reported' as any,
+      tool_name: 'pacu',
+      target_node_ids: ['ci-role'],
+      linked_finding_ids: ['finding-uuid-xyz'],
+      details: {
+        ingested_node_ids: ['ci-role'],
+      },
+    }];
+
+    const chains = buildEvidenceChainsForNode('ci-role', graph, history);
+    expect(chains.length).toBeGreaterThanOrEqual(1);
+    expect(chains[0].tool).toBe('pacu');
+  });
+});
+
+// ============================================================
+// Evidence rendering in full report
+// ============================================================
+
+describe('generateFullReport — evidence content rendering', () => {
+  it('renders evidence_content and raw_output in markdown', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'host-ev', properties: { id: 'host-ev', type: 'host', label: '10.10.10.99', ip: '10.10.10.99', os: 'Linux', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'user-ev', properties: { id: 'user-ev', type: 'user', label: 'root', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-ev', target: 'host-ev', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const history: ActivityLogEntry[] = [{
+      event_id: 'e-ev',
+      timestamp: '2026-01-01T05:00:00Z',
+      description: 'Root access obtained via SSH',
+      action_id: 'act-root',
+      event_type: 'action_completed' as any,
+      tool_name: 'ssh',
+      target_node_ids: ['host-ev'],
+      details: {
+        evidence_type: 'command_output',
+        evidence_content: 'uid=0(root) gid=0(root)',
+        evidence_filename: 'id-output.txt',
+        raw_output: 'root@target:~# id\nuid=0(root) gid=0(root)',
+      },
+    }];
+
+    const input: ReportInput = {
+      config: makeConfig(),
+      graph,
+      history: history as ActivityLogEntry[],
+      agents: [],
+    };
+    const report = generateFullReport(input, { include_evidence: true });
+    expect(report).toContain('uid=0(root)');
+    expect(report).toContain('id-output.txt');
+    expect(report).toContain('Raw output (truncated)');
+  });
+});
+
+// ============================================================
+// buildAllEvidenceChains includes cloud/webapp
+// ============================================================
+
+describe('buildAllEvidenceChains — expanded coverage', () => {
+  it('includes cloud_identity and webapp nodes', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'ci-1', properties: { id: 'ci-1', type: 'cloud_identity', label: 'ci-1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'cr-1', properties: { id: 'cr-1', type: 'cloud_resource', label: 'cr-1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'wa-1', properties: { id: 'wa-1', type: 'webapp', label: 'wa-1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [],
+    };
+    const history: ActivityLogEntry[] = [
+      { event_id: 'e1', timestamp: '2026-01-01T00:00:00Z', description: 'cloud scan', target_node_ids: ['ci-1', 'cr-1', 'wa-1'] },
+    ];
+
+    const allChains = buildAllEvidenceChains(graph, history as ActivityLogEntry[]);
+    expect(allChains.has('ci-1')).toBe(true);
+    expect(allChains.has('cr-1')).toBe(true);
+    expect(allChains.has('wa-1')).toBe(true);
+  });
+});

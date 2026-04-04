@@ -295,6 +295,12 @@ export function ingestFindingImpl(
   // Check objectives
   host.evaluateObjectives();
 
+  const allIngestedNodeIds = [...new Set([
+    ...(finding.target_node_ids || []),
+    ...newNodes,
+    ...updatedNodes,
+  ])];
+
   host.logActionEvent({
     description: `Finding ingested: ${newNodes.length} new nodes, ${newEdges.length} new edges, ${inferredEdges.length} inferred edges`,
     agent_id: finding.agent_id,
@@ -302,7 +308,7 @@ export function ingestFindingImpl(
     event_type: 'finding_ingested',
     category: 'finding',
     tool_name: finding.tool_name,
-    target_node_ids: finding.target_node_ids,
+    target_node_ids: allIngestedNodeIds,
     frontier_item_id: finding.frontier_item_id,
     linked_finding_ids: [finding.id],
     result_classification: newNodes.length > 0 || newEdges.length > 0 || inferredEdges.length > 0 ? 'success' : 'neutral',
@@ -313,6 +319,7 @@ export function ingestFindingImpl(
       updated_nodes: updatedNodes.length,
       updated_edges: updatedEdges.length,
       inferred_edges: inferredEdges.length,
+      ingested_node_ids: allIngestedNodeIds,
     },
   });
 

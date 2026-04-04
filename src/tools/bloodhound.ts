@@ -122,9 +122,24 @@ populate the graph with Active Directory structure.`,
 
       for (const parsed of parsedFindings) {
         const prepared = prepareFindingForIngest(parsed.finding, nodeId => (parsedNodeLookup.get(nodeId) as any) || engine.getNode(nodeId));
-        if (prepared.errors.length > 0) {
-          allErrors.push(`${parsed.file}: invalid graph mutation (${prepared.errors.map(error => error.message).join('; ')})`);
+
+        // Separate fatal node errors from recoverable edge errors
+        const nodeErrors = prepared.errors.filter(e => e.code !== 'edge_type_constraint' && e.code !== 'missing_node_reference');
+        const edgeErrors = prepared.errors.filter(e => e.code === 'edge_type_constraint' || e.code === 'missing_node_reference');
+
+        if (nodeErrors.length > 0) {
+          allErrors.push(`${parsed.file}: invalid graph mutation (${nodeErrors.map(error => error.message).join('; ')})`);
           continue;
+        }
+
+        if (edgeErrors.length > 0) {
+          allErrors.push(...edgeErrors.map(e => `${parsed.file}: skipped edge: ${e.message}`));
+          // Remove invalid edges and continue with the rest of the file
+          const badEdgeKeys = new Set(edgeErrors.map(e => `${e.source_id}--${e.edge_type}--${e.target_id}`));
+          prepared.finding.edges = prepared.finding.edges.filter(e => {
+            const key = `${e.source}--${e.properties.type}--${e.target}`;
+            return !badEdgeKeys.has(key);
+          });
         }
 
         const ingestResult = engine.ingestFinding(prepared.finding);

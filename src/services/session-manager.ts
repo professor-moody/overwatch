@@ -300,14 +300,27 @@ export class SessionManager {
             `SSH auth failed for "${options.title}": ${authFailed}`);
         }
 
-        // Positive confirmation: only if no auth failure detected
+        // Check for auth prompts (password, MFA, passphrase) — transport connected
+        // but auth is NOT complete. The session stays open for operator interaction.
+        const authPrompt = !authFailed ? this.detectSshAuthPrompt(session) : null;
+
+        // Check if the process already exited during the initial wait
+        const sessionDied = session.metadata.state === 'closed' || session.metadata.state === 'error';
+
+        // Positive confirmation: only if no auth failure, no prompt, and process alive
         let confirmed = false;
-        if (!authFailed) {
+        if (!authFailed && !authPrompt && !sessionDied) {
           confirmed = await this.detectSshAuthSuccess(session);
         }
 
+        // success = authentication was positively established (shell confirmed),
+        // or at minimum no failure/prompt detected and the session is alive.
+        // Prompt-only and disconnect states are NOT success — they are
+        // "transport connected, auth incomplete."
+        const success = !authFailed && !authPrompt && !sessionDied;
+
         this.engine.ingestSessionResult({
-          success: !authFailed,
+          success,
           confirmed,
           target_node: options.target_node,
           principal_node: options.principal_node,
@@ -317,6 +330,11 @@ export class SessionManager {
           action_id: options.action_id,
           frontier_item_id: options.frontier_item_id,
         });
+
+        if (authPrompt) {
+          this.logSessionEvent(id, 'session_access_unconfirmed',
+            `SSH session "${options.title}" reached ${authPrompt} — auth not complete`);
+        }
       }
 
       const initial = session.buffer.tail(4096);
@@ -416,22 +434,30 @@ export class SessionManager {
     session.handle.write(command + '\n');
     session.metadata.last_activity_at = new Date().toISOString();
 
-    // Wait for output to settle
+    // Wait for output to settle.
+    // Phase 1: wait for at least one byte of post-command output (or timeout).
+    // Phase 2: once output has started, use idle settling — return when no new
+    //          output arrives for idle_ms consecutive milliseconds.
     return new Promise<SessionReadResult>((resolve) => {
       let lastEndPos = session.buffer.endPos;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let hasReceivedOutput = false;
+      let finished = false;
 
       const finish = () => {
+        if (finished) return;
+        finished = true;
         if (idleTimer) clearTimeout(idleTimer);
         if (overallTimer) clearTimeout(overallTimer);
+        if (waitInterval) clearInterval(waitInterval);
         const result = session.buffer.read(startPos);
         resolve({ session_id: sessionId, start_pos: result.startPos, end_pos: result.endPos, text: result.text, truncated: result.truncated });
       };
 
       const checkIdle = () => {
+        if (finished) return;
         const currentEnd = session.buffer.endPos;
 
-        // Check wait_for regex
         if (waitForRegex) {
           const data = session.buffer.read(startPos);
           if (waitForRegex.test(data.text)) {
@@ -441,7 +467,6 @@ export class SessionManager {
         }
 
         if (currentEnd === lastEndPos) {
-          // No new output — idle period elapsed
           finish();
           return;
         }
@@ -450,10 +475,32 @@ export class SessionManager {
         idleTimer = setTimeout(checkIdle, idleMs);
       };
 
-      // Start idle checking after a brief initial delay
-      idleTimer = setTimeout(checkIdle, idleMs);
+      // Phase 1: poll for first output byte before starting idle settling.
+      // Check every 50ms. Once output arrives, transition to Phase 2.
+      const waitInterval = setInterval(() => {
+        if (finished) { clearInterval(waitInterval); return; }
+        const currentEnd = session.buffer.endPos;
 
-      // Overall timeout
+        // Check wait_for even before any output (covers edge case of
+        // output arriving between the write and the first poll)
+        if (waitForRegex) {
+          const data = session.buffer.read(startPos);
+          if (waitForRegex.test(data.text)) {
+            finish();
+            return;
+          }
+        }
+
+        if (currentEnd > startPos && !hasReceivedOutput) {
+          hasReceivedOutput = true;
+          lastEndPos = currentEnd;
+          clearInterval(waitInterval);
+          // Transition to Phase 2: start idle settling
+          idleTimer = setTimeout(checkIdle, idleMs);
+        }
+      }, 50);
+
+      // Overall timeout — hard deadline regardless of phase
       const overallTimer = setTimeout(finish, timeoutMs);
     });
   }
@@ -618,7 +665,7 @@ export class SessionManager {
   }
 
   private detectSshAuthFailure(session: Session): string | null {
-    const output = session.buffer.tail(4096).text.toLowerCase();
+    const output = session.buffer.tail(4096).text;
     const patterns: Array<[RegExp, string]> = [
       [/permission denied/i, 'Permission denied'],
       [/authentication failed/i, 'Authentication failed'],
@@ -627,9 +674,41 @@ export class SessionManager {
       [/connection reset by peer/i, 'Connection reset by peer'],
       [/no route to host/i, 'No route to host'],
       [/connection timed out/i, 'Connection timed out'],
+      [/kex_exchange_identification/i, 'Key exchange failed'],
+      [/banner exchange/i, 'Banner exchange error'],
+      [/connection closed by .+ port \d+/i, 'Connection closed by remote host'],
+      [/closed by remote host/i, 'Closed by remote host'],
+      [/no matching (host key|key exchange|cipher|mac)/i, 'Algorithm negotiation failed'],
+      [/too many authentication failures/i, 'Too many authentication failures'],
+      [/ssh_dispatch_run_fatal/i, 'SSH dispatch fatal error'],
+      [/could not resolve hostname/i, 'Could not resolve hostname'],
+      [/network is unreachable/i, 'Network unreachable'],
     ];
     for (const [re, label] of patterns) {
       if (re.test(output)) return label;
+    }
+    return null;
+  }
+
+  /**
+   * Detect whether SSH output indicates an authentication prompt (password,
+   * MFA, passphrase) — meaning transport connected but auth is not complete.
+   * Returns the prompt type if detected, null otherwise.
+   */
+  detectSshAuthPrompt(session: Session): string | null {
+    const tail = session.buffer.tail(1024).text;
+    const lastLine = tail.split('\n').filter(l => l.trim().length > 0).pop() || '';
+    const promptPatterns: Array<[RegExp, string]> = [
+      [/password\s*:/i, 'password_prompt'],
+      [/password for\s/i, 'password_prompt'],
+      [/enter passphrase/i, 'passphrase_prompt'],
+      [/verification code\s*:/i, 'mfa_prompt'],
+      [/otp\s*:/i, 'mfa_prompt'],
+      [/enter.*token/i, 'mfa_prompt'],
+      [/are you sure you want to continue connecting/i, 'host_key_prompt'],
+    ];
+    for (const [re, label] of promptPatterns) {
+      if (re.test(lastLine)) return label;
     }
     return null;
   }

@@ -4,7 +4,7 @@
 // ============================================================
 
 import type { Finding } from '../types.js';
-import { cloudIdentityId, cloudPolicyId, groupId, normalizeKeyPart } from './parser-utils.js';
+import { cloudIdentityId, cloudPolicyId, normalizeKeyPart } from './parser-utils.js';
 
 export interface AzureHoundIngestResult {
   findings: Finding[];
@@ -22,6 +22,14 @@ interface AzureHoundData {
 }
 
 const AGENT_ID = 'azurehound-ingest';
+
+// All Azure entities (users, SPs, groups) share a single ID namespace keyed
+// by their Entra object ID (a UUID). This ensures that role assignments —
+// which only carry a principalId — attach to the correct node regardless of
+// whether the principal is a user, group, or service principal.
+function azureObjectNodeId(objectId: string): string {
+  return `azure-${normalizeKeyPart(objectId)}`;
+}
 
 export function parseAzureHoundFile(content: string, filename: string): Finding {
   const nodes: Finding['nodes'] = [];
@@ -49,7 +57,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
         if (!objectId) break;
         const upn = props.userPrincipalName || props.mail || '';
         const displayName = props.displayName || upn || objectId;
-        const nodeId = cloudIdentityId(`azure:user:${objectId}`);
+        const nodeId = azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
         seenNodes.add(nodeId);
         nodes.push({
@@ -71,7 +79,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
         const objectId = props.id || props.objectId || item.ObjectIdentifier || '';
         if (!objectId) break;
         const displayName = props.displayName || objectId;
-        const nodeId = groupId(displayName, 'azure');
+        const nodeId = azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
         seenNodes.add(nodeId);
         nodes.push({
@@ -82,23 +90,14 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
           sid: objectId,
         } as Finding['nodes'][0]);
 
-        // Group members
+        // Group members — keyed by object ID to align with entity nodes
         const members = item.Members || props.members || [];
         for (const member of Array.isArray(members) ? members : []) {
           const memberId = member.ObjectIdentifier || member.id || member.objectId || '';
           const memberType = (member.ObjectType || member['@odata.type'] || '').toLowerCase();
           if (!memberId) continue;
 
-          let memberNodeId: string;
-          if (memberType.includes('user')) {
-            memberNodeId = cloudIdentityId(`azure:user:${memberId}`);
-          } else if (memberType.includes('group')) {
-            memberNodeId = groupId(member.displayName || memberId, 'azure');
-          } else if (memberType.includes('serviceprincipal') || memberType.includes('app')) {
-            memberNodeId = cloudIdentityId(`azure:sp:${memberId}`);
-          } else {
-            memberNodeId = cloudIdentityId(`azure:unknown:${memberId}`);
-          }
+          const memberNodeId = azureObjectNodeId(memberId);
 
           if (!seenNodes.has(memberNodeId)) {
             seenNodes.add(memberNodeId);
@@ -123,6 +122,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
       case 'azapps':
       case 'apps':
       case 'applications': {
+        // Apps use appId (different from SP objectId), so keep a separate namespace
         const appId = props.appId || props.id || item.ObjectIdentifier || '';
         if (!appId) break;
         const displayName = props.displayName || appId;
@@ -145,7 +145,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
         const spId = props.id || props.objectId || item.ObjectIdentifier || '';
         if (!spId) break;
         const displayName = props.displayName || spId;
-        const nodeId = cloudIdentityId(`azure:sp:${spId}`);
+        const nodeId = azureObjectNodeId(spId);
         if (seenNodes.has(nodeId)) break;
         seenNodes.add(nodeId);
         nodes.push({
@@ -157,7 +157,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
           cloud_account: props.tenantId || '',
         } as Finding['nodes'][0]);
 
-        // Link to app if appId is present
+        // Link to app if appId is present (apps use a separate namespace)
         const appId = props.appId;
         if (appId) {
           const appNodeId = cloudIdentityId(`azure:app:${appId}`);
@@ -188,7 +188,7 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
           } as Finding['nodes'][0]);
         }
 
-        const principalNodeId = cloudIdentityId(`azure:principal:${principalId}`);
+        const principalNodeId = azureObjectNodeId(principalId);
         if (!seenNodes.has(principalNodeId)) {
           seenNodes.add(principalNodeId);
           nodes.push({
@@ -212,8 +212,8 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
         const resourceId = props.resourceId || props.ResourceId || '';
         if (!principalId || !resourceId) break;
 
-        const srcId = cloudIdentityId(`azure:principal:${principalId}`);
-        const tgtId = cloudIdentityId(`azure:sp:${resourceId}`);
+        const srcId = azureObjectNodeId(principalId);
+        const tgtId = azureObjectNodeId(resourceId);
 
         if (!seenNodes.has(srcId)) {
           seenNodes.add(srcId);

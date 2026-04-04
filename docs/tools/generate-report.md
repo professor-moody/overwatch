@@ -74,12 +74,17 @@ Self-contained single-file HTML with:
 | `compromised_host` | Hosts with HAS_SESSION/ADMIN_TO edges (confidence ≥ 0.9) | Critical if ADMIN_TO, High if session only |
 | `credential` | Credential nodes with confidence ≥ 0.9 and usable for auth | Critical if privileged, High otherwise |
 | `vulnerability` | Vulnerability nodes | Mapped from CVSS score |
+| `cloud_exposure` | Cloud identities with policies/trust and public cloud resources | Critical if admin policy, High if public resource |
+| `webapp` | Webapp nodes with vulnerabilities or authenticated access | High if vulnerable, Medium if auth-only |
 
 ## Risk Scoring
 
 - Host: base 5.0 + 3.0 (ADMIN_TO) + 1.5 (HAS_SESSION) + 1.0 (≤2 hops to objective), capped at 10
 - Credential: 9.5 if privileged, 7.0 otherwise
 - Vulnerability: CVSS score directly, or 8.0 if exploitable without CVSS, 5.0 fallback
+- Cloud identity: 9.0 if admin policy, 6.5 otherwise
+- Cloud resource: 7.5 if public, 5.0 otherwise
+- Webapp: 7.0 if vulnerable, 4.0 otherwise
 
 ## Auto-Remediation
 
@@ -87,6 +92,17 @@ Generated per finding type:
 - **Hosts** — revoke sessions, reset admin creds, check persistence (OS-specific)
 - **Credentials** — rotate credential, check lateral movement, credential guard mitigations
 - **Vulnerabilities** — patch CVE, update component, vuln-type-specific advice (SSRF → IMDSv2, SQLi → parameterized queries, XSS → CSP)
+- **Cloud identities** — review/reduce permissions, remove admin policies, enable MFA, rotate access keys
+- **Cloud resources** — restrict public access, enable logging, resource-type-specific advice (S3 Block Public Access, IMDSv2, security groups)
+- **Webapps** — fix identified vulns, harden auth (MFA, rate limiting), deploy WAF, code review
+
+## Evidence
+
+When operators supply `evidence` or `raw_output` via `report_finding`, the content is persisted in the activity log and rendered in the report:
+
+- **evidence_content** — inline code block in the finding's Evidence section (truncated to 2 KB / 30 lines)
+- **evidence_filename** — shown as attachment metadata
+- **raw_output** — rendered in a collapsible `<details>` block (truncated to 2 KB / 30 lines)
 
 ## Example
 

@@ -70,12 +70,14 @@ Returns `SessionReadResult`: `{ session_id, start_pos, end_pos, text, truncated 
 
 Convenience: write command + wait for output to settle + return captured output.
 
+Uses a two-phase wait: first waits for any output to arrive after the command is written (up to `timeout_ms`), then uses idle settling — returns once no new output has arrived for `idle_ms` consecutive milliseconds. This prevents early empty returns on slow-starting commands.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | string | Session ID |
 | `command` | string | Command (newline appended automatically) |
 | `timeout_ms` | number? | Max wait (default: 10000) |
-| `idle_ms` | number? | Return after this much silence (default: 500) |
+| `idle_ms` | number? | Return after this much silence *after first output* (default: 500) |
 | `wait_for` | string? | Regex — return immediately on match |
 | `agent_id` | string? | Checked against `claimed_by` |
 | `force` | boolean? | Override ownership check |

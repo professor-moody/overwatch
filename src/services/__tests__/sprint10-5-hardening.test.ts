@@ -185,15 +185,13 @@ describe('H.5 — Superseded identity filtering', () => {
 describe('H.6 — SSH session confirmation', () => {
   afterEach(cleanup);
 
-  it('unconfirmed session gets reduced confidence HAS_SESSION edge', () => {
+  it('unconfirmed session does NOT create HAS_SESSION edge', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-    // Seed nodes
     engine.ingestFinding(makeFinding([
       { id: 'user-test', type: 'user' as const, label: 'testuser', discovered_at: now, confidence: 1.0 },
       { id: 'host-target', type: 'host' as const, label: '10.10.10.5', discovered_at: now, confidence: 1.0 },
     ]));
 
-    // Simulate unconfirmed session
     engine.ingestSessionResult({
       success: true,
       confirmed: false,
@@ -203,9 +201,7 @@ describe('H.6 — SSH session confirmation', () => {
     });
 
     const result = engine.queryGraph({ edge_type: 'HAS_SESSION' });
-    expect(result.edges.length).toBe(1);
-    expect(result.edges[0].properties.confidence).toBe(0.5);
-    expect(result.edges[0].properties.session_unconfirmed).toBe(true);
+    expect(result.edges.length).toBe(0);
   });
 
   it('confirmed session gets full confidence HAS_SESSION edge', () => {
@@ -229,14 +225,14 @@ describe('H.6 — SSH session confirmation', () => {
     expect(result.edges[0].properties.session_unconfirmed).toBeUndefined();
   });
 
-  it('confirmed session upgrades previously unconfirmed edge', () => {
+  it('confirmed session creates edge even after prior unconfirmed attempt', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     engine.ingestFinding(makeFinding([
       { id: 'user-test', type: 'user' as const, label: 'testuser', discovered_at: now, confidence: 1.0 },
       { id: 'host-target', type: 'host' as const, label: '10.10.10.5', discovered_at: now, confidence: 1.0 },
     ]));
 
-    // First: unconfirmed
+    // First: unconfirmed — no edge created
     engine.ingestSessionResult({
       success: true,
       confirmed: false,
@@ -245,7 +241,10 @@ describe('H.6 — SSH session confirmation', () => {
       session_id: 'sess-3a',
     });
 
-    // Second: confirmed
+    let result = engine.queryGraph({ edge_type: 'HAS_SESSION' });
+    expect(result.edges.length).toBe(0);
+
+    // Second: confirmed — edge created at full confidence
     engine.ingestSessionResult({
       success: true,
       confirmed: true,
@@ -254,7 +253,7 @@ describe('H.6 — SSH session confirmation', () => {
       session_id: 'sess-3b',
     });
 
-    const result = engine.queryGraph({ edge_type: 'HAS_SESSION' });
+    result = engine.queryGraph({ edge_type: 'HAS_SESSION' });
     expect(result.edges.length).toBe(1);
     expect(result.edges[0].properties.confidence).toBe(1.0);
   });
@@ -346,6 +345,120 @@ describe('H.7 — SSH probe guard for non-shell prompts', () => {
     const session = makeSession('user@host:~$ ');
     const result = await manager.detectSshAuthSuccess(session);
     expect(result).toBe(true);
+  });
+});
+
+// ============================================================
+// H.7b: SSH classification — detectSshAuthFailure expanded patterns
+// ============================================================
+describe('H.7b — SSH failure detection expanded patterns', () => {
+  function makeSession(tailText: string): Session {
+    const buf = new RingBuffer(4096);
+    buf.write(tailText);
+    return {
+      metadata: {
+        id: 'sess-fail-test',
+        kind: 'ssh',
+        title: 'test',
+        state: 'connected',
+        started_at: now,
+        last_activity_at: now,
+        transport: 'pty',
+        capabilities: { tty_quality: 'full', has_stdin: true, has_stdout: true, supports_resize: true, supports_signals: true },
+        buffer_end_pos: 0,
+      } as SessionMetadata,
+      handle: null,
+      buffer: buf,
+    };
+  }
+
+  it('detects "Connection closed by" as auth failure', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Connection closed by 10.10.10.5 port 22\r\n');
+    // Access private method via cast
+    const result = (manager as any).detectSshAuthFailure(session);
+    expect(result).toBe('Connection closed by remote host');
+  });
+
+  it('detects "kex_exchange_identification" as auth failure', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('kex_exchange_identification: Connection closed by remote host');
+    const result = (manager as any).detectSshAuthFailure(session);
+    expect(result).toBe('Key exchange failed');
+  });
+
+  it('detects "too many authentication failures" as auth failure', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Received disconnect from 10.10.10.5 port 22:2: Too many authentication failures');
+    const result = (manager as any).detectSshAuthFailure(session);
+    expect(result).toBe('Too many authentication failures');
+  });
+});
+
+// ============================================================
+// H.7c: SSH classification — detectSshAuthPrompt
+// ============================================================
+describe('H.7c — SSH auth prompt detection', () => {
+  function makeSession(tailText: string): Session {
+    const buf = new RingBuffer(4096);
+    buf.write(tailText);
+    return {
+      metadata: {
+        id: 'sess-prompt-test',
+        kind: 'ssh',
+        title: 'test',
+        state: 'connected',
+        started_at: now,
+        last_activity_at: now,
+        transport: 'pty',
+        capabilities: { tty_quality: 'full', has_stdin: true, has_stdout: true, supports_resize: true, supports_signals: true },
+        buffer_end_pos: 0,
+      } as SessionMetadata,
+      handle: null,
+      buffer: buf,
+    };
+  }
+
+  it('detects password prompt', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('user@10.10.10.5\'s password: ');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBe('password_prompt');
+  });
+
+  it('detects MFA verification code prompt', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Verification code: ');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBe('mfa_prompt');
+  });
+
+  it('detects passphrase prompt', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Enter passphrase for key \'/home/user/.ssh/id_rsa\': ');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBe('passphrase_prompt');
+  });
+
+  it('detects host key confirmation prompt', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('Are you sure you want to continue connecting (yes/no/[fingerprint])? ');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBe('host_key_prompt');
+  });
+
+  it('returns null for shell prompt (not an auth prompt)', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('user@host:~$ ');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBeNull();
+  });
+
+  it('returns null for empty output', () => {
+    const manager = new SessionManager(null);
+    const session = makeSession('');
+    const result = manager.detectSshAuthPrompt(session);
+    expect(result).toBeNull();
   });
 });
 

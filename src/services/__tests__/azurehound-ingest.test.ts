@@ -144,5 +144,91 @@ describe('AzureHound Ingest', () => {
       const finding = parseAzureHoundFile(JSON.stringify(data), 'users.json');
       expect(finding.nodes.length).toBe(1);
     });
+
+    it('role assignment HAS_POLICY edge lands on the same node as the user', () => {
+      const userFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azusers',
+        data: [{ Properties: { id: 'user-obj-1', displayName: 'Alice', userPrincipalName: 'alice@contoso.com' } }],
+      }), 'users.json');
+
+      const roleFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azroleassignments',
+        data: [{ Properties: { principalId: 'user-obj-1', roleDefinitionName: 'Global Administrator' } }],
+      }), 'roles.json');
+
+      const userNodeId = userFinding.nodes[0].id;
+      const policyEdge = roleFinding.edges.find(e => e.properties.type === 'HAS_POLICY');
+      expect(policyEdge).toBeTruthy();
+      expect(policyEdge!.source).toBe(userNodeId);
+    });
+
+    it('app role assignment ASSUMES_ROLE edge lands on the same node as the SP', () => {
+      const spFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azserviceprincipals',
+        data: [{ Properties: { id: 'sp-obj-1', displayName: 'MyApp SP' } }],
+      }), 'sps.json');
+
+      const appRoleFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azapproleassignments',
+        data: [{ Properties: { principalId: 'sp-obj-1', resourceId: 'target-sp-1' } }],
+      }), 'approles.json');
+
+      const spNodeId = spFinding.nodes[0].id;
+      const assumesEdge = appRoleFinding.edges.find(e => e.properties.type === 'ASSUMES_ROLE');
+      expect(assumesEdge).toBeTruthy();
+      expect(assumesEdge!.source).toBe(spNodeId);
+    });
+
+    it('two groups with the same displayName but different object IDs produce distinct nodes', () => {
+      const data = {
+        kind: 'azgroups',
+        data: [
+          { Properties: { id: 'grp-1', displayName: 'Admins' } },
+          { Properties: { id: 'grp-2', displayName: 'Admins' } },
+        ],
+      };
+
+      const finding = parseAzureHoundFile(JSON.stringify(data), 'groups.json');
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(2);
+      expect(groups[0].id).not.toBe(groups[1].id);
+    });
+
+    it('group member edges resolve to the same node IDs as entity files', () => {
+      const userFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azusers',
+        data: [{ Properties: { id: 'user-1', displayName: 'Alice' } }],
+      }), 'users.json');
+
+      const groupFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azgroups',
+        data: [{
+          Properties: { id: 'grp-1', displayName: 'Admins' },
+          Members: [{ ObjectIdentifier: 'user-1', ObjectType: 'User', displayName: 'Alice' }],
+        }],
+      }), 'groups.json');
+
+      const userNodeId = userFinding.nodes[0].id;
+      const memberEdge = groupFinding.edges.find(e => e.properties.type === 'MEMBER_OF');
+      expect(memberEdge).toBeTruthy();
+      expect(memberEdge!.source).toBe(userNodeId);
+    });
+
+    it('role assignment for a group principal uses the same ID as the group node', () => {
+      const groupFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azgroups',
+        data: [{ Properties: { id: 'grp-1', displayName: 'Admins' } }],
+      }), 'groups.json');
+
+      const roleFinding = parseAzureHoundFile(JSON.stringify({
+        kind: 'azroleassignments',
+        data: [{ Properties: { principalId: 'grp-1', roleDefinitionName: 'Reader' } }],
+      }), 'roles.json');
+
+      const groupNodeId = groupFinding.nodes[0].id;
+      const policyEdge = roleFinding.edges.find(e => e.properties.type === 'HAS_POLICY');
+      expect(policyEdge).toBeTruthy();
+      expect(policyEdge!.source).toBe(groupNodeId);
+    });
   });
 });

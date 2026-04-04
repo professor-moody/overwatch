@@ -773,11 +773,12 @@ export class GraphEngine {
     const confirmed = result.confirmed !== false; // default true for backward compat
 
     if (success) {
-      const edgeConfidence = confirmed ? 1.0 : 0.5;
       let sessionEdgeCreated = false;
-      // Create HAS_SESSION edge only if principal_node is a known graph node
-      // of type user, group, or credential (per graph-schema.ts constraints)
-      if (principal_node && this.ctx.graph.hasNode(principal_node)) {
+
+      // Only create HAS_SESSION edges when auth is positively confirmed.
+      // Unconfirmed success (session alive but no shell detected) is logged
+      // but does NOT create graph edges — the operator can confirm manually.
+      if (confirmed && principal_node && this.ctx.graph.hasNode(principal_node)) {
         const principalAttrs = this.ctx.graph.getNodeAttributes(principal_node);
         const validSourceTypes = new Set(['user', 'group', 'credential']);
         if (validSourceTypes.has(principalAttrs.type)) {
@@ -786,39 +787,34 @@ export class GraphEngine {
           if (!this.ctx.graph.hasEdge(edgeId)) {
             this.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
               type: 'HAS_SESSION',
-              confidence: edgeConfidence,
+              confidence: 1.0,
               discovered_at: new Date().toISOString(),
               discovered_by: 'session-manager',
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
-              ...(confirmed ? {} : { session_unconfirmed: true }),
             });
             this.invalidateFrontierCache();
             this.invalidatePathGraph();
           } else {
-            // Update existing edge — upgrade to confirmed if higher confidence
-            const existing = this.ctx.graph.getEdgeAttributes(edgeId);
-            const newConfidence = Math.max(existing.confidence ?? 0, edgeConfidence);
             this.ctx.graph.mergeEdgeAttributes(edgeId, {
-              confidence: newConfidence,
+              confidence: 1.0,
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
-              ...(newConfidence >= 1.0 ? { session_unconfirmed: undefined } : {}),
+              session_unconfirmed: undefined,
             });
           }
         }
       }
 
-      // Mark the specific frontier item's edge as tested (not all edges to host)
-      this.markFrontierEdgeTested(frontier_item_id, action_id, 'success');
+      // Frontier edge: confirmed = success, unconfirmed = partial (needs operator review)
+      this.markFrontierEdgeTested(frontier_item_id, action_id, confirmed ? 'success' : 'partial');
 
-      // Log operational event regardless of whether HAS_SESSION was created
       const eventType = confirmed ? 'session_access_confirmed' : 'session_access_unconfirmed';
       this.logActionEvent({
         event_type: eventType,
-        description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed'}${principal_node ? ` as ${principal_node}` : ''}`,
+        description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed — no shell detected'}${principal_node ? ` as ${principal_node}` : ''}`,
         agent_id,
         action_id,
         frontier_item_id,
@@ -859,7 +855,7 @@ export class GraphEngine {
   private markFrontierEdgeTested(
     frontier_item_id: string | undefined,
     action_id: string | undefined,
-    test_result: 'success' | 'failure'
+    test_result: 'success' | 'failure' | 'partial'
   ): void {
     if (!frontier_item_id && !action_id) return;
 
