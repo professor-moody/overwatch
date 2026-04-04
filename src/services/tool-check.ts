@@ -34,6 +34,11 @@ const TOOL_CHECKS: Array<{ name: string; command: string; versionFlag: string }>
   { name: 'responder', command: 'responder', versionFlag: '--version' },
   { name: 'enum4linux-ng', command: 'enum4linux-ng', versionFlag: '--version' },
   { name: 'kerbrute', command: 'kerbrute', versionFlag: 'version' },
+  { name: 'nuclei', command: 'nuclei', versionFlag: '-version' },
+  { name: 'nikto', command: 'nikto', versionFlag: '-Version' },
+  { name: 'pacu', command: 'pacu', versionFlag: '--version' },
+  { name: 'prowler', command: 'prowler', versionFlag: '--version' },
+  { name: 'ffuf', command: 'ffuf', versionFlag: '-V' },
   { name: 'python3', command: 'python3', versionFlag: '--version' },
 ];
 

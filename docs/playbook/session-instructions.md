@@ -28,7 +28,7 @@ The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It 
 7. **Execute** using shell commands, scripts, or other tools
 
 8. **Parse or report results**:
-    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler/scoutsuite). **Always pass `action_id` and `frontier_item_id`.**
+    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler). **Always pass `action_id` and `frontier_item_id`.**
     - Use `report_finding()` for manual observations or unsupported tools. **Always pass `action_id` and `frontier_item_id`.**
 
 9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`. **Always pass `action_id`** (the server auto-threads `frontier_item_id` from earlier calls with the same `action_id`).

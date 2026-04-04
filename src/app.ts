@@ -94,15 +94,21 @@ export type CreateOverwatchAppOptions = {
 
 export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || './engagement.json'): EngagementConfig {
   if (!existsSync(configPath)) {
-    console.error(`Config not found at ${configPath}. Creating default config.`);
-    return engagementConfigSchema.parse({
-      id: uuidv4(),
-      name: 'default-engagement',
-      created_at: new Date().toISOString(),
-      scope: { cidrs: [], domains: [], exclusions: [] },
-      objectives: [],
-      opsec: { name: 'pentest', max_noise: 0.7 },
-    });
+    if (process.env.OVERWATCH_BOOTSTRAP === '1') {
+      console.warn(`Config not found at ${configPath}. OVERWATCH_BOOTSTRAP=1 — creating default config.`);
+      return engagementConfigSchema.parse({
+        id: uuidv4(),
+        name: 'default-engagement',
+        created_at: new Date().toISOString(),
+        scope: { cidrs: [], domains: [], exclusions: [] },
+        objectives: [],
+        opsec: { name: 'pentest', max_noise: 0.7 },
+      });
+    }
+    throw new Error(
+      `Engagement config not found at ${configPath}. ` +
+      `Create a config file or set OVERWATCH_BOOTSTRAP=1 to start with an empty engagement.`
+    );
   }
 
   return parseEngagementConfig(readFileSync(configPath, 'utf-8'));

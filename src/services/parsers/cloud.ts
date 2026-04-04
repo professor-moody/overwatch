@@ -54,30 +54,37 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       // Trust policy — ASSUMES_ROLE edges from trusted principals
       const trustPolicy = role.AssumeRolePolicyDocument || role.assume_role_policy_document;
       if (trustPolicy) {
-        const doc = typeof trustPolicy === 'string' ? JSON.parse(trustPolicy) : trustPolicy;
-        const statements = Array.isArray(doc?.Statement) ? doc.Statement : [];
-        for (const stmt of statements) {
-          if (stmt.Effect !== 'Allow') continue;
-          const principals = stmt.Principal?.AWS;
-          const arnList = Array.isArray(principals) ? principals : (principals ? [principals] : []);
-          for (const trustedArn of arnList) {
-            if (typeof trustedArn !== 'string' || trustedArn === '*') continue;
-            const trustedId = cloudIdentityId(trustedArn);
-            if (!seenNodes.has(trustedId)) {
-              seenNodes.add(trustedId);
-              nodes.push({
-                id: trustedId, type: 'cloud_identity',
-                label: trustedArn.split('/').pop() || trustedArn,
-                discovered_at: now, discovered_by: agentId, confidence: 0.8,
-                provider: 'aws', arn: trustedArn,
-                principal_type: trustedArn.includes(':role/') ? 'role' : 'user',
-                cloud_account: (trustedArn.match(/:(\d{12}):/)?.[1]) || '',
-              } as Finding['nodes'][0]);
+        let doc: Record<string, unknown> | null = null;
+        try {
+          doc = typeof trustPolicy === 'string' ? JSON.parse(trustPolicy) : trustPolicy;
+        } catch {
+          // Malformed trust policy document — skip this role's trust edges, continue processing
+        }
+        if (doc) {
+          const statements = Array.isArray(doc?.Statement) ? doc.Statement : [];
+          for (const stmt of statements) {
+            if (stmt.Effect !== 'Allow') continue;
+            const principals = stmt.Principal?.AWS;
+            const arnList = Array.isArray(principals) ? principals : (principals ? [principals] : []);
+            for (const trustedArn of arnList) {
+              if (typeof trustedArn !== 'string' || trustedArn === '*') continue;
+              const trustedId = cloudIdentityId(trustedArn);
+              if (!seenNodes.has(trustedId)) {
+                seenNodes.add(trustedId);
+                nodes.push({
+                  id: trustedId, type: 'cloud_identity',
+                  label: trustedArn.split('/').pop() || trustedArn,
+                  discovered_at: now, discovered_by: agentId, confidence: 0.8,
+                  provider: 'aws', arn: trustedArn,
+                  principal_type: trustedArn.includes(':role/') ? 'role' : 'user',
+                  cloud_account: (trustedArn.match(/:(\d{12}):/)?.[1]) || '',
+                } as Finding['nodes'][0]);
+              }
+              edges.push({
+                source: trustedId, target: nodeId,
+                properties: { type: 'ASSUMES_ROLE', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+              });
             }
-            edges.push({
-              source: trustedId, target: nodeId,
-              properties: { type: 'ASSUMES_ROLE', confidence: 0.9, discovered_at: now, discovered_by: agentId },
-            });
           }
         }
       }
@@ -206,24 +213,33 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
         });
       }
 
-      // If instance has an IAM role (instance profile), create MANAGED_BY edge
-      const profileArn = inst.IamInstanceProfile?.Arn || inst.iam_instance_profile?.arn;
-      if (profileArn) {
-        const roleId = cloudIdentityId(profileArn);
-        if (!seenNodes.has(roleId)) {
-          seenNodes.add(roleId);
-          nodes.push({
-            id: roleId, type: 'cloud_identity',
-            label: profileArn.split('/').pop() || profileArn,
-            discovered_at: now, discovered_by: agentId, confidence: 0.9,
-            provider: 'aws', arn: profileArn, principal_type: 'role',
-            cloud_account: accountId,
-          } as Finding['nodes'][0]);
+      // If instance has an IAM role (instance profile), resolve the actual role ARN
+      // AWS instance profiles contain a Roles array; use the role ARN when available
+      // to avoid creating false pivot paths through the profile ARN.
+      const profile = inst.IamInstanceProfile || inst.iam_instance_profile;
+      if (profile) {
+        const profileArn = profile.Arn || profile.arn || '';
+        const roles = Array.isArray(profile.Roles) ? profile.Roles : (Array.isArray(profile.roles) ? profile.roles : []);
+        const roleArn = roles.length > 0 ? (roles[0].Arn || roles[0].arn || '') : '';
+        const resolvedArn = roleArn || profileArn;
+        if (resolvedArn) {
+          const principalType = roleArn ? 'role' : 'instance_profile';
+          const roleNodeId = cloudIdentityId(resolvedArn);
+          if (!seenNodes.has(roleNodeId)) {
+            seenNodes.add(roleNodeId);
+            nodes.push({
+              id: roleNodeId, type: 'cloud_identity',
+              label: resolvedArn.split('/').pop() || resolvedArn,
+              discovered_at: now, discovered_by: agentId, confidence: 0.9,
+              provider: 'aws', arn: resolvedArn, principal_type: principalType,
+              cloud_account: accountId,
+            } as Finding['nodes'][0]);
+          }
+          edges.push({
+            source: nodeId, target: roleNodeId,
+            properties: { type: 'MANAGED_BY', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+          });
         }
-        edges.push({
-          source: nodeId, target: roleId,
-          properties: { type: 'MANAGED_BY', confidence: 1.0, discovered_at: now, discovered_by: agentId },
-        });
       }
     }
   }

@@ -68,7 +68,6 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'sslscan': parseTestssl,
   'pacu': parsePacu,
   'prowler': parseProwler,
-  'scoutsuite': parseProwler,
 };
 
 export function getSupportedParsers(): string[] {

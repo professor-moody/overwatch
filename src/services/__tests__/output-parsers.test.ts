@@ -1118,6 +1118,48 @@ describe('Output Parsers', () => {
       expect(parseLdapsearch('').nodes.length).toBe(0);
       expect(parseLdapsearch('random garbage\nno ldap here').nodes.length).toBe(0);
     });
+
+    it('parses realistic AD computer with user+computer objectClass as host (LDIF)', () => {
+      const realisticComputer = [
+        'dn: CN=DC01,OU=Domain Controllers,DC=acme,DC=local',
+        'objectClass: top',
+        'objectClass: person',
+        'objectClass: organizationalPerson',
+        'objectClass: user',
+        'objectClass: computer',
+        'sAMAccountName: DC01$',
+        'dNSHostName: dc01.acme.local',
+        'operatingSystem: Windows Server 2019',
+        '',
+      ].join('\n');
+
+      const finding = parseLdapsearch(realisticComputer);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].hostname).toBe('dc01.acme.local');
+      expect(hosts[0].domain_joined).toBe(true);
+      expect(users.length).toBe(0);
+    });
+
+    it('parses realistic AD computer with user+computer objectClass as host (JSON)', () => {
+      const data = JSON.stringify([{
+        attributes: {
+          objectClass: ['top', 'person', 'organizationalPerson', 'user', 'computer'],
+          sAMAccountName: 'DC01$',
+          distinguishedName: 'CN=DC01,OU=Domain Controllers,DC=acme,DC=local',
+          dNSHostName: 'dc01.acme.local',
+          operatingSystem: 'Windows Server 2019',
+        },
+      }]);
+
+      const finding = parseLdapsearch(data);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].hostname).toBe('dc01.acme.local');
+      expect(users.length).toBe(0);
+    });
   });
 
   // =============================================
@@ -1453,6 +1495,15 @@ describe('Output Parsers', () => {
       expect(parsers).toContain('ffuf');
       expect(parsers).toContain('dirbuster');
       expect(parsers.length).toBeGreaterThanOrEqual(20);
+    });
+
+    it('does NOT include scoutsuite (removed — no real parser)', () => {
+      const parsers = getSupportedParsers();
+      expect(parsers).not.toContain('scoutsuite');
+    });
+
+    it('returns null for scoutsuite via parseOutput', () => {
+      expect(parseOutput('scoutsuite', '{}')).toBeNull();
     });
   });
 

@@ -28,7 +28,7 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **Nikto** | `nikto` | Text output | Web vulnerability findings |
 | **TestSSL** | `testssl`, `testssl.sh`, `sslscan` | Text or JSON output | TLS enrichment: version, cipher suites, certificate details |
 | **Pacu** | `pacu` | JSON output | Cloud identity + resource + policy nodes, `HAS_POLICY` / `ASSUMES_ROLE` edges |
-| **Prowler** | `prowler`, `scoutsuite` | JSON output | Cloud resource + policy nodes, security findings |
+| **Prowler** | `prowler` | OCSF JSON-lines output | Cloud resource nodes, security findings as vulnerability nodes |
 
 ## Parameters
 

@@ -284,11 +284,11 @@ function evaluateToolReadiness(profile: LabProfile, toolStatuses: ToolStatus[]):
     requireOne(['nuclei', 'nikto'], 'web_scanner', 'A web vulnerability scanner (nuclei or nikto) is recommended for web_app profile.');
     requireOne(['gobuster', 'feroxbuster', 'ffuf'], 'dir_enum', 'A directory enumeration tool (gobuster, feroxbuster, or ffuf) is recommended for web_app profile.');
   } else if (profile === 'cloud') {
-    requireOne(['pacu', 'prowler', 'scoutsuite'], 'cloud_audit', 'A cloud audit/exploitation tool (pacu, prowler, or scoutsuite) is recommended for cloud profile.');
+    requireOne(['pacu', 'prowler'], 'cloud_audit', 'A cloud audit/exploitation tool (pacu or prowler) is recommended for cloud profile.');
   } else if (profile === 'hybrid') {
     requireSingle('nmap');
     requireOne(['netexec'], 'netexec_or_nxc', 'NetExec/NXC is required for AD validation in hybrid environments.');
-    requireOne(['pacu', 'prowler', 'scoutsuite'], 'cloud_audit', 'A cloud audit tool is recommended for the cloud component of hybrid profile.');
+    requireOne(['pacu', 'prowler'], 'cloud_audit', 'A cloud audit tool is recommended for the cloud component of hybrid profile.');
   } else {
     requireSingle('nmap');
   }

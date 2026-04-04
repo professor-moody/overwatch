@@ -39,7 +39,7 @@ Just start the server with the same `OVERWATCH_CONFIG`. The server automatically
 
 ### What's the difference between `parse_output` and `report_finding`?
 
-- **`parse_output`** — deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler/scoutsuite). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent. Accepts an optional `context` parameter for domain and source host hints.
+- **`parse_output`** — deterministic parser for supported tools (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler). Extracts structured nodes/edges without LLM involvement. Token-efficient and consistent. Accepts an optional `context` parameter for domain and source host hints.
 - **`report_finding`** — manual finding submission for unsupported tools, analyst observations, or already-structured data. The LLM constructs the nodes and edges.
 
 Use `parse_output` whenever possible. See [parse_output vs report_finding](playbook/parse-vs-report.md) for detailed guidance.

@@ -249,7 +249,7 @@ Set `confirm: false` first to preview, then `confirm: true` to apply.
 - **certipy, secretsdump, kerbrute, hashcat, responder, enum4linux, rubeus**:
   All supported. Use the tool name as `tool_name`.
 - **linpeas / linenum**: ANSI text output. Set `source_host` in context.
-- **nuclei, nikto, testssl / sslscan, pacu, prowler / scoutsuite**: All supported.
+- **nuclei, nikto, testssl / sslscan, pacu, prowler**: All supported.
 - Run `./ow tools` to see the full list of supported parsers.
 
 ## Key Commands

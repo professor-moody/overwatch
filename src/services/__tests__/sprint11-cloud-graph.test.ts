@@ -466,6 +466,62 @@ describe('11.4 — Pacu parser', () => {
     expect(finding.edges.some(e => e.properties.type === 'MANAGED_BY')).toBe(true);
   });
 
+  it('resolves IAM role ARN from instance profile Roles array', () => {
+    const data = {
+      EC2Instances: [{
+        InstanceId: 'i-role-test',
+        Region: 'us-east-1',
+        PrivateIpAddress: '10.10.10.60',
+        IamInstanceProfile: {
+          Arn: 'arn:aws:iam::123456789012:instance-profile/MyProfile',
+          Roles: [{ Arn: 'arn:aws:iam::123456789012:role/EC2ServiceRole', RoleName: 'EC2ServiceRole' }],
+        },
+      }]
+    };
+    const finding = parsePacu(JSON.stringify(data), 'test', { cloud_account: '123456789012' });
+    const managedByEdge = finding.edges.find(e => e.properties.type === 'MANAGED_BY');
+    expect(managedByEdge).toBeTruthy();
+    const roleNode = finding.nodes.find(n => n.type === 'cloud_identity' && n.arn === 'arn:aws:iam::123456789012:role/EC2ServiceRole');
+    expect(roleNode).toBeTruthy();
+    expect(roleNode!.principal_type).toBe('role');
+    // Should NOT create a node with the instance-profile ARN
+    const profileNode = finding.nodes.find(n => n.arn === 'arn:aws:iam::123456789012:instance-profile/MyProfile');
+    expect(profileNode).toBeUndefined();
+  });
+
+  it('falls back to instance profile ARN when Roles array is empty', () => {
+    const data = {
+      EC2Instances: [{
+        InstanceId: 'i-fallback',
+        Region: 'us-east-1',
+        PrivateIpAddress: '10.10.10.70',
+        IamInstanceProfile: { Arn: 'arn:aws:iam::123456789012:instance-profile/NoRoles' },
+      }]
+    };
+    const finding = parsePacu(JSON.stringify(data), 'test', { cloud_account: '123456789012' });
+    const managedByEdge = finding.edges.find(e => e.properties.type === 'MANAGED_BY');
+    expect(managedByEdge).toBeTruthy();
+    const profileNode = finding.nodes.find(n => n.type === 'cloud_identity' && n.arn === 'arn:aws:iam::123456789012:instance-profile/NoRoles');
+    expect(profileNode).toBeTruthy();
+    expect(profileNode!.principal_type).toBe('instance_profile');
+  });
+
+  it('survives malformed trust policy without aborting', () => {
+    const data = {
+      IAMRoles: [
+        { Arn: 'arn:aws:iam::123456789012:role/GoodRole', RoleName: 'GoodRole' },
+        { Arn: 'arn:aws:iam::123456789012:role/BadRole', RoleName: 'BadRole', AssumeRolePolicyDocument: 'not-json' },
+        { Arn: 'arn:aws:iam::123456789012:role/AlsoGood', RoleName: 'AlsoGood' },
+      ],
+    };
+    const finding = parsePacu(JSON.stringify(data));
+    const roles = finding.nodes.filter(n => n.type === 'cloud_identity');
+    expect(roles.length).toBe(3);
+    expect(roles.some(r => r.label === 'GoodRole')).toBe(true);
+    expect(roles.some(r => r.label === 'BadRole')).toBe(true);
+    expect(roles.some(r => r.label === 'AlsoGood')).toBe(true);
+  });
+
   it('is registered in PARSERS as pacu', () => {
     const result = parseOutput('pacu', JSON.stringify({ IAMUsers: [] }));
     expect(result).toBeTruthy();
@@ -530,10 +586,10 @@ describe('11.5 — Prowler parser', () => {
     expect(finding.nodes.filter(n => n.type === 'vulnerability')).toHaveLength(0);
   });
 
-  it('is registered in PARSERS as prowler and scoutsuite', () => {
+  it('is registered in PARSERS as prowler (scoutsuite alias removed)', () => {
     const line = JSON.stringify({ ResourceArn: 'arn:aws:s3:::x', ResourceId: 'x', Status: 'PASS', Severity: 'LOW' });
     expect(parseOutput('prowler', line)).toBeTruthy();
-    expect(parseOutput('scoutsuite', line)).toBeTruthy();
+    expect(parseOutput('scoutsuite', line)).toBeNull();
   });
 
   it('handles multiple lines', () => {

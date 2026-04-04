@@ -95,7 +95,38 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
 
     if (!sam) continue;
 
-    // User objects
+    // Computer objects — check BEFORE user/person since AD computers have
+    // objectClass: top, person, organizationalPerson, user, computer
+    if (objectClass.includes('computer')) {
+      const dnsHostname = (entry['dnshostname'] || [''])[0];
+      const osVal = (entry['operatingsystem'] || [''])[0] || undefined;
+      const ip = dnsHostname || sam.replace(/\$$/, '');
+      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : hostId(ip);
+      if (seenNodes.has(resolvedHostId)) continue;
+
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: dnsHostname || sam,
+        hostname: dnsHostname || undefined,
+        os: osVal,
+        domain_joined: true,
+        alive: true,
+      });
+      seenNodes.add(resolvedHostId);
+
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+      continue;
+    }
+
+    // User objects (only reaches here if NOT a computer)
     if (objectClass.includes('person') || objectClass.includes('user')) {
       const resolvedUserId = userId(sam, domain);
       if (seenNodes.has(resolvedUserId)) continue;
@@ -165,36 +196,6 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
       seenNodes.add(resolvedGroupId);
       continue;
     }
-
-    // Computer objects
-    if (objectClass.includes('computer')) {
-      const dnsHostname = (entry['dnshostname'] || [''])[0];
-      const osVal = (entry['operatingsystem'] || [''])[0] || undefined;
-      const ip = dnsHostname || sam.replace(/\$$/, '');
-      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : hostId(ip);
-      if (seenNodes.has(resolvedHostId)) continue;
-
-      nodes.push({
-        id: resolvedHostId,
-        type: 'host',
-        label: dnsHostname || sam,
-        hostname: dnsHostname || undefined,
-        os: osVal,
-        domain_joined: true,
-        alive: true,
-      });
-      seenNodes.add(resolvedHostId);
-
-      if (domain) {
-        const resolvedDomainId = domainId(domain);
-        if (!seenNodes.has(resolvedDomainId)) {
-          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
-          seenNodes.add(resolvedDomainId);
-        }
-        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
-      }
-      continue;
-    }
   }
 
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
@@ -222,6 +223,36 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
     const domain = domainFromDn(dn);
 
     if (!sam) continue;
+
+    // Computer objects — check BEFORE user/person since AD computers have
+    // objectClass: top, person, organizationalPerson, user, computer
+    if (objectClass.includes('computer')) {
+      const dnsHostname = (attrs.dNSHostName || attrs.dnshostname || '') as string;
+      const osVal = (attrs.operatingSystem as string) || undefined;
+      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : `host-${normalizeKeyPart(sam)}`;
+      if (seenNodes.has(resolvedHostId)) continue;
+
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: dnsHostname || sam,
+        hostname: dnsHostname || undefined,
+        os: osVal,
+        domain_joined: true,
+        alive: true,
+      });
+      seenNodes.add(resolvedHostId);
+
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+      continue;
+    }
 
     if (objectClass.includes('person') || objectClass.includes('user')) {
       const resolvedUserId = userId(sam, domain);
@@ -265,34 +296,6 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
           }
           addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
         }
-      }
-      continue;
-    }
-
-    if (objectClass.includes('computer')) {
-      const dnsHostname = (attrs.dNSHostName || attrs.dnshostname || '') as string;
-      const osVal = (attrs.operatingSystem as string) || undefined;
-      const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : `host-${normalizeKeyPart(sam)}`;
-      if (seenNodes.has(resolvedHostId)) continue;
-
-      nodes.push({
-        id: resolvedHostId,
-        type: 'host',
-        label: dnsHostname || sam,
-        hostname: dnsHostname || undefined,
-        os: osVal,
-        domain_joined: true,
-        alive: true,
-      });
-      seenNodes.add(resolvedHostId);
-
-      if (domain) {
-        const resolvedDomainId = domainId(domain);
-        if (!seenNodes.has(resolvedDomainId)) {
-          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
-          seenNodes.add(resolvedDomainId);
-        }
-        addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
       }
       continue;
     }

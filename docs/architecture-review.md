@@ -202,7 +202,7 @@ Seventeen deterministic parsers with 31 aliases:
 | `nikto` | Text or CSV | vulnerability + service nodes |
 | `testssl` / `sslscan` | JSON or text | TLS vulnerability detection (Heartbleed, POODLE, DROWN, etc.) |
 | `pacu` | JSON | cloud_identity + cloud_resource + cloud_policy nodes, IAM edges |
-| `prowler` / `scoutsuite` | JSON | cloud_resource nodes, compliance findings, EXPOSED_TO edges |
+| `prowler` | OCSF JSON-lines | cloud_resource nodes, compliance findings, VULNERABLE_TO edges |
 
 All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication. Parsers accept optional `ParseContext` (`domain`, `source_host`, `cloud_account`, `cloud_region`, `network_zone`) for ambient context.
 

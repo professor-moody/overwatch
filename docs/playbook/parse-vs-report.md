@@ -32,7 +32,7 @@ The raw output comes from one of these supported tools:
 | Nikto | `nikto` |
 | TLS Testing | `testssl`, `sslscan` |
 | AWS Cloud | `pacu` |
-| Cloud Audit | `prowler`, `scoutsuite` |
+| Cloud Audit | `prowler` |
 
 ### Why
 
@@ -123,7 +123,7 @@ For parsers that benefit from ambient context (secretsdump, hashcat), pass the `
 | Nikto scan results | `parse_output` with `tool_name: "nikto"` |
 | TLS/SSL testing | `parse_output` with `tool_name: "testssl"` or `"sslscan"` |
 | AWS Pacu output | `parse_output` with `tool_name: "pacu"` |
-| Prowler/ScoutSuite audit | `parse_output` with `tool_name: "prowler"` or `"scoutsuite"` |
+| Prowler audit | `parse_output` with `tool_name: "prowler"` |
 
 ## Tips
 
