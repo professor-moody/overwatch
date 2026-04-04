@@ -892,22 +892,22 @@ describe('MCP Server Integration', () => {
   });
 
   it('get_system_prompt returns prompt text for primary role', async () => {
-    const body = await callToolJson('get_system_prompt', { role: 'primary' });
-    expect(body.role).toBe('primary');
-    expect(typeof body.prompt).toBe('string');
-    expect(body.prompt.length).toBeGreaterThan(0);
+    const result = await client.callTool({
+      name: 'get_system_prompt',
+      arguments: { role: 'primary' },
+    });
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    expect(typeof text).toBe('string');
+    expect(text.length).toBeGreaterThan(100);
+    expect(text).toContain('Overwatch');
   });
 
-  it('correct_graph succeeds with empty operations', async () => {
+  it('correct_graph rejects empty operations', async () => {
     const result = await client.callTool({
       name: 'correct_graph',
       arguments: { reason: 'integration test no-op', operations: [] },
     });
-    // Empty operations may succeed or fail gracefully depending on min(1) validation
-    const body = parseToolBody(result);
-    // The tool requires min(1) operations, so this should error
-    expect(result.isError).toBeDefined();
-    expect(body.error || body.applied !== undefined).toBeTruthy();
+    expect(result.isError).toBe(true);
   });
 
   it('find_paths returns response shape', async () => {
