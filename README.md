@@ -18,7 +18,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **32 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldap, enum4linux, rubeus, nuclei, nikto, testssl, linpeas, cloud
-- **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O and ownership enforcement
+- **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O, ownership enforcement, and scope-gated remote session creation
 - **Retrospective analysis** — post-engagement skill gaps, inference suggestions, RLVR training traces
 
 ## Quick Start
@@ -99,8 +99,8 @@ Then run `claude` — see the full [Getting Started](https://keys.github.io/over
 | `suggest_inference_rule` | Add custom inference rules |
 | `run_retrospective` | Post-engagement analysis |
 | `get_history` / `export_graph` | Activity log and graph export |
-| `open_session` / `write_session` / `read_session` | Persistent interactive sessions |
-| `list_sessions` / `update_session` / `close_session` | Session management and lifecycle |
+| `open_session` / `write_session` / `read_session` | Persistent interactive sessions (remote targets are scope-enforced) |
+| `list_sessions` / `update_session` / `close_session` | Session management and lifecycle (`list_sessions` returns `{ total, active, sessions }`) |
 | `resize_session` / `signal_session` / `send_to_session` | Session control and convenience I/O |
 | `update_scope` | Confirmation-gated runtime scope expansion/contraction |
 | `get_system_prompt` | Generate dynamic agent instructions from engagement state |

@@ -121,7 +121,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Tool Check** | `src/services/tool-check.ts` | Offensive tool availability detection |
 | **Process Tracker** | `src/services/process-tracker.ts` | PID tracking for long-running scans |
 | **Lab Preflight** | `src/services/lab-preflight.ts` | Lab readiness validation |
-| **Session Manager** | `src/services/session-manager.ts` | Persistent interactive sessions, RingBuffer, ownership enforcement |
+| **Session Manager** | `src/services/session-manager.ts` | Persistent interactive sessions, RingBuffer, ownership enforcement. Session close (operator, process exit, or shutdown) downgrades `HAS_SESSION` edges to `session_live=false`. |
 | **Session Adapters** | `src/services/session-adapters.ts` | LocalPty (node-pty), SSH, and Socket transport adapters |
 | **Prompt Generator** | `src/services/prompt-generator.ts` | Dynamic system prompt generation for primary and sub-agent roles |
 | **Report Generator** | `src/services/report-generator.ts` | Per-finding sections, evidence chains, attack narrative, auto-remediation |

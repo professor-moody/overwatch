@@ -186,7 +186,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | Edge | Description |
 |------|-------------|
 | `ADMIN_TO` | Administrative access to a host |
-| `HAS_SESSION` | Active session on a host |
+| `HAS_SESSION` | Session on a host. `session_live=true` means an active runtime session exists; `session_live=false` means historical proof of access (session closed or server restarted). Only live sessions contribute to `access_summary.compromised_hosts`. |
 | `CAN_RDPINTO` | RDP access to a host |
 | `CAN_PSREMOTE` | PSRemoting/WinRM access |
 

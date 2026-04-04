@@ -1592,7 +1592,7 @@ describe('GraphEngine', () => {
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
         ],
-        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(), session_live: true } }],
       }));
 
       const state = engine.getState();
@@ -1608,7 +1608,7 @@ describe('GraphEngine', () => {
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
           { id: 'user-attacker', type: 'user', label: 'attacker' },
         ],
-        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(), session_live: true } }],
       }));
       // Import a privileged credential WITHOUT OWNS_CRED edge (e.g. from BloodHound)
       engine.ingestFinding(makeFinding({
@@ -1637,7 +1637,7 @@ describe('GraphEngine', () => {
           { id: 'cred-da', type: 'credential', label: 'DA cred', cred_type: 'ntlm', cred_user: 'admin', cred_domain: 'test.local', privileged: true },
         ],
         edges: [
-          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(), session_live: true } },
           { source: 'user-attacker', target: 'cred-da', properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: new Date().toISOString() } },
         ],
       }));
@@ -2746,6 +2746,129 @@ describe('GraphEngine', () => {
       // Load from persisted state
       const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine2.getConfig().scope.cidrs).toContain('172.16.1.0/24');
+    });
+  });
+
+  // =============================================
+  // Startup Reconciliation
+  // =============================================
+
+  describe('startup reconciliation', () => {
+    it('downgrades stale HAS_SESSION edges on restart', () => {
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+        ],
+        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(), session_live: true } }],
+      }));
+      const state1 = engine1.getState();
+      expect(state1.access_summary.compromised_hosts).toHaveLength(1);
+
+      // Simulate restart — new engine loads persisted state
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const state2 = engine2.getState();
+      expect(state2.access_summary.compromised_hosts).toHaveLength(0);
+      // Edge still exists but is marked historical
+      const edges = engine2.queryGraph({ edge_type: 'HAS_SESSION' });
+      expect(edges.edges.length).toBeGreaterThanOrEqual(1);
+      expect(edges.edges[0].properties.session_live).toBe(false);
+    });
+
+    it('does not downgrade already-closed HAS_SESSION edges', () => {
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-attacker', type: 'user', label: 'attacker' },
+        ],
+        edges: [{ source: 'user-attacker', target: 'host-10-10-10-1', properties: {
+          type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(),
+          session_live: false, session_closed_at: '2025-01-01T00:00:00Z',
+        } }],
+      }));
+
+      // Simulate restart
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const edges = engine2.queryGraph({ edge_type: 'HAS_SESSION' });
+      expect(edges.edges[0].properties.session_closed_at).toBe('2025-01-01T00:00:00Z');
+    });
+
+    it('marks running agents as interrupted on restart', () => {
+      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.registerAgent({
+        id: 'task-1',
+        agent_id: 'agent-scout',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: 'fi-1',
+        subgraph_node_ids: [],
+      });
+
+      // Also register a completed agent (should not change)
+      engine1.registerAgent({
+        id: 'task-2',
+        agent_id: 'agent-done',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: 'fi-2',
+        subgraph_node_ids: [],
+      });
+      engine1.updateAgentStatus('task-2', 'completed', 'done');
+      engine1.persist();
+
+      // Simulate restart
+      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const task1 = engine2.getTask('task-1');
+      expect(task1?.status).toBe('interrupted');
+      expect(task1?.completed_at).toBeDefined();
+
+      const task2 = engine2.getTask('task-2');
+      expect(task2?.status).toBe('completed');
+
+      // active_agents should not include interrupted agents
+      const state = engine2.getState();
+      expect(state.active_agents).toHaveLength(0);
+    });
+
+    it('onSessionClosed downgrades HAS_SESSION edge for matching target', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-op', type: 'user', label: 'operator' },
+        ],
+        edges: [{ source: 'user-op', target: 'host-10-10-10-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString(), session_live: true } }],
+      }));
+
+      // Before close, host is compromised
+      expect(engine.getState().access_summary.compromised_hosts).toHaveLength(1);
+
+      // Close the session
+      engine.onSessionClosed('session-1', 'host-10-10-10-1', 'user-op');
+
+      // After close, host is no longer compromised
+      expect(engine.getState().access_summary.compromised_hosts).toHaveLength(0);
+
+      // Edge still exists with historical marker
+      const edges = engine.queryGraph({ edge_type: 'HAS_SESSION' });
+      expect(edges.edges[0].properties.session_live).toBe(false);
+      expect(edges.edges[0].properties.session_closed_at).toBeDefined();
+    });
+
+    it('access_summary still reports host via ADMIN_TO edge regardless of session_live', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
+          { id: 'user-admin', type: 'user', label: 'admin' },
+        ],
+        edges: [{ source: 'user-admin', target: 'host-10-10-10-1', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+
+      const state = engine.getState();
+      expect(state.access_summary.compromised_hosts).toHaveLength(1);
     });
   });
 });

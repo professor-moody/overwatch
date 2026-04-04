@@ -143,6 +143,11 @@ export class GraphEngine {
     }
 
     this.syncObjectiveNodes();
+
+    // Reconcile runtime-dependent state on startup
+    this.reconcileSessionEdgesOnStartup();
+    this.agentMgr.reconcileOnStartup();
+    this.persist();
   }
 
   // =============================================
@@ -796,6 +801,7 @@ export class GraphEngine {
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
+              session_live: true,
             });
             this.invalidateFrontierCache();
             this.invalidatePathGraph();
@@ -805,6 +811,7 @@ export class GraphEngine {
               tested: true,
               test_result: 'success',
               confirmed_at: new Date().toISOString(),
+              session_live: true,
               session_unconfirmed: undefined,
             });
           }
@@ -853,6 +860,59 @@ export class GraphEngine {
     }
 
     this.persist();
+  }
+
+  /**
+   * Called when a session is closed (operator close, process exit, or shutdown).
+   * Downgrades HAS_SESSION edges to historical state so get_state no longer
+   * reports the host as having live access.
+   */
+  onSessionClosed(_sessionId: string, targetNode?: string, principalNode?: string): void {
+    if (!targetNode) return;
+
+    // Find and downgrade matching HAS_SESSION edges
+    const edgesToDowngrade: string[] = [];
+    this.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
+      if (attrs.type !== 'HAS_SESSION') return;
+      if (target !== targetNode) return;
+      if (principalNode && source !== principalNode) return;
+      edgesToDowngrade.push(_edgeId);
+    });
+
+    for (const edgeId of edgesToDowngrade) {
+      this.ctx.graph.mergeEdgeAttributes(edgeId, {
+        session_live: false,
+        session_closed_at: new Date().toISOString(),
+      });
+    }
+
+    if (edgesToDowngrade.length > 0) {
+      this.invalidateFrontierCache();
+    }
+  }
+
+  /**
+   * Reconcile all HAS_SESSION edges on startup: mark any that claim to be
+   * live as no longer live, since all runtime sessions are gone after restart.
+   */
+  reconcileSessionEdgesOnStartup(): void {
+    let downgraded = 0;
+    this.ctx.graph.forEachEdge((_edgeId, attrs) => {
+      if (attrs.type !== 'HAS_SESSION') return;
+      // Only downgrade edges that are still marked as live (or have no session_live flag,
+      // meaning they were created before this feature and never closed properly)
+      if (attrs.session_live !== false) {
+        this.ctx.graph.mergeEdgeAttributes(_edgeId, {
+          session_live: false,
+          session_closed_at: attrs.session_closed_at || new Date().toISOString(),
+        });
+        downgraded++;
+      }
+    });
+    if (downgraded > 0) {
+      this.log(`Reconciled ${downgraded} stale HAS_SESSION edge(s) on startup — marked as historical`, undefined, { category: 'system', event_type: 'system' });
+      this.invalidateFrontierCache();
+    }
   }
 
   private markFrontierEdgeTested(
@@ -1237,7 +1297,9 @@ export class GraphEngine {
       if (attrs.type === 'host') {
         const hasAccess = this.ctx.graph.edges(id).some(e => {
           const ep = this.ctx.graph.getEdgeAttributes(e);
-          return (ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9;
+          if (ep.type === 'ADMIN_TO' && ep.confidence >= 0.9) return true;
+          if (ep.type === 'HAS_SESSION' && ep.confidence >= 0.9 && ep.session_live === true) return true;
+          return false;
         });
         if (hasAccess) compromised.push(attrs.label);
       }

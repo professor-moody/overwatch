@@ -270,6 +270,7 @@ export class SessionManager {
           session.metadata.closed_at = new Date().toISOString();
           this.logSessionEvent(id, 'session_closed',
             `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`);
+          this.notifySessionClosed(session);
         }
         this.pruneClosedSessions();
       });
@@ -583,6 +584,7 @@ export class SessionManager {
 
     this.logSessionEvent(sessionId, 'session_closed',
       `Session "${session.metadata.title}" closed by operator`);
+    this.notifySessionClosed(session);
     this.pruneClosedSessions();
 
     return { metadata: { ...session.metadata }, final };
@@ -612,6 +614,18 @@ export class SessionManager {
   }
 
   // --- Internal helpers ---
+
+  private notifySessionClosed(session: Session): void {
+    if (this.engine) {
+      try {
+        this.engine.onSessionClosed(
+          session.metadata.id,
+          session.metadata.target_node,
+          session.metadata.principal_node,
+        );
+      } catch { /* best-effort graph update */ }
+    }
+  }
 
   private getSessionOrThrow(sessionId: string): Session {
     const session = this.sessions.get(sessionId);

@@ -36,7 +36,7 @@ An `EngagementState` object containing:
 | `frontier` | `FrontierItem[]` | Candidate next actions with graph metrics |
 | `active_agents` | `AgentTask[]` | Currently running sub-agents |
 | `recent_activity` | `array` | Recent events with timestamps and agent IDs |
-| `access_summary` | `object` | Compromised hosts, valid credentials, access level |
+| `access_summary` | `object` | Compromised hosts (live sessions only), valid credentials, access level |
 | `warnings` | `HealthSummary` | Graph health warnings |
 | `lab_readiness` | `LabReadinessSummary` | Lab readiness status |
 

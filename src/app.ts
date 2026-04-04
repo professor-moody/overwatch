@@ -167,6 +167,11 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     ? ProcessTracker.deserialize(savedProcesses)
     : new ProcessTracker();
 
+  // Reconcile tracked process liveness on startup — dead PIDs are marked completed
+  if (savedProcesses.length > 0) {
+    processTracker.refreshStatuses();
+  }
+
   const sessionManager = new SessionManager(engine);
   sessionManager.registerAdapter(new LocalPtyAdapter());
   sessionManager.registerAdapter(new SshAdapter());

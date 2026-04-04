@@ -103,6 +103,11 @@ Overwatch survives compaction because the graph lives outside the context window
 
 This also works across server restarts, session handoffs, and multi-day engagements.
 
+**Startup Reconciliation:** On restart, the engine automatically reconciles runtime-dependent state:
+- **HAS_SESSION edges** are downgraded from `session_live=true` to `session_live=false` since no runtime sessions survive a restart.
+- **Running agents** are marked as `interrupted` since the sub-agent processes no longer exist.
+- **Tracked processes** are checked for PID liveness; dead PIDs are marked as completed.
+
 ## Node ID Conventions
 
 Every node needs a unique, deterministic ID. Overwatch uses these conventions:

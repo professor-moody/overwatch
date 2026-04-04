@@ -257,6 +257,7 @@ wait_for: regex — return immediately when matched in output`,
     {
       title: 'List Sessions',
       description: `List all sessions with metadata (no output buffers).
+Always returns an envelope shaped like { total, active, sessions }.
 Use session_id to get details for a specific session.`,
       inputSchema: {
         active_only: z.boolean().default(false).describe('Only show pending/connected sessions'),

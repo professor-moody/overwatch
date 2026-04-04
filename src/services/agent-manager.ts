@@ -71,4 +71,28 @@ export class AgentManager {
   getAll(): AgentTask[] {
     return Array.from(this.ctx.agents.values());
   }
+
+  /**
+   * On startup, mark any persisted 'running' agents as 'interrupted'
+   * since the runtime that spawned them no longer exists.
+   */
+  reconcileOnStartup(): number {
+    let count = 0;
+    for (const task of this.ctx.agents.values()) {
+      if (task.status === 'running') {
+        task.status = 'interrupted';
+        task.completed_at = new Date().toISOString();
+        count++;
+      }
+    }
+    if (count > 0) {
+      this.ctx.logEvent({
+        description: `Reconciled ${count} agent(s) from 'running' to 'interrupted' on startup`,
+        category: 'system',
+        event_type: 'system',
+        result_classification: 'neutral',
+      });
+    }
+    return count;
+  }
 }

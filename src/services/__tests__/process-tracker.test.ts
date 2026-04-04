@@ -133,5 +133,27 @@ describe('ProcessTracker', () => {
       const restored = ProcessTracker.deserialize([]);
       expect(restored.listAll().length).toBe(0);
     });
+
+    it('refreshStatuses after deserialize marks dead PIDs as completed (startup reconciliation)', () => {
+      // Simulate persisted state with a "running" process whose PID is dead
+      const serialized = [
+        { id: 'p-stale', pid: 999999999, command: 'nmap -sV 10.0.0.0/24', description: 'Long scan', started_at: '2025-01-01T00:00:00Z', status: 'running' as const },
+        { id: 'p-done', pid: 888888888, command: 'nikto -h 10.0.0.1', description: 'Web scan', started_at: '2025-01-01T00:00:00Z', completed_at: '2025-01-01T01:00:00Z', status: 'completed' as const },
+      ];
+      const restored = ProcessTracker.deserialize(serialized);
+
+      // Before refresh, the stale process still appears running
+      expect(restored.listActive()).toHaveLength(1);
+      expect(restored.get('p-stale')!.status).toBe('running');
+
+      // Refresh marks the dead PID as completed
+      restored.refreshStatuses();
+      expect(restored.listActive()).toHaveLength(0);
+      expect(restored.get('p-stale')!.status).toBe('completed');
+      expect(restored.get('p-stale')!.completed_at).toBeDefined();
+
+      // Already-completed processes are untouched
+      expect(restored.get('p-done')!.completed_at).toBe('2025-01-01T01:00:00Z');
+    });
   });
 });

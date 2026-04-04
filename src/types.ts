@@ -389,7 +389,7 @@ export interface AgentTask {
   id: string;
   agent_id: string;
   assigned_at: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
   frontier_item_id: string;
   subgraph_node_ids: string[];
   skill?: string;
