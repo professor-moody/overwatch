@@ -212,7 +212,7 @@ export class FrontierComputer {
         let pivotPrincipal: string | undefined;
         for (const edge of this.ctx.graph.inEdges(host.id) as string[]) {
           const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
-          if (eAttrs.type === 'HAS_SESSION' && eAttrs.confidence >= 0.9) {
+          if (eAttrs.type === 'HAS_SESSION' && eAttrs.confidence >= 0.7) {
             pivotPrincipal = this.ctx.graph.source(edge);
             break;
           }
@@ -223,7 +223,7 @@ export class FrontierComputer {
           if (peer.id === host.id) continue;
           const peerHasSession = this.ctx.graph.inEdges(peer.id).some((e: string) => {
             const ea = this.ctx.graph.getEdgeAttributes(e);
-            return ea.type === 'HAS_SESSION' && ea.confidence >= 0.9;
+            return ea.type === 'HAS_SESSION' && ea.confidence >= 0.7;
           });
           if (peerHasSession) continue;
 

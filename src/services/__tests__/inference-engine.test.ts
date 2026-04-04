@@ -107,6 +107,62 @@ const RULE_NFS_ROOT_SQUASH: InferenceRule = {
   produces: [{ edge_type: 'ADMIN_TO', source_selector: 'session_holders_on_host', target_selector: 'trigger_node', confidence: 0.7 }],
 };
 
+const RULE_ASREP: InferenceRule = {
+  id: 'rule-asrep-roastable',
+  name: 'AS-REP Roastable user',
+  description: '',
+  trigger: { node_type: 'user', property_match: { asrep_roastable: true } },
+  produces: [{ edge_type: 'AS_REP_ROASTABLE', source_selector: 'trigger_node', target_selector: 'matching_user_domain', confidence: 0.85 }],
+};
+
+const RULE_KERBEROASTABLE: InferenceRule = {
+  id: 'rule-kerberoastable',
+  name: 'Kerberoastable user',
+  description: '',
+  trigger: { node_type: 'user', property_match: { has_spn: true } },
+  produces: [{ edge_type: 'KERBEROASTABLE', source_selector: 'trigger_node', target_selector: 'matching_user_domain', confidence: 0.85 }],
+};
+
+const RULE_UNCONSTRAINED_DELEGATION: InferenceRule = {
+  id: 'rule-unconstrained-delegation',
+  name: 'Unconstrained delegation target',
+  description: '',
+  trigger: { node_type: 'host', property_match: { unconstrained_delegation: true } },
+  produces: [{ edge_type: 'DELEGATES_TO', source_selector: 'domain_admins_and_session_holders', target_selector: 'trigger_node', confidence: 0.7 }],
+};
+
+const RULE_DCSYNC: InferenceRule = {
+  id: 'rule-dcsync',
+  name: 'DCSync capable principal',
+  description: '',
+  trigger: { node_type: 'user', property_match: { can_dcsync: true } },
+  produces: [{ edge_type: 'CAN_DCSYNC', source_selector: 'trigger_node', target_selector: 'matching_user_domain', confidence: 0.9 }],
+};
+
+const RULE_SUDO_NOPASSWD: InferenceRule = {
+  id: 'rule-sudo-nopasswd',
+  name: 'Sudoers NOPASSWD enables privilege escalation',
+  description: '',
+  trigger: { node_type: 'host', property_match: { sudoers_nopasswd: true } },
+  produces: [{ edge_type: 'ADMIN_TO', source_selector: 'session_holders_on_host', target_selector: 'trigger_node', confidence: 0.7 }],
+};
+
+const RULE_CAPABILITIES: InferenceRule = {
+  id: 'rule-dangerous-capabilities',
+  name: 'Dangerous Linux capabilities enable privilege escalation',
+  description: '',
+  trigger: { node_type: 'host', property_match: { has_dangerous_capabilities: true } },
+  produces: [{ edge_type: 'ADMIN_TO', source_selector: 'session_holders_on_host', target_selector: 'trigger_node', confidence: 0.55 }],
+};
+
+const RULE_WRITABLE_CRON: InferenceRule = {
+  id: 'rule-writable-cron-systemd',
+  name: 'Writable cron/systemd enables code execution',
+  description: '',
+  trigger: { node_type: 'host', property_match: { writable_cron_or_systemd: true } },
+  produces: [{ edge_type: 'ADMIN_TO', source_selector: 'session_holders_on_host', target_selector: 'trigger_node', confidence: 0.65 }],
+};
+
 const RULE_SSH_KEY_REUSE: InferenceRule = {
   id: 'rule-ssh-key-reuse',
   name: 'SSH key reuse across services',
@@ -533,6 +589,163 @@ describe('InferenceEngine', () => {
       const inferred = engine.runRules('cred-admin');
 
       // parser_context suppresses both domain-scoped AND global fallback
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // matching_user_domain selector
+  // =============================================
+  describe('matching_user_domain selector', () => {
+    it('returns only the user\'s domain via MEMBER_OF_DOMAIN edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
+      addNode(graph, 'domain-other-local', { type: 'domain', domain_name: 'other.local' });
+      addNode(graph, 'user-corp-local-jdoe', { type: 'user', username: 'jdoe', asrep_roastable: true });
+      addEdge(graph, 'user-corp-local-jdoe', 'domain-corp-local', 'MEMBER_OF_DOMAIN');
+
+      const engine = buildEngine(graph, [RULE_ASREP]);
+      const inferred = engine.runRules('user-corp-local-jdoe');
+
+      expect(inferred.length).toBe(1);
+      const edgeAttrs = graph.getEdgeAttributes(inferred[0]);
+      expect(edgeAttrs.type).toBe('AS_REP_ROASTABLE');
+      expect(graph.target(inferred[0])).toBe('domain-corp-local');
+    });
+
+    it('falls back to domain_name property match when no MEMBER_OF_DOMAIN edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
+      addNode(graph, 'domain-other-local', { type: 'domain', domain_name: 'other.local' });
+      addNode(graph, 'user-corp-local-jdoe', { type: 'user', username: 'jdoe', domain_name: 'corp.local', has_spn: true });
+
+      const engine = buildEngine(graph, [RULE_KERBEROASTABLE]);
+      const inferred = engine.runRules('user-corp-local-jdoe');
+
+      expect(inferred.length).toBe(1);
+      expect(graph.target(inferred[0])).toBe('domain-corp-local');
+    });
+
+    it('falls back to all domains when no domain info available', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
+      addNode(graph, 'domain-other-local', { type: 'domain', domain_name: 'other.local' });
+      addNode(graph, 'user-orphan', { type: 'user', username: 'orphan', asrep_roastable: true });
+
+      const engine = buildEngine(graph, [RULE_ASREP]);
+      const inferred = engine.runRules('user-orphan');
+
+      expect(inferred.length).toBe(2);
+    });
+  });
+
+  // =============================================
+  // domain_admins_and_session_holders selector
+  // =============================================
+  describe('domain_admins_and_session_holders selector', () => {
+    it('returns session holders and admin group members', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-uc', { type: 'host', ip: '10.10.10.5', unconstrained_delegation: true });
+      addNode(graph, 'user-session', { type: 'user', username: 'session_user', domain_joined: true });
+      addNode(graph, 'group-da', { type: 'group', group_name: 'Domain Admins' });
+      addNode(graph, 'user-da-member', { type: 'user', username: 'da_member', domain_joined: true });
+      addNode(graph, 'user-nobody', { type: 'user', username: 'nobody', domain_joined: true });
+      addEdge(graph, 'user-session', 'host-uc', 'HAS_SESSION');
+      addEdge(graph, 'user-da-member', 'group-da', 'MEMBER_OF');
+
+      const engine = buildEngine(graph, [RULE_UNCONSTRAINED_DELEGATION]);
+      const inferred = engine.runRules('host-uc');
+
+      const sources = inferred.map(e => graph.source(e));
+      expect(sources).toContain('user-session');
+      expect(sources).toContain('user-da-member');
+      expect(sources).toContain('group-da');
+      expect(sources).not.toContain('user-nobody');
+    });
+
+    it('falls back to all domain users when no session holders or admin groups exist', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-uc', { type: 'host', ip: '10.10.10.5', unconstrained_delegation: true });
+      addNode(graph, 'user-a', { type: 'user', username: 'a', domain_joined: true });
+      addNode(graph, 'user-b', { type: 'user', username: 'b', domain_joined: true });
+
+      const engine = buildEngine(graph, [RULE_UNCONSTRAINED_DELEGATION]);
+      const inferred = engine.runRules('host-uc');
+
+      expect(inferred.length).toBe(2);
+    });
+  });
+
+  // =============================================
+  // DCSync rule
+  // =============================================
+  describe('rule-dcsync', () => {
+    it('creates CAN_DCSYNC edge from user to its domain', () => {
+      const graph = makeGraph();
+      addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
+      addNode(graph, 'user-corp-local-repl', { type: 'user', username: 'repl_svc', can_dcsync: true });
+      addEdge(graph, 'user-corp-local-repl', 'domain-corp-local', 'MEMBER_OF_DOMAIN');
+
+      const engine = buildEngine(graph, [RULE_DCSYNC]);
+      const inferred = engine.runRules('user-corp-local-repl');
+
+      expect(inferred.length).toBe(1);
+      const edgeAttrs = graph.getEdgeAttributes(inferred[0]);
+      expect(edgeAttrs.type).toBe('CAN_DCSYNC');
+      expect(edgeAttrs.confidence).toBe(0.9);
+      expect(graph.source(inferred[0])).toBe('user-corp-local-repl');
+      expect(graph.target(inferred[0])).toBe('domain-corp-local');
+    });
+  });
+
+  // =============================================
+  // Linux privesc rules
+  // =============================================
+  describe('Linux privesc rules', () => {
+    function buildLinuxHost(graph: ReturnType<typeof makeGraph>, props: Record<string, unknown>) {
+      addNode(graph, 'host-linux', { type: 'host', ip: '10.10.10.20', ...props });
+      addNode(graph, 'user-attacker', { type: 'user', username: 'attacker' });
+      addEdge(graph, 'user-attacker', 'host-linux', 'HAS_SESSION');
+    }
+
+    it('rule-sudo-nopasswd creates ADMIN_TO from session holder', () => {
+      const graph = makeGraph();
+      buildLinuxHost(graph, { sudoers_nopasswd: true });
+      const engine = buildEngine(graph, [RULE_SUDO_NOPASSWD]);
+      const inferred = engine.runRules('host-linux');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('ADMIN_TO');
+      expect(attrs.confidence).toBe(0.7);
+    });
+
+    it('rule-dangerous-capabilities creates ADMIN_TO from session holder', () => {
+      const graph = makeGraph();
+      buildLinuxHost(graph, { has_dangerous_capabilities: true });
+      const engine = buildEngine(graph, [RULE_CAPABILITIES]);
+      const inferred = engine.runRules('host-linux');
+
+      expect(inferred.length).toBe(1);
+      expect(graph.getEdgeAttributes(inferred[0]).confidence).toBe(0.55);
+    });
+
+    it('rule-writable-cron-systemd creates ADMIN_TO from session holder', () => {
+      const graph = makeGraph();
+      buildLinuxHost(graph, { writable_cron_or_systemd: true });
+      const engine = buildEngine(graph, [RULE_WRITABLE_CRON]);
+      const inferred = engine.runRules('host-linux');
+
+      expect(inferred.length).toBe(1);
+      expect(graph.getEdgeAttributes(inferred[0]).confidence).toBe(0.65);
+    });
+
+    it('no edges when no session holder exists', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-linux', { type: 'host', ip: '10.10.10.20', sudoers_nopasswd: true });
+      const engine = buildEngine(graph, [RULE_SUDO_NOPASSWD]);
+      const inferred = engine.runRules('host-linux');
+
       expect(inferred.length).toBe(0);
     });
   });

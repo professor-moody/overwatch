@@ -61,14 +61,28 @@ Examples:
       const changes = { add_cidrs, remove_cidrs, add_domains, remove_domains, add_exclusions, remove_exclusions };
 
       if (!confirm) {
-        // Dry-run preview
         const preview = engine.previewScopeChange(changes);
+        const warnings: string[] = [];
+        if (preview.nodes_entering_scope > 0) {
+          warnings.push(`SCOPE EXPANSION: ${preview.nodes_entering_scope} existing node(s) will enter scope.`);
+        }
+        if ((add_cidrs && add_cidrs.length > 0) || (add_domains && add_domains.length > 0)) {
+          const newCidrs = add_cidrs?.filter(c => !preview.before.cidrs.includes(c)) || [];
+          const newDomains = add_domains?.filter(d => !preview.before.domains.includes(d)) || [];
+          if (newCidrs.length > 0 || newDomains.length > 0) {
+            warnings.push(`New scope entries: ${[...newCidrs, ...newDomains].join(', ')}. Future discovered hosts in these ranges will be in-scope.`);
+          }
+        }
+        if (preview.nodes_leaving_scope > 0) {
+          warnings.push(`SCOPE CONTRACTION: ${preview.nodes_leaving_scope} node(s) will leave scope.`);
+        }
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               mode: 'preview',
               message: 'Dry-run preview. Set confirm: true to apply this scope change.',
+              ...(warnings.length > 0 ? { scope_expansion_warning: warnings } : {}),
               reason,
               ...preview,
             }, null, 2),

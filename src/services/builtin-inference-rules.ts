@@ -56,11 +56,11 @@ export const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-adcs-esc1',
     name: 'ADCS enrollment + subject supply = ESC1 candidate',
-    description: 'Certificate template allowing enrollee-supplied subject name',
+    description: 'Certificate template allowing enrollee-supplied subject name with client auth EKU',
     trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
     produces: [{
       edge_type: 'ESC1',
-      source_selector: 'enrollable_users',
+      source_selector: 'enrollable_users_if_client_auth',
       target_selector: 'trigger_node',
       confidence: 0.75
     }]
@@ -68,36 +68,36 @@ export const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-unconstrained-delegation',
     name: 'Unconstrained delegation target',
-    description: 'Hosts with unconstrained delegation can capture TGTs',
+    description: 'Hosts with unconstrained delegation can capture TGTs from authenticating principals',
     trigger: { node_type: 'host', property_match: { unconstrained_delegation: true } },
     produces: [{
       edge_type: 'DELEGATES_TO',
-      source_selector: 'domain_users',
+      source_selector: 'domain_admins_and_session_holders',
       target_selector: 'trigger_node',
-      confidence: 0.85
+      confidence: 0.7
     }]
   },
   {
     id: 'rule-asrep-roastable',
     name: 'AS-REP Roastable user',
-    description: 'User with Kerberos pre-auth disabled is AS-REP roastable',
+    description: 'User with Kerberos pre-auth disabled is AS-REP roastable in its domain',
     trigger: { node_type: 'user', property_match: { asrep_roastable: true } },
     produces: [{
       edge_type: 'AS_REP_ROASTABLE',
       source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
+      target_selector: 'matching_user_domain',
       confidence: 0.85
     }]
   },
   {
     id: 'rule-kerberoastable',
     name: 'Kerberoastable user',
-    description: 'User with SPN set is kerberoastable',
+    description: 'User with SPN set is kerberoastable in its domain',
     trigger: { node_type: 'user', property_match: { has_spn: true } },
     produces: [{
       edge_type: 'KERBEROASTABLE',
       source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
+      target_selector: 'matching_user_domain',
       confidence: 0.85
     }]
   },
@@ -109,7 +109,7 @@ export const BUILTIN_RULES: InferenceRule[] = [
     produces: [{
       edge_type: 'CAN_DELEGATE_TO',
       source_selector: 'trigger_node',
-      target_selector: 'domain_nodes',
+      target_selector: 'delegation_targets',
       confidence: 0.8
     }]
   },
@@ -188,12 +188,12 @@ export const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-ssh-key-reuse',
     name: 'SSH key reuse across services',
-    description: 'SSH key credential can authenticate to any SSH service',
+    description: 'SSH key credential can authenticate to SSH services on hosts where the owner has access',
     trigger: { node_type: 'credential', property_match: { cred_type: 'ssh_key' } },
     produces: [{
       edge_type: 'POTENTIAL_AUTH',
       source_selector: 'trigger_node',
-      target_selector: 'ssh_services',
+      target_selector: 'ssh_services_related',
       confidence: 0.5
     }]
   },
@@ -282,6 +282,54 @@ export const BUILTIN_RULES: InferenceRule[] = [
       source_selector: 'trigger_node',
       target_selector: 'cross_account_roles',
       confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-dcsync',
+    name: 'DCSync capable principal',
+    description: 'User/group with Replicating Directory Changes rights can perform DCSync against the domain',
+    trigger: { node_type: 'user', property_match: { can_dcsync: true } },
+    produces: [{
+      edge_type: 'CAN_DCSYNC',
+      source_selector: 'trigger_node',
+      target_selector: 'matching_user_domain',
+      confidence: 0.9
+    }]
+  },
+  {
+    id: 'rule-sudo-nopasswd',
+    name: 'Sudoers NOPASSWD enables privilege escalation',
+    description: 'Host with NOPASSWD sudoers entries allows session holders to escalate to root',
+    trigger: { node_type: 'host', property_match: { sudoers_nopasswd: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-dangerous-capabilities',
+    name: 'Dangerous Linux capabilities enable privilege escalation',
+    description: 'Host with dangerous capabilities (cap_setuid, cap_dac_override, etc.) allows session holders to escalate',
+    trigger: { node_type: 'host', property_match: { has_dangerous_capabilities: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.55
+    }]
+  },
+  {
+    id: 'rule-writable-cron-systemd',
+    name: 'Writable cron/systemd enables code execution',
+    description: 'Host with writable cron jobs or systemd service files allows session holders to execute as the service owner',
+    trigger: { node_type: 'host', property_match: { writable_cron_or_systemd: true } },
+    produces: [{
+      edge_type: 'ADMIN_TO',
+      source_selector: 'session_holders_on_host',
+      target_selector: 'trigger_node',
+      confidence: 0.65
     }]
   },
 ];

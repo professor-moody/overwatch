@@ -263,6 +263,37 @@ export class InferenceEngine {
       case 'domain_users':
         return this.getNodesByType('user').filter(u => u.domain_joined !== false).map(n => n.id);
 
+      case 'domain_admins_and_session_holders': {
+        const candidates = new Set<string>();
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if ((attrs.type === 'HAS_SESSION' || attrs.type === 'ADMIN_TO') && attrs.confidence >= 0.7) {
+            const srcNode = this.getNode(src);
+            if (srcNode && (srcNode.type === 'user' || srcNode.type === 'group')) {
+              candidates.add(src);
+            }
+          }
+        });
+        const ADMIN_GROUP_NAMES = new Set([
+          'domain admins', 'enterprise admins', 'administrators',
+          'schema admins', 'account operators', 'server operators',
+        ]);
+        this.ctx.graph.forEachNode((_id: string, _attrs) => {
+          const attrs = _attrs as NodeProperties;
+          if (attrs.type !== 'group') return;
+          const gName = ((attrs.group_name as string) || attrs.label || '').toLowerCase().trim();
+          if (ADMIN_GROUP_NAMES.has(gName)) {
+            for (const edge of this.ctx.graph.inEdges(_id) as string[]) {
+              if (this.ctx.graph.getEdgeAttributes(edge).type === 'MEMBER_OF') {
+                candidates.add(this.ctx.graph.source(edge));
+              }
+            }
+            candidates.add(_id);
+          }
+        });
+        if (candidates.size > 0) return Array.from(candidates);
+        return this.getNodesByType('user').filter(u => u.domain_joined !== false).map(n => n.id);
+      }
+
       case 'domain_credentials':
         return this.getNodesByType('credential')
           .filter(c => isReusableDomainCredential(c))
@@ -271,7 +302,7 @@ export class InferenceEngine {
       case 'all_compromised': {
         const compromised: Set<string> = new Set();
         this.ctx.graph.forEachEdge((edge: string, attrs) => {
-          if ((attrs.type === 'HAS_SESSION' || attrs.type === 'ADMIN_TO') && attrs.confidence >= 0.9) {
+          if ((attrs.type === 'HAS_SESSION' || attrs.type === 'ADMIN_TO') && attrs.confidence >= 0.7) {
             compromised.add(this.ctx.graph.target(edge));
           }
         });
@@ -337,8 +368,38 @@ export class InferenceEngine {
         return Array.from(matched);
       }
 
+      case 'matching_user_domain': {
+        const userDomainIds: string[] = [];
+        for (const edge of this.ctx.graph.outEdges(triggerNodeId) as string[]) {
+          if (this.ctx.graph.getEdgeAttributes(edge).type === 'MEMBER_OF_DOMAIN') {
+            userDomainIds.push(this.ctx.graph.target(edge));
+          }
+        }
+        if (userDomainIds.length > 0) return userDomainIds;
+        if (node.domain_name && typeof node.domain_name === 'string') {
+          const domNameLower = node.domain_name.toLowerCase();
+          const allDomains = this.getNodesByType('domain');
+          for (const d of allDomains) {
+            const dName = (d.domain_name || d.label || '').toLowerCase();
+            if (dName === domNameLower || domNameLower.endsWith('.' + dName) || dName.endsWith('.' + domNameLower)) {
+              userDomainIds.push(d.id);
+            }
+          }
+          if (userDomainIds.length > 0) return userDomainIds;
+        }
+        return this.getNodesByType('domain').map(n => n.id);
+      }
+
       case 'enrollable_users':
         return this.getNodesByType('user').map(n => n.id);
+
+      case 'enrollable_users_if_client_auth': {
+        const ekus = node.ekus as string[] | undefined;
+        const hasClientAuth = !ekus || ekus.length === 0
+          || ekus.some(e => e === '1.3.6.1.5.5.7.3.2' || e.toLowerCase().includes('client authentication'));
+        if (!hasClientAuth) return [];
+        return this.getNodesByType('user').map(n => n.id);
+      }
 
       case 'edge_peers': {
         if (!rule?.trigger.requires_edge) return [];
@@ -349,7 +410,7 @@ export class InferenceEngine {
         // For the trigger host, find source nodes of inbound HAS_SESSION edges
         const holders: string[] = [];
         this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
-          if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
+          if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.7) {
             holders.push(src);
           }
         });
@@ -360,6 +421,49 @@ export class InferenceEngine {
         return this.getNodesByType('service')
           .filter(s => s.service_name === 'ssh')
           .map(n => n.id);
+
+      case 'ssh_services_related': {
+        const allSsh = this.getNodesByType('service')
+          .filter(s => s.service_name === 'ssh');
+        const ownerHosts = new Set<string>();
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (attrs.type === 'OWNS_CRED') {
+            this.ctx.graph.forEachOutEdge(src, (_e2: string, a2, _s2: string, tgt: string) => {
+              if (a2.type === 'HAS_SESSION') ownerHosts.add(tgt);
+            });
+          }
+        });
+        if (ownerHosts.size === 0) return allSsh.map(n => n.id);
+        const related = allSsh.filter(s => {
+          const parents = this.getParentHosts(s.id);
+          return parents.some(h => ownerHosts.has(h));
+        });
+        return related.length > 0 ? related.map(n => n.id) : allSsh.map(n => n.id);
+      }
+
+      case 'delegation_targets': {
+        const delegateList = node.allowed_to_delegate_to as string[] | undefined;
+        if (!delegateList || delegateList.length === 0) {
+          return this.getNodesByType('domain').map(n => n.id);
+        }
+        const targets = new Set<string>();
+        const allHosts = this.getNodesByType('host');
+        const allServices = this.getNodesByType('service');
+        for (const spn of delegateList) {
+          const spnLower = spn.toLowerCase();
+          const slashIdx = spnLower.indexOf('/');
+          const hostPart = slashIdx >= 0 ? spnLower.substring(slashIdx + 1).split(':')[0] : spnLower;
+          for (const h of allHosts) {
+            const hn = (h.hostname || h.label || '').toLowerCase();
+            if (hn && (hn === hostPart || hn.startsWith(hostPart + '.'))) targets.add(h.id);
+          }
+          for (const s of allServices) {
+            const sLabel = (s.label || '').toLowerCase();
+            if (sLabel.includes(hostPart)) targets.add(s.id);
+          }
+        }
+        return targets.size > 0 ? Array.from(targets) : this.getNodesByType('domain').map(n => n.id);
+      }
 
       case 'all_usable_credentials':
         return this.getNodesByType('credential')

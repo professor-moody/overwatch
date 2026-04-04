@@ -16,6 +16,15 @@ export interface ScopeManagerHost {
   invalidateHealthReport(): void;
 }
 
+export function isValidDomain(domain: string): boolean {
+  if (!domain || domain.length > 253) return false;
+  if (/\s/.test(domain)) return false;
+  if (domain.includes('/') || domain.includes('\\')) return false;
+  if (!domain.includes('.')) return false;
+  const labels = domain.split('.');
+  return labels.every(l => l.length > 0 && l.length <= 63 && /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(l));
+}
+
 export function updateScope(
   host: ScopeManagerHost,
   changes: {
@@ -35,6 +44,9 @@ export function updateScope(
   }
   for (const cidr of changes.remove_cidrs || []) {
     if (!isValidCidr(cidr)) errors.push(`Invalid CIDR to remove: ${cidr}`);
+  }
+  for (const domain of changes.add_domains || []) {
+    if (!isValidDomain(domain)) errors.push(`Invalid domain format: ${domain}`);
   }
   for (const cidr of changes.add_exclusions || []) {
     if (!isValidCidr(cidr)) errors.push(`Invalid exclusion: ${cidr}`);

@@ -34,7 +34,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
   const sessionHolders: string[] = [];
   for (const edge of host.ctx.graph.inEdges(triggerHostId) as string[]) {
     const attrs = host.ctx.graph.getEdgeAttributes(edge);
-    if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) {
+    if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.7) {
       sessionHolders.push(host.ctx.graph.source(edge));
     }
   }
@@ -230,7 +230,7 @@ export function inferManagedIdentityPivot(host: ImperativeInferenceHost, hostNod
 
     const sessionHolders: string[] = [];
     host.ctx.graph.forEachInEdge(hostId, (_e: string, attrs, src: string) => {
-      if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.9) sessionHolders.push(src);
+      if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.7) sessionHolders.push(src);
     });
     if (sessionHolders.length === 0) continue;
 

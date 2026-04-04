@@ -241,6 +241,7 @@ Use session_id to get details for a specific session.`,
       inputSchema: {
         active_only: z.boolean().default(false).describe('Only show pending/connected sessions'),
         session_id: z.string().optional().describe('Get details for a specific session'),
+        agent_id: z.string().optional().describe('Filter to sessions claimed by this agent (or unclaimed)'),
       },
       annotations: {
         readOnlyHint: true,
@@ -249,7 +250,7 @@ Use session_id to get details for a specific session.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('list_sessions', async ({ active_only, session_id }) => {
+    withErrorBoundary('list_sessions', async ({ active_only, session_id, agent_id }) => {
       if (session_id) {
         const session = sessionManager.getSession(session_id);
         if (!session) {
@@ -263,7 +264,10 @@ Use session_id to get details for a specific session.`,
         };
       }
 
-      const sessions = sessionManager.list(active_only);
+      let sessions = sessionManager.list(active_only);
+      if (agent_id) {
+        sessions = sessions.filter(s => !s.claimed_by || s.claimed_by === agent_id);
+      }
       return {
         content: [{
           type: 'text',
