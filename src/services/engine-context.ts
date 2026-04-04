@@ -225,6 +225,13 @@ const MILESTONE_EVENT_TYPES: Set<ActivityEventType | undefined> = new Set([
   'scope_updated',
   'credential_degradation',
   'session_access_confirmed',
+  // Causal-linkage events needed by retrospective analysis and evidence attribution
+  'action_validated',
+  'parse_output',
+  'instrumentation_warning',
+  'session_access_unconfirmed',
+  'session_error',
+  'graph_corrected',
 ]);
 
 export function isMilestoneEntry(entry: ActivityLogEntry): boolean {

@@ -324,6 +324,25 @@ describe('structured activity logging tools', () => {
     expect(engine.getNode('host-10-10-10-2')).toBeTruthy();
   });
 
+  it('parse_output supports parse-only mode without mutating the graph', async () => {
+    const result = await handlers.parse_output({
+      tool_name: 'nmap',
+      output: '<nmaprun><host><status state="up"/><address addr="10.10.10.3" addrtype="ipv4"/><ports><port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port></ports></host></nmaprun>',
+      ingest: false,
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.parsed).toBe(true);
+    expect(payload.ingested).toBeUndefined();
+    expect(engine.getNode('host-10-10-10-3')).toBeNull();
+
+    const parseEvent = engine.getFullHistory().find(candidate =>
+      candidate.action_id === payload.action_id && candidate.event_type === 'parse_output',
+    );
+    expect(parseEvent?.details?.ingested).toBe(false);
+    expect(parseEvent?.result_classification).toBe('neutral');
+  });
+
   it('parse_output rejects calls that provide both output and file_path', async () => {
     writeFileSync(TEST_NMAP_FILE, '<nmaprun></nmaprun>', 'utf8');
 
@@ -337,6 +356,22 @@ describe('structured activity logging tools', () => {
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0].text);
     expect(payload.error).toContain('exactly one');
+  });
+
+  it('parse_output returns a structured error for unsupported parsers', async () => {
+    const result = await handlers.parse_output({
+      tool_name: 'totally-unsupported',
+      output: 'raw output',
+      ingest: true,
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain('No parser found');
+    expect(payload.supported_parsers).toBeInstanceOf(Array);
+    expect(engine.getFullHistory().some(candidate =>
+      candidate.event_type === 'parse_output' && candidate.result_classification === 'failure',
+    )).toBe(true);
   });
 
   it('parse_output auto-builds both first-label and netbios_name domain aliases', async () => {

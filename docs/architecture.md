@@ -14,7 +14,7 @@ Here's a concrete walkthrough of how data flows through the system during a typi
 ![Data Flow Lifecycle](assets/data-flow-lifecycle-light.svg#only-light)
 ![Data Flow Lifecycle](assets/data-flow-lifecycle-dark.svg#only-dark)
 
-Every step is traceable: `action_id` links `validate_action` → `log_action_event` → `parse_output` → `report_finding`. The activity log records the full causal chain.
+Every step is traceable: `action_id` links `validate_action` → `log_action_event` → `parse_output` → `report_finding`. The activity log records the causal chain with tiered truncation that preserves milestone and causal-linkage events (validations, parse results, warnings, session states, errors) while trimming ephemeral events to stay within budget. Full evidence payloads are stored durably in the evidence store and referenced by `evidence_id`.
 
 ## Design Decisions
 

@@ -23,6 +23,7 @@ import { validateEdgeEndpoints } from './graph-schema.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
+import { EvidenceStore } from './evidence-store.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import {
   inferPivotReachability as _inferPivotReachability,
@@ -85,6 +86,7 @@ export class GraphEngine {
   private reconciler: IdentityReconciler;
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[] } | null = null;
+  private evidenceStore: EvidenceStore;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     const graph = createGraph();
@@ -116,6 +118,7 @@ export class GraphEngine {
       logActionEvent: this.logActionEvent.bind(this),
       invalidatePathGraph: this.invalidatePathGraph.bind(this),
     });
+    this.evidenceStore = new EvidenceStore(filePath);
 
     // Attempt to load existing state
     if (existsSync(this.ctx.stateFilePath)) {
@@ -1411,6 +1414,10 @@ export class GraphEngine {
 
   getStateFilePath(): string {
     return this.ctx.stateFilePath;
+  }
+
+  getEvidenceStore(): EvidenceStore {
+    return this.evidenceStore;
   }
 
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {

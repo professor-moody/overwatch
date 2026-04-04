@@ -405,3 +405,97 @@ describe('tieredTruncate', () => {
     expect(result[1].description).toBe('m3');
   });
 });
+
+// ============================================================
+// Regression: P1 — causal-linkage events promoted to milestone
+// ============================================================
+describe('isMilestoneEntry — causal-linkage events', () => {
+  it('returns true for action_validated', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'action_validated' })).toBe(true);
+  });
+
+  it('returns true for parse_output', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'parse_output' })).toBe(true);
+  });
+
+  it('returns true for instrumentation_warning', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'instrumentation_warning' })).toBe(true);
+  });
+
+  it('returns true for session_access_unconfirmed', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'session_access_unconfirmed' })).toBe(true);
+  });
+
+  it('returns true for session_error', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'session_error' })).toBe(true);
+  });
+
+  it('returns true for graph_corrected', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'graph_corrected' })).toBe(true);
+  });
+
+  it('still returns false for action_started (ephemeral)', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'action_started' })).toBe(false);
+  });
+
+  it('still returns false for inference_generated (ephemeral)', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'inference_generated' })).toBe(false);
+  });
+
+  it('still returns false for agent_registered (ephemeral)', () => {
+    expect(isMilestoneEntry({ event_id: '1', timestamp: '', description: '', event_type: 'agent_registered' })).toBe(false);
+  });
+});
+
+describe('tieredTruncate — preserves causal-linkage events', () => {
+  function entry(desc: string, eventType?: string, ts?: string): any {
+    return {
+      event_id: desc,
+      timestamp: ts || '2026-01-01T00:00:00Z',
+      description: desc,
+      event_type: eventType,
+    };
+  }
+
+  it('preserves action_validated and instrumentation_warning during truncation', () => {
+    const log = [
+      entry('val', 'action_validated', '2026-01-01T00:00:01Z'),
+      entry('warn', 'instrumentation_warning', '2026-01-01T00:00:02Z'),
+      entry('e1', 'action_started', '2026-01-01T00:00:03Z'),
+      entry('e2', 'action_started', '2026-01-01T00:00:04Z'),
+      entry('e3', 'action_started', '2026-01-01T00:00:05Z'),
+    ];
+    const result = tieredTruncate(log, 3);
+    expect(result).toHaveLength(3);
+    const descs = result.map(e => e.description);
+    expect(descs).toContain('val');
+    expect(descs).toContain('warn');
+  });
+
+  it('preserves session_error and session_access_unconfirmed during truncation', () => {
+    const log = [
+      entry('se', 'session_error', '2026-01-01T00:00:01Z'),
+      entry('su', 'session_access_unconfirmed', '2026-01-01T00:00:02Z'),
+      entry('e1', 'action_started', '2026-01-01T00:00:03Z'),
+      entry('e2', 'action_started', '2026-01-01T00:00:04Z'),
+      entry('e3', 'action_started', '2026-01-01T00:00:05Z'),
+    ];
+    const result = tieredTruncate(log, 3);
+    expect(result).toHaveLength(3);
+    const descs = result.map(e => e.description);
+    expect(descs).toContain('se');
+    expect(descs).toContain('su');
+  });
+
+  it('preserves parse_output during truncation', () => {
+    const log = [
+      entry('po', 'parse_output', '2026-01-01T00:00:01Z'),
+      entry('e1', 'action_started', '2026-01-01T00:00:02Z'),
+      entry('e2', 'action_started', '2026-01-01T00:00:03Z'),
+    ];
+    const result = tieredTruncate(log, 2);
+    expect(result).toHaveLength(2);
+    const descs = result.map(e => e.description);
+    expect(descs).toContain('po');
+  });
+});

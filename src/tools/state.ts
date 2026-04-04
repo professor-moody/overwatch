@@ -169,18 +169,27 @@ is derived from the graph and engagement config, not from PATH_TO_OBJECTIVE edge
 
   // ============================================================
   // Tool: get_history
-  // Full engagement activity log for retrospectives.
+  // Paginated engagement activity log for retrospectives.
   // ============================================================
   server.registerTool(
     'get_history',
     {
       title: 'Get Engagement History',
-      description: `Returns the full activity log for the engagement.
-Use during retrospectives to review all actions taken, findings reported,
-inference rules fired, and objectives achieved — with timestamps and agent IDs.`,
+      description: `Returns paginated activity log entries for the engagement.
+
+Use during retrospectives to review actions taken, findings reported,
+inference rules fired, and objectives achieved — with timestamps and agent IDs.
+
+Pagination: use \`cursor\` (an event_id) to fetch the next page. The response
+includes \`next_cursor\` when more entries exist. Omit \`cursor\` to start from
+the oldest retained entry. Set \`direction\` to "newest_first" to start from
+the most recent entry instead.`,
       inputSchema: {
         limit: z.number().int().min(1).max(1000).default(100),
-        agent_id: z.string().optional().describe('Filter by specific agent')
+        agent_id: z.string().optional().describe('Filter by specific agent'),
+        event_type: z.string().optional().describe('Filter by event_type (e.g. action_validated, finding_reported)'),
+        cursor: z.string().optional().describe('event_id cursor — fetch entries after this event'),
+        direction: z.enum(['oldest_first', 'newest_first']).default('oldest_first').describe('Traversal direction'),
       },
       annotations: {
         readOnlyHint: true,
@@ -189,17 +198,42 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
         openWorldHint: false
       }
     },
-    withErrorBoundary('get_history', async ({ limit, agent_id }) => {
+    withErrorBoundary('get_history', async ({ limit, agent_id, event_type, cursor, direction }) => {
       let history = engine.getFullHistory();
+
       if (agent_id) {
         history = history.filter(h => h.agent_id === agent_id);
       }
+      if (event_type) {
+        history = history.filter(h => h.event_type === event_type);
+      }
+
+      if (direction === 'newest_first') {
+        history = [...history].reverse();
+      }
+
+      let startIdx = 0;
+      if (cursor) {
+        const cursorIdx = history.findIndex(h => h.event_id === cursor);
+        if (cursorIdx >= 0) {
+          startIdx = cursorIdx + 1;
+        }
+      }
+
+      const page = history.slice(startIdx, startIdx + limit);
+      const hasMore = startIdx + limit < history.length;
+      const nextCursor = hasMore && page.length > 0 ? page[page.length - 1].event_id : undefined;
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             total_entries: history.length,
-            entries: history.slice(-limit)
+            returned: page.length,
+            has_more: hasMore,
+            next_cursor: nextCursor,
+            direction,
+            entries: page,
           }, null, 2)
         }]
       };

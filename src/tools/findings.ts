@@ -137,13 +137,25 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         };
       }
 
-      // Persist evidence and raw_output so the report generator can reference them.
-      // Truncate raw_output to prevent activity log bloat (keep first 8KB).
+      // Store full evidence in the durable evidence store, keep inline
+      // snippets in the activity log for fast access and report rendering.
       const evidenceDetails: Record<string, unknown> = {
         node_count: finding.nodes.length,
         edge_count: finding.edges.length,
         ingested_node_ids: finding.nodes.map(n => n.id),
       };
+      if (evidence || raw_output) {
+        const store = engine.getEvidenceStore();
+        const evidenceId = store.store({
+          action_id: normalizedActionId,
+          finding_id: finding.id,
+          evidence_type: evidence?.type || 'command_output',
+          filename: evidence?.filename,
+          content: evidence?.content,
+          raw_output,
+        });
+        evidenceDetails.evidence_id = evidenceId;
+      }
       if (evidence) {
         evidenceDetails.evidence_type = evidence.type;
         evidenceDetails.evidence_content = evidence.content?.slice(0, 8192);
@@ -182,11 +194,82 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
             new_nodes: result.new_nodes,
             new_edges: result.new_edges,
             inferred_edges: result.inferred_edges,
+            evidence_id: (evidenceDetails.evidence_id as string) || undefined,
             warnings: warnings.length > 0 ? warnings : undefined,
             message: `Ingested: ${result.new_nodes.length} new nodes, ${result.new_edges.length} new edges, ${result.inferred_edges.length} inferred edges`
           }, null, 2)
         }]
       };
     })
+  );
+
+  // ============================================================
+  // Tool: get_evidence
+  // Retrieve full-fidelity evidence by ID or list stored evidence.
+  // ============================================================
+  server.registerTool(
+    'get_evidence',
+    {
+      title: 'Get Evidence',
+      description: `Retrieve full-fidelity evidence stored during findings.
+
+When evidence or raw_output is submitted via report_finding, the full payload
+is stored durably on disk (not truncated). Use this tool to retrieve the
+complete content by evidence_id, or list all stored evidence records.
+
+The evidence_id is returned in report_finding responses and stored in
+activity log details.evidence_id fields.`,
+      inputSchema: {
+        evidence_id: z.string().optional().describe('Specific evidence ID to retrieve full content'),
+        action_id: z.string().optional().describe('List evidence for a specific action'),
+        finding_id: z.string().optional().describe('List evidence for a specific finding'),
+        list_only: z.boolean().default(false).describe('If true, return manifest records without content'),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('get_evidence', async ({ evidence_id, action_id, finding_id, list_only }) => {
+      const store = engine.getEvidenceStore();
+
+      if (evidence_id) {
+        const record = store.getRecord(evidence_id);
+        if (!record) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: `Evidence ${evidence_id} not found` }) }],
+            isError: true,
+          };
+        }
+        if (list_only) {
+          return { content: [{ type: 'text', text: JSON.stringify(record, null, 2) }] };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ...record,
+              content: store.getContent(evidence_id),
+              raw_output: store.getRawOutput(evidence_id),
+            }, null, 2),
+          }],
+        };
+      }
+
+      const records = store.list(
+        action_id || finding_id ? { action_id, finding_id } : undefined,
+      );
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            total: records.length,
+            records,
+          }, null, 2),
+        }],
+      };
+    }),
   );
 }
