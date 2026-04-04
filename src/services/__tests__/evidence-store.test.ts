@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, rmSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, rmSync } from 'fs';
 import { EvidenceStore } from '../evidence-store.js';
 
 const TEST_STATE = '/tmp/overwatch-ev-test/state.json';
