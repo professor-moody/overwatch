@@ -292,7 +292,7 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Twenty-two built-in rules fire automatically when matching nodes are ingested:
+Twenty-six built-in rules fire automatically when matching nodes are ingested:
 
 #### AD & Service Rules
 
@@ -302,11 +302,12 @@ Twenty-two built-in rules fire automatically when matching nodes are ingested:
 | SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` from compromised hosts |
 | MSSQL + Domain | MSSQL service on domain host | `POTENTIAL_AUTH` from domain credentials |
 | Credential Fanout | New credential node | `POTENTIAL_AUTH` to compatible services in same domain |
-| ADCS ESC1 | cert_template with enrollee-supplied subject | `ESC1` from enrollable users |
-| Unconstrained Delegation | Host with `unconstrained_delegation: true` | `DELEGATES_TO` from domain users |
-| AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to domain nodes |
-| Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to domain nodes |
-| Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to domain nodes |
+| ADCS ESC1 | cert_template with enrollee-supplied subject + client auth EKU | `ESC1` from enrollable users (confidence 0.75) |
+| Unconstrained Delegation | Host with `unconstrained_delegation: true` | `DELEGATES_TO` from domain admins and session holders (confidence 0.7) |
+| AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to user's own domain (confidence 0.85) |
+| Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to user's own domain (confidence 0.85) |
+| Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to delegation targets from `allowed_to_delegate_to` SPN list (confidence 0.8) |
+| DCSync | User with `can_dcsync: true` | `CAN_DCSYNC` to user's own domain (confidence 0.9) |
 | Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
 | LAPS Readable | Host with `laps: true` + inbound `GENERIC_ALL` | `CAN_READ_LAPS` from edge peers |
 | gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
@@ -318,10 +319,13 @@ The last three use **edge-triggered inference** — they require a matching inbo
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
-| SUID Privesc | Host with `has_suid_root: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.85) |
-| SSH Key Reuse | Credential with `cred_type: ssh_key` | `POTENTIAL_AUTH` to all SSH services (confidence 0.5) |
+| SUID Privesc | Host with `has_suid_root: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.6) |
+| SSH Key Reuse | Credential with `cred_type: ssh_key` | `POTENTIAL_AUTH` to SSH services on related hosts (confidence 0.5) |
 | Docker Escape | Host with `docker_socket_accessible: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.8) |
 | NFS Root Squash | Host with `no_root_squash: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.7) |
+| Sudo NOPASSWD | Host with `sudoers_nopasswd: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.7) |
+| Dangerous Capabilities | Host with `has_dangerous_capabilities: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.55) |
+| Writable Cron/Systemd | Host with `writable_cron_or_systemd: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.65) |
 
 #### Web Application Rules
 
@@ -339,9 +343,9 @@ The last three use **edge-triggered inference** — they require a matching inbo
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
-| Overprivileged Policy | Cloud policy with wildcard actions (`iam:*`, `s3:*`, `*:*`) | `POTENTIAL_AUTH` from policy holders (confidence 0.7) |
-| Public Bucket | Cloud resource (`s3_bucket`, `public: true`) | `EXPOSED_TO` internet (confidence 0.9) |
-| Cross-Account Role | Cloud identity with `ASSUMES_ROLE` crossing accounts | `POTENTIAL_AUTH` lateral movement (confidence 0.6) |
+| Overprivileged Policy | Cloud policy with wildcard actions (`iam:*`, `s3:*`, `*:*`) | `PATH_TO_OBJECTIVE` to nearest objective (confidence 0.7) |
+| Public Bucket | Cloud resource (`s3_bucket`, `public: true`) | `PATH_TO_OBJECTIVE` to nearest objective (confidence 0.8) |
+| Cross-Account Role | Cloud identity with `ASSUMES_ROLE` crossing accounts | `REACHABLE` to cross-account roles (confidence 0.7) |
 
 Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md).
 
@@ -355,14 +359,23 @@ Selectors resolve graph context when inference rules fire:
 | `trigger_service` | Same as `trigger_node` |
 | `parent_host` | Host running the triggering service |
 | `domain_nodes` | All domain nodes |
-| `domain_users` | All domain user nodes |
-| `domain_credentials` | All NTLM/Kerberos/AES credentials |
-| `all_compromised` | Hosts with confirmed access |
+| `domain_users` | All domain-joined user nodes |
+| `domain_credentials` | All NTLM/Kerberos/AES reusable credentials |
+| `all_compromised` | Hosts with `HAS_SESSION` or `ADMIN_TO` edges at confidence >= 0.7 |
 | `compatible_services` | Services accepting the credential type |
 | `compatible_services_same_domain` | Like `compatible_services` but filtered to same domain as credential |
 | `matching_domain` | Domain nodes matching host hostname suffix |
+| `matching_user_domain` | Domain nodes the trigger user belongs to (via `MEMBER_OF_DOMAIN` edge or `domain_name` property) |
+| `domain_admins_and_session_holders` | Session holders on trigger host + admin group members; falls back to all domain users |
 | `edge_peers` | Peer nodes from the rule's `requires_edge` (for edge-triggered rules) |
 | `enrollable_users` | All user nodes (for ADCS rules) |
-| `session_holders_on_host` | Users/groups with `HAS_SESSION` to the triggering host |
-| `all_ssh_services` | All services with `service_name: ssh` |
+| `enrollable_users_if_client_auth` | All users, but only when the trigger cert_template has Client Authentication EKU |
+| `session_holders_on_host` | Users/groups with `HAS_SESSION` (confidence >= 0.7) to the triggering host |
+| `ssh_services` | All services with `service_name: ssh` |
+| `ssh_services_related` | SSH services on hosts where the credential owner has existing access |
+| `delegation_targets` | Hosts/services resolved from `allowed_to_delegate_to` SPN list; falls back to domain nodes |
 | `linked_server_hosts` | Hosts matching the `linked_servers` array by hostname/label |
+| `web_form_credentials` | Plaintext non-default credentials for webapp spray |
+| `all_usable_credentials` | All credentials usable for authentication |
+| `nearest_objective` | Objective nodes (for cloud rules with wildcard action gating) |
+| `cross_account_roles` | Cloud identities in different accounts reachable via `ASSUMES_ROLE` |

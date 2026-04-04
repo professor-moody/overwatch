@@ -84,7 +84,9 @@ Out-of-scope host nodes are automatically detected and surfaced in `get_state()`
 ## Behavior notes
 
 - CIDRs are validated before application; invalid formats are rejected with an error
+- **Domain format validation:** `add_domains` entries must contain at least one dot, no whitespace, no path separators (`/`, `\`), and be at most 253 characters. Malformed entries are rejected with per-entry error messages
 - Duplicate entries are silently deduplicated (adding a CIDR already in scope is a no-op)
+- **Scope expansion warnings:** In dry-run preview mode (`confirm: false`), the response includes a `scope_expansion_warning` array listing nodes that would enter or leave scope, plus notes about newly added scope entries. This helps operators gauge impact before committing
 - The frontier cache is invalidated immediately so `next_task` reflects the new scope
 - The persisted state file is written immediately so scope survives restarts
 - Activity log entry includes the complete before/after scope diff for audit trail

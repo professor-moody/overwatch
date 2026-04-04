@@ -12,12 +12,12 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 
 - **Graph-based state** — directed property graphs (hosts, services, credentials, relationships) with traversable attack paths
 - **Hybrid scoring** — deterministic layer handles scope/dedup/OPSEC vetoes; the LLM handles attack chain reasoning
-- **Inference rules** — automatic hypothesis generation (e.g., "SMB signing disabled → relay target")
+- **26 inference rules** — automatic hypothesis generation across AD, Linux, cloud, web, and MSSQL attack surfaces
 - **39 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, scope management, and more
 - **Graph compaction** — cold store keeps the hot graph focused during large network sweeps; ping-only hosts tracked in census
 - **32 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
-- **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder
+- **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldap, enum4linux, rubeus, nuclei, nikto, testssl, linpeas, cloud
 - **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O and ownership enforcement
 - **Retrospective analysis** — post-engagement skill gaps, inference suggestions, RLVR training traces
 

@@ -285,16 +285,35 @@ LLM calls `get_history()` and `export_graph()` to review the full engagement. Pr
 **Lateral:** RELAY_TARGET, NULL_SESSION
 **Meta:** PATH_TO_OBJECTIVE, RELATED
 
-### Built-in Inference Rules (6)
+### Built-in Inference Rules (26)
+
+Twenty-six rules across AD, Linux, web, MSSQL, and cloud domains. See [docs/graph-model.md](docs/graph-model.md) for the full table. Key rules:
 
 | Rule | Trigger | Produces | Confidence |
 |------|---------|----------|------------|
-| Kerberos → Domain | Service: kerberos | MEMBER_OF_DOMAIN → domain nodes | 0.9 |
-| SMB Signing → Relay | Service: smb, signing=false | RELAY_TARGET from compromised | 0.8 |
+| Kerberos → Domain | Service: kerberos | MEMBER_OF_DOMAIN → matching domain | 0.9 |
+| SMB Signing → Relay | Service: smb, signing=false | RELAY_TARGET from compromised (>= 0.7) | 0.8 |
 | MSSQL + Domain | Service: mssql on domain host | POTENTIAL_AUTH from domain creds | 0.7 |
-| Credential Fanout | New credential node | POTENTIAL_AUTH to all compatible services | 0.6 |
-| ADCS ESC1 | Certificate: enrollee_supplies_subject | ESC1 from enrollable users | 0.75 |
-| Unconstrained Delegation | Host: unconstrained_delegation | DELEGATES_TO from domain users | 0.85 |
+| Credential Fanout | New credential node | POTENTIAL_AUTH to compatible services | 0.6 |
+| ADCS ESC1 | cert_template: enrollee_supplies_subject + client auth EKU | ESC1 from enrollable users | 0.75 |
+| Unconstrained Delegation | Host: unconstrained_delegation | DELEGATES_TO from domain admins + session holders | 0.7 |
+| AS-REP Roastable | User: asrep_roastable | AS_REP_ROASTABLE to user's own domain | 0.85 |
+| Kerberoastable | User: has_spn | KERBEROASTABLE to user's own domain | 0.85 |
+| Constrained Delegation | Host: constrained_delegation | CAN_DELEGATE_TO to delegation targets | 0.8 |
+| DCSync | User: can_dcsync | CAN_DCSYNC to user's own domain | 0.9 |
+| Sudo NOPASSWD | Host: sudoers_nopasswd | ADMIN_TO from session holders | 0.7 |
+| Dangerous Capabilities | Host: has_dangerous_capabilities | ADMIN_TO from session holders | 0.55 |
+| Writable Cron/Systemd | Host: writable_cron_or_systemd | ADMIN_TO from session holders | 0.65 |
+
+**Threshold note:** The `all_compromised` and `session_holders_on_host` selectors, frontier pivot gates, and imperative inference functions all use a **0.7** confidence threshold (not 0.9). This matches the graph model's operational definition of "compromised."
+
+**Key selectors added:** `matching_user_domain` (domain the trigger user belongs to), `domain_admins_and_session_holders` (scoped delegation source), `enrollable_users_if_client_auth` (EKU-gated ADCS), `ssh_services_related` (host-scoped SSH), `delegation_targets` (SPN-resolved delegation). See [docs/graph-model.md](docs/graph-model.md) for the full selector reference.
+
+### Scope Governance
+
+- **Domain validation:** `update_scope` validates `add_domains` entries — must contain a dot, no whitespace, no path separators, max 253 chars. Malformed entries are rejected with per-entry errors.
+- **Expansion warnings:** Dry-run preview (`confirm: false`) returns `scope_expansion_warning` listing nodes that would enter/leave scope.
+- **Session scope checks:** `open_session` warns (but does not block) when the target host is out of scope.
 
 ---
 
@@ -448,7 +467,7 @@ Tags improve RAG search ranking. Use specific terms the LLM would search for.
 
 ### Adding Inference Rules
 
-In `graph-engine.ts`, add to the BUILTIN_RULES array:
+In `src/services/builtin-inference-rules.ts`, add to the `BUILTIN_RULES` array:
 
 ```typescript
 {

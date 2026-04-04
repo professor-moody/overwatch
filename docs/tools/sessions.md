@@ -36,6 +36,8 @@ Create a new persistent session.
 
 Returns session metadata + initial output as `SessionReadResult`.
 
+> **Scope check:** If `host` resolves to an out-of-scope address, the session is still created but the response includes a `scope_warning` field. This is advisory — sessions are never blocked by scope.
+
 ### `write_session`
 
 Write raw bytes to a session. The I/O primitive.
@@ -88,6 +90,7 @@ List sessions with metadata.
 |-----------|------|-------------|
 | `active_only` | boolean? | Only pending/connected (default: false) |
 | `session_id` | string? | Get details for one session |
+| `agent_id` | string? | Filter to sessions claimed by this agent (or unclaimed) |
 
 ### `update_session`
 
