@@ -105,7 +105,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
 | **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/output-parsers.ts` | 17 parsers / 31 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler |
+| **Output Parsers** | `src/services/parsers/` | 17 parsers / 30 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler |
 | **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
 | **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization, lifecycle, and domain inference |
 | **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |
@@ -133,7 +133,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 |--------|------|-------|
 | **State** | `src/tools/state.ts` | `get_state`, `run_lab_preflight`, `run_graph_health`, `recompute_objectives`, `get_history`, `export_graph` |
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
-| **Findings** | `src/tools/findings.ts` | `report_finding` |
+| **Findings** | `src/tools/findings.ts` | `report_finding`, `get_evidence` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
 | **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents` |
 | **Skills** | `src/tools/skills.ts` | `get_skill` |

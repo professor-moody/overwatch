@@ -127,7 +127,7 @@ For parsers that benefit from ambient context (secretsdump, hashcat), pass the `
 
 ## Tips
 
-- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (31 aliases across 17 parsers)
+- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (30 aliases across 17 parsers)
 - Use `parse_output` with `ingest: false` to preview what would be parsed without modifying the graph
 - Always include `action_id` from `validate_action` for traceability
 - Pass `context` with `domain` and `source_host` when available for better credential attribution

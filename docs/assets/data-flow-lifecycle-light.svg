@@ -32,7 +32,7 @@
   <line x1="340" y1="170" x2="340" y2="186" class="arr" marker-end="url(#arr)"/>
   <g class="n-amber"><rect x="180" y="186" width="320" height="48" rx="7"/><text class="th" x="340" y="204" text-anchor="middle" dominant-baseline="central">4. Execute (bash / nmap / nxc)</text><text class="ts" x="340" y="220" text-anchor="middle" dominant-baseline="central">Claude Code native bash</text></g>
   <line x1="340" y1="234" x2="340" y2="250" class="arr" marker-end="url(#arr)"/>
-  <g class="n-coral"><rect x="80" y="250" width="240" height="48" rx="7"/><text class="th" x="200" y="268" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="284" text-anchor="middle" dominant-baseline="central">17 parsers / 31 aliases</text></g>
+  <g class="n-coral"><rect x="80" y="250" width="240" height="48" rx="7"/><text class="th" x="200" y="268" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="284" text-anchor="middle" dominant-baseline="central">17 parsers / 30 aliases</text></g>
   <g class="n-coral"><rect x="360" y="250" width="240" height="48" rx="7"/><text class="th" x="480" y="268" text-anchor="middle" dominant-baseline="central">5b. report_finding()</text><text class="ts" x="480" y="284" text-anchor="middle" dominant-baseline="central">Manual nodes/edges</text></g>
   <text class="ts" x="340" y="278" text-anchor="middle">or</text>
   <line x1="200" y1="298" x2="200" y2="322" class="arr" marker-end="url(#arr)"/><line x1="480" y1="298" x2="480" y2="322" class="arr" marker-end="url(#arr)"/>

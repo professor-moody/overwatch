@@ -56,7 +56,7 @@ overwatch/
 │   │   ├── finding-validation.ts # Input validation for findings
 │   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── output-parsers.ts # 17 parsers / 31 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler
+│   │   ├── parsers/          # 17 parsers / 30 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler
 │   │   ├── parser-utils.ts   # Shared parsing helpers
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
@@ -99,10 +99,10 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1105+ tests across 61 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1593+ tests across 59 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
-npm test                        # Fast source tests (1105+ tests)
+npm test                        # Fast source tests (1593+ tests)
 npm run test:integration:stdio  # Stdio integration (24 tests)
 npm run test:integration:http   # HTTP transport integration (6 tests)
 npm run verify                  # All of the above + dist freshness check
@@ -156,7 +156,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 
 ## Adding a New Parser
 
-1. Add the parser function in `src/services/output-parsers.ts`
+1. Add the parser function in `src/services/parsers/`
 2. Register the parser name in the `parsers` map
 3. Add tests in `src/services/__tests__/output-parsers.test.ts`
 4. Update the `parse_output` tool description in `src/tools/parse-output.ts`

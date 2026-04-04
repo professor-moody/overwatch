@@ -46,7 +46,7 @@ Use `parse_output` whenever possible. See [parse_output vs report_finding](playb
 
 ### How do I add a custom parser?
 
-1. Add the parser function in `src/services/output-parsers.ts`
+1. Add the parser function in `src/services/parsers/`
 2. Register the parser name in the `parsers` map
 3. Add tests in `src/services/__tests__/output-parsers.test.ts`
 4. Update the `parse_output` tool description in `src/tools/parse-output.ts`

@@ -180,9 +180,9 @@ Eight integrity checks:
 7. Edge type constraint violations
 8. Stale inferred edges
 
-### Output Parsers (`src/services/output-parsers.ts`)
+### Output Parsers (`src/services/parsers/`)
 
-Seventeen deterministic parsers with 31 aliases:
+Seventeen deterministic parsers with 30 aliases:
 
 | Parser | Input | Output |
 |--------|-------|--------|
@@ -253,7 +253,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
 | `get_evidence` | Retrieve full-fidelity evidence by ID or list stored evidence records |
-| `parse_output` | Deterministic tool output parsing (17 parsers, 31 aliases) |
+| `parse_output` | Deterministic tool output parsing (17 parsers, 30 aliases) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
 | `ingest_azurehound` | AzureHound / ROADtools JSON ingestion |
 
@@ -379,7 +379,7 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**61 test files** across the codebase:
+**59 test files** across the codebase:
 
 | Area | Files | Coverage |
 |------|-------|----------|
@@ -456,7 +456,7 @@ overwatch/
 │   │   ├── graph-schema.ts         # Edge endpoint constraints
 │   │   ├── graph-health.ts         # 8 integrity checks + contextual AD filtering
 │   │   ├── credential-utils.ts     # Credential classification + lifecycle
-│   │   ├── output-parsers.ts       # 17 deterministic parsers (31 aliases)
+│   │   ├── parsers/              # 17 deterministic parsers (30 aliases)
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization
 │   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
@@ -505,7 +505,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 17 parsers (31 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 17 parsers (30 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.

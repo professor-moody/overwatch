@@ -34,8 +34,8 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 | | |
 |---|---|
 | **40** MCP tools | **33** offensive skills |
-| **17** output parsers with 31 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler) | **22** built-in inference rules |
-| **1105+** tests across **61** files | **21** node types, **52** edge types |
+| **17** output parsers with 30 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler) | **22** built-in inference rules |
+| **1593+** tests across **59** files | **21** node types, **52** edge types |
 
 ## Quick Start
 
