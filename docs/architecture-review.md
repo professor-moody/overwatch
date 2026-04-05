@@ -379,7 +379,7 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**59 test files** across the codebase:
+**67 test files** across the codebase (see Vitest output for exact test count):
 
 | Area | Files | Coverage |
 |------|-------|----------|
@@ -387,7 +387,7 @@ The `run_retrospective` tool produces five structured outputs:
 | Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 40 tools via stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
 | Services | 24 test files | CIDR, BloodHound, parsers (17), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
-| Tools | 3 test files | Error boundary, activity logging, process tracking |
+| Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |
 | Dashboard | 5 test files | Boot, graph rendering, UI, WebSocket, main |
 | CLI | `lab-smoke.test.ts` | End-to-end lab workflow |
 

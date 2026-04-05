@@ -99,16 +99,36 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1593+ tests across 59 test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1600+ tests across 65+ source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
-npm test                        # Fast source tests (1593+ tests)
-npm run test:integration:stdio  # Stdio integration (24 tests)
-npm run test:integration:http   # HTTP transport integration (6 tests)
+npm test                        # Fast source tests (see Vitest summary for current count)
+npm run test:integration:stdio  # Stdio MCP integration (build-backed)
+npm run test:integration:http   # HTTP/SSE transport integration (build-backed)
 npm run verify                  # All of the above + dist freshness check
 ```
 
 Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
+
+### Lab smoke harness (multi-profile)
+
+After `npm run build`, **`npm run lab:smoke`** exercises the MCP server against synthetic fixtures (preflight, ingest, graph health, restart persistence, retrospective). Profiles exercise different engagement shapes:
+
+| Profile | Focus |
+|---------|--------|
+| `goad_ad` (default) | BloodHound + nmap + nxc + secretsdump (domain scope) |
+| `network` | CIDR scope, nmap + nxc + secretsdump |
+| `web_app` | Nuclei + Nikto |
+| `cloud` | Prowler + Pacu |
+
+```bash
+npm run lab:smoke                           # default: goad_ad
+npm run lab:smoke -- --profile network
+npm run lab:smoke -- --profile web_app
+npm run lab:smoke -- --profile cloud
+npm run lab:smoke -- --keep-state --verbose # preserve temp dir; print retrospective
+npm run lab:smoke -- --help
+```
 
 Test files are co-located with their modules under `__tests__/` directories:
 

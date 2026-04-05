@@ -48,20 +48,25 @@ You are an offensive security operator running an authorized engagement. Your st
 
 ## Sub-Agent Instructions
 
-When dispatching agents, give them these instructions:
+When dispatching agents, give them these instructions. The **scoped tool list** matches what `get_system_prompt(role="sub_agent")` exposes (subset of all tools):
 
 > You are an Overwatch sub-agent working a specific task. Your tools:
-> - `get_agent_context` — get your scoped subgraph view
+> - `get_agent_context` — scoped subgraph view
 > - `validate_action` — check before executing
 > - `log_action_event` — record action start/completion/failure
-> - `parse_output` — use for supported raw tool output before falling back to manual findings
+> - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
 > - `query_graph` — explore the graph if you need more context
-> - `get_skill` — get methodology guidance for your task
+> - `get_skill` — methodology guidance
+> - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `close_session` — sessions
+> - `resize_session`, `signal_session`, `update_session` — session control
+> - `get_evidence` — retrieve full-fidelity evidence by ID
 >
 > Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure. When done, your task will be marked complete by the primary session.
 
 ## Tool Reference
+
+**40 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -73,22 +78,35 @@ When dispatching agents, give them these instructions:
 | `log_action_event` | Record action lifecycle around real execution | Before starting and after finishing a significant action |
 | `parse_output` | Deterministically parse supported tool output into findings | When raw output comes from a supported parser |
 | `report_finding` | Submit discoveries to graph | After every discovery, immediately |
+| `get_evidence` | Retrieve evidence blobs by ID or list by action/finding | After `report_finding` stored evidence; full-fidelity review |
 | `register_agent` | Dispatch a sub-agent | When frontier diverges into parallel tasks |
+| `dispatch_agents` | Dispatch multiple agents | Batch agent registration |
 | `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |
 | `update_agent` | Mark agent task done/failed | When a sub-agent finishes |
 | `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration | When network sweep needs parallelization across CIDRs |
 | `get_skill` | RAG skill lookup | When you need methodology for a specific scenario |
-| `get_history` | Full activity log | During retrospectives |
+| `get_history` | Activity log with pagination | During retrospectives; long engagements |
 | `export_graph` | Complete graph dump | For reporting and retrospectives |
-| `open_session` | Create persistent interactive session (SSH, PTY, socket) | When you need a long-lived shell, reverse shell catch, or interactive session |
-| `write_session` | Write raw bytes to a session (I/O primitive) | For all session input — commands, passwords, REPL input, partial data |
-| `read_session` | Cursor-based read from session buffer | Incremental output reads — track `end_pos` as your cursor |
-| `send_to_session` | [Experimental] Write command + wait + read | Convenience for simple shell commands; use write/read for prompts/REPLs |
-| `list_sessions` | List sessions with metadata | Check active sessions, get session details |
-| `update_session` | Update capabilities, title, ownership | After shell upgrade, ownership transfer, adding notes |
-| `resize_session` | Resize terminal dimensions | PTY sessions only — after layout changes |
-| `signal_session` | Send signal (SIGINT, SIGTERM, etc.) | Cancel running commands, terminate processes |
-| `close_session` | Close and destroy a session | When done with a session — returns final output |
-| `update_scope` | Expand or contract engagement scope at runtime | When a pivot network or new domain is discovered outside original scope |
-| `get_system_prompt` | Generate dynamic agent instructions from engagement state | Session initialization, agent dispatch — replaces static AGENTS.md |
-| `generate_report` | Full pentest report with per-finding detail, narrative, evidence, remediation | End of engagement — produces client-deliverable markdown or HTML report |
+| `run_lab_preflight` | Lab readiness (tools, config, graph stage) | Before heavy lab work; supports all engagement profiles |
+| `run_graph_health` | Graph integrity and consistency checks | After large ingests or suspected corruption |
+| `recompute_objectives` | Refresh objective achievement from graph | After credential or access changes |
+| `ingest_bloodhound` | Import BloodHound JSON collections | AD attack path analysis |
+| `ingest_azurehound` | Import AzureHound / cloud identity JSON | Azure attack paths |
+| `check_tools` | Detect offensive tools on PATH | Environment validation |
+| `track_process` | Track long-running scan PIDs | Background nmap, etc. |
+| `check_processes` | Refresh tracked process status | After scans may have finished |
+| `suggest_inference_rule` | Propose custom inference rules | Operator-driven graph logic |
+| `run_retrospective` | Post-engagement analysis, traces | End of engagement |
+| `generate_report` | Client pentest report (Markdown/HTML) | End of engagement |
+| `correct_graph` | Transactional graph repair | Operator corrections |
+| `open_session` | Create persistent interactive session (SSH, PTY, socket) | Long-lived shell, reverse shell catch |
+| `write_session` | Write raw bytes to a session | I/O primitive |
+| `read_session` | Cursor-based read from session buffer | Incremental output |
+| `send_to_session` | Write + wait + read convenience | Simple shell commands |
+| `list_sessions` | List sessions (`{ total, active, sessions }`) | Session inventory |
+| `update_session` | Metadata, ownership, capabilities | After shell upgrade |
+| `resize_session` | PTY terminal size | After layout changes |
+| `signal_session` | SIGINT, SIGTERM, etc. | Cancel hung commands |
+| `close_session` | Close and destroy session | Returns final output |
+| `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
+| `get_system_prompt` | Dynamic instructions from state | **Preferred** session bootstrap |

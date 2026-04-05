@@ -109,7 +109,7 @@ Then run `claude` — see the full [Getting Started](https://keys.github.io/over
 | `update_scope` | Confirmation-gated runtime scope expansion/contraction |
 | `get_system_prompt` | Generate dynamic agent instructions from engagement state |
 
-Full reference: **[Tool Documentation](https://keys.github.io/overwatch/tools/)**
+Full reference: **[Tool documentation](https://keys.github.io/overwatch/tools/)** — in-repo copy: [docs/tools/index.md](docs/tools/index.md) (same catalog; useful offline).
 
 ## Documentation
 
