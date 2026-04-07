@@ -176,7 +176,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 
 | Edge | Description |
 |------|-------------|
-| `MEMBER_OF` | User/group is member of a group |
+| `MEMBER_OF` | User, group, or cloud identity is member of a group |
 | `MEMBER_OF_DOMAIN` | Object belongs to a domain |
 | `TRUSTS` | Domain trust relationship |
 | `SAME_DOMAIN` | Objects share a domain |
@@ -252,10 +252,10 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 
 | Edge | Description |
 |------|-------------|
-| `HOSTS` | Host/service hosts a web application |
+| `HOSTS` | Service hosts a web application |
 | `AUTHENTICATED_AS` | Web application authenticated as a user/identity |
-| `VULNERABLE_TO` | Web application or service is vulnerable to a vulnerability |
-| `EXPLOITS` | Credential or access exploits a vulnerability |
+| `VULNERABLE_TO` | Web application, service, or cloud resource is vulnerable to a vulnerability |
+| `EXPLOITS` | Vulnerability exploits a host, credential, or web application |
 
 ### Cloud Infrastructure
 
@@ -298,9 +298,9 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Twenty-six built-in rules fire automatically when matching nodes are ingested:
+Thirty-one built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
 
-#### AD & Service Rules
+#### AD & Service Rules (18)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -313,13 +313,16 @@ Twenty-six built-in rules fire automatically when matching nodes are ingested:
 | AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to user's own domain (confidence 0.85) |
 | Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to user's own domain (confidence 0.85) |
 | Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to delegation targets from `allowed_to_delegate_to` SPN list (confidence 0.8) |
-| DCSync | User with `can_dcsync: true` | `CAN_DCSYNC` to user's own domain (confidence 0.9) |
 | Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
 | LAPS Readable | Host with `laps: true` + inbound `GENERIC_ALL` | `CAN_READ_LAPS` from edge peers |
 | gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
 | RBCD Target | Host with `maq_gt_zero: true` + inbound `WRITEABLE_BY` | `RBCD_TARGET` from edge peers |
-
-The last three use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
+| WriteDACL Escalation | User with inbound `WRITE_DACL` | `ESCALATION_PATH` from edge peers (confidence 0.8) |
+| WriteOwner Escalation | User with inbound `WRITE_OWNER` | `ESCALATION_PATH` from edge peers (confidence 0.8) |
+| ForceChangePassword | User with inbound `FORCE_CHANGE_PASSWORD` | `ESCALATION_PATH` from edge peers (confidence 0.85) |
+| Shadow Credentials | User/host with inbound `WRITE_MSDS_ALLOWEDTOACTONBEHALFOFOTHERIDENTITY` | `ESCALATION_PATH` from edge peers (confidence 0.8) |
+| GPO Abuse | GPO with inbound `WRITE_PROPERTY` | `ESCALATION_PATH` from edge peers to linked hosts (confidence 0.75) |
+| DCSync | User with inbound `CAN_DCSYNC` edge | `CAN_DCSYNC` to user's own domain (confidence 0.9) |
 
 #### Linux Privilege Escalation Rules
 

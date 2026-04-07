@@ -11,7 +11,7 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "id": "string (required)",
   "name": "string (required)",
   "created_at": "ISO 8601 timestamp (required)",
-  "profile": "goad_ad | single_host | cloud | web_app | hybrid | network (optional, inferred if omitted)",
+  "profile": "goad_ad | single_host | cloud | web_app | hybrid | network (optional, inferred if omitted; network must be set explicitly)",
   "scope": {
     "cidrs": ["CIDR notation strings"],
     "domains": ["domain names"],
@@ -70,7 +70,7 @@ The optional `profile` field selects the lab preflight profile, which controls w
 | `cloud` | Cloud-only engagement — checks cloud account scope, recommends cloud tools (pacu, prowler). |
 | `hybrid` | Combined infrastructure + cloud — checks all scope types. |
 
-If omitted, the profile is **inferred**: `hybrid` when both domains and cloud accounts are present, `cloud` when only cloud accounts are scoped, `web_app` when only URL patterns are scoped, `goad_ad` when `scope.domains` is non-empty, `single_host` otherwise.
+If omitted, the profile is **inferred** with the following precedence: `hybrid` when both domains and cloud accounts are present, `cloud` when cloud accounts are scoped (even if URL patterns also exist), `web_app` when URL patterns are scoped (takes precedence over domains), `goad_ad` when `scope.domains` is non-empty, `single_host` otherwise. Note: `network` is never inferred — it must be set explicitly.
 
 ### Objectives
 

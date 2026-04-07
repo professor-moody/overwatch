@@ -68,7 +68,7 @@ When findings are reported, deterministic rules fire automatically to generate h
 | **MSSQL** | 1 | Linked server → REACHABLE |
 | **Cloud** | 3 | Overprivileged policy, public bucket, cross-account role |
 
-Three AD rules use **edge-triggered inference** — they require a matching inbound edge in addition to the node property match. When a new edge arrives, inference also re-evaluates its endpoints.
+Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference also re-evaluates its endpoints. Edge-triggered rules span AD (LAPS, gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync), cloud (cross-account role), and MSSQL (linked server + domain).
 
 See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference with triggers and productions. Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Concepts](concepts.md#inference-rules) for how the rule lifecycle works.
 

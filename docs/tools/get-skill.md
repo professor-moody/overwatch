@@ -42,7 +42,7 @@ For search queries:
 
 ## Available Skills
 
-The library includes 32 offensive methodology guides covering:
+The library includes 33 offensive methodology guides covering:
 
 - **Network** — reconnaissance, DNS, SNMP, SMB enumeration
 - **Active Directory** — discovery, Kerberoasting, ADCS, domain trusts, persistence

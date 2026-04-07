@@ -15,7 +15,7 @@ Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing
 - **31 inference rules** — automatic hypothesis generation across AD, Linux, cloud, web, and MSSQL attack surfaces
 - **40 MCP tools** — state management, graph exploration, output parsing, sub-agent dispatch, persistent sessions, scope management, and more
 - **Graph compaction** — cold store keeps the hot graph focused during large network sweeps; ping-only hosts tracked in census
-- **32 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
+- **33 offensive skills** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure
 - **Live dashboard** — real-time WebGL graph visualization with sigma.js
 - **Deterministic parsers** — nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldap, enum4linux, rubeus, nuclei, nikto, testssl, linpeas, cloud
 - **Persistent sessions** — long-lived interactive sessions (SSH, PTY, reverse shell) with cursor-based I/O, ownership enforcement, and scope-gated remote session creation
@@ -93,12 +93,12 @@ Then run `claude` — see the full [Getting Started](https://keys.github.io/over
 | `find_paths` | Shortest paths to objectives |
 | `get_skill` | RAG search over skill library |
 | `register_agent` / `get_agent_context` / `update_agent` | Sub-agent lifecycle |
-| `dispatch_subnet_agents` | One agent per scope CIDR for parallel enumeration |
+| `dispatch_agents` / `dispatch_subnet_agents` | Batch agent dispatch / one agent per scope CIDR |
 | `ingest_bloodhound` | Import BloodHound JSON collections |
 | `ingest_azurehound` | Import AzureHound / ROADtools JSON collections |
 | `run_lab_preflight` / `run_graph_health` | Environment and graph health checks |
 | `check_tools` / `track_process` / `check_processes` | System utilities |
-| `suggest_inference_rule` | Add custom inference rules |
+| `suggest_inference_rule` / `recompute_objectives` | Add custom inference rules / refresh objective achievement |
 | `run_retrospective` | Post-engagement analysis |
 | `generate_report` | Full pentest report with findings, narrative, evidence, remediation |
 | `correct_graph` | Transactional graph repair (drop/replace edges, patch nodes) |
@@ -118,7 +118,7 @@ Full reference: **[Tool documentation](https://keys.github.io/overwatch/tools/)*
 - **[Configuration](https://keys.github.io/overwatch/configuration/)** — engagement config, OPSEC profiles, env vars
 - **[Graph Model](https://keys.github.io/overwatch/graph-model/)** — node types, edge types, inference rules
 - **[Tool Reference](https://keys.github.io/overwatch/tools/)** — all 40 MCP tools with parameters and examples
-- **[Skills Library](https://keys.github.io/overwatch/skills/)** — 32 offensive methodology guides
+- **[Skills Library](https://keys.github.io/overwatch/skills/)** — 33 offensive methodology guides
 - **[Operator Playbook](https://keys.github.io/overwatch/playbook/)** — lab workflows, session instructions, best practices
 - **[Development](https://keys.github.io/overwatch/development/)** — project structure, testing, extending
 

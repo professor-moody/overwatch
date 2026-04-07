@@ -99,7 +99,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1600+ tests across 65+ source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1643+ tests across 67 source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
 npm test                        # Fast source tests (see Vitest summary for current count)

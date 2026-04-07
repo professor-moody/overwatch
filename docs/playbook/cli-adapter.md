@@ -63,7 +63,7 @@ Overwatch supports three transport modes. The graph, state, and tools are identi
 overwatch get-system-prompt --role primary
 ```
 
-This returns the full operator instructions that Claude Code needs. The existing 32 offensive technique skills (network-recon, kerberoasting, lateral-movement, etc.) are still available via `get_skill` during the engagement — they're methodology guides, not adapter-specific.
+This returns the full operator instructions that Claude Code needs. The existing 33 offensive technique skills (network-recon, kerberoasting, lateral-movement, etc.) are still available via `get_skill` during the engagement — they're methodology guides, not adapter-specific.
 
 ## Bootstrap Sequence
 

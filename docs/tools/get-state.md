@@ -38,7 +38,8 @@ An `EngagementState` object containing:
 | `recent_activity` | `array` | Recent events with timestamps and agent IDs |
 | `access_summary` | `object` | Compromised hosts (live sessions only), valid credentials, access level |
 | `warnings` | `HealthSummary` | Graph health warnings |
-| `lab_readiness` | `LabReadinessSummary` | Lab readiness status |
+| `lab_readiness` | `LabReadinessSummary` | Inline lab readiness summary (graph health severity, domain hints, stage). For full per-tool readiness, use [`run_lab_preflight`](run-lab-preflight.md). |
+| `scope_suggestions` | `string[]` | Suggested scope expansions discovered during the engagement |
 
 ### graph_summary community fields
 

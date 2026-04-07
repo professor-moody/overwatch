@@ -220,7 +220,7 @@ HTTP + WebSocket server on port 8384 (configurable). Serves a sigma.js WebGL das
 
 ### Lab Preflight (`src/services/lab-preflight.ts`)
 
-Aggregate readiness checks for lab workflows (GOAD AD, single host, HTB, network). Validates config, scope, tool availability, graph health, persistence safety, dashboard status, and graph stage. Profile is inferred from scope if not explicitly set.
+Aggregate readiness checks for lab workflows across all 6 profiles (goad_ad, single_host, network, web_app, cloud, hybrid). Validates config, scope, tool availability, graph health, persistence safety, dashboard status, and graph stage. Profile is inferred from scope if not explicitly set; `network` must be set explicitly as it is never auto-inferred.
 
 ### Session Manager (`src/services/session-manager.ts`)
 
@@ -422,7 +422,7 @@ overwatch/
 │   ├── index.ts                    # Stdio entrypoint + graceful shutdown
 │   ├── config.ts                   # Config loading + validation
 │   ├── types.ts                    # Zod schemas + TypeScript types
-│   ├── tools/                      # 19 MCP tool modules
+│   ├── tools/                      # 20 MCP tool modules
 │   │   ├── state.ts                # get_state, preflight, health, history, export, recompute_objectives
 │   │   ├── findings.ts             # report_finding
 │   │   ├── scoring.ts              # next_task, validate_action
