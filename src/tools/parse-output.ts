@@ -38,7 +38,8 @@ by handling structured parsing deterministically.
 
 Pass either the raw output content or a local file path for large artifacts.`,
       inputSchema: {
-        tool_name: z.string().describe('Name of the tool that produced the output (e.g. nmap, nxc, certipy)'),
+        tool_name: z.string().optional().describe('Name of the tool that produced the output (e.g. nmap, nxc, certipy)'),
+        tool: z.string().optional().describe('Alias for tool_name'),
         output: z.string().optional().describe('Raw tool output to parse'),
         file_path: z.string().optional().describe('Local file path to a saved text artifact to parse'),
         agent_id: z.string().optional().describe('Agent ID to attribute the findings to'),
@@ -58,7 +59,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('parse_output', async ({ tool_name, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers }) => {
+    withErrorBoundary('parse_output', async ({ tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers }) => {
+      const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
       const warnings: string[] = [];
       if (list_parsers) {
@@ -67,6 +69,19 @@ Pass either the raw output content or a local file path for large artifacts.`,
             type: 'text',
             text: JSON.stringify({ supported_parsers: getSupportedParsers() }, null, 2)
           }]
+        };
+      }
+
+      if (!tool_name) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'Provide "tool_name" (or "tool") — the name of the tool that produced the output.',
+              supported_parsers: getSupportedParsers(),
+            }, null, 2),
+          }],
+          isError: true,
         };
       }
 

@@ -31,7 +31,7 @@ reactive re-planning by the primary session.
 
 Returns: Summary of what was added/updated and any new inferred edges.`,
       inputSchema: {
-        agent_id: z.string().describe('ID of the reporting agent'),
+        agent_id: z.string().optional().describe('ID of the reporting agent (optional for primary session)'),
         action_id: z.string().optional().describe('Stable action ID linking this finding to a validated/executed action'),
         tool_name: z.string().optional().describe('Tool or command family that produced this finding'),
         target_node_ids: z.array(z.string()).default([]).describe('Primary graph node IDs this finding came from'),
@@ -68,7 +68,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       const warnings: string[] = [];
       const finding: Finding = {
         id: uuidv4(),
-        agent_id,
+        agent_id: agent_id || 'primary',
         timestamp: new Date().toISOString(),
         action_id: normalizedActionId,
         tool_name,
