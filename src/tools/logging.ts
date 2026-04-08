@@ -33,10 +33,12 @@ Recommended flow:
 3. \`action_completed\` or \`action_failed\` when the action resolves`,
       inputSchema: {
         action_id: z.string().optional().describe('Stable action ID. Required for non-planned events.'),
-        event_type: actionEventTypeSchema.describe('Lifecycle event to record.'),
+        event_type: actionEventTypeSchema.optional().describe('Lifecycle event to record.'),
+        type: actionEventTypeSchema.optional().describe('Alias for event_type'),
         description: z.string().optional().describe('Human-readable description of the action event. Auto-defaults from event_type if omitted.'),
         agent_id: z.string().optional().describe('Agent or session responsible for the action.'),
         tool_name: z.string().optional().describe('Tool actually used, e.g. nmap, nxc, bloodhound-python.'),
+        tool: z.string().optional().describe('Alias for tool_name'),
         technique: z.string().optional().describe('Technique category, e.g. password-spray, smb-enum.'),
         target_node_ids: z.array(z.string()).default([]).describe('Primary graph node IDs targeted by this action.'),
         target_ips: z.array(z.string()).optional().describe('Raw IP addresses targeted (pre-discovery, when no graph node exists yet).'),
@@ -54,10 +56,12 @@ Recommended flow:
     },
     withErrorBoundary('log_action_event', async ({
       action_id,
-      event_type,
+      event_type: rawEventType,
+      type: typeAlias,
       description,
       agent_id,
-      tool_name,
+      tool_name: rawToolName,
+      tool,
       technique,
       target_node_ids,
       target_ips,
@@ -66,6 +70,14 @@ Recommended flow:
       result_classification,
       details,
     }) => {
+      const event_type = rawEventType || typeAlias;
+      const tool_name = rawToolName || tool;
+      if (!event_type) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: 'Provide "event_type" (or "type") — the lifecycle event to record.' }, null, 2) }],
+          isError: true,
+        };
+      }
       if (event_type !== 'action_planned' && !action_id) {
         return {
           content: [{

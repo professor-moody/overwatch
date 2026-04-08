@@ -23,6 +23,7 @@ bloodhound-python, gobuster/feroxbuster, ldapsearch, smbclient, rpcclient,
 john, hashcat, responder, enum4linux-ng, kerbrute.`,
       inputSchema: {
         tool_name: z.string().optional().describe('Check a specific tool by name. Omit to check all tools.'),
+        tool: z.string().optional().describe('Alias for tool_name'),
       },
       annotations: {
         readOnlyHint: true,
@@ -31,7 +32,8 @@ john, hashcat, responder, enum4linux-ng, kerbrute.`,
         openWorldHint: true
       }
     },
-    withErrorBoundary('check_tools', async ({ tool_name }) => {
+    withErrorBoundary('check_tools', async ({ tool_name: rawToolName, tool }) => {
+      const tool_name = rawToolName || tool;
       if (tool_name) {
         const result = await checkToolByName(tool_name);
         if (!result) {

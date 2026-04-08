@@ -95,6 +95,7 @@ Call this before every significant action. Returns valid/invalid with specific e
         cloud_resource: z.string().optional().describe('Cloud resource identifier to validate against scope (AWS ARN, Azure subscription path, GCP project path)'),
         action_id: z.string().optional().describe('Stable action ID to correlate validation with execution and findings'),
         tool_name: z.string().optional().describe('Tool expected to be used for this action'),
+        tool: z.string().optional().describe('Alias for tool_name'),
         frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
         description: z.string().optional().describe('Human-readable description of the planned action')
       },
@@ -105,7 +106,8 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name, frontier_item_id, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name: rawToolName, tool, frontier_item_id, description }) => {
+      const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
       const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource });
       const validationResult = !result.valid

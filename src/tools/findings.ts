@@ -34,6 +34,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         agent_id: z.string().optional().describe('ID of the reporting agent (optional for primary session)'),
         action_id: z.string().optional().describe('Stable action ID linking this finding to a validated/executed action'),
         tool_name: z.string().optional().describe('Tool or command family that produced this finding'),
+        tool: z.string().optional().describe('Alias for tool_name'),
         target_node_ids: z.array(z.string()).default([]).describe('Primary graph node IDs this finding came from'),
         frontier_item_id: z.string().optional().describe('Frontier item this finding came from'),
         nodes: z.array(z.object({
@@ -63,7 +64,8 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output }) => {
+    withErrorBoundary('report_finding', async ({ agent_id, action_id, tool_name: rawToolName, tool, target_node_ids = [], frontier_item_id, nodes, edges, evidence, raw_output }) => {
+      const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
       const warnings: string[] = [];
       const finding: Finding = {

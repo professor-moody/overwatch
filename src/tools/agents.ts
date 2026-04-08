@@ -8,7 +8,7 @@ import { isIpInCidr } from '../services/cidr.js';
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot'] as const;
 
-  function buildTask(agent_id: string, frontier_item_id: string, subgraph_node_ids: string[], skill?: string) {
+  function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string) {
     return {
       id: uuidv4(),
       agent_id,
@@ -34,7 +34,7 @@ Provide the frontier item the agent should work on and the relevant node IDs for
 The agent can then call get_agent_context with its task ID to receive its scoped view.`,
       inputSchema: {
         agent_id: z.string().describe('Unique identifier for the agent'),
-        frontier_item_id: z.string().describe('ID of the frontier item this agent should work on'),
+        frontier_item_id: z.string().optional().describe('ID of the frontier item this agent should work on (recommended for attribution)'),
         subgraph_node_ids: z.array(z.string()).default([]).describe('Optional node IDs relevant to this agent\'s task. Leave empty to auto-compute from the frontier item.'),
         skill: z.string().optional().describe('Skill/methodology to apply')
       },
@@ -46,27 +46,29 @@ The agent can then call get_agent_context with its task ID to receive its scoped
       }
     },
     withErrorBoundary('register_agent', async ({ agent_id, frontier_item_id, subgraph_node_ids, skill }) => {
-      const existing = engine.getRunningTaskForFrontierItem(frontier_item_id);
-      if (existing) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              task_id: existing.id,
-              agent_id: existing.agent_id,
-              status: existing.status,
-              skipped_existing: true,
-              message: `A running agent is already assigned to ${frontier_item_id}`,
-            }, null, 2)
-          }]
-        };
+      if (frontier_item_id) {
+        const existing = engine.getRunningTaskForFrontierItem(frontier_item_id);
+        if (existing) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                task_id: existing.id,
+                agent_id: existing.agent_id,
+                status: existing.status,
+                skipped_existing: true,
+                message: `A running agent is already assigned to ${frontier_item_id}`,
+              }, null, 2)
+            }]
+          };
+        }
       }
 
       // Eagerly snapshot seed node IDs when caller omits them, so the scope
       // survives frontier changes between registration and get_agent_context.
       let resolvedNodeIds = subgraph_node_ids || [];
       let scope_warning: string | undefined;
-      if (resolvedNodeIds.length === 0 && !frontier_item_id.startsWith('frontier-discovery-')) {
+      if (frontier_item_id && resolvedNodeIds.length === 0 && !frontier_item_id.startsWith('frontier-discovery-')) {
         resolvedNodeIds = engine.computeSubgraphNodeIds(frontier_item_id, 2);
         if (resolvedNodeIds.length === 0) {
           scope_warning = `Frontier item ${frontier_item_id} resolved to zero seed nodes — the agent may lack graph context`;
@@ -81,7 +83,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         agent_id,
         status: 'running',
         scope_node_count: resolvedNodeIds.length,
-        message: `Agent ${agent_id} registered for task ${frontier_item_id}`,
+        message: `Agent ${agent_id} registered${frontier_item_id ? ` for task ${frontier_item_id}` : ''}`,
       };
       if (scope_warning) response.scope_warning = scope_warning;
 
@@ -249,10 +251,10 @@ auto-computed from the frontier item's target node(s).`,
       // Use snapshotted seeds, falling back to live computation for backward compat
       const seedIds = task.subgraph_node_ids.length > 0
         ? task.subgraph_node_ids
-        : engine.computeSubgraphNodeIds(task.frontier_item_id, hops);
+        : task.frontier_item_id ? engine.computeSubgraphNodeIds(task.frontier_item_id, hops) : [];
 
       // For network_discovery tasks with no backing nodes, return CIDR + scope context
-      if (seedIds.length === 0 && task.frontier_item_id.startsWith('frontier-discovery-')) {
+      if (seedIds.length === 0 && task.frontier_item_id?.startsWith('frontier-discovery-')) {
         const frontierItem = engine.getFrontierItem(task.frontier_item_id);
         return {
           content: [{

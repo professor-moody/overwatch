@@ -31,10 +31,8 @@ graph structure directly.
 You can query by node type, filter by properties, traverse from a specific node,
 filter edges by type, or combine these. Results include full properties.
 
-Deprecated free-text payloads like \`{ "query": "credential" }\` are not supported.`,
+Use structured selectors — free-text query payloads are not supported.`,
       inputSchema: {
-        query: z.string()
-          .optional().describe('Deprecated. Free-text graph queries are not supported. Use the structured selector fields instead.'),
         node_type: nodeTypeSchema
           .optional().describe('Filter nodes by type'),
         node_filter: z.record(z.unknown())
@@ -60,23 +58,6 @@ Deprecated free-text payloads like \`{ "query": "credential" }\` are not support
       }
     },
     withErrorBoundary('query_graph', async (params) => {
-      if (params.query) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Free-text query payloads are not supported. Use structured selector fields such as node_type, node_filter, edge_type, edge_filter, or from_node.',
-              examples: [
-                { node_type: 'credential' },
-                { node_type: 'credential', node_filter: { privileged: true } },
-                { from_node: 'host-10-10-10-10', max_depth: 3 },
-              ],
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-
       const result = engine.queryGraph({
         node_type: params.node_type as NodeType | undefined,
         node_filter: params.node_filter,
@@ -137,8 +118,24 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         paths = engine.findPathsToObjective(objective_id, max_paths, optimize);
       } else if (from_node && to_node) {
         paths = engine.findPaths(from_node, to_node, max_paths, optimize);
+      } else if (from_node && !to_node) {
+        const state = engine.getState();
+        const unachieved = state.objectives.filter(o => !o.achieved);
+        if (unachieved.length === 0) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: 'No unachieved objectives to path toward. Provide both from_node and to_node for point-to-point paths.' }, null, 2) }],
+            isError: true,
+          };
+        }
+        paths = [];
+        for (const obj of unachieved) {
+          const targetNodes = engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria }).nodes.map(n => n.id);
+          for (const tn of targetNodes) {
+            const objPaths = engine.findPaths(from_node, tn, max_paths, optimize);
+            paths.push(...objPaths.map(p => ({ ...p, objective: obj.description })));
+          }
+        }
       } else {
-        // Find paths to all active objectives
         const state = engine.getState();
         paths = [];
         for (const obj of state.objectives.filter(o => !o.achieved)) {

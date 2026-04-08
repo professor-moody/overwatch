@@ -133,19 +133,6 @@ describe('exploration tool handler', () => {
 
   afterEach(cleanup);
 
-  it('rejects deprecated free-text query parameter', async () => {
-    const result = await handlers['query_graph']({
-      query: 'credential',
-      direction: 'both',
-      max_depth: 2,
-      limit: 100,
-    });
-
-    expect(result.isError).toBe(true);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.error).toContain('Free-text');
-  });
-
   it('returns nodes by type', async () => {
     const result = await handlers['query_graph']({
       node_type: 'host',

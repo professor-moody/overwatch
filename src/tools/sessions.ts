@@ -177,8 +177,8 @@ truncated=true means the buffer wrapped past your requested from_pos.`,
       inputSchema: {
         session_id: z.string().describe('Session ID to read from'),
         from_pos: z.number().int().optional().describe('Absolute buffer position to read from (for incremental reads)'),
-        tail_chars: z.number().int().default(4096).describe('Characters to read from tail when from_pos is omitted'),
-        tail_bytes: z.number().int().optional().describe('Deprecated alias for tail_chars'),
+        tail_chars: z.number().int().optional().describe('Characters to read from tail when from_pos is omitted (default 4096)'),
+        tail_bytes: z.number().int().optional().describe('Alias for tail_chars'),
       },
       annotations: {
         readOnlyHint: true,
@@ -407,7 +407,7 @@ Use this to:
 Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
       inputSchema: {
         session_id: z.string().describe('Session ID'),
-        signal: z.enum(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGTSTP', 'SIGCONT']).describe('Signal to send'),
+        signal: z.string().describe('Signal to send (SIGINT, SIGTERM, SIGKILL, SIGTSTP, SIGCONT)'),
         agent_id: z.string().optional().describe('Agent performing the signal (checked against claimed_by)'),
         force: z.boolean().default(false).describe('Override ownership check'),
       },
@@ -418,7 +418,16 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
         openWorldHint: false,
       },
     },
-    withErrorBoundary('signal_session', async ({ session_id, signal, agent_id, force }) => {
+    withErrorBoundary('signal_session', async ({ session_id, signal: rawSignal, agent_id, force }) => {
+      const validSignals = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGTSTP', 'SIGCONT'] as const;
+      const normalized = rawSignal.toUpperCase().startsWith('SIG') ? rawSignal.toUpperCase() : `SIG${rawSignal.toUpperCase()}`;
+      const signal = normalized as typeof validSignals[number];
+      if (!validSignals.includes(signal)) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: `Unknown signal: ${rawSignal}. Valid: ${validSignals.join(', ')}` }, null, 2) }],
+          isError: true,
+        };
+      }
       sessionManager.signal(session_id, signal, agent_id, force);
       return {
         content: [{ type: 'text', text: JSON.stringify({ session_id, signal, sent: true }, null, 2) }],

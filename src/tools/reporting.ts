@@ -34,8 +34,8 @@ Produces a client-deliverable report with:
 
 Use this at the end of an engagement to produce the final deliverable report.`,
       inputSchema: {
-        format: z.enum(['markdown', 'html']).default('markdown')
-          .describe('Output format: markdown or styled HTML'),
+        format: z.enum(['markdown', 'md', 'html']).default('markdown')
+          .describe('Output format: markdown (or md) or html'),
         include_evidence: z.boolean().default(true)
           .describe('Include evidence chains for each finding'),
         include_narrative: z.boolean().default(true)
@@ -57,9 +57,10 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       }
     },
     withErrorBoundary('generate_report', async ({
-      format, include_evidence, include_narrative,
+      format: rawFormat, include_evidence, include_narrative,
       include_retrospective, write_to_disk, output_dir, theme,
     }) => {
+      const format = rawFormat === 'md' ? 'markdown' : rawFormat;
       const config = engine.getConfig();
       const graph = engine.exportGraph();
       const history = engine.getFullHistory();
