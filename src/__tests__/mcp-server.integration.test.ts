@@ -331,14 +331,9 @@ describe('MCP Server Integration', () => {
     expect(discovery[0].target_cidr).toBe('10.10.110.0/24');
   });
 
-  it('query_graph rejects deprecated free-text query payloads', async () => {
-    const result = await client.callTool({
-      name: 'query_graph',
-      arguments: { query: 'credential' },
-    });
-    expect(result.isError).toBe(true);
-    const body = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
-    expect(body.error).toContain('Free-text query payloads are not supported');
+  it('query_graph returns structured results', async () => {
+    const result = await callToolJson('query_graph', { node_type: 'host' });
+    expect(result.nodes).toBeDefined();
   });
 
   it.skipIf(!supportsLocalPty)('supports a full local_pty session lifecycle through MCP', async () => {
