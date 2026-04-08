@@ -28,11 +28,11 @@ Add to your Claude Code MCP config:
 }
 ```
 
-Then run `claude` — see the full [Getting Started](https://keys.github.io/overwatch/getting-started/) guide.
+Then run `claude` — see the full [Getting Started](https://professor-moody.github.io/overwatch/getting-started/) guide.
 
 ## Documentation
 
-**[keys.github.io/overwatch](https://keys.github.io/overwatch/)** — architecture, configuration, 40 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 40 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 
