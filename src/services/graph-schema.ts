@@ -34,7 +34,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   CAN_RDPINTO: { source: ['user', 'group', 'credential'], target: ['host'] },
   CAN_PSREMOTE: { source: ['user', 'group', 'credential'], target: ['host'] },
   // Credential relationships
-  VALID_ON: { source: ['user', 'group', 'credential'], target: ['host'] },
+  VALID_ON: { source: ['user', 'group', 'credential'], target: ['host', 'service'] },
   OWNS_CRED: { source: ['user'], target: ['credential'] },
   DERIVED_FROM: { source: ['credential'], target: ['credential'] },
   // AD attack paths
@@ -146,7 +146,7 @@ export function getSuggestedEdgeFix(violation: EdgeConstraintViolation): EdgeFix
   if (violation.edge_type === 'VALID_ON' && violation.target_type === 'domain') {
     return {
       kind: 'retarget_required',
-      message: 'VALID_ON must target a host node, such as the domain controller where the credential is valid.',
+      message: 'VALID_ON must target a host or service node, such as the domain controller or the specific service where the credential is valid.',
     };
   }
 

@@ -194,7 +194,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 
 | Edge | Description |
 |------|-------------|
-| `VALID_ON` | Credential is valid on a host |
+| `VALID_ON` | Credential is valid on a host or service |
 | `OWNS_CRED` | User owns a credential |
 | `POTENTIAL_AUTH` | Credential might authenticate (hypothesis) |
 | `DERIVED_FROM` | Credential derived from another (e.g., cracked from hash) |

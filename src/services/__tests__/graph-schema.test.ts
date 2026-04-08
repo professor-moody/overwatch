@@ -56,6 +56,7 @@ describe('edge constraints', () => {
     ['CAN_RDPINTO', 'user', 'host'],
     ['CAN_PSREMOTE', 'group', 'host'],
     ['VALID_ON', 'credential', 'host'],
+    ['VALID_ON', 'credential', 'service'],
     ['OWNS_CRED', 'user', 'credential'],
     ['CAN_DCSYNC', 'user', 'domain'],
     ['DELEGATES_TO', 'host', 'service'],
