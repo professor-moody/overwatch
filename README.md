@@ -5,7 +5,7 @@ An offensive security engagement orchestrator built as an MCP server. The persis
 ## Quick Start
 
 ```bash
-git clone https://github.com/keys/overwatch.git
+git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
 npm run build
