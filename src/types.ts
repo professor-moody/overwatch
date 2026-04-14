@@ -77,14 +77,14 @@ export interface NodeProperties {
   member_of?: string[];         // group IDs
 
   // Credential
-  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_value?: string;          // hash or redacted reference
   cred_hash?: string;           // normalized hash material for cracked/captured creds
   cred_user?: string;           // associated user node id
   cred_domain?: string;
   cred_domain_inferred?: boolean;
   cred_domain_source?: 'explicit' | 'graph_inference' | 'parser_context';
-  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
   cred_is_default_guess?: boolean;
