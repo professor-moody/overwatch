@@ -201,7 +201,7 @@ Complex payloads use --stdin:
     }
     EOF
 
-### parse-output (field is `tool_name`, NOT `parser`)
+### parse-output (field is `tool_name` or `tool`, NOT `parser`)
 
     cat << 'EOF' | ./ow parse-output --stdin
     {
@@ -233,9 +233,9 @@ Set `confirm: false` first to preview, then `confirm: true` to apply.
 ## Common Mistakes
 
 - **Wrong:** `from`/`to` on edges — **Right:** `source`/`target`
-- **Wrong:** `parser` in parse-output — **Right:** `tool_name`
+- **Wrong:** `parser` in parse-output — **Right:** `tool_name` (or `tool`)
 - **Wrong:** Running nmap/nxc locally — **Right:** Run on VM via SSH or `open-session`
-- **Wrong:** Omitting `frontier_item_id` — **Right:** Thread it from `next-task` through every call
+- **Wrong:** Omitting `frontier_item_id` — **Right:** Thread it from `next-task` through every call (optional but strongly recommended)
 - **Wrong:** `nmap -sT 10.0.0.1` (text) — **Right:** `nmap -oX - 10.0.0.1` (XML for parser)
 - **Wrong:** `update-scope` without `reason` — **Right:** Always include `reason`
 - **Wrong:** Observations for structured data — **Right:** Use `nodes`/`edges` arrays
@@ -446,7 +446,7 @@ Claude queries the graph to plan attack paths:
 echo '{"node_type": "host"}' | ./ow query-graph --stdin
 
 # Find paths from a credential to the objective
-echo '{"source_id": "cred-plaintext-sql-svc", "target_id": "obj-compromise"}' | ./ow call find_paths --stdin
+echo '{"from_node": "cred-plaintext-sql-svc", "to_node": "obj-compromise"}' | ./ow call find_paths --stdin
 
 # Look up methodology for a technique
 echo '{"query": "kerberoasting"}' | ./ow call get_skill --stdin

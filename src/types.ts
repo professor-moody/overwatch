@@ -201,7 +201,7 @@ export const EDGE_TYPES = [
   // ACL-derived
   'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
   // Lateral movement
-  'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH',
+  'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH', 'TESTED_CRED',
   // Web application surface
   'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS',
   // Cloud infrastructure
@@ -688,6 +688,10 @@ export interface RLVRTrace {
 export interface TraceQualityReport {
   status: 'good' | 'mixed' | 'weak';
   issues: string[];
+  total_actions: number;
+  structured_count: number;
+  mixed_count: number;
+  heuristic_count: number;
 }
 
 export interface RetrospectiveResult {

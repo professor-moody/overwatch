@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
-import { unlinkSync, existsSync, readFileSync } from 'fs';
+import { unlinkSync, existsSync, readFileSync, readdirSync, rmSync } from 'fs';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-eng.json';
@@ -36,6 +36,16 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 
 function cleanup() {
   if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+  // Clean up snapshot files (legacy same-dir and new .snapshots/ subdir)
+  const base = 'state-test-eng';
+  try {
+    for (const f of readdirSync('.')) {
+      if (f.startsWith(`${base}.snap-`) && f.endsWith('.json')) unlinkSync(f);
+    }
+  } catch { /* best effort */ }
+  try {
+    if (existsSync('.snapshots')) rmSync('.snapshots', { recursive: true });
+  } catch { /* best effort */ }
 }
 
 describe('GraphEngine', () => {
@@ -2299,7 +2309,11 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
-          { id: 'user-asrep', type: 'user', label: 'asrep-user', asrep_roastable: true } as any,
+          { id: 'domain-test-local', type: 'domain', label: 'test.local', domain_name: 'test.local' } as any,
+          { id: 'user-asrep', type: 'user', label: 'asrep-user', asrep_roastable: true, domain_name: 'test.local' } as any,
+        ],
+        edges: [
+          { source: 'user-asrep', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-03-20T00:00:00Z' } },
         ],
       }));
       const graph = engine.exportGraph();
@@ -2313,7 +2327,11 @@ describe('GraphEngine', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
-          { id: 'user-spn', type: 'user', label: 'spn-user', has_spn: true } as any,
+          { id: 'domain-test-local', type: 'domain', label: 'test.local', domain_name: 'test.local' } as any,
+          { id: 'user-spn', type: 'user', label: 'spn-user', has_spn: true, domain_name: 'test.local' } as any,
+        ],
+        edges: [
+          { source: 'user-spn', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: '2026-03-20T00:00:00Z' } },
         ],
       }));
       const graph = engine.exportGraph();
@@ -2325,10 +2343,16 @@ describe('GraphEngine', () => {
 
     it('creates CAN_DELEGATE_TO edge when host has constrained_delegation', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      // Add a target host that matches the SPN in allowed_to_delegate_to
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-target', type: 'host', label: 'dc01.test.local', ip: '10.10.10.1', hostname: 'dc01.test.local' } as any,
+        ],
+      }));
       // Use IP 10.10.10.5 — identity resolution will resolve to host-10-10-10-5
       engine.ingestFinding(makeFinding({
         nodes: [
-          { id: 'host-cd', type: 'host', label: 'constrained-host', ip: '10.10.10.5', constrained_delegation: true } as any,
+          { id: 'host-cd', type: 'host', label: 'constrained-host', ip: '10.10.10.5', constrained_delegation: true, allowed_to_delegate_to: ['cifs/dc01.test.local'] } as any,
         ],
       }));
       const graph = engine.exportGraph();

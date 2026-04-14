@@ -1006,8 +1006,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
       if (entries.some(candidate => /\bdomain\s*admin\b|\bDA\b/i.test(candidate.description))) accessLevel = 'domain_admin';
 
       let reward = 0;
-      reward += newNodes * 0.5;
-      reward += newEdges * 0.3;
+      reward += Math.min(newNodes * 0.5 + newEdges * 0.3, 5.0);
       if (objAchieved) reward += 5.0;
       if (entries.some(candidate => candidate.result_classification === 'success')) reward += 1.0;
       if (entries.some(candidate => candidate.result_classification === 'failure')) reward -= 0.1;
@@ -1124,8 +1123,7 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
 
     // Compute reward
     let reward = 0;
-    reward += newNodes * 0.5;
-    reward += newEdges * 0.3;
+    reward += Math.min(newNodes * 0.5 + newEdges * 0.3, 5.0);
     if (objAchieved) reward += 5.0;
     if (desc.includes('admin_to') || desc.includes('has_session')) reward += 1.0;
     if (desc.includes('owns_cred')) reward += 1.0;
@@ -1191,6 +1189,10 @@ export function exportTrainingTraces(input: RetrospectiveInput): { traces: RLVRT
         ? 'weak'
         : 'mixed',
     issues,
+    total_actions: traces.length,
+    structured_count: structuredCount,
+    mixed_count: mixedCount,
+    heuristic_count: heuristicCount,
   };
 
   return { traces, trace_quality };
@@ -1297,6 +1299,7 @@ export function buildCredentialChains(graph: ExportedGraph): CredentialChain[] {
           methods: [...methods].reverse(),
         });
       }
+      visited.delete(nodeId); // backtrack to allow other branches
       return;
     }
 
@@ -1307,10 +1310,10 @@ export function buildCredentialChains(graph: ExportedGraph): CredentialChain[] {
         : target;
       walk(target, [...chain, target], [...labels, targetLabel], [...methods, method]);
     }
+    visited.delete(nodeId); // backtrack to allow other branches
   }
 
   for (const startId of starts) {
-    visited.clear();
     const startNode = nodeMap.get(startId);
     const startLabel = startNode
       ? `${getCredentialDisplayKind(startNode)}: ${startNode.cred_user || startNode.label}`

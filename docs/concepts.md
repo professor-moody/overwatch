@@ -139,10 +139,10 @@ Every significant action follows a structured lifecycle for traceability:
 
 3. Execute the tool/command (bash, nmap, nxc, etc.)
 
-4. parse_output(tool_name, output, action_id)
+4. parse_output(tool_name, output, action_id, ...)
    — or —
-   report_finding(nodes, edges, action_id)
-   → Ingests results into graph
+   report_finding(nodes, edges, action_id, ...)
+   → Ingests results into graph (action_id and agent_id are optional)
 
 5. log_action_event(action_id, event_type="action_completed")
    — or —

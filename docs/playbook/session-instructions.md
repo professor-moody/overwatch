@@ -21,17 +21,17 @@ The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It 
 
 4. **Explore the graph** with `query_graph()` when the frontier doesn't capture a pattern you're seeing
 
-5. **Validate before executing** with `validate_action()` — catches scope violations, OPSEC blacklist hits, and impossible targets. **Always pass `frontier_item_id`** from `next_task()` so the retrospective can attribute results to frontier items. Returns an `action_id` to use for subsequent calls.
+5. **Validate before executing** with `validate_action()` — catches scope violations, OPSEC blacklist hits, and impossible targets. Pass `frontier_item_id` from `next_task()` when available — this is optional but strongly recommended for retrospective attribution. Returns an `action_id` to use for subsequent calls.
 
-6. **Log execution start** with `log_action_event(event_type="action_started")` before major tool execution. **Always pass both `action_id` and `frontier_item_id`.**
+6. **Log execution start** with `log_action_event(event_type="action_started")` before major tool execution. Pass `action_id` and `frontier_item_id` when available.
 
 7. **Execute** using shell commands, scripts, or other tools
 
 8. **Parse or report results**:
-    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler). **Always pass `action_id` and `frontier_item_id`.**
-    - Use `report_finding()` for manual observations or unsupported tools. **Always pass `action_id` and `frontier_item_id`.**
+    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler). Pass `action_id` and `frontier_item_id` when available. Accepts `tool` as an alias for `tool_name`.
+    - Use `report_finding()` for manual observations or unsupported tools. `agent_id` is optional (defaults to `'primary'`). Pass `action_id` and `frontier_item_id` when available.
 
-9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`. **Always pass `action_id`** (the server auto-threads `frontier_item_id` from earlier calls with the same `action_id`).
+9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`. Pass `action_id` — the server auto-threads `frontier_item_id` from earlier calls with the same `action_id`. Also accepts `type` as an alias for `event_type`.
 
 10. **Dispatch sub-agents** with `register_agent()` for parallel work
 
@@ -41,7 +41,7 @@ The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It 
 
 - **The graph is your memory** — after compaction, `get_state()` reconstructs everything
 - **Report early, report often** — every finding triggers inference rules that may surface new attack paths
-- **Use structured action logging** — `validate_action()` gives the `action_id`; `log_action_event()` records execution. **Thread `frontier_item_id`** through every call for retrospective attribution
+- **Use structured action logging** — `validate_action()` gives the `action_id`; `log_action_event()` records execution. Thread `frontier_item_id` through calls when available for retrospective attribution
 - **The deterministic layer is a guardrail, not a brain** — it filters the impossible; the LLM does the offensive thinking
 - **Validate before you execute** — every significant action goes through `validate_action()` first
 - **Use `query_graph()` liberally** — if you have a hunch about a relationship, query for it

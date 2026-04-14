@@ -78,7 +78,7 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
       }
     }
 
-    if (!plaintext || plaintext.length === 0) continue;
+    if (!plaintext || plaintext.trim().length === 0) continue;
 
     // Fall back to context domain when hash format doesn't include domain
     const hadExplicitDomain = !!domain;

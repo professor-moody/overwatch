@@ -113,7 +113,7 @@ export function ingestFindingImpl(
 
     if (temperature === 'cold' && !wasCold) {
       const subnetCidr = host.findSubnetCidr(fullProps.ip);
-      host.ctx.coldStore.add(toColdRecord(fullProps, subnetCidr));
+      host.ctx.coldStore.add(toColdRecord(fullProps, subnetCidr, { finding_id: finding.id, action_id: finding.action_id }));
       continue;
     } else if (wasCold) {
       const coldRecord = host.ctx.coldStore.promote(node.id);

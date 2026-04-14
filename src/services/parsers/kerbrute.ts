@@ -102,8 +102,8 @@ function parseKerbruteLogin(value: string): { username: string; domain: string; 
   const username = value.slice(0, atIndex);
   const remainder = value.slice(atIndex + 1);
   const colonIndex = remainder.indexOf(':');
-  // colonIndex <= 0: no domain; === length-1: empty password (intentional — Kerbrute won't report empty-password success)
-  if (colonIndex <= 0 || colonIndex === remainder.length - 1) return null;
+  // colonIndex <= 0: no domain; colonIndex at end: empty password (Kerbrute won't report empty-password success)
+  if (colonIndex <= 0 || colonIndex >= remainder.length - 1) return null;
 
   return {
     username,

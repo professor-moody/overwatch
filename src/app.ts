@@ -81,6 +81,7 @@ export type OverwatchApp = {
   server: McpServer;
   dashboard: DashboardServer | null;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
+  sessionAbortControllers?: Record<string, AbortController>;
   httpServer?: Server;
 };
 
@@ -235,7 +236,9 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 
   const expressApp = createMcpExpressApp({ host });
   const transports: Record<string, StreamableHTTPServerTransport> = {};
+  const sessionAbortControllers: Record<string, AbortController> = {};
   app.httpTransports = transports;
+  app.sessionAbortControllers = sessionAbortControllers;
 
   // Each HTTP session needs its own McpServer (SDK limitation: one connect() per server).
   // All sessions share the same engine, skills, and services.
@@ -281,12 +284,15 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
           transports[sid] = transport;
+          sessionAbortControllers[sid] = new AbortController();
         },
       });
       transport.onclose = () => {
         const sid = transport.sessionId;
-        if (sid && transports[sid]) {
+        if (sid) {
           delete transports[sid];
+          sessionAbortControllers[sid]?.abort();
+          delete sessionAbortControllers[sid];
         }
       };
       const server = createSessionServer();
@@ -351,7 +357,13 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 }
 
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
-  // Close all HTTP transport sessions
+  // Abort all pending operations and close HTTP transport sessions
+  if (app.sessionAbortControllers) {
+    for (const [sid, controller] of Object.entries(app.sessionAbortControllers)) {
+      controller.abort();
+      delete app.sessionAbortControllers[sid];
+    }
+  }
   if (app.httpTransports) {
     for (const [sid, transport] of Object.entries(app.httpTransports)) {
       try {

@@ -149,6 +149,7 @@ export class InferenceEngine {
           });
           if (alreadyExists) continue;
           const { id: edgeId } = this.addEdge(src, tgt, {
+            ...production.properties as Record<string, unknown>,
             type: production.edge_type,
             confidence: production.confidence,
             discovered_at: now,
@@ -156,7 +157,6 @@ export class InferenceEngine {
             tested: false,
             inferred_by_rule: rule.id,
             inferred_at: now,
-            ...production.properties as Record<string, unknown>
           });
           inferred.push(edgeId);
           this.ctx.logEvent({
@@ -291,7 +291,8 @@ export class InferenceEngine {
           }
         });
         if (candidates.size > 0) return Array.from(candidates);
-        return this.getNodesByType('user').filter(u => u.domain_joined !== false).map(n => n.id);
+        // No admin/session-holder matches — return empty to avoid spurious global edges
+        return [];
       }
 
       case 'domain_credentials':
@@ -387,7 +388,8 @@ export class InferenceEngine {
           }
           if (userDomainIds.length > 0) return userDomainIds;
         }
-        return this.getNodesByType('domain').map(n => n.id);
+        // No domain match found — return empty to avoid spurious global edges
+        return [];
       }
 
       case 'enrollable_users':
@@ -444,7 +446,8 @@ export class InferenceEngine {
       case 'delegation_targets': {
         const delegateList = node.allowed_to_delegate_to as string[] | undefined;
         if (!delegateList || delegateList.length === 0) {
-          return this.getNodesByType('domain').map(n => n.id);
+          // No delegation list — return empty to avoid spurious global edges
+          return [];
         }
         const targets = new Set<string>();
         const allHosts = this.getNodesByType('host');
@@ -462,7 +465,7 @@ export class InferenceEngine {
             if (sLabel.includes(hostPart)) targets.add(s.id);
           }
         }
-        return targets.size > 0 ? Array.from(targets) : this.getNodesByType('domain').map(n => n.id);
+        return targets.size > 0 ? Array.from(targets) : [];
       }
 
       case 'all_usable_credentials':

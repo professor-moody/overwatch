@@ -201,11 +201,16 @@ describe('Output Parsers', () => {
       const hosts = finding.nodes.filter(n => n.type === 'host');
       expect(hosts.length).toBe(3); // All matched hosts are recorded
 
-      // But only successful auth produces edges
+      // Successful auth edges
       const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
       expect(adminEdges.length).toBe(1); // Only Pwn3d! line
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
       expect(validOnEdges.length).toBe(2); // Both [+] lines produce VALID_ON edges
+
+      // F03: Failed auth produces TESTED_CRED edge
+      const testedEdges = finding.edges.filter(e => e.properties.type === 'TESTED_CRED');
+      expect(testedEdges.length).toBe(1); // The [-] line
+      expect(testedEdges[0].properties.confidence).toBe(0.0);
     });
 
     it('connects enumerated shares back to the host and SMB service', () => {
@@ -244,6 +249,26 @@ describe('Output Parsers', () => {
     it('handles empty output', () => {
       const finding = parseNxc('');
       expect(finding.nodes.length).toBe(0);
+    });
+
+    it('F03: failed auth [-] creates TESTED_CRED edge with confidence 0.0', () => {
+      const output = `SMB  10.10.10.5  445  DC01  [-] ACME\\testuser STATUS_LOGON_FAILURE`;
+      const finding = parseNxc(output);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(1);
+      expect(users[0].username).toBe('testuser');
+      const testedEdges = finding.edges.filter(e => e.properties.type === 'TESTED_CRED');
+      expect(testedEdges.length).toBe(1);
+      expect(testedEdges[0].properties.confidence).toBe(0.0);
+    });
+
+    it('F03: failed auth does not produce VALID_ON or ADMIN_TO edges', () => {
+      const output = `SMB  10.10.10.5  445  DC01  [-] ACME\\admin ACCESS_DENIED`;
+      const finding = parseNxc(output);
+      const validOn = finding.edges.filter(e => e.properties.type === 'VALID_ON');
+      const adminTo = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
+      expect(validOn.length).toBe(0);
+      expect(adminTo.length).toBe(0);
     });
 
     it('extracts host metadata from [*] info lines', () => {
@@ -777,6 +802,17 @@ describe('Output Parsers', () => {
       expect(creds[0].cred_value).toBe('Summer:2026!');
       expect(creds[0].cred_domain).toBe('acme.local');
     });
+
+    it('F09: rejects single-char remainder as empty password', () => {
+      // Simulates a VALID LOGIN where colon is at end of remainder: "user@domain:"
+      const edgeCaseSpray = [
+        '2026/03/21 10:00:01 >  [+] VALID LOGIN:\tjdoe@acme.local:',
+      ].join('\n');
+      const finding = parseKerbrute(edgeCaseSpray);
+      // Should produce a user but no credential (empty password)
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(0);
+    });
   });
 
   // =============================================
@@ -863,6 +899,18 @@ describe('Output Parsers', () => {
       const finding = parseHashcat(junkLines.join('\n'));
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
+    });
+
+    it('F05: skips whitespace-only plaintext values', () => {
+      const output = [
+        'fc525c9683e8fe067095ba2ddc971889:Password123',
+        'abcdef0123456789abcdef0123456789:   ',
+        '1234567890abcdef1234567890abcdef:\t',
+      ].join('\n');
+      const finding = parseHashcat(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1); // Only Password123
+      expect(creds[0].cred_value).toBe('Password123');
     });
   });
 
@@ -982,6 +1030,33 @@ describe('Output Parsers', () => {
       const users = finding.nodes.filter(n => n.type === 'user');
       expect(users.length).toBe(1);
       expect(users[0].username).toBe('legacy_svc');
+    });
+
+    it('F01: NTLMv1 captures produce ntlmv1_challenge cred_type and material_kind', () => {
+      const v1Output = [
+        '[SMB] NTLMv1-SSP Client   : 10.10.10.7',
+        '[SMB] NTLMv1-SSP Username : CORP\\legacy_svc',
+        '[SMB] NTLMv1-SSP Hash     : legacy_svc::CORP:aabb:ccdd:0101',
+      ].join('\n');
+      const finding = parseResponder(v1Output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_type).toBe('ntlmv1_challenge');
+      expect(creds[0].cred_material_kind).toBe('ntlmv1_challenge');
+      expect(creds[0].cred_usable_for_auth).toBe(false);
+    });
+
+    it('F01: NTLMv2 captures still produce ntlmv2_challenge', () => {
+      const v2Output = [
+        '[SMB] NTLMv2-SSP Client   : 10.10.10.5',
+        '[SMB] NTLMv2-SSP Username : ACME\\jdoe',
+        '[SMB] NTLMv2-SSP Hash     : jdoe::ACME:1122334455667788:aabbccddee:0101000000',
+      ].join('\n');
+      const finding = parseResponder(v2Output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_type).toBe('ntlmv2_challenge');
+      expect(creds[0].cred_material_kind).toBe('ntlmv2_challenge');
     });
 
     it('parses UPN format usernames (user@domain)', () => {

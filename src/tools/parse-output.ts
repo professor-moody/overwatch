@@ -7,6 +7,7 @@ import type { ParseContext } from '../types.js';
 import { parseOutput, getSupportedParsers } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { validateFilePath } from '../utils/path-validation.js';
 
 export function registerParseOutputTools(server: McpServer, engine: GraphEngine): void {
 
@@ -101,8 +102,22 @@ Pass either the raw output content or a local file path for large artifacts.`,
 
       let outputText: string;
       if (filePathProvided) {
+        let resolvedPath: string;
         try {
-          outputText = readFileSync(file_path!, 'utf8');
+          resolvedPath = validateFilePath(file_path!);
+        } catch (error) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Invalid file_path: ${error instanceof Error ? error.message : String(error)}`,
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+        try {
+          outputText = readFileSync(resolvedPath, 'utf8');
         } catch (error) {
           return {
             content: [{
@@ -170,6 +185,12 @@ Pass either the raw output content or a local file path for large artifacts.`,
       finding.action_id = normalizedActionId;
       finding.tool_name = tool_name;
       finding.frontier_item_id = frontier_item_id;
+
+      // F06: Warn when certipy text fallback produced nodes but no ESC/CA edges
+      if (tool_name === 'certipy' && finding.nodes.length > 0 && finding.edges.length === 0) {
+        warnings.push('Certipy text fallback used — only template names extracted. ESC edges, CA data, and enrollment permissions are missing. Re-run certipy with JSON output (-json) for full ADCS attack path analysis.');
+      }
+
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
       if (!action_id) {
         warnings.push('parse_output was called without prior action context; generated a new action_id, but retrospective linkage will be weaker.');

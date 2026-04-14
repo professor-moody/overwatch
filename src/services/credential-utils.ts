@@ -17,6 +17,8 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
       return 'plaintext_password';
     case 'ntlm':
       return 'ntlm_hash';
+    case 'ntlmv1_challenge':
+      return 'ntlmv1_challenge';
     case 'ntlmv2_challenge':
       return 'ntlmv2_challenge';
     case 'aes256':

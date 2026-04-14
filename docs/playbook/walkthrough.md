@@ -284,7 +284,7 @@ The frontier now shows `POTENTIAL_AUTH` edges to multiple services. The LLM disp
 Each sub-agent:
 
 1. Calls `get_agent_context` → scoped subgraph with the credential and target service
-2. Calls `get_skill("lateral movement")` → methodology
+2. Calls `get_skill` with `query: "lateral movement"` → methodology
 3. Validates and executes authentication test
 4. Reports findings
 

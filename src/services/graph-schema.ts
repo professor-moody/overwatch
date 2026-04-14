@@ -35,6 +35,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   CAN_PSREMOTE: { source: ['user', 'group', 'credential'], target: ['host'] },
   // Credential relationships
   VALID_ON: { source: ['user', 'group', 'credential'], target: ['host', 'service'] },
+  TESTED_CRED: { source: ['user', 'group', 'credential'], target: ['host', 'service'] },
   OWNS_CRED: { source: ['user'], target: ['credential'] },
   DERIVED_FROM: { source: ['credential'], target: ['credential'] },
   // AD attack paths

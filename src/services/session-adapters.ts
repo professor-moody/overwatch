@@ -3,7 +3,13 @@
 // SSH, LocalPTY, and Socket adapter implementations
 // ============================================================
 
-import * as pty from 'node-pty';
+// node-pty is an optional native dependency — loaded dynamically
+let pty: typeof import('node-pty') | null = null;
+try {
+  pty = await import('node-pty');
+} catch {
+  // node-pty not installed — LocalPtyAdapter.spawn() will throw at runtime
+}
 import { createServer, connect, type Server, type Socket } from 'net';
 import type { AdapterHandle, SessionCapabilities } from '../types.js';
 import type { SessionAdapterFactory } from './session-manager.js';
@@ -24,6 +30,9 @@ export class LocalPtyAdapter implements SessionAdapterFactory {
   readonly kind = 'local_pty' as const;
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
+    if (!pty) {
+      throw new Error('node-pty is not installed. Install it with: npm install node-pty (requires native build tools)');
+    }
     const shell = (options.shell as string) || process.env.SHELL || '/bin/bash';
     const cols = (options.cols as number) || 120;
     const rows = (options.rows as number) || 30;
@@ -84,6 +93,9 @@ export class SshAdapter implements SessionAdapterFactory {
   readonly kind = 'ssh' as const;
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
+    if (!pty) {
+      throw new Error('node-pty is not installed. Install it with: npm install node-pty (requires native build tools)');
+    }
     const host = options.host as string;
     if (!host) throw new Error('SSH adapter requires a host');
 
@@ -297,7 +309,7 @@ export class SocketAdapter implements SessionAdapterFactory {
           },
           onData(cb: (chunk: string) => void) {
             // Remove the early buffer callback on first real registration
-            if (earlyBuffer.length >= 0 && dataCallbacks[0] !== cb) {
+            if (earlyBuffer.length > 0 && dataCallbacks[0] !== cb) {
               dataCallbacks.length = 0;
             }
             dataCallbacks.push(cb);

@@ -57,7 +57,7 @@ Generate a client-deliverable pentest report with [`generate_report`](../tools/g
 - Attack narrative by phase (Recon → Access → Lateral → PrivEsc → Objective)
 - Evidence chains linking actions to graph mutations
 - Severity distribution and risk scoring
-- Markdown or self-contained HTML output
+- Markdown (`markdown` or `md`) or self-contained HTML output
 
 ### 7. Retrospective
 

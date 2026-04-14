@@ -8,6 +8,7 @@ import { renderReportHtml } from '../services/report-html.js';
 import type { HtmlReportData, HtmlTimelineEntry } from '../services/report-html.js';
 import { runRetrospective, buildCredentialChains } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
+import { validateFilePath } from '../utils/path-validation.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary } from './error-boundary.js';
@@ -164,7 +165,12 @@ Use this at the end of an engagement to produce the final deliverable report.`,
               failed_techniques: retrospective.skill_gaps.failed_techniques,
             } : undefined,
             trace_quality: retrospective.trace_quality ? {
-              total_actions: 0, with_frontier_id: 0, with_action_id: 0, coverage_pct: 0,
+              total_actions: retrospective.trace_quality.total_actions,
+              with_frontier_id: retrospective.trace_quality.structured_count,
+              with_action_id: retrospective.trace_quality.structured_count + retrospective.trace_quality.mixed_count,
+              coverage_pct: retrospective.trace_quality.total_actions > 0
+                ? Math.round(((retrospective.trace_quality.structured_count + retrospective.trace_quality.mixed_count) / retrospective.trace_quality.total_actions) * 100)
+                : 0,
             } : undefined,
           };
         }
@@ -174,13 +180,21 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       const output = format === 'html' ? html! : markdown;
 
       if (write_to_disk) {
-        const dir = join(output_dir, config.id);
-        if (!existsSync(dir)) {
-          mkdirSync(dir, { recursive: true });
+        let validatedDir: string;
+        try {
+          validatedDir = validateFilePath(join(output_dir, config.id));
+        } catch (error) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: `Invalid output_dir: ${error instanceof Error ? error.message : String(error)}` }, null, 2) }],
+            isError: true,
+          };
         }
-        writeFileSync(join(dir, 'report.md'), markdown);
+        if (!existsSync(validatedDir)) {
+          mkdirSync(validatedDir, { recursive: true });
+        }
+        writeFileSync(join(validatedDir, 'report.md'), markdown);
         if (html) {
-          writeFileSync(join(dir, 'report.html'), html);
+          writeFileSync(join(validatedDir, 'report.html'), html);
         }
       }
 

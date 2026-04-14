@@ -7,6 +7,7 @@ import type { RetrospectiveInput } from '../services/retrospective.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary } from './error-boundary.js';
+import { validateFilePath } from '../utils/path-validation.js';
 
 export function registerRetrospectiveTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
 
@@ -71,17 +72,25 @@ Optionally write all outputs to disk for archival.`,
       const result = runRetrospective(input);
 
       if (write_to_disk) {
-        const dir = join(output_dir, config.id);
-        if (!existsSync(dir)) {
-          mkdirSync(dir, { recursive: true });
+        let validatedDir: string;
+        try {
+          validatedDir = validateFilePath(join(output_dir, config.id));
+        } catch (error) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: `Invalid output_dir: ${error instanceof Error ? error.message : String(error)}` }, null, 2) }],
+            isError: true,
+          };
         }
-        writeFileSync(join(dir, 'report.md'), result.report_markdown);
-        writeFileSync(join(dir, 'inference-suggestions.json'), JSON.stringify(result.inference_suggestions, null, 2));
-        writeFileSync(join(dir, 'skill-gaps.json'), JSON.stringify(result.skill_gaps, null, 2));
-        writeFileSync(join(dir, 'context-improvements.json'), JSON.stringify(result.context_improvements, null, 2));
-        writeFileSync(join(dir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
-        writeFileSync(join(dir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
-        writeFileSync(join(dir, 'summary.txt'), result.summary);
+        if (!existsSync(validatedDir)) {
+          mkdirSync(validatedDir, { recursive: true });
+        }
+        writeFileSync(join(validatedDir, 'report.md'), result.report_markdown);
+        writeFileSync(join(validatedDir, 'inference-suggestions.json'), JSON.stringify(result.inference_suggestions, null, 2));
+        writeFileSync(join(validatedDir, 'skill-gaps.json'), JSON.stringify(result.skill_gaps, null, 2));
+        writeFileSync(join(validatedDir, 'context-improvements.json'), JSON.stringify(result.context_improvements, null, 2));
+        writeFileSync(join(validatedDir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
+        writeFileSync(join(validatedDir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
+        writeFileSync(join(validatedDir, 'summary.txt'), result.summary);
       }
 
       return {

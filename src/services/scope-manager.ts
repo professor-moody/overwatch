@@ -134,7 +134,7 @@ export function updateScope(
         last_seen_at: coldRecord.last_seen_at,
         alive: coldRecord.alive,
         discovered_by: coldRecord.provenance,
-        confidence: 1.0,
+        confidence: coldRecord.confidence ?? 1.0,
       });
       promotedIds.push(coldRecord.id);
       affectedNodeCount++;

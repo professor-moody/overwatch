@@ -75,6 +75,10 @@ describe('Credential Utilities', () => {
     it('returns undefined when neither field is set', () => {
       expect(getCredentialMaterialKind(makeCredNode())).toBeUndefined();
     });
+
+    it('F01: falls back to cred_type: ntlmv1_challenge → ntlmv1_challenge', () => {
+      expect(getCredentialMaterialKind(makeCredNode({ cred_type: 'ntlmv1_challenge' }))).toBe('ntlmv1_challenge');
+    });
   });
 
   // =============================================

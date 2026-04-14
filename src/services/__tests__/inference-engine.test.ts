@@ -666,7 +666,7 @@ describe('InferenceEngine', () => {
       expect(graph.target(inferred[0])).toBe('domain-corp-local');
     });
 
-    it('falls back to all domains when no domain info available', () => {
+    it('F27: returns empty when no domain info available (no unsafe fallback)', () => {
       const graph = makeGraph();
       addNode(graph, 'domain-corp-local', { type: 'domain', domain_name: 'corp.local' });
       addNode(graph, 'domain-other-local', { type: 'domain', domain_name: 'other.local' });
@@ -675,7 +675,7 @@ describe('InferenceEngine', () => {
       const engine = buildEngine(graph, [RULE_ASREP]);
       const inferred = engine.runRules('user-orphan');
 
-      expect(inferred.length).toBe(2);
+      expect(inferred.length).toBe(0);
     });
   });
 
@@ -703,7 +703,7 @@ describe('InferenceEngine', () => {
       expect(sources).not.toContain('user-nobody');
     });
 
-    it('falls back to all domain users when no session holders or admin groups exist', () => {
+    it('F27: returns empty when no session holders or admin groups exist (no unsafe fallback)', () => {
       const graph = makeGraph();
       addNode(graph, 'host-uc', { type: 'host', ip: '10.10.10.5', unconstrained_delegation: true });
       addNode(graph, 'user-a', { type: 'user', username: 'a', domain_joined: true });
@@ -712,7 +712,7 @@ describe('InferenceEngine', () => {
       const engine = buildEngine(graph, [RULE_UNCONSTRAINED_DELEGATION]);
       const inferred = engine.runRules('host-uc');
 
-      expect(inferred.length).toBe(2);
+      expect(inferred.length).toBe(0);
     });
   });
 
@@ -933,6 +933,51 @@ describe('InferenceEngine', () => {
       const inferred = engine.runRules('host-linux');
 
       expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // F28: production.properties cannot override fixed fields
+  // =============================================
+  describe('production.properties spread safety', () => {
+    it('custom rule properties cannot override confidence or discovered_by', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-a', { type: 'host', ip: '10.10.10.1' });
+      addNode(graph, 'host-b', { type: 'host', ip: '10.10.10.2' });
+
+      // host-a connects to host-b so trigger_node → domain_nodes works
+      addNode(graph, 'domain-test', { type: 'domain', domain_name: 'test.local' });
+      addEdge(graph, 'host-a', 'domain-test', 'MEMBER_OF_DOMAIN');
+
+      const maliciousRule: InferenceRule = {
+        id: 'rule-override-attempt',
+        name: 'Rule that tries to override fixed fields',
+        description: '',
+        trigger: { node_type: 'host', property_match: { ip: '10.10.10.1' } },
+        produces: [{
+          edge_type: 'RELATED',
+          source_selector: 'trigger_node',
+          target_selector: 'domain_nodes',
+          confidence: 0.6,
+          properties: {
+            confidence: 999,
+            discovered_by: 'attacker',
+            tested: true,
+            inferred_by_rule: 'fake-rule',
+          },
+        }],
+      };
+
+      const engine = buildEngine(graph, [maliciousRule]);
+      const inferred = engine.runRules('host-a');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      // Fixed fields must NOT be overridden by production.properties
+      expect(attrs.confidence).toBe(0.6);
+      expect(attrs.discovered_by).toBe('inference:rule-override-attempt');
+      expect(attrs.tested).toBe(false);
+      expect(attrs.inferred_by_rule).toBe('rule-override-attempt');
     });
   });
 });

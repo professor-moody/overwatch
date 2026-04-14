@@ -129,6 +129,6 @@ For parsers that benefit from ambient context (secretsdump, hashcat), pass the `
 
 - Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (30 aliases across 17 parsers)
 - Use `parse_output` with `ingest: false` to preview what would be parsed without modifying the graph
-- Always include `action_id` from `validate_action` for traceability
+- Include `action_id` from `validate_action` for traceability (optional but strongly recommended)
 - Pass `context` with `domain` and `source_host` when available for better credential attribution
 - Node IDs should follow conventions: `host-<ip>`, `svc-<ip>-<port>`, `user-<domain>-<name>`

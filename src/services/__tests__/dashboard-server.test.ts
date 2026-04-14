@@ -567,4 +567,56 @@ describe('DashboardServer', () => {
 
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('F22: CORS regex matches IPv6 loopback [::1]', () => {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      responseHeaders: {} as Record<string, string>,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader(key: string, val: string) {
+        this.responseHeaders[key] = val;
+      },
+    };
+
+    const reqIpv6 = {
+      url: '/api/state',
+      headers: { origin: 'http://[::1]:8384' },
+    };
+
+    (dashboard as any).handleHttp(reqIpv6, res);
+    expect(res.responseHeaders['Access-Control-Allow-Origin']).toBe('http://[::1]:8384');
+  });
+
+  it('F22: CORS regex still matches localhost and 127.0.0.1', () => {
+    for (const origin of ['http://localhost:3000', 'http://127.0.0.1:8384', 'https://localhost']) {
+      const res: any = {
+        responseHeaders: {},
+        writeHead() {},
+        end() {},
+        setHeader(key: string, val: string) { this.responseHeaders[key] = val; },
+      };
+
+      (dashboard as any).handleHttp(
+        { url: '/api/state', headers: { origin } },
+        res,
+      );
+      expect(res.responseHeaders['Access-Control-Allow-Origin']).toBe(origin);
+    }
+  });
+
+  it('F21: isLoopback identifies loopback addresses', () => {
+    expect((dashboard as any).isLoopback('127.0.0.1')).toBe(true);
+    expect((dashboard as any).isLoopback('::1')).toBe(true);
+    expect((dashboard as any).isLoopback('localhost')).toBe(true);
+    expect((dashboard as any).isLoopback('0.0.0.0')).toBe(false);
+    expect((dashboard as any).isLoopback('10.10.10.5')).toBe(false);
+  });
 });

@@ -224,6 +224,7 @@ describe('toColdRecord', () => {
       subnet_cidr: '10.0.0.0/24',
       provenance: 'agent-1',
       alive: true,
+      confidence: 1.0,
     });
   });
 
@@ -239,5 +240,34 @@ describe('toColdRecord', () => {
     const rec = toColdRecord(node);
     expect(rec.last_seen_at).toBe(now);
     expect(rec.subnet_cidr).toBeUndefined();
+  });
+
+  it('F04: passes through finding_id and action_id from context', () => {
+    const node: NodeProperties = {
+      id: 'h3',
+      type: 'host' as any,
+      label: '10.0.0.7',
+      ip: '10.0.0.7',
+      discovered_at: now,
+      confidence: 1.0,
+    };
+
+    const rec = toColdRecord(node, '10.0.0.0/24', { finding_id: 'f-123', action_id: 'a-456' });
+    expect(rec.finding_id).toBe('f-123');
+    expect(rec.action_id).toBe('a-456');
+  });
+
+  it('F04: context is optional — no finding_id/action_id when omitted', () => {
+    const node: NodeProperties = {
+      id: 'h4',
+      type: 'host' as any,
+      label: '10.0.0.8',
+      discovered_at: now,
+      confidence: 1.0,
+    };
+
+    const rec = toColdRecord(node, '10.0.0.0/24');
+    expect(rec.finding_id).toBeUndefined();
+    expect(rec.action_id).toBeUndefined();
   });
 });

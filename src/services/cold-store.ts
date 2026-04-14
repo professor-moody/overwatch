@@ -21,6 +21,9 @@ export interface ColdNodeRecord {
   subnet_cidr?: string;
   provenance?: string;
   alive?: boolean;
+  confidence?: number;
+  finding_id?: string;
+  action_id?: string;
 }
 
 // --- Interesting edge types that force a host into the hot graph ---
@@ -155,6 +158,7 @@ export class ColdStore {
 export function toColdRecord(
   node: NodeProperties,
   subnetCidr?: string,
+  context?: { finding_id?: string; action_id?: string },
 ): ColdNodeRecord {
   return {
     id: node.id,
@@ -167,5 +171,8 @@ export function toColdRecord(
     subnet_cidr: subnetCidr,
     provenance: node.discovered_by,
     alive: node.alive,
+    confidence: node.confidence,
+    finding_id: context?.finding_id,
+    action_id: context?.action_id,
   };
 }

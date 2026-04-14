@@ -6,8 +6,16 @@
 // ============================================================
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
+
+// Defense-in-depth: reject evidence IDs with path traversal components
+function sanitizeEvidenceId(id: string): string {
+  if (id !== basename(id) || id.includes('..') || id.includes('\0')) {
+    throw new Error(`Invalid evidence ID: ${id}`);
+  }
+  return id;
+}
 
 export interface EvidenceRecord {
   evidence_id: string;
@@ -95,14 +103,16 @@ export class EvidenceStore {
 
   /** Retrieve full evidence content by ID. */
   getContent(evidenceId: string): string | null {
-    const path = join(this.dir, `${evidenceId}.content`);
+    const safe = sanitizeEvidenceId(evidenceId);
+    const path = join(this.dir, `${safe}.content`);
     if (!existsSync(path)) return null;
     return readFileSync(path, 'utf-8');
   }
 
   /** Retrieve full raw output by ID. */
   getRawOutput(evidenceId: string): string | null {
-    const path = join(this.dir, `${evidenceId}.raw`);
+    const safe = sanitizeEvidenceId(evidenceId);
+    const path = join(this.dir, `${safe}.raw`);
     if (!existsSync(path)) return null;
     return readFileSync(path, 'utf-8');
   }

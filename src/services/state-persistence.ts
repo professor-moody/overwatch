@@ -4,7 +4,7 @@
 // All state access goes through the shared EngineContext.
 // ============================================================
 
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
@@ -45,7 +45,17 @@ export class StatePersistence {
       this.ctx.lastSnapshotTime = now;
     }
 
-    renameSync(tmpPath, this.ctx.stateFilePath);
+    if (process.platform === 'win32') {
+      // Windows: rename may fail if target is locked; try unlink + rename as fallback
+      try {
+        renameSync(tmpPath, this.ctx.stateFilePath);
+      } catch {
+        try { unlinkSync(this.ctx.stateFilePath); } catch { /* target may not exist */ }
+        renameSync(tmpPath, this.ctx.stateFilePath);
+      }
+    } else {
+      renameSync(tmpPath, this.ctx.stateFilePath);
+    }
     this.ctx.fireUpdateCallbacks(detail);
   }
 
@@ -53,17 +63,19 @@ export class StatePersistence {
     try {
       const dir = dirname(this.ctx.stateFilePath);
       const base = basename(this.ctx.stateFilePath, '.json');
+      const snapDir = join(dir, '.snapshots');
+      mkdirSync(snapDir, { recursive: true });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const snapPath = join(dir, `${base}.snap-${ts}-${process.pid}.json`);
+      const snapPath = join(snapDir, `${base}.snap-${ts}-${process.pid}.json`);
       // Copy current state to snapshot
       writeFileSync(snapPath, readFileSync(this.ctx.stateFilePath));
       // Prune old snapshots beyond MAX_SNAPSHOTS
-      const snaps = readdirSync(dir)
+      const snaps = readdirSync(snapDir)
         .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
         .sort();
       while (snaps.length > MAX_SNAPSHOTS) {
         const oldest = snaps.shift()!;
-        try { unlinkSync(join(dir, oldest)); } catch { /* best effort */ }
+        try { unlinkSync(join(snapDir, oldest)); } catch { /* best effort */ }
       }
     } catch (err) {
       this.ctx.log(`Snapshot rotation error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
@@ -74,9 +86,18 @@ export class StatePersistence {
     try {
       const dir = dirname(this.ctx.stateFilePath);
       const base = basename(this.ctx.stateFilePath, '.json');
-      return readdirSync(dir)
-        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
-        .sort();
+      const snapDir = join(dir, '.snapshots');
+      const results: string[] = [];
+      // Check new subdirectory location
+      if (existsSync(snapDir)) {
+        results.push(...readdirSync(snapDir)
+          .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
+          .map(f => `.snapshots/${f}`));
+      }
+      // Check legacy same-directory location for backward compat
+      results.push(...readdirSync(dir)
+        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json')));
+      return results.sort();
     } catch {
       return [];
     }
@@ -85,9 +106,16 @@ export class StatePersistence {
   rollbackToSnapshot(snapshotName: string, builtinRules: InferenceRule[]): boolean {
     const dir = dirname(this.ctx.stateFilePath);
     const snapPath = join(dir, snapshotName);
-    if (!existsSync(snapPath)) return false;
+    if (!existsSync(snapPath)) {
+      // Try legacy same-directory location
+      const legacyPath = join(dir, basename(snapshotName));
+      if (!existsSync(legacyPath)) return false;
+      return this._rollbackFrom(legacyPath, builtinRules);
+    }
+    return this._rollbackFrom(snapPath, builtinRules);
+  }
 
-    // Load snapshot data into current engine state
+  private _rollbackFrom(snapPath: string, builtinRules: InferenceRule[]): boolean {
     const raw = readFileSync(snapPath, 'utf-8');
     const data = JSON.parse(raw);
     this.ctx.graph.clear();
@@ -110,7 +138,7 @@ export class StatePersistence {
       this.ctx.coldStore.import(data.coldStore);
     }
     this.ctx.rebuildActionFrontierMap();
-    this.ctx.log('Rolled back to snapshot: ' + snapshotName, undefined, { category: 'system' });
+    this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persist();
     return true;
   }

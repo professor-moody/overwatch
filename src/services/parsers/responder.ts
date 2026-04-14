@@ -98,8 +98,8 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
 
   // Emit nodes and edges for each complete stanza
   for (const stanza of completed) {
-    const credType = stanza.version === 'ntlmv1' ? 'ntlmv2_challenge' : 'ntlmv2_challenge';
-    const materialKind = stanza.version === 'ntlmv1' ? 'ntlmv2_challenge' : 'ntlmv2_challenge';
+    const credType = stanza.version === 'ntlmv1' ? 'ntlmv1_challenge' : 'ntlmv2_challenge';
+    const materialKind = stanza.version === 'ntlmv1' ? 'ntlmv1_challenge' : 'ntlmv2_challenge';
     const labelPrefix = stanza.version === 'ntlmv1' ? 'NTLMv1' : 'NTLMv2';
 
     const resolvedHostId = hostId(stanza.clientIp);

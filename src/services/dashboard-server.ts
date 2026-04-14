@@ -52,7 +52,17 @@ export class DashboardServer {
       // — handled by httpServer 'error' listener in start()
     });
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws, req) => {
+      // F21: Require token auth when bound to non-loopback address
+      if (!this.isLoopback(this.host)) {
+        const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+        const token = url.searchParams.get('token');
+        const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
+        if (!expected || token !== expected) {
+          ws.close(4401, 'Unauthorized');
+          return;
+        }
+      }
       this.clients.add(ws);
       // Send full state on connect — getState() first to materialize community_id on nodes
       const state = this.engine.getState();
@@ -217,7 +227,7 @@ export class DashboardServer {
     // CORS: restrict to localhost origins (or env override)
     const origin = req.headers.origin || '';
     const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
-    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
     let isAllowedOrigin = isLocalOrigin;
     if (!isAllowedOrigin && origin) {
       try { isAllowedOrigin = new URL(origin).hostname === allowedHost; } catch { /* malformed origin */ }
@@ -243,8 +253,9 @@ export class DashboardServer {
   private serveStaticFile(url: string, res: ServerResponse): void {
     let filePath = url === '/' ? '/index.html' : url;
 
-    // Security: prevent directory traversal
-    if (filePath.includes('..')) {
+    // Security: prevent directory traversal (including percent-encoded variants)
+    const decoded = decodeURIComponent(filePath);
+    if (filePath.includes('..') || decoded.includes('..')) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');
       return;
@@ -345,5 +356,9 @@ export class DashboardServer {
 
   get clientCount(): number {
     return this.clients.size;
+  }
+
+  private isLoopback(host: string): boolean {
+    return host === '127.0.0.1' || host === '::1' || host === 'localhost';
   }
 }

@@ -182,6 +182,19 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
         }
       }
 
+      // Failed auth (- status) — record for spray coverage and lockout tracking
+      if (status === '-') {
+        const credMatch = message.match(/([^\\]+)\\([^\s:]+)/);
+        if (credMatch) {
+          const [, rawCredDomain, username] = credMatch;
+          const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
+          if (username && username !== '') {
+            addUserNode(username, credDomain);
+            addEdgeOnce(userId(username, credDomain), resolvedHostId, 'TESTED_CRED', 0.0);
+          }
+        }
+      }
+
       continue;
     }
 

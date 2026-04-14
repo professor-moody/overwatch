@@ -11,6 +11,8 @@ npm install
 npm run build
 ```
 
+> **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
+
 Add to your Claude Code MCP config:
 
 ```json
