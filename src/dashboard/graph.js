@@ -48,7 +48,7 @@ const NODE_BASE_SIZES = {
   objective: 10,
   certificate: 6,
   ca: 8,
-  cert_template: 6,
+  cert_template: 7,
   pki_store: 5,
   share: 5,
   gpo: 5,
@@ -69,19 +69,27 @@ const EDGE_CATEGORIES = {
   // Access
   ADMIN_TO: '#5dcaa5', HAS_SESSION: '#5dcaa5', CAN_RDPINTO: '#5dcaa5', CAN_PSREMOTE: '#5dcaa5',
   // Credentials
-  VALID_ON: '#f0b54a', OWNS_CRED: '#f0b54a', POTENTIAL_AUTH: '#f0b54a',
+  VALID_ON: '#f0b54a', OWNS_CRED: '#f0b54a', POTENTIAL_AUTH: '#f0b54a', TESTED_CRED: '#f0b54a',
   // AD Attack Paths
-  CAN_DCSYNC: '#f07b6e', DELEGATES_TO: '#f07b6e', WRITEABLE_BY: '#f07b6e',
+  CAN_DCSYNC: '#f07b6e', WRITEABLE_BY: '#f07b6e',
   GENERIC_ALL: '#f07b6e', GENERIC_WRITE: '#f07b6e', WRITE_OWNER: '#f07b6e',
   WRITE_DACL: '#f07b6e', ADD_MEMBER: '#f07b6e', FORCE_CHANGE_PASSWORD: '#f07b6e',
   ALLOWED_TO_ACT: '#f07b6e',
   // ADCS
   CAN_ENROLL: '#afa9ec', ESC1: '#afa9ec', ESC2: '#afa9ec', ESC3: '#afa9ec',
-  ESC4: '#afa9ec', ESC6: '#afa9ec', ESC8: '#afa9ec',
+  ESC4: '#afa9ec', ESC5: '#afa9ec', ESC6: '#afa9ec', ESC7: '#afa9ec', ESC8: '#afa9ec',
+  ESC9: '#afa9ec', ESC10: '#afa9ec', ESC11: '#afa9ec', ESC13: '#afa9ec',
+  ISSUED_BY: '#6b6977', OPERATES_CA: '#6b6977',
+  // Delegation
+  DELEGATES_TO: '#7c6cf0', CAN_DELEGATE_TO: '#7c6cf0',
+  // Roasting
+  AS_REP_ROASTABLE: '#e68a50', KERBEROASTABLE: '#e68a50',
   // Lateral movement
   RELAY_TARGET: '#ed93b1', NULL_SESSION: '#ed93b1',
   // Credential derivation / provenance
   DERIVED_FROM: '#ff8c42', DUMPED_FROM: '#ff8c42',
+  // ACL-derived
+  CAN_READ_LAPS: '#f07b6e', CAN_READ_GMSA: '#f07b6e', RBCD_TARGET: '#f07b6e',
   // Domain
   MEMBER_OF: '#6b6977', MEMBER_OF_DOMAIN: '#6b6977', TRUSTS: '#97c459',
   SAME_DOMAIN: '#6b6977',
@@ -92,6 +100,10 @@ const EDGE_CATEGORIES = {
   ASSUMES_ROLE: '#59b8e6', HAS_POLICY: '#59b8e6',
   POLICY_ALLOWS: '#a8d65c', MANAGED_BY: '#a8d65c',
   EXPOSED_TO: '#6e9eff', RUNS_ON: '#6e9eff',
+  // Objective
+  PATH_TO_OBJECTIVE: '#f0b54a',
+  // Generic
+  RELATED: '#6b6977',
 };
 
 const DEFAULT_EDGE_COLOR = 'rgba(110,158,255,0.25)';
@@ -113,6 +125,7 @@ const LAYOUT_ITERS_PER_FRAME = 5;
 let activeFilters = new Set(Object.keys(NODE_COLORS));
 let hoveredNode = null;
 let hoveredNeighbors = null;
+let hoveredEdge = null;
 let draggedNode = null;
 let isDragging = false;
 const DRAG_THRESHOLD_PX = 6;
@@ -123,8 +136,8 @@ let graphMode = 'overview';
 let labelDensity = 'balanced';
 let emphasizedNodeTypes = new Set();
 
-const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'ca', 'subnet']);
-const DETAIL_NODE_TYPES = new Set(['service', 'share', 'cert_template']);
+const HIGH_SIGNAL_NODE_TYPES = new Set(['domain', 'host', 'objective', 'credential', 'certificate', 'ca', 'subnet', 'cert_template']);
+const DETAIL_NODE_TYPES = new Set(['service', 'share']);
 const SUPPORTING_NODE_TYPES = new Set(['user', 'group', 'ou', 'gpo', 'pki_store']);
 
 // Path highlighting
@@ -467,9 +480,16 @@ function isEdgeEndpointActive(edge) {
 function edgeReducer(edge, data) {
   const res = { ...data };
 
-  // Only show edge labels when zoomed in past detail threshold
+  // Inferred edges: use line (no arrow) to distinguish from confirmed edges
+  if (data.inferredByRule) {
+    res.type = 'line';
+  }
+
+  // Only show edge labels when zoomed in past detail threshold (unless hovered)
   if (getCurrentCameraRatio() > ZOOM_REVEAL_THRESHOLDS.detail) {
-    res.label = '';
+    if (edge !== hoveredEdge) {
+      res.label = '';
+    }
   }
 
   if (!isEdgeVisible(edge)) {
@@ -675,6 +695,16 @@ function setupHover() {
     hoveredNeighbors = null;
     renderer.refresh();
     hideTooltip();
+  });
+
+  renderer.on('enterEdge', ({ edge }) => {
+    hoveredEdge = edge;
+    renderer.refresh();
+  });
+
+  renderer.on('leaveEdge', () => {
+    hoveredEdge = null;
+    renderer.refresh();
   });
 }
 
@@ -1075,17 +1105,25 @@ function buildActualPath(activityEntries) {
   const resultNodes = new Set(orderedNodes);
   const resultEdges = new Set();
 
-  // Connect consecutive nodes via graph edges
+  // Connect consecutive nodes via graph edges, with BFS fallback for gaps
   for (let i = 0; i < orderedNodes.length - 1; i++) {
     const a = orderedNodes[i];
     const b = orderedNodes[i + 1];
     const edges = graph.edges(a);
+    let found = false;
     for (const edgeId of edges) {
       const opposite = graph.opposite(a, edgeId);
       if (opposite === b) {
         resultEdges.add(edgeId);
+        found = true;
         break;
       }
+    }
+    // Fall back to BFS shortest path when no direct edge exists
+    if (!found) {
+      const fill = findShortestPath(a, b);
+      for (const n of fill.nodes) resultNodes.add(n);
+      for (const e of fill.edges) resultEdges.add(e);
     }
   }
 
@@ -1984,7 +2022,7 @@ function groupInitialPositions(nodes, edges = []) {
     if (type === 'service') return 4.5;
     if (type === 'share') return 5.2;
     if (type === 'credential' || type === 'certificate' || type === 'ca') return 5.8;
-    if (type === 'cert_template') return 6.4;
+    if (type === 'cert_template') return 4.8;
     if (type === 'user') return 6.6;
     if (type === 'group' || type === 'ou' || type === 'gpo' || type === 'pki_store') return 8.2;
     return 6;
@@ -2355,14 +2393,14 @@ function zoomToNodes(nodeSet, options = {}) {
 // ============================================================
 
 const COMMUNITY_HULL_COLORS = [
-  'rgba(110,158,255,0.07)',
-  'rgba(93,202,165,0.07)',
-  'rgba(240,181,74,0.07)',
-  'rgba(204,102,255,0.07)',
-  'rgba(255,127,102,0.07)',
-  'rgba(102,204,204,0.07)',
-  'rgba(255,178,102,0.07)',
-  'rgba(153,153,255,0.07)',
+  'rgba(110,158,255,0.10)',
+  'rgba(93,202,165,0.10)',
+  'rgba(240,181,74,0.10)',
+  'rgba(204,102,255,0.10)',
+  'rgba(255,127,102,0.10)',
+  'rgba(102,204,204,0.10)',
+  'rgba(255,178,102,0.10)',
+  'rgba(153,153,255,0.10)',
 ];
 
 function convexHull(points) {
@@ -2422,11 +2460,29 @@ function collectCommunityHullPoints(g, getDisplayData) {
 function drawCommunityHulls() {
   if (!communityHullsEnabled || !renderer || !graph || graph.order === 0) return;
 
-  const canvases = renderer.getCanvases();
-  const labelsCanvas = canvases.labels || canvases.hovers || Object.values(canvases)[0];
-  if (!labelsCanvas) return;
-  const ctx = labelsCanvas.getContext('2d');
+  // Use a dedicated overlay canvas behind sigma's label layer
+  const container = renderer.getContainer();
+  if (!container) return;
+  let canvas = container.querySelector('.overwatch-hull-canvas');
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.className = 'overwatch-hull-canvas';
+    canvas.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:0;';
+    container.insertBefore(canvas, container.firstChild);
+  }
+  // Sync canvas size with container
+  const { width, height } = container.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+  }
+  const ctx = canvas.getContext('2d');
   if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
 
   const communityNodes = collectCommunityHullPoints(graph, (id) => renderer.getNodeDisplayData(id));
 
@@ -2434,29 +2490,48 @@ function drawCommunityHulls() {
   const CORNER_RADIUS = 12;
 
   for (const [cid, points] of communityNodes) {
-    if (points.length < 3) continue;
-    const hull = convexHull(points);
-    if (hull.length < 3) continue;
-    const expanded = expandHull(hull, HULL_PADDING);
-
     const color = COMMUNITY_HULL_COLORS[cid % COMMUNITY_HULL_COLORS.length];
     ctx.save();
     ctx.fillStyle = color;
-    ctx.beginPath();
 
-    // Draw rounded hull using arcTo for smooth corners
-    const n = expanded.length;
-    const first = expanded[0];
-    const mid = { x: (expanded[n - 1].x + first.x) / 2, y: (expanded[n - 1].y + first.y) / 2 };
-    ctx.moveTo(mid.x, mid.y);
-    for (let i = 0; i < n; i++) {
-      const curr = expanded[i];
-      const next = expanded[(i + 1) % n];
-      const midNext = { x: (curr.x + next.x) / 2, y: (curr.y + next.y) / 2 };
-      ctx.arcTo(curr.x, curr.y, midNext.x, midNext.y, CORNER_RADIUS);
+    if (points.length === 1) {
+      // Single node — draw circle
+      ctx.beginPath();
+      ctx.arc(points[0].x, points[0].y, HULL_PADDING + 8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (points.length === 2) {
+      // Two nodes — draw stadium/capsule shape
+      const dx = points[1].x - points[0].x;
+      const dy = points[1].y - points[0].y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = -dy / dist, ny = dx / dist;
+      const r = HULL_PADDING + 4;
+      const angle = Math.atan2(dy, dx);
+      ctx.beginPath();
+      ctx.arc(points[0].x, points[0].y, r, angle + Math.PI / 2, angle - Math.PI / 2);
+      ctx.arc(points[1].x, points[1].y, r, angle - Math.PI / 2, angle + Math.PI / 2);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      // 3+ nodes — convex hull
+      const hull = convexHull(points);
+      if (hull.length < 3) { ctx.restore(); continue; }
+      const expanded = expandHull(hull, HULL_PADDING);
+
+      ctx.beginPath();
+      const n = expanded.length;
+      const first = expanded[0];
+      const mid = { x: (expanded[n - 1].x + first.x) / 2, y: (expanded[n - 1].y + first.y) / 2 };
+      ctx.moveTo(mid.x, mid.y);
+      for (let i = 0; i < n; i++) {
+        const curr = expanded[i];
+        const next = expanded[(i + 1) % n];
+        const midNext = { x: (curr.x + next.x) / 2, y: (curr.y + next.y) / 2 };
+        ctx.arcTo(curr.x, curr.y, midNext.x, midNext.y, CORNER_RADIUS);
+      }
+      ctx.closePath();
+      ctx.fill();
     }
-    ctx.closePath();
-    ctx.fill();
     ctx.restore();
   }
 }

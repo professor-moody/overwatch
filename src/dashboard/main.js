@@ -255,6 +255,59 @@ function refreshEdgeTypeList() {
       G.setEdgeTypeFilter(et);
     });
   });
+
+  refreshEdgeLegend();
+}
+
+const EDGE_LEGEND_CATEGORIES = [
+  { label: 'Network', types: ['REACHABLE', 'RUNS'] },
+  { label: 'Access', types: ['ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE'] },
+  { label: 'Credentials', types: ['VALID_ON', 'OWNS_CRED', 'TESTED_CRED'] },
+  { label: 'AD Attack', types: ['CAN_DCSYNC', 'GENERIC_ALL', 'WRITE_DACL'] },
+  { label: 'ADCS', types: ['CAN_ENROLL', 'ESC1'] },
+  { label: 'Delegation', types: ['DELEGATES_TO', 'CAN_DELEGATE_TO'] },
+  { label: 'Roasting', types: ['KERBEROASTABLE', 'AS_REP_ROASTABLE'] },
+  { label: 'Lateral', types: ['RELAY_TARGET', 'NULL_SESSION'] },
+  { label: 'Cred Chain', types: ['DERIVED_FROM', 'DUMPED_FROM'] },
+  { label: 'Domain', types: ['MEMBER_OF', 'TRUSTS'] },
+  { label: 'Web', types: ['VULNERABLE_TO', 'EXPLOITS'] },
+  { label: 'Cloud', types: ['ASSUMES_ROLE', 'POLICY_ALLOWS'] },
+  { label: 'Inferred', types: ['_inferred_'] },
+];
+
+function refreshEdgeLegend() {
+  const G = window.OverwatchGraph;
+  if (!G) return;
+  const body = document.getElementById('edge-legend-body');
+  if (!body) return;
+  const categories = G.EDGE_CATEGORIES || {};
+  const esc = G.escapeHtml;
+
+  body.innerHTML = EDGE_LEGEND_CATEGORIES.map(cat => {
+    if (cat.types[0] === '_inferred_') {
+      return `<div class="edge-legend-row">
+        <span class="edge-legend-swatch inferred" style="border-color:var(--text-muted)"></span>
+        <span class="edge-legend-label">Inferred (no arrow)</span>
+      </div>`;
+    }
+    const color = categories[cat.types[0]] || '#888';
+    return `<div class="edge-legend-row">
+      <span class="edge-legend-swatch" style="background:${esc(color)}"></span>
+      <span class="edge-legend-label">${esc(cat.label)}</span>
+    </div>`;
+  }).join('');
+
+  // Toggle collapse
+  const legend = document.getElementById('edge-legend');
+  const toggle = document.getElementById('edge-legend-toggle');
+  if (legend && toggle && !toggle._bound) {
+    toggle._bound = true;
+    legend.addEventListener('click', (e) => {
+      if (e.target.closest('.edge-legend-header')) {
+        legend.classList.toggle('collapsed');
+      }
+    });
+  }
 }
 
 function checkHistoryChanged(state) {

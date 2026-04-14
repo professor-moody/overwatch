@@ -1,21 +1,42 @@
 import type { Finding, EdgeType } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { caId, certTemplateId } from '../parser-utils.js';
+import { caId, certTemplateId, domainId } from '../parser-utils.js';
 import { classifyPrincipalIdentity, resolveNodeIdentity } from '../identity-resolution.js';
 
 export function parseCertipy(output: string, agentId: string = 'certipy-parser'): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
+  const seenEdges = new Set<string>();
+
+  function addEdge(source: string, target: string, type: EdgeType, confidence: number = 1.0) {
+    const key = `${source}->${target}:${type}`;
+    if (seenEdges.has(key)) return;
+    seenEdges.add(key);
+    edges.push({
+      source,
+      target,
+      properties: {
+        type,
+        confidence,
+        discovered_at: new Date().toISOString(),
+        discovered_by: agentId,
+      },
+    });
+  }
 
   // Parse certipy find output (JSON format)
   try {
     const data = JSON.parse(output);
 
+    // Build CA → templates mapping from CA data
+    const caTemplateMap = new Map<string, string[]>();
+
     // Certificate Authorities
     if (data['Certificate Authorities']) {
-      for (const [caName, _caData] of Object.entries(data['Certificate Authorities'] as Record<string, unknown>)) {
+      for (const [caName, caData] of Object.entries(data['Certificate Authorities'] as Record<string, unknown>)) {
         const caNodeId = caId(caName);
+        const ca = caData as Record<string, unknown>;
         if (!seenNodes.has(caNodeId)) {
           nodes.push({
             id: caNodeId,
@@ -25,6 +46,27 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
             ca_kind: 'enterprise_ca',
           });
           seenNodes.add(caNodeId);
+        }
+
+        // Extract domain from DNS Name (e.g., "dc01.acme.corp" → "acme.corp")
+        const dnsName = ca['DNS Name'] as string | undefined;
+        if (dnsName) {
+          const parts = dnsName.split('.');
+          if (parts.length >= 2) {
+            const domainName = parts.slice(1).join('.');
+            const domainNodeId = domainId(domainName);
+            if (!seenNodes.has(domainNodeId)) {
+              nodes.push({ id: domainNodeId, type: 'domain', label: domainName, domain_name: domainName });
+              seenNodes.add(domainNodeId);
+            }
+            addEdge(domainNodeId, caNodeId, 'OPERATES_CA');
+          }
+        }
+
+        // Track which templates this CA offers
+        const caTemplates = ca['Certificate Templates'] as string[] | undefined;
+        if (Array.isArray(caTemplates)) {
+          caTemplateMap.set(caNodeId, caTemplates);
         }
       }
     }
@@ -47,50 +89,53 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
           seenNodes.add(tmplId);
         }
 
-        // Check for ESC vulnerabilities
-        if (tmpl['[!] Vulnerabilities']) {
-          const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
-          for (const [escName] of Object.entries(vulns)) {
-            const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
-            if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13'].includes(escType)) {
-              const enrollPerms = tmpl['Enrollment Permissions'] as Record<string, unknown> | undefined;
-              if (enrollPerms?.['Enrollment Rights']) {
-                for (const principal of enrollPerms['Enrollment Rights'] as string[]) {
-                  const principalIdentity = classifyPrincipalIdentity(principal);
-                  const principalId = principalIdentity.id;
-                  const resolution = resolveNodeIdentity({
-                    id: principalId,
-                    type: principalIdentity.nodeType,
-                    label: principalIdentity.label,
-                    username: principalIdentity.username,
-                    domain_name: principalIdentity.domain_name,
-                  });
-                  const resolvedPrincipalId = resolution.id;
-                  if (!seenNodes.has(resolvedPrincipalId)) {
-                    nodes.push({
-                      id: resolvedPrincipalId,
-                      type: principalIdentity.nodeType,
-                      label: principalIdentity.label,
-                      username: principalIdentity.username,
-                      domain_name: principalIdentity.domain_name,
-                      identity_status: resolution.status,
-                      identity_family: resolution.family,
-                      canonical_id: resolution.status === 'canonical' ? resolvedPrincipalId : undefined,
-                      identity_markers: resolution.markers,
-                      principal_type_ambiguous: principalIdentity.ambiguous || undefined,
-                    });
-                    seenNodes.add(resolvedPrincipalId);
-                  }
-                  edges.push({
-                    source: resolvedPrincipalId,
-                    target: tmplId,
-                    properties: {
-                      type: escType as EdgeType,
-                      confidence: 0.9,
-                      discovered_at: new Date().toISOString(),
-                      discovered_by: agentId,
-                    },
-                  });
+        // ISSUED_BY: link template to the CA(s) that offer it
+        for (const [caNodeId, templates] of caTemplateMap) {
+          if (templates.some(t => t.toLowerCase() === templateName.toLowerCase())) {
+            addEdge(tmplId, caNodeId, 'ISSUED_BY');
+          }
+        }
+
+        // CAN_ENROLL: create for all enrollment rights (not gated by vulnerabilities)
+        const enrollPerms = tmpl['Enrollment Permissions'] as Record<string, unknown> | undefined;
+        const enrollRights = enrollPerms?.['Enrollment Rights'] as string[] | undefined;
+        if (enrollRights) {
+          for (const principal of enrollRights) {
+            const principalIdentity = classifyPrincipalIdentity(principal);
+            const principalId = principalIdentity.id;
+            const resolution = resolveNodeIdentity({
+              id: principalId,
+              type: principalIdentity.nodeType,
+              label: principalIdentity.label,
+              username: principalIdentity.username,
+              domain_name: principalIdentity.domain_name,
+            });
+            const resolvedPrincipalId = resolution.id;
+            if (!seenNodes.has(resolvedPrincipalId)) {
+              nodes.push({
+                id: resolvedPrincipalId,
+                type: principalIdentity.nodeType,
+                label: principalIdentity.label,
+                username: principalIdentity.username,
+                domain_name: principalIdentity.domain_name,
+                identity_status: resolution.status,
+                identity_family: resolution.family,
+                canonical_id: resolution.status === 'canonical' ? resolvedPrincipalId : undefined,
+                identity_markers: resolution.markers,
+                principal_type_ambiguous: principalIdentity.ambiguous || undefined,
+              });
+              seenNodes.add(resolvedPrincipalId);
+            }
+
+            addEdge(resolvedPrincipalId, tmplId, 'CAN_ENROLL', 1.0);
+
+            // ESC vulnerability edges (on top of enrollment)
+            if (tmpl['[!] Vulnerabilities']) {
+              const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
+              for (const [escName] of Object.entries(vulns)) {
+                const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
+                if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13'].includes(escType)) {
+                  addEdge(resolvedPrincipalId, tmplId, escType, 0.9);
                 }
               }
             }

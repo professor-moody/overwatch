@@ -192,6 +192,7 @@ export const EDGE_TYPES = [
   'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
   // ADCS
   'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13',
+  'ISSUED_BY', 'OPERATES_CA',
   // Trust
   'TRUSTS', 'SAME_DOMAIN',
   // Roasting

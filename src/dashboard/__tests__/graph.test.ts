@@ -303,6 +303,27 @@ describe('dashboard graph helpers', () => {
     expect(result.edges.size).toBe(0);
   });
 
+  it('buildActualPath fills gaps via BFS when intermediate nodes exist', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('h1', { label: 'H1', nodeType: 'host', color: '#fff', x: 0, y: 0, _props: { type: 'host' } });
+    graph.addNode('cred', { label: 'cred', nodeType: 'credential', color: '#fff', x: 1, y: 0, _props: { type: 'credential' } });
+    graph.addNode('h2', { label: 'H2', nodeType: 'host', color: '#fff', x: 2, y: 0, _props: { type: 'host' } });
+    graph.addEdgeWithKey('h1--DUMPED_FROM--cred', 'cred', 'h1', { edgeType: 'DUMPED_FROM' });
+    graph.addEdgeWithKey('cred--VALID_ON--h2', 'cred', 'h2', { edgeType: 'VALID_ON' });
+
+    const entries = [
+      { timestamp: '2026-01-01T01:00:00Z', target_node_ids: ['h1'], category: 'finding' },
+      { timestamp: '2026-01-01T02:00:00Z', target_node_ids: ['h2'], category: 'finding' },
+    ];
+
+    const result = graphModule.buildActualPath(entries);
+    expect(result.nodes.size).toBe(3);
+    expect(result.edges.size).toBe(2);
+    expect(result.nodes.has('cred')).toBe(true);
+  });
+
   it('buildCredentialFlowData collects credential-related edges and chains', async () => {
     const graphModule = await loadGraphModule();
     const graph = graphModule.init();

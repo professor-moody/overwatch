@@ -1319,6 +1319,77 @@ button.stat-item {
   height: 100%;
 }
 
+/* Edge Legend */
+.edge-legend {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 180px;
+  max-height: 280px;
+  background: rgba(14,17,24,0.88);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  z-index: 5;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+}
+.edge-legend-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-weight: 600;
+  color: var(--text-default);
+  cursor: pointer;
+  user-select: none;
+}
+.edge-legend-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.2s;
+}
+.edge-legend.collapsed .edge-legend-toggle {
+  transform: rotate(-90deg);
+}
+.edge-legend-body {
+  padding: 2px 10px 8px;
+  overflow-y: auto;
+  max-height: 230px;
+}
+.edge-legend.collapsed .edge-legend-body {
+  display: none;
+}
+.edge-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  line-height: 1.3;
+}
+.edge-legend-swatch {
+  width: 16px;
+  height: 3px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.edge-legend-swatch.inferred {
+  height: 1px;
+  border-top: 2px dashed;
+  background: none;
+}
+.edge-legend-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ============================================================
    Node Detail Drawer (right)
    ============================================================ */

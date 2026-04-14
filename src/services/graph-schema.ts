@@ -51,6 +51,8 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   ALLOWED_TO_ACT: { source: ['host', 'user'], target: ['host'] },
   // ADCS
   CAN_ENROLL: { source: ['user', 'group'], target: ['cert_template', 'ca'] },
+  ISSUED_BY: { source: ['cert_template'], target: ['ca'] },
+  OPERATES_CA: { source: ['domain'], target: ['ca'] },
   ESC1: { source: ['user', 'group'], target: ['cert_template'] },
   ESC2: { source: ['user', 'group'], target: ['cert_template'] },
   ESC3: { source: ['user', 'group'], target: ['cert_template'] },

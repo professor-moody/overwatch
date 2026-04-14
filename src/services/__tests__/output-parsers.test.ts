@@ -429,6 +429,9 @@ describe('Output Parsers', () => {
 
       const escEdges = finding.edges.filter(e => e.properties.type === 'ESC1');
       expect(escEdges.length).toBe(1);
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBe(1);
+      expect(enrollEdges[0].target).toBe('cert-template-usertemplate');
       const principal = finding.nodes.find(n => n.id === 'group-acme-domain-users');
       expect(principal?.type).toBe('group');
     });
@@ -453,9 +456,12 @@ describe('Output Parsers', () => {
       const finding = parseCertipy(JSON.stringify(data));
       const groups = finding.nodes.filter(n => n.type === 'group');
       expect(groups.length).toBe(1);
+      // Both principals resolve to same canonical ID → single ESC1 edge (deduplicated)
       const escEdges = finding.edges.filter(e => e.properties.type === 'ESC1');
-      expect(escEdges.length).toBe(2);
-      expect(escEdges[0].source).toBe(escEdges[1].source);
+      expect(escEdges.length).toBe(1);
+      // CAN_ENROLL deduplicates too (same source → same target)
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBe(1);
     });
 
     it('handles non-JSON certipy output', () => {
@@ -493,6 +499,73 @@ describe('Output Parsers', () => {
       expect(esc13Edges.length).toBe(1);
       expect(esc5Edges[0].target).toBe('cert-template-misconfigtemplate');
       expect(esc13Edges[0].target).toBe('cert-template-misconfigtemplate');
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBe(1);
+    });
+
+    it('creates ISSUED_BY edges from templates to their CA', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'CA Name': 'ACME-CA',
+            'Certificate Templates': ['UserTemplate', 'MachineTemplate'],
+          },
+        },
+        'Certificate Templates': {
+          'UserTemplate': {
+            'Enrollee Supplies Subject': true,
+            'Extended Key Usage': ['Client Authentication'],
+          },
+          'MachineTemplate': {
+            'Enrollee Supplies Subject': false,
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const issuedBy = finding.edges.filter(e => e.properties.type === 'ISSUED_BY');
+      expect(issuedBy.length).toBe(2);
+      expect(issuedBy[0].source).toBe('cert-template-usertemplate');
+      expect(issuedBy[0].target).toBe('ca-acme-ca');
+      expect(issuedBy[1].source).toBe('cert-template-machinetemplate');
+      expect(issuedBy[1].target).toBe('ca-acme-ca');
+    });
+
+    it('creates OPERATES_CA edge from domain to CA when DNS Name present', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'CA Name': 'ACME-CA',
+            'DNS Name': 'dc01.acme.corp',
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const operatesCA = finding.edges.filter(e => e.properties.type === 'OPERATES_CA');
+      expect(operatesCA.length).toBe(1);
+      expect(operatesCA[0].target).toBe('ca-acme-ca');
+      const domainNode = finding.nodes.find(n => n.type === 'domain');
+      expect(domainNode).toBeDefined();
+      expect(domainNode!.domain_name).toBe('acme.corp');
+      expect(operatesCA[0].source).toBe(domainNode!.id);
+    });
+
+    it('creates CAN_ENROLL edges even without vulnerabilities', () => {
+      const data = {
+        'Certificate Templates': {
+          'SafeTemplate': {
+            'Enrollee Supplies Subject': false,
+            'Enrollment Permissions': {
+              'Enrollment Rights': ['ACME\\Domain Users'],
+            },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBe(1);
+      expect(enrollEdges[0].target).toBe('cert-template-safetemplate');
+      const escEdges = finding.edges.filter(e => e.properties.type.startsWith('ESC'));
+      expect(escEdges.length).toBe(0);
     });
   });
 
