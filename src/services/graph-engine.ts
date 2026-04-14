@@ -513,7 +513,9 @@ export class GraphEngine {
 
   getCommunities(): Map<string, number> {
     if (this.ctx.communityCache) return this.ctx.communityCache;
-    const communities = detectCommunities(this.ctx.graph);
+    const communities = detectCommunities(this.ctx.graph, {
+      resolution: this.ctx.config.community_resolution,
+    });
     this.ctx.communityCache = communities;
     // Write community_id onto node properties so it flows through graph exports
     for (const [nodeId, cid] of communities) {

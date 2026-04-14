@@ -201,6 +201,8 @@ export const EDGE_TYPES = [
   'CAN_DELEGATE_TO',
   // ACL-derived
   'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
+  // Credential reuse
+  'SHARED_CREDENTIAL',
   // Lateral movement
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH', 'TESTED_CRED',
   // Web application surface
@@ -288,6 +290,7 @@ export interface EngagementConfig {
   };
   objectives: EngagementObjective[];
   opsec: OpsecProfile;
+  community_resolution?: number;  // Louvain resolution (default 1.0, lower → fewer/larger communities)
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -319,6 +322,7 @@ export const engagementConfigSchema = z.object({
     { message: 'created_at must be a valid ISO-8601 date string' },
   ),
   profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
+  community_resolution: z.number().min(0.1).max(10).optional(),
   scope: z.object({
     cidrs: z.array(z.string().regex(
       /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,

@@ -980,4 +980,227 @@ describe('InferenceEngine', () => {
       expect(attrs.inferred_by_rule).toBe('rule-override-attempt');
     });
   });
+
+  // =============================================
+  // Phase 2: ADCS ESC rules
+  // =============================================
+  describe('rule-adcs-esc2', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc2', name: 'ADCS ESC2', description: '',
+      trigger: { node_type: 'cert_template', property_match: { any_purpose: true } },
+      produces: [{ edge_type: 'ESC2', source_selector: 'enrollable_users_if_client_auth', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers ESC2 when template has any_purpose=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', any_purpose: true, ekus: ['1.3.6.1.5.5.7.3.2'] });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC2');
+    });
+
+    it('does NOT infer ESC2 without any_purpose', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', any_purpose: false });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc3', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc3', name: 'ADCS ESC3', description: '',
+      trigger: { node_type: 'cert_template', property_match: { enrollment_agent: true } },
+      produces: [{ edge_type: 'ESC3', source_selector: 'enrollable_users', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers ESC3 when template has enrollment_agent=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', enrollment_agent: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC3');
+    });
+  });
+
+  describe('rule-adcs-esc4', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc4', name: 'ADCS ESC4', description: '',
+      trigger: { node_type: 'cert_template', requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' } },
+      produces: [{ edge_type: 'ESC4', source_selector: 'edge_peers', target_selector: 'trigger_node', confidence: 0.75 }],
+    };
+
+    it('infers ESC4 when template has WRITEABLE_BY edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'WRITEABLE_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC4');
+    });
+
+    it('does NOT infer ESC4 without WRITEABLE_BY edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc6', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc6', name: 'ADCS ESC6', description: '',
+      trigger: { node_type: 'ca', property_match: { san_flag_enabled: true } },
+      produces: [{ edge_type: 'ESC6', source_selector: 'enrollable_users', target_selector: 'trigger_node', confidence: 0.8 }],
+    };
+
+    it('infers ESC6 when CA has san_flag_enabled=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', san_flag_enabled: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC6');
+    });
+  });
+
+  describe('rule-adcs-esc7', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc7', name: 'ADCS ESC7', description: '',
+      trigger: { node_type: 'ca', requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' } },
+      produces: [{ edge_type: 'ESC7', source_selector: 'manage_ca_peers', target_selector: 'trigger_node', confidence: 0.75 }],
+    };
+
+    it('infers ESC7 when CA has GENERIC_ALL from a principal', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'ca-1', 'GENERIC_ALL');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC7');
+    });
+  });
+
+  describe('rule-adcs-esc8', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc8', name: 'ADCS ESC8', description: '',
+      trigger: { node_type: 'ca', property_match: { http_enrollment: true } },
+      produces: [{ edge_type: 'ESC8', source_selector: 'all_compromised', target_selector: 'trigger_node', confidence: 0.6 }],
+    };
+
+    it('infers ESC8 when CA has http_enrollment=true and compromised hosts exist', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', http_enrollment: true });
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'host-a', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC8');
+    });
+
+    it('does NOT infer ESC8 without http_enrollment', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', http_enrollment: false });
+      addNode(graph, 'host-a', { type: 'host' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Phase 2: Credential reuse
+  // =============================================
+  describe('rule-shared-credential', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-shared-credential', name: 'Credential reuse', description: '',
+      trigger: { node_type: 'credential' },
+      produces: [{ edge_type: 'SHARED_CREDENTIAL', source_selector: 'trigger_node', target_selector: 'credentials_same_username', confidence: 0.7 }],
+    };
+
+    it('infers SHARED_CREDENTIAL between credentials with same cred_user', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-a', { type: 'credential', cred_user: 'admin', cred_type: 'ntlm' });
+      addNode(graph, 'cred-b', { type: 'credential', cred_user: 'admin', cred_type: 'plaintext' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('cred-a');
+      expect(inferred.length).toBe(1);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('SHARED_CREDENTIAL');
+    });
+
+    it('does NOT infer SHARED_CREDENTIAL for different usernames', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-a', { type: 'credential', cred_user: 'admin', cred_type: 'ntlm' });
+      addNode(graph, 'cred-b', { type: 'credential', cred_user: 'jsmith', cred_type: 'ntlm' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('cred-a');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('matches cred_user case-insensitively', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-a', { type: 'credential', cred_user: 'Admin', cred_type: 'ntlm' });
+      addNode(graph, 'cred-b', { type: 'credential', cred_user: 'admin', cred_type: 'ntlm' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('cred-a');
+      expect(inferred.length).toBe(1);
+    });
+  });
+
+  // =============================================
+  // Phase 2: Lateral movement chaining
+  // =============================================
+  describe('rule-session-admin-persistence', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-session-admin-persistence', name: 'Session+admin persistence', description: '',
+      trigger: { node_type: 'user', requires_edge: { type: 'ADMIN_TO', direction: 'outbound' } },
+      produces: [{ edge_type: 'PATH_TO_OBJECTIVE', source_selector: 'trigger_node', target_selector: 'nearest_objective', confidence: 0.6 }],
+    };
+
+    it('infers PATH_TO_OBJECTIVE when user has ADMIN_TO and objective exists', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-a', { type: 'user' });
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'obj-1', { type: 'objective' });
+      addEdge(graph, 'user-a', 'host-a', 'ADMIN_TO');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('user-a');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('PATH_TO_OBJECTIVE');
+    });
+
+    it('does NOT infer PATH_TO_OBJECTIVE without ADMIN_TO edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-a', { type: 'user' });
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'obj-1', { type: 'objective' });
+      addEdge(graph, 'user-a', 'host-a', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('user-a');
+      expect(inferred.length).toBe(0);
+    });
+  });
 });

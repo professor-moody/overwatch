@@ -174,4 +174,87 @@ describe('Community Detection', () => {
     expect(nodeA).toBeDefined();
     expect(typeof nodeA!.community_id).toBe('number');
   });
+
+  it('weights access edges higher than REACHABLE edges', () => {
+    // Two clusters connected by a weak REACHABLE link and a strong ADMIN_TO link
+    // Nodes connected via ADMIN_TO should cluster together more strongly
+    const ts = new Date().toISOString();
+    const base = { confidence: 1.0, discovered_at: ts, discovered_by: 'test' };
+
+    // Cluster 1: host-a -- ADMIN_TO --> host-b (strong affinity)
+    engine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', ...base });
+    engine.addNode({ id: 'host-b', type: 'host', label: 'B', ip: '10.10.10.2', ...base });
+    engine.addNode({ id: 'user-x', type: 'user', label: 'X', ...base });
+    engine.addEdge('user-x', 'host-a', { type: 'ADMIN_TO', ...base });
+    engine.addEdge('user-x', 'host-b', { type: 'ADMIN_TO', ...base });
+
+    // Cluster 2: host-c -- REACHABLE --> host-d (weak affinity)
+    engine.addNode({ id: 'host-c', type: 'host', label: 'C', ip: '10.10.10.3', ...base });
+    engine.addNode({ id: 'host-d', type: 'host', label: 'D', ip: '10.10.10.4', ...base });
+    engine.addEdge('host-c', 'host-d', { type: 'REACHABLE', ...base });
+
+    // Weak cross-link
+    engine.addEdge('host-b', 'host-c', { type: 'REACHABLE', confidence: 0.3, discovered_at: ts, discovered_by: 'test' });
+
+    const communities = engine.getCommunities();
+    // user-x, host-a, host-b should be in the same community (strong ADMIN_TO)
+    expect(communities.get('user-x')).toBe(communities.get('host-a'));
+    expect(communities.get('user-x')).toBe(communities.get('host-b'));
+  });
+
+  it('uses configurable resolution parameter', () => {
+    const ts = new Date().toISOString();
+    const base = { confidence: 1.0, discovered_at: ts, discovered_by: 'test' };
+
+    // Create a chain of hosts
+    for (let i = 0; i < 6; i++) {
+      engine.addNode({ id: `host-${i}`, type: 'host', label: `H${i}`, ip: `10.10.10.${i + 1}`, ...base });
+    }
+    for (let i = 0; i < 5; i++) {
+      engine.addEdge(`host-${i}`, `host-${i + 1}`, { type: 'REACHABLE', ...base });
+    }
+
+    const lowRes = engine.getCommunities();
+    const lowResCount = new Set(lowRes.values()).size;
+
+    // Now create a new engine with higher resolution
+    cleanup();
+    const hiResEngine = new GraphEngine(makeConfig({ community_resolution: 3.0 }), TEST_STATE_FILE);
+    for (let i = 0; i < 6; i++) {
+      hiResEngine.addNode({ id: `host-${i}`, type: 'host', label: `H${i}`, ip: `10.10.10.${i + 1}`, ...base });
+    }
+    for (let i = 0; i < 5; i++) {
+      hiResEngine.addEdge(`host-${i}`, `host-${i + 1}`, { type: 'REACHABLE', ...base });
+    }
+
+    const hiRes = hiResEngine.getCommunities();
+    const hiResCount = new Set(hiRes.values()).size;
+
+    // Higher resolution should produce equal or more communities
+    expect(hiResCount).toBeGreaterThanOrEqual(lowResCount);
+  });
+
+  it('default resolution produces same results as resolution=1.0', () => {
+    const ts = new Date().toISOString();
+    const base = { confidence: 1.0, discovered_at: ts, discovered_by: 'test' };
+
+    engine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', ...base });
+    engine.addNode({ id: 'host-b', type: 'host', label: 'B', ip: '10.10.10.2', ...base });
+    engine.addEdge('host-a', 'host-b', { type: 'REACHABLE', ...base });
+
+    const defaultComm = engine.getCommunities();
+
+    // Engine with explicit resolution=1.0 should give same result
+    cleanup();
+    const explicitEngine = new GraphEngine(makeConfig({ community_resolution: 1.0 }), TEST_STATE_FILE);
+    explicitEngine.addNode({ id: 'host-a', type: 'host', label: 'A', ip: '10.10.10.1', ...base });
+    explicitEngine.addNode({ id: 'host-b', type: 'host', label: 'B', ip: '10.10.10.2', ...base });
+    explicitEngine.addEdge('host-a', 'host-b', { type: 'REACHABLE', ...base });
+
+    const explicitComm = explicitEngine.getCommunities();
+
+    // Same community structure
+    expect(defaultComm.get('host-a') === defaultComm.get('host-b'))
+      .toBe(explicitComm.get('host-a') === explicitComm.get('host-b'));
+  });
 });

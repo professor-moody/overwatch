@@ -55,6 +55,8 @@
           <button id="btn-layer-compare-shortest" data-active="false" disabled>Compare Shortest</button>
           <button id="btn-layer-cred-flow" data-active="false">Credential Flow</button>
           <button id="btn-layer-community-hulls" data-active="true">Community Hulls</button>
+          <button id="btn-layer-hide-orphans" data-active="false">Hide Orphans</button>
+          <button id="btn-layer-hide-reachable-only" data-active="false">Hide Reachable-Only</button>
           <div class="edge-filter-divider"></div>
           <div class="edge-filter-section">
             <div class="edge-filter-heading">Edge Source</div>
@@ -85,6 +87,16 @@
           <option value="minimal">Minimal</option>
           <option value="balanced" selected>Balanced</option>
           <option value="verbose">Verbose</option>
+        </select>
+      </label>
+      <label class="toolbar-select-group">
+        <span>Focus</span>
+        <select id="focus-preset-select">
+          <option value="" selected>None</option>
+          <option value="AD Attack Surface">AD Attack Surface</option>
+          <option value="Credential Chain">Credential Chain</option>
+          <option value="ADCS/PKI">ADCS/PKI</option>
+          <option value="Cloud Identity">Cloud Identity</option>
         </select>
       </label>
     </div>

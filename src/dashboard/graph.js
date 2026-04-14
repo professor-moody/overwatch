@@ -88,6 +88,8 @@ const EDGE_CATEGORIES = {
   RELAY_TARGET: '#ed93b1', NULL_SESSION: '#ed93b1',
   // Credential derivation / provenance
   DERIVED_FROM: '#ff8c42', DUMPED_FROM: '#ff8c42',
+  // Credential reuse
+  SHARED_CREDENTIAL: '#ff8c42',
   // ACL-derived
   CAN_READ_LAPS: '#f07b6e', CAN_READ_GMSA: '#f07b6e', RBCD_TARGET: '#f07b6e',
   // Domain
@@ -157,6 +159,11 @@ let credFlowData = null; // { flowEdges: Set, flowNodes: Set, chains: [] }
 // Community hulls
 let communityHullsEnabled = true;
 
+// Graph hygiene
+let hideOrphans = false;
+let hideReachableOnly = false;
+let reachableOnlyCache = null; // Set<nodeId> | null — invalidated on graph change
+
 // Edge type filter
 let edgeTypeFilter = null; // null | { type: string } — highlight all edges of this type
 let edgeSourceFilter = null; // null | 'confirmed' | 'inferred'
@@ -187,6 +194,44 @@ const FILTER_PRESETS = {
   gpo: ['gpo', 'ou', 'domain', 'host', 'user'],
   subnet: ['subnet', 'host', 'domain', 'objective'],
 };
+
+// Named focus presets for curated graph views
+const FOCUS_PRESETS = {
+  'AD Attack Surface': {
+    nodeTypes: ['domain', 'host', 'user', 'group', 'credential', 'objective'],
+    edgeHighlight: new Set([
+      'ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE',
+      'CAN_DCSYNC', 'WRITEABLE_BY', 'GENERIC_ALL', 'GENERIC_WRITE',
+      'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER', 'FORCE_CHANGE_PASSWORD',
+      'ALLOWED_TO_ACT', 'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
+      'DELEGATES_TO', 'CAN_DELEGATE_TO',
+    ]),
+  },
+  'Credential Chain': {
+    nodeTypes: ['credential', 'user', 'host', 'service', 'domain'],
+    edgeHighlight: new Set([
+      'VALID_ON', 'OWNS_CRED', 'DERIVED_FROM', 'DUMPED_FROM',
+      'SHARED_CREDENTIAL', 'HAS_SESSION', 'TESTED_CRED', 'POTENTIAL_AUTH',
+    ]),
+  },
+  'ADCS/PKI': {
+    nodeTypes: ['ca', 'cert_template', 'domain', 'user', 'group', 'certificate', 'pki_store'],
+    edgeHighlight: new Set([
+      'CAN_ENROLL', 'ISSUED_BY', 'OPERATES_CA',
+      'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8',
+      'ESC9', 'ESC10', 'ESC11', 'ESC13',
+    ]),
+  },
+  'Cloud Identity': {
+    nodeTypes: ['cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network', 'host', 'service'],
+    edgeHighlight: new Set([
+      'ASSUMES_ROLE', 'HAS_POLICY', 'POLICY_ALLOWS',
+      'EXPOSED_TO', 'RUNS_ON', 'MANAGED_BY',
+    ]),
+  },
+};
+
+let activeFocusPreset = null; // null | preset name string
 
 // New node animation
 let newNodeIds = new Set();
@@ -234,9 +279,45 @@ function initRenderer() {
   return renderer;
 }
 
+/**
+ * Check if a node only has REACHABLE edges (no other edge types).
+ * Uses a cache that is invalidated when the graph changes.
+ */
+function isReachableOnlyNode(node) {
+  if (!reachableOnlyCache) {
+    reachableOnlyCache = new Set();
+    if (graph) {
+      graph.forEachNode((id) => {
+        const deg = graph.degree(id);
+        if (deg === 0) return; // orphans handled separately
+        let allReachable = true;
+        graph.forEachEdge(id, (_edge, attrs) => {
+          if (allReachable && attrs.type !== 'REACHABLE') allReachable = false;
+        });
+        if (allReachable) reachableOnlyCache.add(id);
+      });
+    }
+  }
+  return reachableOnlyCache.has(node);
+}
+
+function invalidateReachableOnlyCache() {
+  reachableOnlyCache = null;
+}
+
 function isNodeVisible(node, attrs = null) {
   const nodeAttrs = attrs || graph.getNodeAttributes(node);
   if (!nodeAttrs) return false;
+
+  // Graph hygiene: hide orphan nodes (zero edges)
+  if (hideOrphans && graph.degree(node) === 0) {
+    return false;
+  }
+
+  // Graph hygiene: hide nodes whose only edges are REACHABLE
+  if (hideReachableOnly && isReachableOnlyNode(node)) {
+    return false;
+  }
 
   if (isNodeContextuallyRelevant(node)) {
     return true;
@@ -840,6 +921,60 @@ function focusNodeType(nodeType) {
   updateMinimap();
 }
 
+function applyFocusPreset(name) {
+  const preset = FOCUS_PRESETS[name];
+  if (!preset) return;
+
+  activeFocusPreset = name;
+  clearPathHighlight();
+  focusNode = null;
+  focusNeighborhood = null;
+  selectedNode = null;
+  selectedNeighborhood = null;
+  inspectedEdgeIds.clear();
+  graphMode = 'focused';
+
+  const graphModeSelect = document.getElementById('graph-mode-select');
+  if (graphModeSelect) graphModeSelect.value = 'focused';
+
+  activeFilters = new Set(preset.nodeTypes.filter((type) => NODE_COLORS[type]));
+  emphasizedNodeTypes = new Set(preset.nodeTypes);
+
+  // Use edge highlight as an edge type filter — show only edges in the preset
+  edgeTypeFilter = null;
+  edgeSourceFilter = null;
+
+  // Build neighborhood: all nodes of preset types + their neighbors connected by highlighted edge types
+  const neighborhood = new Set();
+  if (graph) {
+    graph.forEachNode((id, attrs) => {
+      if (preset.nodeTypes.includes(attrs.nodeType)) {
+        neighborhood.add(id);
+      }
+    });
+    for (const nodeId of [...neighborhood]) {
+      graph.forEachEdge(nodeId, (_edge, attrs, _src, _tgt) => {
+        if (preset.edgeHighlight.has(attrs.type)) {
+          neighborhood.add(_src);
+          neighborhood.add(_tgt);
+        }
+      });
+    }
+  }
+  selectedNeighborhood = neighborhood;
+
+  buildFilterButtons();
+  if (renderer) renderer.refresh();
+  fitVisibleGraph(neighborhood);
+  updateMinimap();
+}
+
+function clearFocusPreset() {
+  if (!activeFocusPreset) return;
+  activeFocusPreset = null;
+  resetFilters();
+}
+
 function focusNodeContext(node, options = {}) {
   if (!graph || !graph.hasNode(node)) return new Set();
 
@@ -1388,6 +1523,18 @@ function setEdgeTypeFilter(edgeType) {
   updateMinimap();
 }
 
+function setHideOrphans(enabled) {
+  hideOrphans = !!enabled;
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
+function setHideReachableOnly(enabled) {
+  hideReachableOnly = !!enabled;
+  if (renderer) renderer.refresh();
+  updateMinimap();
+}
+
 function setEdgeSourceFilter(source) {
   // Toggle off if same source
   if (edgeSourceFilter === source) {
@@ -1806,6 +1953,7 @@ function reconcileInteractionState() {
 
 function syncGraphData(graphData, options = {}) {
   if (!graphData || !graphData.nodes) return;
+  invalidateReachableOnlyCache();
 
   const preservePositions = options.preservePositions !== false;
   const shouldResetLayout = options.resetLayout === true;
@@ -2087,6 +2235,7 @@ function loadGraphData(graphData) {
 
 function mergeGraphDelta(delta) {
   if (!delta) return;
+  invalidateReachableOnlyCache();
   let added = false;
   let structureChanged = false;
   const addedNodeIds = [];
@@ -2869,6 +3018,14 @@ window.OverwatchGraph = {
   get edgeSourceFilter() { return edgeSourceFilter; },
   get communityHullsEnabled() { return communityHullsEnabled; },
   set communityHullsEnabled(v) { communityHullsEnabled = !!v; if (renderer) renderer.refresh(); },
+  get hideOrphans() { return hideOrphans; },
+  get hideReachableOnly() { return hideReachableOnly; },
+  setHideOrphans,
+  setHideReachableOnly,
+  applyFocusPreset,
+  clearFocusPreset,
+  get activeFocusPreset() { return activeFocusPreset; },
+  FOCUS_PRESETS,
   // Reducers (exported for testing)
   edgeReducer,
   nodeReducer,

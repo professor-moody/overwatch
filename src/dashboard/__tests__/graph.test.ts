@@ -772,4 +772,103 @@ describe('dashboard graph helpers', () => {
 
     graphModule.clearCredentialFlowMode();
   });
+
+  // =============================================
+  // Graph Hygiene: hideOrphans
+  // =============================================
+  it('nodeReducer hides orphan nodes when hideOrphans is enabled', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    graph.addNode('host-a', { label: 'A', nodeType: 'host', color: '#fff', x: 0, y: 0, size: 5, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: 'B', nodeType: 'host', color: '#fff', x: 1, y: 0, size: 5, _props: { type: 'host' } });
+    // host-a is an orphan (no edges), host-b and host-c are connected
+    graph.addNode('host-c', { label: 'C', nodeType: 'host', color: '#fff', x: 2, y: 0, size: 5, _props: { type: 'host' } });
+    graph.addEdgeWithKey('e2', 'host-b', 'host-c', { edgeType: 'REACHABLE' });
+
+    graphModule.setGraphMode('raw');
+
+    // Without hideOrphans, orphan host-a is visible
+    const before = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    expect(before.hidden).toBeUndefined();
+
+    // Enable hideOrphans
+    graphModule.setHideOrphans(true);
+    const after = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    expect(after.hidden).toBe(true);
+
+    // Connected node still visible
+    const connected = graphModule.nodeReducer('host-b', graph.getNodeAttributes('host-b'));
+    expect(connected.hidden).toBeUndefined();
+
+    // Cleanup
+    graphModule.setHideOrphans(false);
+    graphModule.resetFilters();
+    graphModule.setGraphMode('overview');
+  });
+
+  // =============================================
+  // Graph Hygiene: hideReachableOnly
+  // =============================================
+  it('nodeReducer hides reachable-only nodes when hideReachableOnly is enabled', async () => {
+    const graphModule = await loadGraphModule();
+    const graph = graphModule.init();
+
+    // Node with only REACHABLE edges
+    graph.addNode('host-a', { label: 'A', nodeType: 'host', color: '#fff', x: 0, y: 0, size: 5, _props: { type: 'host' } });
+    graph.addNode('host-b', { label: 'B', nodeType: 'host', color: '#fff', x: 1, y: 0, size: 5, _props: { type: 'host' } });
+    graph.addEdgeWithKey('r1', 'host-a', 'host-b', { edgeType: 'REACHABLE', type: 'REACHABLE' });
+
+    // Node with a non-REACHABLE edge
+    graph.addNode('host-c', { label: 'C', nodeType: 'host', color: '#fff', x: 2, y: 0, size: 5, _props: { type: 'host' } });
+    graph.addNode('user-a', { label: 'U', nodeType: 'user', color: '#fff', x: 3, y: 0, size: 5, _props: { type: 'user' } });
+    graph.addEdgeWithKey('a1', 'user-a', 'host-c', { edgeType: 'ADMIN_TO', type: 'ADMIN_TO' });
+
+    graphModule.setGraphMode('raw');
+
+    // Without hideReachableOnly, all visible
+    const beforeA = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    expect(beforeA.hidden).toBeUndefined();
+
+    // Enable hideReachableOnly
+    graphModule.setHideReachableOnly(true);
+    const afterA = graphModule.nodeReducer('host-a', graph.getNodeAttributes('host-a'));
+    expect(afterA.hidden).toBe(true);
+
+    // host-c has ADMIN_TO edge, should still be visible
+    const afterC = graphModule.nodeReducer('host-c', graph.getNodeAttributes('host-c'));
+    expect(afterC.hidden).toBeUndefined();
+
+    // Cleanup
+    graphModule.setHideReachableOnly(false);
+    graphModule.resetFilters();
+    graphModule.setGraphMode('overview');
+  });
+
+  // =============================================
+  // Focus Presets
+  // =============================================
+  it('applyFocusPreset activates correct filters and mode', async () => {
+    const graphModule = await loadGraphModule();
+    graphModule.init();
+
+    graphModule.applyFocusPreset('AD Attack Surface');
+    expect(graphModule.activeFocusPreset).toBe('AD Attack Surface');
+    expect(graphModule.graphMode).toBe('focused');
+
+    // Clear
+    graphModule.clearFocusPreset();
+    expect(graphModule.activeFocusPreset).toBe(null);
+  });
+
+  it('FOCUS_PRESETS has all four named presets', async () => {
+    const graphModule = await loadGraphModule();
+    const presets = graphModule.FOCUS_PRESETS;
+    expect(presets['AD Attack Surface']).toBeDefined();
+    expect(presets['Credential Chain']).toBeDefined();
+    expect(presets['ADCS/PKI']).toBeDefined();
+    expect(presets['Cloud Identity']).toBeDefined();
+    expect(presets['AD Attack Surface'].nodeTypes).toContain('host');
+    expect(presets['ADCS/PKI'].edgeHighlight.has('CAN_ENROLL')).toBe(true);
+  });
 });

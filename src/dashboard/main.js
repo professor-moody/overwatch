@@ -33,7 +33,11 @@ window.addEventListener('DOMContentLoaded', () => {
   // Wire up graph control buttons
   document.getElementById('btn-fit').addEventListener('click', () => G.zoomToFit());
   document.getElementById('btn-layout').addEventListener('click', () => G.toggleLayout());
-  document.getElementById('btn-reset').addEventListener('click', () => G.resetFilters());
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    G.resetFilters();
+    const presetSelect = document.getElementById('focus-preset-select');
+    if (presetSelect) presetSelect.value = '';
+  });
   document.getElementById('btn-zoom-in').addEventListener('click', () => G.zoomIn());
   document.getElementById('btn-zoom-out').addEventListener('click', () => G.zoomOut());
   // Export dropdown
@@ -106,6 +110,22 @@ window.addEventListener('DOMContentLoaded', () => {
     G.communityHullsEnabled = active;
   });
 
+  // Hide orphans toggle
+  document.getElementById('btn-layer-hide-orphans')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    G.setHideOrphans(active);
+  });
+
+  // Hide reachable-only toggle
+  document.getElementById('btn-layer-hide-reachable-only')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const active = btn.dataset.active !== 'true';
+    btn.dataset.active = String(active);
+    G.setHideReachableOnly(active);
+  });
+
   // Edge source filter toggles
   document.getElementById('btn-edge-confirmed')?.addEventListener('click', (e) => {
     const btn = e.currentTarget;
@@ -142,6 +162,16 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('label-density-select')?.addEventListener('change', (event) => {
     G.setLabelDensity(event.target.value);
+  });
+
+  // Focus preset dropdown
+  document.getElementById('focus-preset-select')?.addEventListener('change', (event) => {
+    const name = event.target.value;
+    if (name) {
+      G.applyFocusPreset(name);
+    } else {
+      G.clearFocusPreset();
+    }
   });
 
   // Focus banner "Show All" button
@@ -263,8 +293,9 @@ const EDGE_LEGEND_CATEGORIES = [
   { label: 'Network', types: ['REACHABLE', 'RUNS'] },
   { label: 'Access', types: ['ADMIN_TO', 'HAS_SESSION', 'CAN_RDPINTO', 'CAN_PSREMOTE'] },
   { label: 'Credentials', types: ['VALID_ON', 'OWNS_CRED', 'TESTED_CRED'] },
+  { label: 'Cred Reuse', types: ['SHARED_CREDENTIAL'] },
   { label: 'AD Attack', types: ['CAN_DCSYNC', 'GENERIC_ALL', 'WRITE_DACL'] },
-  { label: 'ADCS', types: ['CAN_ENROLL', 'ESC1'] },
+  { label: 'ADCS', types: ['CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC6', 'ESC7', 'ESC8'] },
   { label: 'Delegation', types: ['DELEGATES_TO', 'CAN_DELEGATE_TO'] },
   { label: 'Roasting', types: ['KERBEROASTABLE', 'AS_REP_ROASTABLE'] },
   { label: 'Lateral', types: ['RELAY_TARGET', 'NULL_SESSION'] },

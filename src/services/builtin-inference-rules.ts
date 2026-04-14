@@ -408,4 +408,112 @@ export const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.65
     }]
   },
+  // --- ADCS ESC rules (Phase 2) ---
+  {
+    id: 'rule-adcs-esc2',
+    name: 'ADCS ESC2 — Any Purpose EKU template',
+    description: 'Certificate template with Any Purpose or no EKU allows certificate abuse for authentication',
+    trigger: { node_type: 'cert_template', property_match: { any_purpose: true } },
+    produces: [{
+      edge_type: 'ESC2',
+      source_selector: 'enrollable_users_if_client_auth',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-adcs-esc3',
+    name: 'ADCS ESC3 — Enrollment agent template',
+    description: 'Certificate template with Certificate Request Agent EKU allows enrolling on behalf of others',
+    trigger: { node_type: 'cert_template', property_match: { enrollment_agent: true } },
+    produces: [{
+      edge_type: 'ESC3',
+      source_selector: 'enrollable_users',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-adcs-esc4',
+    name: 'ADCS ESC4 — Writable certificate template',
+    description: 'Certificate template writable by a principal can be modified to enable ESC1-style abuse',
+    trigger: {
+      node_type: 'cert_template',
+      requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ESC4',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.75
+    }]
+  },
+  {
+    id: 'rule-adcs-esc6',
+    name: 'ADCS ESC6 — EDITF_ATTRIBUTESUBJECTALTNAME2 on CA',
+    description: 'CA with SAN flag enabled allows requesters to specify arbitrary SANs',
+    trigger: { node_type: 'ca', property_match: { san_flag_enabled: true } },
+    produces: [{
+      edge_type: 'ESC6',
+      source_selector: 'enrollable_users',
+      target_selector: 'trigger_node',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-adcs-esc7',
+    name: 'ADCS ESC7 — CA management abuse',
+    description: 'Principal with ManageCA or ManageCertificates on a CA can issue arbitrary certificates',
+    trigger: {
+      node_type: 'ca',
+      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ESC7',
+      source_selector: 'manage_ca_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.75
+    }]
+  },
+  {
+    id: 'rule-adcs-esc8',
+    name: 'ADCS ESC8 — NTLM relay to AD CS HTTP endpoint',
+    description: 'CA with HTTP enrollment endpoint is vulnerable to NTLM relay (PetitPotam/DFSCoerce)',
+    trigger: { node_type: 'ca', property_match: { http_enrollment: true } },
+    produces: [{
+      edge_type: 'ESC8',
+      source_selector: 'all_compromised',
+      target_selector: 'trigger_node',
+      confidence: 0.6
+    }]
+  },
+  // --- Credential reuse ---
+  {
+    id: 'rule-shared-credential',
+    name: 'Credential reuse across accounts',
+    description: 'Credentials with the same username likely share the same password — common in AD environments',
+    trigger: { node_type: 'credential' },
+    produces: [{
+      edge_type: 'SHARED_CREDENTIAL',
+      source_selector: 'trigger_node',
+      target_selector: 'credentials_same_username',
+      confidence: 0.7
+    }]
+  },
+  // --- Lateral movement chaining ---
+  {
+    id: 'rule-session-admin-persistence',
+    name: 'Session + admin on same host implies persistence',
+    description: 'User with both HAS_SESSION and ADMIN_TO on the same host has persistent access — high-value path',
+    trigger: {
+      node_type: 'user',
+      requires_edge: { type: 'ADMIN_TO', direction: 'outbound' }
+    },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node',
+      target_selector: 'nearest_objective',
+      confidence: 0.6
+    }]
+  },
 ];

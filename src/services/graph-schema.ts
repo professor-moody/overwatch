@@ -77,6 +77,8 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   CAN_READ_LAPS: { source: ['user', 'group'], target: ['host'] },
   CAN_READ_GMSA: { source: ['user', 'group'], target: ['user'] },
   RBCD_TARGET: { source: ['host', 'user'], target: ['host'] },
+  // Credential reuse
+  SHARED_CREDENTIAL: { source: ['credential'], target: ['credential'] },
   // Credential provenance
   DUMPED_FROM: { source: ['credential'], target: ['host'] },
   // Lateral movement

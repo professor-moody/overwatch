@@ -569,6 +569,63 @@ export class InferenceEngine {
         return targets;
       }
 
+      case 'credentials_same_username': {
+        // Find other credentials with the same cred_user property (credential reuse detection)
+        const credUser = node.cred_user;
+        if (!credUser || typeof credUser !== 'string') return [];
+        const credUserLower = credUser.toLowerCase();
+        const matches: string[] = [];
+        this.ctx.graph.forEachNode((id: string, attrs) => {
+          if (id === triggerNodeId) return;
+          if (attrs.type !== 'credential') return;
+          const otherUser = attrs.cred_user;
+          if (typeof otherUser === 'string' && otherUser.toLowerCase() === credUserLower) {
+            matches.push(id);
+          }
+        });
+        return matches;
+      }
+
+      case 'ca_for_template': {
+        // Resolve the CA that issued this cert_template via ISSUED_BY edge
+        const cas: string[] = [];
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type === 'ISSUED_BY') cas.push(tgt);
+        });
+        return cas;
+      }
+
+      case 'writeable_by_peers': {
+        // Find principals with WRITEABLE_BY, GENERIC_ALL, GENERIC_WRITE, WRITE_OWNER, or WRITE_DACL on the trigger node
+        const peers = new Set<string>();
+        const WRITE_TYPES = new Set(['WRITEABLE_BY', 'GENERIC_ALL', 'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL']);
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (WRITE_TYPES.has(attrs.type)) peers.add(src);
+        });
+        return Array.from(peers);
+      }
+
+      case 'manage_ca_peers': {
+        // Find principals with GENERIC_ALL or WRITE_DACL on a CA (for ESC7)
+        const peers = new Set<string>();
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (attrs.type === 'GENERIC_ALL' || attrs.type === 'WRITE_DACL') peers.add(src);
+        });
+        return Array.from(peers);
+      }
+
+      case 'http_services_via_ca': {
+        // Find HTTP/HTTPS services that are on hosts that have the trigger CA's ISSUED_BY or OPERATES_CA relationship
+        // Used for ESC8 (NTLM relay to AD CS HTTP endpoints)
+        const httpSvcs: string[] = [];
+        this.ctx.graph.forEachNode((id: string, attrs) => {
+          if (attrs.type === 'service' && (attrs.service_name === 'http' || attrs.service_name === 'https')) {
+            httpSvcs.push(id);
+          }
+        });
+        return httpSvcs;
+      }
+
       default:
         console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);
         return [];
