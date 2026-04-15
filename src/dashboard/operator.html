@@ -83,6 +83,10 @@
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1 8h3l2-5 3 10 2-5h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span>Activity</span>
     </button>
+    <button class="op-nav-item" data-panel="evidence">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 2v12h10V6l-4-4H3z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M9 2v4h4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5 9h6M5 11h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+      <span>Evidence</span>
+    </button>
   </nav>
 
   <!-- Main Content Area -->
@@ -161,8 +165,51 @@
       <div class="op-panel-header">
         <h2>Campaigns</h2>
         <span class="count" id="campaign-count"></span>
+        <button class="op-new-campaign-btn" id="new-campaign-btn" title="Create new campaign">+ New</button>
       </div>
       <div id="campaigns-body">
+        <div id="campaign-builder" class="campaign-builder" style="display:none">
+          <div class="campaign-builder-header">
+            <h3 id="campaign-builder-title">New Campaign</h3>
+            <button class="campaign-detail-close" id="campaign-builder-cancel">✕</button>
+          </div>
+          <div class="campaign-builder-form">
+            <label class="cb-label">Name
+              <input type="text" id="cb-name" class="cb-input" placeholder="Campaign name" maxlength="120" />
+            </label>
+            <label class="cb-label">Strategy
+              <select id="cb-strategy" class="cb-select">
+                <option value="credential_spray">🔑 Credential Spray</option>
+                <option value="enumeration">🔍 Enumeration</option>
+                <option value="post_exploitation">⚡ Post-Exploitation</option>
+                <option value="network_discovery">🌐 Network Discovery</option>
+                <option value="custom" selected>⚙ Custom</option>
+              </select>
+            </label>
+            <div class="cb-label">Frontier Items
+              <div class="cb-picker-controls">
+                <input type="text" id="cb-item-search" class="cb-input cb-input-sm" placeholder="Filter items…" />
+                <select id="cb-item-type-filter" class="cb-select cb-select-sm">
+                  <option value="">All types</option>
+                  <option value="incomplete_node">Incomplete Nodes</option>
+                  <option value="untested_edge">Untested Edges</option>
+                  <option value="inferred_edge">Inferred Edges</option>
+                  <option value="network_discovery">Network Discovery</option>
+                </select>
+                <span class="cb-selected-count" id="cb-selected-count">0 selected</span>
+              </div>
+              <div id="cb-item-list" class="cb-item-list"></div>
+            </div>
+            <div class="cb-label">Abort Conditions
+              <div id="cb-abort-list" class="cb-abort-list"></div>
+              <button class="op-btn op-btn-sm" id="cb-add-abort">+ Add Condition</button>
+            </div>
+            <div class="cb-actions">
+              <button class="op-btn" id="cb-save-draft">Save Draft</button>
+              <button class="op-btn op-btn-primary" id="cb-create-activate">Create &amp; Activate</button>
+            </div>
+          </div>
+        </div>
         <div id="campaigns-list"></div>
       </div>
     </section>
@@ -194,6 +241,17 @@
         <span class="count" id="pending-actions-count"></span>
       </div>
       <div id="pending-actions-body">
+        <div class="pa-toolbar">
+          <label class="pa-sort-label">Sort:
+            <select id="pa-sort-select">
+              <option value="arrival">Arrival order</option>
+              <option value="noise-desc">Noise (highest)</option>
+              <option value="timeout-asc">Timeout (soonest)</option>
+            </select>
+          </label>
+          <button class="pa-bulk-approve-btn" id="pa-bulk-approve" style="display:none">Bulk Approve Similar</button>
+          <button class="pa-bulk-deny-btn" id="pa-bulk-deny" style="display:none">Bulk Deny Similar</button>
+        </div>
         <div id="pending-actions-list"></div>
       </div>
     </section>
@@ -217,6 +275,34 @@
       <div id="activity-list"></div>
     </section>
 
+    <!-- Evidence Panel -->
+    <section class="op-panel" id="panel-evidence">
+      <div class="op-panel-header">
+        <h2>Evidence Chains</h2>
+      </div>
+      <div class="ev-search-row">
+        <input type="text" id="ev-node-search" class="cb-input" placeholder="Search node ID or label…" />
+        <button class="op-btn op-btn-primary op-btn-sm" id="ev-search-btn">Search</button>
+      </div>
+      <div id="ev-chain-container" class="ev-chain-container"></div>
+
+      <div class="ev-path-section">
+        <h3 class="ev-section-title">Attack Paths</h3>
+        <div class="ev-path-controls">
+          <select id="ev-objective-select" class="cb-select">
+            <option value="">Select objective…</option>
+          </select>
+          <select id="ev-optimize" class="cb-select cb-select-sm">
+            <option value="confidence">Confidence</option>
+            <option value="stealth">Stealth</option>
+            <option value="balanced">Balanced</option>
+          </select>
+          <button class="op-btn op-btn-sm" id="ev-path-btn">Find Paths</button>
+        </div>
+        <div id="ev-path-list" class="ev-path-list"></div>
+      </div>
+    </section>
+
   </main>
 
   <!-- Agent Detail Drawer (right) -->
@@ -224,6 +310,44 @@
 
   <!-- Campaign Detail Drawer (right) -->
   <div id="campaign-detail-drawer"></div>
+
+  <!-- Dispatch Modal -->
+  <div id="dispatch-modal-overlay" class="dm-overlay" style="display:none">
+    <div id="dispatch-modal" class="dm-modal">
+      <h3 class="dm-title">Dispatch Agents</h3>
+      <div class="dm-row">
+        <label class="cb-label">Max Agents <span id="dm-max-agents-val" class="dm-range-val">8</span>
+          <input type="range" id="dm-max-agents" class="dm-range" min="1" max="20" value="8" />
+        </label>
+      </div>
+      <div class="dm-row">
+        <label class="cb-label">Scope Hops <span id="dm-hops-val" class="dm-range-val">2</span>
+          <input type="range" id="dm-hops" class="dm-range" min="1" max="5" value="2" />
+        </label>
+      </div>
+      <div class="dm-row">
+        <label class="cb-label">Skill Override
+          <input type="text" id="dm-skill" class="cb-input" placeholder="(optional)" />
+        </label>
+      </div>
+      <div class="dm-row">
+        <label class="cb-label">OPSEC Throttle
+          <select id="dm-throttle" class="cb-select">
+            <option value="0">None (immediate)</option>
+            <option value="5">5s between launches</option>
+            <option value="15">15s between launches</option>
+            <option value="30">30s between launches</option>
+            <option value="60">60s between launches</option>
+          </select>
+        </label>
+      </div>
+      <div class="dm-estimate" id="dm-agent-estimate">≈ 8 agents</div>
+      <div class="cb-actions">
+        <button class="op-btn" id="dm-cancel">Cancel</button>
+        <button class="op-btn op-btn-primary" id="dm-dispatch">Dispatch</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Terminal Panel (bottom) -->
   <div id="terminal-panel">
@@ -239,6 +363,7 @@
 <script src="agents-panel.js"></script>
 <script src="campaigns.js"></script>
 <script src="pending-actions.js"></script>
+<script src="evidence-panel.js"></script>
 <script src="terminal.js"></script>
 <script src="operator.js"></script>
 </body>

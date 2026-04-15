@@ -143,3 +143,141 @@
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
+
+/* Toolbar — sort + bulk */
+.pa-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pa-sort-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pa-sort-label select {
+  font-size: 11px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.pa-bulk-approve-btn,
+.pa-bulk-deny-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.pa-bulk-approve-btn {
+  background: rgba(76, 175, 80, 0.12);
+  color: var(--green);
+  border-color: var(--green);
+  margin-left: auto;
+}
+
+.pa-bulk-deny-btn {
+  background: rgba(239, 83, 80, 0.08);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.pa-bulk-approve-btn:hover { background: rgba(76, 175, 80, 0.25); }
+.pa-bulk-deny-btn:hover   { background: rgba(239, 83, 80, 0.2);  }
+
+/* Priority badge */
+.pa-prio {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pa-prio-high {
+  background: rgba(239, 83, 80, 0.18);
+  color: var(--red);
+}
+
+.pa-prio-med {
+  background: rgba(255, 193, 7, 0.18);
+  color: var(--amber);
+}
+
+.pa-prio-low {
+  background: rgba(76, 175, 80, 0.15);
+  color: var(--green);
+}
+
+/* Inline approve / deny forms */
+.pa-inline-form {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.pa-notes-input,
+.pa-reason-input {
+  width: 100%;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  box-sizing: border-box;
+}
+
+.pa-notes-input:focus,
+.pa-reason-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.pa-form-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.pa-confirm-approve,
+.pa-confirm-deny,
+.pa-cancel-form {
+  font-size: 10px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.pa-confirm-approve {
+  background: rgba(76, 175, 80, 0.2);
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.pa-confirm-deny {
+  background: rgba(239, 83, 80, 0.15);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.pa-cancel-form {
+  background: var(--bg-card);
+  color: var(--text-tertiary);
+  border-color: var(--border);
+}

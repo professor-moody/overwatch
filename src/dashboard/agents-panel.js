@@ -7,6 +7,7 @@ window.OverwatchAgentPanel = (() => {
   let pollTimer = null;
   let agents = [];
   let detailTaskId = null;
+  let selectedAgentIds = new Set();
 
   function escapeHtml(s) {
     const d = document.createElement('div');
@@ -65,6 +66,8 @@ window.OverwatchAgentPanel = (() => {
     }
   }
 
+  let collapsedGroups = new Set();
+
   function renderAgentList(list) {
     const container = document.getElementById('agents-list');
     if (!container) return;
@@ -74,46 +77,91 @@ window.OverwatchAgentPanel = (() => {
       return;
     }
 
-    // Sort: running first, then pending, then completed/failed by most recent
-    const order = { running: 0, pending: 1, failed: 2, interrupted: 3, completed: 4 };
-    const sorted = [...list].sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5));
+    // Group by campaign
+    const groups = new Map(); // campaign_id -> { name, strategy, agents[] }
+    const ungrouped = [];
+    for (const a of list) {
+      const cid = a.campaign_id || a.campaign?.id;
+      if (cid) {
+        if (!groups.has(cid)) groups.set(cid, { name: a.campaign?.name || cid, strategy: a.campaign?.strategy || '', agents: [] });
+        groups.get(cid).agents.push(a);
+      } else {
+        ungrouped.push(a);
+      }
+    }
 
-    container.innerHTML = sorted.map(a => {
-      const elapsed = a.status === 'running' && a.elapsed_ms
-        ? formatElapsed(a.elapsed_ms)
-        : '';
-      const summary = a.result_summary
-        ? escapeHtml(a.result_summary.length > 80 ? a.result_summary.slice(0, 77) + '…' : a.result_summary)
-        : '';
-      const campaignBadge = a.campaign?.name
-        ? `<span class="agent-campaign-badge" title="${escapeHtml(a.campaign.name)}">${escapeHtml(a.campaign.strategy || 'campaign')}</span>`
-        : '';
-      const cancelBtn = (a.status === 'running' || a.status === 'pending')
-        ? `<button class="agent-cancel-btn" data-task-id="${a.id}" title="Cancel agent">✕</button>`
-        : '';
+    // Clean up stale selections
+    const validIds = new Set(list.map(a => a.id));
+    for (const id of selectedAgentIds) {
+      if (!validIds.has(id)) selectedAgentIds.delete(id);
+    }
+    const allSelected = list.length > 0 && list.every(a => selectedAgentIds.has(a.id));
 
-      return `<div class="agent-card agent-card--rich" data-task-id="${a.id}">
-        <div class="agent-card-header">
-          <span class="agent-status-dot ${statusDotClass(a.status)}"></span>
-          <span class="agent-id">${escapeHtml(a.agent_id || a.id)}</span>
-          ${cancelBtn}
+    let html = `<div class="batch-select-header">
+      <label class="batch-select-all"><input type="checkbox" class="agent-select-all" ${allSelected ? 'checked' : ''} /> Select all</label>
+    </div>`;
+
+    // Render campaign groups
+    for (const [cid, group] of groups) {
+      const collapsed = collapsedGroups.has(cid);
+      const running = group.agents.filter(a => a.status === 'running').length;
+      const total = group.agents.length;
+      const icon = STRATEGY_ICONS[group.strategy] || '⚙';
+      const sorted = sortAgents(group.agents);
+      const hasRunning = group.agents.some(a => a.status === 'running' || a.status === 'pending');
+
+      html += `<div class="agent-group">
+        <div class="agent-group-header" data-group-id="${cid}">
+          <span class="agent-group-toggle">${collapsed ? '▸' : '▾'}</span>
+          <span class="agent-group-icon">${icon}</span>
+          <span class="agent-group-name">${escapeHtml(group.name)}</span>
+          <span class="agent-group-count">${running}/${total} running</span>
+          ${hasRunning ? `<button class="agent-group-cancel" data-group-id="${cid}" title="Cancel all agents in this campaign">Cancel All</button>` : ''}
         </div>
-        <div class="agent-card-meta">
-          <span class="agent-status-label ${a.status}">${a.status}</span>
-          ${a.skill ? `<span class="agent-skill">${escapeHtml(a.skill)}</span>` : ''}
-          ${elapsed ? `<span class="agent-elapsed">${elapsed}</span>` : ''}
-          ${campaignBadge}
-        </div>
-        ${summary ? `<div class="agent-card-summary">${summary}</div>` : ''}
+        ${collapsed ? '' : `<div class="agent-group-body">${sorted.map(renderAgentCard).join('')}</div>`}
       </div>`;
-    }).join('');
+    }
 
-    // Click handlers
+    // Render ungrouped agents
+    if (ungrouped.length > 0) {
+      const collapsed = collapsedGroups.has('__ungrouped__');
+      const sorted = sortAgents(ungrouped);
+      html += `<div class="agent-group">
+        <div class="agent-group-header" data-group-id="__ungrouped__">
+          <span class="agent-group-toggle">${collapsed ? '▸' : '▾'}</span>
+          <span class="agent-group-name">Ungrouped</span>
+          <span class="agent-group-count">${ungrouped.length}</span>
+        </div>
+        ${collapsed ? '' : `<div class="agent-group-body">${sorted.map(renderAgentCard).join('')}</div>`}
+      </div>`;
+    }
+
+    container.innerHTML = html;
+
+    // Wire group toggles
+    container.querySelectorAll('.agent-group-header').forEach(hdr => {
+      hdr.addEventListener('click', (e) => {
+        if (e.target.closest('.agent-group-cancel')) return;
+        const gid = hdr.dataset.groupId;
+        if (collapsedGroups.has(gid)) collapsedGroups.delete(gid);
+        else collapsedGroups.add(gid);
+        renderAgentList(agents);
+      });
+    });
+
+    // Wire cancel-all buttons
+    container.querySelectorAll('.agent-group-cancel').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cancelGroupAgents(btn.dataset.groupId);
+      });
+    });
+
+    // Wire card clicks & individual cancel
     container.querySelectorAll('.agent-card--rich').forEach(card => {
       card.addEventListener('click', (e) => {
         if (e.target.closest('.agent-cancel-btn')) return;
-        const tid = card.dataset.taskId;
-        showDetail(tid);
+        showDetail(card.dataset.taskId);
       });
     });
 
@@ -123,6 +171,123 @@ window.OverwatchAgentPanel = (() => {
         cancelAgent(btn.dataset.taskId);
       });
     });
+
+    // Wire select-all
+    container.querySelector('.agent-select-all')?.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        list.forEach(a => selectedAgentIds.add(a.id));
+      } else {
+        selectedAgentIds.clear();
+      }
+      renderAgentList(agents);
+    });
+
+    // Wire individual checkboxes
+    container.querySelectorAll('.agent-select-cb').forEach(cb => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', (e) => {
+        if (e.target.checked) selectedAgentIds.add(e.target.dataset.id);
+        else selectedAgentIds.delete(e.target.dataset.id);
+        renderAgentBatchBar(agents);
+        const all = container.querySelector('.agent-select-all');
+        if (all) all.checked = list.every(a => selectedAgentIds.has(a.id));
+      });
+    });
+
+    renderAgentBatchBar(agents);
+  }
+
+  function renderAgentBatchBar(list) {
+    let bar = document.getElementById('agent-batch-bar');
+    if (selectedAgentIds.size === 0) {
+      if (bar) bar.remove();
+      return;
+    }
+
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'agent-batch-bar';
+      bar.className = 'batch-action-bar';
+      document.getElementById('panel-agents')?.appendChild(bar);
+    }
+
+    const selected = list.filter(a => selectedAgentIds.has(a.id));
+    const hasCancellable = selected.some(a => a.status === 'running' || a.status === 'pending');
+
+    bar.innerHTML = `
+      <span class="batch-count">${selectedAgentIds.size} selected</span>
+      ${hasCancellable ? '<button class="batch-btn batch-cancel">Cancel Selected</button>' : ''}
+      <button class="batch-btn batch-deselect">Deselect All</button>
+    `;
+
+    bar.querySelector('.batch-cancel')?.addEventListener('click', batchCancelAgents);
+    bar.querySelector('.batch-deselect')?.addEventListener('click', () => {
+      selectedAgentIds.clear();
+      renderAgentList(agents);
+    });
+  }
+
+  async function batchCancelAgents() {
+    if (!confirm(`Cancel ${selectedAgentIds.size} agent(s)?`)) return;
+    const cancellable = agents.filter(a => selectedAgentIds.has(a.id) && (a.status === 'running' || a.status === 'pending'));
+    await Promise.allSettled(cancellable.map(a =>
+      fetch(`/api/agents/${encodeURIComponent(a.id)}/cancel`, { method: 'POST' })
+    ));
+    selectedAgentIds.clear();
+    await fetchAgents();
+  }
+
+  const STRATEGY_ICONS = {
+    credential_spray: '🔑',
+    enumeration: '🔍',
+    post_exploitation: '⚡',
+    network_discovery: '🌐',
+    custom: '⚙',
+  };
+
+  function sortAgents(list) {
+    const order = { running: 0, pending: 1, failed: 2, interrupted: 3, completed: 4 };
+    return [...list].sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5));
+  }
+
+  function renderAgentCard(a) {
+    const elapsed = a.status === 'running' && a.elapsed_ms
+      ? formatElapsed(a.elapsed_ms)
+      : '';
+    const summary = a.result_summary
+      ? escapeHtml(a.result_summary.length > 80 ? a.result_summary.slice(0, 77) + '…' : a.result_summary)
+      : '';
+    const cancelBtn = (a.status === 'running' || a.status === 'pending')
+      ? `<button class="agent-cancel-btn" data-task-id="${a.id}" title="Cancel agent">✕</button>`
+      : '';
+    const checked = selectedAgentIds.has(a.id) ? 'checked' : '';
+
+    return `<div class="agent-card agent-card--rich" data-task-id="${a.id}">
+      <div class="agent-card-header">
+        <input type="checkbox" class="agent-select-cb" data-id="${a.id}" ${checked} />
+        <span class="agent-status-dot ${statusDotClass(a.status)}"></span>
+        <span class="agent-id">${escapeHtml(a.agent_id || a.id)}</span>
+        ${cancelBtn}
+      </div>
+      <div class="agent-card-meta">
+        <span class="agent-status-label ${a.status}">${a.status}</span>
+        ${a.skill ? `<span class="agent-skill">${escapeHtml(a.skill)}</span>` : ''}
+        ${elapsed ? `<span class="agent-elapsed">${elapsed}</span>` : ''}
+      </div>
+      ${summary ? `<div class="agent-card-summary">${summary}</div>` : ''}
+    </div>`;
+  }
+
+  async function cancelGroupAgents(groupId) {
+    if (!confirm('Cancel all agents in this campaign?')) return;
+    const group = groupId === '__ungrouped__'
+      ? agents.filter(a => !a.campaign_id && !a.campaign?.id)
+      : agents.filter(a => (a.campaign_id || a.campaign?.id) === groupId);
+    const cancellable = group.filter(a => a.status === 'running' || a.status === 'pending');
+    await Promise.allSettled(cancellable.map(a =>
+      fetch(`/api/agents/${encodeURIComponent(a.id)}/cancel`, { method: 'POST' })
+    ));
+    await fetchAgents();
   }
 
   async function showDetail(taskId) {

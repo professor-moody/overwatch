@@ -539,6 +539,22 @@ export class GraphEngine {
     return this.campaignPlanner.activateCampaign(id);
   }
 
+  createCampaign(params: import('../services/campaign-planner.js').CreateCampaignParams): import('../types.js').Campaign {
+    return this.campaignPlanner.createCampaign(params);
+  }
+
+  updateCampaign(id: string, patch: import('../services/campaign-planner.js').UpdateCampaignParams): import('../types.js').Campaign | null {
+    return this.campaignPlanner.updateCampaign(id, patch);
+  }
+
+  deleteCampaign(id: string): boolean {
+    return this.campaignPlanner.deleteCampaign(id);
+  }
+
+  cloneCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.cloneCampaign(id);
+  }
+
   updateCampaignProgress(
     campaignId: string, frontierItemId: string, result: 'success' | 'failure', findingId?: string,
   ): import('../types.js').Campaign | null {

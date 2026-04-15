@@ -1168,6 +1168,177 @@ describe('DashboardServer', () => {
       expect(data.campaign_id).toBe(campaign.id);
       expect(data.dispatched.length).toBeGreaterThanOrEqual(0);
     });
+
+    it('handleCampaignCreate creates a new campaign via POST', async () => {
+      const bodyStr = JSON.stringify({
+        name: 'Manual campaign',
+        strategy: 'custom',
+        item_ids: ['fi-1', 'fi-2'],
+        abort_conditions: [{ type: 'consecutive_failures', threshold: 3 }],
+      });
+      const req = {
+        headers: {},
+        url: '/api/campaigns',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignCreate(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(201);
+      const data = JSON.parse(res.body);
+      expect(data.campaign.name).toBe('Manual campaign');
+      expect(data.campaign.strategy).toBe('custom');
+      expect(data.campaign.status).toBe('draft');
+      expect(data.campaign.items).toEqual(['fi-1', 'fi-2']);
+    });
+
+    it('handleCampaignCreate rejects missing name', async () => {
+      const bodyStr = JSON.stringify({ strategy: 'custom', item_ids: ['fi-1'] });
+      const req = {
+        headers: {},
+        url: '/api/campaigns',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignCreate(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('handleCampaignCreate rejects invalid strategy', async () => {
+      const bodyStr = JSON.stringify({ name: 'Bad', strategy: 'bogus', item_ids: ['fi-1'] });
+      const req = {
+        headers: {},
+        url: '/api/campaigns',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignCreate(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toContain('Invalid strategy');
+    });
+
+    it('handleCampaignUpdate patches a draft campaign via PATCH', async () => {
+      const campaign = seedCampaign();
+      const bodyStr = JSON.stringify({ name: 'Updated name', abort_conditions: [{ type: 'time_limit_seconds', threshold: 600 }] });
+      const req = {
+        headers: {},
+        url: `/api/campaigns/${campaign.id}`,
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignUpdate(campaign.id, req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.campaign.name).toBe('Updated name');
+      expect(data.campaign.abort_conditions[0].type).toBe('time_limit_seconds');
+    });
+
+    it('handleCampaignUpdate returns 409 for active campaign', async () => {
+      const campaign = seedCampaign();
+      engine.activateCampaign(campaign.id);
+
+      const bodyStr = JSON.stringify({ name: 'Nope' });
+      const req = {
+        headers: {},
+        url: `/api/campaigns/${campaign.id}`,
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignUpdate(campaign.id, req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(409);
+    });
+
+    it('handleCampaignDelete removes a draft campaign', () => {
+      const campaign = seedCampaign();
+      const req = { headers: {} } as any;
+      const res = mockRes();
+
+      (dashboard as any).handleCampaignDelete(campaign.id, req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).deleted).toBe(true);
+      expect(engine.getCampaign(campaign.id)).toBeNull();
+    });
+
+    it('handleCampaignDelete returns 409 for non-draft campaign', () => {
+      const campaign = seedCampaign();
+      engine.activateCampaign(campaign.id);
+
+      const req = { headers: {} } as any;
+      const res = mockRes();
+
+      (dashboard as any).handleCampaignDelete(campaign.id, req, res);
+
+      expect(res.statusCode).toBe(409);
+    });
+
+    it('handleCampaignDelete returns 404 for missing campaign', () => {
+      const req = { headers: {} } as any;
+      const res = mockRes();
+
+      (dashboard as any).handleCampaignDelete('nonexistent', req, res);
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('handleCampaignClone duplicates a campaign as draft', () => {
+      const campaign = seedCampaign();
+      engine.activateCampaign(campaign.id);
+
+      const req = { headers: {} } as any;
+      const res = mockRes();
+
+      (dashboard as any).handleCampaignClone(campaign.id, req, res);
+
+      expect(res.statusCode).toBe(201);
+      const data = JSON.parse(res.body);
+      expect(data.campaign.name).toBe('Test Enumeration (copy)');
+      expect(data.campaign.status).toBe('draft');
+      expect(data.campaign.id).not.toBe(campaign.id);
+    });
+
+    it('handleCampaignClone returns 404 for missing campaign', () => {
+      const req = { headers: {} } as any;
+      const res = mockRes();
+
+      (dashboard as any).handleCampaignClone('nonexistent', req, res);
+
+      expect(res.statusCode).toBe(404);
+    });
   });
 
   // ============================================================

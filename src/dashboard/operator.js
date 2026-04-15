@@ -23,22 +23,112 @@ window.addEventListener('DOMContentLoaded', () => {
 
   let activePanel = 'overview';
   const nav = document.getElementById('op-nav');
+  const PANEL_ORDER = ['overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier', 'activity', 'evidence'];
+
+  function switchToPanel(panel) {
+    if (!panel || panel === activePanel) return;
+    nav.querySelector('.op-nav-item.active')?.classList.remove('active');
+    document.getElementById('panel-' + activePanel)?.classList.remove('active');
+    const btn = nav.querySelector(`.op-nav-item[data-panel="${panel}"]`);
+    if (btn) btn.classList.add('active');
+    document.getElementById('panel-' + panel)?.classList.add('active');
+    activePanel = panel;
+  }
 
   nav.addEventListener('click', (e) => {
     const btn = e.target.closest('.op-nav-item');
     if (!btn) return;
-    const panel = btn.dataset.panel;
-    if (!panel || panel === activePanel) return;
-
-    // Deactivate old
-    nav.querySelector('.op-nav-item.active')?.classList.remove('active');
-    document.getElementById('panel-' + activePanel)?.classList.remove('active');
-
-    // Activate new
-    btn.classList.add('active');
-    document.getElementById('panel-' + panel)?.classList.add('active');
-    activePanel = panel;
+    switchToPanel(btn.dataset.panel);
   });
+
+  // ============================================================
+  // Keyboard Shortcuts
+  // ============================================================
+
+  let shortcutHelpOpen = false;
+
+  document.addEventListener('keydown', (e) => {
+    // Ignore when typing in inputs
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+
+    // ? — toggle shortcut help
+    if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+      e.preventDefault();
+      toggleShortcutHelp();
+      return;
+    }
+
+    // Escape — close overlays
+    if (e.key === 'Escape') {
+      if (shortcutHelpOpen) { toggleShortcutHelp(); return; }
+      return;
+    }
+
+    // 1-8 — switch panels
+    const num = parseInt(e.key);
+    if (num >= 1 && num <= PANEL_ORDER.length && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      switchToPanel(PANEL_ORDER[num - 1]);
+      return;
+    }
+
+    // n — new campaign (when on campaigns panel)
+    if (e.key === 'n' && activePanel === 'campaigns') {
+      e.preventDefault();
+      document.getElementById('new-campaign-btn')?.click();
+      return;
+    }
+
+    // a — approve selected action (when on actions panel)
+    if (e.key === 'a' && activePanel === 'actions') {
+      e.preventDefault();
+      document.querySelector('.pa-btn-approve')?.click();
+      return;
+    }
+
+    // d — deny selected action (when on actions panel)
+    if (e.key === 'd' && activePanel === 'actions') {
+      e.preventDefault();
+      document.querySelector('.pa-btn-deny')?.click();
+      return;
+    }
+
+    // g — open graph explorer
+    if (e.key === 'g' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      window.open('/graph', '_blank');
+      return;
+    }
+  });
+
+  function toggleShortcutHelp() {
+    let overlay = document.getElementById('shortcut-help-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'shortcut-help-overlay';
+      overlay.className = 'shortcut-overlay';
+      overlay.innerHTML = `<div class="shortcut-modal">
+        <h3 class="shortcut-title">Keyboard Shortcuts</h3>
+        <div class="shortcut-grid">
+          <div class="shortcut-row"><kbd>1</kbd>–<kbd>8</kbd><span>Switch panels</span></div>
+          <div class="shortcut-row"><kbd>n</kbd><span>New campaign (Campaigns panel)</span></div>
+          <div class="shortcut-row"><kbd>a</kbd><span>Approve action (Actions panel)</span></div>
+          <div class="shortcut-row"><kbd>d</kbd><span>Deny action (Actions panel)</span></div>
+          <div class="shortcut-row"><kbd>g</kbd><span>Open Graph Explorer</span></div>
+          <div class="shortcut-row"><kbd>?</kbd><span>Toggle this help</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span>Close overlay</span></div>
+        </div>
+        <button class="op-btn op-btn-sm shortcut-close" id="shortcut-close">Close</button>
+      </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) toggleShortcutHelp(); });
+      overlay.querySelector('#shortcut-close').addEventListener('click', toggleShortcutHelp);
+    }
+
+    shortcutHelpOpen = !shortcutHelpOpen;
+    overlay.style.display = shortcutHelpOpen ? 'flex' : 'none';
+  }
 
   // ============================================================
   // Initialize optional panel modules
@@ -56,6 +146,9 @@ window.addEventListener('DOMContentLoaded', () => {
   const PA = window.OverwatchPendingActions;
   if (PA) PA.init();
 
+  const EV = window.OverwatchEvidence;
+  if (EV) EV.init();
+
   // ============================================================
   // State tracking
   // ============================================================
@@ -70,18 +163,21 @@ window.addEventListener('DOMContentLoaded', () => {
     onInitialState(data) {
       lastState = data.state;
       updateOperatorUI(data.state);
+      if (EV) EV.updateFromState(data.state);
     },
     onStateRefresh(data) {
       lastState = data.state;
       updateOperatorUI(data.state);
       if (AP) AP.updateFromState(data.state);
       if (CP) CP.updateFromState();
+      if (EV) EV.updateFromState(data.state);
     },
     onGraphUpdate(data) {
       lastState = data.state;
       updateOperatorUI(data.state);
       if (AP) AP.updateFromState(data.state);
       if (CP) CP.updateFromState();
+      if (EV) EV.updateFromState(data.state);
     },
   });
 
@@ -268,10 +364,34 @@ window.addEventListener('DOMContentLoaded', () => {
     const label = f.description || f.node_id || f.id;
     const nodeId = f.node_id || f.edge_target || '';
 
-    return `<div class="frontier-item">
+    // Enrichment: chain info
+    const chainInfo = f.chain_id
+      ? `<span class="fi-chain" title="Chain: ${esc(f.chain_id)}${f.chain_depth ? ', depth ' + f.chain_depth : ''}">🔗${f.chain_completion != null ? ` ${Math.round(f.chain_completion * 100)}%` : ''}</span>`
+      : '';
+
+    // Enrichment: hops to objective
+    const hops = f.hops_to_objective != null ? f.hops_to_objective : (f.graph_metrics?.hops_to_objective ?? null);
+    const hopsHtml = hops != null
+      ? `<span class="fi-hops fi-hops-${hops <= 2 ? 'close' : hops <= 4 ? 'mid' : 'far'}" title="${hops} hop${hops !== 1 ? 's' : ''} to objective">${hops}h</span>`
+      : '';
+
+    // Enrichment: campaign assignment
+    const camp = f.campaign_name || f.assigned_campaign;
+    const campHtml = camp
+      ? `<span class="fi-campaign-tag" title="Assigned to campaign: ${esc(String(camp))}">${esc(String(camp))}</span>`
+      : '';
+
+    // Fan-out tooltip
+    const fanOut = f.fan_out || f.graph_metrics?.fan_out;
+    const fanTitle = fanOut ? `Fan-out: ${fanOut}` : '';
+
+    return `<div class="frontier-item" ${fanTitle ? `title="${fanTitle}"` : ''}>
       <div class="fi-header">
         <span class="fi-type ${typeClass}">${typeLabel}</span>
         <span class="fi-desc" title="${esc(f.description || '')}">${esc(label)}</span>
+        ${hopsHtml}
+        ${chainInfo}
+        ${campHtml}
         ${nodeId ? `<a href="/graph?focus=${encodeURIComponent(nodeId)}" class="fi-graph-link" title="View in Graph">⊙</a>` : ''}
       </div>
       <div class="fi-footer">

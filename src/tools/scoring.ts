@@ -222,26 +222,39 @@ Call this before every significant action. Returns valid/invalid with specific e
 
   // ============================================================
   // Tool: manage_campaign
-  // Campaign lifecycle control.
+  // Campaign lifecycle control and CRUD.
   // ============================================================
   server.registerTool(
     'manage_campaign',
     {
       title: 'Manage Campaign',
-      description: `Control campaign lifecycle: activate, pause, resume, abort, or get status.
+      description: `Create, control, and manage campaigns.
 
-Campaigns are auto-generated groups of related frontier items:
-- **credential_spray** — one credential tested against multiple services
-- **enumeration** — batch of incomplete nodes needing the same enrichment
-- **post_exploitation** — follow-up actions on a compromised host
-- **network_discovery** — host discovery in a scope CIDR
+**Lifecycle actions** (require campaign_id):
+- activate, pause, resume, abort, status, check_abort
 
-Use next_task(group_by="campaign") to see available campaigns.
-Activate a campaign to begin execution, pause to hold, abort to cancel.`,
+**CRUD actions**:
+- **create** — Create a new campaign from frontier items (requires name, strategy, item_ids)
+- **update** — Modify name, abort_conditions, or items on draft/paused campaigns (requires campaign_id)
+- **clone** — Duplicate a campaign as a new draft (requires campaign_id)
+- **delete** — Remove a draft campaign (requires campaign_id)
+
+Campaigns can be auto-generated or manually composed from frontier items.
+Use next_task(group_by="campaign") to see available campaigns.`,
       inputSchema: {
-        campaign_id: z.string().describe('Campaign ID to manage'),
-        action: z.enum(['activate', 'pause', 'resume', 'abort', 'status', 'check_abort'])
-          .describe('Lifecycle action to perform'),
+        campaign_id: z.string().optional().describe('Campaign ID (required for all actions except create)'),
+        action: z.enum(['activate', 'pause', 'resume', 'abort', 'status', 'check_abort', 'create', 'update', 'clone', 'delete'])
+          .describe('Action to perform'),
+        name: z.string().optional().describe('Campaign name (required for create, optional for update)'),
+        strategy: z.enum(['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom'])
+          .optional().describe('Campaign strategy (required for create)'),
+        item_ids: z.array(z.string()).optional().describe('Frontier item IDs (required for create)'),
+        abort_conditions: z.array(z.object({
+          type: z.enum(['consecutive_failures', 'total_failures_pct', 'opsec_noise_ceiling', 'time_limit_seconds']),
+          threshold: z.number(),
+        })).optional().describe('Abort conditions (optional for create/update)'),
+        add_items: z.array(z.string()).optional().describe('Item IDs to add (for update)'),
+        remove_items: z.array(z.string()).optional().describe('Item IDs to remove (for update)'),
       },
       annotations: {
         readOnlyHint: false,
@@ -250,27 +263,64 @@ Activate a campaign to begin execution, pause to hold, abort to cancel.`,
         openWorldHint: false,
       }
     },
-    withErrorBoundary('manage_campaign', async ({ campaign_id, action }) => {
+    withErrorBoundary('manage_campaign', async ({ campaign_id, action, name, strategy, item_ids, abort_conditions, add_items, remove_items }) => {
       let campaign;
       let extra: Record<string, unknown> = {};
 
       switch (action) {
+        case 'create': {
+          if (!name) return { content: [{ type: 'text', text: JSON.stringify({ error: 'name is required for create' }) }] };
+          if (!strategy) return { content: [{ type: 'text', text: JSON.stringify({ error: 'strategy is required for create' }) }] };
+          if (!item_ids || item_ids.length === 0) return { content: [{ type: 'text', text: JSON.stringify({ error: 'item_ids (non-empty) is required for create' }) }] };
+          campaign = engine.createCampaign({ name, strategy, item_ids, abort_conditions });
+          break;
+        }
+        case 'update': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for update' }) }] };
+          try {
+            campaign = engine.updateCampaign(campaign_id, { name, abort_conditions, add_items, remove_items });
+          } catch (err: any) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+          }
+          break;
+        }
+        case 'clone': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for clone' }) }] };
+          campaign = engine.cloneCampaign(campaign_id);
+          break;
+        }
+        case 'delete': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for delete' }) }] };
+          try {
+            const deleted = engine.deleteCampaign(campaign_id);
+            if (!deleted) return { content: [{ type: 'text', text: JSON.stringify({ error: `Campaign ${campaign_id} not found` }) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, campaign_id }) }] };
+          } catch (err: any) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+          }
+        }
         case 'activate':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.activateCampaign(campaign_id);
           break;
         case 'pause':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.pauseCampaign(campaign_id);
           break;
         case 'resume':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.resumeCampaign(campaign_id);
           break;
         case 'abort':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.abortCampaign(campaign_id);
           break;
         case 'status':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.getCampaign(campaign_id);
           break;
         case 'check_abort':
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required' }) }] };
           campaign = engine.getCampaign(campaign_id);
           extra = engine.checkCampaignAbortConditions(campaign_id);
           break;

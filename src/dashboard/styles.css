@@ -865,6 +865,42 @@ button.stat-item {
 .fi-metric-label { color: var(--text-muted); font-size: 11px; }
 .fi-metric-value { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; font-size: 12px; }
 
+/* Frontier enrichment badges */
+.fi-chain {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 1px 5px;
+  background: var(--bg-surface);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.fi-hops {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.fi-hops-close { color: var(--green); background: rgba(52,211,153,0.1); }
+.fi-hops-mid { color: var(--amber,#e8a838); background: rgba(232,168,56,0.1); }
+.fi-hops-far { color: var(--red); background: rgba(239,68,68,0.1); }
+
+.fi-campaign-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .fi-zoom-btn {
   background: var(--accent-dim);
   border: 1px solid transparent;

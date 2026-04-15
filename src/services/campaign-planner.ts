@@ -7,8 +7,24 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { EngineContext } from './engine-context.js';
-import type { FrontierItem, Campaign, CampaignStrategy, AbortCondition } from '../types.js';
+import type { FrontierItem, Campaign, CampaignStrategy, CampaignStatus, AbortCondition } from '../types.js';
 import type { ChainGroup } from './chain-scorer.js';
+
+/** Parameters for manual campaign creation. */
+export interface CreateCampaignParams {
+  name: string;
+  strategy: CampaignStrategy;
+  item_ids: string[];
+  abort_conditions?: AbortCondition[];
+}
+
+/** Patchable fields for campaign update (draft/paused only). */
+export interface UpdateCampaignParams {
+  name?: string;
+  abort_conditions?: AbortCondition[];
+  add_items?: string[];
+  remove_items?: string[];
+}
 
 // Edge types representing confirmed access to a host
 const ACCESS_EDGE_TYPES = new Set([
@@ -191,6 +207,113 @@ export class CampaignPlanner {
     c.status = 'active';
     c.started_at = new Date().toISOString();
     return c;
+  }
+
+  // =============================================
+  // Manual campaign CRUD
+  // =============================================
+
+  /**
+   * Create a campaign manually from selected frontier items.
+   */
+  createCampaign(params: CreateCampaignParams): Campaign {
+    if (!params.name || params.name.trim().length === 0) {
+      throw new Error('Campaign name is required');
+    }
+    if (!params.item_ids || params.item_ids.length === 0) {
+      throw new Error('At least one frontier item is required');
+    }
+    const id = uuidv4();
+    const campaign: Campaign = {
+      id,
+      name: params.name.trim(),
+      strategy: params.strategy,
+      status: 'draft' as CampaignStatus,
+      items: [...params.item_ids],
+      abort_conditions: params.abort_conditions
+        ? [...params.abort_conditions]
+        : [...DEFAULT_ABORT_CONDITIONS[params.strategy]],
+      progress: { total: params.item_ids.length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+      created_at: new Date().toISOString(),
+      findings: [],
+    };
+    this.campaigns.set(id, campaign);
+    return campaign;
+  }
+
+  /**
+   * Update a campaign. Only draft/paused campaigns can be modified.
+   */
+  updateCampaign(id: string, patch: UpdateCampaignParams): Campaign | null {
+    const c = this.campaigns.get(id);
+    if (!c) return null;
+    if (c.status !== 'draft' && c.status !== 'paused') {
+      throw new Error(`Cannot update campaign in '${c.status}' status (must be draft or paused)`);
+    }
+
+    if (patch.name !== undefined) {
+      if (patch.name.trim().length === 0) throw new Error('Campaign name cannot be empty');
+      c.name = patch.name.trim();
+    }
+    if (patch.abort_conditions !== undefined) {
+      c.abort_conditions = [...patch.abort_conditions];
+    }
+    if (patch.add_items) {
+      for (const itemId of patch.add_items) {
+        if (!c.items.includes(itemId)) {
+          c.items.push(itemId);
+        }
+      }
+      c.progress.total = c.items.length;
+    }
+    if (patch.remove_items) {
+      c.items = c.items.filter(id => !patch.remove_items!.includes(id));
+      c.progress.total = c.items.length;
+    }
+    return c;
+  }
+
+  /**
+   * Delete a campaign. Only draft campaigns can be deleted.
+   */
+  deleteCampaign(id: string): boolean {
+    const c = this.campaigns.get(id);
+    if (!c) return false;
+    if (c.status !== 'draft') {
+      throw new Error(`Cannot delete campaign in '${c.status}' status (must be draft)`);
+    }
+    this.campaigns.delete(id);
+    // Clean up chain mapping if present
+    for (const [key, cid] of this.chainToCampaign) {
+      if (cid === id) {
+        this.chainToCampaign.delete(key);
+        break;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Clone a campaign as a new draft with the same configuration.
+   */
+  cloneCampaign(id: string): Campaign | null {
+    const source = this.campaigns.get(id);
+    if (!source) return null;
+    const newId = uuidv4();
+    const campaign: Campaign = {
+      id: newId,
+      name: `${source.name} (copy)`,
+      strategy: source.strategy,
+      status: 'draft' as CampaignStatus,
+      items: [...source.items],
+      abort_conditions: source.abort_conditions.map(ac => ({ ...ac })),
+      progress: { total: source.items.length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+      created_at: new Date().toISOString(),
+      findings: [],
+      chain_id: source.chain_id,
+    };
+    this.campaigns.set(newId, campaign);
+    return campaign;
   }
 
   // =============================================

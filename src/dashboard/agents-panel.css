@@ -258,3 +258,71 @@
 .agent-detail-cancel:hover {
   background: rgba(239,68,68,0.2);
 }
+
+/* ---- Agent Groups ---- */
+
+.agent-group {
+  margin-bottom: 12px;
+}
+
+.agent-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  user-select: none;
+}
+
+.agent-group-header:hover {
+  background: var(--bg-hover);
+}
+
+.agent-group-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 12px;
+}
+
+.agent-group-icon {
+  font-size: 14px;
+}
+
+.agent-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.agent-group-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.agent-group-cancel {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid var(--red);
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.agent-group-cancel:hover {
+  background: rgba(239,68,68,0.15);
+}
+
+.agent-group-body {
+  padding-left: 12px;
+  border-left: 2px solid var(--border-subtle);
+  margin-left: 6px;
+  margin-top: 4px;
+}

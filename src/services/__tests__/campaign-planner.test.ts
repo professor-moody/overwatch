@@ -548,4 +548,215 @@ describe('CampaignPlanner', () => {
       expect(drafts.length).toBe(1);
     });
   });
+
+  // =============================================
+  // Manual CRUD
+  // =============================================
+  describe('createCampaign', () => {
+    it('creates a campaign with specified items and strategy', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+
+      const campaign = planner.createCampaign({
+        name: 'Custom spray',
+        strategy: 'credential_spray',
+        item_ids: ['fi-1', 'fi-2', 'fi-3'],
+      });
+
+      expect(campaign.id).toBeTruthy();
+      expect(campaign.name).toBe('Custom spray');
+      expect(campaign.strategy).toBe('credential_spray');
+      expect(campaign.status).toBe('draft');
+      expect(campaign.items).toEqual(['fi-1', 'fi-2', 'fi-3']);
+      expect(campaign.progress.total).toBe(3);
+      expect(campaign.progress.completed).toBe(0);
+      // Default abort conditions for credential_spray
+      expect(campaign.abort_conditions).toEqual([
+        { type: 'consecutive_failures', threshold: 5 },
+        { type: 'total_failures_pct', threshold: 0.9 },
+      ]);
+    });
+
+    it('uses custom abort conditions when provided', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+
+      const campaign = planner.createCampaign({
+        name: 'Careful enum',
+        strategy: 'enumeration',
+        item_ids: ['fi-1'],
+        abort_conditions: [{ type: 'consecutive_failures', threshold: 2 }],
+      });
+
+      expect(campaign.abort_conditions).toEqual([{ type: 'consecutive_failures', threshold: 2 }]);
+    });
+
+    it('throws when name is empty', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      expect(() => planner.createCampaign({ name: '', strategy: 'custom', item_ids: ['fi-1'] }))
+        .toThrow('Campaign name is required');
+    });
+
+    it('throws when item_ids is empty', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      expect(() => planner.createCampaign({ name: 'Test', strategy: 'custom', item_ids: [] }))
+        .toThrow('At least one frontier item is required');
+    });
+
+    it('created campaign is retrievable via getCampaign and listCampaigns', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+
+      const campaign = planner.createCampaign({
+        name: 'Lookup test',
+        strategy: 'custom',
+        item_ids: ['fi-1'],
+      });
+
+      expect(planner.getCampaign(campaign.id)).toBe(campaign);
+      expect(planner.listCampaigns()).toContain(campaign);
+    });
+  });
+
+  describe('updateCampaign', () => {
+    it('updates name and abort conditions on a draft campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Original', strategy: 'custom', item_ids: ['fi-1'] });
+
+      const updated = planner.updateCampaign(campaign.id, {
+        name: 'Renamed',
+        abort_conditions: [{ type: 'time_limit_seconds', threshold: 300 }],
+      });
+
+      expect(updated!.name).toBe('Renamed');
+      expect(updated!.abort_conditions).toEqual([{ type: 'time_limit_seconds', threshold: 300 }]);
+    });
+
+    it('adds and removes items', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Items', strategy: 'custom', item_ids: ['fi-1', 'fi-2'] });
+
+      planner.updateCampaign(campaign.id, { add_items: ['fi-3'] });
+      expect(campaign.items).toEqual(['fi-1', 'fi-2', 'fi-3']);
+      expect(campaign.progress.total).toBe(3);
+
+      planner.updateCampaign(campaign.id, { remove_items: ['fi-1'] });
+      expect(campaign.items).toEqual(['fi-2', 'fi-3']);
+      expect(campaign.progress.total).toBe(2);
+    });
+
+    it('does not duplicate items on add', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Dup', strategy: 'custom', item_ids: ['fi-1'] });
+
+      planner.updateCampaign(campaign.id, { add_items: ['fi-1'] });
+      expect(campaign.items).toEqual(['fi-1']);
+    });
+
+    it('allows update on paused campaigns', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Pause update', strategy: 'custom', item_ids: ['fi-1'] });
+      planner.activateCampaign(campaign.id);
+      planner.pauseCampaign(campaign.id);
+
+      const updated = planner.updateCampaign(campaign.id, { name: 'New name' });
+      expect(updated!.name).toBe('New name');
+    });
+
+    it('throws when updating an active campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Active', strategy: 'custom', item_ids: ['fi-1'] });
+      planner.activateCampaign(campaign.id);
+
+      expect(() => planner.updateCampaign(campaign.id, { name: 'Nope' }))
+        .toThrow("Cannot update campaign in 'active' status");
+    });
+
+    it('returns null for nonexistent campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      expect(planner.updateCampaign('nonexistent', { name: 'x' })).toBeNull();
+    });
+  });
+
+  describe('deleteCampaign', () => {
+    it('deletes a draft campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Delete me', strategy: 'custom', item_ids: ['fi-1'] });
+
+      expect(planner.deleteCampaign(campaign.id)).toBe(true);
+      expect(planner.getCampaign(campaign.id)).toBeNull();
+      expect(planner.listCampaigns()).not.toContain(campaign);
+    });
+
+    it('throws when deleting a non-draft campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const campaign = planner.createCampaign({ name: 'Active', strategy: 'custom', item_ids: ['fi-1'] });
+      planner.activateCampaign(campaign.id);
+
+      expect(() => planner.deleteCampaign(campaign.id)).toThrow("Cannot delete campaign in 'active' status");
+    });
+
+    it('returns false for nonexistent campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      expect(planner.deleteCampaign('nonexistent')).toBe(false);
+    });
+  });
+
+  describe('cloneCampaign', () => {
+    it('clones a campaign as a new draft', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const original = planner.createCampaign({
+        name: 'Original',
+        strategy: 'enumeration',
+        item_ids: ['fi-1', 'fi-2'],
+        abort_conditions: [{ type: 'consecutive_failures', threshold: 3 }],
+      });
+      planner.activateCampaign(original.id);
+
+      const clone = planner.cloneCampaign(original.id);
+
+      expect(clone).toBeTruthy();
+      expect(clone!.id).not.toBe(original.id);
+      expect(clone!.name).toBe('Original (copy)');
+      expect(clone!.strategy).toBe('enumeration');
+      expect(clone!.status).toBe('draft');
+      expect(clone!.items).toEqual(['fi-1', 'fi-2']);
+      expect(clone!.abort_conditions).toEqual([{ type: 'consecutive_failures', threshold: 3 }]);
+      expect(clone!.progress.completed).toBe(0);
+      expect(clone!.progress.succeeded).toBe(0);
+    });
+
+    it('cloned campaign has independent abort conditions', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      const original = planner.createCampaign({
+        name: 'Shared AC',
+        strategy: 'custom',
+        item_ids: ['fi-1'],
+        abort_conditions: [{ type: 'consecutive_failures', threshold: 5 }],
+      });
+
+      const clone = planner.cloneCampaign(original.id)!;
+      clone.abort_conditions[0].threshold = 99;
+      expect(original.abort_conditions[0].threshold).toBe(5);
+    });
+
+    it('returns null for nonexistent campaign', () => {
+      const graph = makeGraph();
+      const planner = buildPlanner(graph);
+      expect(planner.cloneCampaign('nonexistent')).toBeNull();
+    });
+  });
 });

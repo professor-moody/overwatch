@@ -394,6 +394,8 @@ export class DashboardServer {
       this.serveSessions(res);
     } else if (pathname === '/api/agents') {
       this.serveAgents(res);
+    } else if (pathname === '/api/campaigns' && method === 'POST') {
+      this.handleCampaignCreate(req, res);
     } else if (pathname === '/api/campaigns') {
       this.serveCampaigns(res);
     } else if (pathname === '/api/actions/pending') {
@@ -405,6 +407,7 @@ export class DashboardServer {
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
       const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/dispatch$/);
+      const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/clone$/);
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
@@ -418,6 +421,12 @@ export class DashboardServer {
         this.handleCampaignAction(campaignActionMatch[1], req, res);
       } else if (campaignDispatchMatch && method === 'POST') {
         this.handleCampaignDispatch(campaignDispatchMatch[1], req, res);
+      } else if (campaignCloneMatch && method === 'POST') {
+        this.handleCampaignClone(campaignCloneMatch[1], req, res);
+      } else if (campaignDetailMatch && method === 'PATCH') {
+        this.handleCampaignUpdate(campaignDetailMatch[1], req, res);
+      } else if (campaignDetailMatch && method === 'DELETE') {
+        this.handleCampaignDelete(campaignDetailMatch[1], req, res);
       } else if (campaignDetailMatch) {
         this.serveCampaignDetail(campaignDetailMatch[1], res);
       } else if (actionApproveMatch && method === 'POST') {
@@ -642,8 +651,20 @@ export class DashboardServer {
     const allAgents = this.engine.getAllAgents();
     const agents = allAgents.filter(a => a.campaign_id === campaignId);
     const abort_check = this.engine.checkCampaignAbortConditions(campaignId);
+
+    // Enrich findings with node summaries
+    const finding_details = (campaign.findings || []).map(nodeId => {
+      const node = this.engine.getNode(nodeId);
+      return {
+        id: nodeId,
+        label: node?.label || nodeId,
+        type: node?.type || 'unknown',
+        created_at: node?.created_at || null,
+      };
+    });
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ campaign, agents, abort_check }));
+    res.end(JSON.stringify({ campaign, agents, abort_check, finding_details }));
   }
 
   private handleCampaignAction(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
@@ -701,6 +722,110 @@ export class DashboardServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
     });
+  }
+
+  private handleCampaignCreate(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body?.name || typeof body.name !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'name (string) is required' }));
+        return;
+      }
+      if (!body?.strategy || typeof body.strategy !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'strategy (string) is required' }));
+        return;
+      }
+      if (!Array.isArray(body?.item_ids) || body.item_ids.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'item_ids (non-empty array) is required' }));
+        return;
+      }
+      const validStrategies = ['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom'];
+      if (!validStrategies.includes(body.strategy)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid strategy. Must be one of: ${validStrategies.join(', ')}` }));
+        return;
+      }
+      try {
+        const campaign = this.engine.createCampaign({
+          name: body.name,
+          strategy: body.strategy as import('../types.js').CampaignStrategy,
+          item_ids: body.item_ids,
+          abort_conditions: Array.isArray(body.abort_conditions) ? body.abort_conditions : undefined,
+        });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ campaign }));
+      } catch (err: any) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleCampaignUpdate(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'JSON body required' }));
+        return;
+      }
+      try {
+        const campaign = this.engine.updateCampaign(campaignId, {
+          name: typeof body.name === 'string' ? body.name : undefined,
+          abort_conditions: Array.isArray(body.abort_conditions) ? body.abort_conditions : undefined,
+          add_items: Array.isArray(body.add_items) ? body.add_items : undefined,
+          remove_items: Array.isArray(body.remove_items) ? body.remove_items : undefined,
+        });
+        if (!campaign) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Campaign not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ campaign }));
+      } catch (err: any) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleCampaignDelete(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const deleted = this.engine.deleteCampaign(campaignId);
+      if (!deleted) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Campaign not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ deleted: true }));
+    } catch (err: any) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private handleCampaignClone(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    const campaign = this.engine.cloneCampaign(campaignId);
+    if (!campaign) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Campaign not found' }));
+      return;
+    }
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ campaign }));
   }
 
   // ---- Mutation auth & body parsing helpers ----
