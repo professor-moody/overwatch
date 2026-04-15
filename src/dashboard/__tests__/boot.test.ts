@@ -4,8 +4,6 @@ import { resolve } from 'path';
 
 const DASHBOARD_DIR = resolve(import.meta.dirname, '..');
 
-const SCRIPT_FILES = ['shared.js', 'node-display.js', 'graph.js', 'ui.js', 'ws.js', 'main.js', 'graph-page.js', 'operator.js'];
-
 const DASHBOARD_HTML_FILES = ['operator.html', 'graph.html'];
 
 // Scripts loaded per page — used for collision detection
