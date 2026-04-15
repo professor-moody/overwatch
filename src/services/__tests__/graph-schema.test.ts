@@ -72,6 +72,7 @@ describe('edge constraints', () => {
     ['ESC1', 'user', 'cert_template'],
     ['ESC6', 'group', 'ca'],
     ['ESC8', 'user', 'ca'],
+    ['ESC12', 'user', 'ca'],
     ['TRUSTS', 'domain', 'domain'],
     ['SAME_DOMAIN', 'host', 'user'],
     ['AS_REP_ROASTABLE', 'user', 'domain'],
@@ -88,6 +89,9 @@ describe('edge constraints', () => {
     ['RELAY_TARGET', 'credential', 'host'],
     ['NULL_SESSION', 'host', 'host'],
     ['POTENTIAL_AUTH', 'credential', 'service'],
+    ['POTENTIAL_AUTH', 'cloud_resource', 'cloud_identity'],
+    ['REACHABLE', 'cloud_identity', 'cloud_resource'],
+    ['ASSUMES_ROLE', 'cloud_resource', 'cloud_identity'],
     ['PATH_TO_OBJECTIVE', 'user', 'objective'],
     ['RELATED', 'host', 'share'],
   ];

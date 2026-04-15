@@ -1123,7 +1123,7 @@ describe('GraphEngine', () => {
     it('no kerberoast warning when user has SPN', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
-        nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql', spn: 'MSSQLSvc/db.test.local' }],
+        nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql', has_spn: true }],
       }));
       const result = engine.validateAction({ target_node: 'user-svc', technique: 'kerberoast' });
       expect(result.warnings.some(w => w.includes('SPN'))).toBe(false);

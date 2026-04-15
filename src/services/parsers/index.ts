@@ -18,7 +18,15 @@ export { parseLinpeas, stripAnsi } from './linpeas.js';
 export { parseNuclei } from './nuclei.js';
 export { parseNikto } from './nikto.js';
 export { parseTestssl } from './testssl.js';
-export { parsePacu, parseProwler } from './cloud.js';
+export { parsePacu, parseProwler, parseEnumerateIam } from './cloud.js';
+export { parseScoutSuite } from './scoutsuite.js';
+export { parseCloudFox } from './cloudfox.js';
+export { parseTerraformState } from './terraform.js';
+export { parseBurp } from './burp.js';
+export { parseZap } from './zap.js';
+export { parseSqlmap } from './sqlmap.js';
+export { parseWpscan } from './wpscan.js';
+export { parseGetNPUsers, parseGetUserSPNs, parseGetTGT, parseGetST, parseSmbclient, parseWmiexec, parsePsexec } from './impacket-suite.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -35,7 +43,15 @@ import { parseLinpeas, stripAnsi } from './linpeas.js';
 import { parseNuclei } from './nuclei.js';
 import { parseNikto } from './nikto.js';
 import { parseTestssl } from './testssl.js';
-import { parsePacu, parseProwler } from './cloud.js';
+import { parsePacu, parseProwler, parseEnumerateIam } from './cloud.js';
+import { parseScoutSuite } from './scoutsuite.js';
+import { parseCloudFox } from './cloudfox.js';
+import { parseTerraformState } from './terraform.js';
+import { parseBurp } from './burp.js';
+import { parseZap } from './zap.js';
+import { parseSqlmap } from './sqlmap.js';
+import { parseWpscan } from './wpscan.js';
+import { parseGetNPUsers, parseGetUserSPNs, parseGetTGT, parseGetST, parseSmbclient, parseWmiexec, parsePsexec } from './impacket-suite.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -68,6 +84,34 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'sslscan': parseTestssl,
   'pacu': parsePacu,
   'prowler': parseProwler,
+  'scoutsuite': parseScoutSuite,
+  'scout-suite': parseScoutSuite,
+  'cloudfox': parseCloudFox,
+  'cloud-fox': parseCloudFox,
+  'terraform': parseTerraformState,
+  'terraform-state': parseTerraformState,
+  'enumerate-iam': parseEnumerateIam,
+  'enumerate_iam': parseEnumerateIam,
+  'burp': parseBurp,
+  'burp-suite': parseBurp,
+  'zap': parseZap,
+  'owasp-zap': parseZap,
+  'sqlmap': parseSqlmap,
+  'wpscan': parseWpscan,
+  'getnpusers': parseGetNPUsers,
+  'impacket-getnpusers': parseGetNPUsers,
+  'getuserspns': parseGetUserSPNs,
+  'impacket-getuserspns': parseGetUserSPNs,
+  'gettgt': parseGetTGT,
+  'impacket-gettgt': parseGetTGT,
+  'getst': parseGetST,
+  'impacket-getst': parseGetST,
+  'smbclient': parseSmbclient,
+  'impacket-smbclient': parseSmbclient,
+  'wmiexec': parseWmiexec,
+  'impacket-wmiexec': parseWmiexec,
+  'psexec': parsePsexec,
+  'impacket-psexec': parsePsexec,
 };
 
 export function getSupportedParsers(): string[] {

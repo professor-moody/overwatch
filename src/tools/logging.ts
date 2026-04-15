@@ -46,6 +46,8 @@ Recommended flow:
         linked_agent_task_id: z.string().optional().describe('Associated agent task ID when this action belongs to a sub-agent.'),
         result_classification: resultClassificationSchema.optional().describe('Outcome classification for completed or failed actions.'),
         details: z.record(z.unknown()).optional().describe('Additional structured context for the action event.'),
+        noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (0.0-1.0) for this action.'),
+        noise_actual: z.number().min(0).max(1).optional().describe('Actual noise observed after completion (overrides estimate).'),
       },
       annotations: {
         readOnlyHint: false,
@@ -69,6 +71,8 @@ Recommended flow:
       linked_agent_task_id,
       result_classification,
       details,
+      noise_estimate,
+      noise_actual,
     }) => {
       const event_type = rawEventType || typeAlias;
       const tool_name = rawToolName || tool;
@@ -115,8 +119,46 @@ Recommended flow:
         frontier_item_id,
         linked_agent_task_id,
         result_classification: resolvedResultClassification,
+        noise_estimate,
+        noise_actual,
         details,
       });
+
+      // Record noise in OPSEC tracker on action_completed/action_started
+      if ((event_type === 'action_completed' || event_type === 'action_started') && noise_estimate !== undefined) {
+        const host_id = target_node_ids.length > 0 ? target_node_ids[0] : undefined;
+        engine.recordOpsecNoise({
+          action_id: normalizedActionId,
+          host_id,
+          noise_estimate,
+          noise_actual,
+        });
+      }
+
+      // G5: Dynamic failure pattern detection
+      // When action_failed with a technique, count recent matching failures.
+      // If >= 3, auto-add to config.failure_patterns.
+      let auto_pattern_added: string | undefined;
+      if (event_type === 'action_failed' && technique) {
+        const history = engine.getState({ activityCount: 200 }).recent_activity;
+        const recentFailures = history.filter(
+          h => h.event_type === 'action_failed' && (h as any).technique === technique
+        );
+        if (recentFailures.length >= 3) {
+          if (!engine.getConfig().failure_patterns) {
+            engine.getConfig().failure_patterns = [];
+          }
+          const existing = engine.getConfig().failure_patterns!.find(
+            fp => fp.technique === technique && !fp.target_pattern
+          );
+          if (!existing) {
+            const warning = `Auto-detected: technique '${technique}' has failed ${recentFailures.length} times recently`;
+            engine.getConfig().failure_patterns!.push({ technique, warning });
+            auto_pattern_added = warning;
+          }
+        }
+      }
+
       engine.persist();
 
       return {
@@ -129,6 +171,7 @@ Recommended flow:
             frontier_type: event.frontier_type,
             tool_name: event.tool_name,
             result_classification: event.result_classification,
+            ...(auto_pattern_added ? { auto_pattern_added } : {}),
           }, null, 2),
         }],
       };

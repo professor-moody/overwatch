@@ -1,0 +1,260 @@
+/* ============================================================
+   Overwatch Dashboard — Agent Supervision Panel Styles
+   ============================================================ */
+
+/* Rich agent cards (override base .agent-card when used within panel) */
+.agent-card--rich {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-left: 2px solid var(--accent);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.agent-card--rich:hover {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+}
+
+.agent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-card-header .agent-id {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dots */
+.agent-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.agent-status-dot.status-running {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.agent-status-dot.status-completed { background: var(--text-muted); }
+.agent-status-dot.status-failed { background: var(--red); }
+.agent-status-dot.status-pending { background: var(--amber); }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Card metadata row */
+.agent-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.agent-status-label {
+  font-weight: 500;
+}
+.agent-status-label.running { color: var(--green); }
+.agent-status-label.completed { color: var(--text-muted); }
+.agent-status-label.failed { color: var(--red); }
+.agent-status-label.interrupted { color: var(--red); }
+.agent-status-label.pending { color: var(--amber); }
+
+.agent-skill {
+  color: var(--purple);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.agent-elapsed {
+  color: var(--text-secondary);
+}
+
+.agent-campaign-badge {
+  background: var(--accent-dim);
+  color: var(--accent);
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.agent-card-summary {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Cancel button */
+.agent-cancel-btn {
+  background: none;
+  border: 1px solid var(--red-dim);
+  color: var(--red);
+  border-radius: 3px;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.agent-cancel-btn:hover {
+  background: var(--red-dim);
+  border-color: var(--red);
+}
+
+/* ============================================================
+   Agent Detail Drawer
+   ============================================================ */
+
+#agent-detail-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 360px;
+  height: 100vh;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-default);
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#agent-detail-drawer.open {
+  transform: translateX(0);
+}
+
+.agent-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.agent-detail-title {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px;
+}
+
+.agent-detail-close:hover { color: var(--text-primary); }
+
+.agent-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.agent-detail-section {
+  margin-bottom: 14px;
+}
+
+.agent-detail-section + .agent-detail-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.agent-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.agent-detail-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.agent-detail-value {
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-value.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.agent-subgraph-node {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  padding: 1px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-subgraph-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.agent-detail-cancel {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px;
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-sm);
+  font: 600 12px var(--font);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.agent-detail-cancel:hover {
+  background: rgba(239,68,68,0.2);
+}

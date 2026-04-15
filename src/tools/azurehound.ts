@@ -73,15 +73,22 @@ After ingestion, inference rules fire on all new nodes.`,
       let totalNodes = 0;
       let totalEdges = 0;
       const errors: string[] = [];
+      const warnings: string[] = [];
       const processedFiles: string[] = [];
+      const skippedFiles: string[] = [];
 
       for (const filePath of files) {
         try {
           const content = readFileSync(filePath, 'utf-8');
           const filename = filePath.split('/').pop() || filePath;
-          const finding = parseAzureHoundFile(content, filename);
+          const result = parseAzureHoundFile(content, filename);
+          const finding = result.finding;
+          if (result.warnings.length > 0) {
+            warnings.push(...result.warnings);
+          }
 
           if (finding.nodes.length === 0 && finding.edges.length === 0) {
+            skippedFiles.push(filename);
             continue;
           }
 
@@ -105,6 +112,8 @@ After ingestion, inference rules fire on all new nodes.`,
         total_nodes: totalNodes,
         total_edges: totalEdges,
         files: processedFiles,
+        skipped_files: skippedFiles.length > 0 ? skippedFiles : undefined,
+        warnings: warnings.length > 0 ? warnings : undefined,
         errors: errors.length > 0 ? errors : undefined,
       };
 

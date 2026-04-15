@@ -1040,4 +1040,178 @@ describe('BloodHound Ingestion', () => {
       expect(constraintErrors.length).toBe(0);
     });
   });
+
+  // ==========================================================
+  // Trust relationship parsing (P1 regression)
+  // ==========================================================
+
+  describe('domain trust parsing', () => {
+    function makeDomainFile(trusts: unknown[]) {
+      return {
+        data: [
+          {
+            ObjectIdentifier: 'S-1-5-21-1111-2222-3333',
+            Properties: {
+              name: 'ALPHA.LOCAL',
+              domain: 'alpha.local',
+              functionallevel: '2016',
+            },
+            Aces: [],
+            Trusts: trusts,
+          },
+        ],
+        meta: { type: 'domains', count: 1, version: 5 },
+      };
+    }
+
+    it('parses one-way inbound trust (target trusts us)', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 1,  // Inbound
+          TrustType: 2,
+          IsTransitive: true,
+          SidFilteringEnabled: false,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const trustEdges = finding!.edges.filter(e => e.properties.type === 'TRUSTS');
+      expect(trustEdges.length).toBe(1);
+
+      // Inbound: source domain → target domain (we can auth to target)
+      const edge = trustEdges[0];
+      expect(edge.target).toContain('beta');
+      expect(edge.properties.is_transitive).toBe(true);
+      expect(edge.properties.sid_filtering).toBe(false);
+    });
+
+    it('parses one-way outbound trust (we trust target)', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 2,  // Outbound
+          TrustType: 2,
+          IsTransitive: true,
+          SidFilteringEnabled: true,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const trustEdges = finding!.edges.filter(e => e.properties.type === 'TRUSTS');
+      expect(trustEdges.length).toBe(1);
+
+      // Outbound: target domain → source domain (target can auth to us)
+      const edge = trustEdges[0];
+      expect(edge.source).toContain('beta');
+      expect(edge.properties.sid_filtering).toBe(true);
+    });
+
+    it('parses bidirectional trust into two edges', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 3,  // Bidirectional
+          TrustType: 2,
+          IsTransitive: true,
+          SidFilteringEnabled: false,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const trustEdges = finding!.edges.filter(e => e.properties.type === 'TRUSTS');
+      expect(trustEdges.length).toBe(2);
+
+      // Should have one edge in each direction (source/target swapped)
+      const edgePairs = trustEdges.map(e => `${e.source}->${e.target}`);
+      expect(new Set(edgePairs).size).toBe(2); // Two distinct directed edges
+      // Verify the edges are reverses of each other
+      const [e1, e2] = trustEdges;
+      expect(e1.source).toBe(e2.target);
+      expect(e1.target).toBe(e2.source);
+    });
+
+    it('creates stub domain node for the trust target', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 1,
+          TrustType: 2,
+          IsTransitive: false,
+          SidFilteringEnabled: false,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const betaNode = finding!.nodes.find(n =>
+        n.type === 'domain' && (n.label === 'BETA.LOCAL' || n.domain_name === 'beta.local')
+      );
+      expect(betaNode).toBeDefined();
+    });
+
+    it('skips trusts with direction 0 (disabled)', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 0,  // Disabled
+          TrustType: 2,
+          IsTransitive: false,
+          SidFilteringEnabled: false,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const trustEdges = finding!.edges.filter(e => e.properties.type === 'TRUSTS');
+      expect(trustEdges.length).toBe(0);
+    });
+
+    it('handles multiple trusts to different domains', () => {
+      const bhData = makeDomainFile([
+        {
+          TargetDomainSid: 'S-1-5-21-4444-5555-6666',
+          TargetDomainName: 'BETA.LOCAL',
+          TrustDirection: 3,
+          TrustType: 2,
+          IsTransitive: true,
+          SidFilteringEnabled: false,
+        },
+        {
+          TargetDomainSid: 'S-1-5-21-7777-8888-9999',
+          TargetDomainName: 'GAMMA.LOCAL',
+          TrustDirection: 1,
+          TrustType: 2,
+          IsTransitive: false,
+          SidFilteringEnabled: true,
+        },
+      ]);
+
+      const { finding } = parseBloodHoundFile(JSON.stringify(bhData), 'domains.json');
+      expect(finding).not.toBeNull();
+
+      const trustEdges = finding!.edges.filter(e => e.properties.type === 'TRUSTS');
+      // BETA: 2 (bidi) + GAMMA: 1 (inbound) = 3
+      expect(trustEdges.length).toBe(3);
+
+      // Verify both target domains have stub nodes
+      const domainNodes = finding!.nodes.filter(n => n.type === 'domain');
+      const domainLabels = domainNodes.map(n => ((n.domain_name as string | undefined) || n.label || '').toLowerCase());
+      expect(domainLabels).toContain('beta.local');
+      expect(domainLabels).toContain('gamma.local');
+    });
+  });
 });

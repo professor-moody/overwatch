@@ -30,9 +30,9 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   let nullSession = false;
 
   for (const line of output.split('\n')) {
-    // Target IP
-    const targetMatch = line.match(/Target:\s*(\d+\.\d+\.\d+\.\d+)/i) ||
-                         line.match(/\|\s*Target\s*\|\s*(\d+\.\d+\.\d+\.\d+)/);
+    // Target IP (IPv4, IPv6, or hostname)
+    const targetMatch = line.match(/Target:\s*(\S+)/i) ||
+                         line.match(/\|\s*Target\s*\|\s*(\S+)/);
     if (targetMatch) { targetIp = targetMatch[1]; continue; }
 
     // Domain/Workgroup
@@ -91,7 +91,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
     if (shareMatch && targetIp) {
       const shareName = shareMatch[1];
       if (shareName.startsWith('[') || shareName === 'Enumerating') continue;
-      const shareNodeId = `share-${targetIp.replace(/\./g, '-')}-${normalizeKeyPart(shareName)}`;
+      const shareNodeId = `share-${hostId(targetIp).replace(/^host-/, '')}-${normalizeKeyPart(shareName)}`;
       if (!seenNodes.has(shareNodeId)) {
         const readable = /READ/i.test(line) || /Listing:\s*OK/i.test(line);
         const writable = /WRITE/i.test(line);
@@ -111,7 +111,7 @@ export function parseEnum4linux(output: string, agentId: string = 'enum4linux-pa
   // Create host and SMB service context if we found a target
   if (targetIp) {
     const resolvedHostId = hostId(targetIp);
-    const serviceNodeId = `svc-${targetIp.replace(/\./g, '-')}-445`;
+    const serviceNodeId = `svc-${resolvedHostId.replace(/^host-/, '')}-445`;
 
     if (!seenNodes.has(resolvedHostId)) {
       nodes.push({
@@ -183,7 +183,7 @@ function parseEnum4linuxJson(data: Record<string, unknown>, agentId: string, con
   // Host + service
   if (targetIp) {
     const resolvedHostId = hostId(targetIp);
-    const serviceNodeId = `svc-${targetIp.replace(/\./g, '-')}-445`;
+    const serviceNodeId = `svc-${resolvedHostId.replace(/^host-/, '')}-445`;
 
     nodes.push({
       id: resolvedHostId,
@@ -285,7 +285,7 @@ function parseEnum4linuxJson(data: Record<string, unknown>, agentId: string, con
   for (const [shareName, rawShare] of Object.entries(shares as Record<string, unknown>)) {
     const shareObj = rawShare as Record<string, unknown>;
     if (!targetIp) continue;
-    const shareNodeId = `share-${targetIp.replace(/\./g, '-')}-${normalizeKeyPart(shareName)}`;
+    const shareNodeId = `share-${hostId(targetIp).replace(/^host-/, '')}-${normalizeKeyPart(shareName)}`;
     if (seenNodes.has(shareNodeId)) continue;
 
     const access = (shareObj.access || {}) as Record<string, unknown>;

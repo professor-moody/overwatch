@@ -7,7 +7,7 @@
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, FrontierItem, NodeType } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
-import { isCredentialStaleOrExpired } from './credential-utils.js';
+import { isCredentialStaleOrExpired, timeToExpiry } from './credential-utils.js';
 import { isIpInCidr } from './cidr.js';
 
 // --- Fan-out estimates by service type ---
@@ -136,18 +136,36 @@ export class FrontierComputer {
       const sourceNode = this.ctx.graph.getNodeAttributes(source);
       const isStale = sourceNode.type === 'credential' && isCredentialStaleOrExpired(sourceNode);
 
+      // Graduated credential expiry scoring
+      let credMultiplier = 1;
+      let credLabel = '';
+      if (isStale) {
+        credMultiplier = 0.1;
+        credLabel = ' [stale credential]';
+      } else if (sourceNode.type === 'credential') {
+        const ttl = timeToExpiry(sourceNode);
+        if (ttl < 30 * 60 * 1000) { // < 30 minutes
+          credMultiplier = 0.3;
+          credLabel = ' [expiring soon]';
+        } else if (ttl < 2 * 60 * 60 * 1000) { // < 2 hours
+          credMultiplier = 0.7;
+          const hoursLeft = Math.ceil(ttl / (60 * 60 * 1000));
+          credLabel = ` [expires in ${hoursLeft}h]`;
+        }
+      }
+
       frontier.push({
         id: `frontier-edge-${edgeId}`,
         type: 'inferred_edge',
         edge_source: source,
         edge_target: target,
         edge_type: attrs.type,
-        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${isStale ? ' [stale credential]' : ''}`,
+        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${credLabel}`,
         graph_metrics: {
           hops_to_objective: this.hopsToObjective(target),
           fan_out_estimate: 2,
           node_degree: this.ctx.graph.degree(target),
-          confidence: isStale ? attrs.confidence * 0.1 : attrs.confidence
+          confidence: attrs.confidence * credMultiplier
         },
         opsec_noise: attrs.opsec_noise || 0.3,
         staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000,
@@ -163,7 +181,7 @@ export class FrontierComputer {
       const maskStr = cidr.split('/')[1];
       const mask = maskStr ? parseInt(maskStr) : 32;
       const hostBits = 32 - mask;
-      const totalEstimate = mask >= 31 ? 1 : (1 << hostBits) - 2;
+      const totalEstimate = mask >= 31 ? 1 : Math.max(2 ** hostBits - 2, 1);
       const cappedEstimate = Math.min(totalEstimate, 254);
 
       const discoveredInCidr = discoveredIps.filter(ip => isIpInCidr(ip, cidr)).length;

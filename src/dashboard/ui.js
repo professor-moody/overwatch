@@ -455,9 +455,19 @@ function toggleFrontierSectionExpanded(sectionKey, event) {
 // ============================================================
 
 function updateAgents(state) {
-  const list = document.getElementById('agents-list');
   const agents = state.active_agents || [];
-  document.getElementById('agent-count').textContent = `(${agents.length})`;
+  const count = document.getElementById('agent-count');
+
+  // If the rich agent panel is loaded, it handles rendering via its own poll.
+  // We only update the count from state.active_agents as a fallback badge.
+  if (window.OverwatchAgentPanel) {
+    // Panel updates itself; just sync count from WS push
+    return;
+  }
+
+  // Fallback: minimal rendering (no agent panel loaded)
+  const list = document.getElementById('agents-list');
+  if (count) count.textContent = `(${agents.length})`;
 
   if (agents.length === 0) {
     list.innerHTML = '<div class="empty-state">No active agents</div>';

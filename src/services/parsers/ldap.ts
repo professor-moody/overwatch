@@ -18,6 +18,46 @@ function domainFromDn(dn: string): string | undefined {
   return dcParts.length > 0 ? dcParts.join('.') : undefined;
 }
 
+/**
+ * Parse AD time interval attributes (stored as negative 100-nanosecond intervals).
+ * e.g., minPwdAge/maxPwdAge/lockoutDuration are stored as negative large integers.
+ * Returns absolute value in seconds, or undefined if unparseable/zero.
+ */
+function parseADTimeInterval(values: string[] | undefined): number | undefined {
+  if (!values || values.length === 0) return undefined;
+  const raw = values[0].trim();
+  if (!raw || raw === '0') return undefined;
+  // AD stores these as negative 100-nanosecond intervals
+  // e.g., -36288000000000 = 42 days in 100ns units
+  const val = BigInt(raw);
+  if (val === 0n) return undefined;
+  const absVal = val < 0n ? -val : val;
+  // Convert 100-nanosecond intervals to seconds
+  return Number(absVal / 10_000_000n);
+}
+
+/**
+ * Convert Windows FILETIME (100-nanosecond intervals since 1601-01-01) to ISO string.
+ * Returns undefined for never-set values (0, max int).
+ */
+function adFileTimeToISO(values: string[] | undefined): string | undefined {
+  if (!values || values.length === 0) return undefined;
+  const raw = values[0].trim();
+  if (!raw || raw === '0' || raw === '9223372036854775807') return undefined;
+  try {
+    // Windows epoch offset: 1601-01-01 to 1970-01-01 in milliseconds
+    const EPOCH_OFFSET = 11644473600000n;
+    const filetime = BigInt(raw);
+    const msFromWindowsEpoch = filetime / 10_000n;
+    const unixMs = msFromWindowsEpoch - EPOCH_OFFSET;
+    const date = new Date(Number(unixMs));
+    if (isNaN(date.getTime())) return undefined;
+    return date.toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
 function parseLdifStanzas(raw: string): Array<Record<string, string[]>> {
   // Handle line continuations (leading space = continuation of previous line)
   const unfolded = raw.replace(/\r?\n /g, '');
@@ -93,6 +133,45 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
     const domain = domainFromDn(dn);
     const sam = (entry['samaccountname'] || [''])[0];
 
+    // Domain password policy from domainDNS objects
+    if (objectClass.includes('domaindns') || objectClass.includes('domain')) {
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        const domainNode = nodes.find(n => n.id === resolvedDomainId);
+        if (domainNode) {
+          const minPwdAge = parseADTimeInterval(entry['minpwdage']);
+          const maxPwdAge = parseADTimeInterval(entry['maxpwdage']);
+          const pwdHistLen = parseInt((entry['pwdhistorylength'] || [''])[0], 10);
+          const minPwdLen = parseInt((entry['minpwdlength'] || [''])[0], 10);
+          const lockoutThreshold = parseInt((entry['lockoutthreshold'] || [''])[0], 10);
+          const lockoutDuration = parseADTimeInterval(entry['lockoutduration']);
+          const lockoutWindow = parseADTimeInterval(entry['lockoutobservationwindow'] || entry['lockoutobservationwindow']);
+
+          if (maxPwdAge !== undefined || minPwdAge !== undefined || !isNaN(pwdHistLen) || !isNaN(minPwdLen)) {
+            domainNode.password_policy = {
+              ...(minPwdAge !== undefined ? { min_pwd_age: minPwdAge } : {}),
+              ...(maxPwdAge !== undefined ? { max_pwd_age: maxPwdAge } : {}),
+              ...(!isNaN(pwdHistLen) ? { pwd_history_length: pwdHistLen } : {}),
+              ...(!isNaN(minPwdLen) ? { min_pwd_length: minPwdLen } : {}),
+            };
+          }
+          if (!isNaN(lockoutThreshold) || lockoutDuration !== undefined || lockoutWindow !== undefined) {
+            domainNode.lockout_policy = {
+              ...(!isNaN(lockoutThreshold) ? { lockout_threshold: lockoutThreshold } : {}),
+              ...(lockoutDuration !== undefined ? { lockout_duration: lockoutDuration } : {}),
+              ...(lockoutWindow !== undefined ? { lockout_observation_window: lockoutWindow } : {}),
+            };
+          }
+        }
+      }
+      // domainDNS objects may not have sAMAccountName, so don't skip
+      if (!sam) continue;
+    }
+
     if (!sam) continue;
 
     // Computer objects — check BEFORE user/person since AD computers have
@@ -137,6 +216,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
       const displayName = (entry['displayname'] || [''])[0] || undefined;
       const sidVal = (entry['objectsid'] || [''])[0] || undefined;
       const enabled = !(uacRaw & UAC_ACCOUNTDISABLE);
+      const pwdLastSet = adFileTimeToISO(entry['pwdlastset']);
 
       nodes.push({
         id: resolvedUserId,
@@ -150,6 +230,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
         asrep_roastable: !!(uacRaw & UAC_DONT_REQUIRE_PREAUTH) || undefined,
         privileged: adminCount === '1' || undefined,
         sid: sidVal,
+        pwd_last_set: pwdLastSet,
       });
       seenNodes.add(resolvedUserId);
 
@@ -222,6 +303,60 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
     const dn = ((Array.isArray(attrs.distinguishedName) ? attrs.distinguishedName[0] : attrs.distinguishedName) || '') as string;
     const domain = domainFromDn(dn);
 
+    // Domain password policy from domainDNS objects
+    if (objectClass.includes('domaindns') || objectClass.includes('domain')) {
+      if (domain) {
+        const resolvedDomainId = domainId(domain);
+        if (!seenNodes.has(resolvedDomainId)) {
+          nodes.push({ id: resolvedDomainId, type: 'domain', label: domain, domain_name: domain });
+          seenNodes.add(resolvedDomainId);
+        }
+        const domainNode = nodes.find(n => n.id === resolvedDomainId);
+        if (domainNode) {
+          const getNum = (key: string): number | undefined => {
+            const v = attrs[key];
+            const n = parseInt(String(Array.isArray(v) ? v[0] : v), 10);
+            return isNaN(n) ? undefined : n;
+          };
+          const getTimeInterval = (key: string): number | undefined => {
+            const v = attrs[key];
+            const raw = String(Array.isArray(v) ? v[0] : v || '').trim();
+            if (!raw || raw === '0' || raw === 'undefined') return undefined;
+            try {
+              const val = BigInt(raw);
+              if (val === 0n) return undefined;
+              const absVal = val < 0n ? -val : val;
+              return Number(absVal / 10_000_000n);
+            } catch { return undefined; }
+          };
+          const maxPwdAge = getTimeInterval('maxPwdAge');
+          const minPwdAge = getTimeInterval('minPwdAge');
+          const pwdHistLen = getNum('pwdHistoryLength');
+          const minPwdLen = getNum('minPwdLength');
+          const lockoutThreshold = getNum('lockoutThreshold');
+          const lockoutDuration = getTimeInterval('lockoutDuration');
+          const lockoutWindow = getTimeInterval('lockOutObservationWindow');
+
+          if (maxPwdAge !== undefined || minPwdAge !== undefined || pwdHistLen !== undefined || minPwdLen !== undefined) {
+            domainNode.password_policy = {
+              ...(minPwdAge !== undefined ? { min_pwd_age: minPwdAge } : {}),
+              ...(maxPwdAge !== undefined ? { max_pwd_age: maxPwdAge } : {}),
+              ...(pwdHistLen !== undefined ? { pwd_history_length: pwdHistLen } : {}),
+              ...(minPwdLen !== undefined ? { min_pwd_length: minPwdLen } : {}),
+            };
+          }
+          if (lockoutThreshold !== undefined || lockoutDuration !== undefined || lockoutWindow !== undefined) {
+            domainNode.lockout_policy = {
+              ...(lockoutThreshold !== undefined ? { lockout_threshold: lockoutThreshold } : {}),
+              ...(lockoutDuration !== undefined ? { lockout_duration: lockoutDuration } : {}),
+              ...(lockoutWindow !== undefined ? { lockout_observation_window: lockoutWindow } : {}),
+            };
+          }
+        }
+      }
+      if (!sam) continue;
+    }
+
     if (!sam) continue;
 
     // Computer objects — check BEFORE user/person since AD computers have
@@ -261,6 +396,8 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
       const uac = parseInt(String(attrs.userAccountControl || '0'), 10) || 0;
       const spns = attrs.servicePrincipalName || [];
       const adminCount = String(attrs.adminCount || '0');
+      const pwdLastSetRaw = String(attrs.pwdLastSet || '');
+      const pwdLastSet = adFileTimeToISO([pwdLastSetRaw]);
 
       nodes.push({
         id: resolvedUserId,
@@ -274,6 +411,7 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
         asrep_roastable: !!(uac & UAC_DONT_REQUIRE_PREAUTH) || undefined,
         privileged: adminCount === '1' || undefined,
         sid: (attrs.objectSid as string) || undefined,
+        pwd_last_set: pwdLastSet,
       });
       seenNodes.add(resolvedUserId);
 

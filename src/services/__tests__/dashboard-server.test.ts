@@ -619,4 +619,662 @@ describe('DashboardServer', () => {
     expect((dashboard as any).isLoopback('0.0.0.0')).toBe(false);
     expect((dashboard as any).isLoopback('10.10.10.5')).toBe(false);
   });
+
+  // ---- Terminal Multiplexer (WS bridge) ----
+
+  it('serveSessions returns empty when no session manager', () => {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    // dashboard has no sessionManager by default
+    (dashboard as any).serveSessions(res);
+    const payload = JSON.parse(res.body);
+    expect(payload).toEqual({ total: 0, active: 0, sessions: [] });
+  });
+
+  it('serveSessions returns session list when session manager is set', () => {
+    const mockSessions = [
+      { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' },
+      { id: 'sess-2', state: 'closed', title: 'Old', kind: 'ssh' },
+    ];
+    (dashboard as any).sessionManager = {
+      list: () => mockSessions,
+    };
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveSessions(res);
+    const payload = JSON.parse(res.body);
+    expect(payload.total).toBe(2);
+    expect(payload.active).toBe(1);
+    expect(payload.sessions).toHaveLength(2);
+  });
+
+  it('handleSessionConnection closes with 4503 when no session manager', () => {
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn(),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'fake-session-id');
+    expect(mockWs.close).toHaveBeenCalledWith(4503, 'Session manager not available');
+  });
+
+  it('handleSessionConnection closes with 4404 when session not found', () => {
+    (dashboard as any).sessionManager = {
+      getSession: () => null,
+    };
+
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn(),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'nonexistent-id');
+    expect(mockWs.close).toHaveBeenCalledWith(4404, 'Session not found');
+  });
+
+  it('handleSessionConnection closes with 4409 when session not connected', () => {
+    (dashboard as any).sessionManager = {
+      getSession: () => ({ id: 'sess-1', state: 'closed', title: 'Old' }),
+    };
+
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn(),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+    expect(mockWs.close).toHaveBeenCalledWith(4409, 'Session not connected (state: closed)');
+  });
+
+  it('handleSessionConnection sends initial output and starts polling', () => {
+    vi.useFakeTimers();
+    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn()
+        .mockReturnValueOnce({ text: 'hello', end_pos: 5, start_pos: 0, truncated: false })  // initial tail
+        .mockReturnValueOnce({ text: '', end_pos: 5, start_pos: 5, truncated: false })         // cursor init (0-byte)
+        .mockReturnValueOnce({ text: ' world', end_pos: 11, start_pos: 5, truncated: false }), // poll
+      write: vi.fn(),
+      resize: vi.fn(),
+    };
+
+    const sent: string[] = [];
+    const listeners: Record<string, Function[]> = {};
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn((event: string, cb: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      send: vi.fn((data: string) => sent.push(data)),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+
+    // Should have sent session_meta + initial output
+    expect(sent.length).toBe(2);
+    expect(JSON.parse(sent[0]).type).toBe('session_meta');
+    expect(JSON.parse(sent[1])).toEqual({ type: 'output', text: 'hello', end_pos: 5 });
+
+    // Advance past poll interval
+    vi.advanceTimersByTime(60);
+
+    expect(sent.length).toBe(3);
+    expect(JSON.parse(sent[2])).toEqual({ type: 'output', text: ' world', end_pos: 11 });
+
+    // Should have poller registered
+    expect((dashboard as any).sessionPollers.has(mockWs)).toBe(true);
+
+    // Cleanup: trigger close handler
+    listeners['close']?.[0]?.();
+    expect((dashboard as any).sessionPollers.has(mockWs)).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('handleSessionConnection forwards input and resize messages', () => {
+    vi.useFakeTimers();
+    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    const writeSpy = vi.fn();
+    const resizeSpy = vi.fn();
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn().mockReturnValue({ text: '', end_pos: 0, start_pos: 0, truncated: false }),
+      write: writeSpy,
+      resize: resizeSpy,
+    };
+
+    const listeners: Record<string, Function[]> = {};
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn((event: string, cb: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      send: vi.fn(),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+
+    // Find message handler
+    const messageHandler = listeners['message']?.[0];
+    expect(messageHandler).toBeDefined();
+
+    // Send input
+    messageHandler(JSON.stringify({ type: 'input', data: 'ls -la\n' }));
+    expect(writeSpy).toHaveBeenCalledWith('sess-1', 'ls -la\n');
+
+    // Send resize
+    messageHandler(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
+    expect(resizeSpy).toHaveBeenCalledWith('sess-1', 120, 40);
+
+    // Cleanup
+    listeners['close']?.[0]?.();
+    vi.useRealTimers();
+  });
+
+  it('session poller stops and notifies on read error', () => {
+    vi.useFakeTimers();
+    const mockMeta = { id: 'sess-1', state: 'connected', title: 'Shell', kind: 'pty' };
+    let readCallCount = 0;
+    (dashboard as any).sessionManager = {
+      getSession: () => mockMeta,
+      read: vi.fn(() => {
+        readCallCount++;
+        if (readCallCount <= 2) return { text: '', end_pos: 0, start_pos: 0, truncated: false };
+        throw new Error('Session closed');
+      }),
+      write: vi.fn(),
+      resize: vi.fn(),
+    };
+
+    const sent: string[] = [];
+    const mockWs = {
+      close: vi.fn(),
+      on: vi.fn(),
+      send: vi.fn((data: string) => sent.push(data)),
+      readyState: WebSocket.OPEN,
+    };
+
+    (dashboard as any).handleSessionConnection(mockWs, 'sess-1');
+    expect((dashboard as any).sessionPollers.has(mockWs)).toBe(true);
+
+    // Advance past poll to trigger error
+    vi.advanceTimersByTime(60);
+
+    // Should have sent session_closed message
+    const closedMsg = sent.find(s => JSON.parse(s).type === 'session_closed');
+    expect(closedMsg).toBeDefined();
+
+    // Poller should be cleaned up
+    expect((dashboard as any).sessionPollers.has(mockWs)).toBe(false);
+
+    // WS should be closed
+    expect(mockWs.close).toHaveBeenCalledWith(4410, 'Session closed');
+
+    vi.useRealTimers();
+  });
+
+  // ============================================================
+  // Agent REST Endpoints
+  // ============================================================
+
+  describe('Agent REST endpoints', () => {
+    function mockRes() {
+      return {
+        statusCode: 0,
+        headers: {} as Record<string, string>,
+        body: '' as string,
+        writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+        end(body?: string) { this.body = body || ''; },
+        setHeader() {},
+      };
+    }
+
+    function registerTestAgent(overrides?: Partial<import('../../types.js').AgentTask>) {
+      const task: import('../../types.js').AgentTask = {
+        id: 'task-' + Math.random().toString(36).slice(2, 10),
+        agent_id: 'agent-test-1',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        subgraph_node_ids: [],
+        ...overrides,
+      };
+      engine.registerAgent(task);
+      return task;
+    }
+
+    it('serveAgents returns all agents with enriched fields', () => {
+      const task = registerTestAgent();
+      registerTestAgent({ id: 'task-completed', agent_id: 'agent-test-2', status: 'completed' });
+
+      const res = mockRes();
+      (dashboard as any).serveAgents(res);
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.total).toBe(2);
+      expect(data.agents).toHaveLength(2);
+
+      const running = data.agents.find((a: any) => a.id === task.id);
+      expect(running.elapsed_ms).toBeTypeOf('number');
+      expect(running.elapsed_ms).toBeGreaterThanOrEqual(0);
+
+      const completed = data.agents.find((a: any) => a.id === 'task-completed');
+      expect(completed.elapsed_ms).toBeUndefined();
+    });
+
+    it('serveAgentContext returns task and subgraph', () => {
+      // Add a node so subgraph has something to traverse
+      engine.ingestFinding({
+        id: 'agent-ctx-seed',
+        agent_id: 'test-agent',
+        timestamp: new Date().toISOString(),
+        nodes: [{ id: 'host-ctx-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+        edges: [],
+      });
+
+      const task = registerTestAgent({ subgraph_node_ids: ['host-ctx-1'] });
+
+      const res = mockRes();
+      (dashboard as any).serveAgentContext(task.id, res);
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.task.id).toBe(task.id);
+      expect(data.subgraph).toBeDefined();
+      expect(data.subgraph.nodes).toBeDefined();
+      expect(data.subgraph.edges).toBeDefined();
+    });
+
+    it('serveAgentContext returns 404 for missing task', () => {
+      const res = mockRes();
+      (dashboard as any).serveAgentContext('nonexistent', res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('handleAgentCancel cancels a running agent', () => {
+      const task = registerTestAgent({ status: 'running' });
+
+      const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
+      const res = mockRes();
+      (dashboard as any).handleAgentCancel(task.id, req, res);
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.cancelled).toBe(true);
+      expect(data.task.status).toBe('interrupted');
+
+      // Verify persistence
+      const updated = engine.getTask(task.id);
+      expect(updated?.status).toBe('interrupted');
+    });
+
+    it('handleAgentCancel returns 409 for completed agent', () => {
+      const task = registerTestAgent({ status: 'completed' });
+
+      const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
+      const res = mockRes();
+      (dashboard as any).handleAgentCancel(task.id, req, res);
+
+      expect(res.statusCode).toBe(409);
+    });
+
+    it('handleAgentCancel returns 404 for missing task', () => {
+      const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
+      const res = mockRes();
+      (dashboard as any).handleAgentCancel('nonexistent', req, res);
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  // ============================================================
+  // Campaign REST Endpoints
+  // ============================================================
+
+  describe('Campaign REST endpoints', () => {
+    function mockRes() {
+      return {
+        statusCode: 0,
+        headers: {} as Record<string, string>,
+        body: '' as string,
+        writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+        end(body?: string) { this.body = body || ''; },
+        setHeader() {},
+      };
+    }
+
+    function seedCampaign() {
+      // We need frontier items first to create a campaign
+      engine.ingestFinding({
+        id: 'campaign-seed',
+        agent_id: 'test-agent',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-c-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-c-1', type: 'service', label: 'SMB', port: 445, service_name: 'smb' },
+        ],
+        edges: [
+          { source: 'host-c-1', target: 'svc-c-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      });
+
+      // Get frontier items to use in campaign
+      const frontier = engine.computeFrontier();
+      const itemIds = frontier.slice(0, 2).map(f => f.id);
+
+      // Manually construct a campaign and inject into the planner
+      const campaign: import('../../types.js').Campaign = {
+        id: 'campaign-test-1',
+        name: 'Test Enumeration',
+        strategy: 'enumeration',
+        status: 'draft',
+        items: itemIds.length > 0 ? itemIds : ['item-1'],
+        abort_conditions: [{ type: 'consecutive_failures', threshold: 3 }],
+        progress: { total: itemIds.length || 1, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+        created_at: new Date().toISOString(),
+        findings: [],
+      };
+
+      // Register campaign directly in graph state
+      (engine as any).campaignPlanner.campaigns.set(campaign.id, campaign);
+      return campaign;
+    }
+
+    it('serveCampaigns returns enriched campaign list', () => {
+      const campaign = seedCampaign();
+
+      const res = mockRes();
+      (dashboard as any).serveCampaigns(res);
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.total).toBeGreaterThanOrEqual(1);
+      const found = data.campaigns.find((c: any) => c.id === campaign.id);
+      expect(found).toBeDefined();
+      expect(found.agent_count).toBe(0);
+      expect(found.running_agents).toBe(0);
+    });
+
+    it('serveCampaignDetail returns campaign with agents and abort check', () => {
+      const campaign = seedCampaign();
+
+      const res = mockRes();
+      (dashboard as any).serveCampaignDetail(campaign.id, res);
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.campaign.id).toBe(campaign.id);
+      expect(data.agents).toEqual([]);
+      expect(data.abort_check).toBeDefined();
+      expect(data.abort_check.should_abort).toBe(false);
+    });
+
+    it('serveCampaignDetail returns 404 for missing campaign', () => {
+      const res = mockRes();
+      (dashboard as any).serveCampaignDetail('nonexistent', res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('handleCampaignAction activates a draft campaign', async () => {
+      const campaign = seedCampaign();
+
+      const bodyStr = JSON.stringify({ action: 'activate' });
+      const req = {
+        headers: {},
+        url: '/api/campaigns/x/action',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignAction(campaign.id, req, res);
+
+      // Wait for async body reading
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.action).toBe('activate');
+      expect(data.campaign.status).toBe('active');
+    });
+
+    it('handleCampaignAction rejects invalid action', async () => {
+      const campaign = seedCampaign();
+
+      const bodyStr = JSON.stringify({ action: 'invalid' });
+      const req = {
+        headers: {},
+        url: '/api/campaigns/x/action',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignAction(campaign.id, req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('handleCampaignDispatch dispatches agents for a campaign', async () => {
+      // Need frontier items in the campaign
+      engine.ingestFinding({
+        id: 'dispatch-seed',
+        agent_id: 'test-agent',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-d-1', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+          { id: 'svc-d-1', type: 'service', label: 'SSH', port: 22, service_name: 'ssh' },
+        ],
+        edges: [
+          {
+            source: 'host-d-1', target: 'svc-d-1',
+            properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() },
+          },
+        ],
+      });
+
+      const frontier = engine.computeFrontier();
+      const itemId = frontier[0]?.id || 'fallback-item';
+
+      const campaign: import('../../types.js').Campaign = {
+        id: 'campaign-dispatch-1',
+        name: 'Dispatch Test',
+        strategy: 'enumeration',
+        status: 'draft',
+        items: [itemId],
+        abort_conditions: [],
+        progress: { total: 1, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+        created_at: new Date().toISOString(),
+        findings: [],
+      };
+      (engine as any).campaignPlanner.campaigns.set(campaign.id, campaign);
+
+      const bodyStr = JSON.stringify({});
+      const req = {
+        headers: {},
+        url: '/api/campaigns/x/dispatch',
+        on: vi.fn((event: string, cb: Function) => {
+          if (event === 'data') cb(Buffer.from(bodyStr));
+          if (event === 'end') cb();
+        }),
+        destroy: vi.fn(),
+      } as any;
+
+      const res = mockRes();
+      await (dashboard as any).handleCampaignDispatch(campaign.id, req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.campaign_id).toBe(campaign.id);
+      expect(data.dispatched.length).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  // ============================================================
+  // Mutation Auth
+  // ============================================================
+
+  describe('Mutation auth', () => {
+    it('checkMutationAuth passes on loopback', () => {
+      const req = { headers: {}, url: '/' } as any;
+      const res = {
+        statusCode: 0,
+        writeHead(code: number) { this.statusCode = code; },
+        end() {},
+        setHeader() {},
+      };
+      const result = (dashboard as any).checkMutationAuth(req, res);
+      expect(result).toBe(true);
+    });
+
+    it('checkMutationAuth rejects on non-loopback without token', () => {
+      // Create dashboard bound to non-loopback
+      const nonLocalDashboard = new DashboardServer(engine, 0, '192.168.1.1');
+      const req = { headers: {}, url: '/' } as any;
+      const res = {
+        statusCode: 0,
+        body: '',
+        writeHead(code: number) { this.statusCode = code; },
+        end(b?: string) { this.body = b || ''; },
+        setHeader() {},
+      };
+
+      const origToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+      delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+
+      const result = (nonLocalDashboard as any).checkMutationAuth(req, res);
+      expect(result).toBe(false);
+      expect(res.statusCode).toBe(403);
+
+      if (origToken) process.env.OVERWATCH_DASHBOARD_TOKEN = origToken;
+    });
+
+    it('checkMutationAuth accepts valid Bearer token', () => {
+      const nonLocalDashboard = new DashboardServer(engine, 0, '192.168.1.1');
+      const origToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+      process.env.OVERWATCH_DASHBOARD_TOKEN = 'secret-test-token';
+
+      const req = {
+        headers: { authorization: 'Bearer secret-test-token', host: 'localhost' },
+        url: '/',
+      } as any;
+      const res = {
+        statusCode: 0,
+        writeHead(code: number) { this.statusCode = code; },
+        end() {},
+        setHeader() {},
+      };
+
+      const result = (nonLocalDashboard as any).checkMutationAuth(req, res);
+      expect(result).toBe(true);
+
+      if (origToken) process.env.OVERWATCH_DASHBOARD_TOKEN = origToken;
+      else delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+    });
+  });
+
+  // ============================================================
+  // HTTP Routing
+  // ============================================================
+
+  describe('HTTP routing', () => {
+    function mockReq(url: string, method: string = 'GET') {
+      return {
+        url,
+        method,
+        headers: { host: 'localhost', origin: '' },
+        on: vi.fn(),
+        destroy: vi.fn(),
+      } as any;
+    }
+
+    function mockRes() {
+      return {
+        statusCode: 0,
+        headers: {} as Record<string, string>,
+        body: '' as string,
+        writeHead(statusCode: number, headers?: Record<string, string>) { this.statusCode = statusCode; if (headers) this.headers = headers; },
+        end(body?: string) { this.body = body || ''; },
+        setHeader(_k: string, _v: string) { this.headers[_k] = _v; },
+      };
+    }
+
+    it('routes GET /api/agents to serveAgents', () => {
+      const spy = vi.spyOn(dashboard as any, 'serveAgents');
+      const req = mockReq('/api/agents');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('routes GET /api/campaigns to serveCampaigns', () => {
+      const spy = vi.spyOn(dashboard as any, 'serveCampaigns');
+      const req = mockReq('/api/campaigns');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('routes OPTIONS to 204 preflight', () => {
+      const req = mockReq('/api/agents', 'OPTIONS');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(res.statusCode).toBe(204);
+    });
+
+    it('routes GET /api/campaigns/:id to serveCampaignDetail', () => {
+      const spy = vi.spyOn(dashboard as any, 'serveCampaignDetail');
+      const req = mockReq('/api/campaigns/abc-123-def');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(spy).toHaveBeenCalledWith('abc-123-def', res);
+    });
+
+    it('routes POST /api/agents/:id/cancel to handleAgentCancel', () => {
+      const spy = vi.spyOn(dashboard as any, 'handleAgentCancel');
+      const req = mockReq('/api/agents/abc-123-def/cancel', 'POST');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(spy).toHaveBeenCalledWith('abc-123-def', req, res);
+    });
+  });
 });

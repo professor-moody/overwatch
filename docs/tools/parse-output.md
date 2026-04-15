@@ -71,6 +71,6 @@ All successful responses share a stable schema, including zero-artifact parses:
 
 - Prefer this over `report_finding` when you have raw output from a supported tool
 - Set `ingest: false` to preview what would be parsed without modifying the graph
-- Set `list_parsers: true` to get the current list of supported parser names (30 aliases across 17 parsers)
+- Set `list_parsers: true` to get the current list of supported parser names (36 aliases across 21 parsers)
 - Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance
 - See [parse_output vs report_finding](../playbook/parse-vs-report.md) for detailed guidance

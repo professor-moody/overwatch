@@ -88,6 +88,17 @@ export function normalizeFindingNode<T extends Partial<NodeProperties> & { id: s
 
   const normalized = { ...node } as T & Record<string, unknown>;
 
+  // Normalize non-standard aliases from parsers
+  if (typeof normalized.cred_material_kind !== 'string' && typeof normalized.material_kind === 'string') {
+    // Map raw parser values to canonical enum values
+    const mkMap: Record<string, string> = { password: 'plaintext_password', hash: 'ntlm_hash' };
+    normalized.cred_material_kind = (mkMap[normalized.material_kind as string] || normalized.material_kind) as NodeProperties['cred_material_kind'];
+  }
+
+  if (typeof normalized.cred_hash !== 'string' && typeof normalized.hash === 'string') {
+    normalized.cred_hash = normalized.hash;
+  }
+
   if (typeof normalized.cred_user !== 'string' && typeof normalized.username === 'string') {
     normalized.cred_user = normalized.username;
   }

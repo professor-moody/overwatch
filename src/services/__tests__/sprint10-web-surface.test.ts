@@ -868,3 +868,58 @@ describe('regression — cross-tool webapp identity convergence', () => {
     expect(nucleiWebapp!.id).toBe(niktoWebapp!.id);
   });
 });
+
+// =============================================
+// Nuclei IPv6 regression
+// =============================================
+describe('regression — Nuclei IPv6 host handling', () => {
+  it('correctly extracts IPv6 host from HTTP matched-at URL', () => {
+    const input = JSON.stringify({
+      'template-id': 'CVE-2024-9999',
+      type: 'http',
+      host: 'http://[2001:db8::1]:8443',
+      'matched-at': 'https://[2001:db8::1]:8443/vuln',
+      info: { name: 'Test RCE', severity: 'critical', tags: ['rce'] },
+    });
+    const result = parseNuclei(input);
+    const host = result.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    expect(host!.id).toBe('host-2001-db8--1');
+    expect(host!.ip).toBe('2001:db8::1');
+    // Service ID should use dashes, not colons
+    const svc = result.nodes.find(n => n.type === 'service');
+    expect(svc).toBeDefined();
+    expect(svc!.id).toBe('svc-2001-db8--1-8443');
+  });
+
+  it('correctly handles non-HTTP IPv6 host:port (bracketed)', () => {
+    const input = JSON.stringify({
+      'template-id': 'redis-unauth',
+      type: 'tcp',
+      host: '[2001:db8::2]:6379',
+      'matched-at': '[2001:db8::2]:6379',
+      info: { name: 'Redis Unauth', severity: 'high', tags: ['redis'] },
+    });
+    const result = parseNuclei(input);
+    const svc = result.nodes.find(n => n.type === 'service');
+    expect(svc).toBeDefined();
+    expect(svc!.id).toBe('svc-2001-db8--2-6379');
+  });
+
+  it('does not truncate IPv6 address at first colon', () => {
+    // Before the fix, split(':')[0] on "http://[2001:db8::1]:8443" would yield "[2001"
+    const input = JSON.stringify({
+      'template-id': 'test-detect',
+      type: 'http',
+      host: 'http://[::1]:80',
+      'matched-at': 'http://[::1]:80/',
+      info: { name: 'Test', severity: 'info', tags: [] },
+    });
+    const result = parseNuclei(input);
+    const host = result.nodes.find(n => n.type === 'host');
+    expect(host).toBeDefined();
+    // Should be "host---1" (::1 with colons replaced by dashes), not something like "host-[2001"
+    expect(host!.id).toBe('host---1');
+    expect(host!.label).not.toContain('[');
+  });
+});

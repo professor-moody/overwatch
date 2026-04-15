@@ -87,6 +87,8 @@ nav:
       - get_agent_context: tools/get-agent-context.md
       - update_agent: tools/update-agent.md
       - dispatch_subnet_agents: tools/dispatch-subnet-agents.md
+      - dispatch_campaign_agents: tools/dispatch-campaign-agents.md
+      - manage_campaign: tools/manage-campaign.md
     - Skills & Inference:
       - get_skill: tools/get-skill.md
       - suggest_inference_rule: tools/suggest-inference-rule.md

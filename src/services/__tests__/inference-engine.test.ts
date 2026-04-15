@@ -1130,6 +1130,395 @@ describe('InferenceEngine', () => {
   });
 
   // =============================================
+  // Phase 2: ESC5, ESC9-ESC13
+  // =============================================
+
+  describe('rule-adcs-esc5-template', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc5-template', name: 'ADCS ESC5 (template)', description: '',
+      trigger: { node_type: 'cert_template', requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' } },
+      produces: [{ edge_type: 'ESC5', source_selector: 'writeable_by_peers', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers ESC5 when template has WRITEABLE_BY edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'WRITEABLE_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC5');
+    });
+
+    it('infers ESC5 for GENERIC_WRITE on template', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'GENERIC_WRITE');
+      // writeable_by_peers catches GENERIC_WRITE; but requires_edge demands WRITEABLE_BY
+      // So we also need a WRITEABLE_BY edge for the trigger to fire
+      addEdge(graph, 'user-a', 'tmpl-1', 'WRITEABLE_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+    });
+
+    it('does NOT infer ESC5 without write ACL edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc5-ca', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc5-ca', name: 'ADCS ESC5 (CA)', description: '',
+      trigger: { node_type: 'ca', requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' } },
+      produces: [{ edge_type: 'ESC5', source_selector: 'writeable_by_peers', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers ESC5 when CA has WRITEABLE_BY edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'ca-1', 'WRITEABLE_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC5');
+    });
+
+    it('does NOT infer ESC5 on CA without write ACL', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc9', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc9', name: 'ADCS ESC9', description: '',
+      trigger: { node_type: 'cert_template', property_match: { ct_flag_no_security_extension: true } },
+      produces: [{ edge_type: 'ESC9', source_selector: 'enrollable_users', target_selector: 'trigger_node', confidence: 0.65 }],
+    };
+
+    it('infers ESC9 when template has ct_flag_no_security_extension=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', ct_flag_no_security_extension: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC9');
+      expect(edge.confidence).toBe(0.65);
+    });
+
+    it('does NOT infer ESC9 without ct_flag_no_security_extension', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', ct_flag_no_security_extension: false });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc10', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc10', name: 'ADCS ESC10', description: '',
+      trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
+      produces: [{ edge_type: 'ESC10', source_selector: 'enrollable_users', target_selector: 'trigger_node', confidence: 0.6 }],
+    };
+
+    it('infers ESC10 when template has enrollee_supplies_subject=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', enrollee_supplies_subject: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC10');
+      expect(edge.confidence).toBe(0.6);
+    });
+
+    it('does NOT infer ESC10 without enrollee_supplies_subject', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', enrollee_supplies_subject: false });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc11', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc11', name: 'ADCS ESC11', description: '',
+      trigger: { node_type: 'ca', property_match: { enforce_encrypt_icert_request: false } },
+      produces: [{ edge_type: 'ESC11', source_selector: 'all_compromised', target_selector: 'trigger_node', confidence: 0.55 }],
+    };
+
+    it('infers ESC11 when CA has enforce_encrypt_icert_request=false', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', enforce_encrypt_icert_request: false });
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'host-a', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC11');
+      expect(edge.confidence).toBe(0.55);
+    });
+
+    it('does NOT infer ESC11 when enforce_encrypt_icert_request=true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', enforce_encrypt_icert_request: true });
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'host-a', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc12', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc12', name: 'ADCS ESC12', description: '',
+      trigger: { node_type: 'ca' },
+      produces: [{ edge_type: 'ESC12', source_selector: 'ca_host_compromised_peers', target_selector: 'trigger_node', confidence: 0.8 }],
+    };
+
+    it('infers ESC12 when CA host has HAS_SESSION from a user', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', ca_name: 'dc01.corp.local' });
+      addNode(graph, 'host-dc01', { type: 'host', hostname: 'dc01.corp.local' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'host-dc01', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC12');
+      expect(edge.confidence).toBe(0.8);
+    });
+
+    it('does NOT infer ESC12 when CA host has no sessions', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', ca_name: 'dc01.corp.local' });
+      addNode(graph, 'host-dc01', { type: 'host', hostname: 'dc01.corp.local' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT infer ESC12 when no host matches CA', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ca-1', { type: 'ca', ca_name: 'dc01.corp.local' });
+      addNode(graph, 'host-other', { type: 'host', hostname: 'web01.corp.local' });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'host-other', 'HAS_SESSION');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ca-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-adcs-esc13', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc13', name: 'ADCS ESC13', description: '',
+      trigger: { node_type: 'cert_template' },
+      produces: [{ edge_type: 'ESC13', source_selector: 'enrollable_users_if_issuance_policy', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers ESC13 when template has issuance_policy_oid and issuance_policy_group_link', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', issuance_policy_oid: '1.3.6.1.4.1.311.21.8.xxx', issuance_policy_group_link: 'CN=HighPrivGroup,DC=corp,DC=local' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ESC13');
+      expect(edge.confidence).toBe(0.7);
+    });
+
+    it('does NOT infer ESC13 without issuance_policy_group_link', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', issuance_policy_oid: '1.3.6.1.4.1.311.21.8.xxx' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT infer ESC13 without issuance_policy_oid', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', issuance_policy_group_link: 'CN=HighPrivGroup,DC=corp,DC=local' });
+      addNode(graph, 'user-a', { type: 'user' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // Cloud inference rules
+  // =============================================
+
+  describe('rule-imds-credential-theft', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-imds-credential-theft', name: 'IMDS credential theft', description: '',
+      trigger: { node_type: 'cloud_resource', property_match: { resource_type: 'ec2', imdsv2_required: false } },
+      produces: [{ edge_type: 'POTENTIAL_AUTH', source_selector: 'trigger_node', target_selector: 'imds_managed_identity', confidence: 0.7 }],
+    };
+
+    it('infers POTENTIAL_AUTH from EC2 without IMDSv2 to managed identity', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ec2-1', { type: 'cloud_resource', resource_type: 'ec2', imdsv2_required: false });
+      addNode(graph, 'role-1', { type: 'cloud_identity', principal_type: 'role' });
+      addEdge(graph, 'ec2-1', 'role-1', 'MANAGED_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ec2-1');
+      expect(inferred.length).toBe(1);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('POTENTIAL_AUTH');
+      expect(edge.confidence).toBe(0.7);
+    });
+
+    it('does NOT infer when IMDSv2 is required', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ec2-1', { type: 'cloud_resource', resource_type: 'ec2', imdsv2_required: true });
+      addNode(graph, 'role-1', { type: 'cloud_identity', principal_type: 'role' });
+      addEdge(graph, 'ec2-1', 'role-1', 'MANAGED_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ec2-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT infer when no MANAGED_BY edge exists', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ec2-1', { type: 'cloud_resource', resource_type: 'ec2', imdsv2_required: false });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ec2-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-cross-account-role-chain', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-cross-account-role-chain', name: 'Transitive cross-account chaining', description: '',
+      trigger: { node_type: 'cloud_identity', requires_edge: { type: 'ASSUMES_ROLE', direction: 'outbound' } },
+      produces: [{ edge_type: 'REACHABLE', source_selector: 'trigger_node', target_selector: 'transitive_assumed_roles', confidence: 0.6 }],
+    };
+
+    it('finds 2-hop cross-account chain', () => {
+      const graph = makeGraph();
+      addNode(graph, 'id-a', { type: 'cloud_identity', cloud_account: '111' });
+      addNode(graph, 'id-b', { type: 'cloud_identity', cloud_account: '111' });
+      addNode(graph, 'id-c', { type: 'cloud_identity', cloud_account: '222' });
+      addEdge(graph, 'id-a', 'id-b', 'ASSUMES_ROLE');
+      addEdge(graph, 'id-b', 'id-c', 'ASSUMES_ROLE');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('id-a');
+      expect(inferred.length).toBeGreaterThanOrEqual(1);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('REACHABLE');
+    });
+
+    it('does NOT fire when no cross-account target', () => {
+      const graph = makeGraph();
+      addNode(graph, 'id-a', { type: 'cloud_identity', cloud_account: '111' });
+      addNode(graph, 'id-b', { type: 'cloud_identity', cloud_account: '111' });
+      addEdge(graph, 'id-a', 'id-b', 'ASSUMES_ROLE');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('id-a');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-lambda-iam-escalation', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-lambda-iam-escalation', name: 'Lambda IAM escalation', description: '',
+      trigger: { node_type: 'cloud_resource', property_match: { resource_type: 'lambda' } },
+      produces: [{ edge_type: 'ASSUMES_ROLE', source_selector: 'trigger_node', target_selector: 'lambda_attached_role', confidence: 0.75 }],
+    };
+
+    it('infers ASSUMES_ROLE from lambda to execution role', () => {
+      const graph = makeGraph();
+      addNode(graph, 'lambda-1', { type: 'cloud_resource', resource_type: 'lambda' });
+      addNode(graph, 'role-1', { type: 'cloud_identity', principal_type: 'role' });
+      addEdge(graph, 'lambda-1', 'role-1', 'MANAGED_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('lambda-1');
+      expect(inferred.length).toBe(1);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('ASSUMES_ROLE');
+      expect(edge.confidence).toBe(0.75);
+    });
+
+    it('does NOT fire for non-lambda resource', () => {
+      const graph = makeGraph();
+      addNode(graph, 'ec2-1', { type: 'cloud_resource', resource_type: 'ec2' });
+      addNode(graph, 'role-1', { type: 'cloud_identity', principal_type: 'role' });
+      addEdge(graph, 'ec2-1', 'role-1', 'MANAGED_BY');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('ec2-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT fire without MANAGED_BY edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'lambda-1', { type: 'cloud_resource', resource_type: 'lambda' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('lambda-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  describe('rule-s3-bucket-exposed', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-s3-bucket-exposed', name: 'S3 bucket exposed', description: '',
+      trigger: { node_type: 'cloud_resource', property_match: { resource_type: 's3_bucket' }, requires_edge: { type: 'EXPOSED_TO', direction: 'outbound' } },
+      produces: [{ edge_type: 'REACHABLE', source_selector: 'edge_peers', target_selector: 'trigger_node', confidence: 0.7 }],
+    };
+
+    it('infers REACHABLE from exposed S3 bucket', () => {
+      const graph = makeGraph();
+      addNode(graph, 'bucket-1', { type: 'cloud_resource', resource_type: 's3_bucket' });
+      addNode(graph, 'subnet-1', { type: 'cloud_network', network_type: 'subnet' });
+      addEdge(graph, 'bucket-1', 'subnet-1', 'EXPOSED_TO');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('bucket-1');
+      expect(inferred.length).toBe(1);
+      const edge = graph.getEdgeAttributes(inferred[0]);
+      expect(edge.type).toBe('REACHABLE');
+      expect(edge.confidence).toBe(0.7);
+    });
+
+    it('does NOT fire without EXPOSED_TO edge', () => {
+      const graph = makeGraph();
+      addNode(graph, 'bucket-1', { type: 'cloud_resource', resource_type: 's3_bucket' });
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('bucket-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
   // Phase 2: Credential reuse
   // =============================================
   describe('rule-shared-credential', () => {

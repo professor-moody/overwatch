@@ -23,7 +23,7 @@ export type EdgeFixSuggestion =
 
 export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Network
-  REACHABLE: { source: ['host'], target: ['host'] },
+  REACHABLE: { source: ['host', 'cloud_identity', 'cloud_resource'], target: ['host', 'cloud_identity', 'cloud_resource'] },
   RUNS: { source: ['host'], target: ['service'] },
   // Domain membership
   MEMBER_OF: { source: ['user', 'group', 'cloud_identity'], target: ['group'] },
@@ -64,6 +64,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   ESC9: { source: ['user', 'group'], target: ['cert_template'] },
   ESC10: { source: ['user', 'group'], target: ['cert_template'] },
   ESC11: { source: ['user', 'group'], target: ['ca'] },
+  ESC12: { source: ['user', 'group'], target: ['ca'] },
   ESC13: { source: ['user', 'group'], target: ['cert_template'] },
   // Trust
   TRUSTS: { source: ['domain'], target: ['domain'] },
@@ -84,14 +85,16 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Lateral movement
   RELAY_TARGET: { source: ['host', 'user', 'credential'], target: ['host'] },
   NULL_SESSION: { source: ['host'], target: ['host', 'service'] },
-  POTENTIAL_AUTH: { source: ['credential', 'user'], target: ['service', 'host', 'webapp'] },
+  POTENTIAL_AUTH: { source: ['credential', 'user', 'cloud_resource'], target: ['service', 'host', 'webapp', 'cloud_identity'] },
   // Web application surface
   HOSTS: { source: ['service'], target: ['webapp'] },
-  AUTHENTICATED_AS: { source: ['credential'], target: ['webapp'] },
-  VULNERABLE_TO: { source: ['webapp', 'service', 'cloud_resource'], target: ['vulnerability'] },
-  EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp'] },
+  AUTHENTICATED_AS: { source: ['credential'], target: ['webapp', 'api_endpoint'] },
+  VULNERABLE_TO: { source: ['webapp', 'service', 'cloud_resource', 'api_endpoint'], target: ['vulnerability'] },
+  EXPLOITS: { source: ['vulnerability'], target: ['host', 'credential', 'webapp', 'api_endpoint'] },
+  HAS_ENDPOINT: { source: ['webapp'], target: ['api_endpoint'] },
+  AUTH_BYPASS: { source: ['vulnerability'], target: ['webapp', 'api_endpoint'] },
   // Cloud infrastructure
-  ASSUMES_ROLE: { source: ['cloud_identity'], target: ['cloud_identity'] },
+  ASSUMES_ROLE: { source: ['cloud_identity', 'cloud_resource'], target: ['cloud_identity'] },
   HAS_POLICY: { source: ['cloud_identity', 'group'], target: ['cloud_policy'] },
   POLICY_ALLOWS: { source: ['cloud_policy'], target: ['cloud_resource'] },
   EXPOSED_TO: { source: ['cloud_resource'], target: ['cloud_network', 'subnet'] },

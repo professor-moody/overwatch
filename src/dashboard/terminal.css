@@ -1,0 +1,171 @@
+/* ============================================================
+   Overwatch Dashboard — Terminal Multiplexer Styles
+   ============================================================ */
+
+/* --- Session list in sidebar --- */
+
+.session-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.session-card:hover {
+  background: var(--panel-hover, rgba(255,255,255,0.04));
+}
+
+.session-card.active {
+  background: rgba(88, 166, 255, 0.1);
+  border-left: 2px solid var(--accent, #58a6ff);
+}
+
+.session-card.attached .session-title {
+  color: var(--accent, #58a6ff);
+}
+
+.session-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.session-status-dot.connected { background: #3fb950; }
+.session-status-dot.pending   { background: #d29922; }
+.session-status-dot.closed    { background: #484f58; }
+
+.session-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary, #c9d1d9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-meta {
+  font-size: 10px;
+  color: var(--text-muted, #8b949e);
+}
+
+.session-attach-btn {
+  background: none;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text-muted, #8b949e);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.session-attach-btn:hover {
+  color: var(--accent, #58a6ff);
+  border-color: var(--accent, #58a6ff);
+}
+
+/* --- Terminal bottom panel --- */
+
+#terminal-panel {
+  display: none;
+  flex-direction: column;
+  border-top: 1px solid var(--border, #30363d);
+  background: #0d1117;
+  height: 300px;
+  min-height: 120px;
+  max-height: 60vh;
+  resize: vertical;
+  overflow: hidden;
+}
+
+#terminal-panel.visible {
+  display: flex;
+}
+
+/* --- Tab bar --- */
+
+#terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: #161b22;
+  border-bottom: 1px solid var(--border, #30363d);
+  padding: 0 4px;
+  height: 30px;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted, #8b949e);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.terminal-tab.active {
+  color: var(--text-primary, #c9d1d9);
+  border-bottom-color: var(--accent, #58a6ff);
+}
+
+.terminal-tab.closed .tab-label,
+.terminal-tab.disconnected .tab-label {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.tab-close {
+  background: none;
+  border: none;
+  color: var(--text-muted, #8b949e);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: #ff7b72;
+}
+
+/* --- Terminal instances --- */
+
+#terminal-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminal-instance {
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+}
+
+.terminal-instance.hidden {
+  display: none;
+}
+
+/* xterm.js overrides */
+.terminal-instance .xterm {
+  height: 100%;
+}
+
+.terminal-instance .xterm-viewport {
+  overflow-y: auto !important;
+}

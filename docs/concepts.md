@@ -44,7 +44,7 @@ Deterministic rules that fire automatically when matching nodes are ingested. Th
 
 **Example:** When a service node with `smb_signing: false` is ingested, the "SMB Signing → Relay" rule fires and creates `RELAY_TARGET` edges from all compromised hosts to that service.
 
-Thirty-one built-in rules ship with Overwatch across five domains: AD & service (18), Linux privilege escalation (7), web application (2), MSSQL (1), and cloud infrastructure (3). This includes **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
+Fifty-three built-in rules ship with Overwatch across five domains: AD & service (21), ADCS (14), Linux privilege escalation (7), web application (6), MSSQL (2), and cloud infrastructure (3). This includes **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
 
 Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference with triggers and productions.
 

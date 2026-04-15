@@ -13,6 +13,9 @@ import type {
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { buildCredentialChains } from './retrospective.js';
+import { classifyFinding } from './finding-classifier.js';
+import type { FindingClassification } from './finding-classifier.js';
+import { estimateCvssFromContext, vectorToString } from './cvss-calculator.js';
 
 // ============================================================
 // Types
@@ -30,6 +33,10 @@ export interface ReportFinding {
   evidence: EvidenceChain[];
   remediation: string;
   risk_score: number; // 0-10
+  classification?: FindingClassification;
+  cvss_vector?: string;
+  cvss_score?: number;
+  cvss_estimated?: boolean;
 }
 
 export interface EvidenceChain {
@@ -58,6 +65,8 @@ export interface ReportOptions {
   include_evidence?: boolean;
   include_narrative?: boolean;
   include_retrospective?: boolean;
+  include_compliance?: boolean;
+  include_attack_navigator?: boolean;
   max_timeline_entries?: number;
 }
 
@@ -94,6 +103,10 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     if (n.properties.type !== 'host') continue;
     const accessEdges = graph.edges.filter(e =>
       e.target === n.id && ACCESS_EDGES.has(e.properties.type) && e.properties.confidence >= 0.9
+      // HAS_SESSION edges with session_live:false are historical — exclude from
+      // compromise determination.  Edges without session_live (pre-existing data)
+      // still pass (backward compat: !== false, not === true).
+      && !(e.properties.type === 'HAS_SESSION' && e.properties.session_live === false)
     );
     if (accessEdges.length === 0) continue;
 
@@ -282,6 +295,41 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     });
   }
 
+  // Enrich findings with classification and CVSS estimation
+  const nodeMap2 = new Map<string, NodeProperties>();
+  for (const n of graph.nodes) nodeMap2.set(n.id, n.properties);
+
+  for (const f of findings) {
+    // Classification (CWE, OWASP, NIST, PCI, ATT&CK)
+    f.classification = classifyFinding(f, nodeMap2, graph);
+
+    // CVSS: use explicit vector from vuln node if available, otherwise estimate
+    let hasExplicitCvss = false;
+    for (const assetId of f.affected_assets) {
+      const node = nodeMap2.get(assetId);
+      if (node?.type === 'vulnerability' && node.cvss !== undefined) {
+        hasExplicitCvss = true;
+        f.cvss_score = node.cvss;
+        break;
+      }
+    }
+    // For vulnerability findings, also check the finding's own vuln node
+    if (!hasExplicitCvss && f.category === 'vulnerability') {
+      const vulnNodeId = f.id.replace(/^finding-vuln-/, '');
+      const vulnNode = nodeMap2.get(vulnNodeId);
+      if (vulnNode?.type === 'vulnerability' && vulnNode.cvss !== undefined) {
+        hasExplicitCvss = true;
+        f.cvss_score = vulnNode.cvss;
+      }
+    }
+    if (!hasExplicitCvss) {
+      const estimated = estimateCvssFromContext(f, graph, nodeMap2);
+      f.cvss_vector = vectorToString(estimated.vector);
+      f.cvss_score = estimated.score;
+      f.cvss_estimated = true;
+    }
+  }
+
   // Sort by risk_score descending
   findings.sort((a, b) => b.risk_score - a.risk_score);
   return findings;
@@ -319,7 +367,31 @@ export function buildEvidenceChainsForNode(
 
   for (const [actionId, entries] of byAction) {
     const first = entries[0];
-    const d = first.details as Record<string, unknown> | undefined;
+
+    // Merge evidence from all entries in the action cluster.
+    // Later lifecycle events (finding_ingested, action_completed) are more
+    // likely to carry the actual evidence than early ones (action_validated).
+    const EVIDENCE_PRIORITY: Record<string, number> = {
+      finding_ingested: 3,
+      action_completed: 2,
+      action_validated: 1,
+    };
+    let bestEvidence: Record<string, unknown> | undefined;
+    let bestPriority = -1;
+    for (const entry of entries) {
+      const det = entry.details as Record<string, unknown> | undefined;
+      if (!det) continue;
+      if (det.evidence_type || det.evidence_content || det.evidence_filename || det.raw_output) {
+        const prio = EVIDENCE_PRIORITY[entry.event_type ?? ''] ?? 0;
+        if (prio > bestPriority) {
+          bestEvidence = det;
+          bestPriority = prio;
+        }
+      }
+    }
+    // Fall back to first entry's details if no entry carried evidence fields
+    const d = bestEvidence ?? (first.details as Record<string, unknown> | undefined);
+
     const chain: EvidenceChain = {
       claim: first.description,
       action_id: actionId,
@@ -564,6 +636,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     include_evidence = true,
     include_narrative = true,
     include_retrospective = true,
+    include_compliance = true,
     max_timeline_entries = 50,
   } = options;
 
@@ -870,6 +943,143 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     }
   }
 
+  // === Executive Heatmap — Severity × Category ===
+  if (findings.length > 0) {
+    lines.push('## Risk Heatmap');
+    lines.push('');
+    const categories = [...new Set(findings.map(f => f.category))];
+    const severities: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
+    lines.push(`| Category | ${severities.join(' | ')} | Total |`);
+    lines.push(`|----------|${severities.map(() => '------').join('|')}|-------|`);
+    for (const cat of categories) {
+      const row = severities.map(s => findings.filter(f => f.category === cat && f.severity === s).length);
+      const total = row.reduce((a, b) => a + b, 0);
+      lines.push(`| ${cat} | ${row.join(' | ')} | ${total} |`);
+    }
+    lines.push('');
+  }
+
+  // === Remediation Priority Ranking ===
+  if (findings.length > 0) {
+    const ranked = buildRemediationRanking(findings, graph);
+    if (ranked.length > 0) {
+      lines.push('## Remediation Priority Ranking');
+      lines.push('');
+      lines.push('Findings ranked by combined CVSS score, blast radius, and credential exposure.');
+      lines.push('');
+      lines.push('| # | Finding | CVSS | Blast Radius | Credential Exposure | Priority Score |');
+      lines.push('|---|---------|------|-------------|-------------------|----------------|');
+      for (let i = 0; i < ranked.length; i++) {
+        const r = ranked[i];
+        lines.push(`| ${i + 1} | ${escapeTableCell(r.title)} | ${r.cvss.toFixed(1)}${r.cvss_estimated ? '†' : ''} | ${r.blast_radius} | ${r.cred_exposure} | ${r.priority_score.toFixed(1)} |`);
+      }
+      lines.push('');
+      lines.push('*† CVSS score estimated from engagement context*');
+      lines.push('');
+    }
+  }
+
+  // === Compliance Mapping ===
+  if (include_compliance && findings.some(f => f.classification)) {
+    lines.push('## Compliance Mapping');
+    lines.push('');
+
+    // CWE Table
+    const cweFindngs = findings.filter(f => f.classification?.cwe);
+    if (cweFindngs.length > 0) {
+      lines.push('### CWE Classification');
+      lines.push('');
+      lines.push('| Finding | CWE | Name |');
+      lines.push('|---------|-----|------|');
+      for (const f of cweFindngs) {
+        lines.push(`| ${escapeTableCell(f.title)} | ${f.classification!.cwe} | ${escapeTableCell(f.classification!.cwe_name || '')} |`);
+      }
+      lines.push('');
+    }
+
+    // OWASP Top 10
+    const owaspFindings = findings.filter(f => f.classification?.owasp_category);
+    if (owaspFindings.length > 0) {
+      lines.push('### OWASP Top 10 (2021) Mapping');
+      lines.push('');
+      const owaspGroups = new Map<string, string[]>();
+      for (const f of owaspFindings) {
+        const cat = f.classification!.owasp_category!;
+        const group = owaspGroups.get(cat) || [];
+        group.push(f.title);
+        owaspGroups.set(cat, group);
+      }
+      lines.push('| OWASP Category | Findings |');
+      lines.push('|----------------|----------|');
+      for (const [cat, titles] of owaspGroups) {
+        lines.push(`| ${escapeTableCell(cat)} | ${titles.length} finding(s) |`);
+      }
+      lines.push('');
+    }
+
+    // NIST 800-53
+    const nistFindings = findings.filter(f => f.classification && f.classification.nist_controls.length > 0);
+    if (nistFindings.length > 0) {
+      lines.push('### NIST 800-53 Controls');
+      lines.push('');
+      const nistGroups = new Map<string, number>();
+      for (const f of nistFindings) {
+        for (const ctrl of f.classification!.nist_controls) {
+          nistGroups.set(ctrl, (nistGroups.get(ctrl) || 0) + 1);
+        }
+      }
+      lines.push('| Control | Findings |');
+      lines.push('|---------|----------|');
+      for (const [ctrl, count] of [...nistGroups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20)) {
+        lines.push(`| ${ctrl} | ${count} |`);
+      }
+      lines.push('');
+    }
+
+    // PCI DSS
+    const pciFindings = findings.filter(f => f.classification && f.classification.pci_requirements.length > 0);
+    if (pciFindings.length > 0) {
+      lines.push('### PCI DSS v4.0 Requirements');
+      lines.push('');
+      const pciGroups = new Map<string, number>();
+      for (const f of pciFindings) {
+        for (const req of f.classification!.pci_requirements) {
+          pciGroups.set(req, (pciGroups.get(req) || 0) + 1);
+        }
+      }
+      lines.push('| Requirement | Findings |');
+      lines.push('|-------------|----------|');
+      for (const [req, count] of [...pciGroups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20)) {
+        lines.push(`| ${req} | ${count} |`);
+      }
+      lines.push('');
+    }
+  }
+
+  // === ATT&CK Technique Coverage ===
+  if (include_compliance && findings.some(f => f.classification && f.classification.attack_techniques.length > 0)) {
+    lines.push('## MITRE ATT&CK Techniques');
+    lines.push('');
+    const allTechniques = new Map<string, { name: string; count: number }>();
+    for (const f of findings) {
+      if (!f.classification) continue;
+      for (const t of f.classification.attack_techniques) {
+        const existing = allTechniques.get(t.id);
+        if (existing) {
+          existing.count++;
+        } else {
+          allTechniques.set(t.id, { name: t.name, count: 1 });
+        }
+      }
+    }
+    lines.push('| Technique | Name | Findings |');
+    lines.push('|-----------|------|----------|');
+    for (const [id, { name, count }] of [...allTechniques.entries()].sort((a, b) => b[1].count - a[1].count)) {
+      lines.push(`| ${id} | ${escapeTableCell(name)} | ${count} |`);
+    }
+    lines.push('');
+  }
+
   // === Activity Timeline ===
   lines.push('## Activity Timeline');
   lines.push('');
@@ -918,6 +1128,78 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
 }
 
 // ============================================================
+// Remediation Ranking
+// ============================================================
+
+interface RemediationRanking {
+  title: string;
+  cvss: number;
+  cvss_estimated: boolean;
+  blast_radius: number;
+  cred_exposure: number;
+  priority_score: number;
+}
+
+export function buildRemediationRanking(findings: ReportFinding[], graph: ExportedGraph): RemediationRanking[] {
+  // Build adjacency for blast radius computation
+  const adjacency = new Map<string, Set<string>>();
+  for (const e of graph.edges) {
+    if (!adjacency.has(e.source)) adjacency.set(e.source, new Set());
+    if (!adjacency.has(e.target)) adjacency.set(e.target, new Set());
+    adjacency.get(e.source)!.add(e.target);
+    adjacency.get(e.target)!.add(e.source);
+  }
+
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
+
+  const ranked = findings.map(f => {
+    const cvss = f.cvss_score ?? f.risk_score;
+    const cvssEstimated = f.cvss_estimated ?? false;
+
+    // Blast radius: count unique nodes within 2 hops of affected assets
+    const reachable = new Set<string>();
+    for (const assetId of f.affected_assets) {
+      // Find node ID matching the asset label
+      const nodeId = graph.nodes.find(n =>
+        n.properties.label === assetId || n.id === assetId
+      )?.id;
+      if (!nodeId) continue;
+      const hop1 = adjacency.get(nodeId);
+      if (hop1) {
+        for (const h of hop1) {
+          reachable.add(h);
+          const hop2 = adjacency.get(h);
+          if (hop2) for (const h2 of hop2) reachable.add(h2);
+        }
+      }
+    }
+    const blastRadius = Math.min(reachable.size, 100);
+
+    // Credential exposure: count credential nodes reachable from affected assets
+    let credExposure = 0;
+    for (const nodeId of reachable) {
+      const node = nodeMap.get(nodeId);
+      if (node?.type === 'credential') credExposure++;
+    }
+
+    // Priority score: weighted combination (CVSS × 4 + blast_radius × 0.3 + cred_exposure × 1.5), capped at 100
+    const priorityScore = Math.min(100, cvss * 4 + blastRadius * 0.3 + credExposure * 1.5);
+
+    return {
+      title: f.title,
+      cvss,
+      cvss_estimated: cvssEstimated,
+      blast_radius: blastRadius,
+      cred_exposure: credExposure,
+      priority_score: priorityScore,
+    };
+  });
+
+  ranked.sort((a, b) => b.priority_score - a.priority_score);
+  return ranked.slice(0, 20);
+}
+
+// ============================================================
 // Remediation Generators
 // ============================================================
 
@@ -929,8 +1211,15 @@ function generateHostRemediation(host: NodeProperties, accessEdges: ExportedGrap
     e.properties.type === 'HAS_SESSION' && (e.properties.confidence ?? 0) >= 0.7
   );
   const hasSession = confirmedSessions.length > 0;
+  const hasLiveSession = confirmedSessions.some(e => e.properties.session_live !== false);
 
-  lines.push(`1. **Revoke all active sessions** on ${host.label || host.ip || host.id} and force re-authentication.`);
+  if (hasLiveSession) {
+    lines.push(`1. **Revoke all active sessions** on ${host.label || host.ip || host.id} and force re-authentication.`);
+  } else if (hasSession) {
+    lines.push(`1. **Review historical sessions** on ${host.label || host.ip || host.id} — no sessions are currently active, but past access was confirmed.`);
+  } else {
+    lines.push(`1. **Force re-authentication** on ${host.label || host.ip || host.id}.`);
+  }
 
   if (hasAdmin) {
     lines.push('2. **Reset local administrator credentials** and review local admin group membership.');

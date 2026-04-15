@@ -77,6 +77,10 @@ function doConnect() {
         handleStateSnapshot(msg.data);
       } else if (msg.type === 'graph_update' && onGraphUpdate) {
         onGraphUpdate(msg.data);
+      } else if (msg.type === 'action_pending' || msg.type === 'action_resolved') {
+        if (window.OverwatchPendingActions) {
+          window.OverwatchPendingActions.handleWsEvent(msg);
+        }
       }
     } catch (err) {
       console.error('WS message parse error:', err);

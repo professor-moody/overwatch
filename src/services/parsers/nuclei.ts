@@ -39,12 +39,16 @@ function serviceIdFromUrl(urlStr: string): string {
     const url = new URL(urlStr);
     const ip = url.hostname;
     const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-    return `svc-${ip.replace(/\./g, '-')}-${port}`;
+    return `svc-${hostId(ip).replace(/^host-/, '')}-${port}`;
   } catch {
-    // Handle plain host:port (e.g. 10.10.10.5:6379 from non-HTTP Nuclei)
+    // Handle plain host:port (e.g. 10.10.10.5:6379 or [::1]:6379 from non-HTTP Nuclei)
+    const bracketMatch = urlStr.match(/^\[([^\]]+)\]:(\d+)$/);
+    if (bracketMatch) {
+      return `svc-${hostId(bracketMatch[1]).replace(/^host-/, '')}-${bracketMatch[2]}`;
+    }
     const hostPortMatch = urlStr.match(/^([\d.]+|[\w.-]+):(\d+)$/);
     if (hostPortMatch) {
-      return `svc-${hostPortMatch[1].replace(/\./g, '-')}-${hostPortMatch[2]}`;
+      return `svc-${hostId(hostPortMatch[1]).replace(/^host-/, '')}-${hostPortMatch[2]}`;
     }
     return `svc-unknown-http`;
   }
@@ -160,11 +164,17 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
 
       // Create host node if identifiable
       if (host) {
-        const hId = hostId(host.replace(/^https?:\/\//, '').split(':')[0]);
+        let ipOrHostname: string;
+        try {
+          const parsed = new URL(host.includes('://') ? host : `http://${host}`);
+          ipOrHostname = parsed.hostname.replace(/^\[|\]$/g, '');
+        } catch {
+          ipOrHostname = host.replace(/^https?:\/\//, '').replace(/[\[\]]/g, '').split('/')[0];
+        }
+        const hId = hostId(ipOrHostname);
         if (!seenNodes.has(hId)) {
           seenNodes.add(hId);
-          const ipOrHostname = host.replace(/^https?:\/\//, '').split(':')[0];
-          const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(ipOrHostname);
+          const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(ipOrHostname) || ipOrHostname.includes(':');
           nodes.push({
             id: hId,
             type: 'host',

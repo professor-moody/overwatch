@@ -31,9 +31,15 @@ function azureObjectNodeId(objectId: string): string {
   return `azure-${normalizeKeyPart(objectId)}`;
 }
 
-export function parseAzureHoundFile(content: string, filename: string): Finding {
+export interface AzureHoundParseResult {
+  finding: Finding;
+  warnings: string[];
+}
+
+export function parseAzureHoundFile(content: string, filename: string): AzureHoundParseResult {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
+  const warnings: string[] = [];
   const now = new Date().toISOString();
   const seenNodes = new Set<string>();
 
@@ -41,11 +47,20 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
   try {
     data = JSON.parse(content);
   } catch {
-    return { id: `azurehound-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] };
+    return { finding: { id: `azurehound-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] }, warnings: [`${filename}: failed to parse JSON`] };
   }
 
   const items = data.data || data.value || (Array.isArray(data) ? data : []);
   const kind = (data.kind || inferKindFromFilename(filename)).toLowerCase();
+
+  const SUPPORTED_KINDS = new Set([
+    'azusers', 'users', 'azgroups', 'groups', 'azapps', 'apps', 'applications',
+    'azserviceprincipals', 'serviceprincipals', 'azroleassignments', 'roleassignments',
+    'azapproleassignments', 'approleassignments',
+  ]);
+  if (!SUPPORTED_KINDS.has(kind) && kind !== 'unknown') {
+    warnings.push(`${filename}: unsupported AzureHound kind '${kind}', skipping ${items.length} item(s)`);
+  }
 
   for (const item of items) {
     const props = item.Properties || item.properties || item;
@@ -161,6 +176,18 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
         const appId = props.appId;
         if (appId) {
           const appNodeId = cloudIdentityId(`azure:app:${appId}`);
+          // Emit stub app node if not already seen so the edge target is valid
+          if (!seenNodes.has(appNodeId)) {
+            seenNodes.add(appNodeId);
+            nodes.push({
+              id: appNodeId, type: 'cloud_identity',
+              label: props.displayName ? `${props.displayName} (App)` : String(appId),
+              discovered_at: now, discovered_by: AGENT_ID, confidence: 0.8,
+              provider: 'azure', principal_type: 'app',
+              arn: String(appId),
+              cloud_account: props.tenantId || '',
+            } as Finding['nodes'][0]);
+          }
           edges.push({
             source: nodeId, target: appNodeId,
             properties: { type: 'ASSUMES_ROLE', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID },
@@ -247,11 +274,14 @@ export function parseAzureHoundFile(content: string, filename: string): Finding 
   }
 
   return {
-    id: `azurehound-${normalizeKeyPart(filename)}-${Date.now()}`,
-    agent_id: AGENT_ID,
-    timestamp: now,
-    nodes,
-    edges,
+    finding: {
+      id: `azurehound-${normalizeKeyPart(filename)}-${Date.now()}`,
+      agent_id: AGENT_ID,
+      timestamp: now,
+      nodes,
+      edges,
+    },
+    warnings,
   };
 }
 

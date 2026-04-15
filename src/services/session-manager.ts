@@ -320,6 +320,18 @@ export class SessionManager {
         // "transport connected, auth incomplete."
         const success = !authFailed && !authPrompt && !sessionDied;
 
+        // Surface auth state in session metadata so callers can distinguish
+        // shell-confirmed sessions from transport-only or auth-failed ones.
+        if (authFailed) {
+          session.metadata.auth_status = 'auth_failed';
+        } else if (authPrompt) {
+          session.metadata.auth_status = 'auth_prompt';
+        } else if (confirmed) {
+          session.metadata.auth_status = 'shell_confirmed';
+        } else {
+          session.metadata.auth_status = 'connected_unconfirmed';
+        }
+
         this.engine.ingestSessionResult({
           success,
           confirmed,

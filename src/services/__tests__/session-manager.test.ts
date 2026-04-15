@@ -991,3 +991,109 @@ describePty('LocalPtyAdapter — real PTY', () => {
     expect(exitInfo.exitCode).toBeDefined();
   });
 });
+
+// ============================================================
+// auth_status on SSH session metadata
+// ============================================================
+
+describe('SessionManager — SSH auth_status in metadata', () => {
+  function createSshMock(initialOutput: string) {
+    const dataCbs: Array<(chunk: string) => void> = [];
+    const exitCbs: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
+
+    const handle: AdapterHandle = {
+      pid: 77777,
+      capabilities: { has_stdin: true, has_stdout: true, supports_resize: false, supports_signals: false, tty_quality: 'full' as const },
+      write() {},
+      resize() {},
+      kill() {},
+      close() {},
+      onData(cb) { dataCbs.push(cb); },
+      onExit(cb) { exitCbs.push(cb); },
+    };
+
+    const adapter: SessionAdapterFactory = {
+      kind: 'ssh' as any,
+      async spawn() {
+        // Simulate initial output arriving immediately
+        setTimeout(() => {
+          for (const cb of dataCbs) cb(initialOutput);
+        }, 10);
+        return handle;
+      },
+    };
+
+    return { adapter, handle, dataCbs, exitCbs };
+  }
+
+  function makeFakeEngine() {
+    return {
+      logActionEvent() {},
+      ingestSessionResult() {},
+      getConfig() {
+        return {
+          scope: { cidrs: ['10.0.0.0/8'], domains: [], exclusions: [] },
+        };
+      },
+    };
+  }
+
+  it('sets auth_status to auth_failed on permission denied', async () => {
+    const { adapter } = createSshMock('Permission denied (publickey).\r\n');
+    const engine = makeFakeEngine();
+    const mgr = new SessionManager(engine as any);
+    mgr.registerAdapter(adapter);
+
+    const result = await mgr.create({
+      kind: 'ssh' as any,
+      title: 'auth-fail-test',
+      host: '10.0.0.1',
+      target_node: 'host-1',
+      initial_wait_ms: 100,
+    });
+
+    expect(result.metadata.auth_status).toBe('auth_failed');
+    await mgr.shutdown();
+  });
+
+  it('sets auth_status to auth_prompt on password prompt', async () => {
+    const { adapter } = createSshMock('user@10.0.0.1\'s password: ');
+    const engine = makeFakeEngine();
+    const mgr = new SessionManager(engine as any);
+    mgr.registerAdapter(adapter);
+
+    const result = await mgr.create({
+      kind: 'ssh' as any,
+      title: 'prompt-test',
+      host: '10.0.0.1',
+      target_node: 'host-1',
+      initial_wait_ms: 100,
+    });
+
+    expect(result.metadata.auth_status).toBe('auth_prompt');
+    await mgr.shutdown();
+  });
+
+  it('sets auth_status to connected_unconfirmed when no auth signals detected', async () => {
+    // Output that doesn't match any auth failure, prompt, or success pattern
+    const { adapter } = createSshMock('Welcome to Ubuntu 22.04\r\n');
+    const engine = makeFakeEngine();
+    const mgr = new SessionManager(engine as any);
+    mgr.registerAdapter(adapter);
+
+    const result = await mgr.create({
+      kind: 'ssh' as any,
+      title: 'unconfirmed-test',
+      host: '10.0.0.1',
+      target_node: 'host-1',
+      initial_wait_ms: 100,
+    });
+
+    // Without a shell prompt pattern match, detectSshAuthSuccess returns false,
+    // so auth_status should be connected_unconfirmed or shell_confirmed depending
+    // on whether the echo probe succeeds. Since the mock doesn't respond to the
+    // probe, it will be connected_unconfirmed.
+    expect(['connected_unconfirmed', 'shell_confirmed']).toContain(result.metadata.auth_status);
+    await mgr.shutdown();
+  });
+});

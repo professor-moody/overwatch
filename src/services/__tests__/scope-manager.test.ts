@@ -498,4 +498,49 @@ describe('scope-manager', () => {
       expect(ctx.config.scope.domains).toEqual(domainsBefore);
     });
   });
+
+  describe('IPv6 rejection', () => {
+    it('rejects IPv6 CIDRs with specific error message', () => {
+      const graph = makeGraph();
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const host = makeHost(graph, ctx);
+
+      const result = updateScope(host, {
+        add_cidrs: ['2001:db8::/32'],
+        reason: 'test ipv6',
+      });
+
+      expect(result.applied).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('IPv6');
+      expect(result.errors[0]).toContain('not supported');
+    });
+
+    it('rejects IPv6 exclusions with specific error message', () => {
+      const graph = makeGraph();
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const host = makeHost(graph, ctx);
+
+      const result = updateScope(host, {
+        add_exclusions: ['fe80::/10'],
+        reason: 'test ipv6 exclusion',
+      });
+
+      expect(result.applied).toBe(false);
+      expect(result.errors[0]).toContain('IPv6');
+    });
+
+    it('distinguishes IPv6 from generic invalid CIDR errors', () => {
+      const graph = makeGraph();
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const host = makeHost(graph, ctx);
+
+      const ipv6Result = updateScope(host, { add_cidrs: ['::1/128'], reason: 'v6' });
+      const invalidResult = updateScope(host, { add_cidrs: ['notacidr'], reason: 'invalid' });
+
+      expect(ipv6Result.errors[0]).toContain('IPv6');
+      expect(invalidResult.errors[0]).toContain('Invalid CIDR');
+      expect(invalidResult.errors[0]).not.toContain('IPv6');
+    });
+  });
 });

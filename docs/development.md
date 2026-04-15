@@ -56,7 +56,7 @@ overwatch/
 │   │   ├── finding-validation.ts # Input validation for findings
 │   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── parsers/          # 17 parsers / 30 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler
+│   │   ├── parsers/          # 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan
 │   │   ├── parser-utils.ts   # Shared parsing helpers
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
@@ -91,7 +91,7 @@ overwatch/
 │       ├── app-bootstrap.test.ts
 │       ├── mcp-server.integration.test.ts
 │       └── http-transport.integration.test.ts
-├── skills/                   # 33 offensive methodology guides
+├── skills/                   # 34 offensive methodology guides
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
 └── docs/                     # Documentation source
@@ -99,7 +99,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1643+ tests across 67 source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). **1900+ tests across 73 source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
 npm test                        # Fast source tests (see Vitest summary for current count)
@@ -138,7 +138,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `cidr.test.ts` | CIDR parsing, scope matching, hostname resolution |
 | `skill-index.test.ts` | Skill search and indexing |
 | `bloodhound-ingest.test.ts` | BloodHound JSON parsing, SharpHound CE adapter |
-| `output-parsers.test.ts` | All 17 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler |
+| `output-parsers.test.ts` | All 21 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan |
 | `parser-utils.test.ts` | Shared parsing utilities, canonical ID generation |
 | `credential-utils.test.ts` | Credential normalization, lifecycle, domain inference |
 | `credential-lifecycle.test.ts` | Credential status, expiry, derivation chains, degradation |

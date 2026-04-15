@@ -59,7 +59,38 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
     }
   }
 
-  // Check which patterns aren't covered by existing rules
+  // Check which patterns aren't covered by existing rules.
+  // Build covered triples from rule produces + trigger/selector node type mapping.
+  const selectorToNodeTypes: Record<string, string[]> = {
+    trigger_node: [],           // filled per-rule from trigger.node_type
+    parent_host: ['host'],
+    domain_nodes: ['domain'],
+    domain_users: ['user'],
+    domain_credentials: ['credential'],
+    matching_domain: ['domain'],
+    orphan_service_host: ['host'],
+    matching_user_for_cred: ['user'],
+  };
+
+  const coveredTriples = new Set<string>();
+  for (const rule of input.inferenceRules) {
+    const triggerType = rule.trigger.node_type;
+    for (const prod of rule.produces) {
+      const sourceTypes = prod.source_selector === 'trigger_node' && triggerType
+        ? [triggerType]
+        : (selectorToNodeTypes[prod.source_selector] ?? []);
+      const targetTypes = prod.target_selector === 'trigger_node' && triggerType
+        ? [triggerType]
+        : (selectorToNodeTypes[prod.target_selector] ?? []);
+
+      for (const st of sourceTypes) {
+        for (const tt of targetTypes) {
+          coveredTriples.add(`${st}→${prod.edge_type}→${tt}`);
+        }
+      }
+    }
+  }
+  // Also keep edge-type-only set for backward compat (loose check)
   const coveredEdgeTypes = new Set(
     input.inferenceRules.flatMap(r => r.produces.map(p => p.edge_type))
   );
@@ -73,7 +104,11 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
   };
 
   for (const [key, pattern] of edgePatterns) {
-    if (pattern.count >= 3 && !coveredEdgeTypes.has(pattern.edgeType)) {
+    // Use triple matching: check if (sourceType, edgeType, targetType) is covered.
+    // Falls back to edge-type-only check for rules whose selectors can't be resolved to types.
+    const tripleCovered = coveredTriples.has(key);
+    const edgeTypeCovered = coveredEdgeTypes.has(pattern.edgeType);
+    if (pattern.count >= 3 && !tripleCovered && !edgeTypeCovered) {
       // Skip same-type patterns — they'd produce self-loops that the engine drops
       if (pattern.sourceType === pattern.targetType) continue;
 
@@ -127,8 +162,13 @@ export function analyzeInferenceGaps(input: RetrospectiveInput): InferenceRuleSu
     ruleStats.set(ruleId, stats);
   }
 
-  // Flag individual low-performing rules
+  // Build rule-id-to-rule lookup for self_confirming check
+  const ruleById = new Map(input.inferenceRules.map(r => [r.id, r]));
+
+  // Flag individual low-performing rules (skip self_confirming rules)
   for (const [ruleId, stats] of ruleStats) {
+    const rule = ruleById.get(ruleId);
+    if (rule?.self_confirming) continue;
     if (stats.total >= 3) {
       const rate = stats.confirmed / stats.total;
       if (rate < 0.1) {

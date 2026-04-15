@@ -586,10 +586,10 @@ describe('11.5 — Prowler parser', () => {
     expect(finding.nodes.filter(n => n.type === 'vulnerability')).toHaveLength(0);
   });
 
-  it('is registered in PARSERS as prowler (scoutsuite alias removed)', () => {
+  it('is registered in PARSERS as prowler and scoutsuite', () => {
     const line = JSON.stringify({ ResourceArn: 'arn:aws:s3:::x', ResourceId: 'x', Status: 'PASS', Severity: 'LOW' });
     expect(parseOutput('prowler', line)).toBeTruthy();
-    expect(parseOutput('scoutsuite', line)).toBeNull();
+    expect(parseOutput('scoutsuite', line)).toBeTruthy();
   });
 
   it('handles multiple lines', () => {
@@ -664,7 +664,7 @@ describe('11.6 — AzureHound ingest', () => {
 
   it('parses Azure users', () => {
     const data = { kind: 'azusers', data: [{ Properties: { id: 'user-obj-1', userPrincipalName: 'admin@test.onmicrosoft.com', displayName: 'Admin', accountEnabled: true, tenantId: 'tenant-1' } }] };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'users.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'users.json');
     expect(finding.nodes.length).toBe(1);
     expect(finding.nodes[0].type).toBe('cloud_identity');
     expect(finding.nodes[0].provider).toBe('azure');
@@ -679,21 +679,21 @@ describe('11.6 — AzureHound ingest', () => {
         Members: [{ ObjectIdentifier: 'user-obj-1', ObjectType: 'User', displayName: 'Admin' }],
       }]
     };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'groups.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'groups.json');
     expect(finding.nodes.find(n => n.type === 'group')).toBeTruthy();
     expect(finding.edges.some(e => e.properties.type === 'MEMBER_OF')).toBe(true);
   });
 
   it('parses Azure apps', () => {
     const data = { kind: 'azapps', data: [{ Properties: { appId: 'app-123', displayName: 'MyApp', tenantId: 't-1' } }] };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'apps.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'apps.json');
     expect(finding.nodes[0].type).toBe('cloud_identity');
     expect(finding.nodes[0].principal_type).toBe('app');
   });
 
   it('parses Azure service principals', () => {
     const data = { kind: 'azserviceprincipals', data: [{ Properties: { id: 'sp-1', displayName: 'MySP', appId: 'app-123' } }] };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'serviceprincipals.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'serviceprincipals.json');
     expect(finding.nodes[0].type).toBe('cloud_identity');
     expect(finding.nodes[0].principal_type).toBe('service_account');
     expect(finding.edges.some(e => e.properties.type === 'ASSUMES_ROLE')).toBe(true);
@@ -704,7 +704,7 @@ describe('11.6 — AzureHound ingest', () => {
       kind: 'azroleassignments',
       data: [{ Properties: { principalId: 'user-obj-1', roleDefinitionName: 'Contributor', roleDefinitionId: 'role-def-1' } }]
     };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'roleassignments.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'roleassignments.json');
     const policyNode = finding.nodes.find(n => n.type === 'cloud_policy');
     expect(policyNode).toBeTruthy();
     expect(policyNode!.policy_name).toBe('Contributor');
@@ -716,19 +716,19 @@ describe('11.6 — AzureHound ingest', () => {
       kind: 'azapproleassignments',
       data: [{ Properties: { principalId: 'user-obj-1', resourceId: 'sp-1' } }]
     };
-    const finding = parseAzureHoundFile(JSON.stringify(data), 'approleassignments.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify(data), 'approleassignments.json');
     expect(finding.edges.some(e => e.properties.type === 'ASSUMES_ROLE')).toBe(true);
   });
 
   it('infers kind from filename when kind field is absent', () => {
     const data = [{ Properties: { id: 'user-1', displayName: 'Test', userPrincipalName: 'test@test.com' } }];
-    const finding = parseAzureHoundFile(JSON.stringify({ data }), 'azusers.json');
+    const { finding } = parseAzureHoundFile(JSON.stringify({ data }), 'azusers.json');
     // Should infer 'azusers' from filename
     expect(finding.nodes[0]?.type).toBe('cloud_identity');
   });
 
   it('handles invalid JSON gracefully', () => {
-    const finding = parseAzureHoundFile('not json', 'bad.json');
+    const { finding } = parseAzureHoundFile('not json', 'bad.json');
     expect(finding.nodes).toHaveLength(0);
   });
 });

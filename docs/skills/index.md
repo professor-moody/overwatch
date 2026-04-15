@@ -1,6 +1,6 @@
 # Skills Library
 
-Overwatch includes 33 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool.
+Overwatch includes 34 offensive methodology guides searchable via TF-IDF through the [`get_skill`](../tools/get-skill.md) tool.
 
 ## Available Skills
 
@@ -12,6 +12,7 @@ Overwatch includes 33 offensive methodology guides searchable via TF-IDF through
 | DNS Enumeration | `dns-enumeration.md` | DNS zone transfers, subdomain enumeration |
 | SNMP Enumeration | `snmp-enumeration.md` | SNMP community string brute-force, MIB walking |
 | SMB Enumeration | `smb-enumeration.md` | Share enumeration, null sessions, user listing |
+| NetExec | `netexec.md` | Multi-protocol enumeration and exploitation with NXC |
 | Subnet Enumeration | `subnet-enumeration.md` | Per-CIDR agent methodology for parallel subnet sweeps |
 
 ### Active Directory

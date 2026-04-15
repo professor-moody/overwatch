@@ -1,0 +1,341 @@
+/* ============================================================
+   Overwatch Dashboard — Campaign Panel Styles
+   ============================================================ */
+
+/* Campaign cards */
+.campaign-card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-left: 2px solid var(--purple);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.campaign-card:hover {
+  background: var(--bg-hover);
+}
+
+.campaign-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.campaign-strategy-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.campaign-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status badges */
+.campaign-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.campaign-status-draft {
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+.campaign-status-active {
+  color: var(--green);
+  background: var(--green-dim);
+}
+
+.campaign-status-paused {
+  color: var(--amber);
+  background: var(--amber-dim);
+}
+
+.campaign-status-completed {
+  color: var(--text-muted);
+  background: var(--bg-active);
+}
+
+.campaign-status-aborted {
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+/* Progress bar */
+.campaign-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.campaign-progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-active);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.campaign-progress-bar--lg {
+  height: 6px;
+  border-radius: 3px;
+}
+
+.campaign-progress-fill {
+  height: 100%;
+  background: var(--green);
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+
+.campaign-progress-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* Card metadata */
+.campaign-card-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.campaign-agents {
+  color: var(--text-secondary);
+}
+
+.campaign-failures {
+  color: var(--red);
+}
+
+/* ============================================================
+   Campaign Detail Drawer
+   ============================================================ */
+
+#campaign-detail-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100vh;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-default);
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#campaign-detail-drawer.open {
+  transform: translateX(0);
+}
+
+.campaign-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.campaign-detail-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px;
+}
+
+.campaign-detail-close:hover { color: var(--text-primary); }
+
+.campaign-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.campaign-detail-section {
+  margin-bottom: 14px;
+}
+
+.campaign-detail-section + .campaign-detail-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.campaign-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.campaign-detail-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.campaign-detail-value {
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.campaign-detail-value.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.campaign-progress-row--detail {
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+/* Abort conditions */
+.campaign-abort-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.campaign-abort-type {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.campaign-abort-values {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.campaign-abort-warning {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 500;
+}
+
+/* Agent list within campaign detail */
+.campaign-agent-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.campaign-agent-id {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-agent-status {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* Findings */
+.campaign-finding-id {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 1px 0;
+}
+
+.campaign-more {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Action buttons */
+.campaign-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.campaign-action-btn {
+  flex: 1;
+  min-width: 80px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font: 600 11px var(--font);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: center;
+}
+
+.campaign-btn-activate {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid var(--green);
+}
+.campaign-btn-activate:hover { background: rgba(62,207,142,0.2); }
+
+.campaign-btn-pause {
+  background: var(--amber-dim);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+}
+.campaign-btn-pause:hover { background: rgba(234,179,8,0.2); }
+
+.campaign-btn-abort {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+.campaign-btn-abort:hover { background: rgba(239,68,68,0.2); }
+
+.campaign-btn-dispatch {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.campaign-btn-dispatch:hover { background: rgba(91,141,239,0.2); }

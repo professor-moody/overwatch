@@ -5,7 +5,7 @@
 
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import type { NodeProperties, NodeType, EngagementConfig, ScopeSuggestion } from '../types.js';
-import { isIpInScope, isValidCidr } from './cidr.js';
+import { isIpInScope, isValidCidr, isIPv6 } from './cidr.js';
 
 export interface ScopeManagerHost {
   ctx: EngineContext;
@@ -41,19 +41,23 @@ export function updateScope(
   const errors: string[] = [];
 
   for (const cidr of changes.add_cidrs || []) {
-    if (!isValidCidr(cidr)) errors.push(`Invalid CIDR: ${cidr}`);
+    if (isIPv6(cidr)) { errors.push(`IPv6 CIDRs are not supported (scope is IPv4-only): ${cidr}`); }
+    else if (!isValidCidr(cidr)) errors.push(`Invalid CIDR: ${cidr}`);
   }
   for (const cidr of changes.remove_cidrs || []) {
-    if (!isValidCidr(cidr)) errors.push(`Invalid CIDR to remove: ${cidr}`);
+    if (isIPv6(cidr)) { errors.push(`IPv6 CIDRs are not supported (scope is IPv4-only): ${cidr}`); }
+    else if (!isValidCidr(cidr)) errors.push(`Invalid CIDR to remove: ${cidr}`);
   }
   for (const domain of changes.add_domains || []) {
     if (!isValidDomain(domain)) errors.push(`Invalid domain format: ${domain}`);
   }
   for (const cidr of changes.add_exclusions || []) {
-    if (!isValidCidr(cidr)) errors.push(`Invalid exclusion: ${cidr}`);
+    if (isIPv6(cidr)) { errors.push(`IPv6 exclusions are not supported (scope is IPv4-only): ${cidr}`); }
+    else if (!isValidCidr(cidr)) errors.push(`Invalid exclusion: ${cidr}`);
   }
   for (const cidr of changes.remove_exclusions || []) {
-    if (!isValidCidr(cidr)) errors.push(`Invalid exclusion to remove: ${cidr}`);
+    if (isIPv6(cidr)) { errors.push(`IPv6 exclusions are not supported (scope is IPv4-only): ${cidr}`); }
+    else if (!isValidCidr(cidr)) errors.push(`Invalid exclusion to remove: ${cidr}`);
   }
 
   if (errors.length > 0) {

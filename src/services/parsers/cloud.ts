@@ -345,3 +345,79 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
 
   return { id: `prowler-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
 }
+
+/**
+ * Parse enumerate-iam text output.
+ *
+ * enumerate-iam probes every AWS API action and reports which succeed.
+ * Output lines look like:
+ *   [INFO] -- Account ID: 123456789012
+ *   [INFO] -- ARN: arn:aws:iam::123456789012:user/testuser
+ *   [INFO] iam.list_users() worked!
+ *   [INFO] s3.list_buckets() worked!
+ */
+export function parseEnumerateIam(output: string, agentId: string = 'enumerate-iam-parser', context?: ParseContext): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const now = new Date().toISOString();
+
+  const lines = output.split('\n');
+
+  let accountIdVal = context?.cloud_account || '';
+  let arnVal = '';
+  const confirmed: string[] = [];
+
+  for (const line of lines) {
+    // Account ID
+    const accMatch = line.match(/Account\s+ID:\s*(\d{12})/i);
+    if (accMatch) { accountIdVal = accMatch[1]; continue; }
+
+    // ARN
+    const arnMatch = line.match(/ARN:\s*(arn:[^\s]+)/i);
+    if (arnMatch) { arnVal = arnMatch[1]; continue; }
+
+    // Confirmed API call
+    const apiMatch = line.match(/(\w+\.\w+)\(\)\s+worked/i);
+    if (apiMatch) {
+      // Convert "iam.list_users" to "iam:ListUsers" style
+      const [service, action] = apiMatch[1].split('.');
+      // Normalise to service:action format
+      const normalised = `${service}:${action}`;
+      confirmed.push(normalised);
+    }
+  }
+
+  if (confirmed.length === 0) {
+    return { id: `enumerate-iam-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [] };
+  }
+
+  // Create cloud_identity for the enumerated principal
+  const identityArn = arnVal || `arn:aws:iam::${accountIdVal}:user/enumerated`;
+  const identityNodeId = cloudIdentityId(identityArn);
+  nodes.push({
+    id: identityNodeId, type: 'cloud_identity',
+    label: arnVal ? arnVal.split('/').pop() || arnVal : 'enumerated-principal',
+    discovered_at: now, discovered_by: agentId, confidence: 1.0,
+    provider: 'aws', arn: arnVal || undefined,
+    principal_type: arnVal.includes(':role/') ? 'role' : 'user',
+    cloud_account: accountIdVal,
+    policies_enumerated: true,
+  } as Finding['nodes'][0]);
+
+  // Create a cloud_policy with the confirmed actions
+  const policyId = cloudPolicyId('aws', `enumerated-${identityArn}`);
+  nodes.push({
+    id: policyId, type: 'cloud_policy',
+    label: `Enumerated permissions (${confirmed.length} actions)`,
+    discovered_at: now, discovered_by: agentId, confidence: 0.9,
+    provider: 'aws', policy_name: 'enumerated-permissions',
+    effect: 'allow', actions: confirmed, resources: ['*'],
+  } as Finding['nodes'][0]);
+
+  edges.push({
+    source: identityNodeId, target: policyId,
+    properties: { type: 'HAS_POLICY', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+  });
+
+  return { id: `enumerate-iam-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+}

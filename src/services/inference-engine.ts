@@ -440,6 +440,12 @@ export class InferenceEngine {
         return this.getNodesByType('user').map(n => n.id);
       }
 
+      case 'enrollable_users_if_issuance_policy': {
+        // ESC13: Only return enrollable users if the template has both issuance_policy_oid and issuance_policy_group_link set
+        if (!node.issuance_policy_oid || !node.issuance_policy_group_link) return [];
+        return this.getNodesByType('user').map(n => n.id);
+      }
+
       case 'edge_peers': {
         if (!rule?.trigger.requires_edge) return [];
         return this.resolveEdgePeers(triggerNodeId, rule.trigger.requires_edge);
@@ -514,6 +520,47 @@ export class InferenceEngine {
         return this.getNodesByType('credential')
           .filter(c => isCredentialUsableForAuth(c) && getCredentialMaterialKind(c) === 'plaintext_password' && !c.cred_is_default_guess)
           .map(n => n.id);
+
+      case 'default_credential_candidates':
+        return this.getNodesByType('credential')
+          .filter(c => c.cred_is_default_guess === true && isCredentialUsableForAuth(c))
+          .map(n => n.id);
+
+      case 'cms_credentials': {
+        // Credentials with default guess flag where a webapp with matching cms_type exists
+        const webapps = this.getNodesByType('webapp');
+        const cmsTypes = new Set(webapps.map(w => (w.cms_type || '').toLowerCase()).filter(Boolean));
+        if (cmsTypes.size === 0) return [];
+        return this.getNodesByType('credential')
+          .filter(c => c.cred_is_default_guess === true && isCredentialUsableForAuth(c))
+          .map(n => n.id);
+      }
+
+      case 'hosted_webapps': {
+        // For a credential trigger, find webapps hosted by services the credential is VALID_ON
+        const webappIds: string[] = [];
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type !== 'VALID_ON') return;
+          // tgt is a service — find webapps it hosts
+          this.ctx.graph.forEachOutEdge(tgt, (_e2: string, a2, _s2: string, tgt2: string) => {
+            if (a2.type === 'HOSTS') webappIds.push(tgt2);
+          });
+        });
+        return webappIds;
+      }
+
+      case 'vulnerable_webapps': {
+        // For a vulnerability trigger, find webapps that have VULNERABLE_TO pointing to it
+        const webappIds: string[] = [];
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (attrs.type !== 'VULNERABLE_TO') return;
+          const srcNode = this.getNode(src);
+          if (srcNode?.type === 'webapp' || srcNode?.type === 'api_endpoint') {
+            webappIds.push(src);
+          }
+        });
+        return webappIds;
+      }
 
       case 'linked_server_hosts': {
         // Resolve linked_servers array on trigger service node to host nodes
@@ -606,6 +653,60 @@ export class InferenceEngine {
         return targets;
       }
 
+      case 'transitive_assumed_roles': {
+        // BFS through ASSUMES_ROLE edges (2+ hops) crossing account boundaries
+        const srcAccount = node.cloud_account;
+        if (!srcAccount) return [];
+        const visited = new Set<string>([triggerNodeId]);
+        const queue = [triggerNodeId];
+        const crossAccountTargets: string[] = [];
+        let depth = 0;
+        let frontier = queue.length;
+        while (queue.length > 0 && depth < 5) {
+          const current = queue.shift()!;
+          frontier--;
+          this.ctx.graph.forEachOutEdge(current, (_edge: string, attrs, _src: string, tgt: string) => {
+            if (attrs.type !== 'ASSUMES_ROLE') return;
+            if (visited.has(tgt)) return;
+            visited.add(tgt);
+            queue.push(tgt);
+            const tgtNode = this.getNode(tgt);
+            if (tgtNode?.cloud_account && tgtNode.cloud_account !== srcAccount) {
+              crossAccountTargets.push(tgt);
+            }
+          });
+          if (frontier === 0) { depth++; frontier = queue.length; }
+        }
+        return crossAccountTargets;
+      }
+
+      case 'imds_managed_identity': {
+        // Follow MANAGED_BY outbound from a cloud_resource (EC2) to find the identity it can pivot to
+        const targets: string[] = [];
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type !== 'MANAGED_BY') return;
+          const tgtNode = this.getNode(tgt);
+          if (tgtNode?.type === 'cloud_identity') {
+            targets.push(tgt);
+          }
+        });
+        return targets;
+      }
+
+      case 'lambda_attached_role': {
+        // Follow MANAGED_BY from a Lambda resource to its execution role
+        if (node.resource_type !== 'lambda') return [];
+        const targets: string[] = [];
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type !== 'MANAGED_BY') return;
+          const tgtNode = this.getNode(tgt);
+          if (tgtNode?.type === 'cloud_identity') {
+            targets.push(tgt);
+          }
+        });
+        return targets;
+      }
+
       case 'credentials_same_username': {
         // Find other credentials with the same cred_user property (credential reuse detection)
         const credUser = node.cred_user;
@@ -649,6 +750,32 @@ export class InferenceEngine {
           if (attrs.type === 'GENERIC_ALL' || attrs.type === 'WRITE_DACL') peers.add(src);
         });
         return Array.from(peers);
+      }
+
+      case 'ca_host_compromised_peers': {
+        // ESC12: Find users with shell access to the host that runs this CA.
+        // Strategy: match CA label/ca_name against host hostname/label, then find HAS_SESSION sources.
+        const caLabel = (node.ca_name || node.label || '').toLowerCase();
+        if (!caLabel) return [];
+        const sessionHolders = new Set<string>();
+        // Also check OPERATES_CA edges: domain → CA; find hosts in that domain
+        const caHosts = new Set<string>();
+        this.ctx.graph.forEachNode((id: string, attrs) => {
+          if (attrs.type !== 'host') return;
+          const hn = (attrs.hostname || attrs.label || '').toLowerCase();
+          // Match if the host's hostname starts with the CA name component (e.g., "dc01" matches "dc01.corp.local")
+          if (hn && caLabel.includes(hn.split('.')[0])) caHosts.add(id);
+          // Or exact DNS match
+          if (hn && (caLabel === hn || caLabel.startsWith(hn + '.'))) caHosts.add(id);
+        });
+        for (const hostId of caHosts) {
+          this.ctx.graph.forEachInEdge(hostId, (_edge: string, attrs, src: string) => {
+            if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.7) {
+              sessionHolders.add(src);
+            }
+          });
+        }
+        return Array.from(sessionHolders);
       }
 
       case 'http_services_via_ca': {

@@ -293,6 +293,62 @@ describe('Retrospective', () => {
       const ruleFewSuggestion = suggestions.find(s => s.rule.id.includes('rule-few'));
       expect(ruleFewSuggestion).toBeUndefined();
     });
+
+    it('does not flag RUNS pattern when a RUNS-producing rule exists (triple matching)', () => {
+      const input = makeInput();
+      // Add 3+ RUNS edges (host→service)
+      input.graph.nodes.push({
+        id: 'host-10-10-10-3',
+        properties: { id: 'host-10-10-10-3', type: 'host', label: '10.10.10.3', ip: '10.10.10.3', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties,
+      });
+      input.graph.nodes.push({
+        id: 'svc-smb-3',
+        properties: { id: 'svc-smb-3', type: 'service', label: 'SMB', port: 445, service_name: 'smb', discovered_at: '2026-01-01T01:00:00Z', confidence: 1.0 } as NodeProperties,
+      });
+      input.graph.edges.push({
+        source: 'host-10-10-10-3', target: 'svc-smb-3',
+        properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties,
+      });
+
+      // Add a rule that produces RUNS (host→service)
+      input.inferenceRules.push({
+        id: 'rule-host-runs-service',
+        name: 'Host runs discovered services',
+        description: 'Service nodes on a host → RUNS edges',
+        trigger: { node_type: 'service' },
+        produces: [{ edge_type: 'RUNS', source_selector: 'parent_host', target_selector: 'trigger_node', confidence: 0.9 }],
+      });
+
+      const suggestions = analyzeInferenceGaps(input);
+      const runsSuggestion = suggestions.find(s => s.rule.id.includes('runs'));
+      expect(runsSuggestion).toBeUndefined();
+    });
+
+    it('does not flag self_confirming rules as low-performing', () => {
+      const input = makeInput();
+      // Add a self_confirming rule
+      input.inferenceRules.push({
+        id: 'rule-kerberos-domain',
+        name: 'Kerberos implies domain membership',
+        description: 'Kerberos → MEMBER_OF_DOMAIN',
+        trigger: { node_type: 'service', property_match: { service_name: 'kerberos' } },
+        produces: [{ edge_type: 'MEMBER_OF_DOMAIN', source_selector: 'parent_host', target_selector: 'matching_domain', confidence: 0.95 }],
+        self_confirming: true,
+      });
+
+      // Add 5 inferred edges from the kerberos rule, 0 confirmed
+      input.graph.edges = [];
+      for (let i = 0; i < 5; i++) {
+        input.graph.edges.push({
+          source: `host-10-10-10-${i % 2 + 1}`, target: 'domain-test-local',
+          properties: { type: 'MEMBER_OF_DOMAIN', confidence: 0.95, discovered_at: '2026-01-01T10:00:00Z', inferred_by_rule: 'rule-kerberos-domain', inferred_at: '2026-01-01T10:00:00Z' } as EdgeProperties,
+        });
+      }
+
+      const suggestions = analyzeInferenceGaps(input);
+      const kerbSuggestion = suggestions.find(s => s.rule.id.includes('rule-kerberos-domain'));
+      expect(kerbSuggestion).toBeUndefined();
+    });
   });
 
   // =============================================
@@ -897,6 +953,58 @@ describe('Retrospective', () => {
         expect(stats.total).toBe(1);
         expect(stats.successful).toBe(1);
       });
+    });
+  });
+
+  // =============================================
+  // Credential field normalization regression
+  // =============================================
+  describe('generateReport — credential field normalization regression', () => {
+    it('counts sqlmap/wpscan plaintext credentials as reusable', () => {
+      // Simulates credentials emitted by sqlmap/wpscan parsers after field-name fix.
+      // Before the fix, cred_type/cred_material_kind used wrong names and
+      // isCredentialUsableForAuth() rejected them → 0 reusable credentials in report.
+      const input = makeInput({
+        graph: {
+          nodes: [
+            ...makeInput().graph.nodes,
+            {
+              id: 'cred-sqlmap-root',
+              properties: {
+                id: 'cred-sqlmap-root', type: 'credential', label: 'root plaintext',
+                cred_type: 'plaintext', cred_user: 'root', cred_material_kind: 'plaintext_password',
+                discovered_at: '2026-01-01T09:00:00Z', confidence: 1.0,
+              } as NodeProperties,
+            },
+          ],
+          edges: makeInput().graph.edges,
+        },
+      });
+      const report = generateReport(input);
+      // Should count both the existing DA cred + the sqlmap cred
+      expect(report).toContain('obtaining 2 reusable credential(s)');
+    });
+
+    it('does not count credentials without recognized cred_type as reusable', () => {
+      const input = makeInput({
+        graph: {
+          nodes: [
+            ...makeInput().graph.nodes,
+            {
+              id: 'cred-broken',
+              properties: {
+                id: 'cred-broken', type: 'credential', label: 'broken cred',
+                // no cred_type, no cred_material_kind, no cred_usable_for_auth
+                discovered_at: '2026-01-01T09:00:00Z', confidence: 1.0,
+              } as NodeProperties,
+            },
+          ],
+          edges: makeInput().graph.edges,
+        },
+      });
+      const report = generateReport(input);
+      // Only the existing DA cred should count
+      expect(report).toContain('obtaining 1 reusable credential(s)');
     });
   });
 });

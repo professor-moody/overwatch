@@ -239,6 +239,7 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | `ESC9` | ADCS escalation path 9 (no security extension) |
 | `ESC10` | ADCS escalation path 10 (weak certificate mapping) |
 | `ESC11` | ADCS escalation path 11 (certificate relay to AD CS) |
+| `ESC12` | ADCS escalation path 12 (shell access to CA with YubiHSM) |
 | `ESC13` | ADCS escalation path 13 (issuance policy OID abuse) |
 
 ### Lateral Movement
@@ -247,6 +248,8 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 |------|-------------|
 | `RELAY_TARGET` | NTLM relay target |
 | `NULL_SESSION` | Null session access |
+| `TESTED_CRED` | Credential tested against a service (with result) |
+| `SHARED_CREDENTIAL` | Credential shared across multiple users/services |
 
 ### Web Application Surface
 
@@ -298,22 +301,22 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Thirty-one built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
+Fifty-three built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
 
-#### AD & Service Rules (18)
+#### AD & Service Rules (21)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
 | Kerberos → Domain | Service with `service_name: kerberos` | `MEMBER_OF_DOMAIN` to matching domain (hostname suffix) |
+| Host Runs Service | Service node linked to a host | `RUNS` edge from host to service |
 | SMB Signing → Relay | Service with `smb_signing: false` | `RELAY_TARGET` from compromised hosts |
 | MSSQL + Domain | MSSQL service on domain host | `POTENTIAL_AUTH` from domain credentials |
 | Credential Fanout | New credential node | `POTENTIAL_AUTH` to compatible services in same domain |
-| ADCS ESC1 | cert_template with enrollee-supplied subject + client auth EKU | `ESC1` from enrollable users (confidence 0.75) |
+| Login Spray Candidate | Service with auth (SMB, RDP, WinRM, SSH, HTTP) | `POTENTIAL_AUTH` from credentials with matching username |
 | Unconstrained Delegation | Host with `unconstrained_delegation: true` | `DELEGATES_TO` from domain admins and session holders (confidence 0.7) |
 | AS-REP Roastable | User with `asrep_roastable: true` | `AS_REP_ROASTABLE` to user's own domain (confidence 0.85) |
 | Kerberoastable | User with `has_spn: true` | `KERBEROASTABLE` to user's own domain (confidence 0.85) |
 | Constrained Delegation | Host with `constrained_delegation: true` | `CAN_DELEGATE_TO` to delegation targets from `allowed_to_delegate_to` SPN list (confidence 0.8) |
-| Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
 | LAPS Readable | Host with `laps: true` + inbound `GENERIC_ALL` | `CAN_READ_LAPS` from edge peers |
 | gMSA Readable | User with `gmsa: true` + inbound `GENERIC_ALL` | `CAN_READ_GMSA` from edge peers |
 | RBCD Target | Host with `maq_gt_zero: true` + inbound `WRITEABLE_BY` | `RBCD_TARGET` from edge peers |
@@ -323,6 +326,28 @@ Thirty-one built-in declarative rules fire automatically when matching nodes are
 | Shadow Credentials | User/host with inbound `WRITE_MSDS_ALLOWEDTOACTONBEHALFOFOTHERIDENTITY` | `ESCALATION_PATH` from edge peers (confidence 0.8) |
 | GPO Abuse | GPO with inbound `WRITE_PROPERTY` | `ESCALATION_PATH` from edge peers to linked hosts (confidence 0.75) |
 | DCSync | User with inbound `CAN_DCSYNC` edge | `CAN_DCSYNC` to user's own domain (confidence 0.9) |
+| Session → Admin Persistence | Host with `HAS_SESSION` + `ADMIN_TO` | `ADMIN_TO` persistence reinforcement |
+| Shared Credential | Credential used by multiple users | `SHARED_CREDENTIAL` edges between users |
+| User Owns Credential | User with associated credential | `OWNS_CRED` edge from user to credential |
+
+#### ADCS Rules (14)
+
+| Rule | Trigger | Produces |
+|------|---------|----------|
+| ADCS ESC1 | cert_template with enrollee-supplied subject + client auth EKU | `ESC1` from enrollable users (confidence 0.75) |
+| ADCS ESC2 | cert_template with Any Purpose or no EKU restriction | `ESC2` from enrollable users (confidence 0.7) |
+| ADCS ESC3 | cert_template with enrollment agent EKU | `ESC3` from enrollable users (confidence 0.7) |
+| ADCS ESC4 | cert_template with low-privilege write access | `ESC4` from writeable-by peers (confidence 0.75) |
+| ADCS ESC5 (Template) | cert_template with vulnerable template ACLs | `ESC5` from relevant users/groups |
+| ADCS ESC5 (CA) | CA with vulnerable CA ACLs | `ESC5` from manage-CA peers |
+| ADCS ESC6 | CA with `EDITF_ATTRIBUTESUBJECTALTNAME2` flag | `ESC6` from enrollable users (confidence 0.75) |
+| ADCS ESC7 | CA with manage CA + manage certificates | `ESC7` from manage-CA peers (confidence 0.75) |
+| ADCS ESC8 | CA with HTTP enrollment endpoint | `ESC8` from HTTP services via CA (confidence 0.7) |
+| ADCS ESC9 | cert_template with no security extension | `ESC9` from enrollable users (confidence 0.7) |
+| ADCS ESC10 | cert_template with weak certificate mapping | `ESC10` from enrollable users (confidence 0.7) |
+| ADCS ESC11 | CA with certificate relay to AD CS | `ESC11` from CA host compromised peers (confidence 0.7) |
+| ADCS ESC12 | CA with shell access + YubiHSM key storage | `ESC12` from CA host compromised peers (confidence 0.7) |
+| ADCS ESC13 | cert_template with issuance policy OID | `ESC13` from enrollable users with issuance policy (confidence 0.7) |
 
 #### Linux Privilege Escalation Rules
 
@@ -336,13 +361,19 @@ Thirty-one built-in declarative rules fire automatically when matching nodes are
 | Dangerous Capabilities | Host with `has_dangerous_capabilities: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.55) |
 | Writable Cron/Systemd | Host with `writable_cron_or_systemd: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.65) |
 
-#### Web Application Rules
+#### Web Application Rules (6)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
+| Web Login Form | Service with `has_login_form: true` | `POTENTIAL_AUTH` from domain credentials |
 | Webapp Login Spray | Webapp with `has_login_form: true` | `POTENTIAL_AUTH` from all credentials (confidence 0.3) |
+| Authenticated Rescan | Webapp with `AUTHENTICATED_AS` edge | Frontier: re-scan with authenticated session |
+| Default Credentials | Webapp with `technology` matching known defaults | `POTENTIAL_AUTH` edges with default cred pairs |
+| CMS Exploitation | Webapp with `cms_type` set | Frontier: version-specific exploit checks |
+| SQLi → Credential Extraction | Vulnerability with `vuln_type=sqli` | `EXPLOITS` edge + potential `credential` nodes |
+| SQLi → RCE Escalation | Vulnerability with `vuln_type=sqli` + stacked queries | `EXPLOITS` edge to parent host |
 
-#### MSSQL Rules
+#### MSSQL Rules (2)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -367,24 +398,35 @@ Selectors resolve graph context when inference rules fire:
 | `trigger_node` | The node that triggered the rule |
 | `trigger_service` | Same as `trigger_node` |
 | `parent_host` | Host running the triggering service |
+| `orphan_service_host` | Host for a service node without an existing `RUNS` edge |
 | `domain_nodes` | All domain nodes |
 | `domain_users` | All domain-joined user nodes |
 | `domain_credentials` | All NTLM/Kerberos/AES reusable credentials |
+| `domain_admins_and_session_holders` | Session holders on trigger host + admin group members; falls back to all domain users |
 | `all_compromised` | Hosts with `HAS_SESSION` or `ADMIN_TO` edges at confidence >= 0.7 |
 | `compatible_services` | Services accepting the credential type |
 | `compatible_services_same_domain` | Like `compatible_services` but filtered to same domain as credential |
 | `matching_domain` | Domain nodes matching host hostname suffix |
 | `matching_user_domain` | Domain nodes the trigger user belongs to (via `MEMBER_OF_DOMAIN` edge or `domain_name` property) |
-| `domain_admins_and_session_holders` | Session holders on trigger host + admin group members; falls back to all domain users |
+| `matching_user_for_cred` | User nodes matching a credential's `cred_user` field |
 | `edge_peers` | Peer nodes from the rule's `requires_edge` (for edge-triggered rules) |
+| `writeable_by_peers` | Peer nodes with `WRITEABLE_BY` edges to the trigger node |
 | `enrollable_users` | All user nodes (for ADCS rules) |
 | `enrollable_users_if_client_auth` | All users, but only when the trigger cert_template has Client Authentication EKU |
+| `enrollable_users_if_issuance_policy` | All users, but only when the trigger cert_template has issuance policy OID |
 | `session_holders_on_host` | Users/groups with `HAS_SESSION` (confidence >= 0.7) to the triggering host |
 | `ssh_services` | All services with `service_name: ssh` |
 | `ssh_services_related` | SSH services on hosts where the credential owner has existing access |
 | `delegation_targets` | Hosts/services resolved from `allowed_to_delegate_to` SPN list; falls back to domain nodes |
 | `linked_server_hosts` | Hosts matching the `linked_servers` array by hostname/label |
+| `target_user_credentials` | Credentials associated with a target user |
+| `credentials_same_username` | Credentials matching the same `cred_user` as the trigger credential |
+| `gpo_linked_hosts` | Hosts linked to the GPO via `APPLIES_TO` or group membership |
 | `web_form_credentials` | Plaintext non-default credentials for webapp spray |
 | `all_usable_credentials` | All credentials usable for authentication |
+| `ca_for_template` | CA nodes that issue the trigger cert_template |
+| `manage_ca_peers` | Identities with manage-CA permissions |
+| `ca_host_compromised_peers` | Session holders on host running the CA |
+| `http_services_via_ca` | HTTP services reachable from CA enrollment endpoints |
 | `nearest_objective` | Objective nodes (for cloud rules with wildcard action gating) |
 | `cross_account_roles` | Cloud identities in different accounts reachable via `ASSUMES_ROLE` |

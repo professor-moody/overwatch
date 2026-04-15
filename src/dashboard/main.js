@@ -30,6 +30,22 @@ window.addEventListener('DOMContentLoaded', () => {
   // Initialize UI (collapsible panels, search, keyboard shortcuts, minimap)
   UI.init();
 
+  // Initialize terminal multiplexer (optional — works without xterm.js)
+  const TM = window.OverwatchTerminal;
+  if (TM) TM.init();
+
+  // Initialize agent supervision panel (optional)
+  const AP = window.OverwatchAgentPanel;
+  if (AP) AP.init();
+
+  // Initialize campaign management panel (optional)
+  const CP = window.OverwatchCampaigns;
+  if (CP) CP.init();
+
+  // Initialize pending actions panel (optional)
+  const PA = window.OverwatchPendingActions;
+  if (PA) PA.init();
+
   // Wire up graph control buttons
   document.getElementById('btn-fit').addEventListener('click', () => G.zoomToFit());
   document.getElementById('btn-layout').addEventListener('click', () => G.toggleLayout());
@@ -217,6 +233,8 @@ window.addEventListener('DOMContentLoaded', () => {
       G.updateMinimap();
       refreshEdgeTypeList();
       checkHistoryChanged(data.state || data);
+      if (window.OverwatchAgentPanel) window.OverwatchAgentPanel.updateFromState(data.state);
+      if (window.OverwatchCampaigns) window.OverwatchCampaigns.updateFromState();
     },
     onGraphUpdate(data) {
       G.mergeGraphDelta(data.delta);
@@ -224,6 +242,8 @@ window.addEventListener('DOMContentLoaded', () => {
       G.updateMinimap();
       refreshEdgeTypeList();
       checkHistoryChanged(data.state || data);
+      if (window.OverwatchAgentPanel) window.OverwatchAgentPanel.updateFromState(data.state);
+      if (window.OverwatchCampaigns) window.OverwatchCampaigns.updateFromState();
     },
   });
 });

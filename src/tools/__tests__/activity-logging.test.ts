@@ -666,4 +666,42 @@ describe('structured activity logging tools', () => {
     );
     expect(entry?.result_classification).toBe('partial');
   });
+
+  it('auto-adds failure pattern after 3 consecutive failures with same technique', async () => {
+    // Log 3 action_failed events with the same technique
+    for (let i = 0; i < 3; i++) {
+      await handlers.log_action_event({
+        action_id: `action-fail-${i}`,
+        event_type: 'action_failed',
+        description: `Kerberoast attempt ${i + 1} failed`,
+        technique: 'kerberoast',
+        target_node_ids: [],
+      });
+    }
+
+    // Check that a failure_pattern was auto-added
+    const config = engine.getConfig();
+    expect(config.failure_patterns).toBeDefined();
+    const kerbPattern = config.failure_patterns!.find(fp => fp.technique === 'kerberoast');
+    expect(kerbPattern).toBeDefined();
+    expect(kerbPattern!.warning).toContain('kerberoast');
+    expect(kerbPattern!.warning).toContain('3');
+  });
+
+  it('does not duplicate auto-added failure patterns', async () => {
+    // Log 4 failures — should only add pattern once
+    for (let i = 0; i < 4; i++) {
+      await handlers.log_action_event({
+        action_id: `action-dup-${i}`,
+        event_type: 'action_failed',
+        description: `SMB relay ${i + 1} failed`,
+        technique: 'smb-relay',
+        target_node_ids: [],
+      });
+    }
+
+    const config = engine.getConfig();
+    const relayPatterns = (config.failure_patterns || []).filter(fp => fp.technique === 'smb-relay');
+    expect(relayPatterns.length).toBe(1);
+  });
 });

@@ -2,6 +2,17 @@
 // Overwatch — CIDR Utilities
 // ============================================================
 
+/**
+ * Detect whether a string looks like an IPv6 address.
+ * Matches any string containing a colon (`:`) — covers full, compressed, and
+ * link-local forms.  All CIDR helpers in this module are IPv4-only; this guard
+ * lets callers reject IPv6 input cleanly instead of producing bogus results
+ * from 32-bit math on 128-bit addresses.
+ */
+export function isIPv6(addr: string): boolean {
+  return addr.includes(':');
+}
+
 export interface CidrExpansionResult {
   ips: string[];
   truncated: boolean;
@@ -11,6 +22,7 @@ export interface CidrExpansionResult {
 const EXPANSION_CAP = 4094; // /20 equivalent — usable hosts in a /20
 
 export function expandCidrDetailed(cidr: string): CidrExpansionResult {
+  if (isIPv6(cidr)) return { ips: [], truncated: false };
   const [base, maskStr] = cidr.split('/');
   if (!maskStr) return { ips: [base], truncated: false };
 
@@ -53,6 +65,7 @@ export function expandCidr(cidr: string): string[] {
 }
 
 export function isIpInCidr(ip: string, cidr: string): boolean {
+  if (isIPv6(ip) || isIPv6(cidr)) return false;
   const [base, maskStr] = cidr.split('/');
   if (!maskStr) return ip === base;
 
@@ -65,6 +78,7 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
 }
 
 export function isIpInScope(ip: string, cidrs: string[], exclusions: string[]): boolean {
+  if (isIPv6(ip)) return false;
   // Check exclusions first
   for (const excl of exclusions) {
     if (excl.includes('/')) {
@@ -118,6 +132,7 @@ export function isValidCidr(cidr: string): boolean {
 export function inferCidrFromIps(ips: string[]): string[] {
   const subnets = new Map<string, Set<string>>();
   for (const ip of ips) {
+    if (isIPv6(ip)) continue;
     const parts = ip.split('.');
     if (parts.length !== 4) continue;
     const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;

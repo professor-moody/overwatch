@@ -201,6 +201,11 @@ export function ingestFindingImpl(
       ...edge.properties,
       discovered_by: finding.agent_id
     };
+    // Mark directly-observed edges as tested so they don't pollute the frontier.
+    // Inferred edges (from rules) retain tested=undefined for frontier surfacing.
+    if (fullProps.confidence >= 1.0 && !fullProps.inferred_by_rule) {
+      fullProps.tested = true;
+    }
     const { id: edgeId, isNew } = host.addEdge(sourceId, targetId, fullProps);
     if (isNew) {
       newEdges.push(edgeId);

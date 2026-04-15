@@ -39,7 +39,10 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
           .describe('Maximum frontier items to return'),
         include_filtered: z.boolean()
           .default(false)
-          .describe('Also return items that were filtered out, with reasons')
+          .describe('Also return items that were filtered out, with reasons'),
+        group_by: z.enum(['individual', 'campaign'])
+          .default('individual')
+          .describe('Return individual frontier items or group them into campaigns (credential spray, enumeration, post-exploitation)')
       },
       annotations: {
         readOnlyHint: false,
@@ -48,7 +51,7 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
         openWorldHint: false
       }
     },
-    withErrorBoundary('next_task', async ({ max_items, include_filtered }) => {
+    withErrorBoundary('next_task', async ({ max_items, include_filtered, group_by }) => {
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
@@ -56,6 +59,12 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
         candidate_count: passed.length,
         candidates: passed.slice(0, max_items)
       };
+
+      if (group_by === 'campaign') {
+        const campaigns = engine.getCampaigns();
+        result.campaigns = campaigns;
+        result.campaign_count = campaigns.length;
+      }
 
       if (include_filtered) {
         result.filtered_count = filtered.length;
@@ -83,6 +92,9 @@ Checks:
 - Is the target in scope (not excluded)?
 - Is the technique blacklisted by OPSEC profile?
 - Is the action within the approved time window?
+- Adaptive OPSEC: noise budget remaining, recommended approach, defensive signals
+
+When approval_mode is 'approve-critical' or 'approve-all', this tool may block while awaiting operator approval. The response will include an 'approval' field with the operator's decision.
 
 Call this before every significant action. Returns valid/invalid with specific errors and warnings.`,
       inputSchema: {
@@ -133,23 +145,147 @@ Call this before every significant action. Returns valid/invalid with specific e
         target_edge: edge_source && edge_target ? { source: edge_source, target: edge_target } : undefined,
         frontier_item_id,
         validation_result: validationResult,
+        noise_estimate: result.opsec_context.global_noise_spent,
         result_classification: !result.valid ? 'failure' : result.warnings.length > 0 ? 'partial' : 'success',
         details: {
           errors: result.errors,
           warnings: result.warnings,
+          opsec_context: result.opsec_context,
         },
       });
       engine.persist();
 
+      // --- Approval gate ---
+      // If validation passed (not invalid) and approval mode requires it,
+      // block until the operator approves, denies, or timeout fires.
+      const queue = engine.getPendingActionQueue();
+      let approval: import('../services/pending-action-queue.js').ActionResolution | undefined;
+      if (validationResult !== 'invalid' && queue.needsApproval(result.opsec_context, technique)) {
+        approval = await queue.submit({
+          action_id: normalizedActionId,
+          technique,
+          target_node,
+          target_ip,
+          description: resolvedDescription,
+          opsec_context: result.opsec_context,
+          validation_result: validationResult as 'valid' | 'warning_only',
+          frontier_item_id,
+        });
+
+        // Log the approval resolution
+        engine.logActionEvent({
+          description: `Action ${approval.status}: ${resolvedDescription}`,
+          action_id: normalizedActionId,
+          event_type: 'action_validated',
+          category: 'frontier',
+          frontier_item_id,
+          result_classification: approval.status === 'denied' ? 'failure' : 'success',
+          details: {
+            approval_status: approval.status,
+            operator_notes: approval.operator_notes,
+            reason: approval.reason,
+          },
+        });
+        engine.persist();
+      }
+
+      const responseObj: Record<string, unknown> = {
+        action_id: normalizedActionId,
+        action: resolvedDescription,
+        frontier_item_id: frontier_item_id || undefined,
+        frontier_type: frontierType || undefined,
+        validation_result: validationResult,
+        ...result,
+      };
+
+      if (approval) {
+        responseObj.approval = {
+          status: approval.status,
+          operator_notes: approval.operator_notes,
+          reason: approval.reason,
+        };
+        // If denied, override validation_result so the model knows to abort
+        if (approval.status === 'denied') {
+          responseObj.validation_result = 'invalid';
+          responseObj.errors = [...(result.errors || []), `Operator denied: ${approval.reason || 'no reason given'}`];
+        }
+      }
+
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
-            action_id: normalizedActionId,
-            action: resolvedDescription,
-            validation_result: validationResult,
-            ...result
-          }, null, 2)
+          text: JSON.stringify(responseObj, null, 2)
+        }]
+      };
+    })
+  );
+
+  // ============================================================
+  // Tool: manage_campaign
+  // Campaign lifecycle control.
+  // ============================================================
+  server.registerTool(
+    'manage_campaign',
+    {
+      title: 'Manage Campaign',
+      description: `Control campaign lifecycle: activate, pause, resume, abort, or get status.
+
+Campaigns are auto-generated groups of related frontier items:
+- **credential_spray** — one credential tested against multiple services
+- **enumeration** — batch of incomplete nodes needing the same enrichment
+- **post_exploitation** — follow-up actions on a compromised host
+- **network_discovery** — host discovery in a scope CIDR
+
+Use next_task(group_by="campaign") to see available campaigns.
+Activate a campaign to begin execution, pause to hold, abort to cancel.`,
+      inputSchema: {
+        campaign_id: z.string().describe('Campaign ID to manage'),
+        action: z.enum(['activate', 'pause', 'resume', 'abort', 'status', 'check_abort'])
+          .describe('Lifecycle action to perform'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      }
+    },
+    withErrorBoundary('manage_campaign', async ({ campaign_id, action }) => {
+      let campaign;
+      let extra: Record<string, unknown> = {};
+
+      switch (action) {
+        case 'activate':
+          campaign = engine.activateCampaign(campaign_id);
+          break;
+        case 'pause':
+          campaign = engine.pauseCampaign(campaign_id);
+          break;
+        case 'resume':
+          campaign = engine.resumeCampaign(campaign_id);
+          break;
+        case 'abort':
+          campaign = engine.abortCampaign(campaign_id);
+          break;
+        case 'status':
+          campaign = engine.getCampaign(campaign_id);
+          break;
+        case 'check_abort':
+          campaign = engine.getCampaign(campaign_id);
+          extra = engine.checkCampaignAbortConditions(campaign_id);
+          break;
+      }
+
+      if (!campaign) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: `Campaign ${campaign_id} not found or action not applicable` }) }]
+        };
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ campaign, ...extra }, null, 2)
         }]
       };
     })

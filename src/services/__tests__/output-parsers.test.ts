@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler } from '../parsers/index.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler, parseBurp, parseZap, parseSqlmap, parseWpscan, parseScoutSuite, parseCloudFox, parseTerraformState, parseEnumerateIam } from '../parsers/index.js';
 
 describe('Output Parsers', () => {
 
@@ -251,6 +251,22 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBe(0);
     });
 
+    it('parses IPv6 SMB output', () => {
+      const output = `SMB  fe80::1  445  DC01  [+] ACME\\admin (Pwn3d!)`;
+      const finding = parseNxc(output);
+
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].id).toContain('host-');
+
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      expect(services[0].service_name).toBe('smb');
+
+      const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
+      expect(adminEdges.length).toBe(1);
+    });
+
     it('F03: failed auth [-] creates TESTED_CRED edge with confidence 0.0', () => {
       const output = `SMB  10.10.10.5  445  DC01  [-] ACME\\testuser STATUS_LOGON_FAILURE`;
       const finding = parseNxc(output);
@@ -395,6 +411,86 @@ describe('Output Parsers', () => {
       expect(finding.edges.filter(e => e.properties.type === 'NULL_SESSION')).toHaveLength(1);
       expect(finding.edges.filter(e => e.properties.type === 'MEMBER_OF_DOMAIN')).toHaveLength(1);
       expect(finding.edges.filter(e => e.properties.type === 'RELATED')).toHaveLength(1);
+    });
+
+    it('extracts Linux OS from SMB info line', () => {
+      const output = [
+        'SMB  10.10.10.20  445  LINUX01  [*] Linux 5.10.0-kali7-amd64 x86_64 (name:LINUX01) (domain:) (signing:False) (SMBv1:False)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].os).toBe('Linux 5.10.0-kali7-amd64 x86_64');
+    });
+
+    it('extracts Samba OS from SMB info line', () => {
+      const output = [
+        'SMB  10.10.10.30  445  SAMBA01  [*] Samba 4.13.13-Debian (name:SAMBA01) (domain:WORKGROUP) (signing:False) (SMBv1:True)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].os).toBe('Samba 4.13.13-Debian');
+    });
+
+    it('extracts SAM dump hashes from --sam output', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] north.sevenkingdoms.local\\admin:Password123',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping SAM hashes',
+        'SMB         10.3.10.11      445    WINTERFELL       Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::',
+        'SMB         10.3.10.11      445    WINTERFELL       jsnow:1001:aad3b435b51404eeaad3b435b51404ee:abcdef0123456789abcdef0123456789:::',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const creds = finding.nodes.filter(n => n.type === 'credential' && n.cred_type === 'ntlm');
+      expect(creds).toHaveLength(2);
+      expect(creds[0].cred_material_kind).toBe('ntlm_hash');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      expect(creds[0].cred_evidence_kind).toBe('dump');
+
+      // DUMPED_FROM edges
+      const dumpEdges = finding.edges.filter(e => e.properties.type === 'DUMPED_FROM');
+      expect(dumpEdges).toHaveLength(2);
+
+      // OWNS_CRED edges for SAM
+      const ownsEdges = finding.edges.filter(e => e.properties.type === 'OWNS_CRED');
+      expect(ownsEdges.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('extracts LSA secrets from --lsa output', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] north.sevenkingdoms.local\\admin:Password123',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        'SMB         10.3.10.11      445    WINTERFELL       NORTH\\svc_backup:BackupP@ss!',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const creds = finding.nodes.filter(n => n.type === 'credential' && n.cred_evidence_kind === 'dump' && n.label?.includes('LSA'));
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_type).toBe('plaintext');
+      expect(creds[0].cred_value).toBe('BackupP@ss!');
+      expect(creds[0].cred_user).toBe('svc_backup');
+    });
+
+    it('extracts spider_plus file listings', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] \\\\10.3.10.11\\Backups\\db_backup.sql (1024)',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] \\\\10.3.10.11\\Backups\\config.xml (512)',
+        'SMB         10.3.10.11      445    WINTERFELL       [*] \\\\10.3.10.11\\Public\\readme.txt (256)',
+      ].join('\n');
+      const finding = parseNxc(output);
+
+      const shares = finding.nodes.filter(n => n.type === 'share');
+      expect(shares.length).toBeGreaterThanOrEqual(2);
+      const backupShare = shares.find(s => s.share_name === 'Backups');
+      expect(backupShare).toBeDefined();
+      expect(backupShare!.spider_files).toBeDefined();
+      expect((backupShare!.spider_files as string[]).length).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -566,6 +662,76 @@ describe('Output Parsers', () => {
       expect(enrollEdges[0].target).toBe('cert-template-safetemplate');
       const escEdges = finding.edges.filter(e => e.properties.type.startsWith('ESC'));
       expect(escEdges.length).toBe(0);
+    });
+
+    it('extracts enforce_encrypt_icert_request=false on CA (ESC11)', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'DNS Name': 'dc01.acme.corp',
+            'IF_ENFORCEENCRYPTICERTREQUEST': false,
+            'Certificate Templates': [],
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const ca = finding.nodes.find(n => n.type === 'ca');
+      expect(ca).toBeDefined();
+      expect((ca as Record<string, unknown>).enforce_encrypt_icert_request).toBe(false);
+    });
+
+    it('extracts enforce_encrypt_icert_request=true on CA', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'DNS Name': 'dc01.acme.corp',
+            'IF_ENFORCEENCRYPTICERTREQUEST': true,
+            'Certificate Templates': [],
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const ca = finding.nodes.find(n => n.type === 'ca');
+      expect(ca).toBeDefined();
+      expect((ca as Record<string, unknown>).enforce_encrypt_icert_request).toBe(true);
+    });
+
+    it('extracts ct_flag_no_security_extension from ESC9 vulnerability (ESC9)', () => {
+      const data = {
+        'Certificate Templates': {
+          'VulnTemplate': {
+            'Enrollee Supplies Subject': false,
+            '[!] Vulnerabilities': { 'ESC9': { 'Description': 'CT_FLAG_NO_SECURITY_EXTENSION flag set' } },
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const tmpl = finding.nodes.find(n => n.type === 'cert_template');
+      expect(tmpl).toBeDefined();
+      expect((tmpl as Record<string, unknown>).ct_flag_no_security_extension).toBe(true);
+    });
+
+    it('extracts issuance_policy_oid and group_link from ESC13 template', () => {
+      const data = {
+        'Certificate Templates': {
+          'PolicyTemplate': {
+            'Enrollee Supplies Subject': false,
+            'msPKI-Certificate-Policy': '1.3.6.1.4.1.311.21.8.999',
+            'Issuance Policies': {
+              '1.3.6.1.4.1.311.21.8.999': {
+                'Linked Group': 'CN=HighPrivGroup,CN=Users,DC=acme,DC=corp',
+              },
+            },
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const tmpl = finding.nodes.find(n => n.type === 'cert_template');
+      expect(tmpl).toBeDefined();
+      expect((tmpl as Record<string, unknown>).issuance_policy_oid).toBe('1.3.6.1.4.1.311.21.8.999');
+      expect((tmpl as Record<string, unknown>).issuance_policy_group_link).toBe('CN=HighPrivGroup,CN=Users,DC=acme,DC=corp');
     });
   });
 
@@ -1430,6 +1596,42 @@ describe('Output Parsers', () => {
       expect(users.length).toBe(1);
       expect(memberEdges.length).toBe(1);
     });
+
+    it('handles IPv6 target in text mode', () => {
+      const textOutput = [
+        '  Target: 2001:db8::1',
+        '  [+] Domain: CORP',
+        '  500: CORP\\Administrator (SidTypeUser)',
+      ].join('\n');
+      const finding = parseEnum4linux(textOutput);
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host).toBeDefined();
+      expect(host!.ip).toBe('2001:db8::1');
+      expect(host!.id).toBe('host-2001-db8--1');
+      const svc = finding.nodes.find(n => n.type === 'service');
+      expect(svc).toBeDefined();
+      expect(svc!.id).toBe('svc-2001-db8--1-445');
+    });
+
+    it('handles IPv6 target in JSON mode', () => {
+      const jsonData = JSON.stringify({
+        target: { host: '2001:db8::2' },
+        domain_info: { domain: 'CORP' },
+        shares: {
+          'DATA': { access: { mapping: 'OK', readable: true } },
+        },
+      });
+      const finding = parseEnum4linux(jsonData);
+      const host = finding.nodes.find(n => n.type === 'host');
+      expect(host).toBeDefined();
+      expect(host!.ip).toBe('2001:db8::2');
+      expect(host!.id).toBe('host-2001-db8--2');
+      const svc = finding.nodes.find(n => n.type === 'service');
+      expect(svc!.id).toBe('svc-2001-db8--2-445');
+      const share = finding.nodes.find(n => n.type === 'share');
+      expect(share).toBeDefined();
+      expect(share!.id).toContain('2001-db8--2');
+    });
   });
 
   // =============================================
@@ -1645,13 +1847,13 @@ describe('Output Parsers', () => {
       expect(parsers.length).toBeGreaterThanOrEqual(20);
     });
 
-    it('does NOT include scoutsuite (removed — no real parser)', () => {
+    it('includes scoutsuite parser', () => {
       const parsers = getSupportedParsers();
-      expect(parsers).not.toContain('scoutsuite');
+      expect(parsers).toContain('scoutsuite');
     });
 
-    it('returns null for scoutsuite via parseOutput', () => {
-      expect(parseOutput('scoutsuite', '{}')).toBeNull();
+    it('returns a Finding for scoutsuite via parseOutput', () => {
+      expect(parseOutput('scoutsuite', '{}')).not.toBeNull();
     });
   });
 
@@ -1990,6 +2192,907 @@ describe('Output Parsers', () => {
     it('returns empty for non-JSON', () => {
       const finding = parseProwler('not json');
       expect(finding.nodes.length).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // ScoutSuite Parser
+  // ===========================================================================
+
+  describe('parseScoutSuite', () => {
+    it('parses IAM users + roles with trust policies', () => {
+      const data = {
+        provider_code: 'aws',
+        account_id: '123456789012',
+        services: {
+          iam: {
+            users: {
+              items: {
+                'user-1': { arn: 'arn:aws:iam::123456789012:user/admin', name: 'admin', mfa_enabled: false },
+              },
+            },
+            roles: {
+              items: {
+                'role-1': {
+                  arn: 'arn:aws:iam::123456789012:role/LambdaExec',
+                  name: 'LambdaExec',
+                  assume_role_policy_document: {
+                    Statement: [{ Effect: 'Allow', Principal: { AWS: ['arn:aws:iam::999999999999:role/CrossAcct'] } }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      };
+
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const identities = finding.nodes.filter(n => n.type === 'cloud_identity');
+      expect(identities.length).toBeGreaterThanOrEqual(3); // admin, LambdaExec, CrossAcct
+      const assumesEdges = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
+      expect(assumesEdges.length).toBe(1);
+    });
+
+    it('strips JS assignment wrapper', () => {
+      const data = { provider_code: 'aws', account_id: '111', services: { iam: { users: { items: { 'u': { arn: 'arn:aws:iam::111:user/x', name: 'x' } } } } } };
+      const finding = parseScoutSuite(`scoutsuite_results = ${JSON.stringify(data)};`);
+      expect(finding.nodes.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('parses S3 buckets with public flag', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          s3: { buckets: { items: { 'b1': { name: 'my-public-bucket', arn: 'arn:aws:s3:::my-public-bucket', acls_public: true } } } },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const s3 = finding.nodes.find(n => n.type === 'cloud_resource' && (n as any).resource_type === 's3_bucket');
+      expect(s3).toBeDefined();
+      expect((s3 as any).public).toBe(true);
+    });
+
+    it('parses security findings as vulnerability nodes', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          s3: {
+            findings: {
+              'bucket-no-encryption': {
+                level: 'danger', flagged_items: 1, description: 'Bucket without encryption',
+                items: ['buckets.my-bucket'],
+              },
+            },
+          },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(1);
+      const vulnEdges = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(vulnEdges.length).toBe(1);
+    });
+
+    it('parses Lambda functions with execution role', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          awslambda: {
+            functions: {
+              items: {
+                'fn-1': { name: 'my-function', arn: 'arn:aws:lambda:us-east-1:123:function:my-function', role: 'arn:aws:iam::123:role/lambda-role' },
+              },
+            },
+          },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const lambdas = finding.nodes.filter(n => n.type === 'cloud_resource' && (n as any).resource_type === 'lambda');
+      expect(lambdas.length).toBe(1);
+      const managedBy = finding.edges.filter(e => e.properties.type === 'MANAGED_BY');
+      expect(managedBy.length).toBe(1);
+    });
+
+    it('returns empty for invalid JSON', () => {
+      const finding = parseScoutSuite('not json');
+      expect(finding.nodes.length).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // CloudFox Parser
+  // ===========================================================================
+
+  describe('parseCloudFox', () => {
+    it('parses role trust entries', () => {
+      const data = [
+        {
+          Type: 'RoleTrust',
+          RoleArn: 'arn:aws:iam::111111111111:role/target-role',
+          TrustedPrincipal: 'arn:aws:iam::222222222222:role/source-role',
+        },
+      ];
+      const finding = parseCloudFox(JSON.stringify(data));
+      const identities = finding.nodes.filter(n => n.type === 'cloud_identity');
+      expect(identities.length).toBe(2);
+      const assumesEdges = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
+      expect(assumesEdges.length).toBe(1);
+    });
+
+    it('parses permission entries with POLICY_ALLOWS', () => {
+      const data = [
+        {
+          Type: 'Permission',
+          PrincipalArn: 'arn:aws:iam::111:user/attacker',
+          Action: 'iam:PassRole',
+          Resource: 'arn:aws:iam::111:role/admin',
+        },
+      ];
+      const finding = parseCloudFox(JSON.stringify(data));
+      const policies = finding.nodes.filter(n => n.type === 'cloud_policy');
+      expect(policies.length).toBe(1);
+      const allows = finding.edges.filter(e => e.properties.type === 'POLICY_ALLOWS');
+      expect(allows.length).toBe(1);
+      const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
+      expect(hasPolicy.length).toBe(1);
+    });
+
+    it('parses inventory entries with attached role', () => {
+      const data = [
+        {
+          Name: 'my-lambda',
+          AWSService: 'lambda',
+          Arn: 'arn:aws:lambda:us-east-1:111:function:my-lambda',
+          Role: 'arn:aws:iam::111:role/lambda-exec',
+          Region: 'us-east-1',
+          AccountId: '111',
+        },
+      ];
+      const finding = parseCloudFox(JSON.stringify(data));
+      const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+      expect(resources.length).toBeGreaterThanOrEqual(1);
+      const managedBy = finding.edges.filter(e => e.properties.type === 'MANAGED_BY');
+      expect(managedBy.length).toBe(1);
+    });
+
+    it('returns empty for invalid JSON', () => {
+      const finding = parseCloudFox('not json');
+      expect(finding.nodes.length).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // Terraform State Parser
+  // ===========================================================================
+
+  describe('parseTerraformState', () => {
+    it('parses EC2 instances with host linkage', () => {
+      const state = {
+        version: 4,
+        resources: [
+          {
+            type: 'aws_instance',
+            name: 'web',
+            instances: [{
+              attributes: {
+                id: 'i-abc123',
+                private_ip: '10.0.1.50',
+                tags: { Name: 'web-server' },
+                iam_instance_profile: 'web-profile',
+                metadata_options: [{ http_tokens: 'optional' }],
+              },
+            }],
+          },
+        ],
+      };
+      const finding = parseTerraformState(JSON.stringify(state));
+      const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+      expect(resources.length).toBe(1);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      const runsOn = finding.edges.filter(e => e.properties.type === 'RUNS_ON');
+      expect(runsOn.length).toBe(1);
+      const managedBy = finding.edges.filter(e => e.properties.type === 'MANAGED_BY');
+      expect(managedBy.length).toBe(1);
+    });
+
+    it('parses IAM roles with trust policy', () => {
+      const state = {
+        version: 4,
+        resources: [
+          {
+            type: 'aws_iam_role',
+            name: 'lambda-exec',
+            instances: [{
+              attributes: {
+                arn: 'arn:aws:iam::123:role/lambda-exec',
+                name: 'lambda-exec',
+                assume_role_policy: JSON.stringify({
+                  Statement: [{ Effect: 'Allow', Principal: { AWS: ['arn:aws:iam::999:root'] } }],
+                }),
+              },
+            }],
+          },
+        ],
+      };
+      const finding = parseTerraformState(JSON.stringify(state));
+      const identities = finding.nodes.filter(n => n.type === 'cloud_identity');
+      expect(identities.length).toBe(2); // role + trusted principal
+      const assumes = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
+      expect(assumes.length).toBe(1);
+    });
+
+    it('parses lambda functions with execution role', () => {
+      const state = {
+        version: 4,
+        resources: [
+          {
+            type: 'aws_lambda_function',
+            name: 'processor',
+            instances: [{
+              attributes: {
+                arn: 'arn:aws:lambda:us-east-1:123:function:processor',
+                function_name: 'processor',
+                role: 'arn:aws:iam::123:role/lambda-role',
+              },
+            }],
+          },
+        ],
+      };
+      const finding = parseTerraformState(JSON.stringify(state));
+      const lambdas = finding.nodes.filter(n => n.type === 'cloud_resource');
+      expect(lambdas.length).toBe(1);
+      const managedBy = finding.edges.filter(e => e.properties.type === 'MANAGED_BY');
+      expect(managedBy.length).toBe(1);
+    });
+
+    it('parses terraform show -json format', () => {
+      const showJson = {
+        values: {
+          root_module: {
+            resources: [
+              {
+                type: 'aws_s3_bucket',
+                name: 'data',
+                values: { bucket: 'my-data-bucket', arn: 'arn:aws:s3:::my-data-bucket', region: 'us-east-1' },
+              },
+            ],
+          },
+        },
+      };
+      const finding = parseTerraformState(JSON.stringify(showJson));
+      const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+      expect(resources.length).toBe(1);
+      expect(resources[0].label).toBe('my-data-bucket');
+    });
+
+    it('parses policy attachments', () => {
+      const state = {
+        version: 4,
+        resources: [
+          {
+            type: 'aws_iam_role_policy_attachment',
+            name: 'attach',
+            instances: [{
+              attributes: {
+                role: 'lambda-exec',
+                policy_arn: 'arn:aws:iam::aws:policy/AdministratorAccess',
+              },
+            }],
+          },
+        ],
+      };
+      const finding = parseTerraformState(JSON.stringify(state));
+      const policies = finding.nodes.filter(n => n.type === 'cloud_policy');
+      expect(policies.length).toBe(1);
+      const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
+      expect(hasPolicy.length).toBe(1);
+    });
+
+    it('returns empty for invalid JSON', () => {
+      const finding = parseTerraformState('not json at all');
+      expect(finding.nodes.length).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // enumerate-iam Parser
+  // ===========================================================================
+
+  describe('parseEnumerateIam', () => {
+    it('parses confirmed API calls into identity + policy', () => {
+      const output = [
+        '[INFO] -- Account ID: 123456789012',
+        '[INFO] -- ARN: arn:aws:iam::123456789012:user/testuser',
+        '[INFO] iam.list_users() worked!',
+        '[INFO] s3.list_buckets() worked!',
+        '[INFO] sts.get_caller_identity() worked!',
+        '[INFO] ec2.describe_instances() returned an error',
+      ].join('\n');
+
+      const finding = parseEnumerateIam(output);
+      expect(finding.nodes.length).toBe(2); // identity + policy
+      const identity = finding.nodes.find(n => n.type === 'cloud_identity');
+      expect(identity).toBeDefined();
+      expect((identity as any).policies_enumerated).toBe(true);
+      const policy = finding.nodes.find(n => n.type === 'cloud_policy');
+      expect(policy).toBeDefined();
+      expect((policy as any).actions).toContain('iam:list_users');
+      expect((policy as any).actions).toContain('s3:list_buckets');
+      expect((policy as any).actions).toHaveLength(3);
+      const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
+      expect(hasPolicy.length).toBe(1);
+    });
+
+    it('returns empty when no API calls confirmed', () => {
+      const output = '[INFO] Starting enumeration...\n[ERROR] No permissions found';
+      const finding = parseEnumerateIam(output);
+      expect(finding.nodes.length).toBe(0);
+    });
+
+    it('uses context cloud_account when no inline account ID', () => {
+      const output = '[INFO] iam.get_user() worked!';
+      const finding = parseEnumerateIam(output, 'test', { cloud_account: '999888777666' } as any);
+      expect(finding.nodes.length).toBe(2);
+    });
+  });
+
+  // ===========================================================================
+  // Burp Suite XML Parser
+  // ===========================================================================
+
+  describe('parseBurp', () => {
+    const sampleBurpXml = `<?xml version="1.0"?>
+<issues burpVersion="2024.1" exportTime="2026-01-01T00:00:00Z">
+  <issue>
+    <serialNumber>1234</serialNumber>
+    <type>1049088</type>
+    <name>SQL injection</name>
+    <host ip="10.10.10.5">http://10.10.10.5</host>
+    <path>/login</path>
+    <severity>High</severity>
+    <confidence>Certain</confidence>
+    <issueBackground>SQL injection vulnerability found.</issueBackground>
+  </issue>
+  <issue>
+    <serialNumber>1235</serialNumber>
+    <type>5244416</type>
+    <name>Cross-site scripting (reflected)</name>
+    <host ip="10.10.10.5">http://10.10.10.5</host>
+    <path>/search</path>
+    <severity>Medium</severity>
+    <confidence>Firm</confidence>
+    <issueBackground>XSS found in search parameter.</issueBackground>
+  </issue>
+  <issue>
+    <serialNumber>1236</serialNumber>
+    <type>6291712</type>
+    <name>Information disclosure - emails</name>
+    <host ip="10.10.10.6">https://10.10.10.6:8443</host>
+    <path>/about</path>
+    <severity>Information</severity>
+    <confidence>Tentative</confidence>
+  </issue>
+</issues>`;
+
+    it('extracts host nodes from Burp XML', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(2);
+      expect(hosts.map(h => h.label).sort()).toEqual(['10.10.10.5', '10.10.10.6']);
+    });
+
+    it('extracts service nodes with correct ports', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(2);
+      const labels = services.map(s => s.label).sort();
+      expect(labels).toEqual(['http/80', 'https/8443']);
+    });
+
+    it('creates webapp nodes via webappOriginId', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const webapps = finding.nodes.filter(n => n.type === 'webapp');
+      expect(webapps.length).toBe(2);
+    });
+
+    it('creates vulnerability nodes with correct type classification', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(3);
+      const types = vulns.map(v => (v as Record<string, unknown>).vuln_type).sort();
+      expect(types).toEqual(['info-disclosure', 'sqli', 'xss']);
+    });
+
+    it('maps severity to CVSS correctly', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const sqli = vulns.find(v => (v as Record<string, unknown>).vuln_type === 'sqli');
+      expect((sqli as Record<string, unknown>).cvss).toBe(7.5);
+      const info = vulns.find(v => (v as Record<string, unknown>).vuln_type === 'info-disclosure');
+      expect((info as Record<string, unknown>).cvss).toBe(1.0);
+    });
+
+    it('maps confidence levels correctly', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const vulnEdges = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      const highConf = vulnEdges.find(e => e.properties.confidence === 0.95);
+      expect(highConf).toBeDefined();
+      const tentConf = vulnEdges.find(e => e.properties.confidence === 0.5);
+      expect(tentConf).toBeDefined();
+    });
+
+    it('creates RUNS, HOSTS, and VULNERABLE_TO edges', () => {
+      const finding = parseBurp(sampleBurpXml);
+      const runs = finding.edges.filter(e => e.properties.type === 'RUNS');
+      const hosts = finding.edges.filter(e => e.properties.type === 'HOSTS');
+      const vulnTo = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(runs.length).toBe(2);
+      expect(hosts.length).toBe(2);
+      expect(vulnTo.length).toBe(3);
+    });
+
+    it('deduplicates host and service nodes across issues', () => {
+      const finding = parseBurp(sampleBurpXml);
+      // Two issues target 10.10.10.5 — should have exactly 1 host node for it
+      const hosts = finding.nodes.filter(n => n.type === 'host' && n.label === '10.10.10.5');
+      expect(hosts.length).toBe(1);
+    });
+
+    it('handles empty input gracefully', () => {
+      const finding = parseBurp('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+
+    it('handles malformed XML gracefully', () => {
+      const finding = parseBurp('<not-valid>xml');
+      expect(finding.nodes.length).toBe(0);
+    });
+
+    it('is accessible via parseOutput', () => {
+      const finding = parseOutput('burp', sampleBurpXml);
+      expect(finding).not.toBeNull();
+      expect(finding!.nodes.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ===========================================================================
+  // ZAP XML Parser
+  // ===========================================================================
+
+  describe('parseZap', () => {
+    const sampleZapXml = `<?xml version="1.0"?>
+<OWASPZAPReport version="2.14.0" generated="2026-01-01">
+  <site name="http://10.10.10.7" host="10.10.10.7" port="80" ssl="false">
+    <alerts>
+      <alertitem>
+        <pluginid>40012</pluginid>
+        <alert>Cross Site Scripting (Reflected)</alert>
+        <riskcode>3</riskcode>
+        <confidence>2</confidence>
+        <cweid>79</cweid>
+        <wascid>8</wascid>
+        <desc>XSS found.</desc>
+        <instances>
+          <instance>
+            <uri>http://10.10.10.7/search?q=test</uri>
+            <method>GET</method>
+            <param>q</param>
+            <attack>&lt;script&gt;alert(1)&lt;/script&gt;</attack>
+          </instance>
+          <instance>
+            <uri>http://10.10.10.7/feedback?msg=test</uri>
+            <method>POST</method>
+            <param>msg</param>
+          </instance>
+        </instances>
+      </alertitem>
+      <alertitem>
+        <pluginid>10202</pluginid>
+        <alert>Absence of Anti-CSRF Tokens</alert>
+        <riskcode>1</riskcode>
+        <confidence>1</confidence>
+        <cweid>352</cweid>
+        <desc>No anti-CSRF tokens found.</desc>
+        <instances>
+          <instance>
+            <uri>http://10.10.10.7/login</uri>
+            <method>POST</method>
+          </instance>
+        </instances>
+      </alertitem>
+    </alerts>
+  </site>
+  <site name="https://10.10.10.8:443" host="10.10.10.8" port="443" ssl="true">
+    <alerts>
+      <alertitem>
+        <pluginid>90033</pluginid>
+        <alert>Server Side Request Forgery</alert>
+        <riskcode>3</riskcode>
+        <confidence>3</confidence>
+        <cweid>918</cweid>
+        <desc>SSRF vulnerability.</desc>
+        <instances>
+          <instance>
+            <uri>https://10.10.10.8/api/fetch?url=http://169.254.169.254</uri>
+            <method>GET</method>
+            <param>url</param>
+          </instance>
+        </instances>
+      </alertitem>
+    </alerts>
+  </site>
+</OWASPZAPReport>`;
+
+    it('extracts host nodes from ZAP XML', () => {
+      const finding = parseZap(sampleZapXml);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(2);
+      expect(hosts.map(h => h.label).sort()).toEqual(['10.10.10.7', '10.10.10.8']);
+    });
+
+    it('extracts service nodes with correct protocols', () => {
+      const finding = parseZap(sampleZapXml);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(2);
+      const labels = services.map(s => s.label).sort();
+      expect(labels).toEqual(['http/80', 'https/443']);
+    });
+
+    it('creates webapp nodes per site', () => {
+      const finding = parseZap(sampleZapXml);
+      const webapps = finding.nodes.filter(n => n.type === 'webapp');
+      expect(webapps.length).toBe(2);
+    });
+
+    it('creates vulnerability nodes with CWE', () => {
+      const finding = parseZap(sampleZapXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(3);
+      const xss = vulns.find(v => (v as Record<string, unknown>).vuln_type === 'xss');
+      expect(xss).toBeDefined();
+      expect((xss as Record<string, unknown>).cwe).toBe('CWE-79');
+    });
+
+    it('classifies vuln types correctly', () => {
+      const finding = parseZap(sampleZapXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const types = vulns.map(v => (v as Record<string, unknown>).vuln_type).sort();
+      expect(types).toEqual(['csrf', 'ssrf', 'xss']);
+    });
+
+    it('maps risk codes to CVSS', () => {
+      const finding = parseZap(sampleZapXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const ssrf = vulns.find(v => v.label === 'Server Side Request Forgery');
+      expect((ssrf as Record<string, unknown>).cvss).toBe(7.5); // riskcode 3
+      const csrf = vulns.find(v => v.label === 'Absence of Anti-CSRF Tokens');
+      expect((csrf as Record<string, unknown>).cvss).toBe(2.5); // riskcode 1
+    });
+
+    it('collects affected_paths from instances', () => {
+      const finding = parseZap(sampleZapXml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const xss = vulns.find(v => (v as Record<string, unknown>).vuln_type === 'xss');
+      const paths = (xss as Record<string, unknown>).affected_paths as string[];
+      expect(paths).toBeDefined();
+      expect(paths.length).toBe(2);
+      expect(paths).toContain('/search');
+      expect(paths).toContain('/feedback');
+    });
+
+    it('creates RUNS, HOSTS, and VULNERABLE_TO edges', () => {
+      const finding = parseZap(sampleZapXml);
+      const runs = finding.edges.filter(e => e.properties.type === 'RUNS');
+      const hosts = finding.edges.filter(e => e.properties.type === 'HOSTS');
+      const vulnTo = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(runs.length).toBe(2);
+      expect(hosts.length).toBe(2);
+      expect(vulnTo.length).toBe(3);
+    });
+
+    it('handles empty input gracefully', () => {
+      const finding = parseZap('');
+      expect(finding.nodes.length).toBe(0);
+      expect(finding.edges.length).toBe(0);
+    });
+
+    it('is accessible via parseOutput with alias', () => {
+      const finding = parseOutput('owasp-zap', sampleZapXml);
+      expect(finding).not.toBeNull();
+      expect(finding!.nodes.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ===========================================================================
+  // SQLMap Text Parser
+  // ===========================================================================
+
+  describe('parseSqlmap', () => {
+    const sampleSqlmapText = `
+        ___
+       __H__
+ ___ ___[.]_____ ___ ___  {1.8.4#stable}
+|_ -| . ["]     | .'| . |
+|___|_  [']_|_|_|__,|  _|
+      |_|V...       |_|   https://sqlmap.org
+
+[*] starting @ 12:00:00 /2026-01-01/
+[12:00:01] [INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[12:00:02] [INFO] testing connection to the target URL
+[12:00:05] [INFO] the back-end DBMS is MySQL
+[12:00:06] [INFO] Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause
+    Payload: id=1 AND 5321=5321
+
+    Type: UNION query
+    Title: Generic UNION query (NULL) - 4 columns
+    Payload: id=1 UNION ALL SELECT NULL,CONCAT(0x71,0x71),NULL,NULL-- -
+
+[12:00:06] [INFO] Parameter: id (GET) is vulnerable. identified injection point(s)
+[12:00:10] [INFO] fetching database users
+[12:00:11] [INFO] retrieved: 'root@localhost'
+[12:00:12] [INFO] cracked password 'toor123' for user 'root'
+[12:00:13] [INFO] cracked password 'pass456' for user 'webapp_user'
+sqlmap identified the following injection point(s) with a total of 42 HTTP(s) requests
+`;
+
+    it('extracts target URL and creates host/service/webapp nodes', () => {
+      const finding = parseSqlmap(sampleSqlmapText);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].label).toBe('10.10.10.9');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+      const webapps = finding.nodes.filter(n => n.type === 'webapp');
+      expect(webapps.length).toBe(1);
+    });
+
+    it('creates SQLi vulnerability node with correct properties', () => {
+      const finding = parseSqlmap(sampleSqlmapText);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBeGreaterThanOrEqual(1);
+      const sqli = vulns[0] as Record<string, unknown>;
+      expect(sqli.vuln_type).toBe('sqli');
+      expect(sqli.dbms).toBe('MySQL');
+      expect(sqli.exploitable).toBe(true);
+      expect(sqli.cvss).toBe(8.5);
+    });
+
+    it('extracts cracked credentials with normalized fields', () => {
+      const finding = parseSqlmap(sampleSqlmapText);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      const labels = creds.map(c => c.label).sort();
+      expect(labels).toEqual(['root:password', 'webapp_user:password']);
+      // Verify normalized credential fields
+      const cred = creds[0] as Record<string, unknown>;
+      expect(cred.cred_material_kind).toBe('plaintext_password');
+      expect(cred.cred_type).toBe('plaintext');
+      expect(cred.cred_usable_for_auth).toBe(true);
+      expect(cred.cred_user).toBeDefined();
+      // Should NOT have non-standard aliases
+      expect(cred.material_kind).toBeUndefined();
+      expect(cred.hash).toBeUndefined();
+    });
+
+    it('creates EXPLOITS edges from vulnerability to credentials', () => {
+      const finding = parseSqlmap(sampleSqlmapText);
+      const exploits = finding.edges.filter(e => e.properties.type === 'EXPLOITS');
+      expect(exploits.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('creates VULNERABLE_TO edges', () => {
+      const finding = parseSqlmap(sampleSqlmapText);
+      const vulnTo = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(vulnTo.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('handles empty input gracefully', () => {
+      const finding = parseSqlmap('');
+      expect(finding.nodes.length).toBe(0);
+    });
+
+    it('handles output with no injection found', () => {
+      const noInjection = `[INFO] testing URL 'http://10.10.10.9/safe.php?id=1'
+[INFO] all tested parameters do not appear to be injectable`;
+      const finding = parseSqlmap(noInjection);
+      // Should still create host/service/webapp from URL but no vulns
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(0);
+    });
+
+    it('parses JSON format', () => {
+      const jsonOutput = JSON.stringify({
+        url: 'http://10.10.10.10/api?param=1',
+        dbms: 'PostgreSQL',
+        vulnerabilities: [
+          { parameter: 'param', type: 'GET', title: 'error-based' }
+        ],
+        users: ['pg_admin@localhost'],
+      });
+      const finding = parseSqlmap(jsonOutput);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(1);
+      expect((vulns[0] as Record<string, unknown>).dbms).toBe('PostgreSQL');
+    });
+
+    it('is accessible via parseOutput', () => {
+      const finding = parseOutput('sqlmap', sampleSqlmapText);
+      expect(finding).not.toBeNull();
+      expect(finding!.nodes.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ===========================================================================
+  // WPScan JSON Parser
+  // ===========================================================================
+
+  describe('parseWpscan', () => {
+    const sampleWpscanJson = JSON.stringify({
+      target_url: 'http://10.10.10.11/wordpress/',
+      effective_url: 'http://10.10.10.11/',
+      interesting_findings: [
+        { url: 'http://10.10.10.11/readme.html', type: 'headers', to_s: 'WordPress readme found' }
+      ],
+      version: {
+        number: '6.4.2',
+        status: 'outdated',
+        vulnerabilities: [
+          {
+            title: 'WordPress 6.4.2 - Authenticated Blind SSRF',
+            fixed_in: '6.4.3',
+            references: { cve: ['2024-12345'] }
+          }
+        ]
+      },
+      plugins: {
+        'contact-form-7': {
+          slug: 'contact-form-7',
+          version: { number: '5.8.1' },
+          vulnerabilities: [
+            {
+              title: 'Contact Form 7 < 5.9 - Unauthenticated File Upload',
+              fixed_in: '5.9',
+              references: { cve: ['2024-67890'] }
+            }
+          ]
+        }
+      },
+      themes: {
+        'twentytwentyfour': {
+          slug: 'twentytwentyfour',
+          version: { number: '1.0' },
+          vulnerabilities: []
+        }
+      },
+      users: {
+        'admin': { id: 1, slug: 'admin', status: 'active' },
+        'editor': { id: 2, slug: 'editor', status: 'active' }
+      },
+      password_attack: {
+        'admin': [{ password: 'admin123' }]
+      }
+    });
+
+    it('creates WordPress-enriched webapp node', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const webapps = finding.nodes.filter(n => n.type === 'webapp');
+      expect(webapps.length).toBe(1);
+      const wa = webapps[0] as Record<string, unknown>;
+      expect(wa.cms_type).toBe('wordpress');
+      expect(wa.technology).toBe('WordPress');
+      expect(wa.version).toBe('6.4.2');
+    });
+
+    it('extracts host and service nodes', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const hosts = finding.nodes.filter(n => n.type === 'host');
+      expect(hosts.length).toBe(1);
+      expect(hosts[0].label).toBe('10.10.10.11');
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(1);
+    });
+
+    it('extracts core WordPress vulnerabilities with CVE', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const coreVuln = vulns.find(v => v.label!.includes('Blind SSRF'));
+      expect(coreVuln).toBeDefined();
+      expect((coreVuln as Record<string, unknown>).cve).toBe('CVE-2024-12345');
+      expect((coreVuln as Record<string, unknown>).vuln_type).toBe('cms-vuln');
+    });
+
+    it('extracts plugin vulnerabilities', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      const pluginVuln = vulns.find(v => v.label!.includes('Contact Form'));
+      expect(pluginVuln).toBeDefined();
+      expect((pluginVuln as Record<string, unknown>).cve).toBe('CVE-2024-67890');
+      expect((pluginVuln as Record<string, unknown>).affected_component).toBe('plugin-contact-form-7@5.8.1');
+    });
+
+    it('extracts enumerated users', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.length).toBe(2);
+      expect(users.map(u => u.label).sort()).toEqual(['admin', 'editor']);
+    });
+
+    it('creates POTENTIAL_AUTH edges for enumerated users', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const potAuth = finding.edges.filter(e => e.properties.type === 'POTENTIAL_AUTH');
+      expect(potAuth.length).toBe(2);
+    });
+
+    it('extracts cracked passwords with normalized credential fields', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      const cred = creds[0] as Record<string, unknown>;
+      expect(cred.cred_user).toBe('admin');
+      expect(cred.cred_material_kind).toBe('plaintext_password');
+      expect(cred.cred_type).toBe('plaintext');
+      expect(cred.cred_value).toBe('admin123');
+      expect(cred.cred_usable_for_auth).toBe(true);
+      // Should NOT have non-standard aliases
+      expect(cred.material_kind).toBeUndefined();
+    });
+
+    it('creates VALID_ON edge for cracked password', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const validOn = finding.edges.filter(e => e.properties.type === 'VALID_ON');
+      expect(validOn.length).toBe(1);
+    });
+
+    it('creates VULNERABLE_TO edges for all vulnerabilities', () => {
+      const finding = parseWpscan(sampleWpscanJson);
+      const vulnTo = finding.edges.filter(e => e.properties.type === 'VULNERABLE_TO');
+      expect(vulnTo.length).toBe(2); // core + plugin (theme has empty vulns)
+    });
+
+    it('handles empty input gracefully', () => {
+      const finding = parseWpscan('');
+      expect(finding.nodes.length).toBe(0);
+    });
+
+    it('handles JSON with no vulnerabilities', () => {
+      const minimal = JSON.stringify({
+        target_url: 'http://10.10.10.12/',
+        effective_url: 'http://10.10.10.12/',
+        version: { number: '6.5.0' },
+      });
+      const finding = parseWpscan(minimal);
+      const webapps = finding.nodes.filter(n => n.type === 'webapp');
+      expect(webapps.length).toBe(1);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(0);
+    });
+
+    it('is accessible via parseOutput', () => {
+      const finding = parseOutput('wpscan', sampleWpscanJson);
+      expect(finding).not.toBeNull();
+      expect(finding!.nodes.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ===========================================================================
+  // Parser registration
+  // ===========================================================================
+
+  describe('parser registration', () => {
+    it('getSupportedParsers includes new web parsers', () => {
+      const supported = getSupportedParsers();
+      expect(supported).toContain('burp');
+      expect(supported).toContain('burp-suite');
+      expect(supported).toContain('zap');
+      expect(supported).toContain('owasp-zap');
+      expect(supported).toContain('sqlmap');
+      expect(supported).toContain('wpscan');
     });
   });
 });

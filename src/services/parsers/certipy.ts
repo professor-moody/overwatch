@@ -38,12 +38,18 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
         const caNodeId = caId(caName);
         const ca = caData as Record<string, unknown>;
         if (!seenNodes.has(caNodeId)) {
+          const enforceEncrypt = ca['IF_ENFORCEENCRYPTICERTREQUEST'] ?? ca['Enforce Encryption for Requests'];
           nodes.push({
             id: caNodeId,
             type: 'ca',
             label: caName,
             ca_name: caName,
             ca_kind: 'enterprise_ca',
+            ...(enforceEncrypt === false || enforceEncrypt === 'Disabled'
+              ? { enforce_encrypt_icert_request: false }
+              : enforceEncrypt === true || enforceEncrypt === 'Enabled'
+                ? { enforce_encrypt_icert_request: true }
+                : {}),
           });
           seenNodes.add(caNodeId);
         }
@@ -78,6 +84,24 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
         const tmpl = templateData as Record<string, unknown>;
 
         if (!seenNodes.has(tmplId)) {
+          // Extract ESC9/13-relevant properties
+          const msPkiCertNameFlag = tmpl['msPKI-Certificate-Name-Flag'] as number | undefined;
+          const ctFlagNoSecExt = msPkiCertNameFlag !== undefined
+            ? (msPkiCertNameFlag & 0x00080000) !== 0  // CT_FLAG_NO_SECURITY_EXTENSION = 0x80000
+            : undefined;
+          // Certipy may also report this directly in vulnerabilities
+          const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown> | undefined;
+          const hasEsc9 = vulns?.['ESC9'] !== undefined;
+          const hasEsc13 = vulns?.['ESC13'] !== undefined;
+
+          // Issuance policy (ESC13)
+          const issuancePolicy = tmpl['Issuance Policies'] as Record<string, unknown> | undefined;
+          const policyOid = tmpl['msPKI-Certificate-Policy'] as string
+            || (issuancePolicy ? Object.keys(issuancePolicy)[0] : undefined);
+          const policyGroupLink = issuancePolicy
+            ? (Object.values(issuancePolicy)[0] as Record<string, unknown> | undefined)?.['Linked Group'] as string | undefined
+            : undefined;
+
           nodes.push({
             id: tmplId,
             type: 'cert_template',
@@ -85,6 +109,11 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
             template_name: templateName,
             enrollee_supplies_subject: tmpl['Enrollee Supplies Subject'] === true,
             eku: Array.isArray(tmpl['Extended Key Usage']) ? tmpl['Extended Key Usage'] : undefined,
+            ...(ctFlagNoSecExt !== undefined ? { ct_flag_no_security_extension: ctFlagNoSecExt } : {}),
+            ...(hasEsc9 && ctFlagNoSecExt === undefined ? { ct_flag_no_security_extension: true } : {}),
+            ...(policyOid ? { issuance_policy_oid: policyOid } : {}),
+            ...(policyGroupLink ? { issuance_policy_group_link: policyGroupLink } : {}),
+            ...(hasEsc13 && !policyOid ? { issuance_policy_oid: 'unknown' } : {}),
           });
           seenNodes.add(tmplId);
         }
@@ -134,7 +163,7 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
               const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
               for (const [escName] of Object.entries(vulns)) {
                 const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
-                if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13'].includes(escType)) {
+                if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13'].includes(escType)) {
                   addEdge(resolvedPrincipalId, tmplId, escType, 0.9);
                 }
               }

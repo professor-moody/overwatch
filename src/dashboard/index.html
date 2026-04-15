@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Overwatch — Live Dashboard</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="agents-panel.css">
+<link rel="stylesheet" href="campaigns.css">
+<link rel="stylesheet" href="pending-actions.css">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="terminal.css">
 <script src="vendor/graphology.umd.min.js"></script>
 <script src="vendor/sigma.min.js"></script>
 <script src="vendor/graphology-layout-forceatlas2.js"></script>
@@ -185,6 +190,34 @@
         </div>
       </div>
 
+      <!-- Campaigns -->
+      <div class="panel">
+        <div class="panel-header" data-panel="campaigns-body">
+          <span class="panel-title">Campaigns</span>
+          <span class="count" id="campaign-count"></span>
+          <span class="chevron">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+        </div>
+        <div class="panel-body" id="campaigns-body">
+          <div id="campaigns-list"></div>
+        </div>
+      </div>
+
+      <!-- Pending Actions (Approval Gate) -->
+      <div class="panel">
+        <div class="panel-header" data-panel="pending-actions-body">
+          <span class="panel-title">Pending Actions</span>
+          <span class="count" id="pending-actions-count"></span>
+          <span class="chevron">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+        </div>
+        <div class="panel-body" id="pending-actions-body">
+          <div id="pending-actions-list"></div>
+        </div>
+      </div>
+
       <!-- Agents -->
       <div class="panel">
         <div class="panel-header" data-panel="agents-body">
@@ -196,6 +229,20 @@
         </div>
         <div class="panel-body" id="agents-body">
           <div id="agents-list"></div>
+        </div>
+      </div>
+
+      <!-- Sessions -->
+      <div class="panel">
+        <div class="panel-header" data-panel="sessions-body">
+          <span class="panel-title">Sessions</span>
+          <span class="count" id="session-count"></span>
+          <span class="chevron">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+        </div>
+        <div class="panel-body" id="sessions-body">
+          <div id="sessions-list"></div>
         </div>
       </div>
 
@@ -281,11 +328,29 @@
     <div class="detail-drawer-body" id="detail-props"></div>
   </div>
 
+  <!-- Agent Detail Drawer (right) -->
+  <div id="agent-detail-drawer"></div>
+
+  <!-- Campaign Detail Drawer (right) -->
+  <div id="campaign-detail-drawer"></div>
+
+  <!-- Terminal Panel (bottom) -->
+  <div id="terminal-panel">
+    <div id="terminal-tabs"></div>
+    <div id="terminal-container"></div>
+  </div>
+
 </div>
 
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
 <script src="graph.js"></script>
 <script src="ui.js"></script>
 <script src="ws.js"></script>
+<script src="agents-panel.js"></script>
+<script src="campaigns.js"></script>
+<script src="pending-actions.js"></script>
+<script src="terminal.js"></script>
 <script src="main.js"></script>
 </body>
 </html>

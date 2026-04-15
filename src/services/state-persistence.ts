@@ -10,6 +10,7 @@ import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry
 import { normalizeActivityLogEntry } from './engine-context.js';
 import type { InferenceRule, NodeProperties } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
+import { OpsecTracker } from './opsec-tracker.js';
 
 export const MAX_SNAPSHOTS = 5;
 
@@ -31,6 +32,7 @@ export class StatePersistence {
       inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
       trackedProcesses: this.ctx.trackedProcesses,
       coldStore: this.ctx.coldStore.export(),
+      opsecTracker: this.ctx.opsecTracker.serialize(),
     };
     const json = JSON.stringify(data);
 
@@ -137,6 +139,9 @@ export class StatePersistence {
     if (data.coldStore) {
       this.ctx.coldStore.import(data.coldStore);
     }
+    this.ctx.opsecTracker = data.opsecTracker
+      ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
+      : new OpsecTracker(this.ctx);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persist();
@@ -162,6 +167,9 @@ export class StatePersistence {
     if (data.coldStore) {
       this.ctx.coldStore.import(data.coldStore);
     }
+    this.ctx.opsecTracker = data.opsecTracker
+      ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
+      : new OpsecTracker(this.ctx);
     this.ctx.rebuildActionFrontierMap();
   }
 
@@ -190,6 +198,9 @@ export class StatePersistence {
         if (data.coldStore) {
           this.ctx.coldStore.import(data.coldStore);
         }
+        this.ctx.opsecTracker = data.opsecTracker
+          ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
+          : new OpsecTracker(this.ctx);
         this.ctx.rebuildActionFrontierMap();
         // Overwrite corrupted state file with valid snapshot data
         this.persist();

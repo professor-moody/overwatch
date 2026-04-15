@@ -115,6 +115,7 @@ When an action targets something outside scope:
 1. **Frontier filtering** — `next_task` never returns frontier items targeting out-of-scope hosts or services
 2. **Validation rejection** — `validate_action` returns `invalid` with error: `"Target is out of scope"`
 3. **No graph pollution** — `report_finding` accepts out-of-scope nodes (they may be discovered passively) but they won't generate frontier items
+4. **URL fallback** — When `url_patterns` is not configured, `validate_action` falls back to checking the URL's hostname against `scope.domains`. URLs with hostnames not matching any scoped domain are rejected.
 
 ### Example: Multi-Domain Engagement
 

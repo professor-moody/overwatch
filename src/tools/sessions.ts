@@ -8,7 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SessionManager } from '../services/session-manager.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { isIpInScope, isHostnameInScope } from '../services/cidr.js';
+import { isIpInScope, isHostnameInScope, isIPv6 } from '../services/cidr.js';
 
 function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'connect' | 'listen'): boolean {
   return kind === 'ssh' || (kind === 'socket' && mode !== 'listen');
@@ -70,6 +70,21 @@ The session is claimed by the opening agent — other agents can read but not wr
     withErrorBoundary('open_session', async (params) => {
       const warnings: string[] = [];
       if (params.host && isRemoteScopedSession(params.kind, params.mode)) {
+        if (isIPv6(params.host)) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `IPv6 targets are not supported (scope is IPv4-only): "${params.host}"`,
+                host: params.host,
+                kind: params.kind,
+                mode: params.mode ?? 'connect',
+                scope_reason: 'ipv6_unsupported',
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
         if (!isHostInScope(params.host, engine)) {
           return {
             content: [{

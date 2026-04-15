@@ -19,7 +19,7 @@ export const EDGE_TYPE_WEIGHTS: Record<string, number> = {
   // ADCS
   CAN_ENROLL: 2.0, ISSUED_BY: 2.0, OPERATES_CA: 2.0,
   ESC1: 2.0, ESC2: 2.0, ESC3: 2.0, ESC4: 2.0, ESC5: 2.0,
-  ESC6: 2.0, ESC7: 2.0, ESC8: 2.0, ESC9: 2.0, ESC10: 2.0, ESC11: 2.0, ESC13: 2.0,
+  ESC6: 2.0, ESC7: 2.0, ESC8: 2.0, ESC9: 2.0, ESC10: 2.0, ESC11: 2.0, ESC12: 2.0, ESC13: 2.0,
   // ACL-derived
   CAN_READ_LAPS: 2.0, CAN_READ_GMSA: 2.0, RBCD_TARGET: 2.0,
   // Delegation

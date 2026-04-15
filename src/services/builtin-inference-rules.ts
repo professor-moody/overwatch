@@ -11,7 +11,8 @@ export const BUILTIN_RULES: InferenceRule[] = [
       source_selector: 'parent_host',
       target_selector: 'matching_domain',
       confidence: 0.95
-    }]
+    }],
+    self_confirming: true
   },
   {
     id: 'rule-smb-signing-relay',
@@ -234,6 +235,69 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    id: 'rule-sqli-credential-extraction',
+    name: 'SQL injection may yield database credentials',
+    description: 'Confirmed SQLi vulnerability on a webapp host is a candidate for credential extraction via database dump',
+    trigger: { node_type: 'vulnerability', property_match: { vuln_type: 'sqli', exploitable: true } },
+    produces: [{
+      edge_type: 'EXPLOITS',
+      source_selector: 'trigger_node',
+      target_selector: 'parent_host',
+      confidence: 0.6
+    }]
+  },
+  {
+    id: 'rule-authenticated-rescan',
+    name: 'Authenticated webapp warrants deeper scanning',
+    description: 'Webapp with authenticated access should be re-scanned for post-auth vulnerabilities',
+    trigger: {
+      node_type: 'webapp',
+      requires_edge: { type: 'AUTHENTICATED_AS', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.4
+    }]
+  },
+  {
+    id: 'rule-default-credentials',
+    name: 'Known technology has default credentials',
+    description: 'Web application running a technology with well-known defaults should be tested for default credentials',
+    trigger: { node_type: 'webapp' },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'default_credential_candidates',
+      target_selector: 'trigger_node',
+      confidence: 0.3
+    }]
+  },
+  {
+    id: 'rule-cms-exploitation',
+    name: 'CMS webapp is a target for version-specific exploits',
+    description: 'Web application with a known CMS type should be tested for CMS-specific vulnerabilities and default credentials',
+    trigger: { node_type: 'webapp' },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'cms_credentials',
+      target_selector: 'trigger_node',
+      confidence: 0.3
+    }]
+  },
+  {
+    id: 'rule-sqli-to-rce',
+    name: 'SQL injection on capable DBMS may enable RCE',
+    description: 'SQLi on MySQL (INTO OUTFILE), MSSQL (xp_cmdshell), or PostgreSQL (COPY TO) can lead to OS command execution',
+    trigger: { node_type: 'vulnerability', property_match: { vuln_type: 'sqli' } },
+    produces: [{
+      edge_type: 'EXPLOITS',
+      source_selector: 'trigger_node',
+      target_selector: 'parent_host',
+      confidence: 0.4
+    }]
+  },
+  {
     id: 'rule-mssql-linked-server',
     name: 'MSSQL linked server implies host reachability',
     description: 'MSSQL service with linked servers implies network reachability to the linked host',
@@ -281,6 +345,64 @@ export const BUILTIN_RULES: InferenceRule[] = [
       edge_type: 'REACHABLE',
       source_selector: 'trigger_node',
       target_selector: 'cross_account_roles',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-imds-credential-theft',
+    name: 'IMDS credential theft via IMDSv1',
+    description: 'EC2 instance without IMDSv2 enforcement allows SSRF-based credential theft from metadata service',
+    trigger: { node_type: 'cloud_resource', property_match: { resource_type: 'ec2', imdsv2_required: false } },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'trigger_node',
+      target_selector: 'imds_managed_identity',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-cross-account-role-chain',
+    name: 'Transitive cross-account role chaining enables deep lateral movement',
+    description: 'Multi-hop ASSUMES_ROLE chains crossing account boundaries open lateral movement into distant accounts',
+    trigger: {
+      node_type: 'cloud_identity',
+      requires_edge: { type: 'ASSUMES_ROLE', direction: 'outbound' }
+    },
+    produces: [{
+      edge_type: 'REACHABLE',
+      source_selector: 'trigger_node',
+      target_selector: 'transitive_assumed_roles',
+      confidence: 0.6
+    }]
+  },
+  {
+    id: 'rule-lambda-iam-escalation',
+    name: 'Lambda execution role enables privilege escalation',
+    description: 'Lambda function with an attached IAM role can be invoked to escalate privileges via the role',
+    trigger: {
+      node_type: 'cloud_resource',
+      property_match: { resource_type: 'lambda' }
+    },
+    produces: [{
+      edge_type: 'ASSUMES_ROLE',
+      source_selector: 'trigger_node',
+      target_selector: 'lambda_attached_role',
+      confidence: 0.75
+    }]
+  },
+  {
+    id: 'rule-s3-bucket-exposed',
+    name: 'S3 bucket with cross-account or public exposure is a data exfiltration vector',
+    description: 'S3 bucket exposed via bucket policy or ACL to external principals enables data access',
+    trigger: {
+      node_type: 'cloud_resource',
+      property_match: { resource_type: 's3_bucket' },
+      requires_edge: { type: 'EXPOSED_TO', direction: 'outbound' }
+    },
+    produces: [{
+      edge_type: 'REACHABLE',
+      source_selector: 'edge_peers',
+      target_selector: 'trigger_node',
       confidence: 0.7
     }]
   },
@@ -487,6 +609,96 @@ export const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.6
     }]
   },
+  {
+    id: 'rule-adcs-esc5-template',
+    name: 'ADCS ESC5 — Vulnerable PKI object ACL (certificate template)',
+    description: 'Principal with write-type ACL on a PKI object (cert template) can modify it to enable certificate abuse',
+    trigger: {
+      node_type: 'cert_template',
+      requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ESC5',
+      source_selector: 'writeable_by_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-adcs-esc5-ca',
+    name: 'ADCS ESC5 — Vulnerable PKI object ACL (CA)',
+    description: 'Principal with write-type ACL on a CA object can modify CA configuration to enable certificate abuse',
+    trigger: {
+      node_type: 'ca',
+      requires_edge: { type: 'WRITEABLE_BY', direction: 'inbound' }
+    },
+    produces: [{
+      edge_type: 'ESC5',
+      source_selector: 'writeable_by_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
+  {
+    id: 'rule-adcs-esc9',
+    name: 'ADCS ESC9 — No security extension (CT_FLAG_NO_SECURITY_EXTENSION)',
+    description: 'Template with CT_FLAG_NO_SECURITY_EXTENSION flag allows bypassing strong certificate binding when StrongCertificateBindingEnforcement < 2',
+    trigger: { node_type: 'cert_template', property_match: { ct_flag_no_security_extension: true } },
+    produces: [{
+      edge_type: 'ESC9',
+      source_selector: 'enrollable_users',
+      target_selector: 'trigger_node',
+      confidence: 0.65
+    }]
+  },
+  {
+    id: 'rule-adcs-esc10',
+    name: 'ADCS ESC10 — Weak certificate mapping (UPN mapping abuse)',
+    description: 'Template with enrollee-supplied subject and weak certificate mapping methods allows impersonation via UPN mapping',
+    trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
+    produces: [{
+      edge_type: 'ESC10',
+      source_selector: 'enrollable_users',
+      target_selector: 'trigger_node',
+      confidence: 0.6
+    }]
+  },
+  {
+    id: 'rule-adcs-esc11',
+    name: 'ADCS ESC11 — NTLM relay to ICPR (RPC without encryption)',
+    description: 'CA without IF_ENFORCEENCRYPTICERTREQUEST allows NTLM relay to RPC certificate enrollment endpoint',
+    trigger: { node_type: 'ca', property_match: { enforce_encrypt_icert_request: false } },
+    produces: [{
+      edge_type: 'ESC11',
+      source_selector: 'all_compromised',
+      target_selector: 'trigger_node',
+      confidence: 0.55
+    }]
+  },
+  {
+    id: 'rule-adcs-esc12',
+    name: 'ADCS ESC12 — Shell access to CA server',
+    description: 'Compromised host running the CA allows direct certificate authority abuse (key extraction, arbitrary issuance)',
+    trigger: { node_type: 'ca' },
+    produces: [{
+      edge_type: 'ESC12',
+      source_selector: 'ca_host_compromised_peers',
+      target_selector: 'trigger_node',
+      confidence: 0.8
+    }]
+  },
+  {
+    id: 'rule-adcs-esc13',
+    name: 'ADCS ESC13 — Issuance policy linked to group',
+    description: 'Template with an issuance policy OID linked to a universal group grants group membership upon enrollment',
+    trigger: { node_type: 'cert_template' },
+    produces: [{
+      edge_type: 'ESC13',
+      source_selector: 'enrollable_users_if_issuance_policy',
+      target_selector: 'trigger_node',
+      confidence: 0.7
+    }]
+  },
   // --- Credential reuse ---
   {
     id: 'rule-shared-credential',
@@ -539,6 +751,30 @@ export const BUILTIN_RULES: InferenceRule[] = [
       source_selector: 'matching_user_for_cred',
       target_selector: 'trigger_node',
       confidence: 0.85
+    }]
+  },
+  {
+    id: 'rule-token-webapp-auth',
+    name: 'Token credential authenticates to webapp via service',
+    description: 'A token credential valid on a service that hosts a webapp implies AUTHENTICATED_AS on the webapp',
+    trigger: { node_type: 'credential', property_match: { cred_type: 'token' } },
+    produces: [{
+      edge_type: 'AUTHENTICATED_AS',
+      source_selector: 'trigger_node',
+      target_selector: 'hosted_webapps',
+      confidence: 0.6
+    }]
+  },
+  {
+    id: 'rule-auth-bypass-escalation',
+    name: 'Auth bypass vulnerability enables unauthenticated access',
+    description: 'A vulnerability with auth_bypass or idor type on a webapp creates an AUTH_BYPASS edge',
+    trigger: { node_type: 'vulnerability', property_match: { vuln_type: 'auth_bypass' } },
+    produces: [{
+      edge_type: 'AUTH_BYPASS',
+      source_selector: 'trigger_node',
+      target_selector: 'vulnerable_webapps',
+      confidence: 0.5
     }]
   },
 ];

@@ -14,6 +14,8 @@ import type {
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
 import { ColdStore } from './cold-store.js';
+import { OpsecTracker } from './opsec-tracker.js';
+import { PendingActionQueue } from './pending-action-queue.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -70,6 +72,8 @@ export type ActivityLogEntry = {
   result_classification?: 'success' | 'failure' | 'partial' | 'neutral';
   linked_finding_ids?: string[];
   linked_agent_task_id?: string;
+  noise_estimate?: number;
+  noise_actual?: number;
   details?: ActivityLogDetails;
 };
 
@@ -100,6 +104,8 @@ export class EngineContext {
   trackedProcesses: TrackedProcess[];
   actionFrontierMap: Map<string, { frontier_item_id: string; agent_id?: string; frontier_type?: ActivityLogEntry['frontier_type'] }>;
   coldStore: ColdStore;
+  opsecTracker: OpsecTracker;
+  pendingActionQueue: PendingActionQueue;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -115,6 +121,8 @@ export class EngineContext {
     this.trackedProcesses = [];
     this.actionFrontierMap = new Map();
     this.coldStore = new ColdStore();
+    this.opsecTracker = new OpsecTracker(this);
+    this.pendingActionQueue = new PendingActionQueue(this);
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {

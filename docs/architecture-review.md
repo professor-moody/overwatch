@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **40 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **42 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,7 +31,7 @@ The server exposes **40 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              40 MCP Tools (Zod-validated)                  │  │
+│  │              42 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · azurehound · inference   │  │
 │  │  remediation · skills · toolcheck · processes · sessions   │  │
@@ -87,16 +87,16 @@ The server exposes **40 MCP tools** covering the full engagement lifecycle — f
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment |
 | `cloud_network` | Cloud network construct (VPC, security group, subnet) |
 
-### Edge Types (52)
+### Edge Types (63)
 
 Organized by domain:
 
 - **Network** — `REACHABLE`, `RUNS`
 - **Domain membership** — `MEMBER_OF`, `MEMBER_OF_DOMAIN`, `TRUSTS`, `SAME_DOMAIN`
 - **Access** — `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`
-- **Credentials** — `VALID_ON`, `OWNS_CRED`, `DERIVED_FROM`, `DUMPED_FROM`, `POTENTIAL_AUTH`
+- **Credentials** — `VALID_ON`, `OWNS_CRED`, `DERIVED_FROM`, `DUMPED_FROM`, `POTENTIAL_AUTH`, `TESTED_CRED`, `SHARED_CREDENTIAL`
 - **AD attack paths** — `CAN_DCSYNC`, `DELEGATES_TO`, `CAN_DELEGATE_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`
-- **ADCS** — `CAN_ENROLL`, `ESC1`–`ESC4`, `ESC6`, `ESC8`
+- **ADCS** — `CAN_ENROLL`, `ESC1`–`ESC13`, `ISSUED_BY`, `OPERATES_CA`
 - **Roasting** — `AS_REP_ROASTABLE`, `KERBEROASTABLE`
 - **Lateral movement** — `RELAY_TARGET`, `NULL_SESSION`
 - **Web application** — `HOSTS`, `AUTHENTICATED_AS`, `VULNERABLE_TO`, `EXPLOITS`
@@ -110,12 +110,12 @@ All edges carry `confidence`, `discovered_at`, `discovered_by`, and optional `in
 
 Rules fire automatically when nodes are ingested. Each rule has:
 - **Trigger** — node type + optional property match + optional `requires_edge` (for edge-triggered rules)
-- **Selectors** — how to find related nodes (15 selector types: `trigger_node`, `trigger_service`, `parent_host`, `domain_nodes`, `domain_users`, `domain_credentials`, `all_compromised`, `compatible_services`, `compatible_services_same_domain`, `matching_domain`, `edge_peers`, `enrollable_users`, `session_holders_on_host`, `all_ssh_services`, `linked_server_hosts`)
+- **Selectors** — how to find related nodes (35 selector types including `trigger_node`, `parent_host`, `domain_nodes`, `domain_users`, `edge_peers`, `enrollable_users`, `session_holders_on_host`, `ca_for_template`, `manage_ca_peers`, and more)
 - **Produces** — edge type + confidence + condition
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
 
-Thirty-one built-in rules span AD & service (18), Linux privilege escalation (7), web application (2), MSSQL (1), and cloud infrastructure (3). Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference.
+Fifty-three built-in rules span AD & service (21), ADCS (14), Linux privilege escalation (7), web application (6), MSSQL (2), and cloud infrastructure (3). Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference.
 
 ---
 
@@ -182,7 +182,7 @@ Eight integrity checks:
 
 ### Output Parsers (`src/services/parsers/`)
 
-Seventeen deterministic parsers with 30 aliases:
+Twenty-one deterministic parsers with 36 aliases:
 
 | Parser | Input | Output |
 |--------|-------|--------|
@@ -203,6 +203,10 @@ Seventeen deterministic parsers with 30 aliases:
 | `testssl` / `sslscan` | JSON or text | TLS vulnerability detection (Heartbleed, POODLE, DROWN, etc.) |
 | `pacu` | JSON | cloud_identity + cloud_resource + cloud_policy nodes, IAM edges |
 | `prowler` | OCSF JSON-lines | cloud_resource nodes, compliance findings, VULNERABLE_TO edges |
+| `burp` | Burp Suite XML | vulnerability + webapp nodes, VULNERABLE_TO edges, CVE/CVSS |
+| `zap` | OWASP ZAP XML | vulnerability + webapp nodes, VULNERABLE_TO edges |
+| `sqlmap` | sqlmap text/JSON | vulnerability nodes (SQLi type, DBMS, technique), credential extraction |
+| `wpscan` | WPScan JSON | plugin/theme vulnerabilities, user enumeration |
 
 All parsers use canonical ID generation with SHA-1 fingerprinting for credential deduplication. Parsers accept optional `ParseContext` (`domain`, `source_host`, `cloud_account`, `cloud_region`, `network_zone`) for ambient context.
 
@@ -212,7 +216,7 @@ Full SharpHound v4/v5 JSON parser. Maps all BH object types (computers, users, g
 
 ### Skill Index (`src/services/skill-index.ts`)
 
-Local TF-IDF search over 33 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
+Local TF-IDF search over 34 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
 
 ### Dashboard Server (`src/services/dashboard-server.ts`)
 
@@ -232,7 +236,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (40)
+## MCP Tools (42)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -253,7 +257,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
 | `get_evidence` | Retrieve full-fidelity evidence by ID or list stored evidence records |
-| `parse_output` | Deterministic tool output parsing (17 parsers, 30 aliases) |
+| `parse_output` | Deterministic tool output parsing (21 parsers, 36 aliases) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
 | `ingest_azurehound` | AzureHound / ROADtools JSON ingestion |
 
@@ -286,7 +290,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 
 | Tool | Purpose |
 |------|---------|
-| `get_skill` | RAG skill search and retrieval (33 skills) |
+| `get_skill` | RAG skill search and retrieval (34 skills) |
 | `check_tools` | Offensive tool availability detection |
 | `track_process` | Register long-running scan for tracking |
 | `check_processes` | Check tracked process status |
@@ -379,14 +383,14 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**67 test files** across the codebase (see Vitest output for exact test count):
+**73 test files** across the codebase (see Vitest output for exact test count):
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (40 tools) |
-| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 40 tools via stdio + HTTP/SSE transport |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (42 tools) |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 42 tools via stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
-| Services | 24 test files | CIDR, BloodHound, parsers (17), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
+| Services | 24 test files | CIDR, BloodHound, parsers (21), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |
 | Dashboard | 5 test files | Boot, graph rendering, UI, WebSocket, main |
 | CLI | `lab-smoke.test.ts` | End-to-end lab workflow |
@@ -443,11 +447,11 @@ overwatch/
 │   │   ├── instructions.ts         # get_system_prompt
 │   │   ├── reporting.ts            # generate_report
 │   │   └── error-boundary.ts       # withErrorBoundary wrapper
-│   ├── services/                   # Core business logic (33 modules)
+│   ├── services/                   # Core business logic (43 modules)
 │   │   ├── graph-engine.ts         # Central orchestrator
 │   │   ├── engine-context.ts       # Shared mutable state (graph, config, rules, cold store)
 │   │   ├── state-persistence.ts    # Atomic persistence + snapshots + cold store serialization
-│   │   ├── inference-engine.ts     # Rule-based edge production (31 built-in rules)
+│   │   ├── inference-engine.ts     # Rule-based edge production (53 built-in rules)
 │   │   ├── frontier.ts             # Frontier computation (5 item types)
 │   │   ├── path-analyzer.ts        # OPSEC-weighted shortest paths (confidence/stealth/balanced)
 │   │   ├── identity-resolution.ts  # Canonical ID generation
@@ -456,7 +460,7 @@ overwatch/
 │   │   ├── graph-schema.ts         # Edge endpoint constraints
 │   │   ├── graph-health.ts         # 8 integrity checks + contextual AD filtering
 │   │   ├── credential-utils.ts     # Credential classification + lifecycle
-│   │   ├── parsers/              # 17 deterministic parsers (30 aliases)
+│   │   ├── parsers/              # 21 deterministic parsers (36 aliases)
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization
 │   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
@@ -488,7 +492,7 @@ overwatch/
 │       ├── lab-smoke.ts            # Lab smoke test harness
 │       ├── lab-smoke-lib.ts        # Smoke test library
 │       └── retrospective.ts        # CLI retrospective runner
-├── skills/                         # 33 offensive methodology guides
+├── skills/                         # 34 offensive methodology guides
 ├── fixtures/                       # Test fixtures (GOAD synth data)
 ├── engagement.json                 # Example engagement config
 ├── package.json                    # Dependencies + scripts
@@ -505,7 +509,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 17 parsers (30 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 21 parsers (36 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.

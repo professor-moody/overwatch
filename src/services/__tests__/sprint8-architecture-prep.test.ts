@@ -180,12 +180,18 @@ describe('validateAction scope expansion', () => {
     expect(invalid.errors[0]).toContain('out of scope');
   });
 
-  it('warns when target_url provided but no url_patterns defined', () => {
+  it('rejects target_url when hostname is out of scope and no url_patterns defined', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const result = engine.validateAction({ target_url: 'https://app.example.com' });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+  });
+
+  it('accepts target_url when hostname matches scope domain and no url_patterns defined', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const result = engine.validateAction({ target_url: 'https://app.test.local/admin' });
     expect(result.valid).toBe(true);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toContain('no url_patterns');
+    expect(result.errors).toHaveLength(0);
   });
 
   it('validates cloud_resource against aws_accounts', () => {

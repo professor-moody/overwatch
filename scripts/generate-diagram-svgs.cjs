@@ -71,16 +71,16 @@ const diagrams = [
   <line x1="290" y1="70" x2="290" y2="110" class="arr" marker-end="url(#arr)"/><line x1="390" y1="110" x2="390" y2="70" class="arr" marker-end="url(#arr)"/>
   <text class="ts" x="252" y="94" text-anchor="end">stdio / HTTP+SSE</text>
   <g class="n-teal"><rect x="60" y="110" width="560" height="290" rx="14"/><text class="th" x="340" y="134" text-anchor="middle" dominant-baseline="central">MCP orchestrator server</text></g>
-  <g class="n-blue"><rect x="90" y="150" width="500" height="36" rx="7"/><text class="th" x="340" y="168" text-anchor="middle" dominant-baseline="central">40 MCP tools (Zod-validated)</text></g>
+  <g class="n-blue"><rect x="90" y="150" width="500" height="36" rx="7"/><text class="th" x="340" y="168" text-anchor="middle" dominant-baseline="central">42 MCP tools (Zod-validated)</text></g>
   <g class="n-amber"><rect x="90" y="200" width="150" height="50" rx="7"/><text class="th" x="165" y="218" text-anchor="middle" dominant-baseline="central">Graph engine</text><text class="ts" x="165" y="234" text-anchor="middle" dominant-baseline="central">graphology</text></g>
-  <g class="n-coral"><rect x="262" y="200" width="150" height="50" rx="7"/><text class="th" x="337" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="337" y="234" text-anchor="middle" dominant-baseline="central">31 rules</text></g>
+  <g class="n-coral"><rect x="262" y="200" width="150" height="50" rx="7"/><text class="th" x="337" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="337" y="234" text-anchor="middle" dominant-baseline="central">53 rules</text></g>
   <g class="n-pink"><rect x="434" y="200" width="150" height="50" rx="7"/><text class="th" x="509" y="218" text-anchor="middle" dominant-baseline="central">Frontier computer</text><text class="ts" x="509" y="234" text-anchor="middle" dominant-baseline="central">Next actions</text></g>
   <line x1="240" y1="225" x2="260" y2="225" class="arr" marker-end="url(#arr)"/><line x1="412" y1="225" x2="432" y2="225" class="arr" marker-end="url(#arr)"/>
   <g class="n-gray"><rect x="90" y="266" width="500" height="36" rx="7"/><text class="th" x="340" y="284" text-anchor="middle" dominant-baseline="central">EngineContext (shared mutable state)</text></g>
   <g class="n-teal"><rect x="90" y="318" width="120" height="36" rx="6"/><text class="ts" x="150" y="336" text-anchor="middle" dominant-baseline="central">Path analyzer</text></g>
   <g class="n-teal"><rect x="224" y="318" width="120" height="36" rx="6"/><text class="ts" x="284" y="336" text-anchor="middle" dominant-baseline="central">Identity resolution</text></g>
   <g class="n-teal"><rect x="358" y="318" width="120" height="36" rx="6"/><text class="ts" x="418" y="336" text-anchor="middle" dominant-baseline="central">State persistence</text></g>
-  <g class="n-teal"><rect x="492" y="318" width="100" height="36" rx="6"/><text class="ts" x="542" y="336" text-anchor="middle" dominant-baseline="central">17 parsers</text></g>
+  <g class="n-teal"><rect x="492" y="318" width="100" height="36" rx="6"/><text class="ts" x="542" y="336" text-anchor="middle" dominant-baseline="central">21 parsers</text></g>
   <g class="n-gray"><rect x="350" y="372" width="90" height="26" rx="6"/><text class="ts" x="395" y="385" text-anchor="middle" dominant-baseline="central">state.json</text></g>
   <line x1="418" y1="354" x2="395" y2="372" class="arr" marker-end="url(#arr)"/>
   <g class="n-blue"><rect x="200" y="430" width="280" height="40" rx="8"/><text class="th" x="340" y="450" text-anchor="middle" dominant-baseline="central">Dashboard (sigma.js WebGL :8384)</text></g>
@@ -100,7 +100,7 @@ const diagrams = [
   <line x1="340" y1="170" x2="340" y2="186" class="arr" marker-end="url(#arr)"/>
   <g class="n-amber"><rect x="180" y="186" width="320" height="48" rx="7"/><text class="th" x="340" y="204" text-anchor="middle" dominant-baseline="central">4. Execute (bash / nmap / nxc)</text><text class="ts" x="340" y="220" text-anchor="middle" dominant-baseline="central">Claude Code native bash</text></g>
   <line x1="340" y1="234" x2="340" y2="250" class="arr" marker-end="url(#arr)"/>
-  <g class="n-coral"><rect x="80" y="250" width="240" height="48" rx="7"/><text class="th" x="200" y="268" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="284" text-anchor="middle" dominant-baseline="central">17 parsers / 31 aliases</text></g>
+  <g class="n-coral"><rect x="80" y="250" width="240" height="48" rx="7"/><text class="th" x="200" y="268" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="284" text-anchor="middle" dominant-baseline="central">21 parsers / 36 aliases</text></g>
   <g class="n-coral"><rect x="360" y="250" width="240" height="48" rx="7"/><text class="th" x="480" y="268" text-anchor="middle" dominant-baseline="central">5b. report_finding()</text><text class="ts" x="480" y="284" text-anchor="middle" dominant-baseline="central">Manual nodes/edges</text></g>
   <text class="ts" x="340" y="278" text-anchor="middle">or</text>
   <line x1="200" y1="298" x2="200" y2="322" class="arr" marker-end="url(#arr)"/><line x1="480" y1="298" x2="480" y2="322" class="arr" marker-end="url(#arr)"/>
@@ -143,7 +143,7 @@ const diagrams = [
     body: `
   <g class="n-coral"><rect x="180" y="10" width="320" height="48" rx="7"/><text class="th" x="340" y="28" text-anchor="middle" dominant-baseline="central">Finding ingested</text><text class="ts" x="340" y="44" text-anchor="middle" dominant-baseline="central">New node/edge enters graph</text></g>
   <line x1="340" y1="58" x2="340" y2="76" class="arr" marker-end="url(#arr)"/>
-  <g class="n-amber"><rect x="120" y="76" width="440" height="48" rx="7"/><text class="th" x="340" y="94" text-anchor="middle" dominant-baseline="central">Rule matching (31 built-in rules)</text><text class="ts" x="340" y="110" text-anchor="middle" dominant-baseline="central">Node type + property + edge-triggered</text></g>
+  <g class="n-amber"><rect x="120" y="76" width="440" height="48" rx="7"/><text class="th" x="340" y="94" text-anchor="middle" dominant-baseline="central">Rule matching (53 built-in rules)</text><text class="ts" x="340" y="110" text-anchor="middle" dominant-baseline="central">Node type + property + edge-triggered</text></g>
   <line x1="140" y1="124" x2="140" y2="148" class="arr" marker-end="url(#arr)"/>
   <line x1="290" y1="124" x2="290" y2="148" class="arr" marker-end="url(#arr)"/>
   <line x1="430" y1="124" x2="430" y2="148" class="arr" marker-end="url(#arr)"/>
@@ -253,7 +253,7 @@ const diagrams = [
   <line x1="340" y1="46" x2="340" y2="64" class="arr" marker-end="url(#arr)"/>
   <g class="n-gray"><rect x="100" y="64" width="480" height="44" rx="8"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">EngineContext (shared mutable state)</text><text class="ts" x="340" y="96" text-anchor="middle" dominant-baseline="central">graph, config, rules, agents, activity log, callbacks, coldStore</text></g>
   <line x1="130" y1="108" x2="130" y2="126" class="arr" marker-end="url(#arr)"/><line x1="270" y1="108" x2="270" y2="126" class="arr" marker-end="url(#arr)"/><line x1="410" y1="108" x2="410" y2="126" class="arr" marker-end="url(#arr)"/><line x1="540" y1="108" x2="540" y2="126" class="arr" marker-end="url(#arr)"/>
-  <g class="n-teal"><rect x="68" y="126" width="130" height="44" rx="6"/><text class="th" x="133" y="142" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="133" y="158" text-anchor="middle" dominant-baseline="central">31 rules, selectors</text></g>
+  <g class="n-teal"><rect x="68" y="126" width="130" height="44" rx="6"/><text class="th" x="133" y="142" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="133" y="158" text-anchor="middle" dominant-baseline="central">53 rules, selectors</text></g>
   <g class="n-blue"><rect x="210" y="126" width="120" height="44" rx="6"/><text class="th" x="270" y="142" text-anchor="middle" dominant-baseline="central">Frontier</text><text class="ts" x="270" y="158" text-anchor="middle" dominant-baseline="central">5 item types</text></g>
   <g class="n-purple"><rect x="342" y="126" width="130" height="44" rx="6"/><text class="th" x="407" y="142" text-anchor="middle" dominant-baseline="central">Path analyzer</text><text class="ts" x="407" y="158" text-anchor="middle" dominant-baseline="central">BFS, objectives</text></g>
   <g class="n-coral"><rect x="484" y="126" width="140" height="44" rx="6"/><text class="th" x="554" y="142" text-anchor="middle" dominant-baseline="central">State persistence</text><text class="ts" x="554" y="158" text-anchor="middle" dominant-baseline="central">Atomic write</text></g>

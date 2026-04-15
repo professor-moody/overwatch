@@ -28,6 +28,7 @@ interface BHObject {
   AllowedToAct?: BHMember[];
   HasSIDHistory?: BHMember[];
   SPNTargets?: BHSPNTarget[];
+  Trusts?: BHTrust[];
   // Computers-specific
   Status?: { Connectable: boolean; Error?: string };
   [key: string]: unknown;
@@ -59,6 +60,15 @@ interface BHSPNTarget {
   ComputerSID: string;
   Port: number;
   Service: string;
+}
+
+interface BHTrust {
+  TargetDomainSid: string;
+  TargetDomainName: string;
+  TrustDirection: number;  // 0 = Disabled, 1 = Inbound, 2 = Outbound, 3 = Bidirectional
+  TrustType: number;
+  IsTransitive: boolean;
+  SidFilteringEnabled: boolean;
 }
 
 // --- Type Mappings ---
@@ -563,6 +573,62 @@ export function parseBloodHoundFile(
             discovered_by: 'bloodhound-ingest',
           },
         });
+      }
+    }
+
+    // Trusts → TRUSTS edges (domain objects only)
+    if (obj.Trusts && Array.isArray(obj.Trusts)) {
+      for (const trust of obj.Trusts as BHTrust[]) {
+        const targetDomainName = trust.TargetDomainName;
+        if (!targetDomainName) continue;
+
+        const targetId = domainId(targetDomainName);
+        // Emit stub domain node for the target so the edge target exists in this finding
+        if (!seenDomainStubs.has(targetId)) {
+          nodes.push({
+            id: targetId,
+            type: 'domain',
+            label: targetDomainName,
+            domain_name: targetDomainName.toLowerCase(),
+          });
+          seenDomainStubs.add(targetId);
+        }
+
+        // TrustDirection: 0 = Disabled, 1 = Inbound, 2 = Outbound, 3 = Bidirectional
+        // "Inbound" means the target domain trusts us → edge from us to target
+        // "Outbound" means we trust the target domain → edge from target to us
+        // "Bidirectional" → both directions
+        const direction = trust.TrustDirection;
+        if (direction === 1 || direction === 3) {
+          // Inbound (or bidi): target trusts us → we can auth to target
+          edges.push({
+            source: nodeId,
+            target: targetId,
+            properties: {
+              type: 'TRUSTS',
+              confidence: 1.0,
+              discovered_at: new Date().toISOString(),
+              discovered_by: 'bloodhound-ingest',
+              is_transitive: trust.IsTransitive,
+              sid_filtering: trust.SidFilteringEnabled,
+            },
+          });
+        }
+        if (direction === 2 || direction === 3) {
+          // Outbound (or bidi): we trust target → target can auth to us
+          edges.push({
+            source: targetId,
+            target: nodeId,
+            properties: {
+              type: 'TRUSTS',
+              confidence: 1.0,
+              discovered_at: new Date().toISOString(),
+              discovered_by: 'bloodhound-ingest',
+              is_transitive: trust.IsTransitive,
+              sid_filtering: trust.SidFilteringEnabled,
+            },
+          });
+        }
       }
     }
 

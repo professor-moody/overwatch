@@ -8,18 +8,6 @@ import { isIpInCidr } from '../services/cidr.js';
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot'] as const;
 
-  function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string) {
-    return {
-      id: uuidv4(),
-      agent_id,
-      assigned_at: new Date().toISOString(),
-      status: 'running' as const,
-      frontier_item_id,
-      subgraph_node_ids,
-      skill,
-    };
-  }
-
   // ============================================================
   // Tool: register_agent
   // Primary session registers a sub-agent task.
@@ -458,4 +446,220 @@ its CIDR as its scoped subgraph.`,
       };
     })
   );
+
+  // ============================================================
+  // Tool: dispatch_campaign_agents
+  // Dispatch sub-agents for each item in a campaign.
+  // ============================================================
+  server.registerTool(
+    'dispatch_campaign_agents',
+    {
+      title: 'Dispatch Campaign Agents',
+      description: `Dispatch sub-agents for each item in a campaign, using campaign-aware scoping.
+
+Activates the campaign if it is in draft status, then registers one agent per
+frontier item (up to max_agents). Scope computation is strategy-aware:
+- credential_spray: credential + target services + parent hosts
+- post_exploitation: host + all connected nodes
+- enumeration/network_discovery/custom: N-hop subgraph from frontier seeds
+
+Skips items that already have a running agent.`,
+      inputSchema: {
+        campaign_id: z.string().describe('ID of the campaign to dispatch agents for'),
+        max_agents: z.number().int().min(1).max(20).default(8).describe('Maximum number of agents to dispatch'),
+        hops: z.number().int().min(1).max(5).default(2).describe('Hops for subgraph scope computation'),
+        skill: z.string().optional().describe('Optional skill override applied to each dispatched agent'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      }
+    },
+    withErrorBoundary('dispatch_campaign_agents', async ({ campaign_id, max_agents, hops, skill }) => {
+      const result = dispatchCampaignAgents(engine, campaign_id, { max_agents, hops, skill });
+
+      if (result.error) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: result.error, campaign_id }, null, 2)
+          }],
+          isError: true
+        };
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    })
+  );
+}
+
+// ============================================================
+// Exported dispatch helper — used by both the MCP tool and the
+// dashboard REST endpoint so the logic lives in one place.
+// ============================================================
+
+export interface DispatchResult {
+  campaign_id: string;
+  strategy: string;
+  requested: number;
+  total_items: number;
+  dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; skill?: string }>;
+  skipped: Array<{ frontier_item_id: string; reason: string }>;
+  warning?: string;
+  error?: string;
+}
+
+export function dispatchCampaignAgents(
+  engine: GraphEngine,
+  campaign_id: string,
+  options: { max_agents?: number; hops?: number; skill?: string } = {},
+): DispatchResult {
+  const max_agents = options.max_agents ?? 8;
+  const hops = options.hops ?? 2;
+  const skill = options.skill;
+
+  const campaign = engine.getCampaign(campaign_id);
+  if (!campaign) {
+    return { campaign_id, strategy: '', requested: max_agents, total_items: 0, dispatched: [], skipped: [], error: `Campaign not found: ${campaign_id}` };
+  }
+
+  if (campaign.status === 'paused' || campaign.status === 'aborted' || campaign.status === 'completed') {
+    return { campaign_id, strategy: campaign.strategy, requested: max_agents, total_items: campaign.items.length, dispatched: [], skipped: [], error: `Campaign is ${campaign.status} — cannot dispatch agents` };
+  }
+
+  // Activate draft campaigns
+  if (campaign.status === 'draft') {
+    engine.activateCampaign(campaign_id);
+  }
+
+  const dispatched: DispatchResult['dispatched'] = [];
+  const skipped: DispatchResult['skipped'] = [];
+
+  for (const itemId of campaign.items) {
+    if (dispatched.length >= max_agents) break;
+
+    const existing = engine.getRunningTaskForFrontierItem(itemId);
+    if (existing) {
+      skipped.push({ frontier_item_id: itemId, reason: `running_agent: ${existing.agent_id}` });
+      continue;
+    }
+
+    const scope = computeCampaignScope(engine, campaign.strategy, itemId, hops);
+    const agent_id = `agent-campaign-${campaign.strategy.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
+    const task = buildTask(agent_id, itemId, scope, skill, campaign_id);
+    engine.registerAgent(task);
+
+    dispatched.push({ task_id: task.id, agent_id, frontier_item_id: itemId, scope_nodes: scope.length, skill });
+  }
+
+  const result: DispatchResult = {
+    campaign_id,
+    strategy: campaign.strategy,
+    requested: max_agents,
+    total_items: campaign.items.length,
+    dispatched,
+    skipped,
+  };
+  if (dispatched.length === 0) {
+    result.warning = 'No agents dispatched — all items were skipped';
+  }
+  return result;
+}
+
+function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string, campaign_id?: string) {
+  return {
+    id: uuidv4(),
+    agent_id,
+    assigned_at: new Date().toISOString(),
+    status: 'running' as const,
+    frontier_item_id,
+    campaign_id,
+    subgraph_node_ids,
+    skill,
+  };
+}
+
+/**
+ * Compute subgraph scope for a campaign item using strategy-aware logic.
+ */
+function computeCampaignScope(
+  engine: GraphEngine,
+  strategy: string,
+  frontierItemId: string,
+  hops: number,
+): string[] {
+  if (strategy === 'credential_spray') {
+    // Include the credential node, target service nodes, and their parent host nodes
+    return computeSprayScope(engine, frontierItemId);
+  }
+
+  if (strategy === 'post_exploitation') {
+    // Include the host and ALL directly connected nodes
+    return computePostExploitScope(engine, frontierItemId);
+  }
+
+  // enumeration, network_discovery, custom: standard N-hop BFS
+  return engine.computeSubgraphNodeIds(frontierItemId, hops);
+}
+
+function computeSprayScope(engine: GraphEngine, frontierItemId: string): string[] {
+  const scope = new Set<string>();
+  const graph = engine.exportGraph();
+
+  // Resolve frontier item to get the edge endpoints
+  // Spray targets are typically inferred_edge items (credential → service/host)
+  const seeds = engine.computeSubgraphNodeIds(frontierItemId, 0);
+  for (const s of seeds) scope.add(s);
+
+  // Walk 1-hop from seeds: collect credentials, services, and their parent hosts
+  for (const seed of seeds) {
+    const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
+    const node = nodeMap.get(seed);
+    if (!node) continue;
+
+    // Add the seed
+    scope.add(seed);
+
+    // Find edges involving this node
+    for (const edge of graph.edges) {
+      if (edge.source === seed || edge.target === seed) {
+        const neighbor = edge.source === seed ? edge.target : edge.source;
+        const neighborNode = nodeMap.get(neighbor);
+        if (!neighborNode) continue;
+        const ntype = neighborNode.properties.type;
+        if (ntype === 'credential' || ntype === 'service' || ntype === 'host' || ntype === 'user') {
+          scope.add(neighbor);
+          // If service, also include parent host
+          if (ntype === 'service') {
+            for (const e2 of graph.edges) {
+              if ((e2.source === neighbor || e2.target === neighbor) && e2.properties.type === 'RUNS') {
+                scope.add(e2.source === neighbor ? e2.target : e2.source);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return [...scope];
+}
+
+function computePostExploitScope(engine: GraphEngine, frontierItemId: string): string[] {
+  const scope = new Set<string>();
+  const seeds = engine.computeSubgraphNodeIds(frontierItemId, 0);
+  for (const s of seeds) scope.add(s);
+
+  // Get ALL direct neighbors (1-hop, no limit on type)
+  const allNodes = engine.computeSubgraphNodeIds(frontierItemId, 1);
+  for (const n of allNodes) scope.add(n);
+
+  return [...scope];
 }

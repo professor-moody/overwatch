@@ -15,6 +15,8 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
+import { ChainScorer } from './chain-scorer.js';
+import { CampaignPlanner } from './campaign-planner.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { runHealthChecks, summarizeHealthReport, hasADContext, contextualFilterHealthReport } from './graph-health.js';
 import { summarizeInlineLabReadiness } from './lab-preflight.js';
@@ -25,6 +27,7 @@ import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { EvidenceStore } from './evidence-store.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
+import type { OpsecContext } from './opsec-tracker.js';
 import {
   inferPivotReachability as _inferPivotReachability,
   inferDefaultCredentials as _inferDefaultCredentials,
@@ -65,6 +68,7 @@ const BIDIRECTIONAL_EDGE_TYPES: Set<EdgeType> = new Set([
   'MEMBER_OF', 'MEMBER_OF_DOMAIN',
   'RELATED', 'SAME_DOMAIN', 'TRUSTS',
   'ASSUMES_ROLE', 'MANAGED_BY',
+  'AUTH_BYPASS',
 ]);
 
 export { GraphUpdateCallback };
@@ -76,9 +80,11 @@ export class GraphEngine {
   private inference: InferenceEngine;
   private paths: PathAnalyzer;
   private frontierComputer: FrontierComputer;
+  private chainScorer: ChainScorer;
+  private campaignPlanner: CampaignPlanner;
   private reconciler: IdentityReconciler;
   private healthReportCache: HealthReport | null = null;
-  private frontierCache: { passed: FrontierItem[]; all: FrontierItem[] } | null = null;
+  private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[] } | null = null;
   private evidenceStore: EvidenceStore;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
@@ -105,6 +111,11 @@ export class GraphEngine {
       this.ctx,
       this.hopsToNearestObjective.bind(this),
     );
+    this.chainScorer = new ChainScorer(
+      this.ctx,
+      this.hopsToNearestObjective.bind(this),
+    );
+    this.campaignPlanner = new CampaignPlanner(this.ctx);
     this.reconciler = new IdentityReconciler(this.ctx.graph, {
       getNode: this.getNode.bind(this),
       addEdge: this.addEdge.bind(this),
@@ -474,8 +485,14 @@ export class GraphEngine {
           }
         }
       }
+      // Enrich frontier items with chain scoring data
+      const chainGroups = this.chainScorer.scoreChains(all);
+
+      // Generate campaigns from frontier + chain groups
+      const campaigns = this.campaignPlanner.generateCampaigns(all, chainGroups);
+
       const { passed } = this.filterFrontier(all);
-      this.frontierCache = { all, passed };
+      this.frontierCache = { all, passed, campaigns };
     }
     return this.frontierCache.all;
   }
@@ -485,6 +502,55 @@ export class GraphEngine {
       this.computeFrontier();
     }
     return this.frontierCache!.passed;
+  }
+
+  // =============================================
+  // Campaign Management (delegated to CampaignPlanner)
+  // =============================================
+
+  getCampaigns(): import('../types.js').Campaign[] {
+    if (!this.frontierCache) {
+      this.computeFrontier();
+    }
+    return this.frontierCache!.campaigns;
+  }
+
+  getCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.getCampaign(id);
+  }
+
+  listCampaigns(filter?: { status?: string }): import('../types.js').Campaign[] {
+    return this.campaignPlanner.listCampaigns(filter);
+  }
+
+  pauseCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.pauseCampaign(id);
+  }
+
+  resumeCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.resumeCampaign(id);
+  }
+
+  abortCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.abortCampaign(id);
+  }
+
+  activateCampaign(id: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.activateCampaign(id);
+  }
+
+  updateCampaignProgress(
+    campaignId: string, frontierItemId: string, result: 'success' | 'failure', findingId?: string,
+  ): import('../types.js').Campaign | null {
+    return this.campaignPlanner.updateCampaignProgress(campaignId, frontierItemId, result, findingId);
+  }
+
+  checkCampaignAbortConditions(campaignId: string): { should_abort: boolean; reason?: string } {
+    return this.campaignPlanner.checkAbortConditions(campaignId);
+  }
+
+  findCampaignForItem(frontierItemId: string): import('../types.js').Campaign | null {
+    return this.campaignPlanner.findCampaignForItem(frontierItemId);
   }
 
   // =============================================
@@ -642,6 +708,26 @@ export class GraphEngine {
     return null;
   }
 
+  private resolveHostDomain(nodeId: string): string | undefined {
+    // Walk outbound MEMBER_OF_DOMAIN edges to find the domain
+    if (!this.ctx.graph.hasNode(nodeId)) return undefined;
+    for (const edge of this.ctx.graph.outEdges(nodeId) as string[]) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edge);
+      if (attrs.type === 'MEMBER_OF_DOMAIN') {
+        const target = this.ctx.graph.target(edge);
+        const targetNode = this.getNode(target);
+        if (targetNode?.type === 'domain') return targetNode.label || target;
+      }
+    }
+    // Fallback: check hostname for domain suffix
+    const hostname = this.resolveHostname(nodeId);
+    if (hostname && hostname.includes('.')) {
+      const parts = hostname.split('.');
+      if (parts.length >= 2) return parts.slice(-2).join('.');
+    }
+    return undefined;
+  }
+
   private isNodeExcluded(nodeId: string): string | null {
     const ip = this.resolveHostIp(nodeId);
     const hostname = this.resolveHostname(nodeId);
@@ -674,6 +760,7 @@ export class GraphEngine {
     valid: boolean;
     errors: string[];
     warnings: string[];
+    opsec_context: OpsecContext;
   } {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -704,7 +791,15 @@ export class GraphEngine {
           errors.push(`Target URL is out of scope: ${action.target_url}`);
         }
       } else {
-        warnings.push(`Target URL provided but no url_patterns defined in scope`);
+        // Fail closed: fall back to hostname-vs-domain scope check
+        try {
+          const hostname = new URL(action.target_url).hostname;
+          if (!isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
+            errors.push(`Target URL hostname is out of scope: ${hostname}`);
+          }
+        } catch {
+          errors.push(`Target URL is malformed: ${action.target_url}`);
+        }
       }
     }
 
@@ -771,7 +866,19 @@ export class GraphEngine {
       }
     }
 
-    return { valid: errors.length === 0, errors, warnings };
+    // OPSEC context from adaptive tracker
+    const host_id = action.target_node || action.edge_target;
+    const domain = host_id ? this.resolveHostDomain(host_id) : undefined;
+    const opsec_context = this.ctx.opsecTracker.getNoiseContext({ host_id: host_id || undefined, domain });
+
+    // Noise budget warning
+    if (opsec_context.noise_budget_remaining <= 0) {
+      warnings.push('Noise budget exhausted — only passive/zero-noise actions recommended.');
+    } else if (this.ctx.opsecTracker.isApproachingCeiling(host_id || undefined, domain)) {
+      warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${this.ctx.config.opsec.max_noise}).`);
+    }
+
+    return { valid: errors.length === 0, errors, warnings, opsec_context };
   }
 
   private checkTechniqueGuidance(action: {
@@ -805,7 +912,7 @@ export class GraphEngine {
       case 'kerberoast': {
         if (!targetNode || !this.ctx.graph.hasNode(targetNode)) return null;
         const node = this.ctx.graph.getNodeAttributes(targetNode);
-        if (node.type === 'user' && !node.spn) return 'Target user has no SPN property set — Kerberoasting requires a servicePrincipalName.';
+        if (node.type === 'user' && !node.has_spn) return 'Target user has no SPN property set — Kerberoasting requires a servicePrincipalName.';
         return null;
       }
       case 'smb-relay':
@@ -1232,8 +1339,27 @@ export class GraphEngine {
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
+    const task = this.agentMgr.getTask(taskId);
     const ok = this.agentMgr.updateStatus(taskId, status, summary);
-    if (ok) this.persist();
+    if (ok) {
+      // Campaign progress aggregation: when a campaign agent reaches terminal state,
+      // update campaign progress and check abort conditions.
+      if (task?.campaign_id && (status === 'completed' || status === 'failed')) {
+        const result = status === 'completed' ? 'success' as const : 'failure' as const;
+        this.campaignPlanner.updateCampaignProgress(task.campaign_id, task.frontier_item_id || '', result);
+        const abort = this.campaignPlanner.checkAbortConditions(task.campaign_id);
+        if (abort.should_abort) {
+          this.campaignPlanner.abortCampaign(task.campaign_id);
+          // Cancel remaining running agents for this campaign
+          for (const agent of this.agentMgr.getAll()) {
+            if (agent.campaign_id === task.campaign_id && agent.status === 'running' && agent.id !== taskId) {
+              this.agentMgr.updateStatus(agent.id, 'interrupted', `Campaign aborted: ${abort.reason}`);
+            }
+          }
+        }
+      }
+      this.persist();
+    }
     return ok;
   }
 
@@ -1490,6 +1616,30 @@ export class GraphEngine {
   persist(detail: GraphUpdateDetail = {}): void {
     this.invalidateHealthReport();
     this.persistence.persist(detail);
+  }
+
+  // =============================================
+  // OPSEC Tracker
+  // =============================================
+
+  recordOpsecNoise(opts: { action_id?: string; host_id?: string; domain?: string; noise_estimate: number; noise_actual?: number }): void {
+    this.ctx.opsecTracker.recordNoise(opts);
+  }
+
+  recordDefensiveSignal(signal: import('./opsec-tracker.js').DefensiveSignal): void {
+    this.ctx.opsecTracker.recordDefensiveSignal(signal);
+  }
+
+  getOpsecContext(opts?: { host_id?: string; domain?: string }): OpsecContext {
+    return this.ctx.opsecTracker.getNoiseContext(opts);
+  }
+
+  // =============================================
+  // Pending Action Queue (Approval Gates)
+  // =============================================
+
+  getPendingActionQueue(): import('./pending-action-queue.js').PendingActionQueue {
+    return this.ctx.pendingActionQueue;
   }
 
   listSnapshots(): string[] {

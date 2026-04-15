@@ -96,8 +96,8 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     return resolvedUserId;
   }
 
-  // Broad prefix regex for all SMB lines: SMB  IP  PORT  HOSTNAME  <rest>
-  const smbLineRe = /^SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+(.*)/i;
+  // Broad prefix regex for all SMB lines: SMB  IP/IPv6/hostname  PORT  HOSTNAME  <rest>
+  const smbLineRe = /^SMB\s+((?:\d+\.){3}\d+|\[?[a-fA-F0-9:]+\]?|[\w.-]+)\s+(\d+)\s+(\S+)\s+(.*)/i;
 
   for (const line of lines) {
     const smbLine = line.match(smbLineRe);
@@ -117,6 +117,35 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       // "Enumerated N local users: DOMAIN" — end of user table
       if (/Enumerated\s+\d+/i.test(infoMsg)) {
         userTableIp = undefined;
+        continue;
+      }
+
+      // --- spider_plus file listing ---
+      // NXC spider_plus outputs: [*] \\IP\SHARE\path\to\file (size)
+      const spiderMsgMatch = infoMsg.match(/^\\\\[^\\]+\\([^\\]+)\\(.+?)(?:\s+\(\d+[^)]*\))?$/);
+      if (spiderMsgMatch) {
+        const [, shareName, filePath] = spiderMsgMatch;
+        const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
+        const shareId = `share-${ip.replace(/\./g, '-')}-${shareName.toLowerCase()}`;
+
+        if (!seenNodes.has(shareId)) {
+          nodes.push({
+            id: shareId,
+            type: 'share',
+            label: `\\\\${ip}\\${shareName}`,
+            share_name: shareName,
+            readable: true,
+          });
+          seenNodes.add(shareId);
+          addEdgeOnce(resolvedHostId, shareId, 'RELATED', 1.0);
+        }
+
+        const shareNode = nodes.find(n => n.id === shareId);
+        if (shareNode) {
+          const files = (shareNode.spider_files as string[]) || [];
+          files.push(filePath);
+          shareNode.spider_files = files;
+        }
         continue;
       }
 
@@ -141,8 +170,9 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       const nullAuthMatch = infoMsg.match(/\(Null Auth:(True|False)\)/i);
       if (nullAuthMatch) meta.nullAuth = nullAuthMatch[1].toLowerCase() === 'true';
 
-      // Extract OS from the info text before first parenthetical
-      const osMatch = infoMsg.match(/^(Windows\s[^(]+)/i);
+      // Extract OS from the info text before first parenthetical.
+      // Matches Windows, Linux, FreeBSD, and other OS strings.
+      const osMatch = infoMsg.match(/^((?:Windows|Linux|FreeBSD|Ubuntu|Debian|CentOS|Red Hat|Samba)\s[^(]+)/i);
       if (osMatch) meta.os = osMatch[1].trim();
 
       continue;
@@ -196,6 +226,97 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       }
 
       continue;
+    }
+
+    // --- SAM dump lines: hash format within NXC output ---
+    // NXC --sam outputs: SMB  IP  445  HOST  username:rid:lmhash:nthash:::
+    {
+      const samMatch = rest.match(/^([^:*\s][^:]*):(\d+):([a-f0-9]{32}):([a-f0-9]{32}):::$/i);
+      if (samMatch) {
+        const [, rawUser, , , nthash] = samMatch;
+        const username = rawUser.replace(/^.*\\/, '');
+        if (!username.endsWith('$')) {
+          const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
+          const domain = hostMeta.get(ip)?.domain;
+          const credNodeId = credentialId('ntlm_hash', nthash, username, domain);
+
+          if (!seenNodes.has(credNodeId)) {
+            nodes.push({
+              id: credNodeId,
+              type: 'credential',
+              label: `NTLM:${username}`,
+              cred_type: 'ntlm',
+              cred_material_kind: 'ntlm_hash',
+              cred_usable_for_auth: true,
+              cred_evidence_kind: 'dump',
+              cred_value: nthash,
+              cred_user: username,
+              cred_domain: domain,
+              dump_source_host: ip,
+            });
+            seenNodes.add(credNodeId);
+          }
+
+          const resolvedUserId = addUserNode(username, domain);
+          addEdgeOnce(resolvedUserId, credNodeId, 'OWNS_CRED', 1.0);
+          edges.push({
+            source: credNodeId,
+            target: resolvedHostId,
+            properties: { type: 'DUMPED_FROM', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+          });
+        }
+        continue;
+      }
+    }
+
+    // --- LSA secrets lines ---
+    // NXC --lsa outputs: SMB  IP  445  HOST  domain\account:plaintext_password
+    // Also: DPAPI secrets, NL$KM, DefaultPassword
+    {
+      const lsaMatch = rest.match(/^([^:]+):(.*)/);
+      if (lsaMatch && !rest.includes('-Username-') && !rest.startsWith('[') && userTableIp !== ip) {
+        const [, rawAccount, secret] = lsaMatch;
+        // Skip known non-credential lines
+        if (secret && secret.length > 0 && !rawAccount.startsWith('NL$KM') && !rawAccount.startsWith('dpapi_')) {
+          // DefaultPassword or cleartext password
+          const isDefault = rawAccount.toLowerCase().includes('defaultpassword');
+          const parts = rawAccount.split('\\');
+          const username = parts.length > 1 ? parts[1] : parts[0];
+          const domain = parts.length > 1 ? resolveDomainName(parts[0], context?.domain_aliases) : hostMeta.get(ip)?.domain;
+
+          if (username && secret.trim().length > 0) {
+            const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
+            const credNodeId = credentialId('plaintext_password', secret.trim(), username, domain);
+
+            if (!seenNodes.has(credNodeId)) {
+              nodes.push({
+                id: credNodeId,
+                type: 'credential',
+                label: `${username} LSA secret`,
+                cred_type: 'plaintext',
+                cred_material_kind: 'plaintext_password',
+                cred_usable_for_auth: true,
+                cred_evidence_kind: 'dump',
+                cred_value: secret.trim(),
+                cred_user: username,
+                cred_domain: domain,
+                cred_is_default_guess: isDefault || undefined,
+                dump_source_host: ip,
+              });
+              seenNodes.add(credNodeId);
+            }
+
+            const resolvedUserId = addUserNode(username, domain);
+            addEdgeOnce(resolvedUserId, credNodeId, 'OWNS_CRED', 1.0);
+            edges.push({
+              source: credNodeId,
+              target: resolvedHostId,
+              properties: { type: 'DUMPED_FROM', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+            });
+            continue;
+          }
+        }
+      }
     }
 
     // --- User enumeration table header ---
@@ -331,13 +452,16 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     }
   }
 
+  // Post-processing: ensure hosts from info-only lines are emitted
+  for (const [ip] of hostMeta) {
+    ensureSmbContext(ip);
+  }
+
   // Post-processing: create NULL_SESSION edges for hosts with null auth
   for (const [ip, meta] of hostMeta) {
     if (!meta.nullAuth) continue;
     const resolvedHostId = hostId(ip);
     const serviceNodeId = `svc-${ip.replace(/\./g, '-')}-445`;
-    // Ensure context exists (may not have been created yet if only [*] lines were seen)
-    ensureSmbContext(ip);
     addEdgeOnce(resolvedHostId, serviceNodeId, 'NULL_SESSION', 1.0);
   }
 

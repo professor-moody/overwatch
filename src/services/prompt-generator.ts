@@ -181,7 +181,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '- **The graph is your memory.** After compaction, `get_state()` reconstructs everything.',
     '- **Report early, report often.** Every `report_finding()` call triggers inference rules.',
     '- **Use structured action logging.** `validate_action()` → `log_action_event()` for causal linkage.',
-    '- **Thread `frontier_item_id` through every call.** Critical for retrospective attribution.',
+    '- **Thread `frontier_item_id` through every call.** Pass it to `validate_action`, `log_action_event`, `parse_output`, and `report_finding`. Without it, retrospective attribution falls back to text heuristics. The `validate_action` response now returns `frontier_item_id` and `frontier_type` for easy reference.',
     '- **The deterministic layer is a guardrail, not a brain.** You do the offensive thinking.',
     '- **Validate before you execute.** Every significant action goes through `validate_action()` first.',
     '- **Use `query_graph()` liberally.** The graph may contain patterns the frontier doesn\'t surface.',

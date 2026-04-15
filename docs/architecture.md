@@ -105,7 +105,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
 | **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/parsers/` | 17 parsers / 30 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler |
+| **Output Parsers** | `src/services/parsers/` | 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan |
 | **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
 | **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization, lifecycle, and domain inference |
 | **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |
@@ -126,6 +126,16 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Prompt Generator** | `src/services/prompt-generator.ts` | Dynamic system prompt generation for primary and sub-agent roles |
 | **Report Generator** | `src/services/report-generator.ts` | Per-finding sections, evidence chains, attack narrative, auto-remediation |
 | **Report HTML** | `src/services/report-html.ts` | Self-contained HTML report renderer with themes and print CSS |
+| **Campaign Planner** | `src/services/campaign-planner.ts` | Campaign assembly, progress tracking, abort conditions |
+| **Chain Scorer** | `src/services/chain-scorer.ts` | Multi-hop credential chain scoring |
+| **OPSEC Tracker** | `src/services/opsec-tracker.ts` | Dynamic noise budget tracking per host/domain/global |
+| **Pending Action Queue** | `src/services/pending-action-queue.ts` | Operator approval gates for actions |
+| **Evidence Store** | `src/services/evidence-store.ts` | Durable evidence blob storage with action/finding linkage |
+| **Finding Ingestion** | `src/services/finding-ingestion.ts` | Finding validation pipeline and graph mutation |
+| **Imperative Inference** | `src/services/imperative-inference.ts` | Imperative (code-driven) inference rule execution |
+| **Scope Manager** | `src/services/scope-manager.ts` | Engagement scope governance and validation |
+| **Graph Query** | `src/services/graph-query.ts` | Structured graph queries with filtering |
+| **Engine Context** | `src/services/engine-context.ts` | Service container and dependency wiring |
 
 ### Tools
 
@@ -135,7 +145,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
 | **Findings** | `src/tools/findings.ts` | `report_finding`, `get_evidence` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
-| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents` |
+| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents`, `dispatch_campaign_agents`, `manage_campaign` |
 | **Skills** | `src/tools/skills.ts` | `get_skill` |
 | **Logging** | `src/tools/logging.ts` | `log_action_event` |
 | **Parse Output** | `src/tools/parse-output.ts` | `parse_output` |

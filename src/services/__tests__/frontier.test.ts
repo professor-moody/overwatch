@@ -288,6 +288,18 @@ describe('FrontierComputer', () => {
       const discoveryItems = items.filter(i => i.type === 'network_discovery');
       expect(discoveryItems.length).toBe(0);
     });
+
+    it('handles very broad CIDRs without overflow', () => {
+      const graph = makeGraph();
+      const config = makeConfig({ scope: { cidrs: ['10.0.0.0/1'], domains: ['test.local'], exclusions: [] } });
+      const { frontier } = buildFrontier(graph, config);
+      const items = frontier.compute();
+
+      const discoveryItems = items.filter(i => i.type === 'network_discovery');
+      expect(discoveryItems.length).toBe(1);
+      // Should be capped at 254, not negative due to bit-shift overflow
+      expect(discoveryItems[0].graph_metrics.fan_out_estimate).toBe(254);
+    });
   });
 
   // =============================================

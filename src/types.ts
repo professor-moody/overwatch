@@ -9,7 +9,7 @@ import { z } from 'zod';
 export const NODE_TYPES = [
   'host', 'service', 'domain', 'user', 'group', 'credential',
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
-  'webapp', 'vulnerability',
+  'webapp', 'vulnerability', 'api_endpoint',
   'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
@@ -67,6 +67,8 @@ export interface NodeProperties {
   // Domain
   domain_name?: string;
   functional_level?: string;
+  password_policy?: { min_pwd_age?: number; max_pwd_age?: number; pwd_history_length?: number; complexity_enabled?: boolean; min_pwd_length?: number };
+  lockout_policy?: { lockout_threshold?: number; lockout_duration?: number; lockout_observation_window?: number };
 
   // User / Group
   username?: string;
@@ -75,6 +77,7 @@ export interface NodeProperties {
   privileged?: boolean;
   sid?: string;
   member_of?: string[];         // group IDs
+  pwd_last_set?: string;        // ISO timestamp — last password change (from LDAP pwdLastSet)
 
   // Credential
   cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
@@ -109,6 +112,16 @@ export interface NodeProperties {
   pki_store_kind?: 'ntauth_store' | 'issuance_policy';
   eku?: string[];
   enrollee_supplies_subject?: boolean;
+  any_purpose?: boolean;
+  enrollment_agent?: boolean;
+  san_flag_enabled?: boolean;
+  http_enrollment?: boolean;
+  ct_flag_no_security_extension?: boolean;
+  strong_cert_binding_enforcement?: number;
+  certificate_mapping_methods?: string[];
+  enforce_encrypt_icert_request?: boolean;
+  issuance_policy_oid?: string;
+  issuance_policy_group_link?: string;
 
   // Service — TLS enrichment
   tls_version?: string;
@@ -127,6 +140,12 @@ export interface NodeProperties {
   auth_type?: string;
   has_api?: boolean;
   cms_type?: string;
+
+  // API Endpoint
+  path?: string;
+  method?: string;
+  auth_required?: boolean;
+  response_type?: string;
 
   // Vulnerability
   cve?: string;
@@ -191,7 +210,7 @@ export const EDGE_TYPES = [
   'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER',
   'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
   // ADCS
-  'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC13',
+  'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13',
   'ISSUED_BY', 'OPERATES_CA',
   // Trust
   'TRUSTS', 'SAME_DOMAIN',
@@ -206,7 +225,7 @@ export const EDGE_TYPES = [
   // Lateral movement
   'RELAY_TARGET', 'NULL_SESSION', 'POTENTIAL_AUTH', 'TESTED_CRED',
   // Web application surface
-  'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS',
+  'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS', 'HAS_ENDPOINT', 'AUTH_BYPASS',
   // Cloud infrastructure
   'ASSUMES_ROLE', 'HAS_POLICY', 'POLICY_ALLOWS', 'EXPOSED_TO', 'RUNS_ON', 'MANAGED_BY',
   // Objective
@@ -231,6 +250,9 @@ export interface EdgeProperties {
   inferred_by_rule?: string;    // rule ID that created this edge
   inferred_at?: string;         // ISO timestamp when inferred
   confirmed_at?: string;        // ISO timestamp when confidence raised to 1.0
+  // Web attack path annotations
+  auth_bypass?: boolean;        // AUTHENTICATED_AS edge bypasses normal auth
+  session_type?: string;        // session/cookie/bearer token type
   // Pivot tracking
   via_pivot?: string;           // node ID of principal enabling pivot (on REACHABLE edges)
   [key: string]: unknown;
@@ -262,6 +284,8 @@ export interface EngagementObjective {
   achieved_at?: string;
 }
 
+export type ApprovalMode = 'auto-approve' | 'approve-critical' | 'approve-all';
+
 export interface OpsecProfile {
   name: string;                  // 'ctf' | 'pentest' | 'redteam' | 'assumed_breach'
   max_noise: number;             // hard ceiling, 0.0-1.0
@@ -271,6 +295,8 @@ export interface OpsecProfile {
   };
   blacklisted_techniques?: string[];
   notes?: string;
+  approval_mode?: ApprovalMode;
+  approval_timeout_ms?: number;  // default: 300000 (5 min)
 }
 
 export interface EngagementConfig {
@@ -313,6 +339,8 @@ export const opsecProfileSchema = z.object({
   }).optional(),
   blacklisted_techniques: z.array(z.string()).optional(),
   notes: z.string().optional(),
+  approval_mode: z.enum(['auto-approve', 'approve-critical', 'approve-all']).optional(),
+  approval_timeout_ms: z.number().int().min(1000).optional(),
 });
 
 export const engagementConfigSchema = z.object({
@@ -389,6 +417,13 @@ export interface FrontierItem {
   scope_unverified?: boolean;
   community_id?: number;
   community_unexplored_count?: number;
+  // Chain scoring (populated by ChainScorer for credential/auth edges)
+  chain_id?: string;                 // groups edges in the same attack chain
+  chain_depth?: number;              // hop position in the chain (0 = first hop)
+  chain_length?: number;             // total hops in the chain
+  chain_completion_pct?: number;     // fraction of chain already confirmed (0.0-1.0)
+  chain_score?: number;              // composite chain value score
+  chain_target_objective?: boolean;  // chain terminates at an objective-adjacent node
 }
 
 export interface ScoredTask {
@@ -408,6 +443,7 @@ export interface AgentTask {
   assigned_at: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
   frontier_item_id?: string;
+  campaign_id?: string;
   subgraph_node_ids: string[];
   skill?: string;
   completed_at?: string;
@@ -436,6 +472,39 @@ export interface Finding {
     filename?: string;
   };
   raw_output?: string;
+}
+
+// --- Campaign Types ---
+
+export type CampaignStrategy = 'credential_spray' | 'enumeration' | 'post_exploitation' | 'network_discovery' | 'custom';
+export type CampaignStatus = 'draft' | 'active' | 'paused' | 'completed' | 'aborted';
+
+export interface AbortCondition {
+  type: 'consecutive_failures' | 'total_failures_pct' | 'opsec_noise_ceiling' | 'time_limit_seconds';
+  threshold: number;
+}
+
+export interface CampaignProgress {
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  consecutive_failures: number;
+}
+
+export interface Campaign {
+  id: string;
+  name: string;
+  strategy: CampaignStrategy;
+  status: CampaignStatus;
+  items: string[];               // frontier item IDs
+  abort_conditions: AbortCondition[];
+  progress: CampaignProgress;
+  chain_id?: string;             // links to ChainScorer chain for spray campaigns
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  findings: string[];            // finding node IDs from campaign execution
 }
 
 // --- Graph State Summary (returned by get_state) ---
@@ -579,6 +648,7 @@ export interface InferenceRule {
     confidence: number;
     properties?: Record<string, unknown>;
   }[];
+  self_confirming?: boolean;     // skip low-performance check (e.g. kerberos domain membership)
 }
 
 // --- Graph Query (for query_graph tool) ---
@@ -736,6 +806,7 @@ export interface SessionMetadata {
   kind: SessionKind;
   transport: string;
   state: SessionState;
+  auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
   title: string;
   host?: string;
   user?: string;

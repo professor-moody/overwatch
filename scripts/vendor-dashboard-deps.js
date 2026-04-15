@@ -116,4 +116,26 @@ const iife = `(function(global) {
 writeFileSync(resolve(vendorDir, 'graphology-layout-forceatlas2.js'), iife);
 console.log('[vendor] graphology-layout-forceatlas2.js built');
 
+// 4. xterm.js — terminal emulator for session multiplexer
+const xtermRoot = resolve(root, 'node_modules', '@xterm', 'xterm');
+if (existsSync(xtermRoot)) {
+  copyFileSync(resolve(xtermRoot, 'lib', 'xterm.js'), resolve(vendorDir, 'xterm.js'));
+  copyFileSync(resolve(xtermRoot, 'css', 'xterm.css'), resolve(vendorDir, 'xterm.css'));
+  console.log('[vendor] xterm.js + xterm.css copied');
+
+  const fitAddon = resolve(root, 'node_modules', '@xterm', 'addon-fit', 'lib', 'addon-fit.js');
+  if (existsSync(fitAddon)) {
+    copyFileSync(fitAddon, resolve(vendorDir, 'addon-fit.js'));
+    console.log('[vendor] addon-fit.js copied');
+  }
+
+  const webglAddon = resolve(root, 'node_modules', '@xterm', 'addon-webgl', 'lib', 'addon-webgl.js');
+  if (existsSync(webglAddon)) {
+    copyFileSync(webglAddon, resolve(vendorDir, 'addon-webgl.js'));
+    console.log('[vendor] addon-webgl.js copied');
+  }
+} else {
+  console.warn('[vendor] WARN: @xterm/xterm not installed — terminal features will not be available');
+}
+
 console.log('[vendor] All dashboard vendor dependencies ready.');

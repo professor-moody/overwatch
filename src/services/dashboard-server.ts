@@ -11,6 +11,8 @@ import { fileURLToPath } from 'url';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
+import type { SessionManager } from './session-manager.js';
+import { dispatchCampaignAgents } from '../tools/agents.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,7 +23,7 @@ export interface DashboardStartResult {
 }
 
 export interface DashboardEvent {
-  type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state';
+  type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved';
   timestamp: string;
   data: any;
 }
@@ -29,42 +31,75 @@ export interface DashboardEvent {
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
+  private sessionWss: WebSocketServer;
   private engine: GraphEngine;
+  private sessionManager: SessionManager | null;
   private port: number;
   private clients: Set<WebSocket> = new Set();
+  private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
   private _running: boolean = false;
   private accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
+  private static readonly SESSION_POLL_MS = 50;
 
   private host: string;
 
-  constructor(engine: GraphEngine, port: number = 8384, host?: string) {
+  constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager) {
     this.engine = engine;
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+    this.sessionManager = sessionManager || null;
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({ noServer: true });
+    this.sessionWss = new WebSocketServer({ noServer: true });
 
     this.wss.on('error', () => {
-      // Absorb WSS errors (e.g. from underlying HTTP server EADDRINUSE)
-      // — handled by httpServer 'error' listener in start()
+      // Absorb WSS errors
     });
 
-    this.wss.on('connection', (ws, req) => {
-      // F21: Require token auth when bound to non-loopback address
+    this.sessionWss.on('error', () => {
+      // Absorb WSS errors
+    });
+
+    // URL-based WebSocket routing
+    this.httpServer.on('upgrade', (req, socket, head) => {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      const pathname = url.pathname;
+
+      // Auth check for non-loopback
       if (!this.isLoopback(this.host)) {
-        const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const token = url.searchParams.get('token');
         const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
         if (!expected || token !== expected) {
-          ws.close(4401, 'Unauthorized');
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
           return;
         }
       }
+
+      const sessionMatch = pathname.match(/^\/ws\/session\/([a-f0-9-]{36})$/);
+      if (sessionMatch) {
+        if (!this.sessionManager) {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        this.sessionWss.handleUpgrade(req, socket, head, (ws) => {
+          this.sessionWss.emit('connection', ws, req);
+          this.handleSessionConnection(ws, sessionMatch[1]);
+        });
+      } else {
+        this.wss.handleUpgrade(req, socket, head, (ws) => {
+          this.wss.emit('connection', ws, req);
+        });
+      }
+    });
+
+    this.wss.on('connection', (ws) => {
       this.clients.add(ws);
-      // Send full state on connect — getState() first to materialize community_id on nodes
+      // Send full state on connect
       const state = this.engine.getState();
       const graph = this.engine.exportGraph();
       const historyCount = this.engine.getFullHistory().length;
@@ -80,6 +115,15 @@ export class DashboardServer {
 
       ws.on('error', () => {
         this.clients.delete(ws);
+      });
+    });
+
+    // Wire PendingActionQueue events to WebSocket broadcasts
+    engine.getPendingActionQueue().onEvent((eventType, data) => {
+      this.broadcast({
+        type: eventType,
+        timestamp: new Date().toISOString(),
+        data,
       });
     });
   }
@@ -114,13 +158,21 @@ export class DashboardServer {
     }
     this.accumulator.drain();
     this.fileCache.clear();
+    // Clean up session pollers
+    for (const [ws, interval] of this.sessionPollers) {
+      clearInterval(interval);
+      ws.close();
+    }
+    this.sessionPollers.clear();
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
       }
       this.clients.clear();
-      this.wss.close(() => {
-        this.httpServer.close(() => resolve());
+      this.sessionWss.close(() => {
+        this.wss.close(() => {
+          this.httpServer.close(() => resolve());
+        });
       });
     });
   }
@@ -188,6 +240,91 @@ export class DashboardServer {
     });
   }
 
+  // ---- Session terminal bridge ----
+
+  private handleSessionConnection(ws: WebSocket, sessionId: string): void {
+    if (!this.sessionManager) {
+      ws.close(4503, 'Session manager not available');
+      return;
+    }
+
+    const meta = this.sessionManager.getSession(sessionId);
+    if (!meta) {
+      ws.close(4404, 'Session not found');
+      return;
+    }
+    if (meta.state !== 'connected') {
+      ws.close(4409, `Session not connected (state: ${meta.state})`);
+      return;
+    }
+
+    // Send initial state
+    ws.send(JSON.stringify({ type: 'session_meta', data: meta }));
+
+    // Read initial buffer tail
+    try {
+      const initial = this.sessionManager.read(sessionId, undefined, 8192);
+      if (initial.text) {
+        ws.send(JSON.stringify({ type: 'output', text: initial.text, end_pos: initial.end_pos }));
+      }
+    } catch { /* session may have closed between check and read */ }
+
+    // Poll buffer for new output
+    let cursor = this.sessionManager.read(sessionId, undefined, 0).end_pos;
+
+    const poller = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        clearInterval(poller);
+        this.sessionPollers.delete(ws);
+        return;
+      }
+
+      try {
+        const result = this.sessionManager!.read(sessionId, cursor);
+        if (result.text) {
+          ws.send(JSON.stringify({ type: 'output', text: result.text, end_pos: result.end_pos }));
+          cursor = result.end_pos;
+        }
+      } catch {
+        // Session closed or error — notify and stop polling
+        ws.send(JSON.stringify({ type: 'session_closed' }));
+        clearInterval(poller);
+        this.sessionPollers.delete(ws);
+        ws.close(4410, 'Session closed');
+      }
+    }, DashboardServer.SESSION_POLL_MS);
+
+    this.sessionPollers.set(ws, poller);
+
+    // Handle input from client
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(String(raw));
+        if (msg.type === 'input' && typeof msg.data === 'string') {
+          this.sessionManager!.write(sessionId, msg.data);
+        } else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+          this.sessionManager!.resize(sessionId, msg.cols, msg.rows);
+        }
+      } catch { /* ignore malformed messages */ }
+    });
+
+    ws.on('close', () => {
+      const interval = this.sessionPollers.get(ws);
+      if (interval) {
+        clearInterval(interval);
+        this.sessionPollers.delete(ws);
+      }
+    });
+
+    ws.on('error', () => {
+      const interval = this.sessionPollers.get(ws);
+      if (interval) {
+        clearInterval(interval);
+        this.sessionPollers.delete(ws);
+      }
+    });
+  }
+
   private static readonly MIME_TYPES: Record<string, string> = {
     '.html': 'text/html; charset=utf-8',
     '.css':  'text/css; charset=utf-8',
@@ -223,6 +360,7 @@ export class DashboardServer {
 
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = req.url || '/';
+    const method = req.method || 'GET';
 
     // CORS: restrict to localhost origins (or env override)
     const origin = req.headers.origin || '';
@@ -235,7 +373,14 @@ export class DashboardServer {
     if (isAllowedOrigin && origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     const pathname = url.split('?')[0];
 
@@ -245,8 +390,47 @@ export class DashboardServer {
       this.serveGraph(res);
     } else if (pathname === '/api/history') {
       this.serveHistory(url, res);
+    } else if (pathname === '/api/sessions') {
+      this.serveSessions(res);
+    } else if (pathname === '/api/agents') {
+      this.serveAgents(res);
+    } else if (pathname === '/api/campaigns') {
+      this.serveCampaigns(res);
+    } else if (pathname === '/api/actions/pending') {
+      this.servePendingActions(res);
     } else {
-      this.serveStaticFile(url, res);
+      // Parameterized routes
+      const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
+      const agentCancelMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/cancel$/);
+      const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
+      const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
+      const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/dispatch$/);
+      const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
+      const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
+      const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
+      const pathsMatch = pathname.match(/^\/api\/paths\/([^/]+)$/);
+
+      if (agentCtxMatch) {
+        this.serveAgentContext(agentCtxMatch[1], res);
+      } else if (agentCancelMatch && method === 'POST') {
+        this.handleAgentCancel(agentCancelMatch[1], req, res);
+      } else if (campaignActionMatch && method === 'POST') {
+        this.handleCampaignAction(campaignActionMatch[1], req, res);
+      } else if (campaignDispatchMatch && method === 'POST') {
+        this.handleCampaignDispatch(campaignDispatchMatch[1], req, res);
+      } else if (campaignDetailMatch) {
+        this.serveCampaignDetail(campaignDetailMatch[1], res);
+      } else if (actionApproveMatch && method === 'POST') {
+        this.handleActionApprove(actionApproveMatch[1], req, res);
+      } else if (actionDenyMatch && method === 'POST') {
+        this.handleActionDeny(actionDenyMatch[1], req, res);
+      } else if (evidenceChainMatch) {
+        this.serveEvidenceChains(decodeURIComponent(evidenceChainMatch[1]), res);
+      } else if (pathsMatch) {
+        this.servePaths(decodeURIComponent(pathsMatch[1]), url, res);
+      } else {
+        this.serveStaticFile(url, res);
+      }
     }
   }
 
@@ -342,6 +526,18 @@ export class DashboardServer {
     res.end(JSON.stringify(graph));
   }
 
+  private serveSessions(res: ServerResponse): void {
+    if (!this.sessionManager) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ total: 0, active: 0, sessions: [] }));
+      return;
+    }
+    const all = this.sessionManager.list();
+    const active = all.filter(s => s.state === 'connected' || s.state === 'pending');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ total: all.length, active: active.length, sessions: all }));
+  }
+
   get running(): boolean {
     return this._running;
   }
@@ -358,7 +554,280 @@ export class DashboardServer {
     return this.clients.size;
   }
 
+  // ---- Agent & Campaign REST endpoints ----
+
+  private serveAgents(res: ServerResponse): void {
+    const agents = this.engine.getAllAgents();
+    const now = Date.now();
+    const enriched = agents.map(a => ({
+      ...a,
+      elapsed_ms: a.status === 'running' ? now - new Date(a.assigned_at).getTime() : undefined,
+      campaign: a.campaign_id ? this.engine.getCampaign(a.campaign_id) : undefined,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ agents: enriched, total: enriched.length }));
+  }
+
+  private serveAgentContext(taskId: string, res: ServerResponse): void {
+    const task = this.engine.getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
+    const subgraph = this.engine.getSubgraphForAgent(task.subgraph_node_ids, { hops: 2 });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ task, subgraph }));
+  }
+
+  private handleAgentCancel(taskId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    const task = this.engine.getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
+    if (task.status !== 'running' && task.status !== 'pending') {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Agent is ${task.status} — cannot cancel` }));
+      return;
+    }
+    const ok = this.engine.updateAgentStatus(taskId, 'interrupted', 'Cancelled by operator via dashboard');
+    if (!ok) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to cancel agent' }));
+      return;
+    }
+    const updated = this.engine.getTask(taskId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ cancelled: true, task: updated }));
+  }
+
+  private serveCampaigns(res: ServerResponse): void {
+    const campaigns = this.engine.listCampaigns();
+    const allAgents = this.engine.getAllAgents();
+    const enriched = campaigns.map(c => {
+      const agents = allAgents.filter(a => a.campaign_id === c.id);
+      return {
+        ...c,
+        agent_count: agents.length,
+        running_agents: agents.filter(a => a.status === 'running').length,
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ campaigns: enriched, total: enriched.length }));
+  }
+
+  private serveCampaignDetail(campaignId: string, res: ServerResponse): void {
+    const campaign = this.engine.getCampaign(campaignId);
+    if (!campaign) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Campaign not found' }));
+      return;
+    }
+    const allAgents = this.engine.getAllAgents();
+    const agents = allAgents.filter(a => a.campaign_id === campaignId);
+    const abort_check = this.engine.checkCampaignAbortConditions(campaignId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ campaign, agents, abort_check }));
+  }
+
+  private handleCampaignAction(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const action = body?.action;
+      const validActions = ['activate', 'pause', 'resume', 'abort'];
+      if (!validActions.includes(action)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${validActions.join(', ')}` }));
+        return;
+      }
+      const campaign = this.engine.getCampaign(campaignId);
+      if (!campaign) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Campaign not found' }));
+        return;
+      }
+      let result: import('../types.js').Campaign | null = null;
+      switch (action) {
+        case 'activate': result = this.engine.activateCampaign(campaignId); break;
+        case 'pause': result = this.engine.pauseCampaign(campaignId); break;
+        case 'resume': result = this.engine.resumeCampaign(campaignId); break;
+        case 'abort': result = this.engine.abortCampaign(campaignId); break;
+      }
+      if (!result) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Failed to ${action} campaign` }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ action, campaign: result }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleCampaignDispatch(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const result = dispatchCampaignAgents(this.engine, campaignId, {
+        max_agents: typeof body?.max_agents === 'number' ? body.max_agents : undefined,
+        hops: typeof body?.hops === 'number' ? body.hops : undefined,
+        skill: typeof body?.skill === 'string' ? body.skill : undefined,
+      });
+      if (result.error) {
+        res.writeHead(result.error.includes('not found') ? 404 : 409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- Mutation auth & body parsing helpers ----
+
+  private checkMutationAuth(req: IncomingMessage, res: ServerResponse): boolean {
+    if (this.isLoopback(this.host)) return true;
+    const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
+    if (!expected) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token not configured for non-loopback host' }));
+      return false;
+    }
+    // Check Authorization header or query string
+    const authHeader = req.headers.authorization;
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const urlToken = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams.get('token');
+    if (headerToken !== expected && urlToken !== expected) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return false;
+    }
+    return true;
+  }
+
+  private readJsonBody(req: IncomingMessage): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const MAX_BODY = 64 * 1024; // 64 KB limit
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY) {
+          req.destroy();
+          reject(new Error('Body too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        try {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          resolve(raw ? JSON.parse(raw) : {});
+        } catch { reject(new Error('Invalid JSON')); }
+      });
+      req.on('error', reject);
+    });
+  }
+
   private isLoopback(host: string): boolean {
     return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+  }
+
+  // =============================================
+  // Pending Actions (Approval Gates)
+  // =============================================
+
+  private servePendingActions(res: ServerResponse): void {
+    const queue = this.engine.getPendingActionQueue();
+    const pending = queue.getPending();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ pending, count: pending.length }));
+  }
+
+  private handleActionApprove(actionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const queue = this.engine.getPendingActionQueue();
+      const result = queue.approve(actionId, body?.notes);
+      if (!result) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Action not found or already resolved' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    });
+  }
+
+  private handleActionDeny(actionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const queue = this.engine.getPendingActionQueue();
+      const result = queue.deny(actionId, body?.reason);
+      if (!result) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Action not found or already resolved' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    });
+  }
+
+  // =============================================
+  // Evidence Chains & Path Visualization
+  // =============================================
+
+  private serveEvidenceChains(nodeId: string, res: ServerResponse): void {
+    // Build evidence chains for a node from the activity log
+    const history = this.engine.getFullHistory();
+    const chains: Array<{ action_id?: string; tool?: string; timestamp: string; snippet?: string }> = [];
+
+    for (const entry of history) {
+      // Match entries that reference this node
+      const entryStr = JSON.stringify(entry);
+      if (!entryStr.includes(nodeId)) continue;
+
+      chains.push({
+        action_id: (entry as Record<string, unknown>).action_id as string | undefined,
+        tool: (entry as Record<string, unknown>).tool_name as string | undefined
+          || (entry as Record<string, unknown>).action_type as string | undefined,
+        timestamp: entry.timestamp,
+        snippet: (entry as Record<string, unknown>).description as string | undefined
+          || (entry as Record<string, unknown>).summary as string | undefined,
+      });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ node_id: nodeId, chains, count: chains.length }));
+  }
+
+  private servePaths(objectiveId: string, url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const optimize = (params.get('optimize') || 'confidence') as 'confidence' | 'stealth' | 'balanced';
+    const limitParam = params.get('limit');
+    const limit = limitParam ? parseInt(limitParam, 10) : 5;
+
+    try {
+      const paths = this.engine.findPathsToObjective(objectiveId, limit, optimize);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ objective_id: objectiveId, paths, count: paths.length }));
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Objective not found or no paths available' }));
+    }
   }
 }

@@ -34,7 +34,7 @@ Then run `claude` — see the full [Getting Started](https://professor-moody.git
 
 ## Documentation
 
-**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 40 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 42 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 

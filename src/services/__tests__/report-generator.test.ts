@@ -5,6 +5,7 @@ import {
   buildAllEvidenceChains,
   buildAttackNarrative,
   generateFullReport,
+  buildRemediationRanking,
 } from '../report-generator.js';
 import type { ReportInput } from '../report-generator.js';
 import { renderReportHtml } from '../report-html.js';
@@ -873,5 +874,416 @@ describe('buildAllEvidenceChains — expanded coverage', () => {
     expect(allChains.has('ci-1')).toBe(true);
     expect(allChains.has('cr-1')).toBe(true);
     expect(allChains.has('wa-1')).toBe(true);
+  });
+});
+
+// ============================================================
+// Credential field normalization regression (sqlmap/wpscan)
+// ============================================================
+
+describe('buildFindings — credential field normalization regression', () => {
+  it('includes credentials with cred_type/cred_user fields (sqlmap/wpscan parser output)', () => {
+    // Simulates credentials emitted by sqlmap/wpscan parsers after field-name fix.
+    // Before the fix, these fields used wrong names and isCredentialUsableForAuth() rejected them.
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'host-sql', properties: { id: 'host-sql', type: 'host', label: '10.10.10.50', ip: '10.10.10.50', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'svc-sql', properties: { id: 'svc-sql', type: 'service', label: 'mysql/3306', port: 3306, service_name: 'mysql', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        {
+          id: 'cred-sqlmap-root',
+          properties: {
+            id: 'cred-sqlmap-root', type: 'credential', label: 'root plaintext',
+            cred_type: 'plaintext', cred_user: 'root', cred_material_kind: 'plaintext_password',
+            discovered_at: '2026-01-01T01:00:00Z', confidence: 1.0,
+          } as NodeProperties,
+        },
+        {
+          id: 'cred-wpscan-admin',
+          properties: {
+            id: 'cred-wpscan-admin', type: 'credential', label: 'wp-admin plaintext',
+            cred_type: 'plaintext', cred_user: 'wp-admin', cred_material_kind: 'plaintext_password',
+            discovered_at: '2026-01-01T01:00:00Z', confidence: 1.0,
+          } as NodeProperties,
+        },
+      ],
+      edges: [
+        { source: 'host-sql', target: 'svc-sql', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+        { source: 'cred-sqlmap-root', target: 'svc-sql', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties },
+        { source: 'cred-wpscan-admin', target: 'svc-sql', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const credFindings = findings.filter(f => f.category === 'credential');
+    expect(credFindings.length).toBe(2);
+    expect(credFindings.map(f => f.title)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('root'),
+        expect.stringContaining('wp-admin'),
+      ]),
+    );
+  });
+
+  it('excludes credentials missing cred_type (pre-fix regression guard)', () => {
+    // A credential with no cred_type and no cred_material_kind should NOT appear
+    const graph: ExportedGraph = {
+      nodes: [
+        {
+          id: 'cred-broken',
+          properties: {
+            id: 'cred-broken', type: 'credential', label: 'broken cred',
+            discovered_at: '2026-01-01T01:00:00Z', confidence: 1.0,
+            // no cred_type, no cred_material_kind, no cred_usable_for_auth
+          } as NodeProperties,
+        },
+      ],
+      edges: [],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    expect(findings.filter(f => f.category === 'credential')).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// buildFindings — classification & CVSS enrichment
+// ============================================================
+
+describe('buildFindings — classification & CVSS enrichment', () => {
+  it('populates classification on every finding', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    for (const f of findings) {
+      expect(f.classification).toBeDefined();
+      expect(f.classification).toHaveProperty('attack_techniques');
+    }
+  });
+
+  it('sets cvss_score on every finding', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    for (const f of findings) {
+      expect(f.cvss_score).toBeDefined();
+      expect(typeof f.cvss_score).toBe('number');
+      expect(f.cvss_score).toBeGreaterThanOrEqual(0);
+      expect(f.cvss_score).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it('uses explicit CVSS from vulnerability node when present', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    const vulnFinding = findings.find(f => f.category === 'vulnerability');
+    expect(vulnFinding).toBeDefined();
+    // vuln-1 has cvss: 9.8 in the graph fixture
+    expect(vulnFinding!.cvss_score).toBe(9.8);
+    // Explicit CVSS should NOT be marked as estimated
+    expect(vulnFinding!.cvss_estimated).toBeUndefined();
+  });
+
+  it('marks estimated CVSS on non-vulnerability findings', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    const nonVulnFindings = findings.filter(f => f.category !== 'vulnerability');
+    expect(nonVulnFindings.length).toBeGreaterThan(0);
+    for (const f of nonVulnFindings) {
+      expect(f.cvss_estimated).toBe(true);
+      expect(f.cvss_vector).toBeDefined();
+      expect(f.cvss_vector).toMatch(/^CVSS:3\.1\//);
+    }
+  });
+
+  it('classifies vulnerability finding with ATT&CK techniques from edges', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    const vulnFinding = findings.find(f => f.category === 'vulnerability');
+    expect(vulnFinding).toBeDefined();
+    // The graph has ADMIN_TO, HAS_SESSION, VULNERABLE_TO, EXPLOITS edges
+    // classifyFinding should pick up ATT&CK techniques from relevant edges
+    expect(vulnFinding!.classification!.attack_techniques).toBeDefined();
+  });
+
+  it('classifies credential finding with CWE', () => {
+    const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
+    const credFinding = findings.find(f => f.category === 'credential');
+    expect(credFinding).toBeDefined();
+    // Credential findings should get a CWE (fallback CWE-522 for credentials)
+    expect(credFinding!.classification!.cwe).toBeDefined();
+  });
+});
+
+// ============================================================
+// buildRemediationRanking
+// ============================================================
+
+describe('buildRemediationRanking', () => {
+  it('returns rankings sorted by priority_score descending', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    expect(ranking.length).toBeGreaterThan(0);
+    for (let i = 1; i < ranking.length; i++) {
+      expect(ranking[i].priority_score).toBeLessThanOrEqual(ranking[i - 1].priority_score);
+    }
+  });
+
+  it('computes blast_radius from graph adjacency', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    // The graph has multiple connected nodes, so at least some findings should have blast_radius > 0
+    const withBlast = ranking.filter(r => r.blast_radius > 0);
+    expect(withBlast.length).toBeGreaterThan(0);
+  });
+
+  it('computes credential exposure for connected credential nodes', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    // The graph has cred-admin and cred-jdoe. Some rankings should show cred_exposure > 0
+    const withCred = ranking.filter(r => r.cred_exposure > 0);
+    expect(withCred.length).toBeGreaterThan(0);
+  });
+
+  it('caps priority_score at 100', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    for (const r of ranking) {
+      expect(r.priority_score).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('returns at most 20 entries', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    expect(ranking.length).toBeLessThanOrEqual(20);
+  });
+
+  it('returns empty array for empty findings', () => {
+    const ranking = buildRemediationRanking([], makeGraph());
+    expect(ranking).toEqual([]);
+  });
+
+  it('includes cvss and cvss_estimated fields', () => {
+    const graph = makeGraph();
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const ranking = buildRemediationRanking(findings, graph);
+    for (const r of ranking) {
+      expect(typeof r.cvss).toBe('number');
+      expect(typeof r.cvss_estimated).toBe('boolean');
+    }
+  });
+});
+
+// ============================================================
+// generateFullReport — new sections (heatmap, ranking, compliance, ATT&CK)
+// ============================================================
+
+describe('generateFullReport — enhanced sections', () => {
+  function makeInput(): ReportInput {
+    return {
+      config: makeConfig(),
+      graph: makeGraph(),
+      history: makeHistory(),
+      agents: [],
+    };
+  }
+
+  it('includes Risk Heatmap section', () => {
+    const report = generateFullReport(makeInput());
+    expect(report).toContain('## Risk Heatmap');
+  });
+
+  it('includes Remediation Priority Ranking section', () => {
+    const report = generateFullReport(makeInput());
+    expect(report).toContain('## Remediation Priority Ranking');
+  });
+
+  it('includes Compliance Mapping section when include_compliance is true', () => {
+    const report = generateFullReport(makeInput(), { include_compliance: true });
+    expect(report).toContain('## Compliance Mapping');
+  });
+
+  it('includes MITRE ATT&CK Techniques section', () => {
+    const report = generateFullReport(makeInput());
+    expect(report).toContain('## MITRE ATT&CK Techniques');
+  });
+
+  it('heatmap has severity columns', () => {
+    const report = generateFullReport(makeInput());
+    const heatmapIdx = report.indexOf('## Risk Heatmap');
+    expect(heatmapIdx).toBeGreaterThan(-1);
+    const section = report.slice(heatmapIdx, heatmapIdx + 500);
+    expect(section).toMatch(/critical|high|medium|low/i);
+  });
+
+  it('remediation ranking shows priority scores', () => {
+    const report = generateFullReport(makeInput());
+    const rankIdx = report.indexOf('## Remediation Priority Ranking');
+    expect(rankIdx).toBeGreaterThan(-1);
+    const section = report.slice(rankIdx, rankIdx + 1000);
+    // Should have table headers
+    expect(section).toContain('Priority');
+    expect(section).toContain('CVSS');
+  });
+
+  it('compliance mapping shows CWE entries', () => {
+    const report = generateFullReport(makeInput(), { include_compliance: true });
+    const compIdx = report.indexOf('## Compliance Mapping');
+    expect(compIdx).toBeGreaterThan(-1);
+    const section = report.slice(compIdx, compIdx + 2000);
+    // Should have CWE entries from classified findings
+    expect(section).toMatch(/CWE-\d+/);
+  });
+});
+
+// ============================================================
+// Evidence chain merge — proof from later lifecycle events
+// ============================================================
+
+describe('buildEvidenceChainsForNode — evidence merge across action cluster', () => {
+  it('picks evidence from finding_ingested over action_validated (P2 regression)', () => {
+    const graph = makeGraph();
+    const history = makeHistory([
+      {
+        event_id: 'v1', timestamp: '2026-01-01T10:00:00Z',
+        description: 'Validated secretsdump action',
+        action_id: 'act-merge-test', event_type: 'action_validated' as any,
+        tool_name: 'secretsdump', technique: 'credential-dumping',
+        target_node_ids: ['cred-admin'],
+      },
+      {
+        event_id: 'v2', timestamp: '2026-01-01T10:01:00Z',
+        description: 'Finding ingested with evidence',
+        action_id: 'act-merge-test', event_type: 'finding_ingested' as any,
+        target_node_ids: ['cred-admin'],
+        details: {
+          evidence_type: 'ntlm_hash',
+          evidence_content: 'admin:500:aad3b435...:31d6cfe0d16ae931b73c59d7e0c089c0',
+          evidence_filename: 'secretsdump_output.txt',
+        },
+      },
+    ]);
+
+    const chains = buildEvidenceChainsForNode('cred-admin', graph, history);
+    const merged = chains.find(c => c.action_id === 'act-merge-test');
+
+    expect(merged).toBeDefined();
+    expect(merged!.evidence_type).toBe('ntlm_hash');
+    expect(merged!.evidence_content).toContain('admin:500');
+    expect(merged!.evidence_filename).toBe('secretsdump_output.txt');
+  });
+
+  it('picks evidence from action_completed when no finding_ingested exists', () => {
+    const graph = makeGraph();
+    const history = makeHistory([
+      {
+        event_id: 'v1', timestamp: '2026-01-01T10:00:00Z',
+        description: 'Validated action',
+        action_id: 'act-comp-test', event_type: 'action_validated' as any,
+        tool_name: 'nmap',
+        target_node_ids: ['host-1'],
+      },
+      {
+        event_id: 'v2', timestamp: '2026-01-01T10:02:00Z',
+        description: 'Action completed',
+        action_id: 'act-comp-test', event_type: 'action_completed' as any,
+        target_node_ids: ['host-1'],
+        details: {
+          raw_output: 'PORT   STATE SERVICE\n22/tcp open  ssh',
+        },
+      },
+    ]);
+
+    const chains = buildEvidenceChainsForNode('host-1', graph, history);
+    const chain = chains.find(c => c.action_id === 'act-comp-test');
+
+    expect(chain).toBeDefined();
+    expect(chain!.raw_output).toContain('22/tcp');
+  });
+
+  it('handles cluster where only first entry has evidence (backward compat)', () => {
+    const graph = makeGraph();
+    const history = makeHistory([
+      {
+        event_id: 'v1', timestamp: '2026-01-01T10:00:00Z',
+        description: 'Action with evidence first',
+        action_id: 'act-first-test', event_type: 'action_completed' as any,
+        tool_name: 'nmap',
+        target_node_ids: ['host-1'],
+        details: { raw_output: 'scan results here' },
+      },
+      {
+        event_id: 'v2', timestamp: '2026-01-01T10:01:00Z',
+        description: 'Later entry without evidence',
+        action_id: 'act-first-test', event_type: 'finding_ingested' as any,
+        target_node_ids: ['host-1'],
+      },
+    ]);
+
+    const chains = buildEvidenceChainsForNode('host-1', graph, history);
+    const chain = chains.find(c => c.action_id === 'act-first-test');
+
+    expect(chain).toBeDefined();
+    expect(chain!.raw_output).toBe('scan results here');
+  });
+});
+
+// ============================================================
+// session_live filtering in buildFindings
+// ============================================================
+
+describe('buildFindings — session_live awareness', () => {
+  it('excludes hosts where only access is HAS_SESSION with session_live:false', () => {
+    const graph = makeGraph({
+      nodes: [
+        { id: 'host-closed', properties: { id: 'host-closed', type: 'host', label: '10.10.10.99', ip: '10.10.10.99', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-admin', target: 'host-closed', properties: { type: 'HAS_SESSION', confidence: 1.0, session_live: false, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ],
+    });
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const hostFindings = findings.filter(f => f.category === 'compromised_host');
+    expect(hostFindings.find(f => f.title.includes('10.10.10.99'))).toBeUndefined();
+  });
+
+  it('includes hosts with HAS_SESSION where session_live is not false (backward compat)', () => {
+    const graph = makeGraph({
+      nodes: [
+        { id: 'host-live', properties: { id: 'host-live', type: 'host', label: '10.10.10.88', ip: '10.10.10.88', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        // session_live is not set — should still count as compromise for backward compat
+        { source: 'user-admin', target: 'host-live', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ],
+    });
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const hostFindings = findings.filter(f => f.category === 'compromised_host');
+    expect(hostFindings.find(f => f.title.includes('10.10.10.88'))).toBeDefined();
+  });
+
+  it('includes hosts with HAS_SESSION where session_live is true', () => {
+    const graph = makeGraph({
+      nodes: [
+        { id: 'host-active', properties: { id: 'host-active', type: 'host', label: '10.10.10.77', ip: '10.10.10.77', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-admin', target: 'host-active', properties: { type: 'HAS_SESSION', confidence: 1.0, session_live: true, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ],
+    });
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const hostFindings = findings.filter(f => f.category === 'compromised_host');
+    expect(hostFindings.find(f => f.title.includes('10.10.10.77'))).toBeDefined();
+  });
+
+  it('still includes hosts when ADMIN_TO exists alongside dead sessions', () => {
+    const graph = makeGraph({
+      nodes: [
+        { id: 'host-admin', properties: { id: 'host-admin', type: 'host', label: '10.10.10.66', ip: '10.10.10.66', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-admin', target: 'host-admin', properties: { type: 'HAS_SESSION', confidence: 1.0, session_live: false, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+        { source: 'user-admin', target: 'host-admin', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ],
+    });
+    const findings = buildFindings(graph, makeHistory(), makeConfig());
+    const hostFindings = findings.filter(f => f.category === 'compromised_host');
+    expect(hostFindings.find(f => f.title.includes('10.10.10.66'))).toBeDefined();
   });
 });

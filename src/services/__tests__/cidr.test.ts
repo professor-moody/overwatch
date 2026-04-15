@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandCidr, expandCidrDetailed, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps } from '../cidr.js';
+import { expandCidr, expandCidrDetailed, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps, isIPv6 } from '../cidr.js';
 
 describe('expandCidr', () => {
   it('expands a /24 to 254 hosts (skips network + broadcast)', () => {
@@ -253,5 +253,60 @@ describe('inferCidrFromIps', () => {
   it('sorts output by prefix', () => {
     const result = inferCidrFromIps(['192.168.1.1', '10.0.0.1', '172.16.0.1']);
     expect(result).toEqual(['10.0.0.0/24', '172.16.0.0/24', '192.168.1.0/24']);
+  });
+});
+
+// ============================================================
+// IPv6 rejection — all CIDR helpers are IPv4-only
+// ============================================================
+
+describe('isIPv6', () => {
+  it('detects full IPv6 addresses', () => {
+    expect(isIPv6('2001:db8::1')).toBe(true);
+    expect(isIPv6('fe80::1%eth0')).toBe(true);
+    expect(isIPv6('::1')).toBe(true);
+    expect(isIPv6('::ffff:192.168.1.1')).toBe(true);
+  });
+
+  it('rejects IPv4 addresses', () => {
+    expect(isIPv6('10.0.0.1')).toBe(false);
+    expect(isIPv6('192.168.1.0/24')).toBe(false);
+  });
+});
+
+describe('IPv6 rejection across CIDR helpers', () => {
+  it('isIpInCidr returns false for IPv6 input', () => {
+    expect(isIpInCidr('fe80::1', '10.0.0.0/8')).toBe(false);
+    expect(isIpInCidr('10.0.0.1', '2001:db8::/64')).toBe(false);
+    expect(isIpInCidr('::1', '::0/128')).toBe(false);
+  });
+
+  it('isIpInScope returns false for IPv6 IP (P1 bug regression)', () => {
+    // This was the original P1 bug: isIpInScope('fe80::1', ['2001:db8::/64'], [])
+    // returned true because ipToNum produced NaN → 0 for both addresses.
+    expect(isIpInScope('fe80::1', ['2001:db8::/64'], [])).toBe(false);
+    expect(isIpInScope('::1', ['10.0.0.0/8'], [])).toBe(false);
+    expect(isIpInScope('2001:db8::1', ['2001:db8::1'], [])).toBe(false);
+  });
+
+  it('isValidCidr rejects IPv6 CIDRs', () => {
+    expect(isValidCidr('2001:db8::/32')).toBe(false);
+    expect(isValidCidr('fe80::/10')).toBe(false);
+    expect(isValidCidr('::1/128')).toBe(false);
+  });
+
+  it('expandCidr returns empty for IPv6 input', () => {
+    expect(expandCidr('2001:db8::/64')).toEqual([]);
+  });
+
+  it('expandCidrDetailed returns empty for IPv6 input', () => {
+    const result = expandCidrDetailed('fe80::/10');
+    expect(result.ips).toEqual([]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('inferCidrFromIps skips IPv6 addresses', () => {
+    const result = inferCidrFromIps(['10.0.0.1', 'fe80::1', '::1', '10.0.0.2']);
+    expect(result).toEqual(['10.0.0.0/24']);
   });
 });

@@ -4,15 +4,21 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 vi.mock('../../services/report-generator.js', () => ({
   generateFullReport: vi.fn(() => '# Test Report\n\nExecutive summary here.'),
   buildFindings: vi.fn(() => [
-    { severity: 'critical', risk_score: 9.5, title: 'Critical Finding', remediation: 'Fix immediately\nDetails here' },
-    { severity: 'high', risk_score: 7.0, title: 'High Finding', remediation: 'Patch system\nMore info' },
-    { severity: 'medium', risk_score: 4.5, title: 'Medium Finding', remediation: 'Review config' },
+    { severity: 'critical', risk_score: 9.5, title: 'Critical Finding', remediation: 'Fix immediately\nDetails here', affected_assets: [], evidence: [], category: 'compromised_host' },
+    { severity: 'high', risk_score: 7.0, title: 'High Finding', remediation: 'Patch system\nMore info', affected_assets: [], evidence: [], category: 'credential' },
+    { severity: 'medium', risk_score: 4.5, title: 'Medium Finding', remediation: 'Review config', affected_assets: [], evidence: [], category: 'vulnerability' },
   ]),
   buildAttackNarrative: vi.fn(() => []),
+  buildRemediationRanking: vi.fn(() => []),
 }));
 
 vi.mock('../../services/report-html.js', () => ({
   renderReportHtml: vi.fn(() => '<html><body><h1>Report</h1></body></html>'),
+}));
+
+vi.mock('../../services/finding-classifier.js', () => ({
+  classifyAllFindings: vi.fn(() => new Map()),
+  generateNavigatorLayer: vi.fn(() => ({})),
 }));
 
 vi.mock('../../services/retrospective.js', () => ({
