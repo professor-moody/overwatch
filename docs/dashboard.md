@@ -190,6 +190,8 @@ A 160×110px minimap in the bottom-right corner shows the full graph at a glance
 | `/api/state` | GET | Current engagement state (JSON), includes `history_count` |
 | `/api/graph` | GET | Full graph export (JSON) |
 | `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |
+| `/api/evidence-chains/:nodeId` | GET | Evidence chain for a node — walks provenance edges (`DERIVED_FROM`, `DUMPED_FROM`, `OWNS_CRED`) to build the full derivation tree |
+| `/api/paths/:objectiveId` | GET | Shortest paths from compromised nodes to an objective — returns path arrays with node/edge details |
 | `ws://` | WebSocket | Live graph delta stream |
 
 ## Verifying Dashboard Status

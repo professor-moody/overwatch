@@ -95,3 +95,44 @@ The trace quality report flags issues like missing action IDs, incomplete loggin
 - Use skill gaps to **prioritize skill development** — fill the most impactful gaps first
 - Feed training traces into **RLVR pipelines** for model improvement
 - The attack path report is designed for **client delivery** — review and customize as needed
+
+## Automatic Inference Rule Application
+
+When a retrospective produces inference rule suggestions, the engine can **automatically apply** high-confidence suggestions without manual review:
+
+### Threshold-Based Auto-Apply
+
+Suggestions with **5 or more occurrences** are applied automatically — the pattern has been observed frequently enough to be reliable. Suggestions below this threshold are flagged for manual review.
+
+```
+Occurrences ≥ 5  →  Auto-applied (added to active rule set)
+Occurrences < 5  →  Suggestion only (logged for review)
+```
+
+The `applyInferenceSuggestions()` function processes the full suggestion list and returns counts of applied vs. skipped rules.
+
+### Technique Priors
+
+Overwatch computes **per-technique success rates** from RLVR training traces across engagements. These priors feed into frontier scoring — techniques with historically higher success rates get a scoring boost.
+
+| Metric | Description |
+|--------|-------------|
+| `total_uses` | How many times this technique was attempted |
+| `successes` | How many times it produced positive outcomes |
+| `failures` | How many times it failed |
+| `success_rate` | `successes / total_uses` |
+
+Technique priors are extracted from the `action.technique` field in RLVR traces. Use `computeTechniquePriors()` to generate priors from a set of traces, and `getTechniquePrior()` to query the prior for a specific technique.
+
+### Skill Annotations
+
+The retrospective hooks automatically annotate skills with usage and outcome metrics:
+
+| Annotation | Description |
+|------------|-------------|
+| `use_count` | Total times the skill was referenced during the engagement |
+| `success_count` | Times a skill-associated action succeeded |
+| `failure_count` | Times a skill-associated action failed |
+| `success_rate` | `success_count / use_count` |
+
+These annotations help identify which skills are most effective and which need updating. The `updateSkillAnnotations()` function processes the activity log and traces to compute these metrics.

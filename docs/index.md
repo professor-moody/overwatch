@@ -27,15 +27,18 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 - **[34 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking.
 - **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
-- **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, and RLVR training traces.
+- **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, RLVR training traces, automatic inference rule application, technique priors, and skill annotations.
+- **[IAM policy simulation](concepts.md#iam-policy-simulation)** — Cloud-native permission evaluation for AWS (deny-overrides-allow), Azure (RBAC scope hierarchy), and GCP (deny policy precedence).
+- **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Automatic expiry estimation, graduated frontier scoring, and provenance chain tracking.
+- **[Web attack path modeling](concepts.md#web-attack-path-modeling)** — API endpoint nodes, authentication bypass edges, and automated web attack inference rules.
 
 ### By the Numbers
 
 | | |
 |---|---|
 | **42** MCP tools | **34** offensive skills |
-| **21** output parsers with 36 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, burp, zap, sqlmap, wpscan) | **53** built-in declarative inference rules |
-| **1900+** tests across **73** files | **21** node types, **63** edge types |
+| **28** output parsers with 50 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, burp, zap, sqlmap, wpscan, getnpusers, getuserspns, gettgt, getst, smbclient, wmiexec, psexec) | **55** built-in declarative inference rules |
+| **2100+** tests across **79** files | **22** node types, **65** edge types |
 
 ## Quick Start
 

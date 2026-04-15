@@ -13,7 +13,7 @@ Deterministically parses tool output into structured findings and (optionally) i
 | Parser | Aliases | Input Format | Produces |
 |--------|---------|--------------|----------|
 | **Nmap** | `nmap`, `nmap-xml` | Nmap XML output | Host + service nodes, `RUNS` edges, OS detection |
-| **NXC/NetExec** | `nxc`, `netexec` | NXC text output | Host + SMB service nodes, share nodes, user nodes, access edges, `NULL_SESSION` edges |
+| **NXC/NetExec** | `nxc`, `netexec` | NXC text output | Host + SMB service nodes, share nodes, user nodes, access edges, `NULL_SESSION` edges, SAM hashes (`--sam`), LSA secrets (`--lsa`), file listings (`spider_plus`) |
 | **Certipy** | `certipy` | Certipy JSON output | CA + cert_template nodes, enrollment edges, ESC edges |
 | **Secretsdump** | `secretsdump`, `impacket-secretsdump` | SAM/NTDS hashes | Credential + user nodes, `OWNS_CRED` + `DUMPED_FROM` + `MEMBER_OF_DOMAIN` edges |
 | **Kerbrute** | `kerbrute` | User enum + spray output | User + domain + credential nodes |
@@ -29,6 +29,13 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **TestSSL** | `testssl`, `testssl.sh`, `sslscan` | Text or JSON output | TLS enrichment: version, cipher suites, certificate details |
 | **Pacu** | `pacu` | JSON output | Cloud identity + resource + policy nodes, `HAS_POLICY` / `ASSUMES_ROLE` edges |
 | **Prowler** | `prowler` | OCSF JSON-lines output | Cloud resource nodes, all FAIL findings as vulnerability nodes (any severity) |
+| **Impacket GetNPUsers** | `getnpusers`, `impacket-getnpusers` | GetNPUsers text output | User + credential nodes (AS-REP hashes), `AS_REP_ROASTABLE` edges |
+| **Impacket GetUserSPNs** | `getuserspns`, `impacket-getuserspns` | GetUserSPNs text output | User + credential nodes (TGS hashes), `KERBEROASTABLE` edges |
+| **Impacket GetTGT** | `gettgt`, `impacket-gettgt` | GetTGT text output | Credential nodes (TGT `.ccache` files), domain membership |
+| **Impacket GetST** | `getst`, `impacket-getst` | GetST text output | Credential nodes (service ticket `.ccache` files), `CAN_DELEGATE_TO` edges |
+| **Impacket smbclient** | `smbclient`, `impacket-smbclient` | smbclient.py text output | Host + share nodes, file listings, `readable`/`writable` share properties |
+| **Impacket wmiexec** | `wmiexec`, `impacket-wmiexec` | wmiexec.py text output | Host nodes with `ADMIN_TO`/`HAS_SESSION` edges (confirmed execution) |
+| **Impacket psexec** | `psexec`, `impacket-psexec` | psexec.py text output | Host nodes with `ADMIN_TO`/`HAS_SESSION` edges (confirmed execution) |
 
 ## Parameters
 
@@ -71,6 +78,6 @@ All successful responses share a stable schema, including zero-artifact parses:
 
 - Prefer this over `report_finding` when you have raw output from a supported tool
 - Set `ingest: false` to preview what would be parsed without modifying the graph
-- Set `list_parsers: true` to get the current list of supported parser names (36 aliases across 21 parsers)
+- Set `list_parsers: true` to get the current list of supported parser names (50 aliases across 28 parsers)
 - Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance
 - See [parse_output vs report_finding](../playbook/parse-vs-report.md) for detailed guidance

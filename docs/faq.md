@@ -196,6 +196,27 @@ The engagement graph (findings, frontier, objectives) survives restarts. Session
 - **`write_session`** — raw I/O primitive. Writes bytes, returns the new buffer position. You call `read_session` separately to get output.
 - **`send_to_session`** — convenience sugar (experimental). Writes a command, waits for output to settle (idle timeout or regex match), then returns the captured output in one call. Simpler but less flexible — use `write`/`read` for interactive prompts, password entry, or REPL input.
 
+### How does credential expiry estimation work?
+
+The engine estimates expiry based on credential type: TGTs/TGS default to 10 hours, tokens to 1 hour, and passwords use the domain's `password_policy.maxAge` combined with the user's `pwd_last_set` timestamp. Frontier scoring applies graduated multipliers — credentials expiring within 30 minutes get a 0.3× factor (urgent), within 2 hours get 0.7× (soon), and healthy credentials get full weight. See [Concepts — Credential Lifecycle](concepts.md#credential-lifecycle) for details.
+
+### What is the IAM policy simulator?
+
+The `evaluateIAM()` function evaluates whether a cloud identity can perform an action on a resource. It traverses the graph to collect all reachable policies (via group memberships and role assumptions) and applies provider-specific evaluation logic: AWS deny-overrides-allow, Azure RBAC scope hierarchy, and GCP deny policy precedence. See [Concepts — IAM Policy Simulation](concepts.md#iam-policy-simulation).
+
+### What Impacket tools are supported by parse_output?
+
+Seven Impacket parsers are supported with 14 aliases: `getnpusers`/`impacket-getnpusers` (AS-REP hashes), `getuserspns`/`impacket-getuserspns` (TGS hashes), `gettgt`/`impacket-gettgt` (TGT tickets), `getst`/`impacket-getst` (service tickets), `smbclient`/`impacket-smbclient` (shares/files), `wmiexec`/`impacket-wmiexec` (remote execution), `psexec`/`impacket-psexec` (remote execution). See [parse_output](tools/parse-output.md) for the full parser table.
+
+### How do I use the evidence chain API?
+
+The dashboard exposes two evidence endpoints:
+
+- **`/api/evidence-chains/:nodeId`** — Returns the full provenance chain for a node by walking `DERIVED_FROM`, `DUMPED_FROM`, and `OWNS_CRED` edges. Useful for tracing credential origins.
+- **`/api/paths/:objectiveId`** — Returns shortest paths from compromised nodes to an engagement objective. Useful for attack path visualization.
+
+Both endpoints are read-only and return JSON. Access them via the dashboard at `http://localhost:8384` (or your configured port).
+
 ## Retrospective
 
 ### When should I run a retrospective?

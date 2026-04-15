@@ -44,7 +44,7 @@ Deterministic rules that fire automatically when matching nodes are ingested. Th
 
 **Example:** When a service node with `smb_signing: false` is ingested, the "SMB Signing → Relay" rule fires and creates `RELAY_TARGET` edges from all compromised hosts to that service.
 
-Fifty-three built-in rules ship with Overwatch across five domains: AD & service (21), ADCS (14), Linux privilege escalation (7), web application (6), MSSQL (2), and cloud infrastructure (3). This includes **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
+Fifty-five built-in rules ship with Overwatch across five domains: AD & service (21), ADCS (14), Linux privilege escalation (7), web application (8), MSSQL (2), and cloud infrastructure (3). This includes **edge-triggered rules** that require both a node property match and a matching inbound edge (e.g., LAPS readable requires `laps: true` + inbound `GENERIC_ALL`). When a new edge arrives, the engine re-evaluates inference on its endpoints.
 
 Custom rules can be added at runtime via [`suggest_inference_rule`](tools/suggest-inference-rule.md). See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference with triggers and productions.
 
@@ -203,7 +203,69 @@ The engine automatically:
 - **Tracks derivation chains** via `DERIVED_FROM` edges (e.g., hash → cracked password)
 - **Infers credential domains** from graph topology when not explicitly provided
 
+### Credential Expiry Estimation
+
+The engine estimates credential expiry automatically based on credential type and domain policy:
+
+| Credential Type | Default Lifetime | Policy Override |
+|----------------|------------------|-----------------|
+| `kerberos_tgt` | 10 hours | Domain `password_policy.maxAge` |
+| `kerberos_tgs` | 10 hours | — |
+| `token` | 1 hour | — |
+| Password types | Domain policy `maxAge` | Requires `pwd_last_set` on the owning user |
+
+When a domain has a `password_policy` with `maxAge` set and the associated user has `pwd_last_set`, the engine computes password expiry as `pwd_last_set + maxAge`. This feeds into graduated frontier scoring:
+
+| Time Remaining | Frontier Score Multiplier |
+|---------------|--------------------------|
+| < 30 minutes | 0.3× (urgent — use it or lose it) |
+| < 2 hours | 0.7× (expiring soon) |
+| > 2 hours | 1.0× (healthy) |
+| Stale/expired | 0.1× (deprioritized) |
+
+The chain scorer similarly applies graduated quality points: healthy credentials score 3 points, expiring (<2h) score 2, near-expiry (<30min) score 1.
+
+### Credential Provenance
+
+The `getCredentialProvenance()` function traces a credential's full provenance chain by walking `DERIVED_FROM` and `DUMPED_FROM` edges. This enables:
+
+- Identifying the original source of a cracked hash
+- Tracing which host a credential was dumped from
+- Understanding multi-hop derivation (e.g., NTDS dump → hash → cracked password → TGT)
+
+The dashboard visualizes provenance chains via the `/api/evidence-chains/:nodeId` endpoint.
+
 See [Graph Model — Credential Lifecycle Properties](graph-model.md#credential-lifecycle-properties) for the full property reference.
+
+## IAM Policy Simulation
+
+Overwatch includes a cloud IAM policy simulator (`evaluateIAM()`) that evaluates whether an identity is permitted to perform an action on a resource. The simulator understands the permission evaluation semantics of all three major cloud providers:
+
+| Provider | Evaluation Logic |
+|----------|-----------------|
+| **AWS** | Deny-overrides-allow — explicit deny in any policy wins. Evaluates all attached policies, then checks for matching allow. |
+| **Azure** | RBAC scope hierarchy — permissions at broader scopes (`/subscriptions/...`) inherit to child resources. Role assignments are evaluated against scope prefixes. |
+| **GCP** | Deny policy precedence — deny policies are evaluated first, then allow. Supports wildcard action matching. |
+
+The simulator traverses the graph to collect all policies reachable from an identity (including via group memberships and role assumptions), then evaluates them against the requested action and resource.
+
+**Usage:** The IAM simulator is used internally by graph analysis tools and is accessible via the evidence chain API. It helps answer questions like "Can this service account delete S3 buckets?" or "Does this Azure role assignment cover this resource?"
+
+## Web Attack Path Modeling
+
+Overwatch models web application attack surfaces using three graph constructs:
+
+1. **`api_endpoint` nodes** — represent individual API endpoints with `path`, `method`, `auth_required`, and `response_type` properties. Connected to their parent webapp via `HAS_ENDPOINT` edges.
+
+2. **`AUTH_BYPASS` edges** — from a `vulnerability` node to a `webapp` or `api_endpoint` when the vulnerability enables authentication bypass. This is a bidirectional edge type — the engine considers both directions for path traversal.
+
+3. **Inference rules** — Two rules automate web attack path discovery:
+    - **Token → Webapp Auth** — When a credential with `cred_type=token` exists and a webapp has an `AUTHENTICATED_AS` edge, creates a `VALID_ON` edge (confidence 0.75)
+    - **Auth Bypass Escalation** — When a vulnerability has an `AUTH_BYPASS` edge to a webapp, creates an `EXPLOITS` edge to the parent host (confidence 0.8)
+
+Four inference selectors support web attack path rules: `default_credential_candidates`, `cms_credentials`, `hosted_webapps`, and `vulnerable_webapps`.
+
+See [Graph Model — Web Application Surface](graph-model.md#web-application-surface) for edge definitions and [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full rule reference.
 
 ## Identity Resolution
 

@@ -107,6 +107,34 @@ Once connected, ask Claude to:
 
 If all three succeed, you're ready to start. See the [Operator Playbook](playbook/index.md) for step-by-step lab workflows.
 
+## Accessing the Dashboard
+
+The live dashboard starts automatically alongside the MCP server — no extra setup needed.
+
+**Open it at:** [`http://localhost:8384`](http://localhost:8384)
+
+### What You'll See
+
+- **Graph visualization** — an interactive WebGL graph (sigma.js) showing all discovered nodes and edges. Drag nodes, hover for tooltips, Shift+click two nodes for shortest path.
+- **Sidebar panels** — Lab Readiness, Graph Summary, Objectives, Frontier (top 15 items), Agents, and Recent Activity.
+- **Search** — filter nodes by label, IP, hostname, or ID.
+- **Overlays** — Toggle Attack Path (gold), Compare Shortest (cyan), Credential Flow (status badges), or Community Hulls from the Layers dropdown.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OVERWATCH_DASHBOARD_PORT` | `8384` | Dashboard port. Set to `0` to disable. |
+| `OVERWATCH_DASHBOARD_TOKEN` | *(none)* | If set, requires `?token=<value>` query parameter for access |
+
+### Troubleshooting
+
+- **Port conflict** — Set `OVERWATCH_DASHBOARD_PORT` to a different port
+- **Blank page** — Open the browser console (F12) for errors; requires WebGL
+- **WebSocket disconnects** — Auto-reconnects every 3 seconds with HTTP polling fallback
+
+See the full [Dashboard Guide](dashboard.md) for all features, keyboard shortcuts, and API endpoints.
+
 ## Troubleshooting
 
 ### Server Won't Start

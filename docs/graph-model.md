@@ -8,8 +8,8 @@ Overwatch models engagements as directed property graphs using [graphology](http
 |------|-------------|----------------|
 | `host` | A target machine | `ip`, `hostname`, `os`, `alive`, `domain_joined` |
 | `service` | A network service on a host | `port`, `protocol`, `service_name`, `version`, `banner` |
-| `domain` | An Active Directory domain | `domain_name`, `functional_level` |
-| `user` | A domain or local user | `username`, `sid`, `enabled`, `privileged` |
+| `domain` | An Active Directory domain | `domain_name`, `functional_level`, `password_policy`, `lockout_policy` |
+| `user` | A domain or local user | `username`, `sid`, `enabled`, `privileged`, `pwd_last_set` |
 | `group` | A security group | `sid`, `member_of` |
 | `credential` | Authentication material | `cred_type`, `cred_value`, `cred_domain`, `cred_user`, `credential_status` |
 | `share` | A network share | `share_name`, `share_path`, `readable`, `writable` |
@@ -27,6 +27,7 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, etc.) | `resource_type`, `region`, `public`, `encrypted` |
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment | `policy_name`, `effect`, `actions`, `resources` |
 | `cloud_network` | Cloud network construct (VPC, security group) | `network_type`, `ingress_rules`, `egress_rules` |
+| `api_endpoint` | A web API endpoint | `path`, `method`, `auth_required`, `response_type` |
 
 ### Common Node Properties
 
@@ -163,6 +164,28 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | `ingress_rules` | `string[]` | Inbound access rules |
 | `egress_rules` | `string[]` | Outbound access rules |
 
+### API Endpoint Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `path` | `string` | URL path (e.g., `/api/users`) |
+| `method` | `string` | HTTP method (`GET`, `POST`, etc.) |
+| `auth_required` | `boolean` | Whether the endpoint requires authentication |
+| `response_type` | `string` | Response content type (e.g., `json`, `html`) |
+
+### Domain Policy Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `password_policy` | `object` | Domain password policy: `minLength`, `maxAge` (ISO 8601 duration), `complexity`, `history` |
+| `lockout_policy` | `object` | Account lockout policy: `threshold`, `duration` (ISO 8601), `observation_window` (ISO 8601) |
+
+### User Temporal Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `pwd_last_set` | `string` | ISO timestamp — when the user's password was last changed. Used with domain `password_policy.maxAge` to estimate credential expiry |
+
 ## Edge Types
 
 ### Network
@@ -256,8 +279,10 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | Edge | Description |
 |------|-------------|
 | `HOSTS` | Service hosts a web application |
+| `HAS_ENDPOINT` | Web application exposes an API endpoint |
 | `AUTHENTICATED_AS` | Web application authenticated as a user/identity |
 | `VULNERABLE_TO` | Web application, service, or cloud resource is vulnerable to a vulnerability |
+| `AUTH_BYPASS` | Vulnerability enables authentication bypass on a web application or API endpoint |
 | `EXPLOITS` | Vulnerability exploits a host, credential, or web application |
 
 ### Cloud Infrastructure
@@ -301,7 +326,7 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Fifty-three built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
+Fifty-five built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
 
 #### AD & Service Rules (21)
 
@@ -361,7 +386,7 @@ Fifty-three built-in declarative rules fire automatically when matching nodes ar
 | Dangerous Capabilities | Host with `has_dangerous_capabilities: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.55) |
 | Writable Cron/Systemd | Host with `writable_cron_or_systemd: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.65) |
 
-#### Web Application Rules (6)
+#### Web Application Rules (8)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -372,6 +397,8 @@ Fifty-three built-in declarative rules fire automatically when matching nodes ar
 | CMS Exploitation | Webapp with `cms_type` set | Frontier: version-specific exploit checks |
 | SQLi → Credential Extraction | Vulnerability with `vuln_type=sqli` | `EXPLOITS` edge + potential `credential` nodes |
 | SQLi → RCE Escalation | Vulnerability with `vuln_type=sqli` + stacked queries | `EXPLOITS` edge to parent host |
+| Token → Webapp Auth | Credential with `cred_type=token` + `AUTHENTICATED_AS` edge on webapp | `VALID_ON` edge from credential to webapp service (confidence 0.75) |
+| Auth Bypass Escalation | Vulnerability with `AUTH_BYPASS` edge to webapp | `EXPLOITS` edge from vulnerability to webapp host (confidence 0.8) |
 
 #### MSSQL Rules (2)
 
@@ -430,3 +457,7 @@ Selectors resolve graph context when inference rules fire:
 | `http_services_via_ca` | HTTP services reachable from CA enrollment endpoints |
 | `nearest_objective` | Objective nodes (for cloud rules with wildcard action gating) |
 | `cross_account_roles` | Cloud identities in different accounts reachable via `ASSUMES_ROLE` |
+| `default_credential_candidates` | Webapps with technology matching known default credential databases |
+| `cms_credentials` | Plaintext credentials for CMS-type web applications |
+| `hosted_webapps` | Webapps hosted on the triggering service (via `HOSTS` edges) |
+| `vulnerable_webapps` | Webapps with at least one `VULNERABLE_TO` edge |
