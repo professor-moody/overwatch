@@ -4,7 +4,16 @@ import { resolve } from 'path';
 
 const DASHBOARD_DIR = resolve(import.meta.dirname, '..');
 
-const SCRIPT_FILES = ['node-display.js', 'graph.js', 'ui.js', 'ws.js', 'main.js'];
+const SCRIPT_FILES = ['shared.js', 'node-display.js', 'graph.js', 'ui.js', 'ws.js', 'main.js', 'graph-page.js', 'operator.js'];
+
+const DASHBOARD_HTML_FILES = ['operator.html', 'graph.html'];
+
+// Scripts loaded per page — used for collision detection
+const PAGE_SCRIPT_GROUPS: Record<string, string[]> = {
+  'graph.html': ['shared.js', 'node-display.js', 'graph.js', 'ui.js', 'ws.js', 'graph-page.js'],
+  'operator.html': ['shared.js', 'node-display.js', 'ws.js', 'operator.js'],
+  'legacy (index.html)': ['node-display.js', 'graph.js', 'ui.js', 'ws.js', 'main.js'],
+};
 
 const REMOTE_CDN_PATTERNS = [
   'cdn.jsdelivr.net',
@@ -34,44 +43,48 @@ function extractTopLevelDeclarations(source: string): string[] {
 }
 
 describe('dashboard boot integrity', () => {
-  it('has no duplicate top-level declarations across dashboard scripts', () => {
-    const allDecls = new Map<string, string[]>();
+  it('has no duplicate top-level declarations across dashboard scripts per page', () => {
+    for (const [page, scripts] of Object.entries(PAGE_SCRIPT_GROUPS)) {
+      const allDecls = new Map<string, string[]>();
 
-    for (const file of SCRIPT_FILES) {
-      const source = readFileSync(resolve(DASHBOARD_DIR, file), 'utf8');
-      const decls = extractTopLevelDeclarations(source);
-      for (const name of decls) {
-        const files = allDecls.get(name) || [];
-        files.push(file);
-        allDecls.set(name, files);
+      for (const file of scripts) {
+        const source = readFileSync(resolve(DASHBOARD_DIR, file), 'utf8');
+        const decls = extractTopLevelDeclarations(source);
+        for (const name of decls) {
+          const files = allDecls.get(name) || [];
+          files.push(file);
+          allDecls.set(name, files);
+        }
       }
-    }
 
-    const collisions: string[] = [];
-    for (const [name, files] of allDecls) {
-      if (files.length > 1) {
-        collisions.push(`"${name}" declared in: ${files.join(', ')}`);
+      const collisions: string[] = [];
+      for (const [name, files] of allDecls) {
+        if (files.length > 1) {
+          collisions.push(`"${name}" declared in: ${files.join(', ')}`);
+        }
       }
-    }
 
-    expect(collisions, `Global scope collisions found:\n${collisions.join('\n')}`).toEqual([]);
+      expect(collisions, `Global scope collisions on ${page}:\n${collisions.join('\n')}`).toEqual([]);
+    }
   });
 
   it('does not reference remote CDN URLs in dashboard HTML', () => {
-    const html = readFileSync(resolve(DASHBOARD_DIR, 'index.html'), 'utf8');
-
-    for (const pattern of REMOTE_CDN_PATTERNS) {
-      expect(html, `Found remote CDN reference: ${pattern}`).not.toContain(pattern);
+    for (const file of DASHBOARD_HTML_FILES) {
+      const html = readFileSync(resolve(DASHBOARD_DIR, file), 'utf8');
+      for (const pattern of REMOTE_CDN_PATTERNS) {
+        expect(html, `Found remote CDN reference in ${file}: ${pattern}`).not.toContain(pattern);
+      }
     }
   });
 
   it('references only local vendor assets in script tags', () => {
-    const html = readFileSync(resolve(DASHBOARD_DIR, 'index.html'), 'utf8');
+    // Check graph.html has vendor graph libraries
+    const graphHtml = readFileSync(resolve(DASHBOARD_DIR, 'graph.html'), 'utf8');
     const scriptSrcPattern = /<script\s+src="([^"]+)"/g;
     let match: RegExpExecArray | null;
     const srcs: string[] = [];
 
-    while ((match = scriptSrcPattern.exec(html)) !== null) {
+    while ((match = scriptSrcPattern.exec(graphHtml)) !== null) {
       srcs.push(match[1]);
     }
 
@@ -80,10 +93,27 @@ describe('dashboard boot integrity', () => {
       expect(src, `Script src "${src}" should be a relative path`).not.toMatch(/^https?:\/\//);
     }
 
-    // Should include vendor assets
+    // Graph page should include vendor graph libraries
     expect(srcs.some(s => s.includes('vendor/graphology'))).toBe(true);
     expect(srcs.some(s => s.includes('vendor/sigma'))).toBe(true);
     expect(srcs.some(s => s.includes('vendor/graphology-layout-forceatlas2'))).toBe(true);
+
+    // Operator page should NOT load heavy graph vendor libraries
+    const opHtml = readFileSync(resolve(DASHBOARD_DIR, 'operator.html'), 'utf8');
+    const opSrcs: string[] = [];
+    let opMatch: RegExpExecArray | null;
+    const opPattern = /<script\s+src="([^"]+)"/g;
+    while ((opMatch = opPattern.exec(opHtml)) !== null) {
+      opSrcs.push(opMatch[1]);
+    }
+    expect(opSrcs.some(s => s.includes('vendor/graphology'))).toBe(false);
+    expect(opSrcs.some(s => s.includes('vendor/sigma'))).toBe(false);
+  });
+
+  it('index.html is a redirect page', () => {
+    const html = readFileSync(resolve(DASHBOARD_DIR, 'index.html'), 'utf8');
+    expect(html).toContain('http-equiv="refresh"');
+    expect(html).toContain('url=/');
   });
 
   it('loads all dashboard modules without missing global exports', async () => {

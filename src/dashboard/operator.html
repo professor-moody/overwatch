@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overwatch — Operator Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="agents-panel.css">
+<link rel="stylesheet" href="campaigns.css">
+<link rel="stylesheet" href="pending-actions.css">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="terminal.css">
+<link rel="stylesheet" href="operator.css">
+<script src="shared.js"></script>
+<script src="node-display.js"></script>
+</head>
+<body>
+
+<div class="op-layout" id="app-layout">
+
+  <!-- Top Toolbar -->
+  <div class="toolbar">
+    <span class="toolbar-brand">◆ OVERWATCH</span>
+    <h1 class="toolbar-title" id="engagement-name">—</h1>
+    <div id="ws-status" class="status-badge">
+      <span class="status-dot"></span>
+      <span>Connecting…</span>
+    </div>
+
+    <div class="toolbar-spacer"></div>
+
+    <div class="toolbar-stats">
+      <div class="toolbar-stat">
+        <span class="toolbar-stat-value" id="stat-nodes">0</span>
+        <span class="toolbar-stat-label">Nodes</span>
+      </div>
+      <div class="toolbar-stat">
+        <span class="toolbar-stat-value" id="stat-edges">0</span>
+        <span class="toolbar-stat-label">Edges</span>
+      </div>
+      <div class="toolbar-stat">
+        <span class="toolbar-stat-value" id="stat-access">none</span>
+        <span class="toolbar-stat-label">Access</span>
+      </div>
+    </div>
+
+    <div class="toolbar-sep"></div>
+
+    <a href="/graph" class="op-graph-link" title="Open Graph Explorer">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="10" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="4" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 5l3 3M6 4h3.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+      Graph
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 1h6v6M9 1L3 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </div>
+
+  <!-- Left Nav Sidebar -->
+  <nav class="op-nav" id="op-nav">
+    <button class="op-nav-item active" data-panel="overview">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Overview</span>
+    </button>
+    <button class="op-nav-item" data-panel="campaigns">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 2v12l5-3 5 3V2H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+      <span>Campaigns</span>
+    </button>
+    <button class="op-nav-item" data-panel="agents">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="currentColor" stroke-width="1.3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Agents</span>
+    </button>
+    <button class="op-nav-item" data-panel="sessions">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M4 7l2 2 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Sessions</span>
+    </button>
+    <button class="op-nav-item" data-panel="actions">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6l4 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Actions</span>
+    </button>
+    <button class="op-nav-item" data-panel="frontier">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8h12M8 2v12M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.7"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+      <span>Frontier</span>
+    </button>
+    <button class="op-nav-item" data-panel="activity">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1 8h3l2-5 3 10 2-5h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Activity</span>
+    </button>
+  </nav>
+
+  <!-- Main Content Area -->
+  <main class="op-content" id="op-content">
+
+    <!-- Overview Panel -->
+    <section class="op-panel active" id="panel-overview">
+      <div class="op-panel-header">
+        <h2>Engagement Overview</h2>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="op-summary-cards" id="summary-cards">
+        <div class="op-card">
+          <div class="op-card-value" id="card-nodes">0</div>
+          <div class="op-card-label">Nodes</div>
+        </div>
+        <div class="op-card">
+          <div class="op-card-value" id="card-edges">0</div>
+          <div class="op-card-label">Edges</div>
+        </div>
+        <div class="op-card">
+          <div class="op-card-value" id="card-objectives">0/0</div>
+          <div class="op-card-label">Objectives</div>
+        </div>
+        <div class="op-card">
+          <div class="op-card-value" id="card-access">none</div>
+          <div class="op-card-label">Access Level</div>
+        </div>
+        <div class="op-card">
+          <div class="op-card-value" id="card-agents">0</div>
+          <div class="op-card-label">Active Agents</div>
+        </div>
+        <div class="op-card">
+          <div class="op-card-value" id="card-campaigns">0</div>
+          <div class="op-card-label">Campaigns</div>
+        </div>
+        <a href="/graph" class="op-card op-card-graph" title="Open Graph Explorer">
+          <div class="op-card-value">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="5" cy="5" r="2.5" stroke="currentColor" stroke-width="1.3"/><circle cx="15" cy="15" r="2.5" stroke="currentColor" stroke-width="1.3"/><circle cx="16" cy="5" r="2" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="15" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M7 6.5l6 6M7 5h7M7 15h6" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+          </div>
+          <div class="op-card-label">Open Graph →</div>
+        </a>
+      </div>
+
+      <!-- Lab Readiness -->
+      <div class="op-section">
+        <h3 class="op-section-title">Lab Readiness</h3>
+        <div class="readiness-panel">
+          <div class="readiness-badge" id="readiness-status">—</div>
+          <div class="readiness-issues" id="readiness-issues"></div>
+        </div>
+      </div>
+
+      <!-- Objectives -->
+      <div class="op-section">
+        <h3 class="op-section-title">Objectives</h3>
+        <div id="objectives-list"></div>
+      </div>
+
+      <!-- Graph Summary (node type breakdown) -->
+      <div class="op-section">
+        <h3 class="op-section-title">Graph Summary</h3>
+        <div class="stat-grid" id="stat-grid"></div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="op-section">
+        <h3 class="op-section-title">Recent Activity</h3>
+        <div id="overview-activity-list"></div>
+      </div>
+    </section>
+
+    <!-- Campaigns Panel -->
+    <section class="op-panel" id="panel-campaigns">
+      <div class="op-panel-header">
+        <h2>Campaigns</h2>
+        <span class="count" id="campaign-count"></span>
+      </div>
+      <div id="campaigns-body">
+        <div id="campaigns-list"></div>
+      </div>
+    </section>
+
+    <!-- Agents Panel -->
+    <section class="op-panel" id="panel-agents">
+      <div class="op-panel-header">
+        <h2>Agents</h2>
+        <span class="count" id="agent-count"></span>
+      </div>
+      <div id="agents-body">
+        <div id="agents-list"></div>
+      </div>
+    </section>
+
+    <!-- Sessions Panel -->
+    <section class="op-panel" id="panel-sessions">
+      <div class="op-panel-header">
+        <h2>Sessions</h2>
+        <span class="count" id="session-count"></span>
+      </div>
+      <div id="sessions-list"></div>
+    </section>
+
+    <!-- Actions (Pending Approvals) Panel -->
+    <section class="op-panel" id="panel-actions">
+      <div class="op-panel-header">
+        <h2>Pending Actions</h2>
+        <span class="count" id="pending-actions-count"></span>
+      </div>
+      <div id="pending-actions-body">
+        <div id="pending-actions-list"></div>
+      </div>
+    </section>
+
+    <!-- Frontier Panel -->
+    <section class="op-panel" id="panel-frontier">
+      <div class="op-panel-header">
+        <h2>Frontier</h2>
+        <span class="count" id="frontier-count"></span>
+      </div>
+      <div id="frontier-body">
+        <div id="frontier-list"></div>
+      </div>
+    </section>
+
+    <!-- Activity Panel -->
+    <section class="op-panel" id="panel-activity">
+      <div class="op-panel-header">
+        <h2>Activity Log</h2>
+      </div>
+      <div id="activity-list"></div>
+    </section>
+
+  </main>
+
+  <!-- Agent Detail Drawer (right) -->
+  <div id="agent-detail-drawer"></div>
+
+  <!-- Campaign Detail Drawer (right) -->
+  <div id="campaign-detail-drawer"></div>
+
+  <!-- Terminal Panel (bottom) -->
+  <div id="terminal-panel">
+    <div id="terminal-tabs"></div>
+    <div id="terminal-container"></div>
+  </div>
+
+</div>
+
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script src="ws.js"></script>
+<script src="agents-panel.js"></script>
+<script src="campaigns.js"></script>
+<script src="pending-actions.js"></script>
+<script src="terminal.js"></script>
+<script src="operator.js"></script>
+</body>
+</html>

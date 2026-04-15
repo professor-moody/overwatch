@@ -423,7 +423,7 @@ describe('DashboardServer', () => {
 
   it('static file responses include Cache-Control header', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-cc-'));
-    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
 
     const res = {
       statusCode: 0,
@@ -440,7 +440,7 @@ describe('DashboardServer', () => {
     };
 
     (dashboard as any).dashboardDir = tempDir;
-    (dashboard as any).serveStaticFile('/index.html', res);
+    (dashboard as any).serveStaticFile('/', res);
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['Cache-Control']).toBe('no-cache');
@@ -500,9 +500,30 @@ describe('DashboardServer', () => {
     expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
   });
 
+  it('index.html redirects to operator dashboard', () => {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | Buffer | undefined,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string | Buffer) {
+        this.body = body;
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveStaticFile('/index.html', res);
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers['Location']).toBe('/');
+  });
+
   it('rejects path traversal attempts in static file serving', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-trav-'));
-    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
 
     const res = {
       statusCode: 0,
@@ -539,7 +560,7 @@ describe('DashboardServer', () => {
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));
-    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
     writeFileSync(join(tempDir, 'assets', 'test.png'), pngBytes);
 

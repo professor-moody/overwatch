@@ -1,0 +1,250 @@
+/* ============================================================
+   Overwatch Operator Dashboard — Layout & Components
+   Nav sidebar, content panels, summary cards
+   ============================================================ */
+
+/* ---- Page Layout ---- */
+
+.op-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  grid-template-rows: 48px 1fr;
+  grid-template-areas:
+    "toolbar toolbar"
+    "nav     content";
+  height: 100vh;
+}
+
+.op-layout .toolbar { grid-area: toolbar; }
+.op-layout .op-nav  { grid-area: nav; }
+.op-layout .op-content { grid-area: content; }
+
+/* ---- Graph Link Button (toolbar) ---- */
+
+.op-graph-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.op-graph-link:hover {
+  background: rgba(91,141,239,0.22);
+  border-color: var(--accent);
+}
+
+/* ---- Navigation Sidebar ---- */
+
+.op-nav {
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  overflow-y: auto;
+}
+
+.op-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+  border-left: 3px solid transparent;
+}
+
+.op-nav-item:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.op-nav-item.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-left-color: var(--accent);
+}
+
+.op-nav-item svg {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* ---- Content Area ---- */
+
+.op-content {
+  overflow-y: auto;
+  padding: 0;
+  background: var(--bg-base);
+}
+
+.op-panel {
+  display: none;
+  padding: 24px;
+  animation: op-fade-in 0.2s ease;
+}
+
+.op-panel.active {
+  display: block;
+}
+
+@keyframes op-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.op-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.op-panel-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ---- Summary Cards ---- */
+
+.op-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.op-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  text-align: center;
+  transition: border-color var(--transition-fast);
+}
+
+.op-card:hover {
+  border-color: var(--border-strong);
+}
+
+.op-card-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+
+.op-card-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+
+.op-card-graph {
+  background: var(--accent-dim);
+  border-color: rgba(91,141,239,0.2);
+  text-decoration: none;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.op-card-graph:hover {
+  background: rgba(91,141,239,0.18);
+  border-color: var(--accent);
+}
+
+.op-card-graph .op-card-value {
+  color: var(--accent);
+}
+
+.op-card-graph .op-card-label {
+  color: var(--accent);
+}
+
+/* ---- Sections ---- */
+
+.op-section {
+  margin-bottom: 24px;
+}
+
+.op-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* ---- Frontier on Operator Page ---- */
+
+.op-frontier-section {
+  margin-bottom: 16px;
+}
+
+.op-frontier-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 8px;
+}
+
+.op-frontier-section-title .count {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.op-frontier-more {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 0;
+  text-align: center;
+}
+
+/* Frontier "View in Graph" link */
+.fi-graph-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+  margin-left: auto;
+}
+
+.fi-graph-link:hover {
+  background: var(--accent-dim);
+}
+
+/* ---- Terminal panel positioning ---- */
+
+.op-layout #terminal-panel {
+  grid-column: 1 / -1;
+}

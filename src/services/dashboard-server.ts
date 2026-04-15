@@ -435,7 +435,20 @@ export class DashboardServer {
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
-    let filePath = url === '/' ? '/index.html' : url;
+    // Multi-page routing: operator dashboard (/) and graph explorer (/graph)
+    let filePath: string;
+    if (url === '/' || url === '/operator' || url === '/operator.html') {
+      filePath = '/operator.html';
+    } else if (url === '/graph' || url === '/graph.html') {
+      filePath = '/graph.html';
+    } else if (url === '/index.html') {
+      // Backward compat: redirect old index.html to operator dashboard
+      res.writeHead(302, { Location: '/' });
+      res.end();
+      return;
+    } else {
+      filePath = url;
+    }
 
     // Security: prevent directory traversal (including percent-encoded variants)
     const decoded = decodeURIComponent(filePath);
