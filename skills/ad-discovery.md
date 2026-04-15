@@ -1,6 +1,6 @@
 # Active Directory Discovery
 
-tags: active-directory, ldap, kerberos, bloodhound, ad, domain, enumeration, users, groups, trusts, delegation, laps, gmsa, nxc
+tags: active-directory, ldap, kerberos, bloodhound, bloodhound-python, sharphound, collector, ad, domain, domain-enum, enumeration, users, groups, trusts, delegation, laps, gmsa, nxc, netexec
 
 ## Objective
 Enumerate the Active Directory domain structure: users, groups, computers, trusts, GPOs, ACLs. BloodHound collection is the single most impactful enumeration step.

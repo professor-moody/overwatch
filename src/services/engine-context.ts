@@ -203,15 +203,18 @@ export class EngineContext {
 export function normalizeActivityLogEntry(
   entry: Partial<ActivityLogEntry> & { description: string; timestamp?: string },
 ): ActivityLogEntry {
-  const normalizedOutcome = entry.outcome || normalizeOutcome(entry.result_classification, entry.validation_result);
+  const resolvedCategory = entry.category || inferCategoryFromEventType(entry.event_type);
+  const resolvedOutcome = entry.outcome
+    || normalizeOutcome(entry.result_classification, entry.validation_result)
+    || inferOutcomeFromEventType(entry.event_type);
   return {
     event_id: entry.event_id || uuidv4(),
     timestamp: entry.timestamp || new Date().toISOString(),
     description: entry.description,
     agent_id: entry.agent_id,
-    category: entry.category,
+    category: resolvedCategory,
     frontier_type: entry.frontier_type,
-    outcome: normalizedOutcome,
+    outcome: resolvedOutcome,
     action_id: entry.action_id,
     event_type: entry.event_type,
     tool_name: entry.tool_name,
@@ -240,6 +243,25 @@ function normalizeOutcome(
   if (validationResult === 'warning_only') return 'neutral';
   if (validationResult === 'valid') return 'success';
 
+  return undefined;
+}
+
+function inferCategoryFromEventType(eventType?: ActivityEventType): ActivityLogEntry['category'] | undefined {
+  if (!eventType) return undefined;
+  if (eventType.startsWith('action_')) return 'frontier';
+  if (eventType.startsWith('finding_') || eventType === 'parse_output') return 'finding';
+  if (eventType.startsWith('inference_')) return 'inference';
+  if (eventType.startsWith('objective_')) return 'objective';
+  if (eventType.startsWith('agent_')) return 'agent';
+  if (eventType.startsWith('session_') || eventType === 'scope_updated' || eventType === 'graph_corrected' || eventType === 'instrumentation_warning' || eventType === 'credential_degradation' || eventType === 'system') return 'system';
+  return undefined;
+}
+
+function inferOutcomeFromEventType(eventType?: ActivityEventType): ActivityLogEntry['outcome'] | undefined {
+  if (!eventType) return undefined;
+  if (eventType === 'action_completed' || eventType === 'finding_reported' || eventType === 'finding_ingested' || eventType === 'objective_achieved' || eventType === 'session_access_confirmed') return 'success';
+  if (eventType === 'action_failed' || eventType === 'session_error') return 'failure';
+  if (eventType === 'action_planned' || eventType === 'action_started' || eventType === 'action_validated') return 'neutral';
   return undefined;
 }
 

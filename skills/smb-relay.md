@@ -1,6 +1,6 @@
 # NTLM Relay Attacks
 
-tags: smb, relay, ntlm, ntlmrelay, responder, lateral-movement, signing, petitpotam, coercion, mitm6, adcs, rbcd
+tags: smb, relay, ntlm, ntlmrelay, ntlm-relay, responder, lateral-movement, signing, petitpotam, coercion, mitm6, adcs, rbcd, dfscoerce, printerbug, webclient
 
 ## Objective
 Relay captured NTLM authentication to targets where SMB signing is disabled, or to LDAP/ADCS endpoints for privilege escalation.

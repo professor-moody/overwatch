@@ -1,6 +1,6 @@
 # Password Spraying and Attacks
 
-tags: password, spray, spraying, brute-force, kerbrute, nxc, hashcat, credential, ntlm, kerberos, cracking
+tags: password, spray, spraying, password-spray, brute-force, brute, kerbrute, nxc, netexec, hashcat, credential, ntlm, kerberos, cracking, lockout
 
 ## Objective
 Discover valid credentials through password spraying, user enumeration, and offline hash cracking.

@@ -617,3 +617,68 @@ describe('actionFrontierMap — cross-agent collision guard', () => {
     expect(entry.frontier_item_id).toBe('fi-noagent');
   });
 });
+
+// ---- Phase 3: Auto-enrichment via inferCategoryFromEventType / inferOutcomeFromEventType ----
+
+describe('normalizeActivityLogEntry — auto-enrichment', () => {
+  it('infers category=frontier from action_started event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_started' });
+    expect(entry.category).toBe('frontier');
+  });
+
+  it('infers category=finding from finding_reported event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'finding_reported' });
+    expect(entry.category).toBe('finding');
+  });
+
+  it('infers category=inference from inference_generated event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'inference_generated' });
+    expect(entry.category).toBe('inference');
+  });
+
+  it('infers category=objective from objective_achieved event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'objective_achieved' });
+    expect(entry.category).toBe('objective');
+  });
+
+  it('infers category=agent from agent_registered event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'agent_registered' });
+    expect(entry.category).toBe('agent');
+  });
+
+  it('infers category=system from session_access_confirmed event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'session_access_confirmed' });
+    expect(entry.category).toBe('system');
+  });
+
+  it('explicit category overrides inferred category', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_started', category: 'system' });
+    expect(entry.category).toBe('system');
+  });
+
+  it('infers outcome=success from action_completed event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_completed' });
+    expect(entry.outcome).toBe('success');
+  });
+
+  it('infers outcome=failure from action_failed event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_failed' });
+    expect(entry.outcome).toBe('failure');
+  });
+
+  it('infers outcome=neutral from action_planned event_type', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_planned' });
+    expect(entry.outcome).toBe('neutral');
+  });
+
+  it('result_classification takes precedence over event_type inference', () => {
+    const entry = normalizeActivityLogEntry({ description: 'test', event_type: 'action_failed', result_classification: 'success' });
+    expect(entry.outcome).toBe('success');
+  });
+
+  it('returns undefined category and outcome with no event_type and no classification', () => {
+    const entry = normalizeActivityLogEntry({ description: 'bare' });
+    expect(entry.category).toBeUndefined();
+    expect(entry.outcome).toBeUndefined();
+  });
+});

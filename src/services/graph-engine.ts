@@ -754,7 +754,79 @@ export class GraphEngine {
       }
     }
 
+    // Technique-specific graph-aware guidance
+    if (action.technique) {
+      const techniqueWarning = this.checkTechniqueGuidance(action);
+      if (techniqueWarning) warnings.push(techniqueWarning);
+    }
+
+    // Failure pattern matching from retrospective feedback
+    if (action.technique && this.ctx.config.failure_patterns) {
+      for (const fp of this.ctx.config.failure_patterns) {
+        if (fp.technique !== action.technique) continue;
+        const targetStr = action.target_node || action.target_ip || '';
+        if (!fp.target_pattern || targetStr.toLowerCase().includes(fp.target_pattern.toLowerCase())) {
+          warnings.push(fp.warning);
+        }
+      }
+    }
+
     return { valid: errors.length === 0, errors, warnings };
+  }
+
+  private checkTechniqueGuidance(action: {
+    target_node?: string; target_ip?: string;
+    edge_source?: string; edge_target?: string;
+    technique?: string;
+  }): string | null {
+    const t = action.technique;
+    const targetNode = action.target_node || action.edge_target;
+
+    switch (t) {
+      case 'secretsdump': {
+        if (!targetNode) return null;
+        const hasAdmin = (this.ctx.graph.inEdges(targetNode) as string[]).some(e =>
+          this.ctx.graph.getEdgeAttributes(e).type === 'ADMIN_TO' && this.ctx.graph.getEdgeAttributes(e).confidence >= 0.7
+        );
+        if (!hasAdmin) return 'No confirmed ADMIN_TO edge to this target — secretsdump requires local admin access.';
+        return null;
+      }
+      case 'dcsync': {
+        if (!targetNode) return null;
+        const node = this.ctx.graph.hasNode(targetNode) ? this.ctx.graph.getNodeAttributes(targetNode) : null;
+        if (node?.type !== 'domain') return null;
+        const hasRights = (this.ctx.graph.inEdges(targetNode) as string[]).some(e => {
+          const et = this.ctx.graph.getEdgeAttributes(e).type;
+          return et === 'CAN_DCSYNC' || et === 'GENERIC_ALL';
+        });
+        if (!hasRights) return 'No CAN_DCSYNC or GENERIC_ALL edge to this domain — DCSync requires replication rights.';
+        return null;
+      }
+      case 'kerberoast': {
+        if (!targetNode || !this.ctx.graph.hasNode(targetNode)) return null;
+        const node = this.ctx.graph.getNodeAttributes(targetNode);
+        if (node.type === 'user' && !node.spn) return 'Target user has no SPN property set — Kerberoasting requires a servicePrincipalName.';
+        return null;
+      }
+      case 'smb-relay':
+      case 'ntlmrelay': {
+        if (!targetNode) return null;
+        const svcEdges = this.ctx.graph.hasNode(targetNode)
+          ? (this.ctx.graph.outEdges(targetNode) as string[]).filter(e =>
+            this.ctx.graph.getEdgeAttributes(e).type === 'RUNS'
+          )
+          : [];
+        for (const e of svcEdges) {
+          const svcNode = this.ctx.graph.getNodeAttributes(this.ctx.graph.target(e));
+          if (svcNode.service_name === 'smb' && svcNode.smb_signing === true) {
+            return 'Target host has SMB signing enabled — NTLM relay to SMB will fail.';
+          }
+        }
+        return null;
+      }
+      default:
+        return null;
+    }
   }
 
   // =============================================

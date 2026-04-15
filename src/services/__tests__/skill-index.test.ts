@@ -135,4 +135,37 @@ describe('SkillIndex', () => {
     const excerpt2 = getExcerpt(content, [(skills as any).stem('vulnerabilities')]);
     expect(excerpt2).toContain('vulnerabilities');
   });
+
+  // ---- Phase 3: Tag discoverability & netexec skill ----
+
+  it('search for netexec returns the netexec skill first', () => {
+    const results = skills.search('netexec');
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].name.toLowerCase()).toMatch(/netexec|nxc/);
+  });
+
+  it('search for crackmapexec alias finds netexec skill', () => {
+    const results = skills.search('crackmapexec');
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some(r => r.name.toLowerCase().includes('netexec'))).toBe(true);
+  });
+
+  it('search for bloodhound returns ad-discovery skill', () => {
+    const results = skills.search('bloodhound');
+    expect(results.length).toBeGreaterThan(0);
+    // Verify the top result has bloodhound in its name or is ad-discovery
+    expect(results[0].name.toLowerCase()).toMatch(/active directory|ad|bloodhound/);
+  });
+
+  it('search for password spray returns password-spraying skill', () => {
+    const results = skills.search('password spray');
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].name.toLowerCase()).toMatch(/password|spray/);
+  });
+
+  it('search for ntlm relay returns smb-relay skill', () => {
+    const results = skills.search('ntlm relay');
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].name.toLowerCase()).toMatch(/smb|relay|ntlm/);
+  });
 });

@@ -587,4 +587,83 @@ describe('structured activity logging tools', () => {
       'inferred_edge',
     ]);
   });
+
+  // ---- Phase 3: Auto-default result_classification ----
+
+  it('auto-defaults result_classification=success on action_completed', async () => {
+    // Create an action first
+    const plan = await handlers.log_action_event({
+      event_type: 'action_planned',
+      description: 'Plan scan',
+      tool_name: 'nmap',
+      target_node_ids: [],
+    });
+    const actionId = JSON.parse(plan.content[0].text).action_id;
+
+    // Complete without explicit result_classification
+    const result = await handlers.log_action_event({
+      event_type: 'action_completed',
+      action_id: actionId,
+      description: 'Scan done',
+      target_node_ids: [],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.event_type).toBe('action_completed');
+
+    // Verify the logged entry has result_classification=success
+    const history = engine.getFullHistory();
+    const completedEntry = history.find(
+      (e) => e.event_type === 'action_completed' && e.action_id === actionId,
+    );
+    expect(completedEntry?.result_classification).toBe('success');
+  });
+
+  it('auto-defaults result_classification=failure on action_failed', async () => {
+    const plan = await handlers.log_action_event({
+      event_type: 'action_planned',
+      description: 'Plan scan',
+      tool_name: 'nmap',
+      target_node_ids: [],
+    });
+    const actionId = JSON.parse(plan.content[0].text).action_id;
+
+    const result = await handlers.log_action_event({
+      event_type: 'action_failed',
+      action_id: actionId,
+      description: 'Scan failed',
+      target_node_ids: [],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.event_type).toBe('action_failed');
+
+    const history = engine.getFullHistory();
+    const failedEntry = history.find(
+      (e) => e.event_type === 'action_failed' && e.action_id === actionId,
+    );
+    expect(failedEntry?.result_classification).toBe('failure');
+  });
+
+  it('explicit result_classification is not overridden by auto-default', async () => {
+    const plan = await handlers.log_action_event({
+      event_type: 'action_planned',
+      description: 'Plan scan',
+      tool_name: 'nmap',
+      target_node_ids: [],
+    });
+    const actionId = JSON.parse(plan.content[0].text).action_id;
+
+    await handlers.log_action_event({
+      event_type: 'action_completed',
+      action_id: actionId,
+      description: 'Partial success',
+      result_classification: 'partial',
+      target_node_ids: [],
+    });
+
+    const history = engine.getFullHistory();
+    const entry = history.find(
+      (e) => e.event_type === 'action_completed' && e.action_id === actionId,
+    );
+    expect(entry?.result_classification).toBe('partial');
+  });
 });

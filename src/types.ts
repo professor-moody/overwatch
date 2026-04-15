@@ -291,6 +291,7 @@ export interface EngagementConfig {
   objectives: EngagementObjective[];
   opsec: OpsecProfile;
   community_resolution?: number;  // Louvain resolution (default 1.0, lower → fewer/larger communities)
+  failure_patterns?: { technique: string; target_pattern?: string; warning: string }[];  // Retrospective feedback for validation
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -323,6 +324,11 @@ export const engagementConfigSchema = z.object({
   ),
   profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
   community_resolution: z.number().min(0.1).max(10).optional(),
+  failure_patterns: z.array(z.object({
+    technique: z.string(),
+    target_pattern: z.string().optional(),
+    warning: z.string(),
+  })).optional(),
   scope: z.object({
     cidrs: z.array(z.string().regex(
       /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,

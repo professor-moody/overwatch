@@ -97,6 +97,10 @@ Recommended flow:
       };
       const resolvedDescription = description || defaultDescriptions[event_type] || event_type;
       const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
+      // Auto-default result_classification on terminal events when caller omits it
+      const resolvedResultClassification = result_classification
+        || (event_type === 'action_completed' ? 'success' as const : undefined)
+        || (event_type === 'action_failed' ? 'failure' as const : undefined);
       const event = engine.logActionEvent({
         description: resolvedDescription,
         agent_id,
@@ -110,7 +114,7 @@ Recommended flow:
         target_ips,
         frontier_item_id,
         linked_agent_task_id,
-        result_classification,
+        result_classification: resolvedResultClassification,
         details,
       });
       engine.persist();

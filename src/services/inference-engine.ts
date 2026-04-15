@@ -63,6 +63,11 @@ export class InferenceEngine {
     const node = this.getNode(triggerNodeId);
     if (!node) return [];
 
+    // OS enrichment: infer OS from child service signatures when host lacks os property
+    if (node.type === 'host' && !node.os) {
+      this.inferOsFromServices(triggerNodeId);
+    }
+
     const inferred: string[] = [];
     for (const rule of this.ctx.inferenceRules) {
       if (rule.trigger.node_type && node.type !== rule.trigger.node_type) continue;
@@ -237,6 +242,38 @@ export class InferenceEngine {
       }
     }
     return domains;
+  }
+
+  private inferOsFromServices(hostNodeId: string): void {
+    const childServices = new Set<string>();
+    for (const edge of this.ctx.graph.outEdges(hostNodeId) as string[]) {
+      if (this.ctx.graph.getEdgeAttributes(edge).type === 'RUNS') {
+        const svcNode = this.getNode(this.ctx.graph.target(edge));
+        if (svcNode?.service_name) childServices.add(svcNode.service_name);
+      }
+    }
+    if (childServices.size === 0) return;
+
+    let inferredOs: string | null = null;
+    if ((childServices.has('kerberos') || childServices.has('ldap')) && childServices.has('smb')) {
+      inferredOs = 'Windows Server';
+    } else if (childServices.has('smb') && !childServices.has('ssh')) {
+      inferredOs = 'Windows';
+    } else if (childServices.has('ssh') && !childServices.has('smb') && !childServices.has('kerberos')) {
+      inferredOs = 'Linux';
+    }
+
+    if (inferredOs) {
+      this.ctx.graph.mergeNodeAttributes(hostNodeId, { os: inferredOs, os_inferred: true });
+      this.ctx.logEvent({
+        description: `Inferred OS for ${hostNodeId}: ${inferredOs} (from service signatures)`,
+        category: 'inference',
+        event_type: 'inference_generated',
+        result_classification: 'success',
+        target_node_ids: [hostNodeId],
+        details: { rule_id: 'rule-os-from-services', inferred_os: inferredOs, services: Array.from(childServices) },
+      });
+    }
   }
 
   private resolveSelector(selector: string, triggerNodeId: string, rule?: InferenceRule): string[] {
@@ -624,6 +661,41 @@ export class InferenceEngine {
           }
         });
         return httpSvcs;
+      }
+
+      case 'orphan_service_host': {
+        // Resolve the parent host for a service node when no RUNS edge exists yet.
+        // Extracts IP from service node ID pattern: svc-{ip}-{port}
+        const existingHosts = this.getParentHosts(triggerNodeId);
+        if (existingHosts.length > 0) return []; // RUNS edge already exists — don't duplicate
+        const svcMatch = triggerNodeId.match(/^svc-(\d+-\d+-\d+-\d+)-/);
+        if (!svcMatch) return [];
+        const ip = svcMatch[1].replace(/-/g, '.');
+        const hostNodeId = `host-${svcMatch[1]}`;
+        if (this.ctx.graph.hasNode(hostNodeId)) return [hostNodeId];
+        // Fallback: search for host with matching IP
+        const allHosts = this.getNodesByType('host');
+        const matched = allHosts.filter(h => h.ip === ip);
+        return matched.map(h => h.id);
+      }
+
+      case 'matching_user_for_cred': {
+        // Find user nodes whose sam_account_name or label matches the credential's cred_user
+        const credUser = node.cred_user;
+        if (!credUser || typeof credUser !== 'string') return [];
+        // Skip if OWNS_CRED edge already exists (from any user to this credential)
+        const existingOwners = (this.ctx.graph.inEdges(triggerNodeId) as string[]).some(e =>
+          this.ctx.graph.getEdgeAttributes(e).type === 'OWNS_CRED'
+        );
+        if (existingOwners) return [];
+        const credUserLower = credUser.toLowerCase();
+        const allUsers = this.getNodesByType('user');
+        return allUsers
+          .filter(u => {
+            const sam = String(u.sam_account_name || u.label || '').toLowerCase();
+            return sam === credUserLower;
+          })
+          .map(u => u.id);
       }
 
       default:

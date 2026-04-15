@@ -170,7 +170,8 @@ describe('GraphEngine', () => {
 
       const state = engine.getState();
       const hostFrontier = state.frontier.find((item) => item.node_id === 'host-10-10-10-5');
-      expect(hostFrontier?.missing_properties).not.toContain('services');
+      // Host may not appear in frontier at all if fully enriched (inference rules fill gaps)
+      expect(hostFrontier?.missing_properties ?? []).not.toContain('services');
     });
 
     it('auto-merges unresolved aliases into later canonical identities and retargets edges', () => {
@@ -1082,6 +1083,118 @@ describe('GraphEngine', () => {
       const result = engine.validateAction({ target_node: 'svc-10-10-10-14-445' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+    });
+
+    // ---- Technique-specific guidance (Phase 3) ----
+
+    it('warns when secretsdump targets a host without ADMIN_TO', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'secretsdump' });
+      expect(result.valid).toBe(true); // warning, not error
+      expect(result.warnings.some(w => w.includes('ADMIN_TO'))).toBe(true);
+    });
+
+    it('no secretsdump warning when ADMIN_TO edge exists', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'user-admin', type: 'user', label: 'admin' },
+        ],
+        edges: [{ source: 'user-admin', target: 'host-10-10-10-1', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'secretsdump' });
+      expect(result.warnings.some(w => w.includes('ADMIN_TO'))).toBe(false);
+    });
+
+    it('warns when kerberoast targets a user without SPN', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql' }],
+      }));
+      const result = engine.validateAction({ target_node: 'user-svc', technique: 'kerberoast' });
+      expect(result.valid).toBe(true);
+      expect(result.warnings.some(w => w.includes('SPN'))).toBe(true);
+    });
+
+    it('no kerberoast warning when user has SPN', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql', spn: 'MSSQLSvc/db.test.local' }],
+      }));
+      const result = engine.validateAction({ target_node: 'user-svc', technique: 'kerberoast' });
+      expect(result.warnings.some(w => w.includes('SPN'))).toBe(false);
+    });
+
+    it('warns when smb-relay targets a host with SMB signing enabled', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'smb/445', port: 445, service_name: 'smb', smb_signing: true },
+        ],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'smb-relay' });
+      expect(result.valid).toBe(true);
+      expect(result.warnings.some(w => w.includes('SMB signing'))).toBe(true);
+    });
+
+    it('no smb-relay warning when SMB signing is disabled', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-10-10-10-1-445', type: 'service', label: 'smb/445', port: 445, service_name: 'smb', smb_signing: false },
+        ],
+        edges: [{ source: 'host-10-10-10-1', target: 'svc-10-10-10-1-445', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'smb-relay' });
+      expect(result.warnings.some(w => w.includes('SMB signing'))).toBe(false);
+    });
+
+    // ---- Failure pattern matching (Phase 3) ----
+
+    it('warns when failure_patterns match technique', () => {
+      const engine = new GraphEngine(makeConfig({
+        failure_patterns: [{ technique: 'secretsdump', warning: 'Previously failed on this network segment' }],
+      }), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'secretsdump' });
+      expect(result.warnings.some(w => w.includes('Previously failed'))).toBe(true);
+    });
+
+    it('failure_patterns with target_pattern only match when target contains the pattern', () => {
+      const engine = new GraphEngine(makeConfig({
+        failure_patterns: [{ technique: 'portscan', target_pattern: '10-10-10-5', warning: 'Host 10.10.10.5 drops probes' }],
+      }), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'host-10-10-10-5', type: 'host', label: '10.10.10.5', ip: '10.10.10.5' },
+        ],
+      }));
+      // Should NOT match host-10-10-10-1
+      const r1 = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'portscan' });
+      expect(r1.warnings.some(w => w.includes('drops probes'))).toBe(false);
+      // SHOULD match host-10-10-10-5
+      const r2 = engine.validateAction({ target_node: 'host-10-10-10-5', technique: 'portscan' });
+      expect(r2.warnings.some(w => w.includes('drops probes'))).toBe(true);
+    });
+
+    it('no failure warnings when config has no failure_patterns', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'secretsdump' });
+      // Only the ADMIN_TO technique warning, no failure_pattern warning
+      expect(result.warnings.every(w => !w.includes('Previously failed'))).toBe(true);
     });
   });
 

@@ -10,7 +10,7 @@ export const BUILTIN_RULES: InferenceRule[] = [
       edge_type: 'MEMBER_OF_DOMAIN',
       source_selector: 'parent_host',
       target_selector: 'matching_domain',
-      confidence: 0.7
+      confidence: 0.95
     }]
   },
   {
@@ -514,6 +514,31 @@ export const BUILTIN_RULES: InferenceRule[] = [
       source_selector: 'trigger_node',
       target_selector: 'nearest_objective',
       confidence: 0.6
+    }]
+  },
+  // --- Auto-inference for parser-discovered relationships ---
+  {
+    id: 'rule-host-runs-service',
+    name: 'Host runs discovered service',
+    description: 'Service nodes should have a RUNS edge from their parent host — infer when missing',
+    trigger: { node_type: 'service' },
+    produces: [{
+      edge_type: 'RUNS',
+      source_selector: 'orphan_service_host',
+      target_selector: 'trigger_node',
+      confidence: 0.9
+    }]
+  },
+  {
+    id: 'rule-user-owns-credential',
+    name: 'User owns matching credential',
+    description: 'Credential with cred_user matching a known user implies OWNS_CRED relationship',
+    trigger: { node_type: 'credential' },
+    produces: [{
+      edge_type: 'OWNS_CRED',
+      source_selector: 'matching_user_for_cred',
+      target_selector: 'trigger_node',
+      confidence: 0.85
     }]
   },
 ];

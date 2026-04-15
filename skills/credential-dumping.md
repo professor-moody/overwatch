@@ -1,6 +1,6 @@
 # Credential Dumping
 
-tags: credential, dumping, secretsdump, sam, lsa, lsass, ntds, dcsync, mimikatz, nxc, pypykatz, nanodump
+tags: credential, dumping, secretsdump, sam, lsa, lsass, ntds, dcsync, mimikatz, nxc, netexec, pypykatz, nanodump, ntlm, hash, ntlm_hash, dpapi
 
 ## Objective
 Extract credentials from compromised hosts: SAM database, LSA secrets, LSASS memory, and NTDS.dit via DCSync.
