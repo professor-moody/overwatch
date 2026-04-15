@@ -1,0 +1,57 @@
+{
+  "id": "red-team",
+  "name": "Red Team Engagement",
+  "description": "Full kill chain simulation with strict OPSEC constraints. Low-and-slow approach with time windows and technique restrictions.",
+  "profile": "hybrid",
+  "scope": {
+    "cidrs": [],
+    "domains": [],
+    "exclusions": []
+  },
+  "objectives": [
+    {
+      "id": "initial-access",
+      "description": "Establish initial foothold without triggering alerts",
+      "target_node_type": "host",
+      "target_criteria": { "alive": true },
+      "achieved": false
+    },
+    {
+      "id": "persistence",
+      "description": "Establish persistent access to the environment",
+      "target_node_type": "credential",
+      "target_criteria": { "cred_type": "certificate" },
+      "achieved": false
+    },
+    {
+      "id": "domain-dominance",
+      "description": "Achieve domain-level control",
+      "target_node_type": "credential",
+      "target_criteria": { "privileged": true },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "redteam",
+    "max_noise": 0.2,
+    "time_window": {
+      "start_hour": 9,
+      "end_hour": 17
+    },
+    "blacklisted_techniques": [
+      "port_scan_aggressive",
+      "password_spray_bulk",
+      "smb_relay_broadcast"
+    ],
+    "approval_mode": "approve-all"
+  },
+  "recommended_skills": [
+    "credential-dumping",
+    "lateral-movement",
+    "active-directory",
+    "evasion-techniques",
+    "persistence-mechanisms",
+    "privilege-escalation-windows",
+    "privilege-escalation-linux"
+  ]
+}

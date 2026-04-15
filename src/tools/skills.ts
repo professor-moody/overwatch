@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SkillIndex } from '../services/skill-index.js';
+import type { KnowledgeBase } from '../services/knowledge-base.js';
 import { withErrorBoundary } from './error-boundary.js';
 
-export function registerSkillTools(server: McpServer, skills: SkillIndex): void {
+export function registerSkillTools(server: McpServer, skills: SkillIndex, kb?: KnowledgeBase | null): void {
 
   // ============================================================
   // Tool: get_skill
@@ -59,7 +60,7 @@ You can also list all available skills or retrieve a specific skill by ID.`,
 
         // Return the top match's full content, plus summaries of others
         const topContent = skills.getSkillContent(matches[0].id);
-        const result = {
+        const result: Record<string, unknown> = {
           top_match: {
             id: matches[0].id,
             name: matches[0].name,
@@ -73,6 +74,21 @@ You can also list all available skills or retrieve a specific skill by ID.`,
             excerpt: m.excerpt
           }))
         };
+
+        // Enrich with KB technique context for relevant techniques
+        if (kb) {
+          const topTechniques = kb.getTopTechniques(5);
+          if (topTechniques.length > 0) {
+            result.kb_insights = topTechniques.map(t => ({
+              technique: t.name,
+              technique_id: t.technique_id,
+              success_rate: `${Math.round(t.success_rate * 100)}%`,
+              avg_noise: t.avg_noise.toFixed(2),
+              engagements: t.engagements,
+            }));
+          }
+        }
+
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 

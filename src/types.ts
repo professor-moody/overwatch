@@ -190,6 +190,10 @@ export interface NodeProperties {
   objective_achieved?: boolean;
   objective_achieved_at?: string;
 
+  // High-Value Target (populated by BloodHoundPathEnricher)
+  hvt?: boolean;
+  hvt_reason?: string;
+
   // Extensible
   [key: string]: unknown;
 }
@@ -303,6 +307,7 @@ export interface EngagementConfig {
   id: string;
   name: string;
   created_at: string;
+  template?: string;
   profile?: LabProfile;
   scope: {
     cidrs: string[];
@@ -350,6 +355,7 @@ export const engagementConfigSchema = z.object({
     (val) => !isNaN(Date.parse(val)),
     { message: 'created_at must be a valid ISO-8601 date string' },
   ),
+  template: z.string().optional(),
   profile: z.enum(['goad_ad', 'single_host', 'network', 'web_app', 'cloud', 'hybrid']).optional(),
   community_resolution: z.number().min(0.1).max(10).optional(),
   failure_patterns: z.array(z.object({
@@ -424,6 +430,7 @@ export interface FrontierItem {
   chain_completion_pct?: number;     // fraction of chain already confirmed (0.0-1.0)
   chain_score?: number;              // composite chain value score
   chain_target_objective?: boolean;  // chain terminates at an objective-adjacent node
+  chain_template?: string;           // matched attack path template name (e.g., 'acl-takeover')
 }
 
 export interface ScoredTask {

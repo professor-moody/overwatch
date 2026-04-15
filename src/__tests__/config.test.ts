@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { formatConfigError, parseEngagementConfig } from '../config.js';
+import { formatConfigError, parseEngagementConfig, listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { loadConfig } from '../app.js';
 
 const VALID_CONFIG = JSON.stringify({
@@ -91,5 +91,57 @@ describe('loadConfig', () => {
     const config = loadConfig('/tmp/nonexistent-overwatch-config.json');
     expect(config.name).toBe('default-engagement');
     expect(config.scope.cidrs).toEqual([]);
+  });
+});
+
+describe('engagement templates', () => {
+  it('lists all available templates', () => {
+    const templates = listTemplates();
+    expect(templates.length).toBeGreaterThanOrEqual(6);
+    const ids = templates.map(t => t.id);
+    expect(ids).toContain('internal-pentest');
+    expect(ids).toContain('external-assessment');
+    expect(ids).toContain('red-team');
+    expect(ids).toContain('cloud-assessment');
+    expect(ids).toContain('assumed-breach');
+    expect(ids).toContain('ctf');
+  });
+
+  it('loads a specific template by id', () => {
+    const template = loadTemplate('internal-pentest');
+    expect(template).not.toBeNull();
+    expect(template!.name).toBe('Internal Penetration Test');
+    expect(template!.profile).toBe('goad_ad');
+    expect(template!.recommended_skills.length).toBeGreaterThan(0);
+  });
+
+  it('returns null for unknown template', () => {
+    expect(loadTemplate('nonexistent-template')).toBeNull();
+  });
+
+  it('merges template with overrides into valid config', () => {
+    const template = loadTemplate('internal-pentest')!;
+    const config = mergeTemplateWithConfig(template, {
+      id: 'eng-test-1',
+      name: 'My Internal Test',
+      created_at: '2026-03-21T00:00:00Z',
+      scope: { cidrs: ['10.0.0.0/8'], domains: ['corp.local'], exclusions: [] },
+    });
+    expect(config.id).toBe('eng-test-1');
+    expect(config.name).toBe('My Internal Test');
+    expect(config.template).toBe('internal-pentest');
+    expect(config.scope.cidrs).toEqual(['10.0.0.0/8']);
+    expect(config.opsec.max_noise).toBe(0.7);
+  });
+
+  it('override opsec takes precedence over template', () => {
+    const template = loadTemplate('ctf')!;
+    const config = mergeTemplateWithConfig(template, {
+      id: 'eng-test-2',
+      name: 'Custom CTF',
+      created_at: '2026-03-21T00:00:00Z',
+      opsec: { name: 'lab', max_noise: 0.5 },
+    });
+    expect(config.opsec.max_noise).toBe(0.5);
   });
 });

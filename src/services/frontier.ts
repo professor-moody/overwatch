@@ -9,9 +9,11 @@ import type { NodeProperties, FrontierItem, NodeType } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
 import { isCredentialStaleOrExpired, timeToExpiry } from './credential-utils.js';
 import { isIpInCidr } from './cidr.js';
+import type { KnowledgeBase } from './knowledge-base.js';
+import { EDGE_TO_ATTACK } from './finding-classifier.js';
 
 // --- Fan-out estimates by service type ---
-const FAN_OUT_ESTIMATES: Record<string, number> = {
+export const FAN_OUT_DEFAULTS: Record<string, number> = {
   kerberos: 50,
   ldap: 40,
   smb: 15,
@@ -74,7 +76,7 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
 };
 
 // --- Noise estimates by missing property ---
-const NOISE_ESTIMATES: Record<string, number> = {
+export const NOISE_ESTIMATE_DEFAULTS: Record<string, number> = {
   alive: 0.2,
   services: 0.5,
   version: 0.3,
@@ -95,10 +97,45 @@ export type HopsToObjectiveFn = (fromNodeId: string) => number | null;
 export class FrontierComputer {
   private ctx: EngineContext;
   private hopsToObjective: HopsToObjectiveFn;
+  private kb: KnowledgeBase | null;
+  private fanOutEstimates: Record<string, number>;
+  private noiseEstimates: Record<string, number>;
 
-  constructor(ctx: EngineContext, hopsToObjective: HopsToObjectiveFn) {
+  constructor(ctx: EngineContext, hopsToObjective: HopsToObjectiveFn, kb?: KnowledgeBase | null) {
     this.ctx = ctx;
     this.hopsToObjective = hopsToObjective;
+    this.kb = kb || null;
+    this.fanOutEstimates = { ...FAN_OUT_DEFAULTS };
+    this.noiseEstimates = { ...NOISE_ESTIMATE_DEFAULTS };
+  }
+
+  setKB(kb: KnowledgeBase | null): void {
+    this.kb = kb;
+  }
+
+  getFanOutEstimates(): Record<string, number> {
+    return { ...this.fanOutEstimates };
+  }
+
+  getNoiseEstimates(): Record<string, number> {
+    return { ...this.noiseEstimates };
+  }
+
+  setFanOutEstimates(overrides: Record<string, number>): void {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (typeof v === 'number' && v >= 0) this.fanOutEstimates[k] = v;
+    }
+  }
+
+  setNoiseEstimates(overrides: Record<string, number>): void {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (typeof v === 'number' && v >= 0 && v <= 1) this.noiseEstimates[k] = v;
+    }
+  }
+
+  resetWeightsToDefaults(): void {
+    this.fanOutEstimates = { ...FAN_OUT_DEFAULTS };
+    this.noiseEstimates = { ...NOISE_ESTIMATE_DEFAULTS };
   }
 
   compute(): FrontierItem[] {
@@ -154,20 +191,37 @@ export class FrontierComputer {
         }
       }
 
+      // KB-informed confidence and noise adjustments
+      let kbConfidenceBoost = 1;
+      let kbNoise: number | undefined;
+      let kbLabel = '';
+      if (this.kb) {
+        const tech = EDGE_TO_ATTACK[attrs.type];
+        if (tech) {
+          const stats = this.kb.getTechniqueStats(tech.id);
+          if (stats && stats.attempts >= 2) {
+            // Blend KB success rate into confidence (weighted 20%)
+            kbConfidenceBoost = 1 + (stats.success_rate - 0.5) * 0.4;
+            kbNoise = stats.avg_noise;
+            kbLabel = ` [KB: ${Math.round(stats.success_rate * 100)}% success]`;
+          }
+        }
+      }
+
       frontier.push({
         id: `frontier-edge-${edgeId}`,
         type: 'inferred_edge',
         edge_source: source,
         edge_target: target,
         edge_type: attrs.type,
-        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${credLabel}`,
+        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${credLabel}${kbLabel}`,
         graph_metrics: {
           hops_to_objective: this.hopsToObjective(target),
           fan_out_estimate: 2,
           node_degree: this.ctx.graph.degree(target),
-          confidence: attrs.confidence * credMultiplier
+          confidence: attrs.confidence * credMultiplier * kbConfidenceBoost
         },
-        opsec_noise: attrs.opsec_noise || 0.3,
+        opsec_noise: kbNoise ?? attrs.opsec_noise ?? 0.3,
         staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000,
         stale_credential: isStale || undefined,
       });
@@ -287,11 +341,11 @@ export class FrontierComputer {
       return services.length * 5;
     }
     if (node.type === 'service') {
-      return FAN_OUT_ESTIMATES[node.service_name || 'default'] || FAN_OUT_ESTIMATES['default'];
+      return this.fanOutEstimates[node.service_name || 'default'] || this.fanOutEstimates['default'];
     }
     if (node.type === 'credential') return 15;
     if (node.type === 'webapp') return 8;
-    return FAN_OUT_ESTIMATES['default'];
+    return this.fanOutEstimates['default'];
   }
 
   private collectDiscoveredIps(): string[] {
@@ -308,8 +362,8 @@ export class FrontierComputer {
 
   private estimateNoiseForNode(_node: NodeProperties, missing: string[]): number {
     for (const prop of missing) {
-      if (prop in NOISE_ESTIMATES) return NOISE_ESTIMATES[prop];
+      if (prop in this.noiseEstimates) return this.noiseEstimates[prop];
     }
-    return NOISE_ESTIMATES['default'];
+    return this.noiseEstimates['default'];
   }
 }

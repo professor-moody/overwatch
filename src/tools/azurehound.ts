@@ -107,10 +107,15 @@ After ingestion, inference rules fire on all new nodes.`,
         }
       }
 
+      // Post-ingest enrichment: identify HVTs and pre-compute attack paths
+      const enrichment = engine.enrichBloodHoundPaths();
+
       const result = {
         files_processed: processedFiles.length,
         total_nodes: totalNodes,
         total_edges: totalEdges,
+        hvts_identified: enrichment.hvts.length,
+        attack_paths_computed: enrichment.paths.length,
         files: processedFiles,
         skipped_files: skippedFiles.length > 0 ? skippedFiles : undefined,
         warnings: warnings.length > 0 ? warnings : undefined,

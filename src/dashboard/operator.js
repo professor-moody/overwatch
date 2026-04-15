@@ -23,7 +23,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   let activePanel = 'overview';
   const nav = document.getElementById('op-nav');
-  const PANEL_ORDER = ['overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier', 'activity', 'evidence'];
+  const PANEL_ORDER = ['overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier', 'activity', 'evidence', 'settings'];
 
   function switchToPanel(panel) {
     if (!panel || panel === activePanel) return;
@@ -111,7 +111,7 @@ window.addEventListener('DOMContentLoaded', () => {
       overlay.innerHTML = `<div class="shortcut-modal">
         <h3 class="shortcut-title">Keyboard Shortcuts</h3>
         <div class="shortcut-grid">
-          <div class="shortcut-row"><kbd>1</kbd>–<kbd>8</kbd><span>Switch panels</span></div>
+          <div class="shortcut-row"><kbd>1</kbd>–<kbd>9</kbd><span>Switch panels</span></div>
           <div class="shortcut-row"><kbd>n</kbd><span>New campaign (Campaigns panel)</span></div>
           <div class="shortcut-row"><kbd>a</kbd><span>Approve action (Actions panel)</span></div>
           <div class="shortcut-row"><kbd>d</kbd><span>Deny action (Actions panel)</span></div>

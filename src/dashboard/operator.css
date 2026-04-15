@@ -980,3 +980,222 @@
   margin-left: auto;
   color: var(--text-tertiary);
 }
+
+/* ============================================================
+   Settings Panel
+   ============================================================ */
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.settings-section {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.settings-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.settings-field {
+  margin-bottom: 16px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.settings-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-range {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.settings-range-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 48px;
+  text-align: right;
+}
+
+.settings-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-time-input {
+  width: 64px !important;
+  text-align: center;
+}
+
+.settings-textarea {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+/* Noise gauge */
+.settings-gauge-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.settings-gauge {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-hover);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.settings-gauge-bar {
+  height: 100%;
+  background: var(--green);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.settings-gauge-bar.warn {
+  background: var(--amber);
+}
+
+.settings-gauge-bar.danger {
+  background: var(--red);
+}
+
+.settings-gauge-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 80px;
+  text-align: right;
+}
+
+/* Info rows */
+.settings-info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.05));
+}
+
+.settings-info-key {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-info-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Health dot */
+.settings-health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.settings-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.settings-health-dot.ok {
+  background: var(--green);
+}
+
+.settings-health-dot.warn {
+  background: var(--amber);
+}
+
+.settings-health-dot.error {
+  background: var(--red);
+}
+
+/* Save actions */
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-save-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-save-status.ok {
+  color: var(--green);
+}
+
+.settings-save-status.error {
+  color: var(--red);
+}
+
+@media (max-width: 900px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Frontier weight tables */
+.fw-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fw-key {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.fw-input {
+  width: 64px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  text-align: right;
+}

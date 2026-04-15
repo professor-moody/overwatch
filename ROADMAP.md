@@ -1,6 +1,6 @@
 # Overwatch Roadmap
 
-Last updated: 2026-04-14
+Last updated: 2026-04-15
 
 This roadmap captures planned capabilities organized into prioritized phases. Items within each phase are roughly ordered by expected impact. Phase ordering reflects dependencies and strategic priority, not strict sequencing — work can overlap across phases.
 
@@ -145,7 +145,7 @@ Add graph-level signals about defensive posture:
 - Defense density computed in `community-detection.ts` alongside Louvain pass
 - Extend `validate_action()` response with `defense_context` field
 
-### 2.4 BloodHound-Native Attack Path Computation
+### 2.4 BloodHound-Native Attack Path Computation ✅
 
 **Priority: Medium** · Depends on: —
 
@@ -447,7 +447,7 @@ Safe graph mutation through the console. All writes route through `correct_graph
 
 > **Goal:** Templates, cross-engagement learning, and operational polish.
 
-### 5.1 Engagement Templating and Profiles
+### 5.1 Engagement Templating and Profiles ✅
 
 **Priority: Medium** · Depends on: —
 
@@ -467,7 +467,7 @@ Pre-built engagement configs:
 - `create_engagement` tool or CLI flag: `--template internal-pentest`
 - Template inheritance: custom config overrides template defaults
 
-### 5.2 Multi-Engagement Knowledge Base
+### 5.2 Multi-Engagement Knowledge Base ✅
 
 **Priority: Medium** · Depends on: 4.3
 
@@ -507,7 +507,7 @@ Fill gaps identified by retrospectives and extend existing parsers:
 - ✅ 14 new parser aliases registered in `parsers/index.ts`
 - New `src/services/parsers/metasploit.ts` (deferred)
 
-### 5.4 MITRE ATT&CK Integration
+### 5.4 MITRE ATT&CK Integration ✅
 
 **Priority: Medium** · Depends on: 4.1
 
@@ -573,7 +573,7 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 2.1 | Adaptive OPSEC Profiling | 2 | High | — | ✅ |
 | 2.2 | Credential Lifecycle Intelligence | 2 | High | — | ✅ |
 | 2.3 | Defensive Posture Estimation | 2 | Medium | — |
-| 2.4 | BloodHound-Native Attack Paths | 2 | Medium | — |
+| 2.4 | BloodHound-Native Attack Paths | 2 | Medium | — | ✅ |
 | 2.5 | Console: Approval Gates | 2 | High | 2.1 | ✅ |
 | 2.6 | Console: Session Terminals | 2 | Critical | — | ✅ |
 | 2.7 | Console: Agent Supervision | 2 | High | — | ✅ |
@@ -584,10 +584,10 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 4.2 | Evidence Chain Visualization | 4 | High | — | Partial ✅ |
 | 4.3 | Retrospective Self-Improvement Loop | 4 | High | — | ✅ |
 | 4.4 | Console: Graph Interaction | 4 | Medium | 4.2 | |
-| 5.1 | Engagement Templates | 5 | Medium | — | |
-| 5.2 | Multi-Engagement Knowledge Base | 5 | Medium | 4.3 | |
+| 5.1 | Engagement Templates | 5 | Medium | — | ✅ |
+| 5.2 | Multi-Engagement Knowledge Base | 5 | Medium | 4.3 | ✅ |
 | 5.3 | Parser Coverage Expansion | 5 | Medium | — | Partial ✅ |
-| 5.4 | MITRE ATT&CK Integration | 5 | Medium | 4.1 | |
+| 5.4 | MITRE ATT&CK Integration | 5 | Medium | 4.1 | ✅ |
 
 ### Recommended execution order (parallelizable tracks)
 

@@ -3,6 +3,10 @@ import {
   classifyFinding,
   classifyAllFindings,
   generateNavigatorLayer,
+  getTechniqueScope,
+  computeGapAnalysis,
+  generateNavigatorLayerWithGaps,
+  PROFILE_TECHNIQUE_SCOPE,
   CWE_TO_OWASP,
   CWE_TO_NIST,
   CWE_TO_PCI,
@@ -269,5 +273,122 @@ describe('generateNavigatorLayer', () => {
     const t1021 = layer.techniques.find((t: any) => t.techniqueID === 'T1021');
     expect(t1021).toBeDefined();
     expect(t1021.comment).toContain('2 finding');
+  });
+});
+
+// ============================================================
+// ATT&CK Technique Scope & Gap Analysis
+// ============================================================
+
+describe('getTechniqueScope', () => {
+  it('returns techniques for internal-pentest', () => {
+    const scope = getTechniqueScope('internal-pentest');
+    expect(scope.length).toBeGreaterThan(0);
+    expect(scope).toContain('T1003');
+    expect(scope).toContain('T1003.006');
+  });
+
+  it('returns techniques for external-assessment', () => {
+    const scope = getTechniqueScope('external-assessment');
+    expect(scope).toContain('T1190');
+    expect(scope).toContain('T1189');
+  });
+
+  it('returns deduplicated sorted array', () => {
+    const scope = getTechniqueScope('red-team');
+    const sorted = [...scope].sort();
+    expect(scope).toEqual(sorted);
+    expect(new Set(scope).size).toBe(scope.length);
+  });
+
+  it('falls back to red-team for unknown profile', () => {
+    const unknown = getTechniqueScope('nonexistent');
+    const redTeam = getTechniqueScope('red-team');
+    expect(unknown).toEqual(redTeam);
+  });
+});
+
+describe('PROFILE_TECHNIQUE_SCOPE', () => {
+  it('has entries for all template profiles', () => {
+    const expected = ['internal-pentest', 'goad_ad', 'external-assessment', 'red-team', 'cloud-assessment', 'assumed-breach', 'ctf'];
+    for (const p of expected) {
+      expect(PROFILE_TECHNIQUE_SCOPE[p]).toBeDefined();
+      expect(PROFILE_TECHNIQUE_SCOPE[p].length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('computeGapAnalysis', () => {
+  it('identifies untested techniques', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'h1', properties: { type: 'host', label: 'H1' } as NodeProperties },
+    ];
+    const edges: ExportedGraph['edges'] = [
+      { source: 'a', target: 'h1', properties: { type: 'ADMIN_TO' as any, confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } },
+    ];
+    const graph = makeGraph(nodes, edges);
+    const findings = [makeFinding({ id: 'f1', affected_assets: ['h1'] })];
+
+    const result = computeGapAnalysis(findings, graph, 'internal-pentest');
+
+    expect(result.profile).toBe('internal-pentest');
+    expect(result.total_in_scope).toBeGreaterThan(0);
+    expect(result.tested_count).toBeGreaterThan(0);
+    expect(result.untested_count).toBeGreaterThan(0);
+    expect(result.coverage_pct).toBeGreaterThan(0);
+    expect(result.coverage_pct).toBeLessThan(100);
+    expect(result.gaps.length).toBe(result.untested_count);
+    // T1021 should be tested (from ADMIN_TO edge)
+    expect(result.tested).toContain('T1021');
+  });
+
+  it('reports tested count for cloud profile', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'h1', properties: { type: 'host', label: 'H1' } as NodeProperties },
+    ];
+    const edges: ExportedGraph['edges'] = [
+      { source: 'h1', target: 'h1', properties: { type: 'EXPLOITS' as any, confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } },
+      { source: 'h1', target: 'h1', properties: { type: 'ASSUMES_ROLE' as any, confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } },
+      { source: 'h1', target: 'h1', properties: { type: 'HAS_POLICY' as any, confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } },
+    ];
+    const graph = makeGraph(nodes, edges);
+    const findings = [makeFinding({ id: 'f1', affected_assets: ['h1'], vuln_type: 'rce', category: 'vulnerability' } as any)];
+
+    const result = computeGapAnalysis(findings, graph, 'cloud-assessment');
+    expect(result.tested_count).toBeGreaterThan(0);
+  });
+
+  it('gap items have suggested actions', () => {
+    const graph = makeGraph([], []);
+    const result = computeGapAnalysis([], graph, 'internal-pentest');
+
+    for (const gap of result.gaps) {
+      expect(gap.technique_id).toBeTruthy();
+      expect(gap.name).toBeTruthy();
+      expect(gap.suggested_action).toBeTruthy();
+    }
+  });
+});
+
+describe('generateNavigatorLayerWithGaps', () => {
+  it('includes gap annotations in amber', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'h1', properties: { type: 'host', label: 'H1' } as NodeProperties },
+    ];
+    const edges: ExportedGraph['edges'] = [
+      { source: 'a', target: 'h1', properties: { type: 'ADMIN_TO' as any, confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } },
+    ];
+    const graph = makeGraph(nodes, edges);
+    const findings = [makeFinding({ id: 'f1', affected_assets: ['h1'] })];
+
+    const layer = generateNavigatorLayerWithGaps(findings, graph, 'Test', 'internal-pentest') as any;
+
+    expect(layer.techniques.length).toBeGreaterThan(0);
+    // Should have gap techniques with amber color
+    const gapTechs = layer.techniques.filter((t: any) => t.color === '#ffcc00');
+    expect(gapTechs.length).toBeGreaterThan(0);
+    expect(gapTechs[0].comment).toContain('GAP');
+    // Description should contain coverage
+    expect(layer.description).toContain('Coverage');
   });
 });

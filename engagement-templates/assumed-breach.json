@@ -1,0 +1,39 @@
+{
+  "id": "assumed-breach",
+  "name": "Assumed Breach",
+  "description": "Post-compromise assessment starting from a foothold. Skip initial recon, focus on lateral movement and privilege escalation.",
+  "profile": "network",
+  "scope": {
+    "cidrs": [],
+    "domains": [],
+    "exclusions": []
+  },
+  "objectives": [
+    {
+      "id": "lateral-movement",
+      "description": "Move laterally from initial foothold to high-value targets",
+      "target_node_type": "host",
+      "target_criteria": { "privileged": true },
+      "achieved": false
+    },
+    {
+      "id": "data-access",
+      "description": "Access sensitive data stores or file shares",
+      "target_node_type": "share",
+      "target_criteria": {},
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "assumed_breach",
+    "max_noise": 0.8,
+    "approval_mode": "approve-critical"
+  },
+  "recommended_skills": [
+    "lateral-movement",
+    "credential-dumping",
+    "privilege-escalation-windows",
+    "privilege-escalation-linux",
+    "post-exploitation"
+  ]
+}

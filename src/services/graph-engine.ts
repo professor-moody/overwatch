@@ -27,6 +27,9 @@ import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { EvidenceStore } from './evidence-store.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
+import { BloodHoundPathEnricher } from './bloodhound-paths.js';
+import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
+import { KnowledgeBase } from './knowledge-base.js';
 import type { OpsecContext } from './opsec-tracker.js';
 import {
   inferPivotReachability as _inferPivotReachability,
@@ -86,6 +89,7 @@ export class GraphEngine {
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[] } | null = null;
   private evidenceStore: EvidenceStore;
+  private kb: KnowledgeBase | null = null;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
     const graph = createGraph();
@@ -152,6 +156,18 @@ export class GraphEngine {
     this.reconcileSessionEdgesOnStartup();
     this.agentMgr.reconcileOnStartup();
     this.persist();
+  }
+
+  /** Lazy-load the cross-engagement knowledge base (returns null if file not found). */
+  getKB(): KnowledgeBase | null {
+    if (!this.kb) {
+      try {
+        this.kb = new KnowledgeBase();
+      } catch {
+        this.kb = null;
+      }
+    }
+    return this.kb;
   }
 
   // =============================================
@@ -459,6 +475,8 @@ export class GraphEngine {
 
   computeFrontier(): FrontierItem[] {
     if (!this.frontierCache) {
+      // Inject KB for technique-aware scoring
+      this.frontierComputer.setKB(this.getKB());
       const all = this.frontierComputer.compute();
       // Enrich frontier items with community data
       const communities = this.getCommunities();
@@ -587,6 +605,20 @@ export class GraphEngine {
 
   findPaths(fromNode: string, toNode: string, maxPaths: number = 5, optimize?: PathOptimize): Array<PathResult> {
     return this.paths.findPaths(fromNode, toNode, maxPaths, optimize);
+  }
+
+  /**
+   * Post-ingest enrichment: identify HVTs and pre-compute attack paths.
+   * Called after BloodHound/AzureHound ingestion.
+   */
+  enrichBloodHoundPaths(optimize?: PathOptimize): { hvts: HVTResult[]; paths: PreComputedPath[] } {
+    const enricher = new BloodHoundPathEnricher(this.ctx);
+    const hvts = enricher.computeHighValueTargets();
+    const paths = enricher.preComputeAttackPaths(this.paths, optimize);
+    if (hvts.length > 0) {
+      this.ctx.log(`BloodHound enrichment: ${hvts.length} HVTs identified, ${paths.length} attack paths pre-computed`, undefined, { category: 'system' });
+    }
+    return { hvts, paths };
   }
 
   // =============================================
@@ -1650,6 +1682,10 @@ export class GraphEngine {
     return this.ctx.opsecTracker.getNoiseContext(opts);
   }
 
+  getOpsecTracker(): import('./opsec-tracker.js').OpsecTracker {
+    return this.ctx.opsecTracker;
+  }
+
   // =============================================
   // Pending Action Queue (Approval Gates)
   // =============================================
@@ -1702,6 +1738,24 @@ export class GraphEngine {
 
   getFrontierItem(frontierItemId: string): FrontierItem | null {
     return this.computeFrontier().find(item => item.id === frontierItemId) || null;
+  }
+
+  getFrontierWeights(): { fan_out: Record<string, number>; noise: Record<string, number> } {
+    return {
+      fan_out: this.frontierComputer.getFanOutEstimates(),
+      noise: this.frontierComputer.getNoiseEstimates(),
+    };
+  }
+
+  setFrontierWeights(weights: { fan_out?: Record<string, number>; noise?: Record<string, number> }): void {
+    if (weights.fan_out) this.frontierComputer.setFanOutEstimates(weights.fan_out);
+    if (weights.noise) this.frontierComputer.setNoiseEstimates(weights.noise);
+    this.invalidateFrontierCache();
+  }
+
+  resetFrontierWeights(): void {
+    this.frontierComputer.resetWeightsToDefaults();
+    this.invalidateFrontierCache();
   }
 
   logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {

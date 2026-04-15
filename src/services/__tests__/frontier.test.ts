@@ -4,6 +4,7 @@ import type { NodeProperties, EdgeProperties } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { FrontierComputer } from '../frontier.js';
+import { KnowledgeBase } from '../knowledge-base.js';
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -378,6 +379,73 @@ describe('FrontierComputer', () => {
       const svcItem = items.find(i => i.type === 'incomplete_node' && i.node_id === 'svc-kerb');
       expect(svcItem).toBeDefined();
       expect(svcItem!.graph_metrics.fan_out_estimate).toBe(50);
+    });
+  });
+
+  // =============================================
+  // KB-informed scoring
+  // =============================================
+  describe('KB-informed scoring', () => {
+    it('adjusts inferred edge confidence using KB success rate', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user' });
+      addNode(graph, 'host-dc', { type: 'host', ip: '10.10.10.1', alive: true, os: 'Windows Server 2019' });
+      addEdge(graph, 'user-1', 'host-dc', 'CAN_DCSYNC', { tested: false });
+
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const kb = new KnowledgeBase('/tmp/test-kb-frontier-' + Date.now() + '.json');
+      // Record a high-success technique (DCSync = T1003.006)
+      kb.recordTechniqueAttempt('T1003.006', 'DCSync', true, 0.8);
+      kb.recordTechniqueAttempt('T1003.006', 'DCSync', true, 0.7);
+      kb.recordTechniqueAttempt('T1003.006', 'DCSync', false, 0.9);
+
+      const frontier = new FrontierComputer(ctx, () => null, kb);
+      const items = frontier.compute();
+
+      const dcSync = items.find(i => i.type === 'inferred_edge' && i.edge_type === 'CAN_DCSYNC');
+      expect(dcSync).toBeDefined();
+      // KB success 67% → boost = 1 + (0.67-0.5)*0.4 ≈ 1.068
+      expect(dcSync!.graph_metrics.confidence).toBeGreaterThan(1.0);
+      // Noise should come from KB avg_noise
+      expect(dcSync!.opsec_noise).toBeCloseTo(0.8, 1);
+      expect(dcSync!.description).toContain('KB:');
+    });
+
+    it('reduces confidence for low-success KB technique', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user' });
+      addNode(graph, 'svc-1', { type: 'service' });
+      addEdge(graph, 'user-1', 'svc-1', 'KERBEROASTABLE', { tested: false });
+
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const kb = new KnowledgeBase('/tmp/test-kb-frontier2-' + Date.now() + '.json');
+      // Record a low-success technique (Kerberoasting = T1558.003)
+      kb.recordTechniqueAttempt('T1558.003', 'Kerberoasting', false, 0.5);
+      kb.recordTechniqueAttempt('T1558.003', 'Kerberoasting', false, 0.4);
+      kb.recordTechniqueAttempt('T1558.003', 'Kerberoasting', false, 0.6);
+
+      const frontier = new FrontierComputer(ctx, () => null, kb);
+      const items = frontier.compute();
+
+      const kerb = items.find(i => i.type === 'inferred_edge' && i.edge_type === 'KERBEROASTABLE');
+      expect(kerb).toBeDefined();
+      // KB success 0% → boost = 1 + (0-0.5)*0.4 = 0.8
+      expect(kerb!.graph_metrics.confidence).toBeLessThan(1.0);
+    });
+
+    it('uses default noise when no KB available', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user' });
+      addNode(graph, 'host-1', { type: 'host' });
+      addEdge(graph, 'user-1', 'host-1', 'CAN_DCSYNC', { tested: false });
+
+      const { frontier } = buildFrontier(graph);
+      const items = frontier.compute();
+
+      const dcSync = items.find(i => i.type === 'inferred_edge' && i.edge_type === 'CAN_DCSYNC');
+      expect(dcSync).toBeDefined();
+      expect(dcSync!.opsec_noise).toBe(0.3); // default
+      expect(dcSync!.description).not.toContain('KB:');
     });
   });
 });

@@ -52,6 +52,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           .describe('Include compliance mapping (CWE, OWASP, NIST, PCI) and ATT&CK techniques'),
         include_attack_navigator: z.boolean().default(false)
           .describe('Generate ATT&CK Navigator layer JSON file (requires write_to_disk)'),
+        include_gap_analysis: z.boolean().default(false)
+          .describe('Include ATT&CK coverage gap analysis section in the report'),
         write_to_disk: z.boolean().default(false)
           .describe('Save report file(s) to output_dir'),
         output_dir: z.string().default('./reports/')
@@ -69,7 +71,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
     withErrorBoundary('generate_report', async ({
       format: rawFormat, include_evidence, include_narrative,
       include_retrospective, include_compliance, include_attack_navigator,
-      write_to_disk, output_dir, theme,
+      include_gap_analysis, write_to_disk, output_dir, theme,
     }) => {
       const format = rawFormat === 'md' ? 'markdown' : rawFormat;
       const config = engine.getConfig();
@@ -99,7 +101,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         config, graph, history, agents, retrospective,
       };
 
-      const options = { include_evidence, include_narrative, include_retrospective, include_compliance, include_attack_navigator };
+      const options = { include_evidence, include_narrative, include_retrospective, include_compliance, include_attack_navigator, include_gap_analysis };
       const markdown = generateFullReport(reportInput, options);
 
       // Build JSON structured output for 'json' format

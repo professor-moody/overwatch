@@ -135,7 +135,7 @@ export function registerAllTools(
   registerScoringTools(s, deps.engine);
   registerExplorationTools(s, deps.engine);
   registerAgentTools(s, deps.engine);
-  registerSkillTools(s, deps.skills);
+  registerSkillTools(s, deps.skills, deps.engine.getKB());
   registerBloodHoundTools(s, deps.engine);
   registerAzureHoundTools(s, deps.engine);
   registerToolCheckTools(s);

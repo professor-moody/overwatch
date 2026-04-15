@@ -152,6 +152,9 @@ populate the graph with Active Directory structure.`,
         fileResults.push({ file: parsed.file, nodes: nodeCount, edges: edgeCount, inferred: inferredCount });
       }
 
+      // Post-ingest enrichment: identify HVTs and pre-compute attack paths
+      const enrichment = engine.enrichBloodHoundPaths();
+
       return {
         content: [{
           type: 'text',
@@ -160,9 +163,11 @@ populate the graph with Active Directory structure.`,
             total_new_nodes: totalNodes,
             total_new_edges: totalEdges,
             total_inferred_edges: totalInferred,
+            hvts_identified: enrichment.hvts.length,
+            attack_paths_computed: enrichment.paths.length,
             per_file: fileResults,
             errors: allErrors.length > 0 ? allErrors : undefined,
-            message: `BloodHound ingestion complete: ${totalNodes} nodes, ${totalEdges} edges, ${totalInferred} inferred from ${fileResults.length} files`
+            message: `BloodHound ingestion complete: ${totalNodes} nodes, ${totalEdges} edges, ${totalInferred} inferred from ${fileResults.length} files. ${enrichment.hvts.length} HVTs identified, ${enrichment.paths.length} attack paths pre-computed.`
           }, null, 2)
         }]
       };

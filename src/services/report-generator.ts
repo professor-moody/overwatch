@@ -13,7 +13,7 @@ import type {
 import type { ActivityLogEntry } from './engine-context.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { buildCredentialChains } from './retrospective.js';
-import { classifyFinding } from './finding-classifier.js';
+import { classifyFinding, computeGapAnalysis } from './finding-classifier.js';
 import type { FindingClassification } from './finding-classifier.js';
 import { estimateCvssFromContext, vectorToString } from './cvss-calculator.js';
 
@@ -67,6 +67,7 @@ export interface ReportOptions {
   include_retrospective?: boolean;
   include_compliance?: boolean;
   include_attack_navigator?: boolean;
+  include_gap_analysis?: boolean;
   max_timeline_entries?: number;
 }
 
@@ -637,6 +638,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     include_narrative = true,
     include_retrospective = true,
     include_compliance = true,
+    include_gap_analysis = false,
     max_timeline_entries = 50,
   } = options;
 
@@ -1078,6 +1080,30 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       lines.push(`| ${id} | ${escapeTableCell(name)} | ${count} |`);
     }
     lines.push('');
+  }
+
+  // === ATT&CK Coverage Gap Analysis ===
+  if (include_gap_analysis) {
+    const profile = config.profile || config.template || 'red-team';
+    const gapResult = computeGapAnalysis(findings, graph, profile);
+    lines.push('## ATT&CK Coverage Gap Analysis');
+    lines.push('');
+    lines.push(`**Profile:** ${profile} | **Coverage:** ${gapResult.coverage_pct}% (${gapResult.tested_count}/${gapResult.total_in_scope} techniques)`);
+    lines.push('');
+
+    if (gapResult.gaps.length > 0) {
+      lines.push('### Untested Techniques');
+      lines.push('');
+      lines.push('| Technique | Name | Suggested Action |');
+      lines.push('|-----------|------|------------------|');
+      for (const gap of gapResult.gaps) {
+        lines.push(`| ${gap.technique_id} | ${escapeTableCell(gap.name)} | ${escapeTableCell(gap.suggested_action || '-')} |`);
+      }
+      lines.push('');
+    } else {
+      lines.push('All in-scope techniques were tested.');
+      lines.push('');
+    }
   }
 
   // === Activity Timeline ===

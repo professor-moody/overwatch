@@ -13,6 +13,7 @@ import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
+import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -394,6 +395,22 @@ export class DashboardServer {
       this.serveSessions(res);
     } else if (pathname === '/api/agents') {
       this.serveAgents(res);
+    } else if (pathname === '/api/templates') {
+      this.serveTemplates(res);
+    } else if (pathname === '/api/settings' && method === 'GET') {
+      this.serveSettings(res);
+    } else if (pathname === '/api/settings' && method === 'PATCH') {
+      this.handleUpdateSettings(req, res);
+    } else if (pathname === '/api/frontier/weights' && method === 'GET') {
+      this.serveFrontierWeights(res);
+    } else if (pathname === '/api/frontier/weights' && method === 'PATCH') {
+      this.handleUpdateFrontierWeights(req, res);
+    } else if (pathname === '/api/frontier/weights/reset' && method === 'POST') {
+      this.handleResetFrontierWeights(req, res);
+    } else if (pathname === '/api/health') {
+      this.serveHealth(res);
+    } else if (pathname === '/api/engagements/from-template' && method === 'POST') {
+      this.handleCreateFromTemplate(req, res);
     } else if (pathname === '/api/campaigns' && method === 'POST') {
       this.handleCampaignCreate(req, res);
     } else if (pathname === '/api/campaigns') {
@@ -500,6 +517,193 @@ export class DashboardServer {
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found');
+    }
+  }
+
+  // ---- Template endpoints ----
+
+  private serveTemplates(res: ServerResponse): void {
+    try {
+      const templates = listTemplates();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ templates, total: templates.length }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private handleCreateFromTemplate(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body?.template_id || typeof body.template_id !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'template_id (string) is required' }));
+        return;
+      }
+      const template = loadTemplate(body.template_id);
+      if (!template) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Template not found: ${body.template_id}` }));
+        return;
+      }
+      const overrides = body.overrides && typeof body.overrides === 'object' ? body.overrides : {};
+      if (!overrides.id || typeof overrides.id !== 'string') {
+        overrides.id = `eng-${Date.now()}`;
+      }
+      if (!overrides.name || typeof overrides.name !== 'string') {
+        overrides.name = template.name;
+      }
+      if (!overrides.created_at || typeof overrides.created_at !== 'string') {
+        overrides.created_at = new Date().toISOString();
+      }
+      try {
+        const config = mergeTemplateWithConfig(template, overrides as any);
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ config }));
+      } catch (err: any) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- Settings endpoints ----
+
+  private serveSettings(res: ServerResponse): void {
+    const config = this.engine.getConfig();
+    const opsec = config.opsec;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      opsec: {
+        max_noise: opsec.max_noise,
+        approval_mode: opsec.approval_mode || 'approve-critical',
+        approval_timeout_ms: opsec.approval_timeout_ms || 300000,
+        blacklisted_techniques: opsec.blacklisted_techniques || [],
+        time_window: opsec.time_window || null,
+      },
+      noise_state: {
+        global_noise_spent: this.engine.getOpsecTracker().getGlobalNoise(),
+        noise_ceiling_ratio: 0.85,
+        per_host_ceiling_ratio: 0.50,
+      },
+      profile: opsec.name || config.profile || 'custom',
+    }));
+  }
+
+  private handleUpdateSettings(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const config = this.engine.getConfig();
+      const opsec = config.opsec;
+      let changed = false;
+
+      if (typeof body.max_noise === 'number' && body.max_noise >= 0 && body.max_noise <= 2) {
+        opsec.max_noise = body.max_noise;
+        changed = true;
+      }
+      if (typeof body.approval_mode === 'string' && ['auto-approve', 'approve-all', 'approve-critical'].includes(body.approval_mode)) {
+        opsec.approval_mode = body.approval_mode;
+        changed = true;
+      }
+      if (typeof body.approval_timeout_ms === 'number' && body.approval_timeout_ms >= 10000 && body.approval_timeout_ms <= 3600000) {
+        opsec.approval_timeout_ms = body.approval_timeout_ms;
+        changed = true;
+      }
+      if (Array.isArray(body.blacklisted_techniques)) {
+        opsec.blacklisted_techniques = body.blacklisted_techniques.filter((t: unknown) => typeof t === 'string');
+        changed = true;
+      }
+      if (body.time_window !== undefined) {
+        if (body.time_window === null) {
+          opsec.time_window = undefined;
+          changed = true;
+        } else if (typeof body.time_window === 'object' &&
+                   typeof body.time_window.start_hour === 'number' &&
+                   typeof body.time_window.end_hour === 'number') {
+          opsec.time_window = { start_hour: body.time_window.start_hour, end_hour: body.time_window.end_hour };
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        this.engine.persist();
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: changed, opsec }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- Frontier weight endpoints ----
+
+  private serveFrontierWeights(res: ServerResponse): void {
+    const weights = this.engine.getFrontierWeights();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(weights));
+  }
+
+  private handleUpdateFrontierWeights(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object with fan_out and/or noise' }));
+        return;
+      }
+      this.engine.setFrontierWeights({
+        fan_out: body.fan_out && typeof body.fan_out === 'object' ? body.fan_out : undefined,
+        noise: body.noise && typeof body.noise === 'object' ? body.noise : undefined,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true, weights: this.engine.getFrontierWeights() }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleResetFrontierWeights(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.engine.resetFrontierWeights();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ reset: true, weights: this.engine.getFrontierWeights() }));
+  }
+
+  // ---- Health endpoint ----
+
+  private serveHealth(res: ServerResponse): void {
+    try {
+      const health = this.engine.getHealthReport();
+      const adContext = this.engine.checkADContext();
+      const graph = this.engine.exportGraph();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        graph_stats: {
+          nodes: graph.nodes.length,
+          edges: graph.edges.length,
+          node_types: graph.nodes.reduce((acc: Record<string, number>, n: any) => {
+            acc[n.properties.type] = (acc[n.properties.type] || 0) + 1;
+            return acc;
+          }, {}),
+        },
+        ad_context: adContext,
+        health_checks: health,
+      }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
     }
   }
 

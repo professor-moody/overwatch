@@ -4,7 +4,9 @@
 // analysis and annotate skills with historical outcomes.
 // ============================================================
 
-import type { InferenceRuleSuggestion, InferenceRule } from '../types.js';
+import type { InferenceRuleSuggestion, InferenceRule, ExportedGraph, NodeProperties } from '../types.js';
+import { KnowledgeBase } from './knowledge-base.js';
+import { EDGE_TO_ATTACK } from './finding-classifier.js';
 
 export interface AutoApplyResult {
   applied: InferenceRuleSuggestion[];
@@ -99,5 +101,84 @@ export function updateSkillAnnotations(
     version: (existing?.version ?? 0) + 1,
     updated_at: now,
     annotations,
+  };
+}
+
+// ============================================================
+// Knowledge Base Import from Engagement
+// ============================================================
+
+export interface KBImportResult {
+  techniques_imported: number;
+  credentials_imported: number;
+  defenses_imported: number;
+}
+
+/**
+ * Extract technique, credential, and defense stats from an engagement graph
+ * and import them into the knowledge base.
+ */
+export function importEngagementToKB(
+  graph: ExportedGraph,
+  kb: KnowledgeBase,
+): KBImportResult {
+  const techniques: Array<{ id: string; name: string; success: boolean; noise: number }> = [];
+  const credentials: Array<{ service: string; isDefault: boolean; isWeak: boolean; username?: string }> = [];
+  const defenses: Array<{ defense: string; techniquesBlocked: string[]; wasBypassed: boolean }> = [];
+
+  // Extract technique stats from edges
+  const seenTechniques = new Set<string>();
+  for (const edge of graph.edges) {
+    const tech = EDGE_TO_ATTACK[edge.properties.type];
+    if (!tech) continue;
+    const key = `${tech.id}-${edge.properties.test_result || 'untested'}`;
+    if (seenTechniques.has(key)) continue;
+    seenTechniques.add(key);
+    techniques.push({
+      id: tech.id,
+      name: tech.name,
+      success: edge.properties.test_result === 'success' || edge.properties.confidence >= 0.9,
+      noise: typeof edge.properties.opsec_noise === 'number' ? edge.properties.opsec_noise : 0.3,
+    });
+  }
+
+  // Extract credential patterns from credential nodes
+  for (const node of graph.nodes) {
+    const props = node.properties as NodeProperties;
+    if (props.type !== 'credential') continue;
+    const service = props.cred_type || 'unknown';
+    credentials.push({
+      service,
+      isDefault: !!props.cred_is_default_guess,
+      isWeak: props.cred_material_kind === 'plaintext_password',
+      username: props.cred_user,
+    });
+  }
+
+  // Extract defense info from host EDR/defense properties
+  const seenDefenses = new Set<string>();
+  for (const node of graph.nodes) {
+    const props = node.properties as NodeProperties;
+    if (props.type !== 'host' || !props.edr) continue;
+    if (seenDefenses.has(props.edr)) continue;
+    seenDefenses.add(props.edr);
+    // Check if any edge from this host was successfully tested (defense bypassed)
+    const wasBypassed = graph.edges.some(
+      e => (e.source === node.id || e.target === node.id) && e.properties.test_result === 'success',
+    );
+    defenses.push({
+      defense: props.edr,
+      techniquesBlocked: [], // would need deeper analysis
+      wasBypassed,
+    });
+  }
+
+  kb.importFromEngagement({ techniques, credentials, defenses });
+  kb.save();
+
+  return {
+    techniques_imported: techniques.length,
+    credentials_imported: credentials.length,
+    defenses_imported: defenses.length,
   };
 }

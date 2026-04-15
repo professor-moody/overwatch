@@ -428,5 +428,182 @@ export function classifyAllFindings(
   return result;
 }
 
+// ============================================================
+// ATT&CK Technique Scope Profiles (C1)
+// ============================================================
+
+/** Techniques expected per engagement profile. */
+export const PROFILE_TECHNIQUE_SCOPE: Record<string, string[]> = {
+  'internal-pentest': [
+    'T1003', 'T1003.006', 'T1558.003', 'T1558.004', 'T1078', 'T1021', 'T1021.001', 'T1021.002', 'T1021.006',
+    'T1098', 'T1110', 'T1110.001', 'T1222', 'T1550.003', 'T1557.001', 'T1552', 'T1552.006', 'T1649',
+    'T1558.001', 'T1098.007',
+  ],
+  'goad_ad': [
+    'T1003', 'T1003.006', 'T1558.003', 'T1558.004', 'T1078', 'T1021', 'T1021.001', 'T1021.002', 'T1021.006',
+    'T1098', 'T1110', 'T1110.001', 'T1222', 'T1550.003', 'T1557.001', 'T1552', 'T1552.006', 'T1649',
+    'T1558.001', 'T1098.007',
+  ],
+  'external-assessment': [
+    'T1190', 'T1189', 'T1059', 'T1005', 'T1078.001', 'T1078.004',
+    'T1595', 'T1592', 'T1589', 'T1590', 'T1591',
+  ],
+  'red-team': [
+    // Full matrix — all known techniques
+    ...Object.values(EDGE_TO_ATTACK).map(t => t.id),
+    ...Object.values(VULN_TO_ATTACK).map(t => t.id),
+    ...Object.values(CATEGORY_TO_ATTACK).map(t => t.id),
+    'T1595', 'T1592', 'T1589', 'T1590', 'T1591',
+    'T1566', 'T1199', 'T1133',
+  ],
+  'cloud-assessment': [
+    'T1078.004', 'T1098.003', 'T1190', 'T1059', 'T1078.001',
+    'T1580', 'T1538', 'T1619',
+  ],
+  'assumed-breach': [
+    'T1003', 'T1003.006', 'T1558.003', 'T1558.004', 'T1078', 'T1021', 'T1021.001', 'T1021.002', 'T1021.006',
+    'T1098', 'T1222', 'T1550.003', 'T1649', 'T1552', 'T1552.006',
+  ],
+  'ctf': [
+    // Full matrix for labs
+    ...Object.values(EDGE_TO_ATTACK).map(t => t.id),
+    ...Object.values(VULN_TO_ATTACK).map(t => t.id),
+    ...Object.values(CATEGORY_TO_ATTACK).map(t => t.id),
+  ],
+};
+
+/**
+ * Get the set of technique IDs expected for a given engagement profile.
+ * Returns deduplicated sorted array.
+ */
+export function getTechniqueScope(profile: string): string[] {
+  const raw = PROFILE_TECHNIQUE_SCOPE[profile] || PROFILE_TECHNIQUE_SCOPE['red-team'] || [];
+  return [...new Set(raw)].sort();
+}
+
+// ============================================================
+// ATT&CK Gap Analysis (C2)
+// ============================================================
+
+export interface GapItem {
+  technique_id: string;
+  name: string;
+  reason_untested: string;
+  suggested_action?: string;
+}
+
+export interface GapAnalysisResult {
+  profile: string;
+  total_in_scope: number;
+  tested_count: number;
+  untested_count: number;
+  coverage_pct: number;
+  gaps: GapItem[];
+  tested: string[];
+}
+
+/** Build a set of technique IDs that have been exercised in the engagement. */
+export function getTestedTechniques(
+  findings: ReportFinding[],
+  graph: ExportedGraph,
+): Set<string> {
+  const tested = new Set<string>();
+  const nodeMap = new Map<string, NodeProperties>();
+  for (const n of graph.nodes) nodeMap.set(n.id, n.properties);
+
+  for (const finding of findings) {
+    const cls = classifyFinding(finding, nodeMap, graph);
+    for (const t of cls.attack_techniques) tested.add(t.id);
+  }
+
+  // Also include techniques from graph edges
+  for (const edge of graph.edges) {
+    const tech = EDGE_TO_ATTACK[edge.properties.type];
+    if (tech) tested.add(tech.id);
+  }
+
+  return tested;
+}
+
+/** Compute ATT&CK gap analysis for the given profile. */
+export function computeGapAnalysis(
+  findings: ReportFinding[],
+  graph: ExportedGraph,
+  profile: string,
+): GapAnalysisResult {
+  const testedSet = getTestedTechniques(findings, graph);
+  const scope = getTechniqueScope(profile);
+
+  // Build a name lookup from all known mappings
+  const nameLookup = new Map<string, string>();
+  for (const t of Object.values(EDGE_TO_ATTACK)) nameLookup.set(t.id, t.name);
+  for (const t of Object.values(VULN_TO_ATTACK)) nameLookup.set(t.id, t.name);
+  for (const t of Object.values(CATEGORY_TO_ATTACK)) nameLookup.set(t.id, t.name);
+
+  const gaps: GapItem[] = [];
+  const tested: string[] = [];
+
+  for (const techId of scope) {
+    if (testedSet.has(techId)) {
+      tested.push(techId);
+    } else {
+      gaps.push({
+        technique_id: techId,
+        name: nameLookup.get(techId) || techId,
+        reason_untested: 'Not observed in findings or graph edges',
+        suggested_action: `Consider testing ${nameLookup.get(techId) || techId} (${techId})`,
+      });
+    }
+  }
+
+  const totalInScope = scope.length;
+  return {
+    profile,
+    total_in_scope: totalInScope,
+    tested_count: tested.length,
+    untested_count: gaps.length,
+    coverage_pct: totalInScope > 0 ? Math.round((tested.length / totalInScope) * 100) : 100,
+    gaps,
+    tested,
+  };
+}
+
+/**
+ * Generate an ATT&CK Navigator layer with gap annotations.
+ * Tested techniques are scored normally; untested in-scope techniques are shown in amber.
+ */
+export function generateNavigatorLayerWithGaps(
+  findings: ReportFinding[],
+  graph: ExportedGraph,
+  engagementName: string,
+  profile: string,
+): object {
+  const baseLayer = generateNavigatorLayer(findings, graph, engagementName) as any;
+  const gapResult = computeGapAnalysis(findings, graph, profile);
+
+  // Add untested techniques with gap annotation
+  const existingIds = new Set(baseLayer.techniques.map((t: any) => t.techniqueID));
+  for (const gap of gapResult.gaps) {
+    const parts = gap.technique_id.split('.');
+    if (!existingIds.has(parts[0])) {
+      baseLayer.techniques.push({
+        techniqueID: parts[0],
+        ...(parts[1] ? { tactic: parts[0] } : {}),
+        score: 0,
+        color: '#ffcc00', // amber for untested
+        comment: `GAP: ${gap.name} — ${gap.reason_untested}`,
+        enabled: true,
+        metadata: [{ name: 'gap', value: 'true' }],
+        links: [],
+        showSubtechniques: !!parts[1],
+      });
+      existingIds.add(parts[0]);
+    }
+  }
+
+  baseLayer.description = `${baseLayer.description} | Coverage: ${gapResult.coverage_pct}% (${gapResult.tested_count}/${gapResult.total_in_scope})`;
+  return baseLayer;
+}
+
 // Exported for testing
 export { CWE_TO_OWASP, CWE_TO_NIST, CWE_TO_PCI, VULN_TYPE_TO_CWE, EDGE_TO_ATTACK, VULN_TO_ATTACK, CATEGORY_TO_ATTACK };

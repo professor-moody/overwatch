@@ -198,6 +198,17 @@ Call this before every significant action. Returns valid/invalid with specific e
         ...result,
       };
 
+      // Enrich with KB technique context if available
+      if (technique) {
+        const kb = engine.getKB();
+        if (kb) {
+          const ctx = kb.getTechniqueContext(technique);
+          if (ctx) {
+            responseObj.kb_context = ctx;
+          }
+        }
+      }
+
       if (approval) {
         responseObj.approval = {
           status: approval.status,

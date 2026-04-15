@@ -1,0 +1,33 @@
+{
+  "id": "external-assessment",
+  "name": "External Assessment",
+  "description": "Web application and cloud perimeter assessment. Conservative approach with full approval gates.",
+  "profile": "web_app",
+  "scope": {
+    "cidrs": [],
+    "domains": [],
+    "exclusions": [],
+    "url_patterns": []
+  },
+  "objectives": [
+    {
+      "id": "initial-access",
+      "description": "Achieve initial access to internal network or application",
+      "target_node_type": "host",
+      "target_criteria": { "alive": true },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "pentest",
+    "max_noise": 0.4,
+    "approval_mode": "approve-all"
+  },
+  "recommended_skills": [
+    "web-application-testing",
+    "dns-enumeration",
+    "cloud-reconnaissance",
+    "subdomain-enumeration",
+    "api-testing"
+  ]
+}

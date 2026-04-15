@@ -1,0 +1,33 @@
+{
+  "id": "ctf",
+  "name": "CTF / Lab Environment",
+  "description": "Lab or CTF environment with no OPSEC constraints. All techniques permitted, auto-approve everything.",
+  "profile": "network",
+  "scope": {
+    "cidrs": [],
+    "domains": [],
+    "exclusions": []
+  },
+  "objectives": [
+    {
+      "id": "compromise",
+      "description": "Compromise all targets in the lab environment",
+      "target_node_type": "credential",
+      "target_criteria": { "privileged": true },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "ctf",
+    "max_noise": 1.0,
+    "approval_mode": "auto-approve"
+  },
+  "recommended_skills": [
+    "credential-dumping",
+    "lateral-movement",
+    "active-directory",
+    "web-application-testing",
+    "privilege-escalation-linux",
+    "privilege-escalation-windows"
+  ]
+}

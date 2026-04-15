@@ -1,0 +1,42 @@
+{
+  "id": "cloud-assessment",
+  "name": "Cloud Security Assessment",
+  "description": "Multi-account cloud assessment across AWS, Azure, and GCP. Focus on IAM misconfigurations, cross-account pivots, and data exposure.",
+  "profile": "cloud",
+  "scope": {
+    "cidrs": [],
+    "domains": [],
+    "exclusions": [],
+    "aws_accounts": [],
+    "azure_subscriptions": [],
+    "gcp_projects": []
+  },
+  "objectives": [
+    {
+      "id": "privilege-escalation",
+      "description": "Escalate from initial cloud credentials to administrative access",
+      "target_node_type": "cloud_identity",
+      "target_criteria": { "privileged": true },
+      "achieved": false
+    },
+    {
+      "id": "cross-account-pivot",
+      "description": "Pivot across cloud accounts via role assumption or trust relationships",
+      "target_node_type": "cloud_identity",
+      "target_criteria": { "principal_type": "role" },
+      "achieved": false
+    }
+  ],
+  "opsec": {
+    "name": "pentest",
+    "max_noise": 0.6,
+    "approval_mode": "approve-critical"
+  },
+  "recommended_skills": [
+    "aws-security",
+    "azure-security",
+    "gcp-security",
+    "cloud-reconnaissance",
+    "iam-exploitation"
+  ]
+}
