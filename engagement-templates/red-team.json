@@ -53,5 +53,39 @@
     "persistence-mechanisms",
     "privilege-escalation-windows",
     "privilege-escalation-linux"
+  ],
+  "phases": [
+    {
+      "id": "recon",
+      "name": "Passive Reconnaissance",
+      "order": 1,
+      "strategies": ["network_discovery", "enumeration"],
+      "entry_criteria": [{ "type": "always" }],
+      "exit_criteria": [{ "type": "node_count", "node_type": "host", "min": 1 }]
+    },
+    {
+      "id": "initial-access",
+      "name": "Initial Access",
+      "order": 2,
+      "strategies": ["credential_spray"],
+      "entry_criteria": [{ "type": "phase_completed", "phase_id": "recon" }],
+      "exit_criteria": [{ "type": "objective_achieved", "objective_id": "initial-access" }]
+    },
+    {
+      "id": "post-exploitation",
+      "name": "Post-Exploitation & Lateral Movement",
+      "order": 3,
+      "strategies": ["post_exploitation", "credential_spray", "enumeration"],
+      "entry_criteria": [{ "type": "phase_completed", "phase_id": "initial-access" }],
+      "exit_criteria": [{ "type": "objective_achieved", "objective_id": "persistence" }]
+    },
+    {
+      "id": "domain-dominance",
+      "name": "Domain Dominance",
+      "order": 4,
+      "strategies": ["post_exploitation"],
+      "entry_criteria": [{ "type": "phase_completed", "phase_id": "post-exploitation" }],
+      "exit_criteria": [{ "type": "objective_achieved", "objective_id": "domain-dominance" }]
+    }
   ]
 }

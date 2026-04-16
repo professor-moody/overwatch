@@ -29,6 +29,7 @@ export class StatePersistence {
       graph: this.ctx.graph.export(),
       activityLog: this.ctx.activityLog,
       agents: Array.from(this.ctx.agents.entries()),
+      campaigns: Array.from(this.ctx.campaigns.entries()),
       inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
       trackedProcesses: this.ctx.trackedProcesses,
       coldStore: this.ctx.coldStore.export(),
@@ -158,6 +159,7 @@ export class StatePersistence {
     this.migrateDefaultCredentialFlags();
     this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
     this.ctx.agents = new Map(data.agents || []);
+    this.ctx.campaigns = new Map(data.campaigns || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     if (data.inferenceRules) {
       for (const rule of data.inferenceRules) {
@@ -188,6 +190,7 @@ export class StatePersistence {
         this.ctx.invalidatePathGraph();
         this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
         this.ctx.agents = new Map(data.agents || []);
+        this.ctx.campaigns = new Map(data.campaigns || []);
         this.ctx.trackedProcesses = data.trackedProcesses || [];
         this.ctx.inferenceRules = [...builtinRules];
         if (data.inferenceRules) {

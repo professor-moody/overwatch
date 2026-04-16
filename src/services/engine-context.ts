@@ -9,7 +9,7 @@
 import type { AbstractGraph } from 'graphology-types';
 import { v4 as uuidv4 } from 'uuid';
 import type {
-  EngagementConfig, InferenceRule, AgentTask,
+  EngagementConfig, InferenceRule, AgentTask, Campaign,
   NodeProperties, EdgeProperties,
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
@@ -96,6 +96,7 @@ export class EngineContext {
   inferenceRules: InferenceRule[];
   activityLog: ActivityLogEntry[];
   agents: Map<string, AgentTask>;
+  campaigns: Map<string, Campaign>;
   stateFilePath: string;
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
@@ -113,6 +114,7 @@ export class EngineContext {
     this.inferenceRules = [];
     this.activityLog = [];
     this.agents = new Map();
+    this.campaigns = new Map();
     this.stateFilePath = stateFilePath;
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;

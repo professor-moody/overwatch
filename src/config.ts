@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { ZodError } from 'zod';
-import { engagementConfigSchema, type EngagementConfig } from './types.js';
+import { engagementConfigSchema, type EngagementConfig, type EngagementPhase } from './types.js';
 
 export function parseEngagementConfig(raw: string): EngagementConfig {
   return engagementConfigSchema.parse(JSON.parse(raw));
@@ -22,6 +22,7 @@ export interface EngagementTemplate {
   scope: Record<string, unknown>;
   objectives: Record<string, unknown>[];
   recommended_skills: string[];
+  phases?: EngagementPhase[];
 }
 
 function getTemplatesDir(): string {
@@ -43,6 +44,7 @@ export function listTemplates(): EngagementTemplate[] {
       scope: raw.scope || {},
       objectives: raw.objectives || [],
       recommended_skills: raw.recommended_skills || [],
+      phases: raw.phases,
     };
   });
 }
@@ -61,6 +63,7 @@ export function loadTemplate(templateId: string): EngagementTemplate | null {
     scope: raw.scope || {},
     objectives: raw.objectives || [],
     recommended_skills: raw.recommended_skills || [],
+    phases: raw.phases,
   };
 }
 
@@ -85,6 +88,7 @@ export function mergeTemplateWithConfig(
       ...template.opsec,
       ...overrides.opsec,
     },
+    phases: overrides.phases ?? template.phases,
   };
   return engagementConfigSchema.parse(merged);
 }

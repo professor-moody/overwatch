@@ -56,7 +56,7 @@ import type {
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
-  ScopeSuggestion
+  ScopeSuggestion, PhaseStatus, PhaseCriterion,
 } from '../types.js';
 
 function createGraph(): OverwatchGraph {
@@ -508,8 +508,8 @@ export class GraphEngine {
       // Enrich frontier items with chain scoring data
       const chainGroups = this.chainScorer.scoreChains(all);
 
-      // Generate campaigns from frontier + chain groups
-      const campaigns = this.campaignPlanner.generateCampaigns(all, chainGroups);
+      // Generate campaigns from frontier + chain groups (phase-aware)
+      const campaigns = this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId());
 
       const { passed } = this.filterFrontier(all);
       this.frontierCache = { all, passed, campaigns };
@@ -587,6 +587,22 @@ export class GraphEngine {
 
   findCampaignForItem(frontierItemId: string): import('../types.js').Campaign | null {
     return this.campaignPlanner.findCampaignForItem(frontierItemId);
+  }
+
+  splitCampaign(id: string, count?: number): import('../types.js').Campaign[] | null {
+    return this.campaignPlanner.splitCampaign(id, count);
+  }
+
+  getCampaignChildren(parentId: string): import('../types.js').Campaign[] {
+    return this.campaignPlanner.getChildren(parentId);
+  }
+
+  getCampaignParentProgress(parentId: string): import('../types.js').CampaignProgress | null {
+    return this.campaignPlanner.getParentProgress(parentId);
+  }
+
+  deriveCampaignParentStatus(parentId: string): import('../types.js').CampaignStatus | null {
+    return this.campaignPlanner.deriveParentStatus(parentId);
   }
 
   // =============================================
@@ -1599,7 +1615,106 @@ export class GraphEngine {
       warnings: summarizeHealthReport(healthReport),
       lab_readiness: labReadiness,
       scope_suggestions: this.collectScopeSuggestions(),
+      phases: this.getPhaseStatuses(),
+      current_phase: this.getCurrentPhaseId(),
     };
+  }
+
+  // --- Phase orchestration ---
+
+  /** Evaluate all engagement phases and return runtime statuses */
+  getPhaseStatuses(): EngagementState['phases'] {
+    const phases = this.ctx.config.phases;
+    if (!phases || phases.length === 0) return [];
+
+    const sorted = [...phases].sort((a, b) => a.order - b.order);
+    const completedPhases = new Set<string>();
+    const result: EngagementState['phases'] = [];
+
+    for (const phase of sorted) {
+      const entryMet = this.evaluateCriteria(phase.entry_criteria, completedPhases);
+      const exitMet = this.evaluateCriteria(phase.exit_criteria, completedPhases);
+
+      let status: PhaseStatus;
+      if (exitMet && entryMet) {
+        status = 'completed';
+        completedPhases.add(phase.id);
+      } else if (entryMet) {
+        status = 'active';
+      } else {
+        status = 'locked';
+      }
+
+      result.push({
+        id: phase.id,
+        name: phase.name,
+        order: phase.order,
+        status,
+        strategies: phase.strategies,
+        entry_criteria_met: entryMet,
+        exit_criteria_met: exitMet,
+      });
+    }
+
+    return result;
+  }
+
+  /** Get the ID of the lowest-order active phase */
+  getCurrentPhaseId(): string | undefined {
+    const statuses = this.getPhaseStatuses();
+    const active = statuses.find(p => p.status === 'active');
+    return active?.id;
+  }
+
+  /** Evaluate a list of criteria — all must be met (AND logic) */
+  private evaluateCriteria(
+    criteria: PhaseCriterion[],
+    completedPhases: Set<string>,
+  ): boolean {
+    if (criteria.length === 0) return true; // no criteria = always met
+    return criteria.every(c => this.evaluateSingleCriterion(c, completedPhases));
+  }
+
+  /** Evaluate a single phase criterion against current graph state */
+  private evaluateSingleCriterion(
+    criterion: PhaseCriterion,
+    completedPhases: Set<string>,
+  ): boolean {
+    switch (criterion.type) {
+      case 'always':
+        return true;
+      case 'phase_completed':
+        return completedPhases.has(criterion.phase_id);
+      case 'objective_achieved':
+        return this.ctx.config.objectives.some(
+          o => o.id === criterion.objective_id && o.achieved,
+        );
+      case 'node_count': {
+        let count = 0;
+        this.ctx.graph.forEachNode((_, attrs) => {
+          if (attrs.type === criterion.node_type && !attrs.superseded_by) count++;
+        });
+        return count >= criterion.min;
+      }
+      case 'access_level': {
+        const levels: Record<string, number> = { none: 0, user: 1, local_admin: 2, domain_admin: 3 };
+        const compromised: string[] = [];
+        this.ctx.graph.forEachNode((_, attrs) => {
+          if (attrs.type !== 'host' || attrs.superseded_by) return;
+          const hasAccess = this.ctx.graph.inEdges(attrs.id).some((e: string) => {
+            const ep = this.ctx.graph.getEdgeAttributes(e);
+            if (ep.type === 'ADMIN_TO' && ep.confidence >= 0.9) return true;
+            if (ep.type === 'HAS_SESSION' && ep.confidence >= 0.9 && ep.session_live === true) return true;
+            return false;
+          });
+          if (hasAccess) compromised.push(attrs.label);
+        });
+        const current = this.computeAccessLevel(compromised);
+        return (levels[current] ?? 0) >= (levels[criterion.min_level] ?? 0);
+      }
+      default:
+        return false;
+    }
   }
 
   private computeAccessLevel(compromised: string[]): string {

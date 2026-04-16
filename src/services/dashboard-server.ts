@@ -426,6 +426,8 @@ export class DashboardServer {
       this.handleCampaignCreate(req, res);
     } else if (pathname === '/api/campaigns') {
       this.serveCampaigns(res);
+    } else if (pathname === '/api/phases') {
+      this.servePhases(res);
     } else if (pathname === '/api/actions/pending') {
       this.servePendingActions(res);
     } else {
@@ -437,6 +439,8 @@ export class DashboardServer {
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
       const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/dispatch$/);
       const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/clone$/);
+      const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/split$/);
+      const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
@@ -456,6 +460,10 @@ export class DashboardServer {
         this.handleCampaignDispatch(campaignDispatchMatch[1], req, res);
       } else if (campaignCloneMatch && method === 'POST') {
         this.handleCampaignClone(campaignCloneMatch[1], req, res);
+      } else if (campaignSplitMatch && method === 'POST') {
+        this.handleCampaignSplit(campaignSplitMatch[1], req, res);
+      } else if (campaignChildrenMatch) {
+        this.serveCampaignChildren(campaignChildrenMatch[1], res);
       } else if (campaignDetailMatch && method === 'PATCH') {
         this.handleCampaignUpdate(campaignDetailMatch[1], req, res);
       } else if (campaignDetailMatch && method === 'DELETE') {
@@ -1194,6 +1202,38 @@ export class DashboardServer {
     }
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ campaign }));
+  }
+
+  private async handleCampaignSplit(campaignId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req);
+      const children = this.engine.splitCampaign(campaignId, body.count);
+      if (!children) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Campaign not found or cannot be split' }));
+        return;
+      }
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ parent_id: campaignId, children, count: children.length }));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    }
+  }
+
+  private serveCampaignChildren(campaignId: string, res: ServerResponse): void {
+    const children = this.engine.getCampaignChildren(campaignId);
+    const progress = this.engine.getCampaignParentProgress(campaignId);
+    const derivedStatus = this.engine.deriveCampaignParentStatus(campaignId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ parent_id: campaignId, children, derived_status: derivedStatus, aggregated_progress: progress }));
+  }
+
+  private servePhases(res: ServerResponse): void {
+    const state = this.engine.getState();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ phases: state.phases, current_phase: state.current_phase }));
   }
 
   // ---- Mutation auth & body parsing helpers ----

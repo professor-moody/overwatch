@@ -190,6 +190,7 @@ window.addEventListener('DOMContentLoaded', () => {
     updateHeader(state);
     updateSummaryCards(state);
     updateReadiness(state);
+    updatePhaseTimeline(state);
     updateObjectives(state);
     updateGraphSummary(state);
     updateFrontier(state);
@@ -258,6 +259,36 @@ window.addEventListener('DOMContentLoaded', () => {
     issuesEl.innerHTML = allIssues.slice(0, 5).map(issue =>
       `<div class="readiness-issue">${esc(typeof issue === 'string' ? issue : issue.message || JSON.stringify(issue))}</div>`
     ).join('');
+  }
+
+  // ---- Phase Timeline ----
+
+  function updatePhaseTimeline(state) {
+    const container = document.getElementById('phase-timeline');
+    if (!container) return;
+    const phases = state.phases || [];
+    const currentPhase = state.current_phase;
+
+    if (phases.length === 0) {
+      container.innerHTML = '';
+      container.closest('.op-section')?.classList.add('hidden');
+      return;
+    }
+    container.closest('.op-section')?.classList.remove('hidden');
+
+    const sorted = [...phases].sort((a, b) => a.order - b.order);
+    container.innerHTML = sorted.map(p => {
+      const isCurrent = p.id === currentPhase;
+      const statusIcon = p.status === 'completed' ? '✓' : (p.status === 'active' ? '●' : '○');
+      const statusClass = `phase-${p.status}`;
+      return `<div class="phase-step ${statusClass}${isCurrent ? ' phase-current' : ''}">
+        <div class="phase-icon">${statusIcon}</div>
+        <div class="phase-info">
+          <div class="phase-name">${esc(p.name)}</div>
+          <div class="phase-strategies">${(p.strategies || []).join(', ')}</div>
+        </div>
+      </div>`;
+    }).join('<div class="phase-connector"></div>');
   }
 
   // ---- Objectives ----

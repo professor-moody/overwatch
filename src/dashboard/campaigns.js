@@ -93,12 +93,17 @@ window.OverwatchCampaigns = (() => {
       const pct = c.progress?.total > 0 ? Math.round((c.progress.completed / c.progress.total) * 100) : 0;
       const statusClass = STATUS_CLASSES[c.status] || '';
       const checked = selectedCampaignIds.has(c.id) ? 'checked' : '';
+      const hierarchyBadge = c.parent_id
+        ? '<span class="campaign-hierarchy-badge child" title="Sub-campaign">↳ child</span>'
+        : (sorted.some(o => o.parent_id === c.id) ? '<span class="campaign-hierarchy-badge parent" title="Has sub-campaigns">⊞ parent</span>' : '');
+      const phaseBadge = c.phase_id ? `<span class="campaign-phase-badge" title="Phase: ${escapeHtml(c.phase_id)}">${escapeHtml(c.phase_id)}</span>` : '';
 
-      return `<div class="campaign-card" data-campaign-id="${c.id}">
+      return `<div class="campaign-card${c.parent_id ? ' campaign-child' : ''}" data-campaign-id="${c.id}">
         <div class="campaign-card-header">
           <input type="checkbox" class="campaign-select-cb" data-id="${c.id}" ${checked} />
           <span class="campaign-strategy-icon" title="${escapeHtml(c.strategy)}">${icon}</span>
           <span class="campaign-name">${escapeHtml(c.name || c.id)}</span>
+          ${hierarchyBadge}${phaseBadge}
           <span class="campaign-status-badge ${statusClass}">${c.status}</span>
         </div>
         <div class="campaign-progress-row">
@@ -297,6 +302,8 @@ window.OverwatchCampaigns = (() => {
           <div class="campaign-detail-row"><span class="campaign-detail-label">Strategy</span><span class="campaign-detail-value">${escapeHtml(c.strategy)}</span></div>
           <div class="campaign-detail-row"><span class="campaign-detail-label">ID</span><span class="campaign-detail-value mono">${c.id}</span></div>
           ${c.chain_id ? `<div class="campaign-detail-row"><span class="campaign-detail-label">Chain</span><span class="campaign-detail-value mono">${escapeHtml(c.chain_id)}</span></div>` : ''}
+          ${c.phase_id ? `<div class="campaign-detail-row"><span class="campaign-detail-label">Phase</span><span class="campaign-detail-value">${escapeHtml(c.phase_id)}</span></div>` : ''}
+          ${c.parent_id ? `<div class="campaign-detail-row"><span class="campaign-detail-label">Parent</span><span class="campaign-detail-value mono">${escapeHtml(c.parent_id)}</span></div>` : ''}
           <div class="campaign-detail-row"><span class="campaign-detail-label">Created</span><span class="campaign-detail-value">${new Date(c.created_at).toLocaleString()}</span></div>
           ${c.started_at ? `<div class="campaign-detail-row"><span class="campaign-detail-label">Started</span><span class="campaign-detail-value">${new Date(c.started_at).toLocaleString()}</span></div>` : ''}
         </div>
@@ -326,8 +333,10 @@ window.OverwatchCampaigns = (() => {
           ${dispatchHtml}
           ${c.status === 'draft' || c.status === 'paused' ? `<button class="campaign-action-btn campaign-btn-edit" id="campaign-edit-btn">Edit</button>` : ''}
           <button class="campaign-action-btn campaign-btn-clone" id="campaign-clone-btn">Clone</button>
+          ${!c.parent_id && c.items?.length > 1 ? `<button class="campaign-action-btn campaign-btn-split" id="campaign-split-btn">Split</button>` : ''}
           ${c.status === 'draft' ? `<button class="campaign-action-btn campaign-btn-delete" id="campaign-delete-btn">Delete</button>` : ''}
         </div>
+        <div id="campaign-children-section"></div>
       </div>
     `;
 
@@ -341,6 +350,8 @@ window.OverwatchCampaigns = (() => {
     drawer.querySelector('#campaign-edit-btn')?.addEventListener('click', () => editCampaign(c.id));
     drawer.querySelector('#campaign-clone-btn')?.addEventListener('click', () => cloneCampaign(c.id));
     drawer.querySelector('#campaign-delete-btn')?.addEventListener('click', () => deleteCampaign(c.id));
+    drawer.querySelector('#campaign-split-btn')?.addEventListener('click', () => splitCampaign(c.id));
+    loadChildren(c.id);
   }
 
   function closeDetail() {
@@ -689,6 +700,58 @@ window.OverwatchCampaigns = (() => {
         const err = await res.json().catch(() => ({}));
         alert(err.error || 'Failed to delete campaign');
       }
+    } catch { /* ignore */ }
+  }
+
+  async function splitCampaign(campaignId) {
+    const countStr = prompt('Number of sub-campaigns (leave blank for 1 per item):');
+    const count = countStr ? parseInt(countStr, 10) : undefined;
+    if (countStr && (isNaN(count) || count < 1)) { alert('Invalid count'); return; }
+    try {
+      const res = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/split`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count }),
+      });
+      if (res.ok) {
+        await fetchCampaigns();
+        loadChildren(campaignId);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Failed to split campaign');
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function loadChildren(parentId) {
+    const section = document.getElementById('campaign-children-section');
+    if (!section) return;
+    try {
+      const res = await fetch(`/api/campaigns/${encodeURIComponent(parentId)}/children`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const kids = data.children || [];
+      if (kids.length === 0) { section.innerHTML = ''; return; }
+      let html = `<div class="campaign-detail-section"><div class="campaign-detail-label">Sub-campaigns (${kids.length})</div>`;
+      if (data.derived_status) html += `<div class="campaign-detail-row"><span class="campaign-detail-label">Derived Status</span><span class="campaign-status-badge ${STATUS_CLASSES[data.derived_status] || ''}">${data.derived_status}</span></div>`;
+      if (data.aggregated_progress) {
+        const ap = data.aggregated_progress;
+        html += `<div class="campaign-detail-row"><span class="campaign-detail-label">Aggregated</span><span class="campaign-detail-value">${ap.completed}/${ap.total} (${ap.succeeded}✓ ${ap.failed}✗)</span></div>`;
+      }
+      html += kids.map(k => {
+        const kpct = k.progress?.total > 0 ? Math.round((k.progress.completed / k.progress.total) * 100) : 0;
+        const kstatusClass = STATUS_CLASSES[k.status] || '';
+        return `<div class="campaign-child-row" data-campaign-id="${k.id}">
+          <span class="campaign-name">↳ ${escapeHtml(k.name || k.id)}</span>
+          <span class="campaign-status-badge ${kstatusClass}">${k.status}</span>
+          <span class="campaign-progress-label">${kpct}%</span>
+        </div>`;
+      }).join('');
+      html += '</div>';
+      section.innerHTML = html;
+      section.querySelectorAll('.campaign-child-row').forEach(row => {
+        row.addEventListener('click', () => showDetail(row.dataset.campaignId));
+      });
     } catch { /* ignore */ }
   }
 

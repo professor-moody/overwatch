@@ -327,6 +327,7 @@ export interface EngagementConfig {
   opsec: OpsecProfile;
   community_resolution?: number;  // Louvain resolution (default 1.0, lower → fewer/larger communities)
   failure_patterns?: { technique: string; target_pattern?: string; warning: string }[];  // Retrospective feedback for validation
+  phases?: EngagementPhase[];     // ordered engagement phases with entry/exit criteria
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -350,6 +351,25 @@ export const opsecProfileSchema = z.object({
   notes: z.string().optional(),
   approval_mode: z.enum(['auto-approve', 'approve-critical', 'approve-all']).optional(),
   approval_timeout_ms: z.number().int().min(1000).optional(),
+});
+
+const campaignStrategySchema = z.enum(['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom']);
+
+const phaseCriterionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('always') }),
+  z.object({ type: z.literal('phase_completed'), phase_id: nonEmptyString }),
+  z.object({ type: z.literal('objective_achieved'), objective_id: nonEmptyString }),
+  z.object({ type: z.literal('node_count'), node_type: nodeTypeSchema, min: z.number().int().min(1) }),
+  z.object({ type: z.literal('access_level'), min_level: z.enum(['user', 'local_admin', 'domain_admin']) }),
+]);
+
+const engagementPhaseSchema = z.object({
+  id: nonEmptyString,
+  name: nonEmptyString,
+  order: z.number().int().min(0),
+  strategies: z.array(campaignStrategySchema).default([]),
+  entry_criteria: z.array(phaseCriterionSchema).default([]),
+  exit_criteria: z.array(phaseCriterionSchema).default([]),
 });
 
 export const engagementConfigSchema = z.object({
@@ -382,6 +402,7 @@ export const engagementConfigSchema = z.object({
   }),
   objectives: z.array(engagementObjectiveSchema),
   opsec: opsecProfileSchema,
+  phases: z.array(engagementPhaseSchema).optional(),
 });
 
 export interface ExportedGraphNode {
@@ -485,6 +506,26 @@ export interface Finding {
   raw_output?: string;
 }
 
+// --- Engagement Phases ---
+
+export type PhaseStatus = 'locked' | 'active' | 'completed';
+
+export type PhaseCriterion =
+  | { type: 'always' }
+  | { type: 'phase_completed'; phase_id: string }
+  | { type: 'objective_achieved'; objective_id: string }
+  | { type: 'node_count'; node_type: NodeType; min: number }
+  | { type: 'access_level'; min_level: 'user' | 'local_admin' | 'domain_admin' };
+
+export interface EngagementPhase {
+  id: string;
+  name: string;
+  order: number;
+  strategies: CampaignStrategy[];
+  entry_criteria: PhaseCriterion[];
+  exit_criteria: PhaseCriterion[];
+}
+
 // --- Campaign Types ---
 
 export type CampaignStrategy = 'credential_spray' | 'enumeration' | 'post_exploitation' | 'network_discovery' | 'custom';
@@ -512,6 +553,8 @@ export interface Campaign {
   abort_conditions: AbortCondition[];
   progress: CampaignProgress;
   chain_id?: string;             // links to ChainScorer chain for spray campaigns
+  phase_id?: string;             // links campaign to an engagement phase
+  parent_id?: string;            // links child campaign to parent
   created_at: string;
   started_at?: string;
   completed_at?: string;
@@ -556,6 +599,16 @@ export interface EngagementState {
   warnings: HealthSummary;
   lab_readiness: LabReadinessSummary;
   scope_suggestions: ScopeSuggestion[];
+  phases: Array<{
+    id: string;
+    name: string;
+    order: number;
+    status: PhaseStatus;
+    strategies: CampaignStrategy[];
+    entry_criteria_met: boolean;
+    exit_criteria_met: boolean;
+  }>;
+  current_phase?: string;        // ID of the lowest-order active phase
 }
 
 // --- Scope Suggestions (surfaced by get_state for operator review) ---

@@ -249,12 +249,15 @@ Call this before every significant action. Returns valid/invalid with specific e
 - **update** — Modify name, abort_conditions, or items on draft/paused campaigns (requires campaign_id)
 - **clone** — Duplicate a campaign as a new draft (requires campaign_id)
 - **delete** — Remove a draft campaign (requires campaign_id)
+- **split** — Split a campaign into sub-campaigns (requires campaign_id, optional split_count)
+- **children** — List child sub-campaigns (requires campaign_id)
+- **parent_progress** — Get aggregated progress from children (requires campaign_id)
 
 Campaigns can be auto-generated or manually composed from frontier items.
 Use next_task(group_by="campaign") to see available campaigns.`,
       inputSchema: {
         campaign_id: z.string().optional().describe('Campaign ID (required for all actions except create)'),
-        action: z.enum(['activate', 'pause', 'resume', 'abort', 'status', 'check_abort', 'create', 'update', 'clone', 'delete'])
+        action: z.enum(['activate', 'pause', 'resume', 'abort', 'status', 'check_abort', 'create', 'update', 'clone', 'delete', 'split', 'children', 'parent_progress'])
           .describe('Action to perform'),
         name: z.string().optional().describe('Campaign name (required for create, optional for update)'),
         strategy: z.enum(['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom'])
@@ -266,6 +269,7 @@ Use next_task(group_by="campaign") to see available campaigns.`,
         })).optional().describe('Abort conditions (optional for create/update)'),
         add_items: z.array(z.string()).optional().describe('Item IDs to add (for update)'),
         remove_items: z.array(z.string()).optional().describe('Item IDs to remove (for update)'),
+        split_count: z.number().int().min(1).optional().describe('Number of sub-campaigns to create (for split; defaults to 1 per item)'),
       },
       annotations: {
         readOnlyHint: false,
@@ -274,7 +278,7 @@ Use next_task(group_by="campaign") to see available campaigns.`,
         openWorldHint: false,
       }
     },
-    withErrorBoundary('manage_campaign', async ({ campaign_id, action, name, strategy, item_ids, abort_conditions, add_items, remove_items }) => {
+    withErrorBoundary('manage_campaign', async ({ campaign_id, action, name, strategy, item_ids, abort_conditions, add_items, remove_items, split_count }) => {
       let campaign;
       let extra: Record<string, unknown> = {};
 
@@ -335,6 +339,27 @@ Use next_task(group_by="campaign") to see available campaigns.`,
           campaign = engine.getCampaign(campaign_id);
           extra = engine.checkCampaignAbortConditions(campaign_id);
           break;
+        case 'split': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for split' }) }] };
+          const children = engine.splitCampaign(campaign_id, split_count);
+          if (!children) return { content: [{ type: 'text', text: JSON.stringify({ error: `Campaign ${campaign_id} not found or cannot be split` }) }] };
+          return { content: [{ type: 'text', text: JSON.stringify({ parent_id: campaign_id, children, count: children.length }, null, 2) }] };
+        }
+        case 'children': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for children' }) }] };
+          const kids = engine.getCampaignChildren(campaign_id);
+          const parentProgress = engine.getCampaignParentProgress(campaign_id);
+          const derivedStatus = engine.deriveCampaignParentStatus(campaign_id);
+          return { content: [{ type: 'text', text: JSON.stringify({ parent_id: campaign_id, children: kids, derived_status: derivedStatus, aggregated_progress: parentProgress }, null, 2) }] };
+        }
+        case 'parent_progress': {
+          if (!campaign_id) return { content: [{ type: 'text', text: JSON.stringify({ error: 'campaign_id is required for parent_progress' }) }] };
+          campaign = engine.getCampaign(campaign_id);
+          const progress = engine.getCampaignParentProgress(campaign_id);
+          const derived = engine.deriveCampaignParentStatus(campaign_id);
+          extra = { aggregated_progress: progress, derived_status: derived };
+          break;
+        }
       }
 
       if (!campaign) {

@@ -7,7 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { EngineContext } from './engine-context.js';
-import type { FrontierItem, Campaign, CampaignStrategy, CampaignStatus, AbortCondition } from '../types.js';
+import type { FrontierItem, Campaign, CampaignStrategy, CampaignStatus, CampaignProgress, AbortCondition } from '../types.js';
 import type { ChainGroup } from './chain-scorer.js';
 
 /** Parameters for manual campaign creation. */
@@ -52,13 +52,41 @@ const DEFAULT_ABORT_CONDITIONS: Record<CampaignStrategy, AbortCondition[]> = {
 
 export class CampaignPlanner {
   private ctx: EngineContext;
-  /** Active campaigns by ID — status tracking persists across frontier regenerations */
-  private campaigns = new Map<string, Campaign>();
+  /** Uses ctx.campaigns for persistence — status tracking survives restarts */
+  private get campaigns(): Map<string, Campaign> { return this.ctx.campaigns; }
   /** Maps chain_id → campaign_id for stable spray campaign identity across recomputation */
   private chainToCampaign = new Map<string, string>();
 
   constructor(ctx: EngineContext) {
     this.ctx = ctx;
+    this.rebuildChainIndex();
+  }
+
+  /** Rebuild chainToCampaign index from persisted campaigns (after load) */
+  private rebuildChainIndex(): void {
+    this.chainToCampaign.clear();
+    for (const [id, c] of this.campaigns) {
+      if (c.chain_id) this.chainToCampaign.set(c.chain_id, id);
+      // Reconstruct stable keys for non-chain campaigns
+      if (c.strategy === 'enumeration') {
+        // Find the node type from the name pattern "Enumerate N <type> nodes"
+        const m = c.name.match(/Enumerate \d+ (\w+) nodes/);
+        if (m) this.chainToCampaign.set(`enum-${m[1]}`, id);
+      } else if (c.strategy === 'post_exploitation') {
+        const m = c.name.match(/Post-exploitation on (.+?) \(/);
+        if (m) {
+          // Try to find the host node by label
+          let hostId: string | undefined;
+          this.ctx.graph.forEachNode((nid, attrs) => {
+            if (!hostId && attrs.label === m[1] && attrs.type === 'host') hostId = nid;
+          });
+          if (hostId) this.chainToCampaign.set(`postex-${hostId}`, id);
+        }
+      } else if (c.strategy === 'network_discovery') {
+        const m = c.name.match(/Discover hosts in (.+)/);
+        if (m) this.chainToCampaign.set(`discovery-${m[1]}`, id);
+      }
+    }
   }
 
   // =============================================
@@ -67,13 +95,19 @@ export class CampaignPlanner {
 
   /**
    * Generate campaigns from frontier items and chain groups.
+   * When phases are configured, only generates campaigns for strategies
+   * allowed in the currently active phase.
    * Merges with existing campaign state (status, progress) when
    * a matching campaign already exists.
    */
-  generateCampaigns(frontier: FrontierItem[], chainGroups: ChainGroup[]): Campaign[] {
+  generateCampaigns(frontier: FrontierItem[], chainGroups: ChainGroup[], activePhaseId?: string): Campaign[] {
     const generated: Campaign[] = [];
 
+    // Determine which strategies are allowed based on active phase
+    const activeStrategies = this.getActiveStrategies(activePhaseId);
+
     // 1. Credential spray campaigns from chain groups
+    if (!activeStrategies || activeStrategies.has('credential_spray')) {
     for (const group of chainGroups) {
       if (group.total_count <= 1) continue; // single-target chains stay individual
       const items = frontier.filter(
@@ -86,12 +120,14 @@ export class CampaignPlanner {
         'credential_spray',
         () => this.nameCredentialSpray(group),
         items.map(fi => fi.id),
-        { chain_id: group.chain_id },
+        { chain_id: group.chain_id, phase_id: activePhaseId },
       );
       generated.push(campaign);
     }
+    } // end credential_spray gate
 
     // 2. Enumeration campaigns: group incomplete_node items by node type
+    if (!activeStrategies || activeStrategies.has('enumeration')) {
     const incompleteByType = new Map<string, FrontierItem[]>();
     for (const item of frontier) {
       if (item.type !== 'incomplete_node' || !item.node_id) continue;
@@ -115,11 +151,14 @@ export class CampaignPlanner {
         'enumeration',
         () => `Enumerate ${items.length} ${nodeType} nodes`,
         items.map(fi => fi.id),
+        { phase_id: activePhaseId },
       );
       generated.push(campaign);
     }
+    } // end enumeration gate
 
     // 3. Post-exploitation campaigns: group items from compromised hosts
+    if (!activeStrategies || activeStrategies.has('post_exploitation')) {
     const postExByHost = new Map<string, FrontierItem[]>();
     for (const item of frontier) {
       if (item.type !== 'inferred_edge' || !item.edge_source) continue;
@@ -144,11 +183,14 @@ export class CampaignPlanner {
         'post_exploitation',
         () => `Post-exploitation on ${label} (${items.length} items)`,
         items.map(fi => fi.id),
+        { phase_id: activePhaseId },
       );
       generated.push(campaign);
     }
+    } // end post_exploitation gate
 
     // 4. Network discovery campaigns: group by CIDR
+    if (!activeStrategies || activeStrategies.has('network_discovery')) {
     const discoveryItems = frontier.filter(fi => fi.type === 'network_discovery' && fi.target_cidr);
     for (const item of discoveryItems) {
       const campaign = this.upsertCampaign(
@@ -156,11 +198,25 @@ export class CampaignPlanner {
         'network_discovery',
         () => `Discover hosts in ${item.target_cidr}`,
         [item.id],
+        { phase_id: activePhaseId },
       );
       generated.push(campaign);
     }
+    } // end network_discovery gate
 
     return generated;
+  }
+
+  /** Get the set of strategies allowed in the active phase, or null if no phases configured */
+  private getActiveStrategies(activePhaseId?: string): Set<CampaignStrategy> | null {
+    const phases = this.ctx.config.phases;
+    if (!phases || phases.length === 0) return null; // no phase restriction
+    if (!activePhaseId) return null; // no active phase = allow all
+
+    const activePhase = phases.find(p => p.id === activePhaseId);
+    if (!activePhase) return null;
+
+    return new Set(activePhase.strategies);
   }
 
   // =============================================
@@ -183,6 +239,7 @@ export class CampaignPlanner {
     const c = this.campaigns.get(id);
     if (!c || c.status !== 'active') return null;
     c.status = 'paused';
+    this.cascadeToChildren(id, 'pause');
     return c;
   }
 
@@ -198,6 +255,7 @@ export class CampaignPlanner {
     if (!c || c.status === 'completed' || c.status === 'aborted') return null;
     c.status = 'aborted';
     c.completed_at = new Date().toISOString();
+    this.cascadeToChildren(id, 'abort');
     return c;
   }
 
@@ -206,6 +264,7 @@ export class CampaignPlanner {
     if (!c || c.status !== 'draft') return null;
     c.status = 'active';
     c.started_at = new Date().toISOString();
+    this.cascadeToChildren(id, 'activate');
     return c;
   }
 
@@ -400,6 +459,115 @@ export class CampaignPlanner {
     }
 
     return { should_abort: false };
+  }
+
+  // =============================================
+  // Campaign hierarchy (parent/child)
+  // =============================================
+
+  /**
+   * Split a campaign into child sub-campaigns.
+   * Each child gets a subset of the parent's frontier items.
+   * @param id Parent campaign ID
+   * @param count Number of children (defaults to 1 per item)
+   */
+  splitCampaign(id: string, count?: number): Campaign[] | null {
+    const parent = this.campaigns.get(id);
+    if (!parent) return null;
+    if (parent.parent_id) return null; // can't split a child
+
+    const items = parent.items;
+    if (items.length === 0) return null;
+
+    const n = Math.min(count ?? items.length, items.length);
+    const children: Campaign[] = [];
+
+    // Distribute items across N children (round-robin)
+    const buckets: string[][] = Array.from({ length: n }, () => []);
+    for (let i = 0; i < items.length; i++) {
+      buckets[i % n].push(items[i]);
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (buckets[i].length === 0) continue;
+      const childId = uuidv4();
+      const child: Campaign = {
+        id: childId,
+        name: `${parent.name} (${i + 1}/${n})`,
+        strategy: parent.strategy,
+        status: 'draft',
+        items: buckets[i],
+        abort_conditions: [...parent.abort_conditions],
+        progress: { total: buckets[i].length, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 },
+        parent_id: id,
+        phase_id: parent.phase_id,
+        chain_id: parent.chain_id,
+        created_at: new Date().toISOString(),
+        findings: [],
+      };
+      this.campaigns.set(childId, child);
+      children.push(child);
+    }
+
+    return children;
+  }
+
+  /** Get all child campaigns of a parent */
+  getChildren(parentId: string): Campaign[] {
+    const result: Campaign[] = [];
+    for (const c of this.campaigns.values()) {
+      if (c.parent_id === parentId) result.push(c);
+    }
+    return result;
+  }
+
+  /** Aggregate progress from all children of a parent campaign */
+  getParentProgress(parentId: string): CampaignProgress | null {
+    const children = this.getChildren(parentId);
+    if (children.length === 0) return null;
+
+    const agg: CampaignProgress = { total: 0, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 };
+    for (const c of children) {
+      agg.total += c.progress.total;
+      agg.completed += c.progress.completed;
+      agg.succeeded += c.progress.succeeded;
+      agg.failed += c.progress.failed;
+      agg.consecutive_failures = Math.max(agg.consecutive_failures, c.progress.consecutive_failures);
+    }
+    return agg;
+  }
+
+  /** Derive parent campaign status from children */
+  deriveParentStatus(parentId: string): CampaignStatus | null {
+    const children = this.getChildren(parentId);
+    if (children.length === 0) return null;
+
+    const statuses = children.map(c => c.status);
+    if (statuses.every(s => s === 'completed')) return 'completed';
+    if (statuses.every(s => s === 'aborted')) return 'aborted';
+    if (statuses.every(s => s === 'draft')) return 'draft';
+    if (statuses.some(s => s === 'active')) return 'active';
+    if (statuses.some(s => s === 'paused')) return 'paused';
+    // Mix of completed/aborted
+    if (statuses.every(s => s === 'completed' || s === 'aborted')) return 'completed';
+    return 'active';
+  }
+
+  /** Cascade lifecycle action from parent to children */
+  cascadeToChildren(parentId: string, action: 'activate' | 'pause' | 'abort'): void {
+    for (const child of this.getChildren(parentId)) {
+      switch (action) {
+        case 'activate':
+          if (child.status === 'draft') this.activateCampaign(child.id);
+          break;
+        case 'pause':
+          if (child.status === 'active') this.pauseCampaign(child.id);
+          break;
+        case 'abort':
+          if (child.status !== 'completed' && child.status !== 'aborted') this.abortCampaign(child.id);
+          break;
+      }
+    }
   }
 
   /**
