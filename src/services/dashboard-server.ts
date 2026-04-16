@@ -15,6 +15,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
+import { EngagementManager } from './engagement-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -46,12 +47,16 @@ export class DashboardServer {
   private static readonly SESSION_POLL_MS = 50;
 
   private host: string;
+  private engagementManager: EngagementManager | null = null;
 
-  constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager) {
+  constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
     this.engine = engine;
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     this.sessionManager = sessionManager || null;
+    if (configPath) {
+      this.engagementManager = new EngagementManager(configPath);
+    }
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -420,6 +425,10 @@ export class DashboardServer {
       this.handleResetFrontierWeights(req, res);
     } else if (pathname === '/api/health') {
       this.serveHealth(res);
+    } else if (pathname === '/api/engagements' && method === 'GET') {
+      this.serveEngagements(res);
+    } else if (pathname === '/api/engagements' && method === 'POST') {
+      this.handleCreateEngagement(req, res);
     } else if (pathname === '/api/engagements/from-template' && method === 'POST') {
       this.handleCreateFromTemplate(req, res);
     } else if (pathname === '/api/campaigns' && method === 'POST') {
@@ -1406,5 +1415,51 @@ export class DashboardServer {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Objective not found or no paths available' }));
     }
+  }
+
+  private serveEngagements(res: ServerResponse): void {
+    if (!this.engagementManager) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ engagements: [], active_id: null }));
+      return;
+    }
+    const engagements = this.engagementManager.listEngagements();
+    const active_id = this.engagementManager.getActiveId();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ engagements, active_id }));
+  }
+
+  private async handleCreateEngagement(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.engagementManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Engagement manager not available' }));
+      return;
+    }
+    this.readJsonBody(req).then(input => {
+      if (!input || !input.name || typeof input.name !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'name is required' }));
+        return;
+      }
+      try {
+        const summary = this.engagementManager!.createEngagement({
+          name: input.name,
+          profile: input.profile,
+          cidrs: Array.isArray(input.cidrs) ? input.cidrs : [],
+          domains: Array.isArray(input.domains) ? input.domains : [],
+          exclusions: Array.isArray(input.exclusions) ? input.exclusions : [],
+          opsec_profile: input.opsec_profile,
+          objectives: Array.isArray(input.objectives) ? input.objectives : [],
+        });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(summary));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message ?? 'Internal error' }));
+      }
+    }).catch(err => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON: ' + err.message }));
+    });
   }
 }

@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="pending-actions.css">
 <link rel="stylesheet" href="vendor/xterm.css">
 <link rel="stylesheet" href="terminal.css">
+<link rel="stylesheet" href="engagements.css">
 <link rel="stylesheet" href="operator.css">
 <script src="shared.js"></script>
 <script src="node-display.js"></script>
@@ -88,6 +89,10 @@
       <span>Evidence</span>
     </button>
     <div style="flex:1"></div>
+    <button class="op-nav-item" data-panel="engagements">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M1 6h14" stroke="currentColor" stroke-width="1.2"/><path d="M5 9h6M5 11h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+      <span>Engagements</span>
+    </button>
     <button class="op-nav-item" data-panel="settings">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <span>Settings</span>
@@ -312,6 +317,79 @@
           <button class="op-btn op-btn-sm" id="ev-path-btn">Find Paths</button>
         </div>
         <div id="ev-path-list" class="ev-path-list"></div>
+      </div>
+    </section>
+
+    <!-- Engagements Panel -->
+    <section class="op-panel" id="panel-engagements">
+      <div class="op-panel-header">
+        <h2>Engagements</h2>
+        <span class="count" id="eng-count"></span>
+        <button class="op-btn op-btn-primary op-btn-sm" id="eng-new-btn" style="margin-left:auto">+ New Engagement</button>
+      </div>
+
+      <!-- Create Form -->
+      <div class="eng-form" id="eng-form" style="display:none">
+        <h3>New Engagement</h3>
+        <div class="eng-form-grid">
+          <div class="eng-form-field">
+            <label class="eng-form-label">Name *</label>
+            <input type="text" id="eng-form-name" class="cb-input" placeholder="e.g. Dante Run" maxlength="120" />
+          </div>
+          <div class="eng-form-field">
+            <label class="eng-form-label">Profile</label>
+            <select id="eng-form-profile" class="cb-select">
+              <option value="network">Network</option>
+              <option value="internal-pentest">Internal Pentest</option>
+              <option value="red-team">Red Team</option>
+              <option value="web_app">Web App</option>
+              <option value="cloud">Cloud</option>
+              <option value="hybrid">Hybrid</option>
+              <option value="single_host">Single Host</option>
+            </select>
+          </div>
+          <div class="eng-form-field">
+            <label class="eng-form-label">Scope CIDRs</label>
+            <div class="eng-tag-row cfg-tag-list" id="eng-form-cidrs"></div>
+            <input type="text" id="eng-form-cidr-input" class="cb-input" placeholder="10.10.0.0/24 (Enter to add)" style="margin-top:4px" />
+          </div>
+          <div class="eng-form-field">
+            <label class="eng-form-label">Scope Domains</label>
+            <div class="eng-tag-row cfg-tag-list" id="eng-form-domains"></div>
+            <input type="text" id="eng-form-domain-input" class="cb-input" placeholder="corp.local (Enter to add)" style="margin-top:4px" />
+          </div>
+          <div class="eng-form-field">
+            <label class="eng-form-label">OPSEC Profile</label>
+            <select id="eng-form-opsec" class="cb-select">
+              <option value="stealth">Stealth (noise ≤ 0.2)</option>
+              <option value="normal">Normal (noise ≤ 0.5)</option>
+              <option value="pentest" selected>Pentest (noise ≤ 0.7)</option>
+              <option value="loud">Loud (noise ≤ 1.0)</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-field">
+          <label class="eng-form-label">Objectives
+            <button class="op-btn op-btn-sm" id="eng-add-obj-btn" style="margin-left:8px;font-size:11px">+ Add</button>
+          </label>
+          <div class="eng-obj-rows" id="eng-obj-rows"></div>
+        </div>
+        <div class="eng-form-actions">
+          <button class="op-btn op-btn-primary" id="eng-form-submit">Create Engagement</button>
+          <button class="op-btn" id="eng-form-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Load hint -->
+      <div class="eng-load-hint" id="eng-load-hint" style="display:none">
+        Restart the server with this config to activate:
+        <code id="eng-load-path"></code>
+        <div style="margin-top:6px;font-size:11px;color:var(--text-secondary)">e.g. <code>OVERWATCH_CONFIG=&lt;path&gt; node dist/index.js</code></div>
+      </div>
+
+      <!-- List -->
+      <div id="eng-list-section">
+        <div class="eng-list" id="eng-list"></div>
       </div>
     </section>
 
@@ -713,6 +791,7 @@
 <script src="pending-actions.js"></script>
 <script src="evidence-panel.js"></script>
 <script src="settings-panel.js"></script>
+<script src="engagements.js"></script>
 <script src="terminal.js"></script>
 <script src="operator.js"></script>
 </body>

@@ -184,7 +184,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   });
 
   const dashboardPort = options.dashboardPort ?? parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
-  const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort, undefined, sessionManager) : null;
+  const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort, undefined, sessionManager, configPath) : null;
 
   registerAllTools(server, {
     engine,

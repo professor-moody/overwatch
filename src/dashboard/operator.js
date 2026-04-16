@@ -23,7 +23,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   let activePanel = 'overview';
   const nav = document.getElementById('op-nav');
-  const PANEL_ORDER = ['overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier', 'activity', 'evidence', 'settings'];
+  const PANEL_ORDER = ['overview', 'campaigns', 'agents', 'sessions', 'actions', 'frontier', 'activity', 'evidence', 'engagements', 'settings'];
 
   function switchToPanel(panel) {
     if (!panel || panel === activePanel) return;
@@ -33,6 +33,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if (btn) btn.classList.add('active');
     document.getElementById('panel-' + panel)?.classList.add('active');
     activePanel = panel;
+    // Notify sub-panels
+    document.dispatchEvent(new CustomEvent('panel-activated', { detail: panel }));
   }
 
   nav.addEventListener('click', (e) => {
@@ -506,4 +508,7 @@ window.addEventListener('DOMContentLoaded', () => {
       </div>`;
     }).join('');
   }
+
+  // Init sub-panels
+  if (typeof window.initEngagementsPanel === 'function') window.initEngagementsPanel();
 });

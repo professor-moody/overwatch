@@ -1,0 +1,212 @@
+/* ============================================================
+   Overwatch — Engagements Panel
+   ============================================================ */
+
+/* Header */
+.eng-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+/* Cards */
+.eng-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.eng-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  transition: border-color 0.15s;
+}
+
+.eng-card-active {
+  border-color: var(--accent);
+  background: rgba(91, 141, 239, 0.05);
+}
+
+.eng-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.eng-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eng-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eng-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.eng-badge-active {
+  background: rgba(91, 141, 239, 0.2);
+  color: var(--accent);
+}
+
+.eng-badge-profile {
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--green);
+}
+
+.eng-meta-stat {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.eng-card-scope {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eng-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.eng-card-id {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eng-card-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.eng-card-load-btn {
+  flex-shrink: 0;
+}
+
+/* Empty state */
+.eng-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+/* Load hint */
+.eng-load-hint {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid #a78bfa;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.eng-load-hint code {
+  display: block;
+  margin-top: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #a78bfa;
+  word-break: break-all;
+}
+
+/* Create form */
+.eng-form {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.eng-form h3 {
+  margin: 0 0 16px;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.eng-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.eng-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.eng-form-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.eng-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 32px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* Objectives */
+.eng-obj-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.eng-obj-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.eng-obj-desc {
+  flex: 1;
+}
+
+/* Form actions */
+.eng-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
