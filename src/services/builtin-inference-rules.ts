@@ -777,4 +777,16 @@ export const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.5
     }]
   },
+  {
+    id: 'rule-api-endpoint-discovery',
+    name: 'Webapp with API requires endpoint enumeration',
+    description: 'A webapp with has_api=true is a candidate for API endpoint discovery and enumeration',
+    trigger: { node_type: 'webapp', property_match: { has_api: true } },
+    produces: [{
+      edge_type: 'POTENTIAL_AUTH',
+      source_selector: 'default_credential_candidates',
+      target_selector: 'trigger_node',
+      confidence: 0.3
+    }]
+  },
 ];

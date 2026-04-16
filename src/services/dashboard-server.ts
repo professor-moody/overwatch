@@ -1153,8 +1153,39 @@ export class DashboardServer {
       });
     }
 
+    // Enrich with node properties and findings from exported graph
+    const exported = this.engine.exportGraph();
+    let node_props: Record<string, unknown> | undefined;
+    let findings: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }> = [];
+    const nodeData = exported.nodes.find(n => n.id === nodeId);
+    if (nodeData) {
+      const attrs = nodeData.properties || {};
+      node_props = {
+        type: attrs.type,
+        label: attrs.label,
+        os: attrs.os,
+        confidence: attrs.confidence,
+        discovered_at: attrs.discovered_at,
+        chain_template: attrs.chain_template,
+      };
+
+      // Collect findings from connected edges
+      for (const edge of exported.edges) {
+        if (edge.source !== nodeId && edge.target !== nodeId) continue;
+        const ep = edge.properties;
+        if (ep.type === 'EXPLOITS' || ep.type === 'AUTH_BYPASS' || ep.finding_type) {
+          findings.push({
+            finding_type: (ep.finding_type as string) || ep.type,
+            severity: ep.severity as string | undefined,
+            technique_id: ep.technique_id as string | undefined,
+            description: `${edge.source} → ${edge.target} (${ep.type})`,
+          });
+        }
+      }
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ node_id: nodeId, chains, count: chains.length }));
+    res.end(JSON.stringify({ node_id: nodeId, chains, count: chains.length, node_props, findings }));
   }
 
   private servePaths(objectiveId: string, url: string, res: ServerResponse): void {

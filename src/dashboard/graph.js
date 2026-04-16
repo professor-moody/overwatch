@@ -1154,6 +1154,43 @@ function clearPathHighlight() {
   if (renderer) renderer.refresh();
 }
 
+// Programmatic path highlight from an ordered array of node IDs
+function highlightPath(nodeIds) {
+  if (!graph || !nodeIds || nodeIds.length < 2) return;
+  pathSource = null;
+  pathTarget = null;
+  pathEdges.clear();
+  pathNodes.clear();
+
+  for (const nid of nodeIds) {
+    if (graph.hasNode(nid)) pathNodes.add(nid);
+  }
+
+  // Find edges between consecutive nodes
+  for (let i = 0; i < nodeIds.length - 1; i++) {
+    const src = nodeIds[i];
+    const tgt = nodeIds[i + 1];
+    if (!graph.hasNode(src) || !graph.hasNode(tgt)) continue;
+    const result = findShortestPath(src, tgt);
+    if (result && result.edges) {
+      for (const e of result.edges) pathEdges.add(e);
+    }
+  }
+
+  pathSource = nodeIds[0];
+  pathTarget = nodeIds[nodeIds.length - 1];
+
+  if (pathEdges.size > 0) showPathInfo();
+  if (renderer) renderer.refresh();
+}
+
+// Center + select a node programmatically
+function selectAndCenter(nodeId) {
+  if (!graph || !graph.hasNode(nodeId)) return;
+  selectNode(nodeId);
+  zoomToNodes(new Set([nodeId]), { paddingFactor: 2.5, minRatio: 0.1, maxRatio: 1.0 });
+}
+
 // ============================================================
 // Attack Path Overlay
 // ============================================================
@@ -2964,6 +3001,8 @@ window.OverwatchGraph = {
   resetFilters,
   fitVisibleGraph,
   clearPathHighlight,
+  highlightPath,
+  selectAndCenter,
   exitNeighborhoodFocus,
   enterNeighborhoodFocus,
   focusNodeType,

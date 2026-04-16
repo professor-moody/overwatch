@@ -216,6 +216,8 @@ const EDGE_TO_ATTACK: Record<string, AttackTechnique> = {
   'MANAGED_BY':     { id: 'T1078.004', name: 'Cloud Accounts' },
   'EXPLOITS':       { id: 'T1190', name: 'Exploit Public-Facing Application' },
   'VULNERABLE_TO':  { id: 'T1190', name: 'Exploit Public-Facing Application' },
+  'AUTH_BYPASS':    { id: 'T1548', name: 'Abuse Elevation Control Mechanism' },
+  'HAS_ENDPOINT':   { id: 'T1595.002', name: 'Vulnerability Scanning' },
 };
 
 // vuln_type → ATT&CK technique

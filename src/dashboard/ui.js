@@ -618,9 +618,28 @@ function showNodeDetail(nodeId) {
     </div>`;
   }
 
+  // 6. Evidence link — navigate to evidence panel for this node
+  html += `<div class="detail-section detail-evidence-link">
+    <button class="op-btn op-btn-sm detail-evidence-btn" data-node="${escapeHtml(nodeId)}" title="View evidence chain for this node">Show Evidence</button>
+  </div>`;
+
   document.getElementById('detail-props').innerHTML = html;
   attachConnectionHandlers();
   attachPropExpandHandlers();
+
+  // Wire evidence button
+  document.querySelectorAll('.detail-evidence-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const EV = window.OverwatchEvidence;
+      if (EV && typeof EV.showEvidenceForNode === 'function') {
+        EV.showEvidenceForNode(btn.dataset.node);
+      } else {
+        // On graph explorer page, open operator dashboard evidence panel
+        window.open(`/?panel=evidence&node=${encodeURIComponent(btn.dataset.node)}`, '_blank');
+      }
+    });
+  });
+
   drawer.classList.add('visible');
 }
 

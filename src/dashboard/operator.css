@@ -834,6 +834,181 @@
   font-size: 14px;
 }
 
+/* ---- Evidence Panel Enhancements ---- */
+
+/* Node properties row */
+.ev-node-props {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--bg-base);
+  border-radius: var(--radius-sm);
+}
+.ev-prop-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+.ev-prop-type {
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+.ev-prop-chain {
+  color: var(--purple);
+  border-color: var(--purple);
+}
+
+/* Finding cards */
+.ev-findings-section {
+  margin-bottom: 16px;
+}
+.ev-findings-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.ev-finding-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--border-default);
+}
+.ev-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ev-finding-type {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ev-finding-sev {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.ev-finding-sev.sev-critical {
+  background: rgba(239,68,68,0.2);
+  color: var(--red);
+}
+.ev-finding-sev.sev-high {
+  background: rgba(249,115,22,0.15);
+  color: #f97316;
+}
+.ev-finding-sev.sev-medium {
+  background: rgba(234,179,8,0.15);
+  color: var(--amber);
+}
+.ev-finding-sev.sev-low {
+  background: rgba(62,207,142,0.15);
+  color: var(--green);
+}
+.ev-finding-tech {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--purple-dim, rgba(167,139,250,0.15));
+  color: var(--purple);
+}
+.ev-finding-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Interactive path nodes */
+.ev-path-node[role="button"] {
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ev-path-node[role="button"]:hover {
+  background: var(--accent);
+  color: var(--bg-base);
+}
+
+/* Clickable chain node header */
+.ev-chain-node[role="button"] {
+  cursor: pointer;
+}
+.ev-chain-node[role="button"]:hover {
+  text-decoration: underline;
+}
+
+/* Edge type labels in path chains */
+.ev-edge-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0 4px;
+}
+
+/* Graph action button in evidence panel */
+.ev-graph-btn {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* Confidence + noise metric bars */
+.ev-path-metrics {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ev-metric-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ev-metric-bar .ev-metric-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 64px;
+  text-align: right;
+}
+.ev-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-base);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ev-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+.ev-bar-conf {
+  background: var(--accent);
+}
+.ev-bar-noise {
+  background: var(--amber);
+}
+.ev-metric-val {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  width: 32px;
+}
+
 /* ---- Keyboard Shortcuts Overlay ---- */
 
 .shortcut-overlay {

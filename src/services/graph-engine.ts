@@ -30,6 +30,8 @@ import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
 import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
 import { KnowledgeBase } from './knowledge-base.js';
+import { WebChainEnricher } from './web-attack-chains.js';
+import type { MatchedChain } from './web-attack-chains.js';
 import type { OpsecContext } from './opsec-tracker.js';
 import {
   inferPivotReachability as _inferPivotReachability,
@@ -619,6 +621,26 @@ export class GraphEngine {
       this.ctx.log(`BloodHound enrichment: ${hvts.length} HVTs identified, ${paths.length} attack paths pre-computed`, undefined, { category: 'system' });
     }
     return { hvts, paths };
+  }
+
+  /**
+   * Post-ingest enrichment: match web attack chain templates.
+   * Called after web parser ingestion when webapp/vulnerability nodes change.
+   */
+  enrichWebAttackChains(): MatchedChain[] {
+    const enricher = new WebChainEnricher(this.ctx);
+    const chains = enricher.matchChainTemplates();
+    if (chains.length > 0) {
+      // Annotate frontier-relevant nodes with chain_template info
+      for (const chain of chains) {
+        const lastNode = chain.node_path[chain.node_path.length - 1];
+        if (this.ctx.graph.hasNode(lastNode)) {
+          this.ctx.graph.setNodeAttribute(lastNode, 'chain_template', chain.template_id);
+        }
+      }
+      this.ctx.log(`Web chain enrichment: ${chains.length} chains matched (${chains.filter(c => c.completion === 1.0).length} complete)`, undefined, { category: 'system' });
+    }
+    return chains;
   }
 
   // =============================================

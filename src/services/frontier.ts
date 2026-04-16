@@ -55,10 +55,16 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
   service: (node) => node.version ? [] : ['version'],
   user: (node) => node.privileged === undefined ? ['privilege_level'] : [],
   domain: (node) => node.functional_level ? [] : ['functional_level'],
-  webapp: (node) => {
+  webapp: (node, ctx) => {
     const m: string[] = [];
     if (!node.technology) m.push('technology');
     if (!node.auth_type) m.push('auth_type');
+    if (node.has_api) {
+      const hasEndpoints = ctx.graph.outEdges(node.id).some((e: string) =>
+        ctx.graph.getEdgeAttributes(e).type === 'HAS_ENDPOINT'
+      );
+      if (!hasEndpoints) m.push('api_endpoints');
+    }
     return m;
   },
   cloud_identity: (node) => {
@@ -208,22 +214,33 @@ export class FrontierComputer {
         }
       }
 
+      // Chain-template-aware scoring: boost items that complete a known web attack chain
+      let chainBoost = 1;
+      let chainLabel = '';
+      const tgtNode = this.ctx.graph.getNodeAttributes(target);
+      const targetChain = tgtNode.chain_template as string | undefined;
+      if (targetChain) {
+        chainBoost = 1.2;
+        chainLabel = ` [chain: ${targetChain}]`;
+      }
+
       frontier.push({
         id: `frontier-edge-${edgeId}`,
         type: 'inferred_edge',
         edge_source: source,
         edge_target: target,
         edge_type: attrs.type,
-        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${credLabel}${kbLabel}`,
+        description: `Test ${attrs.type}: ${source} → ${target} (confidence: ${attrs.confidence})${credLabel}${kbLabel}${chainLabel}`,
         graph_metrics: {
           hops_to_objective: this.hopsToObjective(target),
           fan_out_estimate: 2,
           node_degree: this.ctx.graph.degree(target),
-          confidence: attrs.confidence * credMultiplier * kbConfidenceBoost
+          confidence: attrs.confidence * credMultiplier * kbConfidenceBoost * chainBoost
         },
         opsec_noise: kbNoise ?? attrs.opsec_noise ?? 0.3,
         staleness_seconds: (now - new Date(attrs.discovered_at).getTime()) / 1000,
         stale_credential: isStale || undefined,
+        chain_template: targetChain || undefined,
       });
     });
 
