@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc && node --eval \"import('fs').then(f=>f.cpSync('src/dashboard','dist/dashboard',{recursive:true}))\" && node scripts/vendor-dashboard-deps.js",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "npm run test:source",
