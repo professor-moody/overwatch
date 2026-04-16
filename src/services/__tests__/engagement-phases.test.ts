@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync, readFileSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig, EngagementPhase } from '../../types.js';
 
