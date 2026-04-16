@@ -224,6 +224,7 @@
       <div class="op-panel-header">
         <h2>Agents</h2>
         <span class="count" id="agent-count"></span>
+        <button class="op-btn op-btn-primary op-btn-sm" id="agent-deploy-btn" style="margin-left:auto">Deploy Agent</button>
       </div>
       <div id="agents-body">
         <div id="agents-list"></div>
@@ -313,6 +314,202 @@
       <div class="op-panel-header">
         <h2>Engagement Settings</h2>
         <button class="op-btn op-btn-sm" id="settings-refresh">Refresh</button>
+      </div>
+
+      <!-- Engagement Identity -->
+      <div class="settings-section">
+        <h3 class="settings-section-title">Engagement Identity</h3>
+        <div class="settings-grid">
+          <div>
+            <div class="settings-field">
+              <label class="settings-label">Engagement Name</label>
+              <input type="text" id="cfg-name" class="cb-input" placeholder="Engagement name" />
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Profile</label>
+              <select id="cfg-profile" class="cb-select">
+                <option value="">None</option>
+                <option value="goad_ad">GOAD AD</option>
+                <option value="single_host">Single Host</option>
+                <option value="network">Network</option>
+                <option value="web_app">Web App</option>
+                <option value="cloud">Cloud</option>
+                <option value="hybrid">Hybrid</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Community Resolution</label>
+              <div class="settings-slider-row">
+                <input type="range" id="cfg-community-res" class="settings-range" min="0.1" max="10" step="0.1" value="1.0" />
+                <span class="settings-range-val" id="cfg-community-res-val">1.0</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="settings-field">
+              <label class="settings-label">ID</label>
+              <span class="settings-info-val mono" id="cfg-id">—</span>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Created</label>
+              <span class="settings-info-val" id="cfg-created-at">—</span>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Template</label>
+              <span class="settings-info-val" id="cfg-template">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scope Editor -->
+      <div class="settings-section">
+        <h3 class="settings-section-title">Scope</h3>
+        <div class="settings-grid">
+          <div>
+            <div class="settings-field">
+              <label class="settings-label">CIDRs</label>
+              <div class="cfg-tag-list" id="cfg-cidrs"></div>
+              <div class="cfg-tag-add-row">
+                <input type="text" class="cb-input cfg-tag-input" id="cfg-cidrs-input" placeholder="10.0.0.0/24" />
+                <button class="op-btn op-btn-sm" data-tag-target="cfg-cidrs">+</button>
+              </div>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Domains</label>
+              <div class="cfg-tag-list" id="cfg-domains"></div>
+              <div class="cfg-tag-add-row">
+                <input type="text" class="cb-input cfg-tag-input" id="cfg-domains-input" placeholder="example.com" />
+                <button class="op-btn op-btn-sm" data-tag-target="cfg-domains">+</button>
+              </div>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Exclusions</label>
+              <div class="cfg-tag-list" id="cfg-exclusions"></div>
+              <div class="cfg-tag-add-row">
+                <input type="text" class="cb-input cfg-tag-input" id="cfg-exclusions-input" placeholder="10.0.0.1" />
+                <button class="op-btn op-btn-sm" data-tag-target="cfg-exclusions">+</button>
+              </div>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Hosts</label>
+              <div class="cfg-tag-list" id="cfg-hosts"></div>
+              <div class="cfg-tag-add-row">
+                <input type="text" class="cb-input cfg-tag-input" id="cfg-hosts-input" placeholder="dc01.corp.io" />
+                <button class="op-btn op-btn-sm" data-tag-target="cfg-hosts">+</button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="settings-field">
+              <label class="settings-label">URL Patterns</label>
+              <div class="cfg-tag-list" id="cfg-url-patterns"></div>
+              <div class="cfg-tag-add-row">
+                <input type="text" class="cb-input cfg-tag-input" id="cfg-url-patterns-input" placeholder="*.example.com/api/*" />
+                <button class="op-btn op-btn-sm" data-tag-target="cfg-url-patterns">+</button>
+              </div>
+            </div>
+            <details class="cfg-cloud-details">
+              <summary class="settings-label">Cloud Accounts</summary>
+              <div class="settings-field">
+                <label class="settings-label cfg-label-sm">AWS Accounts</label>
+                <div class="cfg-tag-list" id="cfg-aws-accounts"></div>
+                <div class="cfg-tag-add-row">
+                  <input type="text" class="cb-input cfg-tag-input" id="cfg-aws-accounts-input" placeholder="123456789012" />
+                  <button class="op-btn op-btn-sm" data-tag-target="cfg-aws-accounts">+</button>
+                </div>
+              </div>
+              <div class="settings-field">
+                <label class="settings-label cfg-label-sm">Azure Subscriptions</label>
+                <div class="cfg-tag-list" id="cfg-azure-subscriptions"></div>
+                <div class="cfg-tag-add-row">
+                  <input type="text" class="cb-input cfg-tag-input" id="cfg-azure-subscriptions-input" placeholder="sub-id" />
+                  <button class="op-btn op-btn-sm" data-tag-target="cfg-azure-subscriptions">+</button>
+                </div>
+              </div>
+              <div class="settings-field">
+                <label class="settings-label cfg-label-sm">GCP Projects</label>
+                <div class="cfg-tag-list" id="cfg-gcp-projects"></div>
+                <div class="cfg-tag-add-row">
+                  <input type="text" class="cb-input cfg-tag-input" id="cfg-gcp-projects-input" placeholder="my-project" />
+                  <button class="op-btn op-btn-sm" data-tag-target="cfg-gcp-projects">+</button>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="settings-actions" style="margin-top:8px">
+          <button class="op-btn op-btn-primary op-btn-sm" id="cfg-scope-save">Save Scope</button>
+          <span class="settings-save-status" id="cfg-scope-status"></span>
+        </div>
+      </div>
+
+      <!-- Objectives Editor -->
+      <div class="settings-section">
+        <h3 class="settings-section-title">Objectives
+          <button class="op-btn op-btn-sm" id="cfg-obj-add-btn" style="float:right;font-size:11px">+ Add Objective</button>
+        </h3>
+        <div id="cfg-objectives-list" class="cfg-objectives-list"></div>
+        <div id="cfg-obj-form" class="cfg-obj-form" style="display:none">
+          <div class="settings-field">
+            <label class="settings-label">Description</label>
+            <input type="text" id="cfg-obj-desc" class="cb-input" placeholder="Objective description" />
+          </div>
+          <div class="settings-grid" style="margin-bottom:0">
+            <div class="settings-field">
+              <label class="settings-label">Target Node Type</label>
+              <select id="cfg-obj-node-type" class="cb-select">
+                <option value="">Any</option>
+                <option value="host">host</option>
+                <option value="service">service</option>
+                <option value="credential">credential</option>
+                <option value="domain_object">domain_object</option>
+                <option value="webapp">webapp</option>
+                <option value="cloud_resource">cloud_resource</option>
+                <option value="finding">finding</option>
+                <option value="network">network</option>
+                <option value="user_account">user_account</option>
+                <option value="firewall_rule">firewall_rule</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Achievement Edge Types</label>
+              <input type="text" id="cfg-obj-edge-types" class="cb-input" placeholder="COMPROMISED, HAS_ADMIN (comma-separated)" />
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button class="op-btn op-btn-primary op-btn-sm" id="cfg-obj-submit">Add</button>
+            <button class="op-btn op-btn-sm" id="cfg-obj-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Failure Patterns -->
+      <div class="settings-section">
+        <h3 class="settings-section-title">Failure Patterns
+          <button class="op-btn op-btn-sm" id="cfg-fp-add-btn" style="float:right;font-size:11px">+ Add Pattern</button>
+        </h3>
+        <div id="cfg-failure-patterns" class="cfg-fp-list"></div>
+        <div id="cfg-fp-form" class="cfg-fp-form" style="display:none">
+          <div class="settings-grid" style="margin-bottom:0">
+            <div class="settings-field">
+              <label class="settings-label">Technique</label>
+              <input type="text" id="cfg-fp-technique" class="cb-input" placeholder="T1110.001" />
+            </div>
+            <div class="settings-field">
+              <label class="settings-label">Target Pattern</label>
+              <input type="text" id="cfg-fp-target" class="cb-input" placeholder="*.corp.io (optional)" />
+            </div>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label">Warning</label>
+            <input type="text" id="cfg-fp-warning" class="cb-input" placeholder="Warning message" />
+          </div>
+          <div class="settings-actions">
+            <button class="op-btn op-btn-primary op-btn-sm" id="cfg-fp-submit">Add</button>
+            <button class="op-btn op-btn-sm" id="cfg-fp-cancel">Cancel</button>
+          </div>
+        </div>
       </div>
 
       <div class="settings-grid">
@@ -461,6 +658,35 @@
       <div class="cb-actions">
         <button class="op-btn" id="dm-cancel">Cancel</button>
         <button class="op-btn op-btn-primary" id="dm-dispatch">Dispatch</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Dispatch Modal -->
+  <div id="adm-overlay" class="adm-overlay" style="display:none">
+    <div class="adm-modal">
+      <h3 class="adm-title">Deploy Agent</h3>
+      <div class="adm-row">
+        <label class="cb-label">Target Nodes</label>
+        <input type="text" id="adm-node-search" class="cb-input" placeholder="Search nodes…" />
+        <div id="adm-search-results" class="adm-search-results" style="display:none"></div>
+        <div id="adm-selected-nodes" class="adm-node-list"></div>
+      </div>
+      <div class="adm-row">
+        <label class="cb-label">Skill Override
+          <input type="text" id="adm-skill" class="cb-input" placeholder="(optional)" />
+        </label>
+      </div>
+      <div class="adm-row">
+        <label class="cb-label">Campaign
+          <select id="adm-campaign" class="cb-select">
+            <option value="">None</option>
+          </select>
+        </label>
+      </div>
+      <div class="cb-actions">
+        <button class="op-btn" id="adm-cancel">Cancel</button>
+        <button class="op-btn op-btn-primary" id="adm-dispatch">Deploy</button>
       </div>
     </div>
   </div>

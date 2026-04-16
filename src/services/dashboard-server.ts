@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname, extname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
@@ -395,12 +396,22 @@ export class DashboardServer {
       this.serveSessions(res);
     } else if (pathname === '/api/agents') {
       this.serveAgents(res);
+    } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
+      this.handleAgentDispatch(req, res);
     } else if (pathname === '/api/templates') {
       this.serveTemplates(res);
     } else if (pathname === '/api/settings' && method === 'GET') {
       this.serveSettings(res);
     } else if (pathname === '/api/settings' && method === 'PATCH') {
       this.handleUpdateSettings(req, res);
+    } else if (pathname === '/api/config' && method === 'GET') {
+      this.serveConfig(res);
+    } else if (pathname === '/api/config' && method === 'PATCH') {
+      this.handleUpdateConfig(req, res);
+    } else if (pathname === '/api/config/scope' && method === 'PATCH') {
+      this.handleUpdateScope(req, res);
+    } else if (pathname === '/api/config/objectives' && method === 'POST') {
+      this.handleAddObjective(req, res);
     } else if (pathname === '/api/frontier/weights' && method === 'GET') {
       this.serveFrontierWeights(res);
     } else if (pathname === '/api/frontier/weights' && method === 'PATCH') {
@@ -421,6 +432,7 @@ export class DashboardServer {
       // Parameterized routes
       const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/cancel$/);
+      const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
       const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/dispatch$/);
@@ -434,6 +446,10 @@ export class DashboardServer {
         this.serveAgentContext(agentCtxMatch[1], res);
       } else if (agentCancelMatch && method === 'POST') {
         this.handleAgentCancel(agentCancelMatch[1], req, res);
+      } else if (objectiveMatch && method === 'PATCH') {
+        this.handleUpdateObjective(objectiveMatch[1], req, res);
+      } else if (objectiveMatch && method === 'DELETE') {
+        this.handleDeleteObjective(objectiveMatch[1], req, res);
       } else if (campaignActionMatch && method === 'POST') {
         this.handleCampaignAction(campaignActionMatch[1], req, res);
       } else if (campaignDispatchMatch && method === 'POST') {
@@ -640,6 +656,154 @@ export class DashboardServer {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ updated: changed, opsec }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- Config endpoints ----
+
+  private serveConfig(res: ServerResponse): void {
+    const config = this.engine.getConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(config));
+  }
+
+  private handleUpdateConfig(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      // Prevent overwriting immutable fields
+      delete (body as Record<string, unknown>).id;
+      delete (body as Record<string, unknown>).created_at;
+      const updated = this.engine.updateConfig(body as Record<string, unknown>);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true, config: updated }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleUpdateScope(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const updated = this.engine.updateConfig({ scope: body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true, scope: updated.scope }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleAddObjective(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object' || typeof (body as Record<string, unknown>).description !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'description is required' }));
+        return;
+      }
+      const b = body as Record<string, unknown>;
+      const objective = this.engine.addObjective({
+        description: b.description as string,
+        target_node_type: b.target_node_type as string | undefined,
+        target_criteria: b.target_criteria as Record<string, unknown> | undefined,
+        achievement_edge_types: b.achievement_edge_types as string[] | undefined,
+      });
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ created: true, objective }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleUpdateObjective(id: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const ok = this.engine.updateObjective(id, body as Record<string, unknown>);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Objective not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  private handleDeleteObjective(id: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    const ok = this.engine.removeObjective(id);
+    if (!ok) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Objective not found' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deleted: true }));
+  }
+
+  // ---- Agent dispatch endpoint ----
+
+  private handleAgentDispatch(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const b = body as Record<string, unknown>;
+      const targetNodeIds = Array.isArray(b.target_node_ids) ? b.target_node_ids.filter((x: unknown) => typeof x === 'string') as string[] : [];
+      const skill = typeof b.skill === 'string' ? b.skill : undefined;
+      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
+      const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
+
+      if (targetNodeIds.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'target_node_ids must be a non-empty array of node IDs' }));
+        return;
+      }
+
+      const taskId = randomUUID();
+      const agentId = `dashboard-agent-${taskId.slice(0, 8)}`;
+
+      const task = {
+        id: taskId,
+        agent_id: agentId,
+        assigned_at: new Date().toISOString(),
+        status: 'pending' as const,
+        subgraph_node_ids: targetNodeIds,
+        skill,
+        campaign_id: campaignId,
+        frontier_item_id: frontierItemId,
+      };
+
+      this.engine.registerAgent(task);
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ dispatched: true, task }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));

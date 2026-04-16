@@ -3049,6 +3049,82 @@ describe('GraphEngine', () => {
       expect(state.access_summary.compromised_hosts).toHaveLength(1);
     });
   });
+
+  // ===========================================
+  // updateConfig / objective CRUD
+  // ===========================================
+  describe('updateConfig', () => {
+    it('updates name and profile', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const updated = engine.updateConfig({ name: 'New Name', profile: 'web_app' });
+      expect(updated.name).toBe('New Name');
+      expect(updated.profile).toBe('web_app');
+    });
+
+    it('merges scope partially', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateConfig({ scope: { cidrs: ['192.168.1.0/24'] } });
+      const cfg = engine.getConfig();
+      expect(cfg.scope.cidrs).toEqual(['192.168.1.0/24']);
+      // domains should remain unchanged
+      expect(cfg.scope.domains).toBeDefined();
+    });
+
+    it('updates community_resolution', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateConfig({ community_resolution: 2.5 });
+      expect(engine.getConfig().community_resolution).toBe(2.5);
+    });
+
+    it('updates opsec fields', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateConfig({ opsec: { max_noise: 0.5, approval_mode: 'approve-all' } });
+      const opsec = engine.getConfig().opsec;
+      expect(opsec.max_noise).toBe(0.5);
+      expect(opsec.approval_mode).toBe('approve-all');
+    });
+
+    it('updates failure_patterns', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      engine.updateConfig({ failure_patterns: [{ technique: 'T1110', warning: 'spray blocked' }] });
+      expect(engine.getConfig().failure_patterns).toHaveLength(1);
+      expect(engine.getConfig().failure_patterns![0].technique).toBe('T1110');
+    });
+  });
+
+  describe('objective CRUD', () => {
+    it('adds an objective', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const obj = engine.addObjective({ description: 'Get DA' });
+      expect(obj.id).toBeTruthy();
+      expect(obj.description).toBe('Get DA');
+      expect(obj.achieved).toBe(false);
+      expect(engine.getConfig().objectives.find(o => o.id === obj.id)).toBeTruthy();
+    });
+
+    it('updates an objective', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const obj = engine.addObjective({ description: 'Pivot to cloud' });
+      const ok = engine.updateObjective(obj.id, { achieved: true });
+      expect(ok).toBe(true);
+      const updated = engine.getConfig().objectives.find(o => o.id === obj.id);
+      expect(updated?.achieved).toBe(true);
+      expect(updated?.achieved_at).toBeTruthy();
+    });
+
+    it('removes an objective', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const obj = engine.addObjective({ description: 'Temp objective' });
+      expect(engine.removeObjective(obj.id)).toBe(true);
+      expect(engine.getConfig().objectives.find(o => o.id === obj.id)).toBeUndefined();
+    });
+
+    it('returns false for non-existent objective', () => {
+      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      expect(engine.updateObjective('nope', { achieved: true })).toBe(false);
+      expect(engine.removeObjective('nope')).toBe(false);
+    });
+  });
 });
 
 // =============================================

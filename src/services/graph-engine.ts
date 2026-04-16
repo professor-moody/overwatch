@@ -1742,6 +1742,95 @@ export class GraphEngine {
     return this.ctx.config;
   }
 
+  updateConfig(partial: Record<string, unknown>): EngagementConfig {
+    const current = this.ctx.config;
+    // Merge top-level scalars
+    if (typeof partial.name === 'string' && partial.name.length > 0) current.name = partial.name;
+    if (typeof partial.profile === 'string') current.profile = partial.profile as EngagementConfig['profile'];
+    if (typeof partial.community_resolution === 'number') current.community_resolution = partial.community_resolution;
+
+    // Merge scope (partial merge — only overwrite provided keys)
+    if (partial.scope && typeof partial.scope === 'object') {
+      const s = partial.scope as Record<string, unknown>;
+      if (Array.isArray(s.cidrs)) current.scope.cidrs = s.cidrs;
+      if (Array.isArray(s.domains)) current.scope.domains = s.domains;
+      if (Array.isArray(s.exclusions)) current.scope.exclusions = s.exclusions;
+      if (Array.isArray(s.hosts)) current.scope.hosts = s.hosts;
+      if (Array.isArray(s.aws_accounts)) current.scope.aws_accounts = s.aws_accounts;
+      if (Array.isArray(s.azure_subscriptions)) current.scope.azure_subscriptions = s.azure_subscriptions;
+      if (Array.isArray(s.gcp_projects)) current.scope.gcp_projects = s.gcp_projects;
+      if (Array.isArray(s.url_patterns)) current.scope.url_patterns = s.url_patterns;
+    }
+
+    // Merge opsec
+    if (partial.opsec && typeof partial.opsec === 'object') {
+      const o = partial.opsec as Record<string, unknown>;
+      if (typeof o.name === 'string') current.opsec.name = o.name;
+      if (typeof o.max_noise === 'number') current.opsec.max_noise = o.max_noise;
+      if (typeof o.approval_mode === 'string') current.opsec.approval_mode = o.approval_mode as EngagementConfig['opsec']['approval_mode'];
+      if (typeof o.approval_timeout_ms === 'number') current.opsec.approval_timeout_ms = o.approval_timeout_ms;
+      if (Array.isArray(o.blacklisted_techniques)) current.opsec.blacklisted_techniques = o.blacklisted_techniques;
+      if (o.time_window === null) current.opsec.time_window = undefined;
+      else if (o.time_window && typeof o.time_window === 'object') {
+        const tw = o.time_window as Record<string, unknown>;
+        if (typeof tw.start_hour === 'number' && typeof tw.end_hour === 'number') {
+          current.opsec.time_window = { start_hour: tw.start_hour, end_hour: tw.end_hour };
+        }
+      }
+      if (typeof o.notes === 'string') current.opsec.notes = o.notes;
+    }
+
+    // Merge failure_patterns (full replace)
+    if (Array.isArray(partial.failure_patterns)) {
+      current.failure_patterns = partial.failure_patterns as EngagementConfig['failure_patterns'];
+    }
+
+    // Merge objectives (full replace if provided)
+    if (Array.isArray(partial.objectives)) {
+      current.objectives = partial.objectives as EngagementConfig['objectives'];
+    }
+
+    this.persist();
+    return current;
+  }
+
+  addObjective(obj: { description: string; target_node_type?: string; target_criteria?: Record<string, unknown>; achievement_edge_types?: string[] }): EngagementConfig['objectives'][0] {
+    const objective = {
+      id: uuidv4(),
+      description: obj.description,
+      target_node_type: obj.target_node_type as import('../types.js').NodeType | undefined,
+      target_criteria: obj.target_criteria,
+      achievement_edge_types: obj.achievement_edge_types as import('../types.js').EdgeType[] | undefined,
+      achieved: false,
+    };
+    this.ctx.config.objectives.push(objective);
+    this.persist();
+    return objective;
+  }
+
+  updateObjective(id: string, updates: Record<string, unknown>): boolean {
+    const obj = this.ctx.config.objectives.find(o => o.id === id);
+    if (!obj) return false;
+    if (typeof updates.description === 'string') obj.description = updates.description;
+    if (typeof updates.target_node_type === 'string') obj.target_node_type = updates.target_node_type as import('../types.js').NodeType;
+    if (typeof updates.achieved === 'boolean') {
+      obj.achieved = updates.achieved;
+      obj.achieved_at = updates.achieved ? new Date().toISOString() : undefined;
+    }
+    if (updates.target_criteria !== undefined) obj.target_criteria = updates.target_criteria as Record<string, unknown>;
+    if (Array.isArray(updates.achievement_edge_types)) obj.achievement_edge_types = updates.achievement_edge_types as import('../types.js').EdgeType[];
+    this.persist();
+    return true;
+  }
+
+  removeObjective(id: string): boolean {
+    const idx = this.ctx.config.objectives.findIndex(o => o.id === id);
+    if (idx === -1) return false;
+    this.ctx.config.objectives.splice(idx, 1);
+    this.persist();
+    return true;
+  }
+
   getAllAgents(): AgentTask[] {
     return Array.from(this.ctx.agents.values());
   }

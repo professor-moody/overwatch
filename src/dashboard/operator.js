@@ -353,6 +353,19 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     list.innerHTML = html;
+
+    // Wire frontier deploy buttons
+    list.querySelectorAll('.fi-deploy-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const nodeId = btn.dataset.nodeId;
+        const frontierId = btn.dataset.frontierId;
+        if (nodeId && window.OverwatchAgentPanel?.openDispatchModal) {
+          window.OverwatchAgentPanel.openDispatchModal([nodeId], frontierId);
+        }
+      });
+    });
   }
 
   function renderFrontierItem(f) {
@@ -393,6 +406,7 @@ window.addEventListener('DOMContentLoaded', () => {
         ${chainInfo}
         ${campHtml}
         ${nodeId ? `<a href="/graph?focus=${encodeURIComponent(nodeId)}" class="fi-graph-link" title="View in Graph">⊙</a>` : ''}
+        ${nodeId ? `<button class="fi-deploy-btn" data-node-id="${esc(nodeId)}" data-frontier-id="${esc(f.id)}" title="Deploy Agent">▶</button>` : ''}
       </div>
       <div class="fi-footer">
         <div class="frontier-item-detail">

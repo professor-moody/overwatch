@@ -384,5 +384,149 @@ window.OverwatchAgentPanel = (() => {
     fetchAgents();
   }
 
-  return { init, destroy, updateFromState, fetchAgents, closeDetail };
+  // ====================================================
+  // Agent Dispatch Modal
+  // ====================================================
+  let selectedNodeIds = [];
+  let graphNodes = [];
+
+  function openDispatchModal(preselectedNodeIds, preselectedFrontierId) {
+    selectedNodeIds = preselectedNodeIds ? [...preselectedNodeIds] : [];
+    const overlay = document.getElementById('adm-overlay');
+    if (!overlay) return;
+    overlay.style.display = '';
+    renderSelectedNodes();
+    loadCampaigns();
+    loadGraphNodes();
+    const search = document.getElementById('adm-node-search');
+    if (search) { search.value = ''; search.focus(); }
+    const skill = document.getElementById('adm-skill');
+    if (skill) skill.value = '';
+    // Store frontier item ID
+    overlay.dataset.frontierId = preselectedFrontierId || '';
+  }
+
+  function closeDispatchModal() {
+    const overlay = document.getElementById('adm-overlay');
+    if (overlay) overlay.style.display = 'none';
+    selectedNodeIds = [];
+    const results = document.getElementById('adm-search-results');
+    if (results) results.style.display = 'none';
+  }
+
+  function renderSelectedNodes() {
+    const container = document.getElementById('adm-selected-nodes');
+    if (!container) return;
+    container.innerHTML = selectedNodeIds.map(id => {
+      const node = graphNodes.find(n => n.id === id);
+      const label = node?.properties?.label || id;
+      return `<span class="adm-node-tag">${escapeHtml(label)}<button class="adm-node-remove" data-id="${id}">✕</button></span>`;
+    }).join('');
+    container.querySelectorAll('.adm-node-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectedNodeIds = selectedNodeIds.filter(x => x !== btn.dataset.id);
+        renderSelectedNodes();
+      });
+    });
+  }
+
+  async function loadGraphNodes() {
+    try {
+      const resp = await fetch('/api/graph');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      graphNodes = data.nodes || [];
+    } catch { /* ignore */ }
+  }
+
+  async function loadCampaigns() {
+    try {
+      const resp = await fetch('/api/campaigns');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const sel = document.getElementById('adm-campaign');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">None</option>';
+      for (const c of (data.campaigns || [])) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name || c.id;
+        sel.appendChild(opt);
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Node search
+  const admSearch = document.getElementById('adm-node-search');
+  const admResults = document.getElementById('adm-search-results');
+  if (admSearch) {
+    admSearch.addEventListener('input', () => {
+      const q = admSearch.value.trim().toLowerCase();
+      if (!q || q.length < 2) {
+        if (admResults) admResults.style.display = 'none';
+        return;
+      }
+      const matches = graphNodes.filter(n => {
+        const label = (n.properties?.label || n.id || '').toLowerCase();
+        const type = (n.properties?.type || '').toLowerCase();
+        return (label.includes(q) || type.includes(q) || n.id.toLowerCase().includes(q)) && !selectedNodeIds.includes(n.id);
+      }).slice(0, 20);
+      if (admResults) {
+        if (matches.length === 0) {
+          admResults.style.display = 'none';
+          return;
+        }
+        admResults.style.display = '';
+        admResults.innerHTML = matches.map(n =>
+          `<div class="adm-search-item" data-id="${n.id}">${escapeHtml(n.properties?.label || n.id)}<span class="adm-node-type">${escapeHtml(n.properties?.type || '')}</span></div>`
+        ).join('');
+        admResults.querySelectorAll('.adm-search-item').forEach(item => {
+          item.addEventListener('click', () => {
+            if (!selectedNodeIds.includes(item.dataset.id)) {
+              selectedNodeIds.push(item.dataset.id);
+              renderSelectedNodes();
+            }
+            admSearch.value = '';
+            admResults.style.display = 'none';
+          });
+        });
+      }
+    });
+  }
+
+  // Wire deploy button
+  const deployBtn = document.getElementById('agent-deploy-btn');
+  if (deployBtn) deployBtn.addEventListener('click', () => openDispatchModal());
+
+  // Wire modal buttons
+  const admCancelBtn = document.getElementById('adm-cancel');
+  const admDispatchBtn = document.getElementById('adm-dispatch');
+  if (admCancelBtn) admCancelBtn.addEventListener('click', closeDispatchModal);
+  if (admDispatchBtn) {
+    admDispatchBtn.addEventListener('click', async () => {
+      if (selectedNodeIds.length === 0) return;
+      const skill = document.getElementById('adm-skill')?.value?.trim() || undefined;
+      const campaignId = document.getElementById('adm-campaign')?.value || undefined;
+      const overlay = document.getElementById('adm-overlay');
+      const frontierItemId = overlay?.dataset?.frontierId || undefined;
+      try {
+        const resp = await fetch('/api/agents/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_node_ids: selectedNodeIds,
+            skill,
+            campaign_id: campaignId,
+            frontier_item_id: frontierItemId,
+          }),
+        });
+        if (resp.ok) {
+          closeDispatchModal();
+          await fetchAgents();
+        }
+      } catch { /* ignore */ }
+    });
+  }
+
+  return { init, destroy, updateFromState, fetchAgents, closeDetail, openDispatchModal };
 })();
