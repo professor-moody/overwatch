@@ -52,12 +52,16 @@ After ingestion, inference rules fire on all new nodes.`,
 
       const stat = statSync(resolvedPath);
       const files: string[] = [];
+      let filesDiscovered = 1;
+      let filesSkippedByLimit = 0;
 
       if (stat.isDirectory()) {
-        const entries = readdirSync(resolvedPath)
+        const allEntries = readdirSync(resolvedPath)
           .filter(f => extname(f).toLowerCase() === '.json')
-          .sort()
-          .slice(0, max_files);
+          .sort();
+        filesDiscovered = allEntries.length;
+        filesSkippedByLimit = Math.max(0, allEntries.length - max_files);
+        const entries = allEntries.slice(0, max_files);
         files.push(...entries.map(f => join(resolvedPath, f)));
       } else {
         files.push(resolvedPath);
@@ -76,6 +80,9 @@ After ingestion, inference rules fire on all new nodes.`,
       const warnings: string[] = [];
       const processedFiles: string[] = [];
       const skippedFiles: string[] = [];
+      if (filesSkippedByLimit > 0) {
+        warnings.push(`Directory contains ${filesDiscovered} JSON files; processed first ${files.length} due to max_files=${max_files}, skipped ${filesSkippedByLimit}.`);
+      }
 
       for (const filePath of files) {
         try {
@@ -112,6 +119,8 @@ After ingestion, inference rules fire on all new nodes.`,
 
       const result = {
         files_processed: processedFiles.length,
+        files_discovered: filesDiscovered,
+        files_skipped: skippedFiles.length + filesSkippedByLimit,
         total_nodes: totalNodes,
         total_edges: totalEdges,
         hvts_identified: enrichment.hvts.length,

@@ -13,6 +13,12 @@ export function isIPv6(addr: string): boolean {
   return addr.includes(':');
 }
 
+export function isIPv4(addr: string): boolean {
+  const match = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  return match.slice(1).map(Number).every(octet => octet >= 0 && octet <= 255);
+}
+
 export interface CidrExpansionResult {
   ips: string[];
   truncated: boolean;
@@ -65,8 +71,9 @@ export function expandCidr(cidr: string): string[] {
 }
 
 export function isIpInCidr(ip: string, cidr: string): boolean {
-  if (isIPv6(ip) || isIPv6(cidr)) return false;
+  if (!isIPv4(ip) || isIPv6(cidr)) return false;
   const [base, maskStr] = cidr.split('/');
+  if (!isIPv4(base)) return false;
   if (!maskStr) return ip === base;
 
   const mask = parseInt(maskStr);
@@ -78,7 +85,7 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
 }
 
 export function isIpInScope(ip: string, cidrs: string[], exclusions: string[]): boolean {
-  if (isIPv6(ip)) return false;
+  if (!isIPv4(ip)) return false;
   // Check exclusions first
   for (const excl of exclusions) {
     if (excl.includes('/')) {
@@ -115,6 +122,34 @@ export function isHostnameInScope(hostname: string, domains: string[], exclusion
     if (lower === domainLower || lower.endsWith('.' + domainLower)) return true;
   }
   return false;
+}
+
+export function isHostExcluded(host: string, exclusions: string[]): boolean {
+  const lower = host.toLowerCase();
+  for (const excl of exclusions) {
+    if (excl.includes('/')) {
+      if (isIPv4(host) && isIpInCidr(host, excl)) return true;
+      continue;
+    }
+    const exclLower = excl.toLowerCase();
+    if (lower === exclLower || lower.endsWith('.' + exclLower)) return true;
+  }
+  return false;
+}
+
+export function isHostInScope(
+  host: string,
+  scope: { cidrs?: string[]; domains?: string[]; exclusions?: string[]; hosts?: string[] },
+): boolean {
+  const exclusions = scope.exclusions || [];
+  if (isHostExcluded(host, exclusions)) return false;
+
+  if (isIPv4(host) && isIpInScope(host, scope.cidrs || [], exclusions)) return true;
+
+  const lower = host.toLowerCase();
+  if ((scope.hosts || []).some(scopedHost => scopedHost.toLowerCase() === lower)) return true;
+
+  return isHostnameInScope(host, scope.domains || [], exclusions);
 }
 
 export function isValidCidr(cidr: string): boolean {
@@ -162,7 +197,15 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(`^${re}$`, 'i');
 }
 
-export function isUrlInScope(url: string, patterns: string[]): boolean {
+export function isUrlInScope(url: string, patterns: string[], exclusions: string[] = []): boolean {
+  try {
+    const parsed = new URL(url);
+    if (isHostExcluded(parsed.hostname, exclusions)) return false;
+  } catch {
+    const host = url.replace(/^https?:\/\//, '').split('/')[0]?.split(':')[0] || '';
+    if (host && isHostExcluded(host, exclusions)) return false;
+  }
+
   // Strip protocol for matching — patterns are host/path only
   const normalized = url.replace(/^https?:\/\//, '');
   for (const pattern of patterns) {

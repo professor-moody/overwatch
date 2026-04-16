@@ -3,6 +3,40 @@ import { v4 as uuidv4 } from 'uuid';
 import { caId, certTemplateId, domainId } from '../parser-utils.js';
 import { classifyPrincipalIdentity, resolveNodeIdentity } from '../identity-resolution.js';
 
+function readFirst(obj: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    if (obj[key] !== undefined) return obj[key];
+  }
+  return undefined;
+}
+
+function parseBool(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (['true', 'yes', 'enabled', 'enable', 'on', '1', 'set'].includes(normalized)) return true;
+  if (['false', 'no', 'disabled', 'disable', 'off', '0', 'unset'].includes(normalized)) return false;
+  return undefined;
+}
+
+function parseNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function parseStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === 'string' && value.trim()) {
+    return value.split(/[,;]/).map(v => v.trim()).filter(Boolean);
+  }
+  return undefined;
+}
+
 export function parseCertipy(output: string, agentId: string = 'certipy-parser'): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
@@ -38,18 +72,43 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
         const caNodeId = caId(caName);
         const ca = caData as Record<string, unknown>;
         if (!seenNodes.has(caNodeId)) {
-          const enforceEncrypt = ca['IF_ENFORCEENCRYPTICERTREQUEST'] ?? ca['Enforce Encryption for Requests'];
+          const enforceEncrypt = parseBool(readFirst(ca, [
+            'IF_ENFORCEENCRYPTICERTREQUEST',
+            'Enforce Encryption for Requests',
+            'Enforce Encryption for Requests?',
+          ]));
+          const sanFlag = parseBool(readFirst(ca, [
+            'EDITF_ATTRIBUTESUBJECTALTNAME2',
+            'User Specified SAN',
+            'User Specified SAN?',
+            'Request Disposition - User Specified SAN',
+          ]));
+          const httpEnrollment = parseBool(readFirst(ca, [
+            'Web Enrollment',
+            'Web Enrollment Enabled',
+            'HTTP Enrollment',
+            'HTTP Enrollment Enabled',
+            'Enrollment Web Service',
+          ]));
+          const strongBinding = parseNumber(readFirst(ca, [
+            'StrongCertificateBindingEnforcement',
+            'Strong Certificate Binding Enforcement',
+          ]));
+          const mappingMethods = parseStringArray(readFirst(ca, [
+            'CertificateMappingMethods',
+            'Certificate Mapping Methods',
+          ]));
           nodes.push({
             id: caNodeId,
             type: 'ca',
             label: caName,
             ca_name: caName,
             ca_kind: 'enterprise_ca',
-            ...(enforceEncrypt === false || enforceEncrypt === 'Disabled'
-              ? { enforce_encrypt_icert_request: false }
-              : enforceEncrypt === true || enforceEncrypt === 'Enabled'
-                ? { enforce_encrypt_icert_request: true }
-                : {}),
+            ...(enforceEncrypt !== undefined ? { enforce_encrypt_icert_request: enforceEncrypt } : {}),
+            ...(sanFlag !== undefined ? { san_flag_enabled: sanFlag } : {}),
+            ...(httpEnrollment !== undefined ? { http_enrollment: httpEnrollment } : {}),
+            ...(strongBinding !== undefined ? { strong_cert_binding_enforcement: strongBinding } : {}),
+            ...(mappingMethods ? { certificate_mapping_methods: mappingMethods } : {}),
           });
           seenNodes.add(caNodeId);
         }

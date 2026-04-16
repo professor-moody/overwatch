@@ -24,8 +24,8 @@ function addNode(graph: OverwatchGraph, id: string, props: Partial<NodePropertie
   graph.addNode(id, { id, label: id, discovered_at: new Date().toISOString(), confidence: 1.0, ...props } as NodeProperties);
 }
 
-function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string) {
-  graph.addEdge(src, tgt, { type, confidence: 1.0, discovered_at: new Date().toISOString() } as EdgeProperties);
+function addEdge(graph: OverwatchGraph, src: string, tgt: string, type: string, extra: Partial<EdgeProperties> = {}) {
+  graph.addEdge(src, tgt, { type, confidence: 1.0, discovered_at: new Date().toISOString(), ...extra } as EdgeProperties);
 }
 
 describe('IAM Simulator', () => {
@@ -110,6 +110,91 @@ describe('IAM Simulator', () => {
       const ctx = new EngineContext(graph, makeConfig(), './test.json');
       const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
       expect(result.allowed).toBe(true);
+    });
+
+    it('evaluates policies on assumable roles', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
+      addNode(graph, 'role-admin', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/Admin' });
+      addNode(graph, 'assume-policy', { type: 'cloud_policy', policy_name: 'AllowAssumeAdmin', effect: 'allow', actions: ['sts:AssumeRole'], resources: ['arn:aws:iam::123:role/Admin'] });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'AdminPolicy', effect: 'allow', actions: ['*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'assume-policy', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE');
+      addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
+      expect(result.allowed).toBe(true);
+      expect(result.matching_policies).toContain('AdminPolicy');
+      expect(result.evaluated_principals).toEqual(['user-1', 'role-admin']);
+      expect(result.assumption_paths).toEqual([['user-1', 'role-admin']]);
+    });
+
+    it('does not evaluate trusted role policies without sts:AssumeRole permission', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
+      addNode(graph, 'role-admin', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/Admin' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'AdminPolicy', effect: 'allow', actions: ['*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { assumption_confirmed: false, assumption_basis: 'trust_policy' });
+      addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.matching_policies).toEqual([]);
+      expect(result.evaluated_principals).toEqual(['user-1']);
+      expect(result.assumption_paths).toEqual([]);
+    });
+
+    it('evaluates a successfully tested assume-role edge without a local policy artifact', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
+      addNode(graph, 'role-admin', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/Admin' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'AdminPolicy', effect: 'allow', actions: ['*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { tested: true, test_result: 'success' });
+      addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
+      expect(result.allowed).toBe(true);
+      expect(result.matching_policies).toContain('AdminPolicy');
+    });
+
+    it('handles ASSUMES_ROLE cycles without looping', () => {
+      const graph = makeGraph();
+      addNode(graph, 'role-a', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/A' });
+      addNode(graph, 'role-b', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/B' });
+      addNode(graph, 'assume-b', { type: 'cloud_policy', policy_name: 'AssumeB', effect: 'allow', actions: ['sts:AssumeRole'], resources: ['arn:aws:iam::123:role/B'] });
+      addNode(graph, 'assume-a', { type: 'cloud_policy', policy_name: 'AssumeA', effect: 'allow', actions: ['sts:AssumeRole'], resources: ['arn:aws:iam::123:role/A'] });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'ReadPolicy', effect: 'allow', actions: ['s3:GetObject'], resources: ['*'] });
+      addEdge(graph, 'role-a', 'assume-b', 'HAS_POLICY');
+      addEdge(graph, 'role-b', 'assume-a', 'HAS_POLICY');
+      addEdge(graph, 'role-a', 'role-b', 'ASSUMES_ROLE');
+      addEdge(graph, 'role-b', 'role-a', 'ASSUMES_ROLE');
+      addEdge(graph, 'role-b', 'policy-1', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('role-a', 's3:GetObject', 'arn:aws:s3:::bucket/key', ctx);
+      expect(result.allowed).toBe(true);
+      expect(result.evaluated_principals).toEqual(['role-a', 'role-b']);
+    });
+
+    it('explicit deny on an assumed role overrides allow', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
+      addNode(graph, 'role-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/Restricted' });
+      addNode(graph, 'allow-policy', { type: 'cloud_policy', policy_name: 'AllowS3', effect: 'allow', actions: ['s3:*'], resources: ['*'] });
+      addNode(graph, 'assume-policy', { type: 'cloud_policy', policy_name: 'AssumeRestricted', effect: 'allow', actions: ['sts:AssumeRole'], resources: ['arn:aws:iam::123:role/Restricted'] });
+      addNode(graph, 'deny-policy', { type: 'cloud_policy', policy_name: 'DenySecret', effect: 'deny', actions: ['s3:GetObject'], resources: ['arn:aws:s3:::secret/*'] });
+      addEdge(graph, 'user-1', 'allow-policy', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'assume-policy', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'role-1', 'ASSUMES_ROLE');
+      addEdge(graph, 'role-1', 'deny-policy', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::secret/key', ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.deny_policies).toContain('DenySecret');
     });
   });
 

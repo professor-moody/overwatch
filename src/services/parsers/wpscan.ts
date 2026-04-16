@@ -233,8 +233,10 @@ export function parseWpscan(output: string, agentId: string = 'wpscan-parser', _
           } as Finding['nodes'][0]);
         }
 
-        // Valid credential on this webapp
-        addEdge(cId, waId, 'VALID_ON', 0.95, now, edges, seenEdges);
+        // Confirmed WordPress login for the webapp, plus service-level validity
+        // for graph consumers that require VALID_ON targets to be host/service.
+        addEdge(cId, waId, 'AUTHENTICATED_AS', 0.95, now, edges, seenEdges);
+        addEdge(cId, svcId, 'VALID_ON', 0.95, now, edges, seenEdges);
       }
     }
   }

@@ -316,7 +316,7 @@ export const BUILTIN_RULES: InferenceRule[] = [
     trigger: { node_type: 'cloud_policy' },
     produces: [{
       edge_type: 'PATH_TO_OBJECTIVE',
-      source_selector: 'trigger_node',
+      source_selector: 'policy_holders',
       target_selector: 'nearest_objective',
       confidence: 0.7
     }]

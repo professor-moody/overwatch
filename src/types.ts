@@ -133,6 +133,10 @@ export interface NodeProperties {
   // Subnet
   subnet_cidr?: string;
 
+  // Cloud resource metadata
+  provider_resource_id?: string;
+  public_access_block_incomplete?: boolean;
+
   // Webapp
   url?: string;
   technology?: string;

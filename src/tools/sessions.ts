@@ -8,7 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SessionManager } from '../services/session-manager.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { isIpInScope, isHostnameInScope, isIPv6 } from '../services/cidr.js';
+import { isHostInScope as isScopedHostInScope, isIPv6 } from '../services/cidr.js';
 
 function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'connect' | 'listen'): boolean {
   return kind === 'ssh' || (kind === 'socket' && mode !== 'listen');
@@ -16,8 +16,7 @@ function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'con
 
 function isHostInScope(host: string, engine: GraphEngine): boolean {
   const scope = engine.getConfig().scope;
-  return isIpInScope(host, scope.cidrs, scope.exclusions)
-    || isHostnameInScope(host, scope.domains, scope.exclusions);
+  return isScopedHostInScope(host, scope);
 }
 
 export function registerSessionTools(server: McpServer, sessionManager: SessionManager, engine: GraphEngine): void {

@@ -82,7 +82,14 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
               }
               edges.push({
                 source: trustedId, target: nodeId,
-                properties: { type: 'ASSUMES_ROLE', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+                properties: {
+                  type: 'ASSUMES_ROLE',
+                  confidence: 0.9,
+                  discovered_at: now,
+                  discovered_by: agentId,
+                  assumption_confirmed: false,
+                  assumption_basis: 'trust_policy',
+                },
               });
             }
           }
@@ -101,28 +108,41 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       if (seenNodes.has(nodeId)) continue;
       seenNodes.add(nodeId);
 
-      // Extract actions from the policy document
+      // Extract statement-level actions so explicit denies survive ingestion.
       const policyDoc = policy.PolicyDocument || policy.document;
       const doc = typeof policyDoc === 'string' ? (() => { try { return JSON.parse(policyDoc); } catch { return null; } })() : policyDoc;
-      const actions: string[] = [];
-      const resources: string[] = [];
+      const policyNodes: string[] = [];
+      const statements = doc?.Statement ? (Array.isArray(doc.Statement) ? doc.Statement : [doc.Statement]) : [];
       if (doc?.Statement) {
-        for (const stmt of Array.isArray(doc.Statement) ? doc.Statement : [doc.Statement]) {
-          if (stmt.Effect !== 'Allow') continue;
-          const a = Array.isArray(stmt.Action) ? stmt.Action : (stmt.Action ? [stmt.Action] : []);
-          actions.push(...a);
-          const r = Array.isArray(stmt.Resource) ? stmt.Resource : (stmt.Resource ? [stmt.Resource] : []);
-          resources.push(...r);
+        for (const [index, stmt] of statements.entries()) {
+          const effect = String(stmt.Effect || 'Allow').toLowerCase();
+          if (effect !== 'allow' && effect !== 'deny') continue;
+          const actions = Array.isArray(stmt.Action) ? stmt.Action : (stmt.Action ? [stmt.Action] : []);
+          const resources = Array.isArray(stmt.Resource) ? stmt.Resource : (stmt.Resource ? [stmt.Resource] : ['*']);
+          const conditions = stmt.Condition ? [JSON.stringify(stmt.Condition)] : undefined;
+          const stmtId = statements.length === 1 ? nodeId : cloudPolicyId('aws', `${arn || policyName}:statement:${index}:${effect}`);
+          policyNodes.push(stmtId);
+          nodes.push({
+            id: stmtId, type: 'cloud_policy',
+            label: statements.length === 1 ? policyName : `${policyName} (${effect} statement ${index + 1})`,
+            discovered_at: now, discovered_by: agentId, confidence: 1.0,
+            provider: 'aws', policy_name: policyName, arn,
+            effect, actions, resources,
+            ...(conditions ? { conditions } : {}),
+          } as Finding['nodes'][0]);
         }
       }
 
-      nodes.push({
-        id: nodeId, type: 'cloud_policy',
-        label: policyName,
-        discovered_at: now, discovered_by: agentId, confidence: 1.0,
-        provider: 'aws', policy_name: policyName, arn,
-        effect: 'allow', actions, resources,
-      } as Finding['nodes'][0]);
+      if (policyNodes.length === 0) {
+        policyNodes.push(nodeId);
+        nodes.push({
+          id: nodeId, type: 'cloud_policy',
+          label: policyName,
+          discovered_at: now, discovered_by: agentId, confidence: 1.0,
+          provider: 'aws', policy_name: policyName, arn,
+          effect: 'allow', actions: [], resources: [],
+        } as Finding['nodes'][0]);
+      }
 
       // HAS_POLICY edges from attached entities
       const attached = policy.AttachedEntities || policy.attached_entities || [];
@@ -140,10 +160,12 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
             cloud_account: (entityArn.match(/:(\d{12}):/)?.[1]) || '',
           } as Finding['nodes'][0]);
         }
-        edges.push({
-          source: entityId, target: nodeId,
-          properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: now, discovered_by: agentId },
-        });
+        for (const policyNodeId of policyNodes) {
+          edges.push({
+            source: entityId, target: policyNodeId,
+            properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: now, discovered_by: agentId },
+          });
+        }
       }
     }
   }
@@ -158,8 +180,13 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       if (seenNodes.has(nodeId)) continue;
       seenNodes.add(nodeId);
 
-      const isPublic = bucket.PublicAccessBlockConfiguration
-        ? !(bucket.PublicAccessBlockConfiguration.BlockPublicAcls && bucket.PublicAccessBlockConfiguration.BlockPublicPolicy)
+      const pab = bucket.PublicAccessBlockConfiguration;
+      const explicitPublic = bucket.Public === true || bucket.public === true
+        || bucket.IsPublic === true || bucket.is_public === true
+        || bucket.AclPublic === true || bucket.acl_public === true
+        || bucket.PolicyPublic === true || bucket.policy_public === true;
+      const hasIncompleteBpa = pab
+        ? !(pab.BlockPublicAcls && pab.BlockPublicPolicy && pab.IgnorePublicAcls && pab.RestrictPublicBuckets)
         : undefined;
 
       nodes.push({
@@ -168,7 +195,9 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         provider: 'aws', arn: bucketArn,
         resource_type: 's3_bucket', region: bucket.Region || bucket.region,
-        public: isPublic, cloud_account: accountId,
+        ...(explicitPublic ? { public: true } : {}),
+        ...(hasIncompleteBpa !== undefined ? { public_access_block_incomplete: hasIncompleteBpa } : {}),
+        cloud_account: accountId,
       } as Finding['nodes'][0]);
     }
   }
@@ -356,6 +385,15 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
  *   [INFO] iam.list_users() worked!
  *   [INFO] s3.list_buckets() worked!
  */
+function botoMethodToIamAction(service: string, method: string): string {
+  const action = method
+    .split('_')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+  return `${service}:${action}`;
+}
+
 export function parseEnumerateIam(output: string, agentId: string = 'enumerate-iam-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
@@ -381,8 +419,7 @@ export function parseEnumerateIam(output: string, agentId: string = 'enumerate-i
     if (apiMatch) {
       // Convert "iam.list_users" to "iam:ListUsers" style
       const [service, action] = apiMatch[1].split('.');
-      // Normalise to service:action format
-      const normalised = `${service}:${action}`;
+      const normalised = botoMethodToIamAction(service, action);
       confirmed.push(normalised);
     }
   }

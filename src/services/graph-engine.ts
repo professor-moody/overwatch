@@ -6,7 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
-import { isIpInScope, isIpInCidr, isHostnameInScope, isUrlInScope, isCloudResourceInScope } from './cidr.js';
+import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -748,10 +748,6 @@ export class GraphEngine {
     return { passed, filtered };
   }
 
-  private isExcluded(ip: string): boolean {
-    return !isIpInScope(ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions);
-  }
-
   private resolveHostIp(nodeId: string): string | null {
     const node = this.getNode(nodeId);
     if (!node) return null;
@@ -801,19 +797,14 @@ export class GraphEngine {
   private isNodeExcluded(nodeId: string): string | null {
     const ip = this.resolveHostIp(nodeId);
     const hostname = this.resolveHostname(nodeId);
+    const scope = this.ctx.config.scope;
 
-    if (ip && this.isExcluded(ip)) {
-      // IP not in scope CIDRs — but allow if hostname matches a scoped domain
-      // (handles domain-only engagements where cidrs is empty)
-      if (hostname && isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
-        return null;
-      }
-      return ip;
-    }
-    // No IP: fall back to hostname-based scope check
-    if (!ip && hostname && !isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
-      return hostname;
-    }
+    if (ip && isHostExcluded(ip, scope.exclusions)) return ip;
+    if (hostname && isHostExcluded(hostname, scope.exclusions)) return hostname;
+    if (ip && isScopedHostInScope(ip, scope)) return null;
+    if (hostname && isScopedHostInScope(hostname, scope)) return null;
+    if (ip) return ip;
+    if (hostname) return hostname;
     return null;
   }
 
@@ -848,7 +839,7 @@ export class GraphEngine {
 
     // Scope check for raw target_ip (pre-discovery validation)
     if (action.target_ip) {
-      if (!isIpInScope(action.target_ip, this.ctx.config.scope.cidrs, this.ctx.config.scope.exclusions)) {
+      if (!isScopedHostInScope(action.target_ip, this.ctx.config.scope)) {
         errors.push(`Target IP is out of scope: ${action.target_ip}`);
       }
     }
@@ -857,14 +848,14 @@ export class GraphEngine {
     if (action.target_url) {
       const patterns = this.ctx.config.scope.url_patterns;
       if (patterns && patterns.length > 0) {
-        if (!isUrlInScope(action.target_url, patterns)) {
+        if (!isUrlInScope(action.target_url, patterns, this.ctx.config.scope.exclusions)) {
           errors.push(`Target URL is out of scope: ${action.target_url}`);
         }
       } else {
         // Fail closed: fall back to hostname-vs-domain scope check
         try {
           const hostname = new URL(action.target_url).hostname;
-          if (!isHostnameInScope(hostname, this.ctx.config.scope.domains, this.ctx.config.scope.exclusions)) {
+          if (!isScopedHostInScope(hostname, this.ctx.config.scope)) {
             errors.push(`Target URL hostname is out of scope: ${hostname}`);
           }
         } catch {

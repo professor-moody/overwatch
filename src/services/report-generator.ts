@@ -5,7 +5,7 @@
 // ============================================================
 
 import type {
-  EngagementConfig, NodeProperties, EdgeType,
+  EngagementConfig, NodeProperties,
   ExportedGraph, ExportedGraphEdge,
   AgentTask, InferenceRuleSuggestion, SkillGapReport,
   ContextImprovementReport, TraceQualityReport,
@@ -88,8 +88,6 @@ export interface ReportInput {
 // Constants
 // ============================================================
 
-const ACCESS_EDGES = new Set<EdgeType>(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
-
 // ============================================================
 // Per-Finding Sections
 // ============================================================
@@ -99,17 +97,29 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
   const nodeMap = new Map<string, NodeProperties>();
   for (const n of graph.nodes) nodeMap.set(n.id, n.properties);
 
+  const compromisedHostIds = new Set<string>();
+
   // 1. Compromised hosts
   for (const n of graph.nodes) {
     if (n.properties.type !== 'host') continue;
-    const accessEdges = graph.edges.filter(e =>
-      e.target === n.id && ACCESS_EDGES.has(e.properties.type) && e.properties.confidence >= 0.9
+    const sessionEdges = graph.edges.filter(e =>
+      e.target === n.id && e.properties.type === 'HAS_SESSION' && e.properties.confidence >= 0.9
       // HAS_SESSION edges with session_live:false are historical — exclude from
       // compromise determination.  Edges without session_live (pre-existing data)
       // still pass (backward compat: !== false, not === true).
       && !(e.properties.type === 'HAS_SESSION' && e.properties.session_live === false)
     );
-    if (accessEdges.length === 0) continue;
+    const exploitEdges = graph.edges.filter(e =>
+      e.target === n.id && e.properties.type === 'EXPLOITS' && e.properties.confidence >= 0.9 &&
+      (e.properties.tested === true || !e.properties.inferred_by_rule)
+    );
+    if (sessionEdges.length === 0 && exploitEdges.length === 0) continue;
+
+    compromisedHostIds.add(n.id);
+    const adminEdges = graph.edges.filter(e =>
+      e.target === n.id && e.properties.type === 'ADMIN_TO' && e.properties.confidence >= 0.9
+    );
+    const accessEdges = [...sessionEdges, ...exploitEdges, ...adminEdges];
 
     const accessMethods = accessEdges.map(e => {
       const src = nodeMap.get(e.source);
@@ -121,15 +131,35 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     findings.push({
       id: `finding-host-${n.id}`,
       title: `Compromised Host: ${n.properties.label || n.properties.ip || n.id}`,
-      severity: accessEdges.some(e => e.properties.type === 'ADMIN_TO') ? 'critical' : 'high',
+      severity: adminEdges.length > 0 ? 'critical' : 'high',
       category: 'compromised_host',
-      description: `Host ${n.properties.label || n.id} was compromised via: ${accessMethods.join('; ')}. ` +
+      description: `Host ${n.properties.label || n.id} has confirmed access via: ${accessMethods.join('; ')}. ` +
         `OS: ${n.properties.os || 'unknown'}. ` +
         (n.properties.domain_joined ? 'Domain-joined.' : ''),
       affected_assets: [n.properties.label || n.id],
       evidence,
       remediation: generateHostRemediation(n.properties, accessEdges, nodeMap),
       risk_score: computeHostRiskScore(accessEdges, hopsToObj),
+    });
+  }
+
+  // 1b. Administrative access paths that are not confirmed compromise
+  for (const e of graph.edges) {
+    if (e.properties.type !== 'ADMIN_TO' || e.properties.confidence < 0.9) continue;
+    const host = nodeMap.get(e.target);
+    if (host?.type !== 'host' || compromisedHostIds.has(e.target)) continue;
+    const src = nodeMap.get(e.source);
+    const evidence = buildEvidenceChainsForNode(e.target, graph, history);
+    findings.push({
+      id: `finding-access-${e.source}-${e.target}`,
+      title: `Administrative Access Path: ${host.label || host.ip || e.target}`,
+      severity: 'high',
+      category: 'access_path',
+      description: `${src?.label || e.source} has administrative rights to ${host.label || e.target}, but no confirmed session or code execution evidence is recorded for this host.`,
+      affected_assets: [host.label || e.target, src?.label || e.source],
+      evidence,
+      remediation: generateAccessPathRemediation(host, src),
+      risk_score: 7.0,
     });
   }
 
@@ -140,9 +170,22 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
 
     const evidence = buildEvidenceChainsForNode(n.id, graph, history);
     const validOnEdges = graph.edges.filter(e =>
-      e.source === n.id && (e.properties.type === 'VALID_ON' || e.properties.type === 'POTENTIAL_AUTH')
+      e.source === n.id && e.properties.type === 'VALID_ON'
     );
-    const targetHosts = validOnEdges.map(e => nodeMap.get(e.target)?.label || e.target);
+    const candidateEdges = graph.edges.filter(e =>
+      e.source === n.id && e.properties.type === 'POTENTIAL_AUTH'
+    );
+    const confirmedTargets = validOnEdges.map(e => nodeMap.get(e.target)?.label || e.target);
+    const candidateTargets = candidateEdges.map(e => nodeMap.get(e.target)?.label || e.target);
+    const targetHosts = [...confirmedTargets, ...candidateTargets];
+    const targetSummary = [
+      confirmedTargets.length > 0
+        ? `Confirmed valid on ${confirmedTargets.length} service(s): ${confirmedTargets.slice(0, 5).join(', ')}${confirmedTargets.length > 5 ? `, +${confirmedTargets.length - 5} more` : ''}`
+        : undefined,
+      candidateTargets.length > 0
+        ? `Untested candidate for ${candidateTargets.length} service(s): ${candidateTargets.slice(0, 5).join(', ')}${candidateTargets.length > 5 ? `, +${candidateTargets.length - 5} more` : ''}`
+        : undefined,
+    ].filter(Boolean).join('. ');
 
     findings.push({
       id: `finding-cred-${n.id}`,
@@ -151,8 +194,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       category: 'credential',
       description: `${getCredentialDisplayKind(n.properties)} credential for ${n.properties.cred_user || 'unknown user'}` +
         (n.properties.cred_domain ? ` (domain: ${n.properties.cred_domain})` : '') +
-        `. Valid on ${targetHosts.length} service(s): ${targetHosts.slice(0, 5).join(', ')}` +
-        (targetHosts.length > 5 ? `, +${targetHosts.length - 5} more` : '') + '.',
+        (targetSummary ? `. ${targetSummary}.` : '. No confirmed target validity recorded.'),
       affected_assets: [n.properties.cred_user || n.properties.label || n.id, ...targetHosts.slice(0, 5)],
       evidence,
       remediation: generateCredentialRemediation(n.properties),
@@ -1265,6 +1307,16 @@ function generateHostRemediation(host: NodeProperties, accessEdges: ExportedGrap
   }
 
   return lines.join('\n');
+}
+
+function generateAccessPathRemediation(host: NodeProperties, principal?: NodeProperties): string {
+  const hostLabel = host.label || host.ip || host.id;
+  const principalLabel = principal?.label || principal?.id || 'the privileged principal';
+  return [
+    `1. **Review and reduce administrative membership** granting ${principalLabel} access to ${hostLabel}.`,
+    '2. **Validate whether the access path is required** for business operations and remove stale delegated rights.',
+    '3. **Monitor for logon attempts** using this path until access has been remediated.',
+  ].join('\n');
 }
 
 function generateCredentialRemediation(cred: NodeProperties): string {

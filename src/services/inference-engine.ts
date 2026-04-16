@@ -276,6 +276,10 @@ export class InferenceEngine {
     }
   }
 
+  private isConfirmedAssumeRoleEdge(attrs: EdgeProperties): boolean {
+    return attrs.assumption_confirmed !== false || (attrs.tested === true && attrs.test_result === 'success');
+  }
+
   private resolveSelector(selector: string, triggerNodeId: string, rule?: InferenceRule): string[] {
     const node = this.getNode(triggerNodeId);
     if (!node) return [];
@@ -638,6 +642,18 @@ export class InferenceEngine {
         return this.getNodesByType('objective').map(n => n.id);
       }
 
+      case 'policy_holders': {
+        const targets: string[] = [];
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (attrs.type !== 'HAS_POLICY') return;
+          const srcNode = this.getNode(src);
+          if (srcNode?.type === 'cloud_identity' || srcNode?.type === 'group') {
+            targets.push(src);
+          }
+        });
+        return targets;
+      }
+
       case 'cross_account_roles': {
         // Find cloud_identity nodes reachable via ASSUMES_ROLE that have a different cloud_account
         const srcAccount = node.cloud_account;
@@ -645,6 +661,7 @@ export class InferenceEngine {
         const targets: string[] = [];
         this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
           if (attrs.type !== 'ASSUMES_ROLE') return;
+          if (!this.isConfirmedAssumeRoleEdge(attrs)) return;
           const tgtNode = this.getNode(tgt);
           if (tgtNode?.cloud_account && tgtNode.cloud_account !== srcAccount) {
             targets.push(tgt);
@@ -667,6 +684,7 @@ export class InferenceEngine {
           frontier--;
           this.ctx.graph.forEachOutEdge(current, (_edge: string, attrs, _src: string, tgt: string) => {
             if (attrs.type !== 'ASSUMES_ROLE') return;
+            if (!this.isConfirmedAssumeRoleEdge(attrs)) return;
             if (visited.has(tgt)) return;
             visited.add(tgt);
             queue.push(tgt);

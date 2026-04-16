@@ -97,22 +97,35 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
     return 'aws';
   }
 
+  function arnOrUndefined(value: unknown): string | undefined {
+    const str = String(value || '');
+    return str.startsWith('arn:') ? str : undefined;
+  }
+
+  function ec2RegionFromAz(value: unknown): string {
+    const az = String(value || '');
+    return az ? az.replace(/[a-z]$/, '') : 'unknown';
+  }
+
   for (const res of resources) {
     const provider = detectProvider(res.type, res.provider);
-    const arn = String(res.attrs.arn || res.attrs.id || '');
+    const arn = arnOrUndefined(res.attrs.arn);
+    const providerResourceId = String(res.attrs.id || '');
 
     // --- AWS EC2 instances ---
     if (res.type === 'aws_instance') {
       const instanceId = String(res.attrs.id || '');
-      const instArn = arn || `arn:aws:ec2:${res.attrs.availability_zone || 'unknown'}:${accountId}:instance/${instanceId}`;
+      const region = ec2RegionFromAz(res.attrs.availability_zone);
+      const instArn = arn || `arn:aws:ec2:${region}:${accountId}:instance/${instanceId}`;
       const nodeId = cloudResourceId(instArn);
       addNode({
         id: nodeId, type: 'cloud_resource',
         label: String((res.attrs.tags as Record<string, unknown>)?.Name || res.name || instanceId),
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         provider, arn: instArn, resource_type: 'ec2',
-        region: String(res.attrs.availability_zone || '').replace(/-\w$/, ''),
+        region,
         cloud_account: accountId,
+        provider_resource_id: instanceId || providerResourceId || undefined,
         public: !!(res.attrs.public_ip || res.attrs.associate_public_ip_address),
         imdsv2_required: (res.attrs.metadata_options as Record<string, unknown>[] | undefined)?.[0]?.http_tokens === 'required',
       } as Finding['nodes'][0]);
@@ -187,7 +200,14 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
               } as Finding['nodes'][0]);
               edges.push({
                 source: trustedId, target: nodeId,
-                properties: { type: 'ASSUMES_ROLE', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+                properties: {
+                  type: 'ASSUMES_ROLE',
+                  confidence: 0.9,
+                  discovered_at: now,
+                  discovered_by: agentId,
+                  assumption_confirmed: false,
+                  assumption_basis: 'trust_policy',
+                },
               });
             }
           }
@@ -251,6 +271,7 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         provider, arn: bucketArn, resource_type: 's3_bucket',
         region: String(res.attrs.region || ''), cloud_account: accountId,
+        provider_resource_id: providerResourceId || bucketName,
       } as Finding['nodes'][0]);
       continue;
     }
@@ -266,6 +287,7 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         provider, arn: fnArn, resource_type: 'lambda',
         cloud_account: accountId,
+        provider_resource_id: providerResourceId || fnName,
       } as Finding['nodes'][0]);
 
       const roleArn = String(res.attrs.role || '');
@@ -309,6 +331,7 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
         label: String(res.attrs.name || sgId),
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         network_type: 'security_group', ingress_rules: ingress,
+        provider_resource_id: providerResourceId || sgId,
       } as Finding['nodes'][0]);
       continue;
     }

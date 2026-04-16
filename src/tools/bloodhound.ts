@@ -53,12 +53,20 @@ populate the graph with Active Directory structure.`,
 
       const filesToProcess: Array<{ path: string; name: string; raw?: string }> = [];
       const stat = statSync(resolvedPath);
+      let filesDiscovered = 1;
+      let filesSkipped = 0;
+      const warnings: string[] = [];
 
       if (stat.isDirectory()) {
-        const entries = readdirSync(resolvedPath)
+        const allEntries = readdirSync(resolvedPath)
           .filter(f => extname(f).toLowerCase() === '.json')
-          .sort()
-          .slice(0, max_files);
+          .sort();
+        filesDiscovered = allEntries.length;
+        filesSkipped = Math.max(0, allEntries.length - max_files);
+        const entries = allEntries.slice(0, max_files);
+        if (filesSkipped > 0) {
+          warnings.push(`Directory contains ${allEntries.length} JSON files; processed first ${entries.length} due to max_files=${max_files}, skipped ${filesSkipped}.`);
+        }
         for (const entry of entries) {
           filesToProcess.push({ path: join(resolvedPath, entry), name: entry });
         }
@@ -160,14 +168,17 @@ populate the graph with Active Directory structure.`,
           type: 'text',
           text: JSON.stringify({
             files_processed: fileResults.length,
+            files_discovered: filesDiscovered,
+            files_skipped: filesSkipped,
             total_new_nodes: totalNodes,
             total_new_edges: totalEdges,
             total_inferred_edges: totalInferred,
             hvts_identified: enrichment.hvts.length,
             attack_paths_computed: enrichment.paths.length,
             per_file: fileResults,
+            warnings: warnings.length > 0 ? warnings : undefined,
             errors: allErrors.length > 0 ? allErrors : undefined,
-            message: `BloodHound ingestion complete: ${totalNodes} nodes, ${totalEdges} edges, ${totalInferred} inferred from ${fileResults.length} files. ${enrichment.hvts.length} HVTs identified, ${enrichment.paths.length} attack paths pre-computed.`
+            message: `BloodHound ingestion complete: ${totalNodes} nodes, ${totalEdges} edges, ${totalInferred} inferred from ${fileResults.length} files${filesSkipped > 0 ? ` (${filesSkipped} skipped by max_files)` : ''}. ${enrichment.hvts.length} HVTs identified, ${enrichment.paths.length} attack paths pre-computed.`
           }, null, 2)
         }]
       };

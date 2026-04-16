@@ -240,6 +240,7 @@ const CATEGORY_TO_ATTACK: Record<string, AttackTechnique> = {
   'compromised_host': { id: 'T1021', name: 'Remote Services' },
   'credential':       { id: 'T1003', name: 'OS Credential Dumping' },
   'vulnerability':    { id: 'T1190', name: 'Exploit Public-Facing Application' },
+  'access_path':      { id: 'T1021', name: 'Remote Services' },
   'cloud_exposure':   { id: 'T1078.004', name: 'Cloud Accounts' },
   'webapp':           { id: 'T1190', name: 'Exploit Public-Facing Application' },
 };

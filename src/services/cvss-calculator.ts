@@ -206,6 +206,10 @@ export function estimateCvssFromContext(
       confidentialityImpact = 'H';
       integrityImpact = 'L';
       break;
+    case 'access_path':
+      confidentialityImpact = 'L';
+      integrityImpact = 'L';
+      break;
     case 'vulnerability':
       confidentialityImpact = 'H';
       integrityImpact = 'H';

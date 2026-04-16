@@ -7,7 +7,7 @@
 // ============================================================
 
 import type { EngineContext } from './engine-context.js';
-import type { NodeProperties } from '../types.js';
+import type { EdgeProperties, NodeProperties } from '../types.js';
 
 export interface IAMEvalResult {
   allowed: boolean;
@@ -15,6 +15,8 @@ export interface IAMEvalResult {
   matching_policies: string[];
   deny_policies?: string[];
   provider?: 'aws' | 'azure' | 'gcp';
+  evaluated_principals?: string[];
+  assumption_paths?: string[][];
 }
 
 /**
@@ -71,44 +73,75 @@ export function evaluateIAM(
   const principal = ctx.graph.getNodeAttributes(principalId) as NodeProperties;
   const provider = principal.provider || detectProvider(principal);
 
-  // Collect all policies attached to the principal
+  // Collect all policies attached to the principal and confirmed assumable roles.
   const policyNodes: Array<{ id: string; node: NodeProperties }> = [];
-  ctx.graph.forEachOutEdge(principalId, (_edge, attrs, _src, target) => {
-    if (attrs.type !== 'HAS_POLICY') return;
-    if (!ctx.graph.hasNode(target)) return;
-    const policyNode = ctx.graph.getNodeAttributes(target) as NodeProperties;
-    if (policyNode.type === 'cloud_policy') {
-      policyNodes.push({ id: target, node: policyNode });
-    }
-  });
+  const seenPolicies = new Set<string>();
+  const evaluatedPrincipals: string[] = [];
+  const assumptionPaths: string[][] = [];
+  const queue: Array<{ id: string; path: string[] }> = [{ id: principalId, path: [principalId] }];
+  const visited = new Set<string>();
+  const maxAssumeDepth = 5;
 
-  // Also traverse group memberships: principal → MEMBER_OF → group → HAS_POLICY → policy
-  ctx.graph.forEachOutEdge(principalId, (_edge, attrs, _src, groupTarget) => {
-    if (attrs.type !== 'MEMBER_OF') return;
-    ctx.graph.forEachOutEdge(groupTarget, (_e2, a2, _s2, policyTarget) => {
-      if (a2.type !== 'HAS_POLICY') return;
-      if (!ctx.graph.hasNode(policyTarget)) return;
-      const policyNode = ctx.graph.getNodeAttributes(policyTarget) as NodeProperties;
-      if (policyNode.type === 'cloud_policy') {
-        policyNodes.push({ id: policyTarget, node: policyNode });
+  function addPolicy(policy: { id: string; node: NodeProperties }): void {
+    if (seenPolicies.has(policy.id)) return;
+    seenPolicies.add(policy.id);
+    policyNodes.push(policy);
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current.id)) continue;
+    visited.add(current.id);
+    evaluatedPrincipals.push(current.id);
+    if (current.path.length > 1) assumptionPaths.push(current.path);
+
+    ctx.graph.forEachOutEdge(current.id, (_edge, attrs, _src, target) => {
+      if (attrs.type === 'HAS_POLICY' || attrs.type === 'MEMBER_OF') return;
+
+      if (attrs.type === 'ASSUMES_ROLE' && current.path.length <= maxAssumeDepth && ctx.graph.hasNode(target)) {
+        const targetNode = ctx.graph.getNodeAttributes(target) as NodeProperties;
+        if (
+          targetNode.type === 'cloud_identity'
+          && !current.path.includes(target)
+          && canUseAssumeRoleEdge(current.id, targetNode, attrs as EdgeProperties, provider, ctx)
+        ) {
+          queue.push({ id: target, path: [...current.path, target] });
+        }
       }
     });
-  });
+
+    for (const policy of collectDirectAndGroupPolicies(current.id, ctx)) {
+      addPolicy(policy);
+    }
+  }
 
   if (policyNodes.length === 0) {
-    return { allowed: false, reason: 'No policies attached to principal', matching_policies: [], provider };
+    return {
+      allowed: false,
+      reason: 'No policies attached to principal or assumable roles',
+      matching_policies: [],
+      provider,
+      evaluated_principals: evaluatedPrincipals,
+      assumption_paths: assumptionPaths,
+    };
   }
 
+  let result: IAMEvalResult;
   switch (provider) {
     case 'aws':
-      return evaluateAWS(policyNodes, action, resource);
+      result = evaluateAWS(policyNodes, action, resource);
+      break;
     case 'azure':
-      return evaluateAzure(policyNodes, action, resource);
+      result = evaluateAzure(policyNodes, action, resource);
+      break;
     case 'gcp':
-      return evaluateGCP(policyNodes, action, resource);
+      result = evaluateGCP(policyNodes, action, resource);
+      break;
     default:
-      return evaluateAWS(policyNodes, action, resource); // default to AWS semantics
+      result = evaluateAWS(policyNodes, action, resource); // default to AWS semantics
+      break;
   }
+  return { ...result, evaluated_principals: evaluatedPrincipals, assumption_paths: assumptionPaths };
 }
 
 function detectProvider(node: NodeProperties): 'aws' | 'azure' | 'gcp' | undefined {
@@ -116,6 +149,55 @@ function detectProvider(node: NodeProperties): 'aws' | 'azure' | 'gcp' | undefin
   if (node.arn?.includes('.azure.') || node.principal_type === 'managed_identity') return 'azure';
   if (node.arn?.includes('gserviceaccount.com') || node.principal_type === 'service_account') return 'gcp';
   return undefined;
+}
+
+function collectDirectAndGroupPolicies(
+  principalId: string,
+  ctx: EngineContext,
+): Array<{ id: string; node: NodeProperties }> {
+  const policies: Array<{ id: string; node: NodeProperties }> = [];
+  const seen = new Set<string>();
+
+  function addPolicy(policyTarget: string): void {
+    if (!ctx.graph.hasNode(policyTarget) || seen.has(policyTarget)) return;
+    const policyNode = ctx.graph.getNodeAttributes(policyTarget) as NodeProperties;
+    if (policyNode.type !== 'cloud_policy') return;
+    seen.add(policyTarget);
+    policies.push({ id: policyTarget, node: policyNode });
+  }
+
+  ctx.graph.forEachOutEdge(principalId, (_edge, attrs, _src, target) => {
+    if (attrs.type === 'HAS_POLICY') {
+      addPolicy(target);
+      return;
+    }
+
+    // Group memberships: principal → MEMBER_OF → group → HAS_POLICY → policy
+    if (attrs.type === 'MEMBER_OF') {
+      ctx.graph.forEachOutEdge(target, (_e2, a2, _s2, policyTarget) => {
+        if (a2.type === 'HAS_POLICY') addPolicy(policyTarget);
+      });
+    }
+  });
+
+  return policies;
+}
+
+function canUseAssumeRoleEdge(
+  sourcePrincipalId: string,
+  targetRole: NodeProperties,
+  edge: EdgeProperties,
+  provider: 'aws' | 'azure' | 'gcp' | undefined,
+  ctx: EngineContext,
+): boolean {
+  if (provider !== 'aws') return true;
+  if (edge.assumption_confirmed === true) return true;
+  if (edge.tested === true && edge.test_result === 'success') return true;
+  if (!targetRole.arn) return false;
+
+  const sourcePolicies = collectDirectAndGroupPolicies(sourcePrincipalId, ctx);
+  if (sourcePolicies.length === 0) return false;
+  return evaluateAWS(sourcePolicies, 'sts:AssumeRole', targetRole.arn).allowed;
 }
 
 /**

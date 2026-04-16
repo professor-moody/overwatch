@@ -74,7 +74,14 @@ export function parseCloudFox(output: string, agentId: string = 'cloudfox-parser
         } as Finding['nodes'][0]);
         edges.push({
           source: trustedId, target: roleNodeId,
-          properties: { type: 'ASSUMES_ROLE', confidence: 0.9, discovered_at: now, discovered_by: agentId },
+          properties: {
+            type: 'ASSUMES_ROLE',
+            confidence: 0.9,
+            discovered_at: now,
+            discovered_by: agentId,
+            assumption_confirmed: false,
+            assumption_basis: 'trust_policy',
+          },
         });
       }
       continue;

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
-import { isUrlInScope, isCloudResourceInScope } from '../cidr.js';
+import { isUrlInScope, isCloudResourceInScope, isHostInScope } from '../cidr.js';
 import { inferProfile } from '../../types.js';
 import type { EngagementConfig } from '../../types.js';
 import { unlinkSync, existsSync } from 'fs';
@@ -72,6 +72,39 @@ describe('isUrlInScope', () => {
 
   it('case-insensitive matching', () => {
     expect(isUrlInScope('https://APP.EXAMPLE.COM', ['*.example.com'])).toBe(true);
+  });
+
+  it('hostname exclusions override URL patterns', () => {
+    expect(isUrlInScope('https://blocked.example.com/admin', ['*.example.com/**'], ['blocked.example.com'])).toBe(false);
+  });
+});
+
+describe('isHostInScope', () => {
+  it('allows explicit scoped hosts outside CIDRs and domains', () => {
+    expect(isHostInScope('jumpbox.internal', {
+      cidrs: ['10.10.10.0/28'],
+      domains: ['test.local'],
+      hosts: ['jumpbox.internal'],
+      exclusions: [],
+    })).toBe(true);
+  });
+
+  it('exclusions override explicit scoped hosts', () => {
+    expect(isHostInScope('jumpbox.internal', {
+      cidrs: [],
+      domains: [],
+      hosts: ['jumpbox.internal'],
+      exclusions: ['jumpbox.internal'],
+    })).toBe(false);
+  });
+
+  it('does not treat hostnames as IPv4 CIDR matches', () => {
+    expect(isHostInScope('app.example.com', {
+      cidrs: ['0.0.0.0/0'],
+      domains: [],
+      hosts: [],
+      exclusions: [],
+    })).toBe(false);
   });
 });
 

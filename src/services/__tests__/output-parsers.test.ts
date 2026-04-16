@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler, parseBurp, parseZap, parseSqlmap, parseWpscan, parseScoutSuite, parseCloudFox, parseTerraformState, parseEnumerateIam } from '../parsers/index.js';
+import { prepareFindingForIngest } from '../finding-validation.js';
 
 describe('Output Parsers', () => {
 
@@ -694,6 +695,26 @@ describe('Output Parsers', () => {
       const ca = finding.nodes.find(n => n.type === 'ca');
       expect(ca).toBeDefined();
       expect((ca as Record<string, unknown>).enforce_encrypt_icert_request).toBe(true);
+    });
+
+    it('extracts CA-level ESC properties used by inference rules', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'EDITF_ATTRIBUTESUBJECTALTNAME2': 'Enabled',
+            'HTTP Enrollment Enabled': true,
+            'Strong Certificate Binding Enforcement': '1',
+            'Certificate Mapping Methods': 'UPN,SID',
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const ca = finding.nodes.find(n => n.type === 'ca') as Record<string, unknown> | undefined;
+      expect(ca).toBeDefined();
+      expect(ca!.san_flag_enabled).toBe(true);
+      expect(ca!.http_enrollment).toBe(true);
+      expect(ca!.strong_cert_binding_enforcement).toBe(1);
+      expect(ca!.certificate_mapping_methods).toEqual(['UPN', 'SID']);
     });
 
     it('extracts ct_flag_no_security_extension from ESC9 vulnerability (ESC9)', () => {
@@ -2151,11 +2172,62 @@ describe('Output Parsers', () => {
 
       const assumeEdges = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
       expect(assumeEdges.length).toBeGreaterThanOrEqual(1);
+      expect(assumeEdges[0].properties.assumption_confirmed).toBe(false);
+      expect(assumeEdges[0].properties.assumption_basis).toBe('trust_policy');
     });
 
     it('returns empty for invalid JSON', () => {
       const finding = parsePacu('not json');
       expect(finding.nodes.length).toBe(0);
+    });
+
+    it('preserves explicit deny statements from IAM policies', () => {
+      const data = {
+        IAMPolicies: [{
+          PolicyName: 'MixedS3Policy',
+          Arn: 'arn:aws:iam::123:policy/MixedS3Policy',
+          PolicyDocument: {
+            Statement: [
+              { Effect: 'Allow', Action: 's3:*', Resource: '*' },
+              { Effect: 'Deny', Action: 's3:DeleteObject', Resource: 'arn:aws:s3:::protected/*' },
+            ],
+          },
+          AttachedEntities: [{ Arn: 'arn:aws:iam::123:user/admin' }],
+        }],
+      };
+      const finding = parsePacu(JSON.stringify(data));
+      const policies = finding.nodes.filter(n => n.type === 'cloud_policy');
+      expect(policies.some(p => p.effect === 'allow' && p.actions?.includes('s3:*'))).toBe(true);
+      expect(policies.some(p => p.effect === 'deny' && p.actions?.includes('s3:DeleteObject'))).toBe(true);
+      const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
+      expect(hasPolicy.length).toBe(2);
+    });
+
+    it('does not mark S3 buckets public from incomplete Block Public Access alone', () => {
+      const data = {
+        AccountId: '123456789012',
+        S3Buckets: [{
+          Name: 'private-but-bpa-incomplete',
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            BlockPublicPolicy: false,
+            IgnorePublicAcls: true,
+            RestrictPublicBuckets: true,
+          },
+        }],
+      };
+      const finding = parsePacu(JSON.stringify(data));
+      const bucket = finding.nodes.find(n => n.type === 'cloud_resource' && n.resource_type === 's3_bucket') as any;
+      expect(bucket).toBeDefined();
+      expect(bucket.public).toBeUndefined();
+      expect(bucket.public_access_block_incomplete).toBe(true);
+    });
+
+    it('marks S3 buckets public only with explicit public indicators', () => {
+      const data = { S3Buckets: [{ Name: 'public-bucket', PolicyPublic: true }] };
+      const finding = parsePacu(JSON.stringify(data));
+      const bucket = finding.nodes.find(n => n.type === 'cloud_resource' && n.resource_type === 's3_bucket') as any;
+      expect(bucket.public).toBe(true);
     });
   });
 
@@ -2394,6 +2466,30 @@ describe('Output Parsers', () => {
       expect(runsOn.length).toBe(1);
       const managedBy = finding.edges.filter(e => e.properties.type === 'MANAGED_BY');
       expect(managedBy.length).toBe(1);
+      expect(resources[0].id).toBe('cloud-resource-arn-aws-ec2-unknown-instance-i-abc123');
+      expect((resources[0] as any).provider_resource_id).toBe('i-abc123');
+    });
+
+    it('uses canonical ARN IDs for EC2 and S3 when Terraform only has provider-local IDs', () => {
+      const state = {
+        version: 4,
+        resources: [
+          {
+            type: 'aws_instance',
+            name: 'web',
+            instances: [{ attributes: { id: 'i-123', availability_zone: 'us-east-1a' } }],
+          },
+          {
+            type: 'aws_s3_bucket',
+            name: 'data',
+            instances: [{ attributes: { id: 'my-data-bucket' } }],
+          },
+        ],
+      };
+      const finding = parseTerraformState(JSON.stringify(state), 'test', { cloud_account: '123456789012' } as any);
+      const resourceIds = finding.nodes.filter(n => n.type === 'cloud_resource').map(n => n.id).sort();
+      expect(resourceIds).toContain('cloud-resource-arn-aws-ec2-us-east-1-123456789012-instance-i-123');
+      expect(resourceIds).toContain('cloud-resource-arn-aws-s3-my-data-bucket');
     });
 
     it('parses IAM roles with trust policy', () => {
@@ -2517,8 +2613,9 @@ describe('Output Parsers', () => {
       expect((identity as any).policies_enumerated).toBe(true);
       const policy = finding.nodes.find(n => n.type === 'cloud_policy');
       expect(policy).toBeDefined();
-      expect((policy as any).actions).toContain('iam:list_users');
-      expect((policy as any).actions).toContain('s3:list_buckets');
+      expect((policy as any).actions).toContain('iam:ListUsers');
+      expect((policy as any).actions).toContain('s3:ListBuckets');
+      expect((policy as any).actions).toContain('sts:GetCallerIdentity');
       expect((policy as any).actions).toHaveLength(3);
       const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
       expect(hasPolicy.length).toBe(1);
@@ -2878,6 +2975,18 @@ sqlmap identified the following injection point(s) with a total of 42 HTTP(s) re
       expect(cred.hash).toBeUndefined();
     });
 
+    it('does not promote dumped table hashes into reusable credentials', () => {
+      const output = `
+[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[INFO] the back-end DBMS is MySQL
+[INFO] Parameter: id (GET) is vulnerable
+| admin | $2y$10$abcdefghijklmnopqrstuuuuuuuuuuuuuuuuuuuuuuuuuu |
+`;
+      const finding = parseSqlmap(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(0);
+    });
+
     it('creates EXPLOITS edges from vulnerability to credentials', () => {
       const finding = parseSqlmap(sampleSqlmapText);
       const exploits = finding.edges.filter(e => e.properties.type === 'EXPLOITS');
@@ -3043,10 +3152,18 @@ sqlmap identified the following injection point(s) with a total of 42 HTTP(s) re
       expect(cred.material_kind).toBeUndefined();
     });
 
-    it('creates VALID_ON edge for cracked password', () => {
+    it('creates valid schema edges for cracked password', () => {
       const finding = parseWpscan(sampleWpscanJson);
       const validOn = finding.edges.filter(e => e.properties.type === 'VALID_ON');
       expect(validOn.length).toBe(1);
+      const authAs = finding.edges.filter(e => e.properties.type === 'AUTHENTICATED_AS');
+      expect(authAs.length).toBe(1);
+      const serviceIds = new Set(finding.nodes.filter(n => n.type === 'service').map(n => n.id));
+      const webappIds = new Set(finding.nodes.filter(n => n.type === 'webapp').map(n => n.id));
+      expect(serviceIds.has(validOn[0].target)).toBe(true);
+      expect(webappIds.has(authAs[0].target)).toBe(true);
+      const prepared = prepareFindingForIngest(finding, () => null);
+      expect(prepared.errors).toEqual([]);
     });
 
     it('creates VULNERABLE_TO edges for all vulnerabilities', () => {

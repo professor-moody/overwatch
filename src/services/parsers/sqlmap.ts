@@ -124,18 +124,8 @@ function parseSqlmapText(
       crackedCreds.push({ username: crackedMatch[2], password: crackedMatch[1] });
     }
 
-    // Dump table credentials: username/password patterns
-    // Table: users  ... | admin | $2y$10$... |
-    const tableRowMatch = line.match(/^\|\s+(\S+)\s+\|\s+(\S+)\s+\|/);
-    if (tableRowMatch) {
-      const [, col1, col2] = tableRowMatch;
-      // Heuristic: if col2 looks like a hash or password
-      if (col2 && /^\$\d|^[a-f0-9]{32,}$/i.test(col2) && col1 !== 'username' && col1 !== 'id') {
-        if (!crackedCreds.some(c => c.username === col1)) {
-          crackedCreds.push({ username: col1, password: col2 });
-        }
-      }
-    }
+    // Dumped table rows are not necessarily reusable authentication material.
+    // Only explicit sqlmap crack output is promoted into credential nodes.
   }
 
   // If no target URL found, try to extract from any URL in the output
@@ -327,24 +317,21 @@ function buildSqlmapNodes(
 
   // Cracked credential nodes
   for (const cred of crackedCreds) {
-    const isHash = /^\$\d|^[a-f0-9]{32,}$/i.test(cred.password);
-    const materialKind: string = isHash ? 'ntlm_hash' : 'plaintext_password';
-    const credType: string = isHash ? 'ntlm' : 'plaintext';
-    const cId = credentialId(isHash ? 'hash' : 'password', cred.password, cred.username);
+    const cId = credentialId('password', cred.password, cred.username);
 
     if (!seenNodes.has(cId)) {
       seenNodes.add(cId);
       nodes.push({
         id: cId,
         type: 'credential',
-        label: `${cred.username}:${isHash ? 'hash' : 'password'}`,
+        label: `${cred.username}:password`,
         discovered_at: now,
         confidence: 0.9,
-        cred_material_kind: materialKind,
-        cred_type: credType,
+        cred_material_kind: 'plaintext_password',
+        cred_type: 'plaintext',
         cred_user: cred.username,
         cred_usable_for_auth: true,
-        ...(isHash ? { cred_hash: cred.password } : { cred_value: cred.password }),
+        cred_value: cred.password,
       } as Finding['nodes'][0]);
     }
 

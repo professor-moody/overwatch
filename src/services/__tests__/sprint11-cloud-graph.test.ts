@@ -235,13 +235,30 @@ describe('11.3 — Cloud inference rules', () => {
 
   it('rule-overprivileged-policy fires for wildcard actions', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-    engine.ingestFinding(makeFinding([
-      { id: 'cp-wild', type: 'cloud_policy', label: 'SuperAdmin', discovered_at: now, confidence: 1.0, provider: 'aws', policy_name: 'SuperAdmin', actions: ['*:*'], resources: ['*'] },
-    ]));
+    engine.ingestFinding(makeFinding(
+      [
+        { id: 'ci-admin', type: 'cloud_identity', label: 'admin', discovered_at: now, confidence: 1.0, provider: 'aws', arn: 'arn:aws:iam::123456789012:user/admin' },
+        { id: 'cp-wild', type: 'cloud_policy', label: 'SuperAdmin', discovered_at: now, confidence: 1.0, provider: 'aws', policy_name: 'SuperAdmin', actions: ['*:*'], resources: ['*'] },
+      ],
+      [
+        { source: 'ci-admin', target: 'cp-wild', properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: now } },
+      ]
+    ));
     const edges = engine.queryGraph({ edge_type: 'PATH_TO_OBJECTIVE' });
     expect(edges.edges.length).toBeGreaterThanOrEqual(1);
     const ptoEdge = edges.edges.find(e => e.properties.inferred_by_rule === 'rule-overprivileged-policy');
     expect(ptoEdge).toBeTruthy();
+    expect(ptoEdge!.source).toBe(cloudIdentityId('arn:aws:iam::123456789012:user/admin'));
+  });
+
+  it('rule-overprivileged-policy does not create policy-to-objective edges without holders', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding(makeFinding([
+      { id: 'cp-wild', type: 'cloud_policy', label: 'SuperAdmin', discovered_at: now, confidence: 1.0, provider: 'aws', policy_name: 'SuperAdmin', actions: ['*:*'], resources: ['*'] },
+    ]));
+    const edges = engine.queryGraph({ edge_type: 'PATH_TO_OBJECTIVE' });
+    const ptoEdge = edges.edges.find(e => e.properties.inferred_by_rule === 'rule-overprivileged-policy');
+    expect(ptoEdge).toBeUndefined();
   });
 
   it('rule-overprivileged-policy does NOT fire for non-wildcard actions', () => {

@@ -161,6 +161,27 @@ describe('buildFindings', () => {
     expect(adminCred).toBeDefined();
     expect(adminCred!.severity).toBe('critical'); // privileged
     expect(adminCred!.risk_score).toBe(9.5);
+    expect(adminCred!.description).toContain('Confirmed valid on');
+    const jdoeCred = credFindings.find(f => f.title.includes('jdoe'));
+    expect(jdoeCred?.description).toContain('Untested candidate for');
+    expect(jdoeCred?.description).not.toContain('Valid on');
+  });
+
+  it('reports ADMIN_TO-only paths as access paths, not compromised hosts', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        { id: 'user-admin', properties: { id: 'user-admin', type: 'user', label: 'admin', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+        { id: 'host-admin', properties: { id: 'host-admin', type: 'host', label: '10.10.10.50', ip: '10.10.10.50', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'user-admin', target: 'host-admin', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    expect(findings.find(f => f.category === 'compromised_host')).toBeUndefined();
+    const accessPath = findings.find(f => f.category === 'access_path');
+    expect(accessPath).toBeDefined();
+    expect(accessPath!.title).toContain('Administrative Access Path');
   });
 
   it('generates findings for vulnerabilities', () => {
@@ -1272,7 +1293,7 @@ describe('buildFindings — session_live awareness', () => {
     expect(hostFindings.find(f => f.title.includes('10.10.10.77'))).toBeDefined();
   });
 
-  it('still includes hosts when ADMIN_TO exists alongside dead sessions', () => {
+  it('reports ADMIN_TO alongside dead sessions as an access path', () => {
     const graph = makeGraph({
       nodes: [
         { id: 'host-admin', properties: { id: 'host-admin', type: 'host', label: '10.10.10.66', ip: '10.10.10.66', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
@@ -1284,6 +1305,8 @@ describe('buildFindings — session_live awareness', () => {
     });
     const findings = buildFindings(graph, makeHistory(), makeConfig());
     const hostFindings = findings.filter(f => f.category === 'compromised_host');
-    expect(hostFindings.find(f => f.title.includes('10.10.10.66'))).toBeDefined();
+    expect(hostFindings.find(f => f.title.includes('10.10.10.66'))).toBeUndefined();
+    const accessPaths = findings.filter(f => f.category === 'access_path');
+    expect(accessPaths.find(f => f.title.includes('10.10.10.66'))).toBeDefined();
   });
 });
