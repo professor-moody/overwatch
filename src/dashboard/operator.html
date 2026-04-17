@@ -332,6 +332,12 @@
       <div class="eng-form" id="eng-form" style="display:none">
         <h3>New Engagement</h3>
         <div class="eng-form-grid">
+          <div class="eng-form-field" style="grid-column:1/-1">
+            <label class="eng-form-label">Template <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — pre-fills phases &amp; objectives)</span></label>
+            <select id="eng-form-template" class="cb-select">
+              <option value="">None (blank engagement)</option>
+            </select>
+          </div>
           <div class="eng-form-field">
             <label class="eng-form-label">Name *</label>
             <input type="text" id="eng-form-name" class="cb-input" placeholder="e.g. Dante Run" maxlength="120" />
@@ -340,8 +346,7 @@
             <label class="eng-form-label">Profile</label>
             <select id="eng-form-profile" class="cb-select">
               <option value="network">Network</option>
-              <option value="internal-pentest">Internal Pentest</option>
-              <option value="red-team">Red Team</option>
+              <option value="goad_ad">Active Directory (GOAD)</option>
               <option value="web_app">Web App</option>
               <option value="cloud">Cloud</option>
               <option value="hybrid">Hybrid</option>
@@ -357,6 +362,11 @@
             <label class="eng-form-label">Scope Domains</label>
             <div class="eng-tag-row cfg-tag-list" id="eng-form-domains"></div>
             <input type="text" id="eng-form-domain-input" class="cb-input" placeholder="corp.local (Enter to add)" style="margin-top:4px" />
+          </div>
+          <div class="eng-form-field">
+            <label class="eng-form-label">Exclusions</label>
+            <div class="eng-tag-row cfg-tag-list" id="eng-form-exclusions"></div>
+            <input type="text" id="eng-form-exclusion-input" class="cb-input" placeholder="10.10.0.1 (Enter to add)" style="margin-top:4px" />
           </div>
           <div class="eng-form-field">
             <label class="eng-form-label">OPSEC Profile</label>

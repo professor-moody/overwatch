@@ -5,6 +5,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import { loadTemplate, mergeTemplateWithConfig } from '../config.js';
 
 export interface EngagementSummary {
   id: string;
@@ -27,6 +28,7 @@ export interface CreateEngagementInput {
   exclusions?: string[];
   opsec_profile?: string;
   objectives?: Array<{ id: string; description: string }>;
+  template_id?: string;
 }
 
 const OPSEC_PROFILES: Record<string, { name: string; max_noise: number }> = {
@@ -109,25 +111,55 @@ export class EngagementManager {
       .replace(/^-|-$/g, '')
       .slice(0, 40);
     const id = `${slug}-${Date.now().toString(36)}`;
+    const created_at = new Date().toISOString();
 
-    const config = {
-      id,
-      name: input.name,
-      created_at: new Date().toISOString(),
-      profile: input.profile || 'network',
-      scope: {
-        cidrs: input.cidrs || [],
-        domains: input.domains || [],
-        exclusions: input.exclusions || [],
-      },
-      objectives: (input.objectives || []).map((o, i) => ({
-        id: o.id || `obj-${i + 1}`,
-        description: o.description,
-        achieved: false,
-      })),
-      opsec: OPSEC_PROFILES[input.opsec_profile || 'pentest'] ?? OPSEC_PROFILES.pentest,
-      phases: [],
-    };
+    let config: Record<string, unknown>;
+
+    if (input.template_id) {
+      const template = loadTemplate(input.template_id);
+      if (!template) {
+        throw new Error(`Template not found: ${input.template_id}`);
+      }
+      const opsecOverride = input.opsec_profile
+        ? OPSEC_PROFILES[input.opsec_profile] ?? OPSEC_PROFILES.pentest
+        : undefined;
+      const mergedObjectives = input.objectives && input.objectives.length > 0
+        ? input.objectives.map((o, i) => ({ id: o.id || `obj-${i + 1}`, description: o.description, achieved: false }))
+        : undefined;
+      const overrides: any = {
+        id,
+        name: input.name,
+        created_at,
+        scope: {
+          cidrs: input.cidrs || [],
+          domains: input.domains || [],
+          exclusions: input.exclusions || [],
+        },
+      };
+      if (input.profile) overrides.profile = input.profile;
+      if (opsecOverride) overrides.opsec = opsecOverride;
+      if (mergedObjectives) overrides.objectives = mergedObjectives;
+      config = mergeTemplateWithConfig(template, overrides) as unknown as Record<string, unknown>;
+    } else {
+      config = {
+        id,
+        name: input.name,
+        created_at,
+        profile: input.profile || 'network',
+        scope: {
+          cidrs: input.cidrs || [],
+          domains: input.domains || [],
+          exclusions: input.exclusions || [],
+        },
+        objectives: (input.objectives || []).map((o, i) => ({
+          id: o.id || `obj-${i + 1}`,
+          description: o.description,
+          achieved: false,
+        })),
+        opsec: OPSEC_PROFILES[input.opsec_profile || 'pentest'] ?? OPSEC_PROFILES.pentest,
+        phases: [],
+      };
+    }
 
     const filePath = join(this.engagementsDir, `${id}.json`);
     writeFileSync(filePath, JSON.stringify(config, null, 2));

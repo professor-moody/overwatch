@@ -1450,6 +1450,7 @@ export class DashboardServer {
           exclusions: Array.isArray(input.exclusions) ? input.exclusions : [],
           opsec_profile: input.opsec_profile,
           objectives: Array.isArray(input.objectives) ? input.objectives : [],
+          template_id: typeof input.template_id === 'string' ? input.template_id : undefined,
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
