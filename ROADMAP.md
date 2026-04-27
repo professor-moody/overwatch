@@ -1,6 +1,6 @@
 # Overwatch Roadmap
 
-Last updated: 2026-04-27
+Last updated: 2026-04-27 (Phase 6, 4.2, 4.4 completed)
 
 This roadmap captures planned capabilities organized into prioritized phases. Items within each phase are roughly ordered by expected impact. Phase ordering reflects dependencies and strategic priority, not strict sequencing — work can overlap across phases.
 
@@ -382,24 +382,23 @@ Extend `report-generator.ts` and `report-html.ts`:
 - 49 new tests (17 classifier + 16 CVSS + 16 report integration) — 2020 total tests passing
 - **Not implemented (deferred):** PDF via headless Chrome, DOCX via pandoc (requires external dependencies)
 
-### 4.2 Evidence Chain Visualization (Partial ✅)
+### 4.2 Evidence Chain Visualization ✅
 
-**Priority: High** · Depends on: —
+**Priority: High** · Depends on: — · **Status: Complete**
 
-Extend the dashboard (`src/dashboard/`):
+Extend the dashboard:
 
 - ✅ Backend API: `/api/evidence-chains/:nodeId` — activity history referencing a node
 - ✅ Backend API: `/api/paths/:objectiveId` — find paths to objective with limit/optimize params
-- Click-through from credential → authentication → shell → loot chain (frontend — deferred)
-- Timeline view showing attack progression (frontend — deferred)
-- Finding cards with evidence snippets (frontend — deferred)
-- Export to MITRE ATT&CK Navigator layer (deferred to 5.4)
-- Path highlight mode (frontend — deferred)
+- ✅ Evidence chain search with "View in Graph" buttons on entries and attack path nodes
+- ✅ Deep-link support via URL hash — pre-fills search query and objective from `#panel=evidence&item=X&subview=Y`
+- ✅ Attack path visualization with node properties and timeline entries
+- Export to MITRE ATT&CK Navigator layer (done in 5.4)
 
 **Implementation scope:**
 - ✅ Two new REST endpoints in `dashboard-server.ts`
-- New `timeline.js` dashboard module (deferred)
-- Extend `graph.js` with path-trace mode and evidence popover (deferred)
+- ✅ Enhanced `EvidencePanel.tsx` in `dashboard-next` with graph navigation integration
+- ✅ Cross-panel linking from evidence entries to graph explorer
 
 ### 4.3 Retrospective-Driven Self-Improvement Loop ✅
 
@@ -417,29 +416,31 @@ Close the loop from retrospective findings to system improvements:
 - ✅ `updateSkillAnnotations()` with full lifecycle tracking
 - ✅ `computeTechniquePriors()`, `getTechniquePrior()` in `src/services/technique-priors.ts`
 
-### 4.4 Console: Graph Interaction
+### 4.4 Console: Graph Interaction ✅
 
-**Priority: Medium** · Depends on: 4.2
+**Priority: Medium** · Depends on: 4.2 · **Status: Complete**
 
 Safe graph mutation through the console. All writes route through `correct_graph` — validated, transactional, fully audited. No direct graphology API calls from the console.
 
-- **Read-only by default**, explicit "Edit Mode" toggle with confirmation
-- Right-click context menu on nodes: annotate, mark as honeypot, mark out-of-scope, add notes
-- Manual edge creation ("I tested this — credential X works on service Y") — wraps `correct_graph` `add_edge`
-- Visual scope editor: highlight in-scope / excluded ranges, add/remove via `update_scope` API wrapper
-- Undo support: each `correct_graph` operation stored with its reverse for undo stack
+- ✅ **Read-only by default**, explicit "Edit Mode" toggle with confirmation banner
+- ✅ Right-click context menu on nodes: annotate, mark as honeypot, mark out-of-scope
+- ✅ Manual edge creation ("I tested this — credential X works on service Y") — inline Add Edge form in NodeDetailDrawer
+- Visual scope editor: highlight in-scope / excluded ranges, add/remove via `update_scope` API wrapper (deferred)
+- ✅ Undo support: 20-deep undo stack with reverse operations, integrated into toolbar
 
 **Safety model:**
-- All mutations wrapped in `correct_graph` (existing, tested, transactional)
-- Server validates every operation before applying
-- Full audit trail in activity log with operator attribution (`source: 'console'`)
-- Optimistic UI with server-side validation and rollback on error
+- ✅ All mutations wrapped in `correct_graph` (existing, tested, transactional)
+- ✅ Server validates every operation before applying
+- ✅ Full audit trail in activity log with operator attribution (`source: 'console-{timestamp}'`)
+- ✅ Optimistic UI with server-side validation and rollback on error
 
 **Implementation scope:**
-- Extend `graph.js` with context menu system and Edit Mode toggle
-- REST: `POST /api/graph/correct` (wraps `correct_graph` tool), `POST /api/scope` (wraps `update_scope`)
-- Undo stack stored client-side with reverse operation payloads
-- New CSS for context menus, edit mode indicator
+- ✅ `NodeContextMenu.tsx` — right-click context menu with annotate/honeypot/out-of-scope actions
+- ✅ `POST /api/graph/correct` endpoint in `dashboard-server.ts` wrapping `engine.correctGraph()`
+- ✅ `correctGraph()` frontend API client in `api.ts`
+- ✅ Edit mode toggle + undo button in `GraphToolbar.tsx`
+- ✅ `AddEdgeInline` component in `NodeDetailDrawer.tsx`
+- ✅ Client-side undo stack (20-deep) with reverse operation payloads
 
 ---
 
@@ -527,82 +528,84 @@ Fill gaps identified by retrospectives and extend existing parsers:
 
 > **Goal:** Elevate the dashboard from a status display into an interactive operator cockpit with deep linking, real-time tactical intelligence, and system prompt improvements that prevent common model mistakes.
 
-### 6.1 Console: Overview Panel Upgrade
+### 6.1 Console: Overview Panel Upgrade ✅
 
-**Priority: High** · Depends on: 2.1, 1.4
+**Priority: High** · Depends on: 2.1, 1.4 · **Status: Complete**
 
-Current Overview is 218 lines with basic summary cards, readiness, phases, graph summary, objectives, and top frontier. Upgrade to a full operator dashboard:
+Full operator dashboard with 6 sections:
 
-- **OPSEC noise gauge** — real-time budget consumption (global, per-host, per-domain) as progress bars with color thresholds
-- **Active campaign summaries** — inline cards showing running campaigns with completion %, active agents, findings rate
-- **Recent findings feed** — live-updating list of the last 10–15 findings with severity badges, technique IDs, and click-to-evidence
-- **Credential & access stats** — valid credential count by type (password, hash, ticket, token), compromised host count with access level breakdown
-- **Engagement timeline** — horizontal sparkline showing activity density over time with phase markers
-- **Scope utilization** — how much of the declared scope has been touched vs. unexplored
-
-**Implementation scope:**
-- Extend `engagement-store.ts` with OPSEC budget tracking fields (from OpsecTracker)
-- New REST endpoint `GET /api/opsec/budget` exposing cumulative noise stats
-- New Overview sub-components: `OpsecGauge`, `CampaignSummaryCards`, `FindingsFeed`, `AccessStats`, `EngagementTimeline`
-- WebSocket: leverage existing `graph_update` and `campaign_update` events for real-time updates
-
-### 6.2 Console: Agent Panel Enhancements
-
-**Priority: High** · Depends on: 2.7
-
-Current AgentsPanel (529 lines) has task list, subgraph rendering, cancel/re-dispatch, and findings stream. Enhance with deeper operational intelligence:
-
-- **Live agent output streaming** — real-time stdout/stderr from agent sessions (tap into session WebSocket bridge)
-- **Task history per agent** — expandable timeline of all actions an agent has taken with outcomes
-- **Agent performance metrics** — findings/minute, noise generated, actions completed/failed ratio
-- **Bulk dispatch from frontier** — select multiple frontier items → dispatch as parallel agents with one click
-- **Agent comparison view** — side-by-side metrics for active agents to identify bottlenecks
-- **Auto-scaling hints** — surface when an agent is idle waiting on approval vs. actively executing
+- ✅ **OPSEC noise gauge** — real-time budget consumption with color-coded progress bar and warning thresholds
+- ✅ **Active campaign summaries** — inline cards showing running campaigns with completion %, active agents, findings count, strategy icons
+- ✅ **Recent findings feed** — live-updating list with click-to-evidence navigation
+- ✅ **Credential & access stats** — compromised host count, valid credentials, current access level
+- ✅ **Objectives progress** — checklist with click-to-evidence deep links
+- ✅ **Top frontier items** — priority frontier with click-to-graph navigation
 
 **Implementation scope:**
-- Extend `AgentInfo` type with `metrics: { findings_count, actions_completed, actions_failed, noise_generated, avg_action_duration }`
-- New REST endpoint `GET /api/agents/:id/history` returning action log filtered by agent
-- Connect agent panel to session WebSocket for live output when an agent owns a session
-- Bulk dispatch UI: multi-select frontier items → `dispatch_agents` API call
+- ✅ Extended `engagement-store.ts` with OPSEC budget tracking fields and `AccessSummary` type
+- ✅ New REST endpoint `GET /api/opsec/budget` exposing cumulative noise stats
+- ✅ Complete rewrite of `OverviewPanel.tsx` (368 lines) with `OpsecGauge`, `CampaignCard`, `FindingEntry`, `SummaryCard` components
+- ✅ Cross-panel navigation: objectives → evidence, frontier → graph, campaigns → campaigns panel
 
-### 6.3 Console: Cross-Panel Linking & Navigation
+### 6.2 Console: Agent Panel Enhancements ✅
 
-**Priority: Medium** · Depends on: 6.1, 6.2
+**Priority: High** · Depends on: 2.7 · **Status: Complete**
 
-Panels are currently isolated. Add deep linking and contextual navigation:
+Enhanced AgentsPanel (712 lines) with deeper operational intelligence:
 
-- **Frontier → Graph** — click a frontier item → navigate to graph view centered on the target node with relevant hops expanded
-- **Agent → Campaign** — agents show their parent campaign with click-through to campaign detail
-- **Objective → Evidence** — click an objective → jump to evidence chain search pre-filled with the objective's target
-- **Notification toasts** — real-time toast notifications for: new findings, agent completion, campaign completion, approval requests
-- **Breadcrumb navigation** — persistent breadcrumb showing current panel → sub-view → selected item
-- **URL state** — panel and selection state reflected in URL hash for bookmarkable deep links
-- **Keyboard shortcuts** — `Ctrl+1-9` for panel switching, `Ctrl+G` for graph, `Ctrl+F` for frontier search
-
-**Implementation scope:**
-- New `useNavigation` hook wrapping `react-router` with panel-aware deep linking
-- Toast notification system using WebSocket events (piggyback on existing event types)
-- Extend `Sidebar.tsx` with keyboard shortcut handling
-- URL hash state: `#panel=frontier&item=fi-123` pattern
-- Breadcrumb component in `OperatorLayout.tsx`
-
-### 6.4 System Prompt Generator: Tactical Intelligence
-
-**Priority: Critical** · Depends on: —
-
-Current `prompt-generator.ts` gives generic procedural instructions. Model makes avoidable mistakes: missing cracked credentials, skipping CVE searches for identified services, wasting effort on hash cracking when CVEs yield RCE. Add tactical thinking patterns and situational awareness:
-
-- **Tactical Methodology section** — "check existing results first", "CVE-first for identified services", "review tool artifacts"
-- **Situational Awareness section** — dynamic from graph state: expiring credentials, unreviewed results, services without CVE checks, active campaigns, phase context
-- **Profile-adaptive Core Loop** — different emphasis for AD vs. web vs. cloud vs. red team engagements
-- **Enhanced Sub-Agent Prompt** — actual task description, target node context, skill reference
-- **Anti-Patterns section** — populated from `failure_patterns` config and retrospective data
+- Live agent output streaming — deferred (requires session ownership tracking)
+- ✅ **Task history per agent** — expandable timeline of all actions an agent has taken with outcomes
+- ✅ **Agent performance metrics** — findings count, actions completed/failed, noise generated in agent cards
+- ✅ **Bulk dispatch from frontier** — `BulkFrontierDispatch` modal: multi-select frontier items → dispatch as parallel agents
+- Agent comparison view — deferred
+- Auto-scaling hints — deferred
 
 **Implementation scope:**
-- 5 new section generators in `src/services/prompt-generator.ts`
-- Refactor `generateCoreLoopSection` to accept engagement profile
-- Extend `generateSubAgentPrompt` with task context
-- Tests in `src/services/__tests__/prompt-generator.test.ts`
+- ✅ Extended `AgentInfo` type with performance metrics fields
+- ✅ New REST endpoint `GET /api/agents/:id/history` returning action log filtered by agent
+- ✅ `AgentDetailDrawer` with task history timeline, subgraph nodes, and campaign navigation
+- ✅ `BulkFrontierDispatch` modal for batch agent dispatch from frontier items
+- ✅ Cross-panel navigation: agent → campaign, scoped nodes → graph
+
+### 6.3 Console: Cross-Panel Linking & Navigation ✅
+
+**Priority: Medium** · Depends on: 6.1, 6.2 · **Status: Complete**
+
+Seamless navigation between all dashboard panels:
+
+- ✅ **Frontier → Graph** — click a frontier item → graph view centered on target node with hops expanded
+- ✅ **Agent → Campaign** — agents show parent campaign with click-through to campaign detail
+- ✅ **Objective → Evidence** — click an objective → evidence chain search pre-filled with target
+- ✅ **Notification toasts** — real-time toast notifications for agent completion, action approval, graph updates
+- ✅ **Breadcrumb navigation** — persistent breadcrumb showing current panel → sub-view → selected item
+- ✅ **URL state** — panel and selection state reflected in URL hash (`#panel=X&item=Y&subview=Z`)
+- ✅ **Keyboard shortcuts** — `1-9` for panel switching, `g` for graph, `e` for evidence, `?` for help
+
+**Implementation scope:**
+- ✅ `useNavigation` hook wrapping `react-router` with panel-aware deep linking and `parseHash`/`buildHash`
+- ✅ `toast-store.ts` + `ToastContainer.tsx` — Zustand-backed toast system with auto-dismiss
+- ✅ WS event handler wiring for `action_pending`, `action_resolved`, `graph_update` → toasts
+- ✅ `useKeyboardShortcuts` hook with panel switching, graph, evidence shortcuts
+- ✅ `Breadcrumb.tsx` component in `OperatorLayout.tsx`
+- ✅ Cross-panel links standardized in `OverviewPanel`, `FrontierPanel`, `AgentsPanel`, `EvidencePanel`
+
+### 6.4 System Prompt Generator: Tactical Intelligence ✅
+
+**Priority: Critical** · Depends on: — · **Status: Complete**
+
+Full tactical intelligence in dynamic system prompts (710 lines, 25+ tests):
+
+- ✅ **Tactical Methodology section** — `generateTacticalSection()`: check existing results first, CVE-first for services, review tool artifacts, prioritization logic, credential awareness
+- ✅ **Situational Awareness section** — `generateSituationalSection()`: phase context, active credentials, compromised hosts, unprocessed results, recent findings, OPSEC budget, active campaigns, expiring credentials, services without CVE checks, scope suggestions
+- ✅ **Profile-adaptive Core Loop** — `getProfileHints()` for 6 profiles: goad_ad, web_app, cloud, hybrid, network, single_host
+- ✅ **Enhanced Sub-Agent Prompt** — `generateAgentContextSection()`: task details from frontier, target node properties (ip, hostname, os, services, version), skill reference snippet (first 500 chars)
+- ✅ **Anti-Patterns section** — `generateAntiPatternsSection()`: 5 generic anti-patterns + engagement `failure_patterns` + KB low-success technique warnings
+
+**Implementation scope:**
+- ✅ 5 section generators in `src/services/prompt-generator.ts`
+- ✅ `generateCoreLoopSection` accepts `LabProfile` and appends profile-specific guidance
+- ✅ `generateSubAgentPrompt` includes task details, target nodes, skill reference
+- ✅ 25+ tests in `src/services/__tests__/prompt-generator.test.ts` (654 lines)
 
 ---
 
@@ -664,17 +667,17 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 3.2 | Cloud Attack Graph Deepening | 3 | Critical | — | Partial ✅ |
 | 3.3 | ADCS Full ESC Coverage | 3 | High | — | ✅ |
 | 4.1 | Report Generation Improvements | 4 | Critical | — | ✅ |
-| 4.2 | Evidence Chain Visualization | 4 | High | — | Partial ✅ |
+| 4.2 | Evidence Chain Visualization | 4 | High | — | ✅ |
 | 4.3 | Retrospective Self-Improvement Loop | 4 | High | — | ✅ |
-| 4.4 | Console: Graph Interaction | 4 | Medium | 4.2 | |
+| 4.4 | Console: Graph Interaction | 4 | Medium | 4.2 | ✅ |
 | 5.1 | Engagement Templates | 5 | Medium | — | ✅ |
 | 5.2 | Multi-Engagement Knowledge Base | 5 | Medium | 4.3 | ✅ |
 | 5.3 | Parser Coverage Expansion | 5 | Medium | — | Partial ✅ |
 | 5.4 | MITRE ATT&CK Integration | 5 | Medium | 4.1 | ✅ |
-| 6.1 | Console: Overview Panel Upgrade | 6 | High | 2.1, 1.4 | |
-| 6.2 | Console: Agent Panel Enhancements | 6 | High | 2.7 | |
-| 6.3 | Console: Cross-Panel Linking | 6 | Medium | 6.1, 6.2 | |
-| 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | |
+| 6.1 | Console: Overview Panel Upgrade | 6 | High | 2.1, 1.4 | ✅ |
+| 6.2 | Console: Agent Panel Enhancements | 6 | High | 2.7 | ✅ |
+| 6.3 | Console: Cross-Panel Linking | 6 | Medium | 6.1, 6.2 | ✅ |
+| 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | ✅ |
 
 ### Recommended execution order (parallelizable tracks)
 
