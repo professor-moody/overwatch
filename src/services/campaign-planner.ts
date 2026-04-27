@@ -56,10 +56,21 @@ export class CampaignPlanner {
   private get campaigns(): Map<string, Campaign> { return this.ctx.campaigns; }
   /** Maps chain_id → campaign_id for stable spray campaign identity across recomputation */
   private chainToCampaign = new Map<string, string>();
+  /** Reverse index: frontier item ID → campaign ID for O(1) lookup */
+  private itemToCampaign = new Map<string, string>();
 
   constructor(ctx: EngineContext) {
     this.ctx = ctx;
     this.rebuildChainIndex();
+    this.rebuildItemIndex();
+  }
+
+  /** Rebuild itemToCampaign reverse index from persisted campaigns */
+  private rebuildItemIndex(): void {
+    this.itemToCampaign.clear();
+    for (const [id, c] of this.campaigns) {
+      for (const item of c.items) this.itemToCampaign.set(item, id);
+    }
   }
 
   /** Rebuild chainToCampaign index from persisted campaigns (after load) */
@@ -401,10 +412,13 @@ export class CampaignPlanner {
       c.progress.consecutive_failures++;
     }
 
-    // Auto-complete when all items processed (unless abort conditions are triggered)
-    if (c.progress.completed >= c.progress.total && c.status === 'active') {
+    // Check abort conditions first — prevents completing a campaign that should be aborted
+    if (c.status === 'active') {
       const abort = this.checkAbortConditions(campaignId);
-      if (!abort.should_abort) {
+      if (abort.should_abort) {
+        c.status = 'aborted';
+        c.completed_at = new Date().toISOString();
+      } else if (c.progress.completed >= c.progress.total) {
         c.status = 'completed';
         c.completed_at = new Date().toISOString();
       }
@@ -574,9 +588,8 @@ export class CampaignPlanner {
    * Find which campaign contains a given frontier item.
    */
   findCampaignForItem(frontierItemId: string): Campaign | null {
-    for (const c of this.campaigns.values()) {
-      if (c.items.includes(frontierItemId)) return c;
-    }
+    const campaignId = this.itemToCampaign.get(frontierItemId);
+    if (campaignId) return this.campaigns.get(campaignId) || null;
     return null;
   }
 
@@ -600,9 +613,23 @@ export class CampaignPlanner {
     const existing = existingId ? this.campaigns.get(existingId) : null;
 
     if (existing) {
-      // Refresh item list (frontier may have changed) but preserve status/progress
-      existing.items = itemIds;
-      existing.progress.total = itemIds.length;
+      if (existing.status === 'draft') {
+        // Draft campaigns: safe to fully refresh item list
+        existing.items = itemIds;
+        existing.progress.total = itemIds.length;
+      } else if (existing.status === 'active') {
+        // Active campaigns: only append new items, don't remove processed ones
+        const currentSet = new Set(existing.items);
+        for (const id of itemIds) {
+          if (!currentSet.has(id)) {
+            existing.items.push(id);
+            currentSet.add(id);
+          }
+        }
+        existing.progress.total = existing.items.length;
+      }
+      // Completed/aborted/paused campaigns: don't modify items
+      this.rebuildItemIndex();
       return existing;
     }
 
@@ -622,6 +649,7 @@ export class CampaignPlanner {
 
     this.campaigns.set(id, campaign);
     this.chainToCampaign.set(stableKey, id);
+    for (const item of itemIds) this.itemToCampaign.set(item, id);
     return campaign;
   }
 

@@ -1,0 +1,228 @@
+import { create } from 'zustand';
+import type {
+  EngagementState,
+  ExportedGraph,
+  ExportedNode,
+  ExportedEdge,
+  FrontierItem,
+  Objective,
+  AgentInfo,
+  Campaign,
+  SessionInfo,
+  PendingAction,
+  ActivityEntry,
+  EngagementPhase,
+  FullStateData,
+  GraphUpdateData,
+  OpsecBudget,
+  AccessSummary,
+} from '../lib/types';
+
+export interface EngagementStore {
+  // Connection
+  connected: boolean;
+  initialized: boolean;
+  setConnected: (v: boolean) => void;
+  setInitialized: () => void;
+
+  // Engagement state
+  engagement: EngagementState['engagement'] | null;
+  accessLevel: string;
+  historyCount: number;
+
+  // Graph
+  graph: ExportedGraph;
+  graphSummary: EngagementState['graph_summary'] | null;
+  graphVersion: number;
+  lastDelta: { nodes: ExportedNode[]; edges: ExportedEdge[]; removed_nodes: string[]; removed_edges: string[] } | null;
+
+  // Frontier
+  frontier: FrontierItem[];
+
+  // Objectives
+  objectives: Objective[];
+
+  // Agents
+  agents: AgentInfo[];
+
+  // Campaigns
+  campaigns: Campaign[];
+
+  // Sessions
+  sessions: SessionInfo[];
+
+  // Pending Actions
+  pendingActions: PendingAction[];
+
+  // Activity
+  recentActivity: ActivityEntry[];
+
+  // Phases
+  phases: EngagementPhase[];
+
+  // Readiness
+  readiness: { status: string; issues: string[] } | null;
+
+  // OPSEC Budget
+  opsecBudget: OpsecBudget | null;
+
+  // Access Summary
+  accessSummary: AccessSummary;
+
+  // Actions
+  loadFullState: (data: FullStateData) => void;
+  applyGraphUpdate: (data: GraphUpdateData) => void;
+  updatePendingAction: (type: 'action_pending' | 'action_resolved', data: unknown) => void;
+  setAgents: (agents: AgentInfo[]) => void;
+  setCampaigns: (campaigns: Campaign[]) => void;
+  setSessions: (sessions: SessionInfo[]) => void;
+  setRecentActivity: (entries: ActivityEntry[]) => void;
+  setOpsecBudget: (budget: OpsecBudget) => void;
+}
+
+export const useEngagementStore = create<EngagementStore>((set, get) => ({
+  // Connection
+  connected: false,
+  initialized: false,
+  setConnected: (v) => set({ connected: v }),
+  setInitialized: () => set({ initialized: true }),
+
+  // Engagement state
+  engagement: null,
+  accessLevel: 'none',
+  historyCount: 0,
+
+  // Graph
+  graph: { nodes: [], edges: [] },
+  graphSummary: null,
+  graphVersion: 0,
+  lastDelta: null,
+
+  // Frontier
+  frontier: [],
+
+  // Objectives
+  objectives: [],
+
+  // Agents
+  agents: [],
+
+  // Campaigns
+  campaigns: [],
+
+  // Sessions
+  sessions: [],
+
+  // Pending Actions
+  pendingActions: [],
+
+  // Activity
+  recentActivity: [],
+
+  // Phases
+  phases: [],
+
+  // Readiness
+  readiness: null,
+
+  // OPSEC Budget
+  opsecBudget: null,
+
+  // Access Summary
+  accessSummary: { compromised_hosts: [], valid_credentials: [], current_access_level: 'none' },
+
+  // --- Actions ---
+
+  loadFullState: (data: FullStateData) => {
+    const s = data.state;
+    set({
+      engagement: s.engagement || null,
+      accessLevel: s.access_level || 'none',
+      historyCount: data.history_count ?? 0,
+      graph: data.graph,
+      graphSummary: s.graph_summary || null,
+      graphVersion: get().graphVersion + 1,
+      lastDelta: null,
+      frontier: s.frontier || [],
+      objectives: s.objectives || [],
+      agents: s.agents || [],
+      campaigns: s.campaigns || [],
+      sessions: s.sessions || [],
+      pendingActions: s.pending_actions || [],
+      phases: s.phases || [],
+      initialized: true,
+      readiness: s.readiness || null,
+      accessSummary: (s as any).access_summary || get().accessSummary,
+      recentActivity: (s as any).recent_activity || get().recentActivity,
+    });
+  },
+
+  applyGraphUpdate: (data: GraphUpdateData) => {
+    const s = data.state;
+    const prev = get().graph;
+
+    // Merge delta into existing graph
+    const nodeMap = new Map<string, ExportedNode>();
+    for (const n of prev.nodes) nodeMap.set(n.id, n);
+    // Remove deleted nodes
+    for (const id of data.delta.removed_nodes || []) nodeMap.delete(id);
+    // Add/update nodes from delta
+    for (const n of data.delta.nodes) nodeMap.set(n.id, n);
+
+    const edgeMap = new Map<string, ExportedEdge>();
+    for (const e of prev.edges) {
+      const key = e.id || `${e.source}-${e.type}-${e.target}`;
+      edgeMap.set(key, e);
+    }
+    // Remove deleted edges
+    for (const id of data.delta.removed_edges || []) edgeMap.delete(id);
+    // Add/update edges from delta
+    for (const e of data.delta.edges) {
+      const key = e.id || `${e.source}-${e.type}-${e.target}`;
+      edgeMap.set(key, e);
+    }
+
+    set({
+      engagement: s.engagement || get().engagement,
+      accessLevel: s.access_level || get().accessLevel,
+      historyCount: data.history_count ?? get().historyCount,
+      graph: {
+        nodes: Array.from(nodeMap.values()),
+        edges: Array.from(edgeMap.values()),
+      },
+      graphSummary: s.graph_summary || get().graphSummary,
+      graphVersion: get().graphVersion + 1,
+      lastDelta: data.delta,
+      frontier: s.frontier || get().frontier,
+      objectives: s.objectives || get().objectives,
+      agents: s.agents || get().agents,
+      campaigns: s.campaigns || get().campaigns,
+      sessions: s.sessions || get().sessions,
+      pendingActions: s.pending_actions || get().pendingActions,
+      phases: s.phases || get().phases,
+      readiness: s.readiness || get().readiness,
+      accessSummary: (s as any).access_summary || get().accessSummary,
+      recentActivity: (s as any).recent_activity || get().recentActivity,
+    });
+  },
+
+  updatePendingAction: (type, data) => {
+    if (type === 'action_pending') {
+      const action = data as PendingAction;
+      set((s) => ({
+        pendingActions: [...s.pendingActions.filter((a) => a.action_id !== action.action_id), action],
+      }));
+    } else if (type === 'action_resolved') {
+      const resolved = data as { action_id: string };
+      set((s) => ({
+        pendingActions: s.pendingActions.filter((a) => a.action_id !== resolved.action_id),
+      }));
+    }
+  },
+
+  setAgents: (agents) => set({ agents }),
+  setCampaigns: (campaigns) => set({ campaigns }),
+  setSessions: (sessions) => set({ sessions }),
+  setRecentActivity: (entries) => set({ recentActivity: entries }),
+  setOpsecBudget: (budget) => set({ opsecBudget: budget }),
+}));

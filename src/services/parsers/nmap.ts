@@ -74,6 +74,18 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
   const edges: Finding['edges'] = [];
   const hosts = extractNmapHosts(xml);
 
+  if (hosts.length === 0 && xml.length > 100) {
+    console.error(`[nmap-parser] Warning: non-trivial input (${xml.length} chars) produced 0 hosts. Input may be truncated or malformed.`);
+    return {
+      id: uuidv4(),
+      agent_id: agentId,
+      timestamp: new Date().toISOString(),
+      nodes: [],
+      edges: [],
+      raw_output: `[PARSE WARNING] Nmap XML (${xml.length} chars) produced 0 hosts. Input may be truncated or malformed.\n${xml.slice(0, 500)}`,
+    };
+  }
+
   for (const host of hosts) {
     const resolvedHostId = hostId(host.ip);
 
@@ -143,7 +155,10 @@ function extractNmapHosts(xml: string): NmapHost[] {
   let parsed: Record<string, unknown>;
   try {
     parsed = nmapXmlParser.parse(xml) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    if (xml.length > 100) {
+      console.error(`[nmap-parser] Failed to parse XML (${xml.length} chars): ${err instanceof Error ? err.message : String(err)}`);
+    }
     return hosts;
   }
 

@@ -7,6 +7,20 @@
 
 import type { EngineContext } from './engine-context.js';
 
+// --- Shared time window utility ---
+
+/**
+ * Check if the current time falls within the given time window.
+ * Uses fractional hours for precision (e.g. 17:30 = 17.5).
+ * Handles wrap-around windows (e.g. 22:00–06:00).
+ */
+export function isInTimeWindow(startHour: number, endHour: number, now: Date = new Date()): boolean {
+  const hour = now.getHours() + now.getMinutes() / 60;
+  return startHour <= endHour
+    ? hour >= startHour && hour < endHour
+    : hour >= startHour || hour < endHour;
+}
+
 // --- Types ---
 
 export interface DefensiveSignal {
@@ -154,9 +168,7 @@ export class OpsecTracker {
     const { start_hour, end_hour } = tw;
 
     // Check if currently in window
-    const inWindow = start_hour <= end_hour
-      ? hour >= start_hour && hour < end_hour
-      : hour >= start_hour || hour < end_hour;
+    const inWindow = isInTimeWindow(start_hour, end_hour, now);
 
     if (!inWindow) return 0;
 

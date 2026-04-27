@@ -4,7 +4,16 @@
 // ============================================================
 
 import type { GraphEngine } from './graph-engine.js';
-import type { EngagementConfig, EngagementState, AgentTask } from '../types.js';
+import type { EngagementConfig, EngagementState, AgentTask, LabProfile } from '../types.js';
+import { inferProfile } from '../types.js';
+import { timeToExpiry } from './credential-utils.js';
+import { SkillIndex } from './skill-index.js';
+import type { TechniqueStats } from './knowledge-base.js';
+
+interface PromptContext {
+  state: EngagementState;
+  engine: GraphEngine;
+}
 
 export type PromptRole = 'primary' | 'sub_agent';
 
@@ -28,9 +37,9 @@ export function generateSystemPrompt(
   const state = engine.getState({ activityCount: 10 });
 
   if (options.role === 'sub_agent') {
-    return generateSubAgentPrompt(state, registeredTools, options);
+    return generateSubAgentPrompt(state, registeredTools, options, engine);
   }
-  return generatePrimaryPrompt(state, registeredTools, options);
+  return generatePrimaryPrompt(state, registeredTools, options, engine);
 }
 
 // ============================================================
@@ -41,11 +50,15 @@ function generatePrimaryPrompt(
   state: EngagementState,
   tools: ToolEntry[],
   options: GeneratePromptOptions,
+  engine: GraphEngine,
 ): string {
   const sections: string[] = [];
+  const profile = inferProfile(state.config);
+  const ctx: PromptContext = { state, engine };
 
   sections.push(generateIdentitySection(state.config));
-  sections.push(generateCoreLoopSection());
+  sections.push(generateCoreLoopSection(profile));
+  sections.push(generateTacticalSection());
   sections.push(generateKeyPrinciplesSection(state.config));
 
   if (options.include_tools !== false) {
@@ -54,6 +67,12 @@ function generatePrimaryPrompt(
 
   if (options.include_state !== false) {
     sections.push(generateStateSnapshotSection(state));
+    sections.push(generateSituationalSection(ctx));
+  }
+
+  const antiPatterns = generateAntiPatternsSection(ctx);
+  if (antiPatterns) {
+    sections.push(antiPatterns);
   }
 
   return sections.join('\n\n');
@@ -67,6 +86,7 @@ function generateSubAgentPrompt(
   state: EngagementState,
   tools: ToolEntry[],
   options: GeneratePromptOptions,
+  engine: GraphEngine,
 ): string {
   const sections: string[] = [];
 
@@ -92,9 +112,10 @@ function generateSubAgentPrompt(
   }
 
   sections.push(generateSubAgentWorkflowSection());
+  sections.push(generateTacticalSection());
 
   if (options.include_state !== false && agentContext) {
-    sections.push(generateAgentContextSection(agentContext));
+    sections.push(generateAgentContextSection(agentContext, state, engine));
   }
 
   return sections.join('\n\n');
@@ -139,8 +160,8 @@ function generateIdentitySection(config: EngagementConfig): string {
   return lines.join('\n');
 }
 
-function generateCoreLoopSection(): string {
-  return `## Core Loop
+function generateCoreLoopSection(profile: LabProfile): string {
+  const base = `## Core Loop
 
 1. **Start every session** (including after compaction) by calling \`get_state()\`. This gives you the complete engagement briefing from the graph — scope, discoveries, access, objectives, frontier.
 
@@ -172,6 +193,65 @@ function generateCoreLoopSection(): string {
 11. **Monitor and re-plan** by periodically calling \`get_state()\`.
 
 12. **Repeat** until all objectives are achieved or the operator redirects.`;
+
+  const profileHints = getProfileHints(profile);
+  if (profileHints) {
+    return base + '\n\n### Profile-Specific Guidance (' + profile + ')\n\n' + profileHints;
+  }
+  return base;
+}
+
+function getProfileHints(profile: LabProfile): string | null {
+  switch (profile) {
+    case 'goad_ad':
+      return [
+        '- Prioritize credential chain completion: if 2 of 3 hops are confirmed, the last hop is highest value.',
+        '- Use BloodHound paths (`find_paths`) to identify shortest routes to DA/EA.',
+        '- Sequence: enumerate → Kerberoast/ASREProast → credential spray → lateral movement → DCSync.',
+        '- After every new credential, immediately evaluate POTENTIAL_AUTH edges it unlocks.',
+        '- Check ADCS certificate templates — ESC1-ESC13 paths may bypass password requirements entirely.',
+      ].join('\n');
+    case 'web_app':
+      return [
+        '- **CVE-first**: When you identify a service + version, search for known CVEs *before* attempting brute-force or hash cracking.',
+        '- Prioritize: authenticated re-scan > IDOR/auth bypass > SQLi/RCE > brute-force.',
+        '- Check for default credentials on all identified web frameworks and CMS platforms.',
+        '- After SQLi discovery, evaluate RCE potential (stacked queries, file write) before credential extraction.',
+        '- API endpoint enumeration: look for `/api/`, `/v1/`, `/graphql` paths on every webapp.',
+      ].join('\n');
+    case 'cloud':
+      return [
+        '- **IAM first**: Enumerate IAM policies and role trust before testing network services.',
+        '- Check for IMDS v1 on every EC2/VM instance — it\'s often the cheapest credential theft path.',
+        '- Evaluate cross-account role chaining: `ASSUMES_ROLE` edges may span account boundaries.',
+        '- Lambda/Functions with attached IAM roles are high-value targets for privilege escalation.',
+        '- Check S3/Blob/GCS bucket policies for public access before attempting authenticated access.',
+      ].join('\n');
+    case 'hybrid':
+      return [
+        '- This engagement spans both on-prem and cloud — look for pivot points between the two.',
+        '- AD Connect / Azure AD Sync services are high-value targets for credential bridging.',
+        '- On-prem service accounts may have cloud IAM equivalents — check for credential reuse.',
+        '- Cloud-to-on-prem: managed identities on VMs with AD access, Azure Arc agents.',
+        '- On-prem-to-cloud: ADFS/PTA agents, Azure AD password hash sync.',
+      ].join('\n');
+    case 'network':
+      return [
+        '- Prioritize service enumeration across all subnets before deep-diving individual hosts.',
+        '- Group hosts by service fingerprint — similar services likely share vulnerabilities.',
+        '- Check for default SNMP communities, IPMI hash disclosure, UPnP on network devices.',
+        '- Pivot through compromised hosts to reach isolated network segments.',
+      ].join('\n');
+    case 'single_host':
+      return [
+        '- Focus on thorough enumeration of all services on the target before exploitation.',
+        '- Check all service versions against CVE databases — prioritize known RCE over brute-force.',
+        '- Local privilege escalation: check SUID, capabilities, cron, writable paths, kernel version.',
+        '- Enumerate all users and credentials — look for password reuse across services.',
+      ].join('\n');
+    default:
+      return null;
+  }
 }
 
 function generateKeyPrinciplesSection(config: EngagementConfig): string {
@@ -281,7 +361,7 @@ function generateSubAgentWorkflowSection(): string {
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;
 }
 
-function generateAgentContextSection(agent: AgentTask): string {
+function generateAgentContextSection(agent: AgentTask, state?: EngagementState, engine?: GraphEngine): string {
   const lines = [
     '## Agent Context',
     '',
@@ -295,6 +375,334 @@ function generateAgentContextSection(agent: AgentTask): string {
   }
   if (agent.skill) {
     lines.push(`- **Skill:** ${agent.skill}`);
+  }
+
+  // Enhanced: include task description from frontier if available
+  if (state && agent.frontier_item_id) {
+    const frontierItem = state.frontier.find(f => f.id === agent.frontier_item_id);
+    if (frontierItem) {
+      lines.push('');
+      lines.push('### Task Details');
+      lines.push(`- **Type:** ${frontierItem.type}`);
+      lines.push(`- **Description:** ${frontierItem.description}`);
+      if (frontierItem.graph_metrics.hops_to_objective != null) {
+        lines.push(`- **Hops to Objective:** ${frontierItem.graph_metrics.hops_to_objective}`);
+      }
+      lines.push(`- **Expected Noise:** ${(frontierItem.opsec_noise * 100).toFixed(0)}%`);
+      if (frontierItem.chain_id) {
+        lines.push(`- **Chain:** ${frontierItem.chain_id} (depth ${frontierItem.chain_depth ?? '?'}/${frontierItem.chain_length ?? '?'}, ${((frontierItem.chain_completion_pct ?? 0) * 100).toFixed(0)}% complete)`);
+      }
+    }
+  }
+
+  // Skill reference: inline first 500 chars of skill content
+  if (agent.skill && engine) {
+    try {
+      const skillIndex = new SkillIndex();
+      const content = skillIndex.getSkillContent(agent.skill);
+      if (content) {
+        lines.push('');
+        lines.push('### Skill Reference');
+        const snippet = content.length > 500 ? content.slice(0, 500) + '...' : content;
+        lines.push(snippet);
+      }
+    } catch { /* skill index unavailable — skip */ }
+  }
+
+  // Target node context: key properties of scoped nodes
+  if (engine && agent.subgraph_node_ids && agent.subgraph_node_ids.length > 0) {
+    const nodeSnippets: string[] = [];
+    for (const nid of agent.subgraph_node_ids.slice(0, 3)) {
+      const node = engine.getNode(nid);
+      if (!node) continue;
+      const props: string[] = [`type=${node.type}`, `label=${node.label}`];
+      if (node.ip) props.push(`ip=${node.ip}`);
+      if (node.hostname) props.push(`hostname=${node.hostname}`);
+      if (node.services) props.push(`services=${node.services}`);
+      if (node.version) props.push(`version=${node.version}`);
+      if (node.os) props.push(`os=${node.os}`);
+      if (node.cred_type) props.push(`cred_type=${node.cred_type}`);
+      nodeSnippets.push(`- \`${nid}\`: ${props.join(', ')}`);
+    }
+    if (nodeSnippets.length > 0) {
+      lines.push('');
+      lines.push('### Target Nodes');
+      lines.push(...nodeSnippets);
+      if (agent.subgraph_node_ids.length > 3) {
+        lines.push(`- ... and ${agent.subgraph_node_ids.length - 3} more`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================
+// Tactical Methodology — prevents common model mistakes
+// ============================================================
+
+function generateTacticalSection(): string {
+  return `## Tactical Methodology
+
+### Before Every Action
+- **Check existing results first.** Before cracking a hash, use \`query_graph()\` to check if it's already been cracked. Before scanning a port, check if scan results already exist in the graph. Check log files and tool output directories from previous actions — tools like hashcat, nxc, and impacket leave results on disk.
+- **CVE-first for identified services.** When you identify a service + version (especially running as root/SYSTEM), search for known CVEs *before* attempting brute-force, hash cracking, or manual exploitation. Known vulns are lower-noise and higher-reward than credential attacks.
+- **Review tool artifacts.** After every action completes, check for output files, log files, and loot directories. Don't re-derive information that's already been captured.
+
+### Prioritization Logic
+- **Exploitation > brute-force.** A service running as root/SYSTEM with a known CVE is almost always higher priority than cracking a hash for the same service.
+- **Authenticated access > re-authentication.** If you already have valid credentials for a service, use them. Don't attempt to crack hashes for services you can already access.
+- **Quietest path wins.** When multiple attack paths exist to the same target, estimate noise for each and pick the quietest one that's likely to succeed.
+- **Chain completion is high value.** If 2 of 3 hops in an attack chain are confirmed, the final hop is worth more than an isolated edge.
+
+### Credential Awareness
+- When a credential is cracked or captured, **immediately** evaluate all services it can authenticate to using \`query_graph()\`. Don't wait for the next frontier cycle.
+- Track credential state: captured → cracking → cracked → used → expired. Don't attempt actions with expired credentials.
+- Check for credential reuse: if \`user:password\` works on one service, test it against all services that user has POTENTIAL_AUTH edges to.`;
+}
+
+// ============================================================
+// Situational Awareness — dynamic from engagement state
+// ============================================================
+
+function generateSituationalSection(ctx: PromptContext): string {
+  const { state, engine } = ctx;
+  const lines: string[] = [
+    '## Situational Awareness',
+    '',
+    'The following is auto-generated from the current engagement state. Pay attention to these items.',
+    '',
+  ];
+
+  let hasContent = false;
+
+  // Phase context
+  if (state.phases.length > 0 && state.current_phase) {
+    const currentPhase = state.phases.find(p => p.id === state.current_phase);
+    if (currentPhase) {
+      lines.push(`### Current Phase: ${currentPhase.name}`);
+      if (currentPhase.strategies.length > 0) {
+        lines.push(`- **Focus strategies:** ${currentPhase.strategies.join(', ')}`);
+      }
+      if (!currentPhase.exit_criteria_met) {
+        lines.push('- **Exit criteria not met** — continue working toward phase completion.');
+      }
+      const nextPhase = state.phases.find(p => p.order === currentPhase.order + 1);
+      if (nextPhase) {
+        lines.push(`- **Next phase:** ${nextPhase.name}${nextPhase.entry_criteria_met ? ' (ready to enter)' : ''}`);
+      }
+      lines.push('');
+      hasContent = true;
+    }
+  }
+
+  // Credential status
+  if (state.access_summary.valid_credentials.length > 0) {
+    lines.push(`### Active Credentials (${state.access_summary.valid_credentials.length})`);
+    for (const cred of state.access_summary.valid_credentials.slice(0, 10)) {
+      lines.push(`- ${cred}`);
+    }
+    if (state.access_summary.valid_credentials.length > 10) {
+      lines.push(`- ... and ${state.access_summary.valid_credentials.length - 10} more`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Compromised hosts
+  if (state.access_summary.compromised_hosts.length > 0) {
+    lines.push(`### Compromised Hosts (${state.access_summary.compromised_hosts.length})`);
+    lines.push(`Access level: **${state.access_summary.current_access_level}**`);
+    for (const host of state.access_summary.compromised_hosts.slice(0, 10)) {
+      lines.push(`- ${host}`);
+    }
+    if (state.access_summary.compromised_hosts.length > 10) {
+      lines.push(`- ... and ${state.access_summary.compromised_hosts.length - 10} more`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Recent activity — detect completed actions without follow-up
+  const recentCompleted = state.recent_activity.filter(a =>
+    a.event_type?.includes('completed') || a.description?.toLowerCase().includes('completed'));
+  const recentParsed = state.recent_activity.filter(a =>
+    a.event_type?.includes('finding') || a.description?.toLowerCase().includes('parsed') || a.description?.toLowerCase().includes('reported'));
+
+  if (recentCompleted.length > recentParsed.length + 2) {
+    lines.push('### ⚠ Unprocessed Results');
+    lines.push(`${recentCompleted.length} actions completed recently but only ${recentParsed.length} findings parsed/reported. **Check for tool output that hasn't been ingested.** Look for log files, loot directories, and tool artifacts from completed actions.`);
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Recent findings summary
+  const findings = state.recent_activity.filter(a =>
+    a.event_type?.includes('finding') || a.description?.toLowerCase().includes('finding'));
+  if (findings.length > 0) {
+    lines.push(`### Recent Findings (${findings.length})`);
+    for (const f of findings.slice(-5)) {
+      const timeStr = f.timestamp ? new Date(f.timestamp).toLocaleTimeString() : '';
+      lines.push(`- ${timeStr ? `[${timeStr}] ` : ''}${f.description}`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // OPSEC budget status
+  const opsecCtx = engine.getOpsecContext();
+  if (opsecCtx.global_noise_spent > 0 || opsecCtx.defensive_signals.length > 0) {
+    const maxNoise = state.config.opsec?.max_noise ?? 1;
+    const pct = maxNoise > 0 ? Math.round((opsecCtx.global_noise_spent / maxNoise) * 100) : 0;
+    lines.push(`### OPSEC Budget`);
+    lines.push(`- **Noise spent:** ${opsecCtx.global_noise_spent.toFixed(2)} / ${maxNoise} (${pct}%)`);
+    lines.push(`- **Remaining:** ${opsecCtx.noise_budget_remaining.toFixed(2)}`);
+    lines.push(`- **Recommended approach:** ${opsecCtx.recommended_approach}`);
+    if (opsecCtx.time_window_remaining_hours !== undefined) {
+      lines.push(`- **Time window remaining:** ${opsecCtx.time_window_remaining_hours.toFixed(1)}h`);
+    }
+    if (opsecCtx.warning) {
+      lines.push(`- ⚠ **${opsecCtx.warning}**`);
+    }
+    if (opsecCtx.defensive_signals.length > 0) {
+      lines.push(`- **Defensive signals (${opsecCtx.defensive_signals.length}):**`);
+      for (const sig of opsecCtx.defensive_signals.slice(0, 5)) {
+        const target = sig.host_id || sig.domain || 'global';
+        lines.push(`  - ${sig.type} on ${target}: ${sig.description}`);
+      }
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Active campaigns
+  const campaigns = engine.listCampaigns();
+  const activeCampaigns = campaigns.filter(c => c.status === 'active' || c.status === 'paused');
+  if (activeCampaigns.length > 0) {
+    lines.push(`### Active Campaigns (${activeCampaigns.length})`);
+    for (const c of activeCampaigns.slice(0, 5)) {
+      const pct = c.progress.total > 0 ? Math.round((c.progress.completed / c.progress.total) * 100) : 0;
+      const status = c.status === 'paused' ? ' [PAUSED]' : '';
+      lines.push(`- **${c.name}**${status}: ${c.progress.completed}/${c.progress.total} (${pct}%), ${c.findings.length} finding(s), ${c.progress.consecutive_failures} consecutive failures`);
+      const abortThreshold = c.abort_conditions.find(ac => ac.type === 'consecutive_failures')?.threshold;
+      if (abortThreshold && c.progress.consecutive_failures >= abortThreshold - 1) {
+        lines.push(`  - ⚠ **Approaching abort threshold** (${c.progress.consecutive_failures}/${abortThreshold} consecutive failures)`);
+      }
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Expiring credentials
+  const expiringCreds: Array<{ label: string; minutesLeft: number }> = [];
+  engine.getNodesByType('credential').forEach(node => {
+    if (node.confidence < 0.9 || node.identity_status === 'superseded') return;
+    const ttl = timeToExpiry(node);
+    if (ttl < 2 * 60 * 60 * 1000 && ttl > 0) { // < 2 hours and not already expired
+      expiringCreds.push({
+        label: `${node.cred_user || node.label}`,
+        minutesLeft: Math.round(ttl / 60000),
+      });
+    }
+  });
+  if (expiringCreds.length > 0) {
+    expiringCreds.sort((a, b) => a.minutesLeft - b.minutesLeft);
+    lines.push(`### ⚠ Expiring Credentials (${expiringCreds.length})`);
+    for (const c of expiringCreds.slice(0, 5)) {
+      lines.push(`- **${c.label}** expires in **${c.minutesLeft}m** — use it or lose it`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Services with version info but no CVE check
+  const uncheckedServices: string[] = [];
+  const vulnTargets = new Set<string>();
+  const vulnEdgeResult = engine.queryGraph({ edge_type: 'VULNERABLE_TO' as import('../types.js').EdgeType });
+  for (const e of vulnEdgeResult.edges) vulnTargets.add(e.source);
+  const exploitEdgeResult = engine.queryGraph({ edge_type: 'EXPLOITS' as import('../types.js').EdgeType });
+  for (const e of exploitEdgeResult.edges) vulnTargets.add(e.source);
+  engine.getNodesByType('service').forEach(node => {
+    if (!node.version || node.identity_status === 'superseded') return;
+    if (!vulnTargets.has(node.id)) {
+      uncheckedServices.push(`${node.label} (${node.version})`);
+    }
+  });
+  if (uncheckedServices.length > 0) {
+    lines.push(`### Services Without CVE Checks (${uncheckedServices.length})`);
+    lines.push('These services have version info but no `VULNERABLE_TO` or `EXPLOITS` edges — prioritize CVE lookups:');
+    for (const s of uncheckedServices.slice(0, 5)) {
+      lines.push(`- ${s}`);
+    }
+    if (uncheckedServices.length > 5) {
+      lines.push(`- ... and ${uncheckedServices.length - 5} more`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  // Scope suggestions
+  if (state.scope_suggestions.length > 0) {
+    lines.push(`### Scope Suggestions (${state.scope_suggestions.length})`);
+    for (const s of state.scope_suggestions.slice(0, 3)) {
+      lines.push(`- Consider adding **${s.suggested_cidr}** (${s.out_of_scope_ips.length} IPs discovered, ${s.source_descriptions[0] || 'unknown source'})`);
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
+  if (!hasContent) {
+    return ''; // Don't emit an empty section
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================
+// Anti-Patterns — from failure_patterns and common mistakes
+// ============================================================
+
+function generateAntiPatternsSection(ctx: PromptContext): string | null {
+  const { state, engine } = ctx;
+  const config = state.config;
+  const lines: string[] = [
+    '## Anti-Patterns — Do NOT Do These',
+    '',
+    '- **Do not crack hashes when the service has known CVEs.** Check CVE databases for the service version first.',
+    '- **Do not re-scan ports or services that have already been scanned.** Use `query_graph()` to check existing results.',
+    '- **Do not attempt authentication with expired or revoked credentials.** Check credential state first.',
+    '- **Do not ignore completed tool output.** Always check for log files, loot directories, and output artifacts after every action.',
+    '- **Do not skip version detection.** Always capture service version information — it unlocks CVE lookups and targeted exploitation.',
+  ];
+
+  // Append engagement-specific failure patterns
+  if (config.failure_patterns && config.failure_patterns.length > 0) {
+    lines.push('');
+    lines.push('### Engagement-Specific Warnings');
+    lines.push('');
+    lines.push('These patterns have been identified from previous actions in this engagement:');
+    for (const fp of config.failure_patterns) {
+      const target = fp.target_pattern ? ` (target: \`${fp.target_pattern}\`)` : '';
+      lines.push(`- **${fp.technique}**${target}: ${fp.warning}`);
+    }
+  }
+
+  // Retrospective-sourced low-success techniques from knowledge base
+  const kb = engine.getKB();
+  if (kb) {
+    const lowSuccess = kb.getAllTechniqueStats()
+      .filter((t: TechniqueStats) => t.attempts >= 5 && t.success_rate < 0.2)
+      .sort((a: TechniqueStats, b: TechniqueStats) => a.success_rate - b.success_rate)
+      .slice(0, 5);
+    if (lowSuccess.length > 0) {
+      lines.push('');
+      lines.push('### Low-Success Techniques (from knowledge base)');
+      lines.push('');
+      lines.push('These techniques have historically low success rates — consider alternatives:');
+      for (const t of lowSuccess) {
+        lines.push(`- **${t.name}**: ${t.successes}/${t.attempts} succeeded (${Math.round(t.success_rate * 100)}%) — avg noise ${t.avg_noise.toFixed(2)}`);
+      }
+    }
   }
 
   return lines.join('\n');

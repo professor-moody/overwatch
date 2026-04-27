@@ -2510,7 +2510,7 @@ describe('GraphEngine', () => {
   // Sprint 1: Hostname scope enforcement
   // =============================================
   describe('hostname scope enforcement', () => {
-    it('rejects hostname-only node when hostname does not match scope domains', () => {
+    it('warns (not rejects) hostname-only node when hostname does not match scope domains', () => {
       const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
       // Identity resolution renames to host-dc01-other-local
       engine.ingestFinding(makeFinding({
@@ -2520,8 +2520,9 @@ describe('GraphEngine', () => {
       }));
       const resolvedId = 'host-dc01-other-local';
       const result = engine.validateAction({ target_node: resolvedId });
-      expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
+      // Node is not explicitly excluded, so validation passes with a scope warning
+      expect(result.valid).toBe(true);
+      expect(result.warnings.some(w => w.includes('scope unverified'))).toBe(true);
     });
 
     it('allows hostname-only node when hostname matches a scope domain', () => {

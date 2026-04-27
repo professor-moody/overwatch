@@ -215,7 +215,10 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           } as Finding['nodes'][0]);
         }
 
-        const principalNodeId = azureObjectNodeId(principalId);
+        // Resolve principal: try azure-{id} first, fall back to azure:app:{id} if
+        // the principalId matches an App Registration (which uses cloudIdentityId)
+        const appNodeId = cloudIdentityId(`azure:app:${principalId}`);
+        const principalNodeId = seenNodes.has(appNodeId) ? appNodeId : azureObjectNodeId(principalId);
         if (!seenNodes.has(principalNodeId)) {
           seenNodes.add(principalNodeId);
           nodes.push({

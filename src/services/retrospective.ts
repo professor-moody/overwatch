@@ -393,9 +393,9 @@ function collectFrontierSuccessStats(input: RetrospectiveInput): FrontierSuccess
       const desc = entry.description.toLowerCase();
       if (desc.includes('discover hosts') || desc.includes('continue discovery') || desc.includes('host discovery') || desc.includes('network discovery') || desc.includes('network scan')) {
         frontierType = 'network_discovery';
-      } else if (desc.includes('incomplete') || desc.includes('enumerat') || desc.includes('scan')) {
+      } else if (desc.includes('incomplete') || desc.includes('enumerat') || /\bscan\b/.test(desc)) {
         frontierType = 'incomplete_node';
-      } else if (desc.includes('untested') || desc.includes('test')) {
+      } else if (desc.includes('untested') || /\btest\b/.test(desc)) {
         frontierType = 'untested_edge';
       } else if (desc.includes('inferred') || desc.includes('hypothes')) {
         frontierType = 'inferred_edge';

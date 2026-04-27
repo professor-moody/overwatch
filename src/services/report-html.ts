@@ -638,34 +638,42 @@ function esc(s: string): string {
 export function inlineMarkdownToHtml(text: string): string {
   let result = '';
   let i = 0;
+  let plainStart = 0; // Track start of plain text segment for batch escaping
   while (i < text.length) {
     if (text[i] === '`') {
       const end = text.indexOf('`', i + 1);
       if (end !== -1) {
+        if (i > plainStart) result += esc(text.slice(plainStart, i));
         result += `<code>${esc(text.slice(i + 1, end))}</code>`;
         i = end + 1;
+        plainStart = i;
         continue;
       }
     }
     if (text[i] === '*' && text[i + 1] === '*') {
       const end = text.indexOf('**', i + 2);
       if (end !== -1) {
+        if (i > plainStart) result += esc(text.slice(plainStart, i));
         result += `<strong>${esc(text.slice(i + 2, end))}</strong>`;
         i = end + 2;
+        plainStart = i;
         continue;
       }
     }
     if (text[i] === '*' && text[i + 1] !== '*') {
       const end = text.indexOf('*', i + 1);
       if (end !== -1 && text[end + 1] !== '*') {
+        if (i > plainStart) result += esc(text.slice(plainStart, i));
         result += `<em>${esc(text.slice(i + 1, end))}</em>`;
         i = end + 1;
+        plainStart = i;
         continue;
       }
     }
-    result += esc(text[i]);
     i++;
   }
+  // Flush remaining plain text
+  if (plainStart < text.length) result += esc(text.slice(plainStart));
   return result;
 }
 

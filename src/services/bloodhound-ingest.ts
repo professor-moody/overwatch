@@ -232,13 +232,25 @@ export function normalizeSharpHoundCE(raw: string, filename: string): { normaliz
     return { normalized: raw, wasCE: false };
   }
 
-  // Normalize: lowercase all property keys in each object
+  // Normalize: lowercase property keys and standardize structural keys in each object
+  const STRUCTURAL_KEYS: Record<string, string> = {
+    aces: 'Aces', members: 'Members', sessions: 'Sessions',
+    localadmins: 'LocalAdmins', remotedesktopusers: 'RemoteDesktopUsers',
+    dcomuser: 'DcomUsers', psremoteusers: 'PSRemoteUsers',
+    objectidentifier: 'ObjectIdentifier', primarygroupsid: 'PrimaryGroupSID',
+    properties: 'Properties',
+  };
   const normalizedData = parsed.data.map((obj: BHObject) => {
-    const normalizedObj: Record<string, unknown> = { ...obj };
+    // Normalize structural keys to expected PascalCase
+    const normalizedObj: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const canonical = STRUCTURAL_KEYS[key.toLowerCase()];
+      normalizedObj[canonical || key] = value;
+    }
 
     // Normalize Properties keys to lowercase
-    if (obj.Properties && typeof obj.Properties === 'object') {
-      normalizedObj.Properties = lowercaseObjectKeys(obj.Properties);
+    if (normalizedObj.Properties && typeof normalizedObj.Properties === 'object') {
+      normalizedObj.Properties = lowercaseObjectKeys(normalizedObj.Properties as Record<string, unknown>);
     }
 
     return normalizedObj;

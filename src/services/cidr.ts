@@ -254,7 +254,7 @@ export function isCloudResourceInScope(
     if (!scope.gcp_projects?.length) {
       return { in_scope: false, reason: `GCP project ${projectId} — no gcp_projects defined in scope` };
     }
-    if (scope.gcp_projects.includes(projectId)) {
+    if (scope.gcp_projects.map(p => p.toLowerCase()).includes(projectId.toLowerCase())) {
       return { in_scope: true, reason: '' };
     }
     return { in_scope: false, reason: `GCP project ${projectId} not in scope` };

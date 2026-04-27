@@ -217,7 +217,11 @@ export class SocketAdapter implements SessionAdapterFactory {
     if (!port) throw new Error('Socket adapter requires a port');
 
     if (mode === 'listen') {
-      return this.spawnListener(host || '0.0.0.0', port, sessionId, onConnect);
+      const bindHost = host || '127.0.0.1';
+      if (bindHost === '0.0.0.0') {
+        console.error(`[session] Warning: listener binding to 0.0.0.0 — exposed on all interfaces`);
+      }
+      return this.spawnListener(bindHost, port, sessionId, onConnect);
     } else {
       if (!host) throw new Error('Socket adapter connect mode requires a host');
       return this.spawnConnect(host, port, sessionId, onConnect);

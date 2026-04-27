@@ -29,7 +29,14 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
   let data: Record<string, unknown>;
   try {
     data = JSON.parse(jsonStr) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    if (jsonStr.length > 100) {
+      console.error(`[scoutsuite-parser] Failed to parse JSON (${jsonStr.length} chars): ${err instanceof Error ? err.message : String(err)}`);
+      return {
+        id: `scoutsuite-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [],
+        raw_output: `[PARSE WARNING] ScoutSuite JSON (${jsonStr.length} chars) failed to parse. Input may be truncated or malformed.\n${jsonStr.slice(0, 500)}`,
+      };
+    }
     return { id: `scoutsuite-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [] };
   }
 

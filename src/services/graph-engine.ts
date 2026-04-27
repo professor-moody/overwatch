@@ -6,7 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
-import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope } from './cidr.js';
+import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope, isValidCidr } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -33,6 +33,7 @@ import { KnowledgeBase } from './knowledge-base.js';
 import { WebChainEnricher } from './web-attack-chains.js';
 import type { MatchedChain } from './web-attack-chains.js';
 import type { OpsecContext } from './opsec-tracker.js';
+import { isInTimeWindow } from './opsec-tracker.js';
 import {
   inferPivotReachability as _inferPivotReachability,
   inferDefaultCredentials as _inferDefaultCredentials,
@@ -47,6 +48,7 @@ import {
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
 import type { ScopeManagerHost } from './scope-manager.js';
+import { isValidDomain } from './scope-manager.js';
 import { ingestFindingImpl } from './finding-ingestion.js';
 import type { FindingIngestionHost } from './finding-ingestion.js';
 import { queryGraphImpl } from './graph-query.js';
@@ -268,13 +270,14 @@ export class GraphEngine {
 
   addNode(props: NodeProperties): string {
     if (this.ctx.graph.hasNode(props.id)) {
-      // Merge properties
+      // Merge properties — property-only change, no topology change
       this.ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
+      this.invalidateHealthReport();
     } else {
       this.ctx.graph.addNode(props.id, props);
       this.invalidatePathGraph();
+      this.invalidateAllCaches();
     }
-    this.invalidateHealthReport();
     return props.id;
   }
 
@@ -289,15 +292,15 @@ export class GraphEngine {
           props = { ...props, confirmed_at: new Date().toISOString() };
           this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
         }
-        // Update existing edge
+        // Update existing edge — property-only change, no topology change
         this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
         this.invalidateHealthReport();
         return { id: edgeId, isNew: false };
       }
     }
-    // New edge
+    // New edge — topology change
     this.invalidatePathGraph();
-    this.invalidateHealthReport();
+    this.invalidateAllCaches();
     const edgeId = `${source}--${props.type}--${target}`;
     try {
       return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
@@ -328,7 +331,7 @@ export class GraphEngine {
     if (!edgeId) return null;
     this.ctx.graph.dropEdge(edgeId);
     this.invalidatePathGraph();
-    this.invalidateHealthReport();
+    this.invalidateAllCaches();
     return edgeId;
   }
 
@@ -371,7 +374,7 @@ export class GraphEngine {
       ...normalizeNodeProvenance(nextNode),
     };
     this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
-    this.invalidateHealthReport();
+    this.invalidateAllCaches();
     return this.ctx.graph.getNodeAttributes(nodeId);
   }
 
@@ -810,17 +813,29 @@ export class GraphEngine {
     return undefined;
   }
 
+  private isNodeVerifiedInScope(nodeId: string): boolean {
+    const ip = this.resolveHostIp(nodeId);
+    const hostname = this.resolveHostname(nodeId);
+    const scope = this.ctx.config.scope;
+    if (ip && isScopedHostInScope(ip, scope)) return true;
+    if (hostname && isScopedHostInScope(hostname, scope)) return true;
+    // Nodes without IP/hostname (user, group, credential, etc.) are considered in-scope
+    if (!ip && !hostname) return true;
+    return false;
+  }
+
   private isNodeExcluded(nodeId: string): string | null {
     const ip = this.resolveHostIp(nodeId);
     const hostname = this.resolveHostname(nodeId);
     const scope = this.ctx.config.scope;
 
+    // Explicitly excluded → return the identifier (truthy = excluded)
     if (ip && isHostExcluded(ip, scope.exclusions)) return ip;
     if (hostname && isHostExcluded(hostname, scope.exclusions)) return hostname;
+    // Explicitly in scope → not excluded
     if (ip && isScopedHostInScope(ip, scope)) return null;
     if (hostname && isScopedHostInScope(hostname, scope)) return null;
-    if (ip) return ip;
-    if (hostname) return hostname;
+    // Neither excluded nor confirmed in-scope → fail open, let scope_unverified annotation handle it
     return null;
   }
 
@@ -890,22 +905,19 @@ export class GraphEngine {
 
     // Check scope — target_node, edge_source, and edge_target
     //    Resolves child nodes (services, shares) to their parent host IP.
-    if (action.target_node) {
-      const excludedIp = this.isNodeExcluded(action.target_node);
+    //    isNodeExcluded returns truthy only for explicitly excluded nodes.
+    //    Nodes that can't be verified in-scope get a warning, not an error.
+    for (const [label, nodeId] of [
+      ['Target', action.target_node],
+      ['Edge source', action.edge_source],
+      ['Edge target', action.edge_target],
+    ] as const) {
+      if (!nodeId) continue;
+      const excludedIp = this.isNodeExcluded(nodeId);
       if (excludedIp) {
-        errors.push(`Target is out of scope: ${excludedIp}`);
-      }
-    }
-    if (action.edge_source) {
-      const excludedIp = this.isNodeExcluded(action.edge_source);
-      if (excludedIp) {
-        errors.push(`Edge source is out of scope: ${excludedIp}`);
-      }
-    }
-    if (action.edge_target) {
-      const excludedIp = this.isNodeExcluded(action.edge_target);
-      if (excludedIp) {
-        errors.push(`Edge target is out of scope: ${excludedIp}`);
+        errors.push(`${label} is out of scope: ${excludedIp}`);
+      } else if (!this.isNodeVerifiedInScope(nodeId)) {
+        warnings.push(`${label} scope unverified: ${nodeId} — not explicitly in-scope CIDRs/domains`);
       }
     }
 
@@ -916,12 +928,10 @@ export class GraphEngine {
 
     // Time window check (handles wrap-around, e.g. 22:00–06:00)
     if (this.ctx.config.opsec.time_window) {
-      const hour = new Date().getHours();
       const { start_hour, end_hour } = this.ctx.config.opsec.time_window;
-      const inWindow = start_hour <= end_hour
-        ? hour >= start_hour && hour < end_hour
-        : hour >= start_hour || hour < end_hour;
-      if (!inWindow) {
+      const now = new Date();
+      if (!isInTimeWindow(start_hour, end_hour, now)) {
+        const hour = now.getHours();
         warnings.push(`Outside approved time window (${start_hour}:00-${end_hour}:00), current hour: ${hour}`);
       }
     }
@@ -1790,7 +1800,8 @@ export class GraphEngine {
   // =============================================
 
   persist(detail: GraphUpdateDetail = {}): void {
-    this.invalidateHealthReport();
+    // Callers (addNode, addEdge, dropEdge, patchNodeProperties) already
+    // invalidate the appropriate caches before calling persist.
     this.persistence.persist(detail);
   }
 
@@ -1828,7 +1839,7 @@ export class GraphEngine {
 
   rollbackToSnapshot(snapshotName: string): boolean {
     const ok = this.persistence.rollbackToSnapshot(snapshotName, BUILTIN_RULES);
-    if (ok) this.invalidateHealthReport();
+    if (ok) this.invalidateAllCaches();
     return ok;
   }
 
@@ -1856,8 +1867,25 @@ export class GraphEngine {
     if (typeof partial.community_resolution === 'number') current.community_resolution = partial.community_resolution;
 
     // Merge scope (partial merge — only overwrite provided keys)
+    // Validate CIDRs and domains before applying, matching updateScope validation.
     if (partial.scope && typeof partial.scope === 'object') {
       const s = partial.scope as Record<string, unknown>;
+      const scopeErrors: string[] = [];
+      for (const key of ['cidrs', 'exclusions'] as const) {
+        if (Array.isArray(s[key])) {
+          for (const cidr of s[key] as string[]) {
+            if (!isValidCidr(cidr)) scopeErrors.push(`Invalid CIDR in scope.${key}: ${cidr}`);
+          }
+        }
+      }
+      if (Array.isArray(s.domains)) {
+        for (const domain of s.domains as string[]) {
+          if (!isValidDomain(domain)) scopeErrors.push(`Invalid domain in scope.domains: ${domain}`);
+        }
+      }
+      if (scopeErrors.length > 0) {
+        throw new Error(`Scope validation failed: ${scopeErrors.join('; ')}`);
+      }
       if (Array.isArray(s.cidrs)) current.scope.cidrs = s.cidrs;
       if (Array.isArray(s.domains)) current.scope.domains = s.domains;
       if (Array.isArray(s.exclusions)) current.scope.exclusions = s.exclusions;
@@ -2021,6 +2049,10 @@ export class GraphEngine {
   }
 
   private invalidateHealthReport(): void {
+    this.healthReportCache = null;
+  }
+
+  private invalidateAllCaches(): void {
     this.healthReportCache = null;
     this.frontierCache = null;
   }

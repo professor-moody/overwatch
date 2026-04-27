@@ -107,7 +107,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       // HAS_SESSION edges with session_live:false are historical — exclude from
       // compromise determination.  Edges without session_live (pre-existing data)
       // still pass (backward compat: !== false, not === true).
-      && !(e.properties.type === 'HAS_SESSION' && e.properties.session_live === false)
+      && e.properties.session_live !== false
     );
     const exploitEdges = graph.edges.filter(e =>
       e.target === n.id && e.properties.type === 'EXPLOITS' && e.properties.confidence >= 0.9 &&
@@ -1220,6 +1220,16 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
 
   const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
 
+  // Reverse lookup: label/ip/hostname → node ID for blast radius resolution
+  const assetToNodeId = new Map<string, string>();
+  for (const n of graph.nodes) {
+    assetToNodeId.set(n.id, n.id);
+    if (n.properties.label) assetToNodeId.set(n.properties.label, n.id);
+    if (n.properties.ip) assetToNodeId.set(n.properties.ip, n.id);
+    if (n.properties.hostname) assetToNodeId.set(n.properties.hostname as string, n.id);
+    if (n.properties.cred_user) assetToNodeId.set(n.properties.cred_user as string, n.id);
+  }
+
   const ranked = findings.map(f => {
     const cvss = f.cvss_score ?? f.risk_score;
     const cvssEstimated = f.cvss_estimated ?? false;
@@ -1227,10 +1237,7 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
     // Blast radius: count unique nodes within 2 hops of affected assets
     const reachable = new Set<string>();
     for (const assetId of f.affected_assets) {
-      // Find node ID matching the asset label
-      const nodeId = graph.nodes.find(n =>
-        n.properties.label === assetId || n.id === assetId
-      )?.id;
+      const nodeId = assetToNodeId.get(assetId);
       if (!nodeId) continue;
       const hop1 = adjacency.get(nodeId);
       if (hop1) {

@@ -19,7 +19,14 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
   let data: Record<string, unknown>;
   try {
     data = JSON.parse(output) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    if (output.length > 100) {
+      console.error(`[terraform-parser] Failed to parse JSON (${output.length} chars): ${err instanceof Error ? err.message : String(err)}`);
+      return {
+        id: `terraform-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [],
+        raw_output: `[PARSE WARNING] Terraform JSON (${output.length} chars) failed to parse. Input may be truncated or malformed.\n${output.slice(0, 500)}`,
+      };
+    }
     return { id: `terraform-${Date.now()}`, agent_id: agentId, timestamp: now, nodes: [], edges: [] };
   }
 

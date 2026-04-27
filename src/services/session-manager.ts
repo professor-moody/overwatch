@@ -430,6 +430,10 @@ export class SessionManager {
       if (options.wait_for.length > 1000) {
         throw new Error('wait_for pattern too long (max 1000 chars)');
       }
+      // Reject patterns with nested quantifiers that can cause catastrophic backtracking (ReDoS)
+      if (/([+*]|\{\d)[^)]*[+*]|\{\d/.test(options.wait_for) || /\([^)]*[+*][^)]*\)[+*?]/.test(options.wait_for)) {
+        throw new Error('wait_for pattern rejected: nested quantifiers may cause catastrophic backtracking');
+      }
       try {
         waitForRegex = new RegExp(options.wait_for);
       } catch (e) {

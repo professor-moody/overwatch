@@ -1,6 +1,6 @@
 # Overwatch Roadmap
 
-Last updated: 2026-04-15
+Last updated: 2026-04-27
 
 This roadmap captures planned capabilities organized into prioritized phases. Items within each phase are roughly ordered by expected impact. Phase ordering reflects dependencies and strategic priority, not strict sequencing — work can overlap across phases.
 
@@ -523,13 +523,96 @@ Fill gaps identified by retrospectives and extend existing parsers:
 
 ---
 
+## Phase 6 — Console UX & Operator Experience
+
+> **Goal:** Elevate the dashboard from a status display into an interactive operator cockpit with deep linking, real-time tactical intelligence, and system prompt improvements that prevent common model mistakes.
+
+### 6.1 Console: Overview Panel Upgrade
+
+**Priority: High** · Depends on: 2.1, 1.4
+
+Current Overview is 218 lines with basic summary cards, readiness, phases, graph summary, objectives, and top frontier. Upgrade to a full operator dashboard:
+
+- **OPSEC noise gauge** — real-time budget consumption (global, per-host, per-domain) as progress bars with color thresholds
+- **Active campaign summaries** — inline cards showing running campaigns with completion %, active agents, findings rate
+- **Recent findings feed** — live-updating list of the last 10–15 findings with severity badges, technique IDs, and click-to-evidence
+- **Credential & access stats** — valid credential count by type (password, hash, ticket, token), compromised host count with access level breakdown
+- **Engagement timeline** — horizontal sparkline showing activity density over time with phase markers
+- **Scope utilization** — how much of the declared scope has been touched vs. unexplored
+
+**Implementation scope:**
+- Extend `engagement-store.ts` with OPSEC budget tracking fields (from OpsecTracker)
+- New REST endpoint `GET /api/opsec/budget` exposing cumulative noise stats
+- New Overview sub-components: `OpsecGauge`, `CampaignSummaryCards`, `FindingsFeed`, `AccessStats`, `EngagementTimeline`
+- WebSocket: leverage existing `graph_update` and `campaign_update` events for real-time updates
+
+### 6.2 Console: Agent Panel Enhancements
+
+**Priority: High** · Depends on: 2.7
+
+Current AgentsPanel (529 lines) has task list, subgraph rendering, cancel/re-dispatch, and findings stream. Enhance with deeper operational intelligence:
+
+- **Live agent output streaming** — real-time stdout/stderr from agent sessions (tap into session WebSocket bridge)
+- **Task history per agent** — expandable timeline of all actions an agent has taken with outcomes
+- **Agent performance metrics** — findings/minute, noise generated, actions completed/failed ratio
+- **Bulk dispatch from frontier** — select multiple frontier items → dispatch as parallel agents with one click
+- **Agent comparison view** — side-by-side metrics for active agents to identify bottlenecks
+- **Auto-scaling hints** — surface when an agent is idle waiting on approval vs. actively executing
+
+**Implementation scope:**
+- Extend `AgentInfo` type with `metrics: { findings_count, actions_completed, actions_failed, noise_generated, avg_action_duration }`
+- New REST endpoint `GET /api/agents/:id/history` returning action log filtered by agent
+- Connect agent panel to session WebSocket for live output when an agent owns a session
+- Bulk dispatch UI: multi-select frontier items → `dispatch_agents` API call
+
+### 6.3 Console: Cross-Panel Linking & Navigation
+
+**Priority: Medium** · Depends on: 6.1, 6.2
+
+Panels are currently isolated. Add deep linking and contextual navigation:
+
+- **Frontier → Graph** — click a frontier item → navigate to graph view centered on the target node with relevant hops expanded
+- **Agent → Campaign** — agents show their parent campaign with click-through to campaign detail
+- **Objective → Evidence** — click an objective → jump to evidence chain search pre-filled with the objective's target
+- **Notification toasts** — real-time toast notifications for: new findings, agent completion, campaign completion, approval requests
+- **Breadcrumb navigation** — persistent breadcrumb showing current panel → sub-view → selected item
+- **URL state** — panel and selection state reflected in URL hash for bookmarkable deep links
+- **Keyboard shortcuts** — `Ctrl+1-9` for panel switching, `Ctrl+G` for graph, `Ctrl+F` for frontier search
+
+**Implementation scope:**
+- New `useNavigation` hook wrapping `react-router` with panel-aware deep linking
+- Toast notification system using WebSocket events (piggyback on existing event types)
+- Extend `Sidebar.tsx` with keyboard shortcut handling
+- URL hash state: `#panel=frontier&item=fi-123` pattern
+- Breadcrumb component in `OperatorLayout.tsx`
+
+### 6.4 System Prompt Generator: Tactical Intelligence
+
+**Priority: Critical** · Depends on: —
+
+Current `prompt-generator.ts` gives generic procedural instructions. Model makes avoidable mistakes: missing cracked credentials, skipping CVE searches for identified services, wasting effort on hash cracking when CVEs yield RCE. Add tactical thinking patterns and situational awareness:
+
+- **Tactical Methodology section** — "check existing results first", "CVE-first for identified services", "review tool artifacts"
+- **Situational Awareness section** — dynamic from graph state: expiring credentials, unreviewed results, services without CVE checks, active campaigns, phase context
+- **Profile-adaptive Core Loop** — different emphasis for AD vs. web vs. cloud vs. red team engagements
+- **Enhanced Sub-Agent Prompt** — actual task description, target node context, skill reference
+- **Anti-Patterns section** — populated from `failure_patterns` config and retrospective data
+
+**Implementation scope:**
+- 5 new section generators in `src/services/prompt-generator.ts`
+- Refactor `generateCoreLoopSection` to accept engagement profile
+- Extend `generateSubAgentPrompt` with task context
+- Tests in `src/services/__tests__/prompt-generator.test.ts`
+
+---
+
 ## Cross-Cutting Concerns
 
 These apply across all phases and should be addressed continuously.
 
 ### Console Infrastructure
 
-Shared foundation for all console items (1.4, 2.5, 2.6, 2.7, 4.4):
+Shared foundation for all console items (1.4, 2.5, 2.6, 2.7, 4.4, 6.1, 6.2, 6.3):
 
 - **Auth & Security**: Extend existing `OVERWATCH_DASHBOARD_TOKEN` to all REST write endpoints. CSRF protection on mutations. Rate limiting. Non-loopback binding requires token. All console write operations get audit trail.
 - **Frontend**: Vanilla JS (consistent with existing dashboard, no framework migration). xterm.js for terminals. New CSS modules per panel. Keyboard shortcuts for common operations.
@@ -588,6 +671,10 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 5.2 | Multi-Engagement Knowledge Base | 5 | Medium | 4.3 | ✅ |
 | 5.3 | Parser Coverage Expansion | 5 | Medium | — | Partial ✅ |
 | 5.4 | MITRE ATT&CK Integration | 5 | Medium | 4.1 | ✅ |
+| 6.1 | Console: Overview Panel Upgrade | 6 | High | 2.1, 1.4 | |
+| 6.2 | Console: Agent Panel Enhancements | 6 | High | 2.7 | |
+| 6.3 | Console: Cross-Panel Linking | 6 | Medium | 6.1, 6.2 | |
+| 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | |
 
 ### Recommended execution order (parallelizable tracks)
 
@@ -598,6 +685,7 @@ Track C (Reporting):        4.1 → 4.2 → 4.3 → 4.4
 Track D (Platform):         5.1 → 5.3 → 5.2 → 5.4
 Track E (Defensive intel):  2.3 → 2.4 (can start anytime)
 Track F (Console):          2.6 → 2.7 → 1.4 → 2.5 → 4.4
+Track G (Operator UX):      6.4 → 6.1 → 6.2 → 6.3
 ```
 
-Tracks A and B are the highest-leverage work. Track C can start immediately since it has no dependencies on A or B. Track D is ongoing polish. Track F is the console spine — starts with session terminals (no dependencies, highest standalone value, infrastructure 80% built), then agent supervision, then campaign UI (needs 1.2), then approval gates (needs 2.1), then graph interaction last (lowest risk tolerance).
+Tracks A and B are the highest-leverage work. Track C can start immediately since it has no dependencies on A or B. Track D is ongoing polish. Track F is the console spine — starts with session terminals (no dependencies, highest standalone value, infrastructure 80% built), then agent supervision, then campaign UI (needs 1.2), then approval gates (needs 2.1), then graph interaction last (lowest risk tolerance). **Track G** starts with 6.4 (prompt generator — no dependencies, critical impact on model reasoning quality) then flows into dashboard panel upgrades.

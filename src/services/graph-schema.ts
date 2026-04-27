@@ -114,10 +114,10 @@ export function validateEdgeEndpoints(
   sourceType: NodeType,
   targetType: NodeType,
   refs: Pick<EdgeConstraintViolation, 'source_id' | 'target_id'> & { edge_id?: string },
-): { valid: true } | { valid: false; violation: EdgeConstraintViolation; suggested_fix?: EdgeFixSuggestion } {
+): { valid: true; unconstrained?: boolean } | { valid: false; violation: EdgeConstraintViolation; suggested_fix?: EdgeFixSuggestion } {
   const constraint = getEdgeConstraint(edgeType);
   if (!constraint) {
-    return { valid: true };
+    return { valid: true, unconstrained: true };
   }
 
   if (constraint.source.includes(sourceType) && constraint.target.includes(targetType)) {

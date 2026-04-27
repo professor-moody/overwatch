@@ -148,7 +148,8 @@ export class EngineContext {
           description: `action_id ${event.action_id} collision: agent "${event.agent_id}" tried to associate fi "${event.frontier_item_id}" but it is already mapped to fi "${existing.frontier_item_id}" by agent "${existing.agent_id}"`,
           event_type: 'instrumentation_warning',
           category: 'system',
-          action_id: event.action_id,
+          action_id: undefined,
+          frontier_item_id: undefined,
           agent_id: event.agent_id,
         });
       } else {

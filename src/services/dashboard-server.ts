@@ -16,6 +16,7 @@ import type { SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { EngagementManager } from './engagement-manager.js';
+import { checkAllTools } from './tool-check.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -350,6 +351,25 @@ export class DashboardServer {
 
   private resolveDashboardDir(): string {
     if (this.dashboardDir) return this.dashboardDir;
+
+    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'legacy';
+
+    if (version === 'next') {
+      // dashboard-next (React + Vite build)
+      const nextDistPath = join(__dirname, '..', 'dashboard-next');
+      if (existsSync(join(nextDistPath, 'index.html'))) {
+        this.dashboardDir = nextDistPath;
+        return nextDistPath;
+      }
+      // Fallback: source build output
+      const nextSrcPath = join(__dirname, '..', '..', 'dist', 'dashboard-next');
+      if (existsSync(join(nextSrcPath, 'index.html'))) {
+        this.dashboardDir = nextSrcPath;
+        return nextSrcPath;
+      }
+      console.error('Dashboard-next not found, falling back to legacy dashboard');
+    }
+
     // dist/services/ → dist/dashboard/
     const distPath = join(__dirname, '..', 'dashboard');
     if (existsSync(join(distPath, 'index.html'))) {
@@ -423,6 +443,8 @@ export class DashboardServer {
       this.handleUpdateFrontierWeights(req, res);
     } else if (pathname === '/api/frontier/weights/reset' && method === 'POST') {
       this.handleResetFrontierWeights(req, res);
+    } else if (pathname === '/api/opsec/budget') {
+      this.serveOpsecBudget(res);
     } else if (pathname === '/api/health') {
       this.serveHealth(res);
     } else if (pathname === '/api/engagements' && method === 'GET') {
@@ -431,6 +453,12 @@ export class DashboardServer {
       this.handleCreateEngagement(req, res);
     } else if (pathname === '/api/engagements/from-template' && method === 'POST') {
       this.handleCreateFromTemplate(req, res);
+    } else if (pathname?.startsWith('/api/engagements/') && !pathname.includes('/from-template') && method === 'GET') {
+      const engId = decodeURIComponent(pathname.slice('/api/engagements/'.length));
+      this.serveEngagementDetail(engId, res);
+    } else if (pathname?.startsWith('/api/engagements/') && !pathname.includes('/from-template') && method === 'PATCH') {
+      const engId = decodeURIComponent(pathname.slice('/api/engagements/'.length));
+      this.handleUpdateEngagement(engId, req, res);
     } else if (pathname === '/api/campaigns' && method === 'POST') {
       this.handleCampaignCreate(req, res);
     } else if (pathname === '/api/campaigns') {
@@ -439,9 +467,18 @@ export class DashboardServer {
       this.servePhases(res);
     } else if (pathname === '/api/actions/pending') {
       this.servePendingActions(res);
+    } else if (pathname === '/api/tools' && method === 'GET') {
+      this.serveTools(res);
+    } else if (pathname === '/api/inference-rules' && method === 'GET') {
+      this.serveInferenceRules(res);
+    } else if (pathname === '/api/graph/export' && method === 'POST') {
+      this.handleGraphExport(res);
+    } else if (pathname === '/api/graph/correct' && method === 'POST') {
+      this.handleGraphCorrect(req, res);
     } else {
       // Parameterized routes
       const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
+      const agentHistoryMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/history$/);
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/cancel$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
@@ -457,6 +494,8 @@ export class DashboardServer {
 
       if (agentCtxMatch) {
         this.serveAgentContext(agentCtxMatch[1], res);
+      } else if (agentHistoryMatch) {
+        this.serveAgentHistory(agentHistoryMatch[1], res);
       } else if (agentCancelMatch && method === 'POST') {
         this.handleAgentCancel(agentCancelMatch[1], req, res);
       } else if (objectiveMatch && method === 'PATCH') {
@@ -494,9 +533,17 @@ export class DashboardServer {
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
+    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'legacy';
+    const isSPA = version === 'next';
+
     // Multi-page routing: operator dashboard (/) and graph explorer (/graph)
     let filePath: string;
-    if (url === '/' || url === '/operator' || url === '/operator.html') {
+    if (isSPA) {
+      // React SPA: serve index.html for all non-asset routes (React Router handles routing)
+      const pathname = url.split('?')[0];
+      const hasExt = extname(pathname) !== '';
+      filePath = hasExt ? pathname : '/index.html';
+    } else if (url === '/' || url === '/operator' || url === '/operator.html') {
       filePath = '/operator.html';
     } else if (url === '/graph' || url === '/graph.html') {
       filePath = '/graph.html';
@@ -987,6 +1034,34 @@ export class DashboardServer {
     res.end(JSON.stringify({ task, subgraph }));
   }
 
+  private serveAgentHistory(taskId: string, res: ServerResponse): void {
+    const task = this.engine.getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
+    const agentId = task.agent_id;
+    const entries = this.engine.getFullHistory().filter(e => e.agent_id === agentId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ entries, total: entries.length }));
+  }
+
+  private serveOpsecBudget(res: ServerResponse): void {
+    const ctx = this.engine.getOpsecContext();
+    const maxNoise = this.engine.getConfig().opsec.max_noise;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      global_noise_spent: ctx.global_noise_spent,
+      noise_budget_remaining: ctx.noise_budget_remaining,
+      max_noise: maxNoise,
+      recommended_approach: ctx.recommended_approach,
+      defensive_signals: ctx.defensive_signals,
+      time_window_remaining_hours: ctx.time_window_remaining_hours,
+      warning: ctx.warning,
+    }));
+  }
+
   private handleAgentCancel(taskId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     const task = this.engine.getTask(taskId);
@@ -1248,6 +1323,22 @@ export class DashboardServer {
   // ---- Mutation auth & body parsing helpers ----
 
   private checkMutationAuth(req: IncomingMessage, res: ServerResponse): boolean {
+    // CSRF: Always check Origin header for mutation requests, even on loopback.
+    // Reject cross-origin mutations from untrusted sites that may be open in the browser.
+    const origin = req.headers.origin;
+    if (origin) {
+      const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
+      let isAllowed = isLocalOrigin;
+      if (!isAllowed) {
+        try { isAllowed = new URL(origin).hostname === this.host; } catch { /* malformed */ }
+      }
+      if (!isAllowed) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'CSRF: origin not allowed' }));
+        return false;
+      }
+    }
+
     if (this.isLoopback(this.host)) return true;
     const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
     if (!expected) {
@@ -1267,11 +1358,11 @@ export class DashboardServer {
     return true;
   }
 
-  private readJsonBody(req: IncomingMessage): Promise<any> {
+  private readJsonBody(req: IncomingMessage, maxBytes: number = 64 * 1024): Promise<any> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let size = 0;
-      const MAX_BODY = 64 * 1024; // 64 KB limit
+      const MAX_BODY = maxBytes;
       req.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > MAX_BODY) {
@@ -1435,7 +1526,7 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'Engagement manager not available' }));
       return;
     }
-    this.readJsonBody(req).then(input => {
+    this.readJsonBody(req, 256 * 1024).then(input => {
       if (!input || !input.name || typeof input.name !== 'string') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'name is required' }));
@@ -1448,8 +1539,16 @@ export class DashboardServer {
           cidrs: Array.isArray(input.cidrs) ? input.cidrs : [],
           domains: Array.isArray(input.domains) ? input.domains : [],
           exclusions: Array.isArray(input.exclusions) ? input.exclusions : [],
+          hosts: Array.isArray(input.hosts) ? input.hosts : undefined,
+          url_patterns: Array.isArray(input.url_patterns) ? input.url_patterns : undefined,
+          aws_accounts: Array.isArray(input.aws_accounts) ? input.aws_accounts : undefined,
+          azure_subscriptions: Array.isArray(input.azure_subscriptions) ? input.azure_subscriptions : undefined,
+          gcp_projects: Array.isArray(input.gcp_projects) ? input.gcp_projects : undefined,
           opsec_profile: input.opsec_profile,
+          opsec: input.opsec && typeof input.opsec === 'object' ? input.opsec : undefined,
           objectives: Array.isArray(input.objectives) ? input.objectives : [],
+          failure_patterns: Array.isArray(input.failure_patterns) ? input.failure_patterns : undefined,
+          phases: Array.isArray(input.phases) ? input.phases : undefined,
           template_id: typeof input.template_id === 'string' ? input.template_id : undefined,
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -1462,5 +1561,111 @@ export class DashboardServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON: ' + err.message }));
     });
+  }
+
+  private serveEngagementDetail(id: string, res: ServerResponse): void {
+    if (!this.engagementManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Engagement manager not available' }));
+      return;
+    }
+    const detail = this.engagementManager.getEngagement(id);
+    if (!detail) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Engagement not found: ${id}` }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(detail));
+  }
+
+  private handleUpdateEngagement(id: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.engagementManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Engagement manager not available' }));
+      return;
+    }
+    this.readJsonBody(req, 256 * 1024).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const updated = this.engagementManager!.updateEngagement(id, body);
+      if (!updated) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Engagement not found: ${id}` }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true }));
+    }).catch(err => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON: ' + err.message }));
+    });
+  }
+
+  // ---- Tools endpoint ----
+
+  private async serveTools(res: ServerResponse): Promise<void> {
+    try {
+      const results = await checkAllTools();
+      const installed = results.filter(t => t.installed);
+      const missing = results.filter(t => !t.installed);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        installed_count: installed.length,
+        missing_count: missing.length,
+        tools: results,
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Tool check failed: ' + (err as Error).message }));
+    }
+  }
+
+  // ---- Inference rules endpoint ----
+
+  private serveInferenceRules(res: ServerResponse): void {
+    const rules = this.engine.getInferenceRules();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ rules, total: rules.length }));
+  }
+
+  // ---- Graph export endpoint ----
+
+  private handleGraphExport(res: ServerResponse): void {
+    const graph = this.engine.exportGraph();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(graph));
+  }
+
+  // ---- Graph correct endpoint ----
+
+  private async handleGraphCorrect(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await this.readJsonBody(req);
+      const { reason, operations } = body;
+      if (!reason || !Array.isArray(operations) || operations.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'reason (string) and operations (array) are required' }));
+        return;
+      }
+      const result = this.engine.correctGraph(reason, operations, `console-${Date.now()}`);
+      // Broadcast full state update to all WS clients
+      const state = this.engine.getState();
+      const graph = this.engine.exportGraph();
+      this.broadcast({
+        type: 'full_state',
+        timestamp: new Date().toISOString(),
+        data: { state, graph, history_count: this.engine.getFullHistory().length },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    }
   }
 }

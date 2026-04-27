@@ -286,16 +286,20 @@ export class FrontierComputer {
       frontier.filter(f => f.type === 'inferred_edge' && f.edge_type === 'REACHABLE').map(f => f.edge_target)
     );
 
-    this.ctx.graph.forEachNode((_subnetId: string, subnetAttrs) => {
-      if (subnetAttrs.type !== 'subnet' || !subnetAttrs.subnet_cidr) return;
-      const cidr = subnetAttrs.subnet_cidr as string;
+    // Pre-index: collect all hosts with IPs and all subnets in a single pass,
+    // then assign hosts to subnets. O(N + S×H_avg) instead of O(S×N).
+    const allHosts: Array<{ id: string; attrs: NodeProperties }> = [];
+    const subnets: Array<{ id: string; cidr: string }> = [];
+    this.ctx.graph.forEachNode((nId: string, nAttrs) => {
+      if (nAttrs.type === 'host' && nAttrs.ip) {
+        allHosts.push({ id: nId, attrs: nAttrs });
+      } else if (nAttrs.type === 'subnet' && nAttrs.subnet_cidr) {
+        subnets.push({ id: nId, cidr: nAttrs.subnet_cidr as string });
+      }
+    });
 
-      const hostsInSubnet: Array<{ id: string; attrs: NodeProperties }> = [];
-      this.ctx.graph.forEachNode((hId: string, hAttrs) => {
-        if (hAttrs.type === 'host' && hAttrs.ip && isIpInCidr(hAttrs.ip, cidr)) {
-          hostsInSubnet.push({ id: hId, attrs: hAttrs });
-        }
-      });
+    for (const subnet of subnets) {
+      const hostsInSubnet = allHosts.filter(h => isIpInCidr(h.attrs.ip!, subnet.cidr));
 
       for (const host of hostsInSubnet) {
         let pivotPrincipal: string | undefined;
@@ -327,7 +331,7 @@ export class FrontierComputer {
             node_id: peer.id,
             pivot_host_id: host.id,
             via_pivot: pivotPrincipal,
-            description: `Host "${peer.attrs.label}" in ${cidr} reachable via pivot on "${host.attrs.label}"`,
+            description: `Host "${peer.attrs.label}" in ${subnet.cidr} reachable via pivot on "${host.attrs.label}"`,
             graph_metrics: {
               hops_to_objective: this.hopsToObjective(peer.id),
               fan_out_estimate: 5,
@@ -339,7 +343,7 @@ export class FrontierComputer {
           });
         }
       }
-    });
+    }
 
     return frontier;
   }
@@ -378,9 +382,12 @@ export class FrontierComputer {
   }
 
   private estimateNoiseForNode(_node: NodeProperties, missing: string[]): number {
+    let max = -1;
     for (const prop of missing) {
-      if (prop in this.noiseEstimates) return this.noiseEstimates[prop];
+      if (prop in this.noiseEstimates && this.noiseEstimates[prop] > max) {
+        max = this.noiseEstimates[prop];
+      }
     }
-    return this.noiseEstimates['default'];
+    return max >= 0 ? max : this.noiseEstimates['default'];
   }
 }

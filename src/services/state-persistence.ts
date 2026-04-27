@@ -4,7 +4,7 @@
 // All state access goes through the shared EngineContext.
 // ============================================================
 
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, mkdirSync, openSync, fsyncSync, closeSync } from 'fs';
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
@@ -37,9 +37,12 @@ export class StatePersistence {
     };
     const json = JSON.stringify(data);
 
-    // Atomic write: write to temp, then rename (atomic on POSIX)
+    // Atomic write: write to temp, fsync, then rename (atomic on POSIX)
     const tmpPath = this.ctx.stateFilePath + '.tmp';
     writeFileSync(tmpPath, json);
+    const fd = openSync(tmpPath, 'r');
+    fsyncSync(fd);
+    closeSync(fd);
 
     // Rotate snapshot before overwriting (throttled to once per 30s)
     const now = Date.now();

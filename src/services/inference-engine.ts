@@ -246,16 +246,24 @@ export class InferenceEngine {
 
   private inferOsFromServices(hostNodeId: string): void {
     const childServices = new Set<string>();
+    const serviceBanners: string[] = [];
     for (const edge of this.ctx.graph.outEdges(hostNodeId) as string[]) {
       if (this.ctx.graph.getEdgeAttributes(edge).type === 'RUNS') {
         const svcNode = this.getNode(this.ctx.graph.target(edge));
         if (svcNode?.service_name) childServices.add(svcNode.service_name);
+        if (svcNode?.version) serviceBanners.push(svcNode.version);
+        if (svcNode?.banner) serviceBanners.push(svcNode.banner as string);
       }
     }
     if (childServices.size === 0) return;
 
+    // Check banners for Samba — overrides service-based heuristics
+    const hasSambaBanner = serviceBanners.some(b => /samba/i.test(b));
+
     let inferredOs: string | null = null;
-    if ((childServices.has('kerberos') || childServices.has('ldap')) && childServices.has('smb')) {
+    if (hasSambaBanner) {
+      inferredOs = 'Linux';
+    } else if ((childServices.has('kerberos') || childServices.has('ldap')) && childServices.has('smb')) {
       inferredOs = 'Windows Server';
     } else if (childServices.has('smb') && !childServices.has('ssh')) {
       inferredOs = 'Windows';
@@ -378,7 +386,16 @@ export class InferenceEngine {
         // Only fall back to global fanout when there is truly zero domain info.
         // Non-authoritative hints (parser_context) suppress global fallback —
         // these credentials wait for authoritative domain evidence before fanning out.
-        if (credDomains.size === 0) return hasNonAuthoritativeDomain ? [] : allCompat;
+        if (credDomains.size === 0) {
+          if (hasNonAuthoritativeDomain) return [];
+          // Global fanout: cap to prevent frontier explosion on large graphs
+          const maxGlobalFanout = ((this.ctx.config as unknown as Record<string, unknown>).max_global_fanout as number | undefined) ?? 50;
+          if (allCompat.length > maxGlobalFanout) {
+            console.error(`[inference] compatible_services_same_domain: capping global fanout from ${allCompat.length} to ${maxGlobalFanout} for credential ${triggerNodeId}`);
+            return allCompat.slice(0, maxGlobalFanout);
+          }
+          return allCompat;
+        }
         return allCompat.filter(svcId => {
           const hostIds = this.getParentHosts(svcId);
           return hostIds.some(hId => {
@@ -601,11 +618,12 @@ export class InferenceEngine {
         // then find hosts that are MEMBER_OF those OUs (or directly linked).
         const linkedHosts = new Set<string>();
         const visited = new Set<string>();
-        const queue: string[] = [triggerNodeId];
+        const queue: Array<{ id: string; depth: number }> = [{ id: triggerNodeId, depth: 0 }];
         while (queue.length > 0) {
-          const current = queue.shift()!;
+          const { id: current, depth: curDepth } = queue.shift()!;
           if (visited.has(current)) continue;
           visited.add(current);
+          if (curDepth >= 10) continue;
           const currentNode = this.getNode(current);
           if (currentNode?.type === 'host') {
             linkedHosts.add(current);
@@ -615,7 +633,7 @@ export class InferenceEngine {
           for (const edge of this.ctx.graph.outEdges(current) as string[]) {
             const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
             if (eAttrs.type === 'RELATED' || eAttrs.type === 'MEMBER_OF') {
-              queue.push(this.ctx.graph.target(edge));
+              queue.push({ id: this.ctx.graph.target(edge), depth: curDepth + 1 });
             }
           }
           // Also check inbound MEMBER_OF (child → container)
@@ -781,9 +799,9 @@ export class InferenceEngine {
         this.ctx.graph.forEachNode((id: string, attrs) => {
           if (attrs.type !== 'host') return;
           const hn = (attrs.hostname || attrs.label || '').toLowerCase();
-          // Match if the host's hostname starts with the CA name component (e.g., "dc01" matches "dc01.corp.local")
-          if (hn && caLabel.includes(hn.split('.')[0])) caHosts.add(id);
-          // Or exact DNS match
+          // Match if the host's first hostname component matches the CA's first component
+          if (hn && hn.split('.')[0] === caLabel.split('.')[0]) caHosts.add(id);
+          // Or exact DNS match / suffix match
           if (hn && (caLabel === hn || caLabel.startsWith(hn + '.'))) caHosts.add(id);
         });
         for (const hostId of caHosts) {
@@ -797,14 +815,39 @@ export class InferenceEngine {
       }
 
       case 'http_services_via_ca': {
-        // Find HTTP/HTTPS services that are on hosts that have the trigger CA's ISSUED_BY or OPERATES_CA relationship
+        // Find HTTP/HTTPS services on hosts connected to the trigger CA node via OPERATES_CA or ISSUED_BY edges
         // Used for ESC8 (NTLM relay to AD CS HTTP endpoints)
-        const httpSvcs: string[] = [];
-        this.ctx.graph.forEachNode((id: string, attrs) => {
-          if (attrs.type === 'service' && (attrs.service_name === 'http' || attrs.service_name === 'https')) {
-            httpSvcs.push(id);
+        const caHostIds = new Set<string>();
+        // Collect hosts that operate or are related to this CA
+        this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+          if (attrs.type === 'OPERATES_CA' || attrs.type === 'ISSUED_BY') {
+            const srcNode = this.getNode(src);
+            if (srcNode?.type === 'host') caHostIds.add(src);
           }
         });
+        this.ctx.graph.forEachOutEdge(triggerNodeId, (_edge: string, attrs, _src: string, tgt: string) => {
+          if (attrs.type === 'OPERATES_CA' || attrs.type === 'ISSUED_BY') {
+            const tgtNode = this.getNode(tgt);
+            if (tgtNode?.type === 'host') caHostIds.add(tgt);
+          }
+        });
+        // If no CA host found, fall back to trigger node's parent host
+        if (caHostIds.size === 0) {
+          const triggerNode = this.getNode(triggerNodeId);
+          if (triggerNode?.type === 'host') caHostIds.add(triggerNodeId);
+        }
+        // Collect HTTP/HTTPS services on those hosts
+        const httpSvcs: string[] = [];
+        for (const hId of caHostIds) {
+          this.ctx.graph.forEachOutEdge(hId, (_edge: string, attrs, _src: string, tgt: string) => {
+            if (attrs.type === 'RUNS') {
+              const svcNode = this.getNode(tgt);
+              if (svcNode?.type === 'service' && (svcNode.service_name === 'http' || svcNode.service_name === 'https')) {
+                httpSvcs.push(tgt);
+              }
+            }
+          });
+        }
         return httpSvcs;
       }
 

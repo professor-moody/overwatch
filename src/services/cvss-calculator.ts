@@ -147,8 +147,8 @@ export function estimateCvssFromContext(
     if (node.type === 'host') {
       // Check if host has inbound edges from network services
       const hasNetworkService = graph.edges.some(e =>
-        e.source === assetId && e.properties.type === 'RUNS' ||
-        e.target === assetId && (e.properties.type === 'REACHABLE')
+        (e.source === assetId && e.properties.type === 'RUNS') ||
+        (e.target === assetId && e.properties.type === 'REACHABLE')
       );
       if (hasNetworkService) attackVector = 'N';
     }

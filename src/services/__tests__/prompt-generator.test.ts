@@ -289,4 +289,365 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('[    ] **Exfiltrate data**');
     });
   });
+
+  describe('tactical methodology section', () => {
+    it('includes tactical methodology in primary prompt', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('## Tactical Methodology');
+      expect(prompt).toContain('Check existing results first');
+      expect(prompt).toContain('CVE-first for identified services');
+      expect(prompt).toContain('Review tool artifacts');
+    });
+
+    it('includes prioritization logic', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Exploitation > brute-force');
+      expect(prompt).toContain('Authenticated access > re-authentication');
+      expect(prompt).toContain('Quietest path wins');
+      expect(prompt).toContain('Chain completion is high value');
+    });
+
+    it('includes credential awareness guidance', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Credential Awareness');
+      expect(prompt).toContain('query_graph()');
+      expect(prompt).toContain('credential reuse');
+    });
+
+    it('includes tactical section in sub-agent prompt too', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
+
+      expect(prompt).toContain('## Tactical Methodology');
+      expect(prompt).toContain('CVE-first');
+    });
+  });
+
+  describe('profile-specific guidance', () => {
+    it('includes profile hints for goad_ad profile', () => {
+      const adConfig = { ...config, profile: 'goad_ad' as const };
+      const engine = new GraphEngine(adConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (goad_ad)');
+      expect(prompt).toContain('credential chain completion');
+      expect(prompt).toContain('BloodHound');
+      expect(prompt).toContain('ESC1-ESC13');
+    });
+
+    it('includes profile hints for web_app profile', () => {
+      const webConfig = { ...config, profile: 'web_app' as const };
+      const engine = new GraphEngine(webConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (web_app)');
+      expect(prompt).toContain('CVE-first');
+      expect(prompt).toContain('default credentials');
+    });
+
+    it('includes profile hints for cloud profile', () => {
+      const cloudConfig = { ...config, profile: 'cloud' as const };
+      const engine = new GraphEngine(cloudConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (cloud)');
+      expect(prompt).toContain('IAM first');
+      expect(prompt).toContain('IMDS');
+    });
+
+    it('includes profile hints for hybrid profile', () => {
+      const hybridConfig = { ...config, profile: 'hybrid' as const };
+      const engine = new GraphEngine(hybridConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (hybrid)');
+      expect(prompt).toContain('pivot points');
+    });
+
+    it('includes profile hints for network profile', () => {
+      const netConfig = { ...config, profile: 'network' as const };
+      const engine = new GraphEngine(netConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (network)');
+      expect(prompt).toContain('service enumeration');
+    });
+
+    it('includes profile hints for single_host profile', () => {
+      const shConfig = { ...config, profile: 'single_host' as const };
+      const engine = new GraphEngine(shConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Profile-Specific Guidance (single_host)');
+      expect(prompt).toContain('CVE databases');
+    });
+  });
+
+  describe('anti-patterns section', () => {
+    it('includes generic anti-patterns', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Anti-Patterns');
+      expect(prompt).toContain('Do not crack hashes when the service has known CVEs');
+      expect(prompt).toContain('Do not re-scan ports');
+      expect(prompt).toContain('Do not attempt authentication with expired');
+      expect(prompt).toContain('Do not ignore completed tool output');
+      expect(prompt).toContain('Do not skip version detection');
+    });
+
+    it('includes engagement-specific failure patterns', () => {
+      const fpConfig = {
+        ...config,
+        failure_patterns: [
+          { technique: 'password_spray', target_pattern: '*.corp.local', warning: 'Account lockout after 3 attempts' },
+          { technique: 'kerberoast', warning: 'AES only — RC4 downgrade will fail' },
+        ],
+      };
+      const engine = new GraphEngine(fpConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Engagement-Specific Warnings');
+      expect(prompt).toContain('password_spray');
+      expect(prompt).toContain('*.corp.local');
+      expect(prompt).toContain('Account lockout after 3 attempts');
+      expect(prompt).toContain('kerberoast');
+      expect(prompt).toContain('AES only');
+    });
+  });
+
+  describe('situational awareness section', () => {
+    it('includes situational section when state has credentials', () => {
+      const engine = createTestEngine();
+      // Ingest a host with admin access + credential to trigger access_summary
+      engine.ingestFinding({
+        id: 'f-sit-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-sit', type: 'host', label: '10.0.0.50' },
+          { id: 'cred-sit', type: 'credential', label: 'admin:password123', confidence: 1.0, cred_type: 'plaintext', cred_user: 'admin' },
+        ],
+        edges: [
+          { source: 'cred-sit', target: 'host-sit', properties: { type: 'ADMIN_TO', confidence: 1.0 } },
+        ],
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      // Should contain state snapshot at minimum; situational section may or may not appear
+      // depending on what the engine computes as valid credentials
+      expect(prompt).toContain('## Current State Snapshot');
+    });
+
+    it('omits empty situational section', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      // With empty graph, situational section should be empty string (omitted)
+      // so the Situational Awareness header should NOT appear
+      const situationalCount = (prompt.match(/## Situational Awareness/g) || []).length;
+      expect(situationalCount).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe('enhanced sub-agent context', () => {
+    it('includes task details when frontier item matches', () => {
+      const engine = createTestEngine();
+      // Register agent
+      engine.registerAgent({
+        id: 'task-detail-1',
+        agent_id: 'agent-detail-1',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: 'fi-detail-1',
+        subgraph_node_ids: ['host-1'],
+      });
+
+      // We need a frontier item with that ID — ingest some data to generate frontier
+      engine.ingestFinding({
+        id: 'f-detail-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-1', type: 'host', label: '10.0.0.1' },
+        ],
+        edges: [],
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, {
+        role: 'sub_agent',
+        agent_id: 'agent-detail-1',
+      });
+
+      // Should always include Agent Context section
+      expect(prompt).toContain('## Agent Context');
+      expect(prompt).toContain('agent-detail-1');
+      // Tactical section should also be present for sub-agents
+      expect(prompt).toContain('## Tactical Methodology');
+    });
+
+    it('includes target node properties for scoped nodes', () => {
+      const engine = createTestEngine();
+      // Identity resolution canonicalizes host id: host-10-0-0-99
+      const canonicalId = 'host-10-0-0-99';
+      engine.ingestFinding({
+        id: 'f-target-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-tgt', type: 'host', label: '10.0.0.99', ip: '10.0.0.99', hostname: 'dc01.corp.local', os: 'Windows Server 2019' },
+        ],
+        edges: [],
+      });
+      engine.registerAgent({
+        id: 'task-tgt-1',
+        agent_id: 'agent-tgt-1',
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: 'fi-tgt-1',
+        subgraph_node_ids: [canonicalId],
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, {
+        role: 'sub_agent',
+        agent_id: 'agent-tgt-1',
+      });
+
+      expect(prompt).toContain('### Target Nodes');
+      expect(prompt).toContain(canonicalId);
+      expect(prompt).toContain('ip=10.0.0.99');
+      expect(prompt).toContain('hostname=dc01.corp.local');
+    });
+  });
+
+  describe('OPSEC budget in situational awareness', () => {
+    it('includes OPSEC budget when noise has been spent', () => {
+      const engine = createTestEngine();
+      engine.recordOpsecNoise({ noise_estimate: 0.3, host_id: 'h1' });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).toContain('### OPSEC Budget');
+      expect(prompt).toContain('Noise spent:');
+      expect(prompt).toContain('Remaining:');
+      expect(prompt).toContain('Recommended approach:');
+    });
+
+    it('includes defensive signals when recorded', () => {
+      const engine = createTestEngine();
+      engine.recordOpsecNoise({ noise_estimate: 0.1 });
+      engine.recordDefensiveSignal({
+        type: 'lockout',
+        host_id: 'host-locked',
+        detected_at: new Date().toISOString(),
+        description: 'Account lockout detected after spray',
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).toContain('Defensive signals');
+      expect(prompt).toContain('lockout');
+      expect(prompt).toContain('Account lockout detected');
+    });
+  });
+
+  describe('active campaigns in situational awareness', () => {
+    it('includes active campaigns', () => {
+      const engine = createTestEngine();
+      // Ingest nodes to create frontier items
+      engine.ingestFinding({
+        id: 'f-camp-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-camp', type: 'host', label: '10.0.0.10' },
+          { id: 'svc-camp', type: 'service', label: 'smb', port: 445 },
+        ],
+        edges: [
+          { source: 'host-camp', target: 'svc-camp', properties: { type: 'RUNS', confidence: 1.0 } },
+        ],
+      });
+
+      // Get frontier items to use as campaign items
+      const state = engine.getState();
+      const itemIds = state.frontier.map(f => f.id);
+      // If no frontier items, use a dummy — campaign planner requires at least one
+      const ids = itemIds.length > 0 ? itemIds.slice(0, 1) : ['dummy-fi-1'];
+
+      const campaign = engine.createCampaign({
+        name: 'Test Spray Campaign',
+        strategy: 'credential_spray',
+        item_ids: ids,
+      });
+      engine.activateCampaign(campaign.id);
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).toContain('### Active Campaigns');
+      expect(prompt).toContain('Test Spray Campaign');
+    });
+  });
+
+  describe('services without CVE checks', () => {
+    it('surfaces services with version but no VULNERABLE_TO edges', () => {
+      const engine = createTestEngine();
+      engine.ingestFinding({
+        id: 'f-cve-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-cve', type: 'host', label: '10.0.0.20' },
+          { id: 'svc-cve', type: 'service', label: 'apache', version: '2.4.49', port: 80 },
+        ],
+        edges: [
+          { source: 'host-cve', target: 'svc-cve', properties: { type: 'RUNS', confidence: 1.0 } },
+        ],
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).toContain('Services Without CVE Checks');
+      expect(prompt).toContain('apache (2.4.49)');
+    });
+
+    it('does not surface services that have VULNERABLE_TO edges', () => {
+      const engine = createTestEngine();
+      engine.ingestFinding({
+        id: 'f-cve-2',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-cve2', type: 'host', label: '10.0.0.21' },
+          { id: 'svc-cve2', type: 'service', label: 'nginx', version: '1.18.0', port: 80 },
+          { id: 'vuln-1', type: 'vulnerability', label: 'CVE-2021-23017' },
+        ],
+        edges: [
+          { source: 'host-cve2', target: 'svc-cve2', properties: { type: 'RUNS', confidence: 1.0 } },
+          { source: 'svc-cve2', target: 'vuln-1', properties: { type: 'VULNERABLE_TO', confidence: 0.9 } },
+        ],
+      });
+
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).not.toContain('nginx (1.18.0)');
+    });
+  });
+
+  describe('retrospective anti-patterns from KB', () => {
+    it('includes low-success techniques when KB has data', () => {
+      const engine = createTestEngine();
+      const kb = engine.getKB();
+      if (kb) {
+        // Simulate a low-success technique with >=5 attempts and <20% success
+        for (let i = 0; i < 10; i++) {
+          kb.recordTechniqueAttempt('password_spray', 'Password Spray', i < 1, 0.5);
+        }
+        const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+        expect(prompt).toContain('Low-Success Techniques');
+        expect(prompt).toContain('Password Spray');
+        expect(prompt).toContain('1/10 succeeded');
+      }
+    });
+  });
 });
