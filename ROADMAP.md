@@ -648,6 +648,267 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 
 ---
 
+## Phase 7 — Engine Hardening & Model Intelligence
+
+> **Goal:** Scale the backend for larger engagements, improve model reasoning quality through tighter feedback loops, and eliminate operational friction that causes wasted actions.
+
+### 7.1 Persistence Write Coalescing
+
+**Priority: High** · Depends on: —
+
+`persist()` is called ~25 times across the engine (every addNode, addEdge, registerAgent, etc.), each doing full JSON serialize + fsync + atomic rename. For large graphs (thousands of nodes), this is a bottleneck.
+
+- **Dirty-flag + debounced flush** — mark state dirty on mutation, flush after 100ms of quiet or 500ms max latency
+- **Immediate flush on session close / process exit** — safety valve so no data is lost
+- **Batch persist API** — `engine.batchMutate(fn)` that holds persistence until the batch completes
+- **Metrics** — track persist frequency, avg serialization time, flush latency
+
+**Implementation scope:**
+- Modify `StatePersistence` with `markDirty()`, `scheduleFlush()`, `flushNow()`
+- Add `batchMutate(fn: () => void)` to `GraphEngine` that suppresses individual persist calls
+- Hook process `SIGTERM`/`SIGINT` + `beforeExit` to force flush
+- Tests: verify batch operations produce single persist, verify safety on kill
+
+### 7.2 Graph Engine Decomposition
+
+**Priority: Medium** · Depends on: 7.1
+
+`graph-engine.ts` is 83KB / 2154 lines — a god object that owns graph ops, persistence, inference, frontier, campaigns, agents, paths, health, objectives, sessions, OPSEC, scope, BH paths, evidence, KB, and web chains.
+
+- Extract **ObjectiveManager** — objective CRUD, achievement evaluation, sync
+- Extract **SessionEdgeTracker** — HAS_SESSION edge lifecycle, downgrade on close, reconcile on startup
+- Extract **ConfigManager** — engagement config CRUD, updateConfig, addObjective, removeObjective
+- Keep `GraphEngine` as thin facade delegating to focused modules sharing `EngineContext`
+- All extractees get their own test files (currently covered by the 143KB `graph-engine.test.ts`)
+
+**Implementation scope:**
+- 3-4 new files: `objective-manager.ts`, `session-tracker.ts`, `config-manager.ts`
+- `GraphEngine` retains public API surface (no breaking changes to tools)
+- Split `graph-engine.test.ts` into focused test files
+
+### 7.3 Outcome Feedback Loop in validate_action
+
+**Priority: High** · Depends on: —
+
+`validate_action` scores actions before execution but doesn't surface recent outcomes from the same engagement. The model repeats failed approaches because it doesn't see "you tried this technique on a similar target 20 minutes ago and it failed."
+
+- **Recent outcome summary** — for the proposed technique × target-type, include last 3 concrete outcomes from this engagement (not just KB cross-engagement stats)
+- **Similar-target failure warnings** — if the same technique failed on hosts in the same community/subnet, warn with specifics
+- **Cumulative success rate** — per-technique hit rate for the current engagement displayed alongside KB historical rate
+- **Cool-down suggestions** — if a technique has failed 3+ times consecutively, suggest alternatives from KB
+
+**Implementation scope:**
+- Extend `validateAction()` return type with `recent_outcomes: { target, timestamp, result, reason }[]`
+- Query activity log for matching `technique` + `event_type: action_completed|action_failed` entries
+- Add community/subnet similarity matching for "similar target" detection
+- Tests: verify outcomes surface correctly, verify cool-down logic
+
+### 7.4 Adaptive Prompt Token Budgeting
+
+**Priority: High** · Depends on: —
+
+`generateSystemPrompt` always includes all sections. For large engagements (50+ credentials, 20 campaigns, 100+ activity entries), the situational awareness section alone can blow the context budget.
+
+- **Token estimation** — rough token count per section (chars/4 heuristic is fine)
+- **Priority-based trimming** — tactical + anti-patterns always included; situational items scored by urgency (expiring creds > campaign status > scope suggestions) and trimmed to fit budget
+- **Configurable budget** — `max_prompt_tokens` in engagement config (default 8000)
+- **Section-level summary fallback** — when a section exceeds budget, replace with compressed summary ("12 credentials active, 3 expiring within 1h — use query_graph for details")
+
+**Implementation scope:**
+- New `estimateTokens(text: string)` utility
+- Refactor `generateSituationalSection` to score and prioritize sub-items
+- Add `max_prompt_tokens` config option with section budget allocation
+- Tests: verify trimming behavior, verify high-priority items survive truncation
+
+### 7.5 Tool Call Telemetry
+
+**Priority: Medium** · Depends on: —
+
+No visibility into how the model uses tools — which it calls frequently, which it ignores, what sequences it follows. This data feeds retrospective analysis and prompt improvement.
+
+- **Call counters** — per-tool invocation count, avg response time, error rate
+- **Sequence tracking** — record tool call ordering to detect patterns (e.g., always calls `get_state` → `next_task` → `validate_action`)
+- **Unused tool detection** — tools never called across an engagement get flagged
+- **Dashboard widget** — tool usage heatmap in overview panel
+
+**Implementation scope:**
+- Wrap `ToolRegistrar.registerTool` callback with timing/counting middleware
+- Store telemetry in `EngineContext` (not persisted — runtime only, exported via retrospective)
+- Add `tool_telemetry` section to `run_retrospective` output
+- Dashboard: simple bar chart of tool call frequency
+
+### 7.6 Structured Error Envelopes
+
+**Priority: Medium** · Depends on: —
+
+Tools inconsistently return errors — some return `{ error: string }` in text content, others throw. The model sometimes can't distinguish "no results" from "operation failed."
+
+- **Standard response shape** — all tools return `{ success: boolean, data?: T, error?: string, warnings?: string[] }`
+- **Error classification** — `validation_error`, `not_found`, `scope_violation`, `internal_error`
+- **MCP `isError` flag** — set `isError: true` on the response when the tool genuinely failed
+- **Graceful degradation** — validation errors include what the model should do instead
+
+**Implementation scope:**
+- Update `withErrorBoundary` to wrap all responses in standard envelope
+- Add `isError: true` to MCP tool responses on failures
+- Audit all 42 tools for consistent error handling
+- Tests: verify error responses match schema
+
+### 7.7 Graph Health Auto-Checks
+
+**Priority: Low** · Depends on: —
+
+`run_graph_health` is manual-only. Orphan nodes, dangling edges, and superseded-but-referenced nodes accumulate silently.
+
+- **Lightweight auto-check** — run subset of health checks every N findings (e.g., every 20)
+- **Surface warnings in situational awareness** — add to `generateSituationalSection` when issues detected
+- **Auto-fix trivial issues** — orphan subnet nodes with no children, duplicate edges with same source/target/type
+- **Threshold alerts** — if health score drops below 0.8, flag in prompt
+
+**Implementation scope:**
+- Add `runLightweightHealthCheck()` to `GraphEngine` (orphans + dangling only, O(n))
+- Call from `ingestFinding` after every 20th finding (counter in EngineContext)
+- Extend situational section to include health warnings
+- Tests: verify auto-check triggers at correct intervals
+
+### 7.8 Finding Deduplication
+
+**Priority: Medium** · Depends on: —
+
+When the model parses the same tool output twice (common after compaction), duplicate findings create duplicate activity log entries and potentially duplicate graph nodes.
+
+- **Content hashing** — SHA-256 of `(tool_name, target_node, technique, raw_output_first_500_chars)` as dedup key
+- **Dedup window** — ignore exact duplicates within 5-minute window
+- **Merge semantics** — if a duplicate arrives with new properties, merge rather than reject
+- **Counter** — track deduplicated count for retrospective analysis
+
+**Implementation scope:**
+- Add `recent_finding_hashes: Set<string>` to `EngineContext` (rolling window)
+- Hash computation in `ingestFindingImpl` before graph mutation
+- Return `{ deduplicated: true }` when a finding is skipped
+- Tests: verify exact duplicates rejected, verify partial-overlap merged
+
+### 7.9 Inference Rule Effectiveness Tracking
+
+**Priority: Medium** · Depends on: —
+
+31 built-in inference rules generate hypothesis edges, but there's no tracking of which hypotheses are later *confirmed* by actual findings vs. remaining unconfirmed indefinitely.
+
+- **Confirmation tracking** — when an inferred edge gets `confidence` upgraded (finding confirms it), credit the source rule
+- **Effectiveness score** — `confirmed / (confirmed + expired_unconfirmed)` per rule
+- **Retrospective integration** — surface rules with <10% confirmation rate in retrospective output
+- **Dynamic rule prioritization** — high-effectiveness rules run first in the inference pipeline
+
+**Implementation scope:**
+- Add `source_rule_id` property to inferred edges (already have `inferred_by`)
+- Track confirmation events in inference engine
+- New `getInferenceRuleStats()` method on `GraphEngine`
+- Extend retrospective with rule effectiveness section
+
+### 7.10 Engagement-Scoped Technique Priors
+
+**Priority: Low** · Depends on: —
+
+The knowledge base stores cross-engagement technique stats but doesn't differentiate by environment type. A technique that works 80% on `goad_ad` may work 20% on `red_team`.
+
+- **Profile-aware priors** — `success_rate_by_profile: Record<LabProfile, number>`
+- **Current-engagement rate** — inline the in-progress success rate alongside KB historical rate
+- **Confidence intervals** — for techniques with <10 samples, flag as "low confidence prior"
+- **Decay** — older engagement data weighs less than recent
+
+**Implementation scope:**
+- Extend `TechniqueStats` with `by_profile` breakdown
+- Modify `computeTechniquePriors()` to accept profile filter
+- Add time-decay weighting to success rate computation
+- Update prompt generator to surface profile-specific priors
+
+### 7.11 Incremental Frontier Computation
+
+**Priority: Low** · Depends on: 7.1
+
+`computeFrontier()` walks every node and edge on each call. Acceptable for graphs <1000 nodes but expensive at scale.
+
+- **Change-triggered recomputation** — only re-evaluate nodes/edges in the neighborhood of the mutation
+- **Frontier cache with surgical invalidation** — invalidate only affected frontier items when a node property changes
+- **Lazy expansion** — compute top-N frontier items eagerly, expand on demand via `next_task(max_items)`
+
+**Implementation scope:**
+- Track dirty node set per persist cycle
+- `computeFrontier(dirtySet?)` that limits iteration to affected subgraph
+- Cache invalidation scoped to community of changed node
+- Tests: verify incremental matches full recomputation
+
+### 7.12 Frontier Intent Deduplication
+
+**Priority: Low** · Depends on: —
+
+Frontier can surface semantically identical items (e.g., "enumerate host A" and "scan services on host A") targeting the same node with similar action classes.
+
+- **Intent grouping** — cluster items by `(target_node, action_class)` and present highest-scored representative
+- **Action class taxonomy** — enumeration, exploitation, credential_test, lateral_movement, post_exploitation
+- **Expand-on-request** — `next_task(expand_group=true)` shows all items in a group
+
+**Implementation scope:**
+- Classify frontier items by action class based on `type` + `missing_properties`
+- Group in `filterFrontier()` output with `group_id` field
+- Default behavior: one representative per group, full list available via param
+- Tests: verify grouping, verify representative selection logic
+
+### 7.13 Session Idle Timeout
+
+**Priority: Low** · Depends on: —
+
+Sessions stay open indefinitely, consuming resources and leaving stale `HAS_SESSION` edges.
+
+- **Configurable idle timeout** — close sessions with no I/O for N minutes (default: 30)
+- **Warning before close** — write `[Overwatch: session idle, closing in 60s]` to buffer
+- **Edge downgrade** — `session_live: false` on timeout, same as manual close
+- **Exempt sessions** — operator can mark sessions as persistent (reverse shell catchers)
+
+**Implementation scope:**
+- Add `idle_timeout_ms` to session metadata (default 30min)
+- Timer reset on every `write_session` / `read_session` / `send_to_session`
+- On timeout: write warning, wait 60s, then close
+- Tests: verify timeout triggers, verify exempt sessions survive
+
+### 7.14 API Schema Export (OpenAPI)
+
+**Priority: Low** · Depends on: —
+
+The dashboard REST API has ~30 endpoints with no formal spec. Frontend and external integrations guess at shapes.
+
+- **Auto-generate OpenAPI 3.1 spec** from Zod schemas used in tool registration
+- **Serve at `/api/docs`** — Swagger UI or Scalar for interactive exploration
+- **Versioning** — spec includes API version, changelog link
+- **Client codegen** — generated TypeScript client for dashboard-next replaces hand-written `api.ts`
+
+**Implementation scope:**
+- `zod-to-openapi` or manual spec generation from existing schemas
+- Express middleware to serve spec JSON and UI
+- CI check: spec stays in sync with implementation
+- Optional: generate `api.ts` from spec
+
+### 7.15 Documentation Refresh
+
+**Priority: Medium** · Depends on: —
+
+Several docs are stale after Phases 4-6 completion:
+
+- **`docs/architecture.md`** — add `dashboard-next` (React), new services (IAM simulator, finding classifier, CVSS calculator, technique priors, web attack chains, campaign planner, chain scorer, prompt generator, engagement manager)
+- **`docs/dashboard.md`** — rewrite to cover React dashboard panels, cross-panel navigation, edit mode, evidence search
+- **`docs/tools/index.md`** — update tool count (42), add `manage_campaign` CRUD actions, `dispatch_campaign_agents`
+- **`docs/graph-model.md`** — add cloud_network node type docs, web attack chain edges
+- **`docs/concepts.md`** — add campaigns, technique priors, prompt generation concepts
+- **New: `docs/api.md`** — REST API reference for dashboard server endpoints
+
+**Implementation scope:**
+- Audit all docs files against current codebase
+- Update architecture component tables
+- Rewrite dashboard.md for React dashboard
+- Add REST API reference
+
+---
+
 ## Summary & Priority Matrix
 
 | # | Item | Phase | Priority | Depends On | Status |
@@ -658,7 +919,7 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 1.4 | Console: Campaign Management UI | 1 | High | 1.2 | ✅ |
 | 2.1 | Adaptive OPSEC Profiling | 2 | High | — | ✅ |
 | 2.2 | Credential Lifecycle Intelligence | 2 | High | — | ✅ |
-| 2.3 | Defensive Posture Estimation | 2 | Medium | — |
+| 2.3 | Defensive Posture Estimation | 2 | Medium | — | |
 | 2.4 | BloodHound-Native Attack Paths | 2 | Medium | — | ✅ |
 | 2.5 | Console: Approval Gates | 2 | High | 2.1 | ✅ |
 | 2.6 | Console: Session Terminals | 2 | Critical | — | ✅ |
@@ -678,6 +939,21 @@ The GOAD retrospective flagged weak logging. Every phase should enforce:
 | 6.2 | Console: Agent Panel Enhancements | 6 | High | 2.7 | ✅ |
 | 6.3 | Console: Cross-Panel Linking | 6 | Medium | 6.1, 6.2 | ✅ |
 | 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | ✅ |
+| 7.1 | Persistence Write Coalescing | 7 | High | — | |
+| 7.2 | Graph Engine Decomposition | 7 | Medium | 7.1 | |
+| 7.3 | Outcome Feedback Loop | 7 | High | — | |
+| 7.4 | Adaptive Prompt Token Budgeting | 7 | High | — | |
+| 7.5 | Tool Call Telemetry | 7 | Medium | — | |
+| 7.6 | Structured Error Envelopes | 7 | Medium | — | |
+| 7.7 | Graph Health Auto-Checks | 7 | Low | — | |
+| 7.8 | Finding Deduplication | 7 | Medium | — | |
+| 7.9 | Inference Rule Effectiveness Tracking | 7 | Medium | — | |
+| 7.10 | Engagement-Scoped Technique Priors | 7 | Low | — | |
+| 7.11 | Incremental Frontier Computation | 7 | Low | 7.1 | |
+| 7.12 | Frontier Intent Deduplication | 7 | Low | — | |
+| 7.13 | Session Idle Timeout | 7 | Low | — | |
+| 7.14 | API Schema Export (OpenAPI) | 7 | Low | — | |
+| 7.15 | Documentation Refresh | 7 | Medium | — | |
 
 ### Recommended execution order (parallelizable tracks)
 
@@ -689,6 +965,10 @@ Track D (Platform):         5.1 → 5.3 → 5.2 → 5.4
 Track E (Defensive intel):  2.3 → 2.4 (can start anytime)
 Track F (Console):          2.6 → 2.7 → 1.4 → 2.5 → 4.4
 Track G (Operator UX):      6.4 → 6.1 → 6.2 → 6.3
+Track H (Engine perf):      7.1 → 7.2 → 7.11 (sequential, each builds on prior)
+Track I (Model reasoning):  7.3 + 7.4 + 7.8 (parallel, no dependencies)
+Track J (Observability):    7.5 → 7.6 → 7.9 (incremental, each adds instrumentation)
+Track K (Polish):           7.7 + 7.10 + 7.12 + 7.13 + 7.14 + 7.15 (all independent)
 ```
 
-Tracks A and B are the highest-leverage work. Track C can start immediately since it has no dependencies on A or B. Track D is ongoing polish. Track F is the console spine — starts with session terminals (no dependencies, highest standalone value, infrastructure 80% built), then agent supervision, then campaign UI (needs 1.2), then approval gates (needs 2.1), then graph interaction last (lowest risk tolerance). **Track G** starts with 6.4 (prompt generator — no dependencies, critical impact on model reasoning quality) then flows into dashboard panel upgrades.
+Tracks A–G are complete or near-complete. **Track H** (engine performance) is the highest-leverage new work — persistence coalescing unblocks decomposition which unblocks incremental frontier. **Track I** (model reasoning) delivers the most direct engagement quality improvements and all items can start in parallel immediately. **Track J** (observability) builds instrumentation that feeds the retrospective loop. **Track K** is independent polish work that can be picked up opportunistically.
