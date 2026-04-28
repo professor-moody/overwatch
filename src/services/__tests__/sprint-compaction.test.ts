@@ -364,6 +364,7 @@ describe('Graph compaction integration', () => {
       { id: 'host-10-10-10-5', type: 'host', label: '10.10.10.5', ip: '10.10.10.5', alive: true },
     ]));
     expect(engine.getState().graph_summary.cold_node_count).toBe(1);
+    engine.flushNow();
 
     // Load a fresh engine from the same state file
     const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);

@@ -159,7 +159,7 @@ export class GraphEngine {
     // Reconcile runtime-dependent state on startup
     this.reconcileSessionEdgesOnStartup();
     this.agentMgr.reconcileOnStartup();
-    this.persist();
+    this.persistence.persistImmediate();
   }
 
   /** Lazy-load the cross-engagement knowledge base (returns null if file not found). */
@@ -1803,6 +1803,55 @@ export class GraphEngine {
     // Callers (addNode, addEdge, dropEdge, patchNodeProperties) already
     // invalidate the appropriate caches before calling persist.
     this.persistence.persist(detail);
+  }
+
+  /**
+   * Execute a batch of mutations with a single coalesced persist at the end.
+   * All persist() calls within `fn` are suppressed until the batch completes.
+   * Batches can nest — only the outermost triggers the flush.
+   */
+  batchMutate(fn: () => void): void {
+    this.persistence.beginBatch();
+    try {
+      fn();
+    } finally {
+      this.persistence.endBatch();
+    }
+  }
+
+  /**
+   * Async version of batchMutate for async operations.
+   */
+  async batchMutateAsync(fn: () => Promise<void>): Promise<void> {
+    this.persistence.beginBatch();
+    try {
+      await fn();
+    } finally {
+      this.persistence.endBatch();
+    }
+  }
+
+  /**
+   * Force an immediate flush of any pending state to disk.
+   * Use when you need to guarantee state is persisted before proceeding.
+   */
+  flushNow(): void {
+    this.persistence.flushNow();
+  }
+
+  /**
+   * Returns persistence performance metrics for observability.
+   */
+  getPersistMetrics(): import('./state-persistence.js').PersistMetrics {
+    return this.persistence.getMetrics();
+  }
+
+  /**
+   * Tear down timers and process listeners.
+   * Call during graceful shutdown or in tests to avoid leaked state.
+   */
+  dispose(): void {
+    this.persistence.dispose();
   }
 
   // =============================================

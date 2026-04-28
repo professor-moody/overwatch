@@ -380,6 +380,7 @@ describe('ingestSessionResult calls persist', () => {
       principal_node: 'user-root',
       session_id: 'sess-persist-check',
     });
+    engine.flushNow();
 
     expect(existsSync(TEST_STATE_FILE)).toBe(true);
   });
@@ -396,6 +397,7 @@ describe('ingestSessionResult calls persist', () => {
       principal_node: 'user-root',
       session_id: 'sess-persist-fail',
     });
+    engine.flushNow();
 
     expect(existsSync(TEST_STATE_FILE)).toBe(true);
   });

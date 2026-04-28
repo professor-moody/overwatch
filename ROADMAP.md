@@ -939,7 +939,7 @@ Several docs are stale after Phases 4-6 completion:
 | 6.2 | Console: Agent Panel Enhancements | 6 | High | 2.7 | ✅ |
 | 6.3 | Console: Cross-Panel Linking | 6 | Medium | 6.1, 6.2 | ✅ |
 | 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | ✅ |
-| 7.1 | Persistence Write Coalescing | 7 | High | — | |
+| 7.1 | Persistence Write Coalescing | 7 | High | — | ✅ |
 | 7.2 | Graph Engine Decomposition | 7 | Medium | 7.1 | |
 | 7.3 | Outcome Feedback Loop | 7 | High | — | |
 | 7.4 | Adaptive Prompt Token Budgeting | 7 | High | — | |

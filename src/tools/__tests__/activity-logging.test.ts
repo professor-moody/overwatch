@@ -77,6 +77,7 @@ describe('structured activity logging tools', () => {
     expect(payload.event_id).toBeDefined();
     expect(payload.action_id).toBeDefined();
 
+    engine.flushNow();
     const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const history = reloaded.getFullHistory();
     const entry = history.find(candidate => candidate.action_id === payload.action_id);

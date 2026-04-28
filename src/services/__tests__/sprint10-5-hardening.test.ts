@@ -529,6 +529,7 @@ describe('H.9 — Default-credential migration on reload', () => {
     // Simulate pre-migration state: remove the flag from the persisted node
     (engine1 as any).ctx.graph.mergeNodeAttributes('cred-default-wordpress', { cred_is_default_guess: undefined });
     (engine1 as any).persistence.persist();
+    engine1.flushNow();
 
     // Phase 2: reload from persisted state — migration should backfill the flag
     const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);

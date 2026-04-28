@@ -48,28 +48,41 @@ function cleanup() {
   } catch { /* best effort */ }
 }
 
+// Track engine instances for cleanup
+const engines: GraphEngine[] = [];
+const _OrigGraphEngine = GraphEngine;
+function trackedEngine(...args: ConstructorParameters<typeof GraphEngine>): GraphEngine {
+  const e = new _OrigGraphEngine(...args);
+  engines.push(e);
+  return e;
+}
+
 describe('GraphEngine', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    for (const e of engines) e.dispose();
+    engines.length = 0;
+    cleanup();
+  });
 
   // =============================================
   // Seeding
   // =============================================
   describe('seeding from config', () => {
     it('does NOT auto-expand CIDRs into host nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       // CIDRs define scope boundaries only — hosts are created by tool output
       expect(state.graph_summary.nodes_by_type['host'] || 0).toBe(0);
     });
 
     it('creates domain nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       expect(state.graph_summary.nodes_by_type['domain']).toBe(1);
     });
 
     it('creates objective nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       expect(state.graph_summary.nodes_by_type['objective']).toBe(1);
     });
@@ -83,7 +96,7 @@ describe('GraphEngine', () => {
           hosts: ['dc01.test.local', 'web01.test.local'],
         },
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       const state = engine.getState();
       expect(state.graph_summary.nodes_by_type['host']).toBe(2);
     });
@@ -94,7 +107,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('ingestFinding', () => {
     it('adds new nodes to the graph', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -110,7 +123,7 @@ describe('GraphEngine', () => {
     });
 
     it('merges properties on existing nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Create host first
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
@@ -130,7 +143,7 @@ describe('GraphEngine', () => {
     });
 
     it('skips edges with missing source/target nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.ingestFinding(makeFinding({
         edges: [
           { source: 'nonexistent-a', target: 'nonexistent-b', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
@@ -140,7 +153,7 @@ describe('GraphEngine', () => {
     });
 
     it('deduplicates edges of the same type', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a host and service first
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -163,7 +176,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not leave NXC-only hosts marked as missing services', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const finding = parseNxc('SMB  10.10.10.5  445  ACME\\scanner  [+]  Windows Server 2019');
 
       engine.ingestFinding(finding);
@@ -175,7 +188,7 @@ describe('GraphEngine', () => {
     });
 
     it('auto-merges unresolved aliases into later canonical identities and retargets edges', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.addNode({
         id: 'bh-user-s-1-5-21-1',
         type: 'user',
@@ -209,7 +222,7 @@ describe('GraphEngine', () => {
     });
 
     it('reverse-merges hostname-only host into existing IP-based host via FQDN short name', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // First: ingest a host with IP and FQDN (e.g. from nmap)
       engine.ingestFinding(makeFinding({
@@ -248,7 +261,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('inference rules', () => {
     it('infers MEMBER_OF_DOMAIN from Kerberos service via hostname suffix', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Give the host a hostname so matching_domain can resolve via suffix
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -272,7 +285,7 @@ describe('GraphEngine', () => {
     });
 
     it('does NOT infer MEMBER_OF_DOMAIN for Kerberos host without matching hostname', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Host has no hostname — matching_domain should produce nothing
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -290,7 +303,7 @@ describe('GraphEngine', () => {
 
     it('does NOT infer MEMBER_OF_DOMAIN when hostname is sibling domain (dot-boundary)', () => {
       const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'eviltest.local'], exclusions: [] } });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       // Host with hostname in eviltest.local, NOT test.local
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -313,7 +326,7 @@ describe('GraphEngine', () => {
     });
 
     it('infers RELAY_TARGET from SMB signing disabled', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Need a compromised host first for the relay source
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -340,7 +353,7 @@ describe('GraphEngine', () => {
     });
 
     it('fires inference on property updates (P1.5 fix)', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // Add SMB service without signing info — no relay inference
       engine.ingestFinding(makeFinding({
@@ -375,7 +388,7 @@ describe('GraphEngine', () => {
     });
 
     it('fires inference on edge-update endpoints (Tier 1B)', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // Host + SMB service with signing disabled + RUNS edge.
       // No compromised host yet, so RELAY_TARGET rule finds no source — nothing inferred.
@@ -416,7 +429,7 @@ describe('GraphEngine', () => {
     });
 
     it('infers POTENTIAL_AUTH for new credentials', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a service that accepts domain auth (host must be in same domain)
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -440,7 +453,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not infer POTENTIAL_AUTH from responder NTLMv2 captures', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -463,7 +476,7 @@ describe('GraphEngine', () => {
     });
 
     it('still infers POTENTIAL_AUTH from secretsdump NT hashes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Host must be in the same domain as the credential for domain-scoped fanout
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -484,7 +497,7 @@ describe('GraphEngine', () => {
     });
 
     it('still infers POTENTIAL_AUTH from hashcat cracked passwords', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -505,7 +518,7 @@ describe('GraphEngine', () => {
 
     it('does NOT fan out POTENTIAL_AUTH across domains (domain-scoped)', () => {
       const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'other.local'], exclusions: [] } });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       // Add a service in "other.local" domain
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -536,7 +549,7 @@ describe('GraphEngine', () => {
 
     it('does NOT fan out hashcat cred with cred_domain but no MEMBER_OF_DOMAIN edge across domains', () => {
       const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local', 'other.local'], exclusions: [] } });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       // Service in "other.local"
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -566,7 +579,7 @@ describe('GraphEngine', () => {
 
     it('does NOT use parser_context cred_domain for domain-scoped fanout', () => {
       const config = makeConfig({ scope: { cidrs: ['10.10.10.0/28'], domains: ['test.local'], exclusions: [] } });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       // Service on a domain-joined host
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -596,7 +609,7 @@ describe('GraphEngine', () => {
     });
 
     it('backfills cred_domain when user gains MEMBER_OF_DOMAIN in a later finding', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Finding 1: user + credential, no domain
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -631,7 +644,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('frontier_item_id auto-threading', () => {
     it('auto-fills frontier_item_id on subsequent events with same action_id', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // First event: action_validated with frontier_item_id
       engine.logActionEvent({
         description: 'validate action',
@@ -653,7 +666,7 @@ describe('GraphEngine', () => {
     });
 
     it('survives state reload via rebuildActionFrontierMap', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Log an event with action_id + frontier_item_id
       engine.logActionEvent({
         description: 'validate action',
@@ -664,9 +677,10 @@ describe('GraphEngine', () => {
       });
       // Persist state to disk
       engine.persist();
+      engine.flushNow();
 
       // Create a new engine instance and load the saved state
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Log a follow-up event with same action_id but NO frontier_item_id
       engine2.logActionEvent({
         description: 'complete action',
@@ -685,7 +699,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('frontier', () => {
     it('generates incomplete_node items for hosts missing alive status', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Create a host without alive status
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
@@ -698,7 +712,7 @@ describe('GraphEngine', () => {
     });
 
     it('generates inferred_edge items for untested inferred edges', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Give host a hostname so kerberos matching_domain selector works
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -721,14 +735,14 @@ describe('GraphEngine', () => {
     });
 
     it('filters out excluded IPs', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       const excludedItems = state.frontier.filter(f => f.node_id === 'host-10-10-10-14');
       expect(excludedItems.length).toBe(0);
     });
 
     it('filters out dead hosts', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: false }],
       }));
@@ -740,7 +754,7 @@ describe('GraphEngine', () => {
 
     it('filters items exceeding OPSEC noise ceiling', () => {
       const config = makeConfig({ opsec: { name: 'redteam', max_noise: 0.1 } });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       const state = engine.getState();
       // With noise ceiling 0.1, most items should be filtered (ping sweep = 0.2)
       const highNoiseInFrontier = state.frontier.filter(f => f.opsec_noise > 0.1);
@@ -748,7 +762,7 @@ describe('GraphEngine', () => {
     });
 
     it('emits network_discovery items from scope CIDRs', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const frontier = engine.computeFrontier();
       const discovery = frontier.filter(f => f.type === 'network_discovery');
       expect(discovery.length).toBe(1);
@@ -762,7 +776,7 @@ describe('GraphEngine', () => {
       const config = makeConfig({
         scope: { cidrs: ['10.10.10.0/24', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       const frontier = engine.computeFrontier();
       const discovery = frontier.filter(f => f.type === 'network_discovery');
       expect(discovery.length).toBe(2);
@@ -770,7 +784,7 @@ describe('GraphEngine', () => {
     });
 
     it('network_discovery items pass through filterFrontier', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const frontier = engine.computeFrontier();
       const { passed } = engine.filterFrontier(frontier);
       const discovery = passed.filter(f => f.type === 'network_discovery');
@@ -778,7 +792,7 @@ describe('GraphEngine', () => {
     });
 
     it('network_discovery items appear in getState frontier', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       const discovery = state.frontier.filter(f => f.type === 'network_discovery');
       expect(discovery.length).toBe(1);
@@ -786,7 +800,7 @@ describe('GraphEngine', () => {
     });
 
     it('network_discovery item persists with reduced fan_out after partial exploration', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // /28 = 14 usable hosts
       let frontier = engine.computeFrontier();
       let discovery = frontier.find(f => f.type === 'network_discovery' && f.target_cidr === '10.10.10.0/28');
@@ -811,7 +825,7 @@ describe('GraphEngine', () => {
       const config = makeConfig({
         scope: { cidrs: ['10.10.10.0/30'], domains: ['test.local'], exclusions: [] },
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
 
       let frontier = engine.computeFrontier();
       expect(frontier.some(f => f.type === 'network_discovery')).toBe(true);
@@ -832,7 +846,7 @@ describe('GraphEngine', () => {
       const config = makeConfig({
         scope: { cidrs: ['10.10.10.0/24', '192.168.1.0/24'], domains: ['test.local'], exclusions: [] },
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
 
       // Discover a host only in the first CIDR
       engine.ingestFinding(makeFinding({
@@ -855,7 +869,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('validation', () => {
     it('validates existing nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
       }));
@@ -864,14 +878,14 @@ describe('GraphEngine', () => {
     });
 
     it('rejects nonexistent nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_node: 'host-does-not-exist' });
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
     });
 
     it('rejects excluded IPs', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' }],
       }));
@@ -881,14 +895,14 @@ describe('GraphEngine', () => {
     });
 
     it('rejects blacklisted techniques', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ technique: 'zerologon' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('blacklisted'))).toBe(true);
     });
 
     it('allows non-blacklisted techniques', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
       }));
@@ -897,7 +911,7 @@ describe('GraphEngine', () => {
     });
 
     it('rejects excluded edge_target in validateAction', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -910,7 +924,7 @@ describe('GraphEngine', () => {
     });
 
     it('warns when outside normal time window (e.g. 8-18)', () => {
-      const engine = new GraphEngine(makeConfig({
+      const engine = trackedEngine(makeConfig({
         opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 8, end_hour: 18 } },
       }), TEST_STATE_FILE);
       const hour = new Date().getHours();
@@ -923,7 +937,7 @@ describe('GraphEngine', () => {
     });
 
     it('handles overnight time window wrap-around (e.g. 22-06)', () => {
-      const engine = new GraphEngine(makeConfig({
+      const engine = trackedEngine(makeConfig({
         opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 22, end_hour: 6 } },
       }), TEST_STATE_FILE);
       const hour = new Date().getHours();
@@ -937,7 +951,7 @@ describe('GraphEngine', () => {
     });
 
     it('rejects excluded edge_source in validateAction', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
@@ -950,41 +964,41 @@ describe('GraphEngine', () => {
     });
 
     it('validates in-scope target_ip without requiring a graph node', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '10.10.10.1' });
       expect(result.valid).toBe(true);
       expect(result.errors.length).toBe(0);
     });
 
     it('rejects out-of-scope target_ip', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '192.168.1.1' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
     });
 
     it('rejects excluded target_ip', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '10.10.10.14' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('out of scope'))).toBe(true);
     });
 
     it('validates target_ip combined with technique', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '10.10.10.1', technique: 'portscan' });
       expect(result.valid).toBe(true);
     });
 
     it('rejects target_ip with blacklisted technique', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '10.10.10.1', technique: 'zerologon' });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('blacklisted'))).toBe(true);
     });
 
     it('filterFrontier excludes items with out-of-scope edge_target', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1009,7 +1023,7 @@ describe('GraphEngine', () => {
     });
 
     it('filterFrontier excludes service nodes on excluded hosts', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a service on the excluded host (10.10.10.14)
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1037,7 +1051,7 @@ describe('GraphEngine', () => {
     });
 
     it('allows IP-backed frontier items in domain-only engagements', () => {
-      const engine = new GraphEngine(makeConfig({
+      const engine = trackedEngine(makeConfig({
         scope: {
           cidrs: [],
           domains: ['test.local'],
@@ -1068,7 +1082,7 @@ describe('GraphEngine', () => {
     });
 
     it('validateAction rejects service node on excluded host', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a service on the excluded host (10.10.10.14)
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1088,7 +1102,7 @@ describe('GraphEngine', () => {
     // ---- Technique-specific guidance (Phase 3) ----
 
     it('warns when secretsdump targets a host without ADMIN_TO', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
       }));
@@ -1098,7 +1112,7 @@ describe('GraphEngine', () => {
     });
 
     it('no secretsdump warning when ADMIN_TO edge exists', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1111,7 +1125,7 @@ describe('GraphEngine', () => {
     });
 
     it('warns when kerberoast targets a user without SPN', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql' }],
       }));
@@ -1121,7 +1135,7 @@ describe('GraphEngine', () => {
     });
 
     it('no kerberoast warning when user has SPN', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'user-svc', type: 'user', label: 'svc_sql', has_spn: true }],
       }));
@@ -1130,7 +1144,7 @@ describe('GraphEngine', () => {
     });
 
     it('warns when smb-relay targets a host with SMB signing enabled', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1144,7 +1158,7 @@ describe('GraphEngine', () => {
     });
 
     it('no smb-relay warning when SMB signing is disabled', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1159,7 +1173,7 @@ describe('GraphEngine', () => {
     // ---- Failure pattern matching (Phase 3) ----
 
     it('warns when failure_patterns match technique', () => {
-      const engine = new GraphEngine(makeConfig({
+      const engine = trackedEngine(makeConfig({
         failure_patterns: [{ technique: 'secretsdump', warning: 'Previously failed on this network segment' }],
       }), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
@@ -1170,7 +1184,7 @@ describe('GraphEngine', () => {
     });
 
     it('failure_patterns with target_pattern only match when target contains the pattern', () => {
-      const engine = new GraphEngine(makeConfig({
+      const engine = trackedEngine(makeConfig({
         failure_patterns: [{ technique: 'portscan', target_pattern: '10-10-10-5', warning: 'Host 10.10.10.5 drops probes' }],
       }), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
@@ -1188,7 +1202,7 @@ describe('GraphEngine', () => {
     });
 
     it('no failure warnings when config has no failure_patterns', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
       }));
@@ -1203,7 +1217,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('path analysis', () => {
     it('hopsToNearestObjective returns null for disconnected nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const hops = engine.hopsToNearestObjective('host-10-10-10-1');
       // No edges exist initially, so no path
       expect(hops).toBeNull();
@@ -1220,7 +1234,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
 
       // Build a path: attacker has session on host-1, host-1 is reachable to dc01
       engine.ingestFinding(makeFinding({
@@ -1254,7 +1268,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-attacker', type: 'user', label: 'attacker' },
@@ -1272,13 +1286,13 @@ describe('GraphEngine', () => {
     });
 
     it('findPaths returns empty for nonexistent nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const paths = engine.findPaths('nonexistent', 'also-nonexistent');
       expect(paths).toEqual([]);
     });
 
     it('findPaths finds a path between connected nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1302,7 +1316,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('agent lifecycle', () => {
     it('registers and retrieves a task', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const task: AgentTask = {
         id: 'task-1',
         agent_id: 'agent-recon-1',
@@ -1320,12 +1334,12 @@ describe('GraphEngine', () => {
     });
 
     it('returns null for unknown task', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine.getTask('nonexistent')).toBeNull();
     });
 
     it('updates task status', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const task: AgentTask = {
         id: 'task-2',
         agent_id: 'agent-2',
@@ -1346,13 +1360,13 @@ describe('GraphEngine', () => {
     });
 
     it('returns false for updating unknown task (P1.4 fix)', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const success = engine.updateAgentStatus('nonexistent', 'failed');
       expect(success).toBe(false);
     });
 
     it('shows active agents in state', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.registerAgent({
         id: 'task-3',
         agent_id: 'agent-3',
@@ -1368,7 +1382,7 @@ describe('GraphEngine', () => {
     });
 
     it('returns scoped subgraph for agent', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a host and service connected to it
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1391,7 +1405,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('objective tracking', () => {
     it('marks objective achieved when criteria are met and access edge exists', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // Report a privileged credential matching the DA objective criteria + OWNS_CRED edge
       engine.ingestFinding(makeFinding({
@@ -1419,7 +1433,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not mark objective achieved when matching node exists but has no access', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // Report a matching credential without any access edge (e.g. imported from BloodHound)
       engine.ingestFinding(makeFinding({
@@ -1440,7 +1454,7 @@ describe('GraphEngine', () => {
     });
 
     it('marks objective achieved via obtained flag without access edge', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       engine.ingestFinding(makeFinding({
         nodes: [{
@@ -1461,7 +1475,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not mark objective achieved with non-matching criteria', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       engine.ingestFinding(makeFinding({
         nodes: [{
@@ -1481,7 +1495,7 @@ describe('GraphEngine', () => {
     });
 
     it('recomputeObjectives re-evaluates stale objective state from normalized obtained credentials', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1520,7 +1534,7 @@ describe('GraphEngine', () => {
 
   describe('graph remediation', () => {
     it('repairs a GOAD-style broken graph and clears stale invalid edges', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1562,7 +1576,7 @@ describe('GraphEngine', () => {
     });
 
     it('rolls back the whole correction batch when one operation is invalid', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -1598,7 +1612,7 @@ describe('GraphEngine', () => {
   describe('persistence', () => {
     it('persists and reloads state', () => {
       // Create engine, add some data
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.ingestFinding(makeFinding({
         nodes: [
           { id: 'svc-persist', type: 'service', label: 'persist test', port: 80, service_name: 'http' },
@@ -1617,9 +1631,10 @@ describe('GraphEngine', () => {
       });
 
       const state1 = engine1.getState();
+      engine1.flushNow();
 
       // Create new engine from same state file — should reload
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state2 = engine2.getState();
 
       expect(state2.graph_summary.total_nodes).toBe(state1.graph_summary.total_nodes);
@@ -1627,7 +1642,7 @@ describe('GraphEngine', () => {
     });
 
     it('persists agent state across reloads (P1.3 fix)', () => {
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.registerAgent({
         id: 'task-agent-persist',
         agent_id: 'agent-ap',
@@ -1636,16 +1651,17 @@ describe('GraphEngine', () => {
         frontier_item_id: 'fi-1',
         subgraph_node_ids: [],
       });
+      engine1.flushNow();
 
       // Reload
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const task = engine2.getTask('task-agent-persist');
       expect(task).not.toBeNull();
       expect(task!.agent_id).toBe('agent-ap');
     });
 
     it('persists tracked processes across reloads', () => {
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.setTrackedProcesses([{
         id: 'proc-1',
         pid: 12345,
@@ -1655,8 +1671,9 @@ describe('GraphEngine', () => {
         status: 'running',
       }]);
       engine1.persist();
+      engine1.flushNow();
 
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine2.getTrackedProcesses()).toHaveLength(1);
       expect(engine2.getTrackedProcesses()[0].id).toBe('proc-1');
     });
@@ -1680,19 +1697,21 @@ describe('GraphEngine', () => {
         completed_at: '2026-03-21T00:10:00.000Z',
       };
 
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.setTrackedProcesses([procA]);
       engine1.persist();
+      engine1.flushNow();
 
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine2.setTrackedProcesses([procB]);
       engine2.persist();
+      engine2.flushNow();
 
       const snapshots = engine2.listSnapshots();
       expect(snapshots.length).toBeGreaterThan(0);
       expect(engine2.rollbackToSnapshot(snapshots[snapshots.length - 1])).toBe(true);
 
-      const engine3 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine3 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
       expect(engine3.getTrackedProcesses()[0].id).toBe('proc-a');
     });
@@ -1703,14 +1722,14 @@ describe('GraphEngine', () => {
   // =============================================
   describe('access summary', () => {
     it('reports no access initially', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       expect(state.access_summary.compromised_hosts.length).toBe(0);
       expect(state.access_summary.current_access_level).toBe('none');
     });
 
     it('rollback restores inference rules from snapshot', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       // Add first custom rule and persist (creates a snapshot)
       engine.addInferenceRule({
@@ -1720,6 +1739,7 @@ describe('GraphEngine', () => {
         trigger: { node_type: 'host' },
         produces: [],
       });
+      engine.flushNow();
 
       // Force a persist to create a snapshot with rule-custom-1
       // (addInferenceRule already persists)
@@ -1732,6 +1752,7 @@ describe('GraphEngine', () => {
         trigger: { node_type: 'host' },
         produces: [],
       });
+      engine.flushNow();
 
       // Get snapshot list — rollback to the earliest one (before rule-custom-2)
       const snapshots = engine.listSnapshots();
@@ -1739,9 +1760,10 @@ describe('GraphEngine', () => {
 
       const result = engine.rollbackToSnapshot(snapshots[0]);
       expect(result).toBe(true);
+      engine.flushNow();
 
       // After rollback, reload engine from persisted state
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // The first snapshot had rule-custom-1 but NOT rule-custom-2
       // However the very first snapshot is before any custom rules were added
       // So we just verify the rollback didn't keep rules from after the snapshot
@@ -1750,7 +1772,7 @@ describe('GraphEngine', () => {
     });
 
     it('reports compromised hosts with HAS_SESSION', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -1765,7 +1787,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not report domain_admin for imported privileged credential without access (Bug 2)', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Establish a session so compromised_hosts > 0 (otherwise access_level is 'none')
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1793,7 +1815,7 @@ describe('GraphEngine', () => {
     });
 
     it('reports domain_admin when privileged credential is obtained via OWNS_CRED', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -1810,7 +1832,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not report responder captures as valid credentials or compromised hosts', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const responderFinding = parseResponder([
         '[SMB] NTLMv2-SSP Client   : 10.10.10.2',
         '[SMB] NTLMv2-SSP Username : TEST.LOCAL\\jdoe',
@@ -1835,7 +1857,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       const responderFinding = parseResponder([
         '[SMB] NTLMv2-SSP Client   : 10.10.10.2',
         '[SMB] NTLMv2-SSP Username : TEST.LOCAL\\jdoe',
@@ -1853,7 +1875,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('edge overcounting fix', () => {
     it('ingestFinding returns empty new_edges when re-ingesting the same edge', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a host, service and edge
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1875,7 +1897,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('persist delta callback', () => {
     it('fires update callback with real delta from ingestFinding', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       let receivedDetail: any = null;
       engine.onUpdate((detail) => { receivedDetail = detail; });
 
@@ -1893,7 +1915,7 @@ describe('GraphEngine', () => {
     });
 
     it('ingestFinding result includes updated_nodes when merging properties', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Create host first
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
@@ -1907,7 +1929,7 @@ describe('GraphEngine', () => {
     });
 
     it('ingestFinding result includes updated_edges when re-ingesting edge', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a host, service and edge
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1925,7 +1947,7 @@ describe('GraphEngine', () => {
     });
 
     it('delta callback includes updated_nodes and updated_edges', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // First: create the host, service and edge
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -1955,7 +1977,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('discovered_at preservation', () => {
     it('preserves original discovered_at when re-ingesting existing node', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const originalTimestamp = '2024-01-01T00:00:00.000Z';
 
       // First ingest with a known timestamp
@@ -1990,7 +2012,7 @@ describe('GraphEngine', () => {
     });
 
     it('sets discovered_at for new nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const ts = '2025-03-21T00:00:00.000Z';
       engine.ingestFinding({
         id: 'f-ts-new',
@@ -2005,7 +2027,7 @@ describe('GraphEngine', () => {
     });
 
     it('tracks first_seen_at, last_seen_at, and sources on new and updated nodes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding({
         id: 'prov-1',
         timestamp: '2026-03-21T10:00:00.000Z',
@@ -2032,7 +2054,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not duplicate repeated provenance sources', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding({
         id: 'prov-repeat-1',
         timestamp: '2026-03-21T10:00:00.000Z',
@@ -2055,7 +2077,7 @@ describe('GraphEngine', () => {
     });
 
     it('includes graph health warnings in getState()', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.addNode({ id: 'host-warning-a', type: 'host', label: 'warning-a', ip: '10.10.10.77', alive: true, discovered_at: '2026-03-21T12:00:00.000Z', confidence: 1 });
       engine.addNode({ id: 'host-warning-b', type: 'host', label: 'warning-b', ip: '10.10.10.77', alive: true, discovered_at: '2026-03-21T12:00:00.000Z', confidence: 1 });
 
@@ -2066,7 +2088,7 @@ describe('GraphEngine', () => {
     });
 
     it('reuses cached health reports until the graph changes', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       const first = engine.getHealthReport();
       const second = engine.getHealthReport();
@@ -2098,7 +2120,7 @@ describe('GraphEngine', () => {
       const { writeFileSync: wfs } = require('fs');
       wfs(TEST_STATE_FILE, '{ corrupted json!!!');
       // Should not throw — falls back to seedFromConfig
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state = engine.getState();
       // Should have re-seeded domain and objective nodes (no CIDR host expansion)
       expect(state.graph_summary.nodes_by_type['domain']).toBe(1);
@@ -2123,18 +2145,20 @@ describe('GraphEngine', () => {
         status: 'running' as const,
       };
 
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.setTrackedProcesses([procA]);
       engine1.persist();
+      engine1.flushNow();
 
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine2.setTrackedProcesses([procB]);
       engine2.persist();
+      engine2.flushNow();
 
       const { writeFileSync: wfs } = require('fs');
       wfs(TEST_STATE_FILE, '{ corrupted json!!!');
 
-      const engine3 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine3 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
       expect(engine3.getTrackedProcesses()[0].id).toBe('proc-recover-a');
     });
@@ -2155,7 +2179,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2178,7 +2202,7 @@ describe('GraphEngine', () => {
     });
 
     it('findPathsToObjective finds path through mixed-direction chain', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2197,7 +2221,7 @@ describe('GraphEngine', () => {
     });
 
     it('findPaths traverses HAS_SESSION in reverse direction', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2216,7 +2240,7 @@ describe('GraphEngine', () => {
     });
 
     it('inferred edges get inferred_by_rule and inferred_at set', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Ingest a credential to trigger the cred-fanout inference rule
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2242,7 +2266,7 @@ describe('GraphEngine', () => {
     });
 
     it('confirming an inferred edge sets confirmed_at', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // First: create an inferred edge via cred-fanout
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2285,7 +2309,7 @@ describe('GraphEngine', () => {
     });
 
     it('RUNS edge is NOT traversable in reverse for pathfinding', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2304,7 +2328,7 @@ describe('GraphEngine', () => {
 
   describe('helper behaviors', () => {
     it('computeSubgraphNodeIds resolves standard frontier node IDs without recomputing frontier', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2325,7 +2349,7 @@ describe('GraphEngine', () => {
     });
 
     it('computeSubgraphNodeIds resolves standard frontier edge IDs without recomputing frontier', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
@@ -2346,7 +2370,7 @@ describe('GraphEngine', () => {
     });
 
     it('preserves identical array content while only updating provenance metadata', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         timestamp: '2026-03-21T10:00:00Z',
         nodes: [
@@ -2370,7 +2394,7 @@ describe('GraphEngine', () => {
     });
 
     it('flags real array content changes as updates', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-array-test', type: 'user', label: 'array test', member_of: ['group-a', 'group-b'] },
@@ -2387,7 +2411,7 @@ describe('GraphEngine', () => {
     });
 
     it('caps activity log history at 5000 entries', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       for (let i = 0; i < 5005; i++) {
         (engine as any).log(`activity-${i}`);
@@ -2400,12 +2424,13 @@ describe('GraphEngine', () => {
     });
 
     it('persists only the bounded activity log history', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
       for (let i = 0; i < 5005; i++) {
         (engine as any).log(`persisted-activity-${i}`);
       }
       engine.persist();
+      engine.flushNow();
 
       const saved = JSON.parse(readFileSync(TEST_STATE_FILE, 'utf-8'));
       expect(saved.activityLog).toHaveLength(5000);
@@ -2419,7 +2444,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('new inference rules', () => {
     it('creates AS_REP_ROASTABLE edge when user has asrep_roastable', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'domain-test-local', type: 'domain', label: 'test.local', domain_name: 'test.local' } as any,
@@ -2437,7 +2462,7 @@ describe('GraphEngine', () => {
     });
 
     it('creates KERBEROASTABLE edge when user has has_spn', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'domain-test-local', type: 'domain', label: 'test.local', domain_name: 'test.local' } as any,
@@ -2455,7 +2480,7 @@ describe('GraphEngine', () => {
     });
 
     it('creates CAN_DELEGATE_TO edge when host has constrained_delegation', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a target host that matches the SPN in allowed_to_delegate_to
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2476,7 +2501,7 @@ describe('GraphEngine', () => {
     });
 
     it('creates POTENTIAL_AUTH edge when service has has_login_form', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // First add a domain credential
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2511,7 +2536,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('hostname scope enforcement', () => {
     it('warns (not rejects) hostname-only node when hostname does not match scope domains', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Identity resolution renames to host-dc01-other-local
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2526,7 +2551,7 @@ describe('GraphEngine', () => {
     });
 
     it('allows hostname-only node when hostname matches a scope domain', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Identity resolution renames to host-dc01-test-local
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2539,7 +2564,7 @@ describe('GraphEngine', () => {
     });
 
     it('allows node with out-of-scope IP but in-scope hostname (hostname fallback)', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-external', type: 'host', label: 'dc02.test.local', hostname: 'dc02.test.local', ip: '192.168.99.1' },
@@ -2551,7 +2576,7 @@ describe('GraphEngine', () => {
     });
 
     it('annotates frontier items with scope_unverified when node has no IP or hostname', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'domain-mystery', type: 'domain', label: 'mystery.local' },
@@ -2586,7 +2611,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'share-sysvol', type: 'share', label: 'SYSVOL', share_name: 'SYSVOL', readable: true } as any,
@@ -2607,7 +2632,7 @@ describe('GraphEngine', () => {
           achieved: false,
         }],
       });
-      const engine = new GraphEngine(config, TEST_STATE_FILE);
+      const engine = trackedEngine(config, TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-dcsync', type: 'user', label: 'dcsync-user' },
@@ -2626,7 +2651,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('access-level classification', () => {
     it('reports local_admin when privileged cred has no cred_domain', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-localadm', type: 'user', label: 'localadmin' },
@@ -2643,7 +2668,7 @@ describe('GraphEngine', () => {
     });
 
     it('reports domain_admin when privileged cred has matching cred_domain', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-da', type: 'user', label: 'da-user' },
@@ -2665,7 +2690,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('getState activityCount', () => {
     it('returns the requested number of activity entries', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       for (let i = 0; i < 50; i++) {
         (engine as any).log(`activity-${i}`);
       }
@@ -2681,7 +2706,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('cross-node inference rules', () => {
     it('LAPS rule fires when host has laps:true and inbound GENERIC_ALL', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Ingest a group and a LAPS-enabled host with GENERIC_ALL from group to host
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2701,7 +2726,7 @@ describe('GraphEngine', () => {
     });
 
     it('LAPS rule does NOT fire without inbound GENERIC_ALL', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-laps2', type: 'host', label: '10.10.10.21', ip: '10.10.10.21', laps: true } as any,
@@ -2713,7 +2738,7 @@ describe('GraphEngine', () => {
     });
 
     it('gMSA rule fires when user has gmsa:true and inbound GENERIC_ALL', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'group-readers', type: 'group', label: 'gMSA Readers' },
@@ -2732,7 +2757,7 @@ describe('GraphEngine', () => {
     });
 
     it('RBCD rule fires when host has maq_gt_zero and inbound WRITEABLE_BY', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'user-attacker', type: 'user', label: 'attacker' },
@@ -2751,7 +2776,7 @@ describe('GraphEngine', () => {
     });
 
     it('RBCD rule does NOT fire without inbound WRITEABLE_BY', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-rbcd2', type: 'host', label: '10.10.10.23', ip: '10.10.10.23', maq_gt_zero: true } as any,
@@ -2763,7 +2788,7 @@ describe('GraphEngine', () => {
     });
 
     it('cross-node rules fire when trigger node is re-ingested after edge arrives', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // First ingest LAPS host without the edge
       engine.ingestFinding(makeFinding({
         nodes: [
@@ -2797,7 +2822,7 @@ describe('GraphEngine', () => {
   // =============================================
   describe('scope management', () => {
     it('updateScope adds CIDR and frontier includes new network discovery', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add out-of-scope host
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5', alive: true }],
@@ -2825,7 +2850,7 @@ describe('GraphEngine', () => {
     });
 
     it('updateScope with confirm=false via previewScopeChange returns preview without mutating', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' }],
       }));
@@ -2839,7 +2864,7 @@ describe('GraphEngine', () => {
     });
 
     it('updateScope removes CIDR', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const before = engine.getConfig().scope.cidrs;
       expect(before).toContain('10.10.10.0/28');
 
@@ -2849,7 +2874,7 @@ describe('GraphEngine', () => {
     });
 
     it('updateScope logs scope_updated activity event', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateScope({ add_cidrs: ['192.168.2.0/24'], reason: 'Test expansion' });
 
       const history = engine.getFullHistory();
@@ -2860,14 +2885,14 @@ describe('GraphEngine', () => {
     });
 
     it('updateScope rejects invalid CIDR', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.updateScope({ add_cidrs: ['not-a-cidr'], reason: 'bad' });
       expect(result.applied).toBe(false);
       expect(result.errors[0]).toContain('Invalid CIDR');
     });
 
     it('collectScopeSuggestions groups out-of-scope hosts into /24 suggestions', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' },
@@ -2888,7 +2913,7 @@ describe('GraphEngine', () => {
     });
 
     it('getState includes scope_suggestions for out-of-scope hosts', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5' }],
       }));
@@ -2899,7 +2924,7 @@ describe('GraphEngine', () => {
     });
 
     it('after scope expansion, previously out-of-scope nodes pass filterFrontier', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [{ id: 'host-172-16-1-5', type: 'host', label: '172.16.1.5', ip: '172.16.1.5', alive: true }],
       }));
@@ -2919,11 +2944,12 @@ describe('GraphEngine', () => {
     });
 
     it('persisted config survives reload with expanded scope', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateScope({ add_cidrs: ['172.16.1.0/24'], reason: 'Persist test' });
+      engine.flushNow();
 
       // Load from persisted state
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine2.getConfig().scope.cidrs).toContain('172.16.1.0/24');
     });
   });
@@ -2934,7 +2960,7 @@ describe('GraphEngine', () => {
 
   describe('startup reconciliation', () => {
     it('downgrades stale HAS_SESSION edges on restart', () => {
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -2944,9 +2970,10 @@ describe('GraphEngine', () => {
       }));
       const state1 = engine1.getState();
       expect(state1.access_summary.compromised_hosts).toHaveLength(1);
+      engine1.flushNow();
 
       // Simulate restart — new engine loads persisted state
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const state2 = engine2.getState();
       expect(state2.access_summary.compromised_hosts).toHaveLength(0);
       // Edge still exists but is marked historical
@@ -2956,7 +2983,7 @@ describe('GraphEngine', () => {
     });
 
     it('does not downgrade already-closed HAS_SESSION edges', () => {
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -2967,15 +2994,16 @@ describe('GraphEngine', () => {
           session_live: false, session_closed_at: '2025-01-01T00:00:00Z',
         } }],
       }));
+      engine1.flushNow();
 
       // Simulate restart
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const edges = engine2.queryGraph({ edge_type: 'HAS_SESSION' });
       expect(edges.edges[0].properties.session_closed_at).toBe('2025-01-01T00:00:00Z');
     });
 
     it('marks running agents as interrupted on restart', () => {
-      const engine1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine1.registerAgent({
         id: 'task-1',
         agent_id: 'agent-scout',
@@ -2996,9 +3024,10 @@ describe('GraphEngine', () => {
       });
       engine1.updateAgentStatus('task-2', 'completed', 'done');
       engine1.persist();
+      engine1.flushNow();
 
       // Simulate restart
-      const engine2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const task1 = engine2.getTask('task-1');
       expect(task1?.status).toBe('interrupted');
       expect(task1?.completed_at).toBeDefined();
@@ -3012,7 +3041,7 @@ describe('GraphEngine', () => {
     });
 
     it('onSessionClosed downgrades HAS_SESSION edge for matching target', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -3037,7 +3066,7 @@ describe('GraphEngine', () => {
     });
 
     it('access_summary still reports host via ADMIN_TO edge regardless of session_live', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
         nodes: [
           { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', alive: true },
@@ -3056,14 +3085,14 @@ describe('GraphEngine', () => {
   // ===========================================
   describe('updateConfig', () => {
     it('updates name and profile', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const updated = engine.updateConfig({ name: 'New Name', profile: 'web_app' });
       expect(updated.name).toBe('New Name');
       expect(updated.profile).toBe('web_app');
     });
 
     it('merges scope partially', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateConfig({ scope: { cidrs: ['192.168.1.0/24'] } });
       const cfg = engine.getConfig();
       expect(cfg.scope.cidrs).toEqual(['192.168.1.0/24']);
@@ -3072,13 +3101,13 @@ describe('GraphEngine', () => {
     });
 
     it('updates community_resolution', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateConfig({ community_resolution: 2.5 });
       expect(engine.getConfig().community_resolution).toBe(2.5);
     });
 
     it('updates opsec fields', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateConfig({ opsec: { max_noise: 0.5, approval_mode: 'approve-all' } });
       const opsec = engine.getConfig().opsec;
       expect(opsec.max_noise).toBe(0.5);
@@ -3086,7 +3115,7 @@ describe('GraphEngine', () => {
     });
 
     it('updates failure_patterns', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.updateConfig({ failure_patterns: [{ technique: 'T1110', warning: 'spray blocked' }] });
       expect(engine.getConfig().failure_patterns).toHaveLength(1);
       expect(engine.getConfig().failure_patterns![0].technique).toBe('T1110');
@@ -3095,7 +3124,7 @@ describe('GraphEngine', () => {
 
   describe('objective CRUD', () => {
     it('adds an objective', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const obj = engine.addObjective({ description: 'Get DA' });
       expect(obj.id).toBeTruthy();
       expect(obj.description).toBe('Get DA');
@@ -3104,7 +3133,7 @@ describe('GraphEngine', () => {
     });
 
     it('updates an objective', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const obj = engine.addObjective({ description: 'Pivot to cloud' });
       const ok = engine.updateObjective(obj.id, { achieved: true });
       expect(ok).toBe(true);
@@ -3114,14 +3143,14 @@ describe('GraphEngine', () => {
     });
 
     it('removes an objective', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const obj = engine.addObjective({ description: 'Temp objective' });
       expect(engine.removeObjective(obj.id)).toBe(true);
       expect(engine.getConfig().objectives.find(o => o.id === obj.id)).toBeUndefined();
     });
 
     it('returns false for non-existent objective', () => {
-      const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       expect(engine.updateObjective('nope', { achieved: true })).toBe(false);
       expect(engine.removeObjective('nope')).toBe(false);
     });

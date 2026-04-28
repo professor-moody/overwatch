@@ -2,6 +2,13 @@
 // Overwatch — State Persistence
 // Handles persist, snapshot rotation, load, and recovery.
 // All state access goes through the shared EngineContext.
+//
+// Write Coalescing:
+// Rather than writing to disk on every mutation, the persist()
+// method marks state dirty and schedules a debounced flush.
+// Multiple rapid mutations coalesce into a single disk write.
+// Safety valves: flushNow() for immediate write, shutdown hooks,
+// and batchMutate() to suppress flushes during batch operations.
 // ============================================================
 
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, mkdirSync, openSync, fsyncSync, closeSync } from 'fs';
@@ -14,16 +21,220 @@ import { OpsecTracker } from './opsec-tracker.js';
 
 export const MAX_SNAPSHOTS = 5;
 
+// --- Coalescing configuration ---
+export const FLUSH_DEBOUNCE_MS = 100;   // Wait 100ms of quiet before flushing
+export const FLUSH_MAX_DELAY_MS = 500;  // Maximum time between dirty and flush
+
+export interface PersistMetrics {
+  flushCount: number;
+  totalSerializeMs: number;
+  totalWriteMs: number;
+  coalescedCalls: number;  // persist() calls that were coalesced (didn't cause immediate write)
+  lastFlushMs: number;
+}
+
 export class StatePersistence {
   private ctx: EngineContext;
   private builtinRuleIds: Set<string>;
 
+  // --- Write coalescing state ---
+  private dirty = false;
+  private pendingDetail: GraphUpdateDetail = {};
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  private batchDepth = 0;  // >0 means inside batchMutate, suppress auto-flush
+  private metrics: PersistMetrics = {
+    flushCount: 0,
+    totalSerializeMs: 0,
+    totalWriteMs: 0,
+    coalescedCalls: 0,
+    lastFlushMs: 0,
+  };
+  private shutdownHandlers: (() => void)[] = [];
+
   constructor(ctx: EngineContext, builtinRules: InferenceRule[], _createGraph?: () => OverwatchGraph) {
     this.ctx = ctx;
     this.builtinRuleIds = new Set(builtinRules.map(r => r.id));
+    this.hookShutdown();
   }
 
+  /**
+   * Mark state as dirty and schedule a coalesced flush.
+   * This is the primary persist entry point — callers do NOT block on disk I/O.
+   * Detail objects are merged so the final flush includes all changes.
+   */
   persist(detail: GraphUpdateDetail = {}): void {
+    this.mergeDetail(detail);
+    this.dirty = true;
+
+    // Fire update callbacks immediately — dashboard needs real-time deltas
+    // even when the disk write is deferred.
+    this.ctx.fireUpdateCallbacks(detail);
+
+    // If inside a batch, don't schedule — batch end will flush
+    if (this.batchDepth > 0) {
+      this.metrics.coalescedCalls++;
+      return;
+    }
+
+    this.scheduleFlush();
+  }
+
+  /**
+   * Immediately write state to disk. Bypasses coalescing.
+   * Use for: rollback, recovery, process shutdown, explicit sync points.
+   */
+  flushNow(): void {
+    this.cancelTimers();
+    if (!this.dirty) return;
+    this.writeStateToDisk();
+    this.dirty = false;
+    this.pendingDetail = {};
+  }
+
+  /**
+   * Immediately write state to disk regardless of dirty flag.
+   * Use for: initial persist after load, rollback overwrites.
+   */
+  persistImmediate(detail: GraphUpdateDetail = {}): void {
+    this.cancelTimers();
+    this.writeStateToDisk();
+    this.ctx.fireUpdateCallbacks(detail);
+    this.dirty = false;
+    this.pendingDetail = {};
+  }
+
+  /**
+   * Begin a batch: all persist() calls within the batch are coalesced,
+   * and the actual disk write happens when the outermost batch ends.
+   * Batches can nest.
+   */
+  beginBatch(): void {
+    this.batchDepth++;
+  }
+
+  /**
+   * End a batch. When the outermost batch ends, flushes if dirty.
+   */
+  endBatch(): void {
+    if (this.batchDepth <= 0) return;
+    this.batchDepth--;
+    if (this.batchDepth === 0 && this.dirty) {
+      this.scheduleFlush();
+    }
+  }
+
+  /** Returns true if there are unflushed mutations. */
+  isDirty(): boolean {
+    return this.dirty;
+  }
+
+  /** Returns persistence performance metrics. */
+  getMetrics(): Readonly<PersistMetrics> {
+    return { ...this.metrics };
+  }
+
+  /** Reset metrics (e.g., for testing or retrospective boundary). */
+  resetMetrics(): void {
+    this.metrics = { flushCount: 0, totalSerializeMs: 0, totalWriteMs: 0, coalescedCalls: 0, lastFlushMs: 0 };
+  }
+
+  // --- Scheduling ---
+
+  private scheduleFlush(): void {
+    this.metrics.coalescedCalls++;
+
+    // Reset debounce timer (waits for quiet)
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this.flushNow();
+    }, FLUSH_DEBOUNCE_MS);
+
+    // Max-delay timer ensures we don't wait forever under continuous load
+    if (this.maxDelayTimer === null) {
+      this.maxDelayTimer = setTimeout(() => {
+        this.maxDelayTimer = null;
+        this.flushNow();
+      }, FLUSH_MAX_DELAY_MS);
+    }
+  }
+
+  private cancelTimers(): void {
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.maxDelayTimer !== null) {
+      clearTimeout(this.maxDelayTimer);
+      this.maxDelayTimer = null;
+    }
+  }
+
+  /** Cancel any pending flush (for shutdown / disposal). */
+  cancelPendingFlush(): void {
+    this.cancelTimers();
+  }
+
+  // --- Detail merging ---
+
+  private mergeDetail(detail: GraphUpdateDetail): void {
+    for (const key of ['new_nodes', 'new_edges', 'updated_nodes', 'updated_edges', 'inferred_edges', 'removed_nodes', 'removed_edges'] as const) {
+      const incoming = detail[key];
+      if (incoming && incoming.length > 0) {
+        const existing = this.pendingDetail[key];
+        if (existing) {
+          // Deduplicate while merging
+          const set = new Set(existing);
+          for (const item of incoming) set.add(item);
+          (this.pendingDetail as Record<string, string[]>)[key] = [...set];
+        } else {
+          (this.pendingDetail as Record<string, string[]>)[key] = [...incoming];
+        }
+      }
+    }
+  }
+
+  // --- Shutdown safety ---
+
+  private hookShutdown(): void {
+    const flush = () => {
+      if (this.dirty) {
+        this.cancelTimers();
+        try {
+          this.writeStateToDisk();
+          this.dirty = false;
+          this.pendingDetail = {};
+        } catch { /* best effort on shutdown */ }
+      }
+    };
+
+    this.shutdownHandlers = [flush];
+    process.on('SIGTERM', flush);
+    process.on('SIGINT', flush);
+    process.on('beforeExit', flush);
+  }
+
+  /**
+   * Tear down timers and process listeners. Call when the engine is shutting
+   * down gracefully or in tests to avoid leaked listeners / stale timer writes.
+   */
+  dispose(): void {
+    this.cancelTimers();
+    for (const handler of this.shutdownHandlers) {
+      process.removeListener('SIGTERM', handler);
+      process.removeListener('SIGINT', handler);
+      process.removeListener('beforeExit', handler);
+    }
+    this.shutdownHandlers = [];
+  }
+
+  // --- Core write logic (unchanged from original) ---
+
+  private writeStateToDisk(): void {
+    const serializeStart = Date.now();
     const data = {
       config: this.ctx.config,
       graph: this.ctx.graph.export(),
@@ -36,6 +247,10 @@ export class StatePersistence {
       opsecTracker: this.ctx.opsecTracker.serialize(),
     };
     const json = JSON.stringify(data);
+    const serializeEnd = Date.now();
+    this.metrics.totalSerializeMs += (serializeEnd - serializeStart);
+
+    const writeStart = Date.now();
 
     // Atomic write: write to temp, fsync, then rename (atomic on POSIX)
     const tmpPath = this.ctx.stateFilePath + '.tmp';
@@ -62,7 +277,11 @@ export class StatePersistence {
     } else {
       renameSync(tmpPath, this.ctx.stateFilePath);
     }
-    this.ctx.fireUpdateCallbacks(detail);
+
+    const writeEnd = Date.now();
+    this.metrics.totalWriteMs += (writeEnd - writeStart);
+    this.metrics.lastFlushMs = writeEnd - serializeStart;
+    this.metrics.flushCount++;
   }
 
   private rotateSnapshot(): void {
@@ -148,7 +367,7 @@ export class StatePersistence {
       : new OpsecTracker(this.ctx);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
-    this.persist();
+    this.persistImmediate();
     return true;
   }
 
@@ -209,7 +428,7 @@ export class StatePersistence {
           : new OpsecTracker(this.ctx);
         this.ctx.rebuildActionFrontierMap();
         // Overwrite corrupted state file with valid snapshot data
-        this.persist();
+        this.persistImmediate();
         return true;
       } catch {
         continue;

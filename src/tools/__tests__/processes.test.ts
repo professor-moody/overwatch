@@ -67,6 +67,7 @@ describe('registerProcessTools', () => {
       command: 'nmap -sV 10.10.10.1',
       description: 'Version scan',
     });
+    engine.flushNow();
 
     const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     expect(reloaded.getTrackedProcesses()).toHaveLength(1);
@@ -81,6 +82,7 @@ describe('registerProcessTools', () => {
     });
 
     await handlers.check_processes({ active_only: false });
+    engine.flushNow();
 
     const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     expect(reloaded.getTrackedProcesses()).toHaveLength(1);

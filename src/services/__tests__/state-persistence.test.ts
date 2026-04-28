@@ -6,7 +6,7 @@ import { join } from 'path';
 import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.js';
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
-import { StatePersistence, MAX_SNAPSHOTS } from '../state-persistence.js';
+import { StatePersistence, MAX_SNAPSHOTS, FLUSH_DEBOUNCE_MS } from '../state-persistence.js';
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -35,12 +35,16 @@ const now = new Date().toISOString();
 
 describe('StatePersistence', () => {
   let tempDir: string;
+  const instances: StatePersistence[] = [];
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'overwatch-persist-test-'));
   });
 
   afterEach(() => {
+    // Dispose all instances to cancel timers and remove process listeners
+    for (const p of instances) p.dispose();
+    instances.length = 0;
     try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
   });
 
@@ -50,6 +54,7 @@ describe('StatePersistence', () => {
     const ctx = new EngineContext(graph, makeConfig(), filePath);
     ctx.inferenceRules.push(...BUILTIN_RULES);
     const persistence = new StatePersistence(ctx, BUILTIN_RULES, makeGraph);
+    instances.push(persistence);
     return { ctx, persistence, graph };
   }
 
@@ -64,6 +69,7 @@ describe('StatePersistence', () => {
       graph.addEdge('host-1', 'svc-1', { type: 'RUNS', confidence: 1.0, discovered_at: now } as EdgeProperties);
 
       persistence.persist();
+      persistence.flushNow();
 
       // Load into a fresh context
       const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
@@ -79,6 +85,7 @@ describe('StatePersistence', () => {
       ctx.logEvent({ description: 'test event', event_type: 'action_completed', result_classification: 'success' });
 
       persistence.persist();
+      persistence.flushNow();
 
       const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
       persistence2.loadState();
@@ -99,6 +106,7 @@ describe('StatePersistence', () => {
       } as any);
 
       persistence.persist();
+      persistence.flushNow();
 
       const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
       persistence2.loadState();
@@ -119,6 +127,7 @@ describe('StatePersistence', () => {
       });
 
       persistence.persist();
+      persistence.flushNow();
 
       const raw = JSON.parse(readFileSync(ctx.stateFilePath, 'utf-8'));
       // Should only contain the custom rule, not the builtin
@@ -140,6 +149,7 @@ describe('StatePersistence', () => {
       });
 
       persistence.persist();
+      persistence.flushNow();
 
       const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
       persistence2.loadState();
@@ -159,11 +169,13 @@ describe('StatePersistence', () => {
 
       // First persist creates the state file
       persistence.persist();
+      persistence.flushNow();
       expect(existsSync(ctx.stateFilePath)).toBe(true);
 
       // Force snapshot rotation by resetting timer
       ctx.lastSnapshotTime = 0;
       persistence.persist();
+      persistence.flushNow();
 
       const snapshots = persistence.listSnapshots();
       expect(snapshots.length).toBeGreaterThan(0);
@@ -175,11 +187,13 @@ describe('StatePersistence', () => {
 
       // Create initial state
       persistence.persist();
+      persistence.flushNow();
 
       // Create more than MAX_SNAPSHOTS by forcing rotation each time
       for (let i = 0; i < MAX_SNAPSHOTS + 3; i++) {
         ctx.lastSnapshotTime = 0;
         persistence.persist();
+        persistence.flushNow();
       }
 
       const snapshots = persistence.listSnapshots();
@@ -195,10 +209,12 @@ describe('StatePersistence', () => {
       const { ctx, persistence, graph } = buildPersistence();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: 'original', discovered_at: now, confidence: 1.0 } as NodeProperties);
       persistence.persist();
+      persistence.flushNow();
 
       // Force a snapshot
       ctx.lastSnapshotTime = 0;
       persistence.persist();
+      persistence.flushNow();
 
       const snapshots = persistence.listSnapshots();
       expect(snapshots.length).toBeGreaterThan(0);
@@ -206,6 +222,7 @@ describe('StatePersistence', () => {
       // Modify graph
       graph.addNode('host-2', { id: 'host-2', type: 'host', label: 'new', discovered_at: now, confidence: 1.0 } as NodeProperties);
       persistence.persist();
+      persistence.flushNow();
 
       // Rollback to snapshot
       const rolled = persistence.rollbackToSnapshot(snapshots[0], BUILTIN_RULES);
@@ -229,9 +246,11 @@ describe('StatePersistence', () => {
       const { ctx, persistence, graph } = buildPersistence();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: 'original', discovered_at: now, confidence: 1.0 } as NodeProperties);
       persistence.persist();
+      persistence.flushNow();
 
       ctx.lastSnapshotTime = 0;
       persistence.persist();
+      persistence.flushNow();
 
       // Corrupt the main state file
       writeFileSync(ctx.stateFilePath, '{invalid json');
@@ -256,9 +275,180 @@ describe('StatePersistence', () => {
       const { ctx, persistence, graph } = buildPersistence();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
       persistence.persist();
+      persistence.flushNow();
 
       expect(existsSync(ctx.stateFilePath)).toBe(true);
       expect(existsSync(ctx.stateFilePath + '.tmp')).toBe(false);
+    });
+  });
+
+  // =============================================
+  // Write coalescing
+  // =============================================
+  describe('write coalescing', () => {
+    it('marks state dirty after persist() without writing immediately', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+
+      expect(persistence.isDirty()).toBe(true);
+      expect(existsSync(ctx.stateFilePath)).toBe(false);
+    });
+
+    it('flushNow() writes immediately and clears dirty flag', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+      persistence.flushNow();
+
+      expect(persistence.isDirty()).toBe(false);
+      expect(existsSync(ctx.stateFilePath)).toBe(true);
+    });
+
+    it('flushNow() is a no-op when not dirty', () => {
+      const { persistence } = buildPersistence();
+      const metricsBefore = persistence.getMetrics();
+
+      persistence.flushNow();
+
+      expect(persistence.getMetrics().flushCount).toBe(metricsBefore.flushCount);
+    });
+
+    it('persistImmediate() writes even when not dirty', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persistImmediate();
+
+      expect(persistence.isDirty()).toBe(false);
+      expect(existsSync(ctx.stateFilePath)).toBe(true);
+    });
+
+    it('batch suppresses flush scheduling until endBatch', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+
+      persistence.beginBatch();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+      graph.addNode('host-2', { id: 'host-2', type: 'host', label: '10.0.0.2', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+
+      // Still dirty, not flushed
+      expect(persistence.isDirty()).toBe(true);
+      expect(existsSync(ctx.stateFilePath)).toBe(false);
+
+      persistence.endBatch();
+
+      // After endBatch, flush is scheduled but not yet executed (debounced)
+      // Force it:
+      persistence.flushNow();
+      expect(persistence.isDirty()).toBe(false);
+      expect(existsSync(ctx.stateFilePath)).toBe(true);
+
+      // Both nodes should be persisted
+      const raw = JSON.parse(readFileSync(ctx.stateFilePath, 'utf-8'));
+      const nodeIds = raw.graph.nodes.map((n: { key: string }) => n.key);
+      expect(nodeIds).toContain('host-1');
+      expect(nodeIds).toContain('host-2');
+    });
+
+    it('nested batches only flush after outermost endBatch', () => {
+      const { ctx, persistence, graph } = buildPersistence();
+
+      persistence.beginBatch();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+
+      persistence.beginBatch();  // nested
+      graph.addNode('host-2', { id: 'host-2', type: 'host', label: '10.0.0.2', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+      persistence.endBatch();  // end inner — should NOT flush
+
+      expect(persistence.isDirty()).toBe(true);
+      // inner endBatch should not trigger write because outer is still open
+
+      persistence.endBatch();  // end outer
+      persistence.flushNow();
+
+      expect(persistence.isDirty()).toBe(false);
+      const raw = JSON.parse(readFileSync(ctx.stateFilePath, 'utf-8'));
+      const nodeIds = raw.graph.nodes.map((n: { key: string }) => n.key);
+      expect(nodeIds).toContain('host-1');
+      expect(nodeIds).toContain('host-2');
+    });
+
+    it('merges detail objects across coalesced persist() calls', () => {
+      const { persistence } = buildPersistence();
+
+      persistence.beginBatch();
+      persistence.persist({ new_nodes: ['host-1'], new_edges: ['e1'] });
+      persistence.persist({ new_nodes: ['host-2'], updated_nodes: ['host-1'] });
+      persistence.persist({ new_edges: ['e2'], new_nodes: ['host-1'] }); // duplicate host-1
+      persistence.endBatch();
+
+      // Can't directly inspect pendingDetail, but we can check it flushes without error
+      persistence.flushNow();
+      expect(persistence.isDirty()).toBe(false);
+    });
+
+    it('tracks coalesced call metrics', () => {
+      const { persistence, graph } = buildPersistence();
+
+      persistence.beginBatch();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+      persistence.persist();
+      persistence.persist();
+      persistence.endBatch();
+      persistence.flushNow();
+
+      const metrics = persistence.getMetrics();
+      expect(metrics.flushCount).toBe(1);  // single write
+      expect(metrics.coalescedCalls).toBeGreaterThanOrEqual(3);  // 3 calls coalesced
+      expect(metrics.totalSerializeMs).toBeGreaterThanOrEqual(0);
+      expect(metrics.totalWriteMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('resetMetrics() clears counters', () => {
+      const { persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+      persistence.persist();
+      persistence.flushNow();
+
+      persistence.resetMetrics();
+      const metrics = persistence.getMetrics();
+      expect(metrics.flushCount).toBe(0);
+      expect(metrics.coalescedCalls).toBe(0);
+    });
+
+    it('debounce timer fires and writes after FLUSH_DEBOUNCE_MS', async () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+      expect(existsSync(ctx.stateFilePath)).toBe(false);
+
+      // Wait for debounce to fire
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+
+      expect(existsSync(ctx.stateFilePath)).toBe(true);
+      expect(persistence.isDirty()).toBe(false);
+    });
+
+    it('cancelPendingFlush() prevents debounced write', async () => {
+      const { ctx, persistence, graph } = buildPersistence();
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+      persistence.cancelPendingFlush();
+
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+
+      // Should NOT have written because we cancelled
+      expect(existsSync(ctx.stateFilePath)).toBe(false);
+      expect(persistence.isDirty()).toBe(true);
     });
   });
 });

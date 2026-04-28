@@ -303,6 +303,7 @@ describe('Engagement Phases', () => {
 
       // Persist state
       engine.persist();
+      engine.flushNow();
 
       // Create new engine from same state file
       const engine2 = new GraphEngine(config, TEST_STATE_FILE);
@@ -326,6 +327,7 @@ describe('Engagement Phases', () => {
 
       engine.splitCampaign(parent.id, 2);
       engine.persist();
+      engine.flushNow();
 
       // Restart
       const engine2 = new GraphEngine(config, TEST_STATE_FILE);
