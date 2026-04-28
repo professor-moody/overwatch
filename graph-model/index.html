@@ -1,0 +1,5735 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Offensive security engagement orchestrator — MCP server with graph-based state management">
+      
+      
+      
+        <link rel="canonical" href="https://REDACTED.github.io/overwatch/graph-model/">
+      
+      
+        <link rel="prev" href="../concepts/">
+      
+      
+        <link rel="next" href="../tools/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Graph Model - Overwatch</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#graph-model" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Overwatch" class="md-header__button md-logo" aria-label="Overwatch" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Overwatch
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Graph Model
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="cyan"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="cyan"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/REDACTED/overwatch" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    REDACTED/overwatch
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../tools/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Tool Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../skills/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Skills
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../playbook/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operator Playbook
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../faq/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  FAQ
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../development/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Overwatch" class="md-nav__button md-logo" aria-label="Overwatch" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Overwatch
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/REDACTED/overwatch" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    REDACTED/overwatch
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Key Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph Model
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Node Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#common-node-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Node Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-lifecycle-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Lifecycle Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#identity-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#host-enrichment-properties-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host Enrichment Properties (Linux)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vulnerability-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vulnerability Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-identity-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Identity Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-resource-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Resource Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-policy-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Policy Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-network-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Network Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#api-endpoint-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Endpoint Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-policy-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain Policy Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-temporal-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User Temporal Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#network" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Network
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-membership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain Membership
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ad-attack-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AD Attack Paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#roasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roasting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ADCS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lateral-movement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lateral Movement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objective
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#edge-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference Rules
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inference Rules">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ad-service-rules-21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AD &amp; Service Rules (21)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adcs-rules-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ADCS Rules (14)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#linux-privilege-escalation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Privilege Escalation Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-rules-8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Rules (8)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mssql-rules-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MSSQL Rules (2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selector-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selector Reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../tools/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tool Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State & Health
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    State & Health
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-state/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_state
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-lab-preflight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_lab_preflight
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-graph-health/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_graph_health
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_history
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/export-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    export_graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scoring & Validation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scoring & Validation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/next-task/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    next_task
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/validate-action/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    validate_action
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/log-action-event/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    log_action_event
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Findings & Parsing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Findings & Parsing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/report-finding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    report_finding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/parse-output/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    parse_output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph Exploration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Graph Exploration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/query-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    query_graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/find-paths/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    find_paths
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/register-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-agent-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_agent_context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/update-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    update_agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/dispatch-subnet-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    dispatch_subnet_agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/dispatch-campaign-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    dispatch_campaign_agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/manage-campaign/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    manage_campaign
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_7" id="__nav_4_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Inference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Skills & Inference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_skill
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/suggest-inference-rule/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    suggest_inference_rule
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Ingestion
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/ingest-bloodhound/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ingest_bloodhound
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/ingest-azurehound/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ingest_azurehound
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Remediation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Remediation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/correct-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    correct_graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Utilities
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Utilities
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/check-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    check_tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/track-process/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    track_process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/check-processes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    check_processes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sessions
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reporting
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reporting
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/generate-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    generate_report
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analysis
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_13">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Analysis
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-retrospective/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_retrospective
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../skills/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Skills
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/featured/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Featured: Kerberoasting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../playbook/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Playbook
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Playbook
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/walkthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    End-to-End Walkthrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/goad-lab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GOAD AD Lab
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/htb-single/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTB / Single Host
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/htb-network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTB / Network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/cli-adapter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Adapter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/session-instructions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Instructions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/parse-vs-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    parse_output vs report_finding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../playbook/retrospective/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrospectives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Node Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#common-node-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Node Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-lifecycle-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Lifecycle Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#identity-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#host-enrichment-properties-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host Enrichment Properties (Linux)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vulnerability-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vulnerability Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-identity-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Identity Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-resource-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Resource Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-policy-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Policy Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-network-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Network Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#api-endpoint-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API Endpoint Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-policy-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain Policy Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-temporal-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User Temporal Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#network" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Network
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-membership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain Membership
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ad-attack-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AD Attack Paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#roasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roasting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ADCS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lateral-movement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lateral Movement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objective
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#edge-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference Rules
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inference Rules">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ad-service-rules-21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AD &amp; Service Rules (21)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adcs-rules-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ADCS Rules (14)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#linux-privilege-escalation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Privilege Escalation Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-application-rules-8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web Application Rules (8)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mssql-rules-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MSSQL Rules (2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloud-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selector-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selector Reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="graph-model">Graph Model<a class="headerlink" href="#graph-model" title="Permanent link">&para;</a></h1>
+<p>Overwatch models engagements as directed property graphs using <a href="https://graphology.github.io/">graphology</a>. Every discovery — a host, a credential, an access relationship — is a node or edge in the graph.</p>
+<h2 id="node-types">Node Types<a class="headerlink" href="#node-types" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+<th>Key Properties</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>host</code></td>
+<td>A target machine</td>
+<td><code>ip</code>, <code>hostname</code>, <code>os</code>, <code>alive</code>, <code>domain_joined</code></td>
+</tr>
+<tr>
+<td><code>service</code></td>
+<td>A network service on a host</td>
+<td><code>port</code>, <code>protocol</code>, <code>service_name</code>, <code>version</code>, <code>banner</code></td>
+</tr>
+<tr>
+<td><code>domain</code></td>
+<td>An Active Directory domain</td>
+<td><code>domain_name</code>, <code>functional_level</code>, <code>password_policy</code>, <code>lockout_policy</code></td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td>A domain or local user</td>
+<td><code>username</code>, <code>sid</code>, <code>enabled</code>, <code>privileged</code>, <code>pwd_last_set</code></td>
+</tr>
+<tr>
+<td><code>group</code></td>
+<td>A security group</td>
+<td><code>sid</code>, <code>member_of</code></td>
+</tr>
+<tr>
+<td><code>credential</code></td>
+<td>Authentication material</td>
+<td><code>cred_type</code>, <code>cred_value</code>, <code>cred_domain</code>, <code>cred_user</code>, <code>credential_status</code></td>
+</tr>
+<tr>
+<td><code>share</code></td>
+<td>A network share</td>
+<td><code>share_name</code>, <code>share_path</code>, <code>readable</code>, <code>writable</code></td>
+</tr>
+<tr>
+<td><code>certificate</code></td>
+<td>An X.509 certificate</td>
+<td><code>template_name</code>, <code>eku</code></td>
+</tr>
+<tr>
+<td><code>ca</code></td>
+<td>A Certificate Authority</td>
+<td><code>ca_name</code>, <code>ca_kind</code> (<code>enterprise_ca</code>, <code>root_ca</code>, <code>aia_ca</code>)</td>
+</tr>
+<tr>
+<td><code>cert_template</code></td>
+<td>An AD CS certificate template</td>
+<td><code>template_name</code>, <code>ca_name</code>, <code>eku</code>, <code>enrollee_supplies_subject</code></td>
+</tr>
+<tr>
+<td><code>pki_store</code></td>
+<td>A PKI store</td>
+<td><code>pki_store_kind</code> (<code>ntauth_store</code>, <code>issuance_policy</code>)</td>
+</tr>
+<tr>
+<td><code>gpo</code></td>
+<td>A Group Policy Object</td>
+<td><code>label</code></td>
+</tr>
+<tr>
+<td><code>ou</code></td>
+<td>An Organizational Unit</td>
+<td><code>label</code></td>
+</tr>
+<tr>
+<td><code>subnet</code></td>
+<td>A network subnet</td>
+<td><code>subnet_cidr</code></td>
+</tr>
+<tr>
+<td><code>objective</code></td>
+<td>An engagement objective</td>
+<td><code>objective_description</code>, <code>objective_achieved</code></td>
+</tr>
+<tr>
+<td><code>webapp</code></td>
+<td>A web application</td>
+<td><code>url</code>, <code>technology</code>, <code>framework</code>, <code>auth_type</code></td>
+</tr>
+<tr>
+<td><code>vulnerability</code></td>
+<td>A discovered vulnerability</td>
+<td><code>cve</code>, <code>cvss</code>, <code>vuln_type</code>, <code>exploitable</code></td>
+</tr>
+<tr>
+<td><code>cloud_identity</code></td>
+<td>Cloud IAM principal (user, role, service account)</td>
+<td><code>provider</code>, <code>arn</code>, <code>principal_type</code>, <code>mfa_enabled</code></td>
+</tr>
+<tr>
+<td><code>cloud_resource</code></td>
+<td>Cloud resource (S3 bucket, EC2, Lambda, etc.)</td>
+<td><code>resource_type</code>, <code>region</code>, <code>public</code>, <code>encrypted</code></td>
+</tr>
+<tr>
+<td><code>cloud_policy</code></td>
+<td>Cloud IAM policy or RBAC role assignment</td>
+<td><code>policy_name</code>, <code>effect</code>, <code>actions</code>, <code>resources</code></td>
+</tr>
+<tr>
+<td><code>cloud_network</code></td>
+<td>Cloud network construct (VPC, security group)</td>
+<td><code>network_type</code>, <code>ingress_rules</code>, <code>egress_rules</code></td>
+</tr>
+<tr>
+<td><code>api_endpoint</code></td>
+<td>A web API endpoint</td>
+<td><code>path</code>, <code>method</code>, <code>auth_required</code>, <code>response_type</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="common-node-properties">Common Node Properties<a class="headerlink" href="#common-node-properties" title="Permanent link">&para;</a></h3>
+<p>Every node has these base properties:</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td><code>string</code></td>
+<td>Unique node identifier</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td><code>NodeType</code></td>
+<td>One of the types above</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td><code>string</code></td>
+<td>Human-readable display label</td>
+</tr>
+<tr>
+<td><code>confidence</code></td>
+<td><code>number</code></td>
+<td>0.0 (hypothesis) to 1.0 (confirmed)</td>
+</tr>
+<tr>
+<td><code>discovered_by</code></td>
+<td><code>string</code></td>
+<td>Agent ID that found this node</td>
+</tr>
+<tr>
+<td><code>discovered_at</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp of discovery</td>
+</tr>
+<tr>
+<td><code>first_seen_at</code></td>
+<td><code>string</code></td>
+<td>First direct observation time</td>
+</tr>
+<tr>
+<td><code>last_seen_at</code></td>
+<td><code>string</code></td>
+<td>Most recent direct observation time</td>
+</tr>
+<tr>
+<td><code>sources</code></td>
+<td><code>string[]</code></td>
+<td>Unique agents that contributed to this node</td>
+</tr>
+</tbody>
+</table>
+<h3 id="credential-types">Credential Types<a class="headerlink" href="#credential-types" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th><code>cred_type</code></th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plaintext</code></td>
+<td>Cleartext password</td>
+</tr>
+<tr>
+<td><code>cleartext</code></td>
+<td>Cleartext password (alias for <code>plaintext</code>)</td>
+</tr>
+<tr>
+<td><code>ntlm</code></td>
+<td>NTLM hash</td>
+</tr>
+<tr>
+<td><code>ntlmv2_challenge</code></td>
+<td>Captured NTLMv2 challenge-response</td>
+</tr>
+<tr>
+<td><code>aes256</code></td>
+<td>AES-256 Kerberos key</td>
+</tr>
+<tr>
+<td><code>kerberos_tgt</code></td>
+<td>Kerberos TGT</td>
+</tr>
+<tr>
+<td><code>kerberos_tgs</code></td>
+<td>Kerberos TGS (Kerberoast)</td>
+</tr>
+<tr>
+<td><code>certificate</code></td>
+<td>X.509 certificate</td>
+</tr>
+<tr>
+<td><code>token</code></td>
+<td>Authentication token</td>
+</tr>
+<tr>
+<td><code>ssh_key</code></td>
+<td>SSH private key</td>
+</tr>
+</tbody>
+</table>
+<h3 id="credential-lifecycle-properties">Credential Lifecycle Properties<a class="headerlink" href="#credential-lifecycle-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>credential_status</code></td>
+<td><code>string</code></td>
+<td><code>active</code>, <code>stale</code>, <code>expired</code>, or <code>rotated</code></td>
+</tr>
+<tr>
+<td><code>valid_until</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp — expiry for time-limited creds (TGT/TGS, tokens, certs)</td>
+</tr>
+<tr>
+<td><code>rotated_at</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp — when credential was observed as changed</td>
+</tr>
+<tr>
+<td><code>stale_at</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp — when credential became stale</td>
+</tr>
+<tr>
+<td><code>cred_domain_inferred</code></td>
+<td><code>boolean</code></td>
+<td>Whether <code>cred_domain</code> was set by graph inference</td>
+</tr>
+<tr>
+<td><code>cred_domain_source</code></td>
+<td><code>string</code></td>
+<td><code>explicit</code>, <code>graph_inference</code>, or <code>parser_context</code></td>
+</tr>
+<tr>
+<td><code>dump_source_host</code></td>
+<td><code>string</code></td>
+<td>Host from which the credential was dumped</td>
+</tr>
+</tbody>
+</table>
+<p>Stale or expired credentials have their outbound <code>POTENTIAL_AUTH</code> edges degraded (confidence × 0.5, clamped at 0.1). Frontier items sourced from stale/expired credentials are deprioritized (confidence × 0.1).</p>
+<h3 id="identity-properties">Identity Properties<a class="headerlink" href="#identity-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>identity_status</code></td>
+<td><code>string</code></td>
+<td><code>canonical</code>, <code>unresolved</code>, or <code>superseded</code></td>
+</tr>
+<tr>
+<td><code>identity_family</code></td>
+<td><code>string</code></td>
+<td>Family grouping for related identities</td>
+</tr>
+<tr>
+<td><code>canonical_id</code></td>
+<td><code>string</code></td>
+<td>ID of the canonical node (if superseded)</td>
+</tr>
+<tr>
+<td><code>identity_markers</code></td>
+<td><code>string[]</code></td>
+<td>Matching markers (hostname variants, SIDs, credential fingerprints)</td>
+</tr>
+<tr>
+<td><code>superseded_by</code></td>
+<td><code>string</code></td>
+<td>Node ID that superseded this one</td>
+</tr>
+</tbody>
+</table>
+<p>Identity resolution runs automatically on ingest. Alias nodes sharing identity markers are merged into canonicals — edges are retargeted and properties merged.</p>
+<h3 id="host-enrichment-properties-linux">Host Enrichment Properties (Linux)<a class="headerlink" href="#host-enrichment-properties-linux" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>suid_checked</code></td>
+<td><code>boolean</code></td>
+<td>Whether SUID binaries have been enumerated</td>
+</tr>
+<tr>
+<td><code>has_suid_root</code></td>
+<td><code>boolean</code></td>
+<td>Dangerous SUID root binaries found</td>
+</tr>
+<tr>
+<td><code>suid_binaries</code></td>
+<td><code>string[]</code></td>
+<td>List of SUID root binary paths</td>
+</tr>
+<tr>
+<td><code>cron_checked</code></td>
+<td><code>boolean</code></td>
+<td>Whether cron jobs have been enumerated</td>
+</tr>
+<tr>
+<td><code>cron_jobs</code></td>
+<td><code>string[]</code></td>
+<td>Discovered cron job entries</td>
+</tr>
+<tr>
+<td><code>capabilities_checked</code></td>
+<td><code>boolean</code></td>
+<td>Whether capabilities have been checked</td>
+</tr>
+<tr>
+<td><code>interesting_capabilities</code></td>
+<td><code>string[]</code></td>
+<td>Capabilities of interest</td>
+</tr>
+<tr>
+<td><code>docker_socket_accessible</code></td>
+<td><code>boolean</code></td>
+<td>Docker socket is accessible</td>
+</tr>
+<tr>
+<td><code>kernel_version</code></td>
+<td><code>string</code></td>
+<td>Kernel version string</td>
+</tr>
+</tbody>
+</table>
+<h3 id="web-application-properties">Web Application Properties<a class="headerlink" href="#web-application-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>url</code></td>
+<td><code>string</code></td>
+<td>Application URL</td>
+</tr>
+<tr>
+<td><code>technology</code></td>
+<td><code>string</code></td>
+<td>Detected technology stack</td>
+</tr>
+<tr>
+<td><code>framework</code></td>
+<td><code>string</code></td>
+<td>Web framework (e.g., Django, Rails)</td>
+</tr>
+<tr>
+<td><code>auth_type</code></td>
+<td><code>string</code></td>
+<td>Authentication type (form, basic, oauth)</td>
+</tr>
+<tr>
+<td><code>has_api</code></td>
+<td><code>boolean</code></td>
+<td>Exposes an API</td>
+</tr>
+<tr>
+<td><code>cms_type</code></td>
+<td><code>string</code></td>
+<td>CMS type (WordPress, Drupal, etc.)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="vulnerability-properties">Vulnerability Properties<a class="headerlink" href="#vulnerability-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cve</code></td>
+<td><code>string</code></td>
+<td>CVE identifier</td>
+</tr>
+<tr>
+<td><code>cvss</code></td>
+<td><code>number</code></td>
+<td>CVSS score (0.0–10.0)</td>
+</tr>
+<tr>
+<td><code>vuln_type</code></td>
+<td><code>string</code></td>
+<td>Vulnerability class (e.g., <code>sqli</code>, <code>xss</code>, <code>ssrf</code>, <code>rce</code>)</td>
+</tr>
+<tr>
+<td><code>exploitable</code></td>
+<td><code>boolean</code></td>
+<td>Whether the vulnerability is exploitable</td>
+</tr>
+<tr>
+<td><code>exploit_available</code></td>
+<td><code>boolean</code></td>
+<td>Public exploit exists</td>
+</tr>
+<tr>
+<td><code>affected_component</code></td>
+<td><code>string</code></td>
+<td>Affected software component</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cloud-identity-properties">Cloud Identity Properties<a class="headerlink" href="#cloud-identity-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provider</code></td>
+<td><code>string</code></td>
+<td><code>aws</code>, <code>azure</code>, or <code>gcp</code></td>
+</tr>
+<tr>
+<td><code>arn</code></td>
+<td><code>string</code></td>
+<td>Amazon Resource Name (AWS) or equivalent identifier</td>
+</tr>
+<tr>
+<td><code>principal_type</code></td>
+<td><code>string</code></td>
+<td><code>user</code>, <code>role</code>, <code>service_account</code>, <code>managed_identity</code>, <code>app</code></td>
+</tr>
+<tr>
+<td><code>policies</code></td>
+<td><code>string[]</code></td>
+<td>Attached policy names</td>
+</tr>
+<tr>
+<td><code>mfa_enabled</code></td>
+<td><code>boolean</code></td>
+<td>Multi-factor authentication status</td>
+</tr>
+<tr>
+<td><code>last_used</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp of last use</td>
+</tr>
+<tr>
+<td><code>cloud_account</code></td>
+<td><code>string</code></td>
+<td>Account/subscription/project ID</td>
+</tr>
+<tr>
+<td><code>policies_enumerated</code></td>
+<td><code>boolean</code></td>
+<td>Whether policies have been fully enumerated</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cloud-resource-properties">Cloud Resource Properties<a class="headerlink" href="#cloud-resource-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>resource_type</code></td>
+<td><code>string</code></td>
+<td>e.g., <code>s3_bucket</code>, <code>ec2_instance</code>, <code>lambda_function</code>, <code>azure_vm</code></td>
+</tr>
+<tr>
+<td><code>region</code></td>
+<td><code>string</code></td>
+<td>Cloud region</td>
+</tr>
+<tr>
+<td><code>public</code></td>
+<td><code>boolean</code></td>
+<td>Publicly accessible</td>
+</tr>
+<tr>
+<td><code>encrypted</code></td>
+<td><code>boolean</code></td>
+<td>Encryption at rest enabled</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td><code>object</code></td>
+<td>Cloud resource tags</td>
+</tr>
+<tr>
+<td><code>imdsv2_required</code></td>
+<td><code>boolean</code></td>
+<td>IMDSv2 enforcement (EC2)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cloud-policy-properties">Cloud Policy Properties<a class="headerlink" href="#cloud-policy-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>policy_name</code></td>
+<td><code>string</code></td>
+<td>Policy display name</td>
+</tr>
+<tr>
+<td><code>effect</code></td>
+<td><code>string</code></td>
+<td><code>allow</code> or <code>deny</code></td>
+</tr>
+<tr>
+<td><code>actions</code></td>
+<td><code>string[]</code></td>
+<td>Allowed/denied API actions (e.g., <code>s3:*</code>, <code>iam:PassRole</code>)</td>
+</tr>
+<tr>
+<td><code>resources</code></td>
+<td><code>string[]</code></td>
+<td>Resource ARN patterns</td>
+</tr>
+<tr>
+<td><code>conditions</code></td>
+<td><code>string[]</code></td>
+<td>Policy conditions</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cloud-network-properties">Cloud Network Properties<a class="headerlink" href="#cloud-network-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>network_type</code></td>
+<td><code>string</code></td>
+<td><code>vpc</code>, <code>security_group</code>, <code>subnet</code>, <code>firewall_rule</code></td>
+</tr>
+<tr>
+<td><code>ingress_rules</code></td>
+<td><code>string[]</code></td>
+<td>Inbound access rules</td>
+</tr>
+<tr>
+<td><code>egress_rules</code></td>
+<td><code>string[]</code></td>
+<td>Outbound access rules</td>
+</tr>
+</tbody>
+</table>
+<h3 id="api-endpoint-properties">API Endpoint Properties<a class="headerlink" href="#api-endpoint-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td><code>string</code></td>
+<td>URL path (e.g., <code>/api/users</code>)</td>
+</tr>
+<tr>
+<td><code>method</code></td>
+<td><code>string</code></td>
+<td>HTTP method (<code>GET</code>, <code>POST</code>, etc.)</td>
+</tr>
+<tr>
+<td><code>auth_required</code></td>
+<td><code>boolean</code></td>
+<td>Whether the endpoint requires authentication</td>
+</tr>
+<tr>
+<td><code>response_type</code></td>
+<td><code>string</code></td>
+<td>Response content type (e.g., <code>json</code>, <code>html</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="domain-policy-properties">Domain Policy Properties<a class="headerlink" href="#domain-policy-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>password_policy</code></td>
+<td><code>object</code></td>
+<td>Domain password policy: <code>minLength</code>, <code>maxAge</code> (ISO 8601 duration), <code>complexity</code>, <code>history</code></td>
+</tr>
+<tr>
+<td><code>lockout_policy</code></td>
+<td><code>object</code></td>
+<td>Account lockout policy: <code>threshold</code>, <code>duration</code> (ISO 8601), <code>observation_window</code> (ISO 8601)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="user-temporal-properties">User Temporal Properties<a class="headerlink" href="#user-temporal-properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pwd_last_set</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp — when the user's password was last changed. Used with domain <code>password_policy.maxAge</code> to estimate credential expiry</td>
+</tr>
+</tbody>
+</table>
+<h2 id="edge-types">Edge Types<a class="headerlink" href="#edge-types" title="Permanent link">&para;</a></h2>
+<h3 id="network">Network<a class="headerlink" href="#network" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>REACHABLE</code></td>
+<td>Network reachability between hosts</td>
+</tr>
+<tr>
+<td><code>RUNS</code></td>
+<td>Host runs a service</td>
+</tr>
+</tbody>
+</table>
+<h3 id="domain-membership">Domain Membership<a class="headerlink" href="#domain-membership" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MEMBER_OF</code></td>
+<td>User, group, or cloud identity is member of a group</td>
+</tr>
+<tr>
+<td><code>MEMBER_OF_DOMAIN</code></td>
+<td>Object belongs to a domain</td>
+</tr>
+<tr>
+<td><code>TRUSTS</code></td>
+<td>Domain trust relationship</td>
+</tr>
+<tr>
+<td><code>SAME_DOMAIN</code></td>
+<td>Objects share a domain</td>
+</tr>
+</tbody>
+</table>
+<h3 id="access">Access<a class="headerlink" href="#access" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ADMIN_TO</code></td>
+<td>Administrative access to a host</td>
+</tr>
+<tr>
+<td><code>HAS_SESSION</code></td>
+<td>Session on a host. <code>session_live=true</code> means an active runtime session exists; <code>session_live=false</code> means historical proof of access (session closed or server restarted). Only live sessions contribute to <code>access_summary.compromised_hosts</code>.</td>
+</tr>
+<tr>
+<td><code>CAN_RDPINTO</code></td>
+<td>RDP access to a host</td>
+</tr>
+<tr>
+<td><code>CAN_PSREMOTE</code></td>
+<td>PSRemoting/WinRM access</td>
+</tr>
+</tbody>
+</table>
+<h3 id="credentials">Credentials<a class="headerlink" href="#credentials" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VALID_ON</code></td>
+<td>Credential is valid on a host or service</td>
+</tr>
+<tr>
+<td><code>OWNS_CRED</code></td>
+<td>User owns a credential</td>
+</tr>
+<tr>
+<td><code>POTENTIAL_AUTH</code></td>
+<td>Credential might authenticate (hypothesis)</td>
+</tr>
+<tr>
+<td><code>DERIVED_FROM</code></td>
+<td>Credential derived from another (e.g., cracked from hash)</td>
+</tr>
+<tr>
+<td><code>DUMPED_FROM</code></td>
+<td>Credential dumped from a host</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ad-attack-paths">AD Attack Paths<a class="headerlink" href="#ad-attack-paths" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CAN_DCSYNC</code></td>
+<td>DCSync rights</td>
+</tr>
+<tr>
+<td><code>DELEGATES_TO</code></td>
+<td>Delegation relationship</td>
+</tr>
+<tr>
+<td><code>CAN_DELEGATE_TO</code></td>
+<td>Constrained delegation to a target service</td>
+</tr>
+<tr>
+<td><code>WRITEABLE_BY</code></td>
+<td>Object is writable by another</td>
+</tr>
+<tr>
+<td><code>GENERIC_ALL</code></td>
+<td>GenericAll permission</td>
+</tr>
+<tr>
+<td><code>GENERIC_WRITE</code></td>
+<td>GenericWrite permission</td>
+</tr>
+<tr>
+<td><code>WRITE_OWNER</code></td>
+<td>WriteOwner permission</td>
+</tr>
+<tr>
+<td><code>WRITE_DACL</code></td>
+<td>WriteDACL permission</td>
+</tr>
+<tr>
+<td><code>ADD_MEMBER</code></td>
+<td>Can add members to a group</td>
+</tr>
+<tr>
+<td><code>FORCE_CHANGE_PASSWORD</code></td>
+<td>Can force password change</td>
+</tr>
+<tr>
+<td><code>ALLOWED_TO_ACT</code></td>
+<td>Resource-based constrained delegation</td>
+</tr>
+<tr>
+<td><code>CAN_READ_LAPS</code></td>
+<td>LAPS password readable via ACL</td>
+</tr>
+<tr>
+<td><code>CAN_READ_GMSA</code></td>
+<td>gMSA password readable via ACL</td>
+</tr>
+<tr>
+<td><code>RBCD_TARGET</code></td>
+<td>Resource-based constrained delegation target</td>
+</tr>
+</tbody>
+</table>
+<h3 id="roasting">Roasting<a class="headerlink" href="#roasting" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AS_REP_ROASTABLE</code></td>
+<td>User is AS-REP roastable (pre-auth disabled)</td>
+</tr>
+<tr>
+<td><code>KERBEROASTABLE</code></td>
+<td>User is Kerberoastable (has SPN)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="adcs">ADCS<a class="headerlink" href="#adcs" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CAN_ENROLL</code></td>
+<td>Can enroll in a certificate template</td>
+</tr>
+<tr>
+<td><code>ESC1</code> – <code>ESC4</code></td>
+<td>ADCS escalation paths 1–4</td>
+</tr>
+<tr>
+<td><code>ESC5</code></td>
+<td>ADCS escalation path 5 (vulnerable CA ACL)</td>
+</tr>
+<tr>
+<td><code>ESC6</code></td>
+<td>ADCS escalation path 6</td>
+</tr>
+<tr>
+<td><code>ESC7</code></td>
+<td>ADCS escalation path 7 (CA agent approval bypass)</td>
+</tr>
+<tr>
+<td><code>ESC8</code></td>
+<td>ADCS escalation path 8 (web enrollment relay)</td>
+</tr>
+<tr>
+<td><code>ESC9</code></td>
+<td>ADCS escalation path 9 (no security extension)</td>
+</tr>
+<tr>
+<td><code>ESC10</code></td>
+<td>ADCS escalation path 10 (weak certificate mapping)</td>
+</tr>
+<tr>
+<td><code>ESC11</code></td>
+<td>ADCS escalation path 11 (certificate relay to AD CS)</td>
+</tr>
+<tr>
+<td><code>ESC12</code></td>
+<td>ADCS escalation path 12 (shell access to CA with YubiHSM)</td>
+</tr>
+<tr>
+<td><code>ESC13</code></td>
+<td>ADCS escalation path 13 (issuance policy OID abuse)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lateral-movement">Lateral Movement<a class="headerlink" href="#lateral-movement" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RELAY_TARGET</code></td>
+<td>NTLM relay target</td>
+</tr>
+<tr>
+<td><code>NULL_SESSION</code></td>
+<td>Null session access</td>
+</tr>
+<tr>
+<td><code>TESTED_CRED</code></td>
+<td>Credential tested against a service (with result)</td>
+</tr>
+<tr>
+<td><code>SHARED_CREDENTIAL</code></td>
+<td>Credential shared across multiple users/services</td>
+</tr>
+</tbody>
+</table>
+<h3 id="web-application-surface">Web Application Surface<a class="headerlink" href="#web-application-surface" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HOSTS</code></td>
+<td>Service hosts a web application</td>
+</tr>
+<tr>
+<td><code>HAS_ENDPOINT</code></td>
+<td>Web application exposes an API endpoint</td>
+</tr>
+<tr>
+<td><code>AUTHENTICATED_AS</code></td>
+<td>Web application authenticated as a user/identity</td>
+</tr>
+<tr>
+<td><code>VULNERABLE_TO</code></td>
+<td>Web application, service, or cloud resource is vulnerable to a vulnerability</td>
+</tr>
+<tr>
+<td><code>AUTH_BYPASS</code></td>
+<td>Vulnerability enables authentication bypass on a web application or API endpoint</td>
+</tr>
+<tr>
+<td><code>EXPLOITS</code></td>
+<td>Vulnerability exploits a host, credential, or web application</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cloud-infrastructure">Cloud Infrastructure<a class="headerlink" href="#cloud-infrastructure" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ASSUMES_ROLE</code></td>
+<td>Cloud identity can assume a role (cross-account or same-account)</td>
+</tr>
+<tr>
+<td><code>HAS_POLICY</code></td>
+<td>Cloud identity has an attached policy</td>
+</tr>
+<tr>
+<td><code>POLICY_ALLOWS</code></td>
+<td>Cloud policy allows actions on a resource</td>
+</tr>
+<tr>
+<td><code>EXPOSED_TO</code></td>
+<td>Cloud resource is exposed to a network/internet</td>
+</tr>
+<tr>
+<td><code>RUNS_ON</code></td>
+<td>Cloud resource runs on infrastructure (e.g., Lambda on VPC)</td>
+</tr>
+<tr>
+<td><code>MANAGED_BY</code></td>
+<td>Cloud resource is managed by an identity (managed identity, service account)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="objective">Objective<a class="headerlink" href="#objective" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PATH_TO_OBJECTIVE</code></td>
+<td>Computed path toward an engagement objective</td>
+</tr>
+</tbody>
+</table>
+<h3 id="generic">Generic<a class="headerlink" href="#generic" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RELATED</code></td>
+<td>Uncategorized relationship (unconstrained). Generic relationship (no endpoint type constraints)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="edge-properties">Edge Properties<a class="headerlink" href="#edge-properties" title="Permanent link">&para;</a></h3>
+<p>Every edge has these base properties:</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code></td>
+<td><code>EdgeType</code></td>
+<td>One of the types above</td>
+</tr>
+<tr>
+<td><code>confidence</code></td>
+<td><code>number</code></td>
+<td>0.0 (hypothesis) to 1.0 (confirmed)</td>
+</tr>
+<tr>
+<td><code>discovered_by</code></td>
+<td><code>string</code></td>
+<td>Agent ID</td>
+</tr>
+<tr>
+<td><code>discovered_at</code></td>
+<td><code>string</code></td>
+<td>ISO timestamp</td>
+</tr>
+<tr>
+<td><code>tested</code></td>
+<td><code>boolean</code></td>
+<td>Whether this edge has been tested</td>
+</tr>
+<tr>
+<td><code>test_result</code></td>
+<td><code>string</code></td>
+<td><code>success</code>, <code>failure</code>, <code>partial</code>, <code>error</code></td>
+</tr>
+<tr>
+<td><code>opsec_noise</code></td>
+<td><code>number</code></td>
+<td>0.0 (silent) to 1.0 (loud)</td>
+</tr>
+<tr>
+<td><code>inferred_by_rule</code></td>
+<td><code>string</code></td>
+<td>Rule ID if this edge was inferred</td>
+</tr>
+<tr>
+<td><code>confirmed_at</code></td>
+<td><code>string</code></td>
+<td>Timestamp when confidence raised to 1.0</td>
+</tr>
+</tbody>
+</table>
+<h2 id="inference-rules">Inference Rules<a class="headerlink" href="#inference-rules" title="Permanent link">&para;</a></h2>
+<p>Fifty-five built-in declarative rules fire automatically when matching nodes are ingested. Many rules use <strong>edge-triggered inference</strong> — they require a matching inbound edge (<code>requires_edge</code> field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.</p>
+<h4 id="ad-service-rules-21">AD &amp; Service Rules (21)<a class="headerlink" href="#ad-service-rules-21" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kerberos → Domain</td>
+<td>Service with <code>service_name: kerberos</code></td>
+<td><code>MEMBER_OF_DOMAIN</code> to matching domain (hostname suffix)</td>
+</tr>
+<tr>
+<td>Host Runs Service</td>
+<td>Service node linked to a host</td>
+<td><code>RUNS</code> edge from host to service</td>
+</tr>
+<tr>
+<td>SMB Signing → Relay</td>
+<td>Service with <code>smb_signing: false</code></td>
+<td><code>RELAY_TARGET</code> from compromised hosts</td>
+</tr>
+<tr>
+<td>MSSQL + Domain</td>
+<td>MSSQL service on domain host</td>
+<td><code>POTENTIAL_AUTH</code> from domain credentials</td>
+</tr>
+<tr>
+<td>Credential Fanout</td>
+<td>New credential node</td>
+<td><code>POTENTIAL_AUTH</code> to compatible services in same domain</td>
+</tr>
+<tr>
+<td>Login Spray Candidate</td>
+<td>Service with auth (SMB, RDP, WinRM, SSH, HTTP)</td>
+<td><code>POTENTIAL_AUTH</code> from credentials with matching username</td>
+</tr>
+<tr>
+<td>Unconstrained Delegation</td>
+<td>Host with <code>unconstrained_delegation: true</code></td>
+<td><code>DELEGATES_TO</code> from domain admins and session holders (confidence 0.7)</td>
+</tr>
+<tr>
+<td>AS-REP Roastable</td>
+<td>User with <code>asrep_roastable: true</code></td>
+<td><code>AS_REP_ROASTABLE</code> to user's own domain (confidence 0.85)</td>
+</tr>
+<tr>
+<td>Kerberoastable</td>
+<td>User with <code>has_spn: true</code></td>
+<td><code>KERBEROASTABLE</code> to user's own domain (confidence 0.85)</td>
+</tr>
+<tr>
+<td>Constrained Delegation</td>
+<td>Host with <code>constrained_delegation: true</code></td>
+<td><code>CAN_DELEGATE_TO</code> to delegation targets from <code>allowed_to_delegate_to</code> SPN list (confidence 0.8)</td>
+</tr>
+<tr>
+<td>LAPS Readable</td>
+<td>Host with <code>laps: true</code> + inbound <code>GENERIC_ALL</code></td>
+<td><code>CAN_READ_LAPS</code> from edge peers</td>
+</tr>
+<tr>
+<td>gMSA Readable</td>
+<td>User with <code>gmsa: true</code> + inbound <code>GENERIC_ALL</code></td>
+<td><code>CAN_READ_GMSA</code> from edge peers</td>
+</tr>
+<tr>
+<td>RBCD Target</td>
+<td>Host with <code>maq_gt_zero: true</code> + inbound <code>WRITEABLE_BY</code></td>
+<td><code>RBCD_TARGET</code> from edge peers</td>
+</tr>
+<tr>
+<td>WriteDACL Escalation</td>
+<td>User with inbound <code>WRITE_DACL</code></td>
+<td><code>ESCALATION_PATH</code> from edge peers (confidence 0.8)</td>
+</tr>
+<tr>
+<td>WriteOwner Escalation</td>
+<td>User with inbound <code>WRITE_OWNER</code></td>
+<td><code>ESCALATION_PATH</code> from edge peers (confidence 0.8)</td>
+</tr>
+<tr>
+<td>ForceChangePassword</td>
+<td>User with inbound <code>FORCE_CHANGE_PASSWORD</code></td>
+<td><code>ESCALATION_PATH</code> from edge peers (confidence 0.85)</td>
+</tr>
+<tr>
+<td>Shadow Credentials</td>
+<td>User/host with inbound <code>WRITE_MSDS_ALLOWEDTOACTONBEHALFOFOTHERIDENTITY</code></td>
+<td><code>ESCALATION_PATH</code> from edge peers (confidence 0.8)</td>
+</tr>
+<tr>
+<td>GPO Abuse</td>
+<td>GPO with inbound <code>WRITE_PROPERTY</code></td>
+<td><code>ESCALATION_PATH</code> from edge peers to linked hosts (confidence 0.75)</td>
+</tr>
+<tr>
+<td>DCSync</td>
+<td>User with inbound <code>CAN_DCSYNC</code> edge</td>
+<td><code>CAN_DCSYNC</code> to user's own domain (confidence 0.9)</td>
+</tr>
+<tr>
+<td>Session → Admin Persistence</td>
+<td>Host with <code>HAS_SESSION</code> + <code>ADMIN_TO</code></td>
+<td><code>ADMIN_TO</code> persistence reinforcement</td>
+</tr>
+<tr>
+<td>Shared Credential</td>
+<td>Credential used by multiple users</td>
+<td><code>SHARED_CREDENTIAL</code> edges between users</td>
+</tr>
+<tr>
+<td>User Owns Credential</td>
+<td>User with associated credential</td>
+<td><code>OWNS_CRED</code> edge from user to credential</td>
+</tr>
+</tbody>
+</table>
+<h4 id="adcs-rules-14">ADCS Rules (14)<a class="headerlink" href="#adcs-rules-14" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ADCS ESC1</td>
+<td>cert_template with enrollee-supplied subject + client auth EKU</td>
+<td><code>ESC1</code> from enrollable users (confidence 0.75)</td>
+</tr>
+<tr>
+<td>ADCS ESC2</td>
+<td>cert_template with Any Purpose or no EKU restriction</td>
+<td><code>ESC2</code> from enrollable users (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC3</td>
+<td>cert_template with enrollment agent EKU</td>
+<td><code>ESC3</code> from enrollable users (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC4</td>
+<td>cert_template with low-privilege write access</td>
+<td><code>ESC4</code> from writeable-by peers (confidence 0.75)</td>
+</tr>
+<tr>
+<td>ADCS ESC5 (Template)</td>
+<td>cert_template with vulnerable template ACLs</td>
+<td><code>ESC5</code> from relevant users/groups</td>
+</tr>
+<tr>
+<td>ADCS ESC5 (CA)</td>
+<td>CA with vulnerable CA ACLs</td>
+<td><code>ESC5</code> from manage-CA peers</td>
+</tr>
+<tr>
+<td>ADCS ESC6</td>
+<td>CA with <code>EDITF_ATTRIBUTESUBJECTALTNAME2</code> flag</td>
+<td><code>ESC6</code> from enrollable users (confidence 0.75)</td>
+</tr>
+<tr>
+<td>ADCS ESC7</td>
+<td>CA with manage CA + manage certificates</td>
+<td><code>ESC7</code> from manage-CA peers (confidence 0.75)</td>
+</tr>
+<tr>
+<td>ADCS ESC8</td>
+<td>CA with HTTP enrollment endpoint</td>
+<td><code>ESC8</code> from HTTP services via CA (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC9</td>
+<td>cert_template with no security extension</td>
+<td><code>ESC9</code> from enrollable users (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC10</td>
+<td>cert_template with weak certificate mapping</td>
+<td><code>ESC10</code> from enrollable users (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC11</td>
+<td>CA with certificate relay to AD CS</td>
+<td><code>ESC11</code> from CA host compromised peers (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC12</td>
+<td>CA with shell access + YubiHSM key storage</td>
+<td><code>ESC12</code> from CA host compromised peers (confidence 0.7)</td>
+</tr>
+<tr>
+<td>ADCS ESC13</td>
+<td>cert_template with issuance policy OID</td>
+<td><code>ESC13</code> from enrollable users with issuance policy (confidence 0.7)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="linux-privilege-escalation-rules">Linux Privilege Escalation Rules<a class="headerlink" href="#linux-privilege-escalation-rules" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SUID Privesc</td>
+<td>Host with <code>has_suid_root: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.6)</td>
+</tr>
+<tr>
+<td>SSH Key Reuse</td>
+<td>Credential with <code>cred_type: ssh_key</code></td>
+<td><code>POTENTIAL_AUTH</code> to SSH services on related hosts (confidence 0.5)</td>
+</tr>
+<tr>
+<td>Docker Escape</td>
+<td>Host with <code>docker_socket_accessible: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.8)</td>
+</tr>
+<tr>
+<td>NFS Root Squash</td>
+<td>Host with <code>no_root_squash: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.7)</td>
+</tr>
+<tr>
+<td>Sudo NOPASSWD</td>
+<td>Host with <code>sudoers_nopasswd: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.7)</td>
+</tr>
+<tr>
+<td>Dangerous Capabilities</td>
+<td>Host with <code>has_dangerous_capabilities: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.55)</td>
+</tr>
+<tr>
+<td>Writable Cron/Systemd</td>
+<td>Host with <code>writable_cron_or_systemd: true</code> + <code>HAS_SESSION</code></td>
+<td><code>ADMIN_TO</code> from session holders (confidence 0.65)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="web-application-rules-8">Web Application Rules (8)<a class="headerlink" href="#web-application-rules-8" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Web Login Form</td>
+<td>Service with <code>has_login_form: true</code></td>
+<td><code>POTENTIAL_AUTH</code> from domain credentials</td>
+</tr>
+<tr>
+<td>Webapp Login Spray</td>
+<td>Webapp with <code>has_login_form: true</code></td>
+<td><code>POTENTIAL_AUTH</code> from all credentials (confidence 0.3)</td>
+</tr>
+<tr>
+<td>Authenticated Rescan</td>
+<td>Webapp with <code>AUTHENTICATED_AS</code> edge</td>
+<td>Frontier: re-scan with authenticated session</td>
+</tr>
+<tr>
+<td>Default Credentials</td>
+<td>Webapp with <code>technology</code> matching known defaults</td>
+<td><code>POTENTIAL_AUTH</code> edges with default cred pairs</td>
+</tr>
+<tr>
+<td>CMS Exploitation</td>
+<td>Webapp with <code>cms_type</code> set</td>
+<td>Frontier: version-specific exploit checks</td>
+</tr>
+<tr>
+<td>SQLi → Credential Extraction</td>
+<td>Vulnerability with <code>vuln_type=sqli</code></td>
+<td><code>EXPLOITS</code> edge + potential <code>credential</code> nodes</td>
+</tr>
+<tr>
+<td>SQLi → RCE Escalation</td>
+<td>Vulnerability with <code>vuln_type=sqli</code> + stacked queries</td>
+<td><code>EXPLOITS</code> edge to parent host</td>
+</tr>
+<tr>
+<td>Token → Webapp Auth</td>
+<td>Credential with <code>cred_type=token</code> + <code>AUTHENTICATED_AS</code> edge on webapp</td>
+<td><code>VALID_ON</code> edge from credential to webapp service (confidence 0.75)</td>
+</tr>
+<tr>
+<td>Auth Bypass Escalation</td>
+<td>Vulnerability with <code>AUTH_BYPASS</code> edge to webapp</td>
+<td><code>EXPLOITS</code> edge from vulnerability to webapp host (confidence 0.8)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="mssql-rules-2">MSSQL Rules (2)<a class="headerlink" href="#mssql-rules-2" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MSSQL Linked Server</td>
+<td>MSSQL service with <code>linked_servers</code></td>
+<td><code>REACHABLE</code> edges to linked hosts (confidence 0.8)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="cloud-rules">Cloud Rules<a class="headerlink" href="#cloud-rules" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Trigger</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Overprivileged Policy</td>
+<td>Cloud policy with wildcard actions (<code>iam:*</code>, <code>s3:*</code>, <code>*:*</code>)</td>
+<td><code>PATH_TO_OBJECTIVE</code> to nearest objective (confidence 0.7)</td>
+</tr>
+<tr>
+<td>Public Bucket</td>
+<td>Cloud resource (<code>s3_bucket</code>, <code>public: true</code>)</td>
+<td><code>PATH_TO_OBJECTIVE</code> to nearest objective (confidence 0.8)</td>
+</tr>
+<tr>
+<td>Cross-Account Role</td>
+<td>Cloud identity with <code>ASSUMES_ROLE</code> crossing accounts</td>
+<td><code>REACHABLE</code> to cross-account roles (confidence 0.7)</td>
+</tr>
+</tbody>
+</table>
+<p>Custom rules can be added at runtime via <a href="../tools/suggest-inference-rule/"><code>suggest_inference_rule</code></a>.</p>
+<h3 id="selector-reference">Selector Reference<a class="headerlink" href="#selector-reference" title="Permanent link">&para;</a></h3>
+<p>Selectors resolve graph context when inference rules fire:</p>
+<table>
+<thead>
+<tr>
+<th>Selector</th>
+<th>Resolves To</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trigger_node</code></td>
+<td>The node that triggered the rule</td>
+</tr>
+<tr>
+<td><code>trigger_service</code></td>
+<td>Same as <code>trigger_node</code></td>
+</tr>
+<tr>
+<td><code>parent_host</code></td>
+<td>Host running the triggering service</td>
+</tr>
+<tr>
+<td><code>orphan_service_host</code></td>
+<td>Host for a service node without an existing <code>RUNS</code> edge</td>
+</tr>
+<tr>
+<td><code>domain_nodes</code></td>
+<td>All domain nodes</td>
+</tr>
+<tr>
+<td><code>domain_users</code></td>
+<td>All domain-joined user nodes</td>
+</tr>
+<tr>
+<td><code>domain_credentials</code></td>
+<td>All NTLM/Kerberos/AES reusable credentials</td>
+</tr>
+<tr>
+<td><code>domain_admins_and_session_holders</code></td>
+<td>Session holders on trigger host + admin group members; falls back to all domain users</td>
+</tr>
+<tr>
+<td><code>all_compromised</code></td>
+<td>Hosts with <code>HAS_SESSION</code> or <code>ADMIN_TO</code> edges at confidence &gt;= 0.7</td>
+</tr>
+<tr>
+<td><code>compatible_services</code></td>
+<td>Services accepting the credential type</td>
+</tr>
+<tr>
+<td><code>compatible_services_same_domain</code></td>
+<td>Like <code>compatible_services</code> but filtered to same domain as credential</td>
+</tr>
+<tr>
+<td><code>matching_domain</code></td>
+<td>Domain nodes matching host hostname suffix</td>
+</tr>
+<tr>
+<td><code>matching_user_domain</code></td>
+<td>Domain nodes the trigger user belongs to (via <code>MEMBER_OF_DOMAIN</code> edge or <code>domain_name</code> property)</td>
+</tr>
+<tr>
+<td><code>matching_user_for_cred</code></td>
+<td>User nodes matching a credential's <code>cred_user</code> field</td>
+</tr>
+<tr>
+<td><code>edge_peers</code></td>
+<td>Peer nodes from the rule's <code>requires_edge</code> (for edge-triggered rules)</td>
+</tr>
+<tr>
+<td><code>writeable_by_peers</code></td>
+<td>Peer nodes with <code>WRITEABLE_BY</code> edges to the trigger node</td>
+</tr>
+<tr>
+<td><code>enrollable_users</code></td>
+<td>All user nodes (for ADCS rules)</td>
+</tr>
+<tr>
+<td><code>enrollable_users_if_client_auth</code></td>
+<td>All users, but only when the trigger cert_template has Client Authentication EKU</td>
+</tr>
+<tr>
+<td><code>enrollable_users_if_issuance_policy</code></td>
+<td>All users, but only when the trigger cert_template has issuance policy OID</td>
+</tr>
+<tr>
+<td><code>session_holders_on_host</code></td>
+<td>Users/groups with <code>HAS_SESSION</code> (confidence &gt;= 0.7) to the triggering host</td>
+</tr>
+<tr>
+<td><code>ssh_services</code></td>
+<td>All services with <code>service_name: ssh</code></td>
+</tr>
+<tr>
+<td><code>ssh_services_related</code></td>
+<td>SSH services on hosts where the credential owner has existing access</td>
+</tr>
+<tr>
+<td><code>delegation_targets</code></td>
+<td>Hosts/services resolved from <code>allowed_to_delegate_to</code> SPN list; falls back to domain nodes</td>
+</tr>
+<tr>
+<td><code>linked_server_hosts</code></td>
+<td>Hosts matching the <code>linked_servers</code> array by hostname/label</td>
+</tr>
+<tr>
+<td><code>target_user_credentials</code></td>
+<td>Credentials associated with a target user</td>
+</tr>
+<tr>
+<td><code>credentials_same_username</code></td>
+<td>Credentials matching the same <code>cred_user</code> as the trigger credential</td>
+</tr>
+<tr>
+<td><code>gpo_linked_hosts</code></td>
+<td>Hosts linked to the GPO via <code>APPLIES_TO</code> or group membership</td>
+</tr>
+<tr>
+<td><code>web_form_credentials</code></td>
+<td>Plaintext non-default credentials for webapp spray</td>
+</tr>
+<tr>
+<td><code>all_usable_credentials</code></td>
+<td>All credentials usable for authentication</td>
+</tr>
+<tr>
+<td><code>ca_for_template</code></td>
+<td>CA nodes that issue the trigger cert_template</td>
+</tr>
+<tr>
+<td><code>manage_ca_peers</code></td>
+<td>Identities with manage-CA permissions</td>
+</tr>
+<tr>
+<td><code>ca_host_compromised_peers</code></td>
+<td>Session holders on host running the CA</td>
+</tr>
+<tr>
+<td><code>http_services_via_ca</code></td>
+<td>HTTP services reachable from CA enrollment endpoints</td>
+</tr>
+<tr>
+<td><code>nearest_objective</code></td>
+<td>Objective nodes (for cloud rules with wildcard action gating)</td>
+</tr>
+<tr>
+<td><code>cross_account_roles</code></td>
+<td>Cloud identities in different accounts reachable via <code>ASSUMES_ROLE</code></td>
+</tr>
+<tr>
+<td><code>default_credential_candidates</code></td>
+<td>Webapps with technology matching known default credential databases</td>
+</tr>
+<tr>
+<td><code>cms_credentials</code></td>
+<td>Plaintext credentials for CMS-type web applications</td>
+</tr>
+<tr>
+<td><code>hosted_webapps</code></td>
+<td>Webapps hosted on the triggering service (via <code>HOSTS</code> edges)</td>
+</tr>
+<tr>
+<td><code>vulnerable_webapps</code></td>
+<td>Webapps with at least one <code>VULNERABLE_TO</code> edge</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
