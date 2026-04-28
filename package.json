@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc && node --eval \"import('fs').then(f=>f.cpSync('src/dashboard','dist/dashboard',{recursive:true}))\" && node scripts/vendor-dashboard-deps.js && npx vite build --config src/dashboard-next/vite.config.ts",
     "build:dashboard-next": "npx vite build --config src/dashboard-next/vite.config.ts",
+    "build:pages": "GITHUB_PAGES=true npx vite build --config src/dashboard-next/vite.config.ts && cp dist/dashboard-next/index.html dist/dashboard-next/404.html",
     "dev:dashboard-next": "npx vite --config src/dashboard-next/vite.config.ts",
     "prepare": "npm run build",
     "start": "node dist/index.js",

@@ -5,7 +5,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   root: __dirname,
-  base: '/',
+  base: process.env.GITHUB_PAGES ? '/overwatch/' : '/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
