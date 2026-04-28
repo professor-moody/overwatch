@@ -58,14 +58,15 @@ The LLM handles nuanced reasoning:
 
 ### Inference Rules
 
-When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Thirty-one built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
+When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Fifty-five built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
 
 | Domain | Rules | Examples |
 |--------|-------|----------|
-| **AD & Service** | 18 | Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1, Delegation, Roasting, LAPS/gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync |
+| **AD & Service** | 21 | Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1–ESC8+, Delegation, Roasting, LAPS/gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync |
+| **ADCS** | 14 | ESC1–ESC8, ESC9/10/11, ESC13, EDITF_ATTRIBUTESUBJECTALTNAME2 |
 | **Linux Privesc** | 7 | SUID root, SSH key reuse, Docker escape, NFS no_root_squash, sudo NOPASSWD, dangerous capabilities, writable cron/systemd |
-| **Web** | 2 | Webapp login spray, web login form |
-| **MSSQL** | 1 | Linked server → REACHABLE |
+| **Web** | 8 | Webapp login spray, web login form, token→webapp auth, auth bypass escalation, default CMS creds, IMDSv1 SSRF |
+| **MSSQL** | 2 | Linked server → REACHABLE, xp_cmdshell → code execution |
 | **Cloud** | 3 | Overprivileged policy, public bucket, cross-account role |
 
 Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference also re-evaluates its endpoints. Edge-triggered rules span AD (LAPS, gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync), cloud (cross-account role), and MSSQL (linked server + domain).
@@ -135,6 +136,10 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Imperative Inference** | `src/services/imperative-inference.ts` | Imperative (code-driven) inference rule execution |
 | **Scope Manager** | `src/services/scope-manager.ts` | Engagement scope governance and validation |
 | **Graph Query** | `src/services/graph-query.ts` | Structured graph queries with filtering |
+| **Objective Manager** | `src/services/objective-manager.ts` | Objective CRUD, achievement evaluation, phase tracking |
+| **Session Tracker** | `src/services/session-tracker.ts` | HAS_SESSION edge lifecycle, frontier marking, startup reconciliation |
+| **Config Manager** | `src/services/config-manager.ts` | Config seeding, update validation, scope/opsec merging |
+| **Tool Telemetry** | `src/services/tool-telemetry.ts` | Runtime tool call counting, timing, sequence analysis |
 | **Engine Context** | `src/services/engine-context.ts` | Service container and dependency wiring |
 
 ### Tools

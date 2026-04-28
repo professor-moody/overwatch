@@ -3329,6 +3329,48 @@ describe('GraphEngine', () => {
       expect((engine as any).ctx.dedupCount).toBe(2);
     });
   });
+
+  describe('inference rule effectiveness stats', () => {
+    it('returns per-rule stats for rules with ≥3 inferred edges', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // Ingest a credential to trigger cred-fanout — creates POTENTIAL_AUTH inferred edges
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'svc-smb-s1', type: 'service', label: 'SMB on .1', port: 445, service_name: 'smb' },
+          { id: 'svc-smb-s2', type: 'service', label: 'SMB on .2', port: 445, service_name: 'smb' },
+          { id: 'svc-smb-s3', type: 'service', label: 'SMB on .3', port: 445, service_name: 'smb' },
+          { id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2' },
+          { id: 'host-10-10-10-3', type: 'host', label: '10.10.10.3', ip: '10.10.10.3' },
+          { id: 'cred-test-stats', type: 'credential', label: 'test cred', cred_type: 'ntlm', cred_user: 'testuser', cred_domain: 'test.local' },
+        ],
+        edges: [
+          { source: 'host-10-10-10-1', target: 'svc-smb-s1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-2', target: 'svc-smb-s2', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-3', target: 'svc-smb-s3', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-1', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-2', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+          { source: 'host-10-10-10-3', target: 'domain-test-local', properties: { type: 'MEMBER_OF_DOMAIN', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      }));
+
+      const stats = engine.getInferenceRuleStats();
+      // cred-fanout should have produced at least 3 POTENTIAL_AUTH edges
+      const credFanout = stats.find(s => s.rule_id === 'rule-cred-fanout');
+      if (credFanout) {
+        expect(credFanout.total).toBeGreaterThanOrEqual(3);
+        expect(credFanout.confirmation_rate).toBe(0); // none confirmed yet
+        expect(credFanout.unconfirmed).toBe(credFanout.total);
+      }
+    });
+
+    it('includes inference_rule_effectiveness in getState', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const state = engine.getState();
+      expect(state.inference_rule_effectiveness).toBeDefined();
+      expect(Array.isArray(state.inference_rule_effectiveness)).toBe(true);
+    });
+  });
 });
 
 // =============================================

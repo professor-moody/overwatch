@@ -943,17 +943,17 @@ Several docs are stale after Phases 4-6 completion:
 | 7.2 | Graph Engine Decomposition | 7 | Medium | 7.1 | ✅ |
 | 7.3 | Outcome Feedback Loop | 7 | High | — | ✅ |
 | 7.4 | Adaptive Prompt Token Budgeting | 7 | High | — | ✅ |
-| 7.5 | Tool Call Telemetry | 7 | Medium | — | |
-| 7.6 | Structured Error Envelopes | 7 | Medium | — | |
+| 7.5 | Tool Call Telemetry | 7 | Medium | — | ✅ |
+| 7.6 | Structured Error Envelopes | 7 | Medium | — | ✅ |
 | 7.7 | Graph Health Auto-Checks | 7 | Low | — | |
 | 7.8 | Finding Deduplication | 7 | Medium | — | ✅ |
-| 7.9 | Inference Rule Effectiveness Tracking | 7 | Medium | — | |
+| 7.9 | Inference Rule Effectiveness Tracking | 7 | Medium | — | ✅ |
 | 7.10 | Engagement-Scoped Technique Priors | 7 | Low | — | |
 | 7.11 | Incremental Frontier Computation | 7 | Low | 7.1 | |
 | 7.12 | Frontier Intent Deduplication | 7 | Low | — | |
 | 7.13 | Session Idle Timeout | 7 | Low | — | |
 | 7.14 | API Schema Export (OpenAPI) | 7 | Low | — | |
-| 7.15 | Documentation Refresh | 7 | Medium | — | |
+| 7.15 | Documentation Refresh | 7 | Medium | — | ✅ |
 
 ### Recommended execution order (parallelizable tracks)
 

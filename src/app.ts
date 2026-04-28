@@ -45,6 +45,8 @@ import { registerSessionTools } from './tools/sessions.js';
 import { registerScopeTools } from './tools/scope.js';
 import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
+import { ToolTelemetry } from './services/tool-telemetry.js';
+import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -80,6 +82,7 @@ export type OverwatchApp = {
   sessionManager: SessionManager;
   server: McpServer;
   dashboard: DashboardServer | null;
+  telemetry: ToolTelemetry;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
   sessionAbortControllers?: Record<string, AbortController>;
   httpServer?: Server;
@@ -125,6 +128,11 @@ export function registerAllTools(
     getDashboardStatus: DashboardStatusProvider;
   },
 ): ToolEntry[] {
+  // Initialize shared telemetry (idempotent — first caller wins)
+  if (!getTelemetry()) {
+    setTelemetry(new ToolTelemetry());
+  }
+
   const registrar = new ToolRegistrar(server as McpServer);
   const s = registrar as unknown as McpServer;
 
@@ -143,7 +151,7 @@ export function registerAllTools(
   registerInferenceTools(s, deps.engine);
   registerParseOutputTools(s, deps.engine);
   registerLoggingTools(s, deps.engine);
-  registerRetrospectiveTools(s, deps.engine, deps.skills);
+  registerRetrospectiveTools(s, deps.engine, deps.skills, () => registrar.getEntries().map(e => e.name));
   registerReportingTools(s, deps.engine, deps.skills);
   registerRemediationTools(s, deps.engine);
   registerSessionTools(s, deps.sessionManager, deps.engine);
@@ -206,6 +214,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     sessionManager,
     server,
     dashboard,
+    telemetry: getTelemetry()!,
   };
 }
 

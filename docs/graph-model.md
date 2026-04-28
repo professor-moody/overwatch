@@ -322,7 +322,8 @@ Every edge has these base properties:
 | `test_result` | `string` | `success`, `failure`, `partial`, `error` |
 | `opsec_noise` | `number` | 0.0 (silent) to 1.0 (loud) |
 | `inferred_by_rule` | `string` | Rule ID if this edge was inferred |
-| `confirmed_at` | `string` | Timestamp when confidence raised to 1.0 |
+| `inferred_at` | `string` | ISO timestamp when the edge was inferred |
+| `confirmed_at` | `string` | ISO timestamp when a finding confirmed an inferred edge (confidence raised to 1.0) |
 
 ## Inference Rules
 

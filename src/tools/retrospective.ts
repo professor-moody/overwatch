@@ -6,10 +6,10 @@ import { runRetrospective } from '../services/retrospective.js';
 import type { RetrospectiveInput } from '../services/retrospective.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
-import { withErrorBoundary } from './error-boundary.js';
+import { withErrorBoundary, getTelemetry } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
 
-export function registerRetrospectiveTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
+export function registerRetrospectiveTools(server: McpServer, engine: GraphEngine, skills: SkillIndex, getToolNames?: () => string[]): void {
 
   // ============================================================
   // Tool: run_retrospective
@@ -71,6 +71,12 @@ Optionally write all outputs to disk for archival.`,
 
       const result = runRetrospective(input);
 
+      // Attach tool telemetry if available
+      const telemetry = getTelemetry();
+      if (telemetry) {
+        result.tool_telemetry = telemetry.summarize(getToolNames ? getToolNames() : []);
+      }
+
       if (write_to_disk) {
         let validatedDir: string;
         try {
@@ -91,6 +97,9 @@ Optionally write all outputs to disk for archival.`,
         writeFileSync(join(validatedDir, 'training-traces.json'), JSON.stringify(result.training_traces, null, 2));
         writeFileSync(join(validatedDir, 'trace-quality.json'), JSON.stringify(result.trace_quality, null, 2));
         writeFileSync(join(validatedDir, 'summary.txt'), result.summary);
+        if (result.tool_telemetry) {
+          writeFileSync(join(validatedDir, 'tool-telemetry.json'), JSON.stringify(result.tool_telemetry, null, 2));
+        }
       }
 
       return {
@@ -103,6 +112,7 @@ Optionally write all outputs to disk for archival.`,
             context_improvements: result.context_improvements,
             training_traces_count: result.training_traces.length,
             trace_quality: result.trace_quality,
+            tool_telemetry: result.tool_telemetry,
             report_preview: result.report_markdown.slice(0, 500) + '...',
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
           }, null, 2)

@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { withErrorBoundary } from '../error-boundary.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { withErrorBoundary, setTelemetry, getTelemetry, toolSuccess, toolError } from '../error-boundary.js';
+import { ToolTelemetry } from '../../services/tool-telemetry.js';
 
 describe('withErrorBoundary', () => {
   it('passes through successful returns unchanged', async () => {
@@ -24,6 +25,8 @@ describe('withErrorBoundary', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.error).toBe('kaboom');
     expect(parsed.tool).toBe('exploding_tool');
+    expect(parsed.success).toBe(false);
+    expect(parsed.classification).toBe('internal_error');
 
     // Verify it logged tool name and stack
     expect(consoleSpy).toHaveBeenCalledWith(
@@ -76,5 +79,98 @@ describe('withErrorBoundary', () => {
     const result: any = await wrapped({ name: 'test' });
     expect(result.content[0].text).toBe('ok');
     expect(result._meta).toEqual({ custom: true });
+  });
+
+  it('classifies "not found" errors correctly', async () => {
+    const handler = async (_args: any) => { throw new Error('Node xyz does not exist'); };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const wrapped = withErrorBoundary('test', handler);
+    const result: any = await wrapped({});
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.classification).toBe('not_found');
+    consoleSpy.mockRestore();
+  });
+
+  it('classifies scope violation errors correctly', async () => {
+    const handler = async (_args: any) => { throw new Error('Target not in scope'); };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const wrapped = withErrorBoundary('test', handler);
+    const result: any = await wrapped({});
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.classification).toBe('scope_violation');
+    consoleSpy.mockRestore();
+  });
+
+  it('classifies validation errors correctly', async () => {
+    const handler = async (_args: any) => { throw new Error('Invalid input: must be a string'); };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const wrapped = withErrorBoundary('test', handler);
+    const result: any = await wrapped({});
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.classification).toBe('validation_error');
+    consoleSpy.mockRestore();
+  });
+});
+
+describe('telemetry integration', () => {
+  let savedTelemetry: any;
+
+  beforeEach(() => {
+    savedTelemetry = getTelemetry();
+    setTelemetry(new ToolTelemetry());
+  });
+
+  afterEach(() => {
+    if (savedTelemetry) setTelemetry(savedTelemetry);
+  });
+
+  it('records successful calls via withErrorBoundary', async () => {
+    const handler = async (_args: any) => ({ content: [{ type: 'text' as const, text: 'ok' }] });
+    const wrapped = withErrorBoundary('my_tool', handler);
+    await wrapped({});
+
+    const stats = getTelemetry()!.getStats();
+    expect(stats.get('my_tool')!.calls).toBe(1);
+    expect(stats.get('my_tool')!.errors).toBe(0);
+  });
+
+  it('records errors via withErrorBoundary', async () => {
+    const handler = async (_args: any) => { throw new Error('fail'); };
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const wrapped = withErrorBoundary('fail_tool', handler);
+    await wrapped({});
+
+    const stats = getTelemetry()!.getStats();
+    expect(stats.get('fail_tool')!.calls).toBe(1);
+    expect(stats.get('fail_tool')!.errors).toBe(1);
+    consoleSpy.mockRestore();
+  });
+});
+
+describe('toolSuccess / toolError helpers', () => {
+  it('toolSuccess builds correct MCP shape', () => {
+    const result = toolSuccess({ count: 5 });
+    expect(result.content[0].type).toBe('text');
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({ count: 5 });
+    expect(parsed.warnings).toBeUndefined();
+    expect((result as any).isError).toBeUndefined();
+  });
+
+  it('toolSuccess includes warnings when provided', () => {
+    const result = toolSuccess({ ok: true }, ['something is slow']);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.warnings).toEqual(['something is slow']);
+  });
+
+  it('toolError builds correct MCP shape with isError', () => {
+    const result = toolError('not found', 'not_found', 'query_graph');
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error).toBe('not found');
+    expect(parsed.classification).toBe('not_found');
+    expect(parsed.tool).toBe('query_graph');
   });
 });

@@ -81,7 +81,7 @@ import type {
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
-  ScopeSuggestion,
+  ScopeSuggestion, InferenceRuleEffectiveness,
 } from '../types.js';
 
 export interface RecentOutcome {
@@ -421,6 +421,29 @@ export class GraphEngine {
 
   private runInferenceRules(triggerNodeId: string): string[] {
     return this.inference.runRules(triggerNodeId);
+  }
+
+  getInferenceRuleStats(): InferenceRuleEffectiveness[] {
+    const ruleStats = new Map<string, { total: number; confirmed: number }>();
+    this.ctx.graph.forEachEdge((_edgeId, attrs) => {
+      if (!attrs.inferred_by_rule) return;
+      const ruleId = attrs.inferred_by_rule as string;
+      const stats = ruleStats.get(ruleId) || { total: 0, confirmed: 0 };
+      stats.total++;
+      if (attrs.confirmed_at) stats.confirmed++;
+      ruleStats.set(ruleId, stats);
+    });
+
+    return Array.from(ruleStats.entries())
+      .filter(([, s]) => s.total >= 3)
+      .map(([rule_id, s]) => ({
+        rule_id,
+        total: s.total,
+        confirmed: s.confirmed,
+        unconfirmed: s.total - s.confirmed,
+        confirmation_rate: s.total > 0 ? s.confirmed / s.total : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
   }
 
   private get findingIngestionHost(): FindingIngestionHost {
@@ -1563,6 +1586,7 @@ export class GraphEngine {
       scope_suggestions: this.collectScopeSuggestions(),
       phases: this.getPhaseStatuses(),
       current_phase: this.getCurrentPhaseId(),
+      inference_rule_effectiveness: this.getInferenceRuleStats(),
     };
   }
 

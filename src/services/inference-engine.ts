@@ -68,8 +68,12 @@ export class InferenceEngine {
       this.inferOsFromServices(triggerNodeId);
     }
 
+    // Dynamic rule ordering: sort by confirmation rate (desc), deprioritize
+    // rules with 0 confirmations and ≥5 attempts
+    const sortedRules = this.getSortedRules();
+
     const inferred: string[] = [];
-    for (const rule of this.ctx.inferenceRules) {
+    for (const rule of sortedRules) {
       if (rule.trigger.node_type && node.type !== rule.trigger.node_type) continue;
 
       if (rule.trigger.property_match) {
@@ -85,6 +89,49 @@ export class InferenceEngine {
     }
 
     return inferred;
+  }
+
+  /**
+   * Sort rules by effectiveness: high confirmation rate first,
+   * deprioritize rules with 0 confirmations and ≥5 attempts.
+   * Caches for 60s to avoid per-trigger graph scans.
+   */
+  private ruleOrderCache: { rules: InferenceRule[]; ts: number } | null = null;
+  private static readonly RULE_ORDER_CACHE_MS = 60_000;
+
+  private getSortedRules(): InferenceRule[] {
+    const now = Date.now();
+    if (this.ruleOrderCache && now - this.ruleOrderCache.ts < InferenceEngine.RULE_ORDER_CACHE_MS) {
+      // Return cached order but use current rule set (rules may have been added)
+      if (this.ruleOrderCache.rules.length === this.ctx.inferenceRules.length) {
+        return this.ruleOrderCache.rules;
+      }
+    }
+
+    // Compute per-rule stats from graph edges
+    const ruleStats = new Map<string, { total: number; confirmed: number }>();
+    this.ctx.graph.forEachEdge((_edgeId, attrs) => {
+      if (!attrs.inferred_by_rule) return;
+      const ruleId = attrs.inferred_by_rule as string;
+      const stats = ruleStats.get(ruleId) || { total: 0, confirmed: 0 };
+      stats.total++;
+      if (attrs.confirmed_at) stats.confirmed++;
+      ruleStats.set(ruleId, stats);
+    });
+
+    const sorted = [...this.ctx.inferenceRules].sort((a, b) => {
+      const sa = ruleStats.get(a.id);
+      const sb = ruleStats.get(b.id);
+      const rateA = sa && sa.total > 0 ? sa.confirmed / sa.total : 0.5; // no data = neutral
+      const rateB = sb && sb.total > 0 ? sb.confirmed / sb.total : 0.5;
+      // Deprioritize rules with 0 confirmations and ≥5 attempts
+      const penaltyA = (sa && sa.total >= 5 && sa.confirmed === 0) ? -1 : 0;
+      const penaltyB = (sb && sb.total >= 5 && sb.confirmed === 0) ? -1 : 0;
+      return (rateB + penaltyB) - (rateA + penaltyA);
+    });
+
+    this.ruleOrderCache = { rules: sorted, ts: now };
+    return sorted;
   }
 
   private runRulesForRule(rule: InferenceRule, triggerNodeId: string): string[] {

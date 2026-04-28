@@ -611,6 +611,15 @@ export interface EngagementState {
     exit_criteria_met: boolean;
   }>;
   current_phase?: string;        // ID of the lowest-order active phase
+  inference_rule_effectiveness?: InferenceRuleEffectiveness[];
+}
+
+export interface InferenceRuleEffectiveness {
+  rule_id: string;
+  total: number;
+  confirmed: number;
+  unconfirmed: number;
+  confirmation_rate: number;
 }
 
 // --- Scope Suggestions (surfaced by get_state for operator review) ---
@@ -848,6 +857,7 @@ export interface RetrospectiveResult {
   report_markdown: string;
   training_traces: RLVRTrace[];
   trace_quality: TraceQualityReport;
+  tool_telemetry?: import('./services/tool-telemetry.js').TelemetrySummary;
   summary: string;
 }
 
