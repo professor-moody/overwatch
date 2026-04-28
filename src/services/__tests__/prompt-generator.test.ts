@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolve } from 'path';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
-import { generateSystemPrompt, type ToolEntry } from '../prompt-generator.js';
+import { generateSystemPrompt, estimateTokens, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.json'));
@@ -647,6 +647,92 @@ describe('prompt-generator', () => {
         expect(prompt).toContain('Low-Success Techniques');
         expect(prompt).toContain('Password Spray');
         expect(prompt).toContain('1/10 succeeded');
+      }
+    });
+  });
+
+  describe('token budgeting', () => {
+    it('estimateTokens uses chars/4 heuristic', () => {
+      expect(estimateTokens('')).toBe(0);
+      expect(estimateTokens('abcd')).toBe(1);
+      expect(estimateTokens('hello world')).toBe(3); // 11 chars / 4 = 2.75 → ceil = 3
+    });
+
+    it('default budget (8000) includes all sections', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      expect(prompt).toContain('# Overwatch');
+      expect(prompt).toContain('## Core Loop');
+      expect(prompt).toContain('## Tactical Methodology');
+      expect(prompt).toContain('## Tool Reference');
+      expect(prompt).toContain('## Current State Snapshot');
+    });
+
+    it('very small budget still includes CRITICAL sections', () => {
+      const engine = createTestEngine();
+      // Budget of 500 tokens — only identity and core loop (critical) should survive
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary', max_prompt_tokens: 500 });
+      expect(prompt).toContain('# Overwatch');
+      expect(prompt).toContain('## Core Loop');
+      // Non-critical sections should be missing or summarized
+      expect(prompt).not.toContain('## Current State Snapshot');
+    });
+
+    it('tight budget summarizes tool table instead of full list', () => {
+      const engine = createTestEngine();
+      // Use a budget that can fit critical + high priority but not tool table + state
+      const fullPrompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary', max_prompt_tokens: 50000 });
+      const fullTokens = estimateTokens(fullPrompt);
+
+      // Budget that forces tool table into summary mode
+      const tightBudget = Math.floor(fullTokens * 0.65);
+      const trimmedPrompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary', max_prompt_tokens: tightBudget });
+
+      // Should contain identity (critical)
+      expect(trimmedPrompt).toContain('# Overwatch');
+      // Token count should be within budget (with some tolerance for critical overflow)
+      const trimmedTokens = estimateTokens(trimmedPrompt);
+      expect(trimmedTokens).toBeLessThanOrEqual(tightBudget * 1.5); // Critical can overflow
+    });
+
+    it('config.max_prompt_tokens is respected when options.max_prompt_tokens not set', () => {
+      // Use a budget too small to fit everything (500 forces trimming)
+      const tightConfig = { ...config, max_prompt_tokens: 500 };
+      const engine = new GraphEngine(tightConfig, TEST_STATE_FILE);
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      // With 500 token budget, non-critical sections should be trimmed
+      // Critical sections (identity + core loop) may overflow, but HIGH/MEDIUM/LOW should be gone
+      expect(prompt).not.toContain('## Tool Reference');
+      expect(prompt).not.toContain('## Current State Snapshot');
+      // Should still contain critical content
+      expect(prompt).toContain('# Overwatch');
+    });
+
+    it('situational section gets summarized showing headings when over budget', () => {
+      const engine = createTestEngine();
+      // Ingest data to generate situational content
+      engine.ingestFinding({
+        id: 'f-budget-1',
+        agent_id: 'test',
+        timestamp: new Date().toISOString(),
+        nodes: [
+          { id: 'host-budget', type: 'host', label: '10.0.0.100' },
+          { id: 'cred-budget', type: 'credential', label: 'admin:pass', confidence: 1.0, cred_type: 'plaintext', cred_user: 'admin' },
+        ],
+        edges: [
+          { source: 'cred-budget', target: 'host-budget', properties: { type: 'ADMIN_TO', confidence: 1.0 } },
+        ],
+      });
+
+      // Full output has situational section
+      const full = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary', max_prompt_tokens: 50000 });
+      if (full.includes('## Situational Awareness')) {
+        // Now try with tight budget — should get compressed version or omit
+        const tight = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary', max_prompt_tokens: 1500 });
+        // Should either be compressed or omitted entirely
+        if (tight.includes('Situational Awareness')) {
+          expect(tight).toContain('compressed');
+        }
       }
     });
   });

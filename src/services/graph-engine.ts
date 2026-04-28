@@ -61,6 +61,15 @@ import type {
   ScopeSuggestion, PhaseStatus, PhaseCriterion,
 } from '../types.js';
 
+export interface RecentOutcome {
+  target: string;
+  timestamp: string;
+  result: 'success' | 'failure' | 'neutral';
+  reason?: string;
+  technique?: string;
+  action_id?: string;
+}
+
 function createGraph(): OverwatchGraph {
   return createOverwatchGraph();
 }
@@ -853,6 +862,9 @@ export class GraphEngine {
     errors: string[];
     warnings: string[];
     opsec_context: OpsecContext;
+    recent_outcomes?: RecentOutcome[];
+    technique_success_rate?: { engagement: number; engagement_attempts: number; kb: number; kb_attempts: number };
+    cooldown_suggestion?: string;
   } {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -965,7 +977,105 @@ export class GraphEngine {
       warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${this.ctx.config.opsec.max_noise}).`);
     }
 
-    return { valid: errors.length === 0, errors, warnings, opsec_context };
+    // --- Outcome feedback loop ---
+    let recent_outcomes: RecentOutcome[] | undefined;
+    let technique_success_rate: { engagement: number; engagement_attempts: number; kb: number; kb_attempts: number } | undefined;
+    let cooldown_suggestion: string | undefined;
+
+    if (action.technique) {
+      const targetIds = [action.target_node, action.edge_target].filter(Boolean) as string[];
+      const targetIps = action.target_ip ? [action.target_ip] : [];
+
+      // Gather recent outcomes for this technique from the activity log
+      recent_outcomes = this.getRecentOutcomes(action.technique, targetIds, targetIps);
+
+      // Compute engagement-level success rate for this technique
+      const allForTechnique = this.ctx.activityLog.filter(e =>
+        e.technique === action.technique &&
+        (e.event_type === 'action_completed' || e.event_type === 'action_failed') &&
+        e.outcome
+      );
+      if (allForTechnique.length > 0) {
+        const successes = allForTechnique.filter(e => e.outcome === 'success').length;
+        const engRate = successes / allForTechnique.length;
+        const kb = this.getKB();
+        const kbStats = kb?.getTechniqueStats(action.technique);
+        technique_success_rate = {
+          engagement: Math.round(engRate * 100) / 100,
+          engagement_attempts: allForTechnique.length,
+          kb: kbStats ? kbStats.success_rate : -1,
+          kb_attempts: kbStats ? kbStats.attempts : 0,
+        };
+      }
+
+      // Similar-target failure warnings via community matching
+      if (targetIds.length > 0) {
+        const communities = this.getCommunities();
+        const targetCommunityIds = new Set<number>();
+        for (const tid of targetIds) {
+          const cid = communities.get(tid);
+          if (cid !== undefined) targetCommunityIds.add(cid);
+        }
+        if (targetCommunityIds.size > 0) {
+          const similarFailures = this.ctx.activityLog.filter(e =>
+            e.technique === action.technique &&
+            e.outcome === 'failure' &&
+            e.target_node_ids?.some(nid => {
+              const cid = communities.get(nid);
+              return cid !== undefined && targetCommunityIds.has(cid);
+            })
+          );
+          // Exclude entries that are already in recent_outcomes (same target)
+          const directTargetSet = new Set([...targetIds, ...targetIps]);
+          const uniqueSimilar = similarFailures.filter(e =>
+            !e.target_node_ids?.some(nid => directTargetSet.has(nid)) &&
+            !e.target_ips?.some(ip => directTargetSet.has(ip))
+          );
+          if (uniqueSimilar.length > 0) {
+            const targetLabels = uniqueSimilar.slice(-3).map(e => {
+              const nid = e.target_node_ids?.[0];
+              if (nid && this.ctx.graph.hasNode(nid)) {
+                return this.ctx.graph.getNodeAttribute(nid, 'label') || nid;
+              }
+              return e.target_ips?.[0] || nid || 'unknown';
+            });
+            warnings.push(
+              `${action.technique} failed on ${uniqueSimilar.length} similar target(s) in the same network community: ${targetLabels.join(', ')}. Consider a different approach.`
+            );
+          }
+        }
+      }
+
+      // Cool-down suggestion: 3+ consecutive failures with this technique
+      const recentForTechnique = this.ctx.activityLog.filter(e =>
+        e.technique === action.technique &&
+        (e.event_type === 'action_completed' || e.event_type === 'action_failed') &&
+        e.outcome
+      );
+      if (recentForTechnique.length >= 3) {
+        const lastThree = recentForTechnique.slice(-3);
+        const allFailed = lastThree.every(e => e.outcome === 'failure');
+        if (allFailed) {
+          const kb = this.getKB();
+          const alternatives = kb ? kb.getTopTechniques(5)
+            .filter(t => t.technique_id !== action.technique && t.success_rate > 0.3)
+            .map(t => t.technique_id)
+            .slice(0, 3) : [];
+          cooldown_suggestion = `${action.technique} has failed ${recentForTechnique.filter(e => e.outcome === 'failure').length} consecutive time(s) in this engagement.`
+            + (alternatives.length > 0
+              ? ` Consider alternatives: ${alternatives.join(', ')}.`
+              : ' Consider a different approach or verify prerequisites.');
+          warnings.push(cooldown_suggestion);
+        }
+      }
+    }
+
+    return {
+      valid: errors.length === 0, errors, warnings, opsec_context,
+      ...(recent_outcomes && recent_outcomes.length > 0 ? { recent_outcomes } : {}),
+      ...(technique_success_rate ? { technique_success_rate } : {}),
+      ...(cooldown_suggestion ? { cooldown_suggestion } : {}),
+    };
   }
 
   private checkTechniqueGuidance(action: {
@@ -1021,6 +1131,54 @@ export class GraphEngine {
       default:
         return null;
     }
+  }
+
+  private getRecentOutcomes(technique: string, targetIds: string[], targetIps: string[], limit: number = 5): RecentOutcome[] {
+    const targetSet = new Set([...targetIds, ...targetIps]);
+    const outcomes: RecentOutcome[] = [];
+
+    // Scan activity log in reverse for matching technique × target entries
+    for (let i = this.ctx.activityLog.length - 1; i >= 0 && outcomes.length < limit; i--) {
+      const entry = this.ctx.activityLog[i];
+      if (entry.technique !== technique) continue;
+      if (entry.event_type !== 'action_completed' && entry.event_type !== 'action_failed') continue;
+      if (!entry.outcome) continue;
+
+      // Match by target node IDs or target IPs
+      const matchesByNode = entry.target_node_ids?.some(nid => targetSet.has(nid));
+      const matchesByIp = entry.target_ips?.some(ip => targetSet.has(ip));
+
+      // Also accept technique-only matches (same technique, any target) for broader context
+      const targetLabel = entry.target_node_ids?.[0]
+        ? (this.ctx.graph.hasNode(entry.target_node_ids[0])
+          ? this.ctx.graph.getNodeAttribute(entry.target_node_ids[0], 'label') || entry.target_node_ids[0]
+          : entry.target_node_ids[0])
+        : entry.target_ips?.[0] || 'unknown';
+
+      if (matchesByNode || matchesByIp) {
+        // Direct match — include with full detail
+        outcomes.unshift({
+          target: targetLabel,
+          timestamp: entry.timestamp,
+          result: entry.outcome as 'success' | 'failure' | 'neutral',
+          reason: entry.description,
+          technique: entry.technique,
+          action_id: entry.action_id,
+        });
+      } else if (outcomes.length < limit) {
+        // Same technique, different target — useful for seeing pattern
+        outcomes.unshift({
+          target: targetLabel,
+          timestamp: entry.timestamp,
+          result: entry.outcome as 'success' | 'failure' | 'neutral',
+          reason: entry.description,
+          technique: entry.technique,
+          action_id: entry.action_id,
+        });
+      }
+    }
+
+    return outcomes.slice(0, limit);
   }
 
   // =============================================

@@ -941,8 +941,8 @@ Several docs are stale after Phases 4-6 completion:
 | 6.4 | System Prompt Generator: Tactical Intelligence | 6 | Critical | — | ✅ |
 | 7.1 | Persistence Write Coalescing | 7 | High | — | ✅ |
 | 7.2 | Graph Engine Decomposition | 7 | Medium | 7.1 | |
-| 7.3 | Outcome Feedback Loop | 7 | High | — | |
-| 7.4 | Adaptive Prompt Token Budgeting | 7 | High | — | |
+| 7.3 | Outcome Feedback Loop | 7 | High | — | ✅ |
+| 7.4 | Adaptive Prompt Token Budgeting | 7 | High | — | ✅ |
 | 7.5 | Tool Call Telemetry | 7 | Medium | — | |
 | 7.6 | Structured Error Envelopes | 7 | Medium | — | |
 | 7.7 | Graph Health Auto-Checks | 7 | Low | — | |

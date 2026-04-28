@@ -328,6 +328,7 @@ export interface EngagementConfig {
   community_resolution?: number;  // Louvain resolution (default 1.0, lower → fewer/larger communities)
   failure_patterns?: { technique: string; target_pattern?: string; warning: string }[];  // Retrospective feedback for validation
   phases?: EngagementPhase[];     // ordered engagement phases with entry/exit criteria
+  max_prompt_tokens?: number;     // Token budget for system prompt generation (default 8000)
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -403,6 +404,7 @@ export const engagementConfigSchema = z.object({
   objectives: z.array(engagementObjectiveSchema),
   opsec: opsecProfileSchema,
   phases: z.array(engagementPhaseSchema).optional(),
+  max_prompt_tokens: z.number().int().min(1000).max(100000).optional(),
 });
 
 export interface ExportedGraphNode {

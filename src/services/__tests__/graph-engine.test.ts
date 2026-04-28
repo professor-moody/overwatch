@@ -997,6 +997,101 @@ describe('GraphEngine', () => {
       expect(result.errors.some(e => e.includes('blacklisted'))).toBe(true);
     });
 
+    it('returns recent_outcomes when technique has prior action results', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      // Log a completed action with technique + target
+      engine.logActionEvent({
+        description: 'Portscan completed',
+        event_type: 'action_completed',
+        technique: 'portscan',
+        target_node_ids: ['host-10-10-10-1'],
+        outcome: 'success',
+      });
+      engine.logActionEvent({
+        description: 'Portscan failed on host',
+        event_type: 'action_failed',
+        technique: 'portscan',
+        target_node_ids: ['host-10-10-10-1'],
+        outcome: 'failure',
+      });
+
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'portscan' });
+      expect(result.recent_outcomes).toBeDefined();
+      expect(result.recent_outcomes!.length).toBe(2);
+      expect(result.recent_outcomes![0].result).toBe('success');
+      expect(result.recent_outcomes![1].result).toBe('failure');
+    });
+
+    it('computes technique_success_rate from activity log', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      // 2 successes, 1 failure = 0.67 rate
+      for (const outcome of ['success', 'success', 'failure'] as const) {
+        engine.logActionEvent({
+          description: `Enum ${outcome}`,
+          event_type: outcome === 'success' ? 'action_completed' : 'action_failed',
+          technique: 'enum4linux',
+          target_node_ids: ['host-10-10-10-1'],
+          outcome,
+        });
+      }
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'enum4linux' });
+      expect(result.technique_success_rate).toBeDefined();
+      expect(result.technique_success_rate!.engagement).toBeCloseTo(0.67, 1);
+      expect(result.technique_success_rate!.engagement_attempts).toBe(3);
+    });
+
+    it('suggests cooldown after 3+ consecutive failures', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      // 3 consecutive failures
+      for (let i = 0; i < 3; i++) {
+        engine.logActionEvent({
+          description: `Kerberoast attempt ${i} failed`,
+          event_type: 'action_failed',
+          technique: 'kerberoast',
+          target_node_ids: ['host-10-10-10-1'],
+          outcome: 'failure',
+        });
+      }
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'kerberoast' });
+      expect(result.cooldown_suggestion).toBeDefined();
+      expect(result.cooldown_suggestion).toContain('kerberoast');
+      expect(result.cooldown_suggestion).toContain('failed');
+      expect(result.warnings.some(w => w.includes('failed'))).toBe(true);
+    });
+
+    it('no cooldown when last 3 are not all failures', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      engine.logActionEvent({ description: 'fail1', event_type: 'action_failed', technique: 'smb-relay', target_node_ids: ['host-10-10-10-1'], outcome: 'failure' });
+      engine.logActionEvent({ description: 'success', event_type: 'action_completed', technique: 'smb-relay', target_node_ids: ['host-10-10-10-1'], outcome: 'success' });
+      engine.logActionEvent({ description: 'fail2', event_type: 'action_failed', technique: 'smb-relay', target_node_ids: ['host-10-10-10-1'], outcome: 'failure' });
+
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'smb-relay' });
+      expect(result.cooldown_suggestion).toBeUndefined();
+    });
+
+    it('omits outcome fields when no technique is provided', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }],
+      }));
+      const result = engine.validateAction({ target_node: 'host-10-10-10-1' });
+      expect(result.recent_outcomes).toBeUndefined();
+      expect(result.technique_success_rate).toBeUndefined();
+      expect(result.cooldown_suggestion).toBeUndefined();
+    });
+
     it('filterFrontier excludes items with out-of-scope edge_target', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

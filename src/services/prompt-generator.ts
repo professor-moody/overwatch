@@ -22,6 +22,30 @@ export interface GeneratePromptOptions {
   agent_id?: string;
   include_state?: boolean;
   include_tools?: boolean;
+  max_prompt_tokens?: number;
+}
+
+// ============================================================
+// Token estimation — chars/4 heuristic (good enough for budgeting)
+// ============================================================
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// Section priority levels: higher priority = always included first
+const enum SectionPriority {
+  CRITICAL = 4,   // identity, core loop — cannot be trimmed
+  HIGH = 3,       // tactical, anti-patterns, key principles
+  MEDIUM = 2,     // tool table, state snapshot
+  LOW = 1,        // situational awareness subsections
+}
+
+interface PrioritizedSection {
+  content: string;
+  priority: SectionPriority;
+  label: string;
+  summarizable?: boolean;  // can be replaced with a summary when over budget
 }
 
 export interface ToolEntry {
@@ -46,36 +70,97 @@ export function generateSystemPrompt(
 // Primary orchestrator prompt
 // ============================================================
 
+const DEFAULT_MAX_PROMPT_TOKENS = 8000;
+
 function generatePrimaryPrompt(
   state: EngagementState,
   tools: ToolEntry[],
   options: GeneratePromptOptions,
   engine: GraphEngine,
 ): string {
-  const sections: string[] = [];
   const profile = inferProfile(state.config);
   const ctx: PromptContext = { state, engine };
+  const maxTokens = options.max_prompt_tokens ?? state.config.max_prompt_tokens ?? DEFAULT_MAX_PROMPT_TOKENS;
 
-  sections.push(generateIdentitySection(state.config));
-  sections.push(generateCoreLoopSection(profile));
-  sections.push(generateTacticalSection());
-  sections.push(generateKeyPrinciplesSection(state.config));
+  // Build prioritized sections
+  const prioritized: PrioritizedSection[] = [
+    { content: generateIdentitySection(state.config), priority: SectionPriority.CRITICAL, label: 'identity' },
+    { content: generateCoreLoopSection(profile), priority: SectionPriority.CRITICAL, label: 'core_loop' },
+    { content: generateTacticalSection(), priority: SectionPriority.HIGH, label: 'tactical' },
+    { content: generateKeyPrinciplesSection(state.config), priority: SectionPriority.HIGH, label: 'key_principles' },
+  ];
 
   if (options.include_tools !== false) {
-    sections.push(generateToolTableSection(tools));
+    prioritized.push({ content: generateToolTableSection(tools), priority: SectionPriority.MEDIUM, label: 'tool_table', summarizable: true });
   }
 
   if (options.include_state !== false) {
-    sections.push(generateStateSnapshotSection(state));
-    sections.push(generateSituationalSection(ctx));
+    prioritized.push({ content: generateStateSnapshotSection(state), priority: SectionPriority.MEDIUM, label: 'state_snapshot' });
+    prioritized.push({ content: generateSituationalSection(ctx), priority: SectionPriority.LOW, label: 'situational', summarizable: true });
   }
 
   const antiPatterns = generateAntiPatternsSection(ctx);
   if (antiPatterns) {
-    sections.push(antiPatterns);
+    prioritized.push({ content: antiPatterns, priority: SectionPriority.HIGH, label: 'anti_patterns' });
   }
 
-  return sections.join('\n\n');
+  return assembleSectionsWithinBudget(prioritized, maxTokens);
+}
+
+function assembleSectionsWithinBudget(sections: PrioritizedSection[], maxTokens: number): string {
+  // Sort by priority descending (CRITICAL first)
+  const sorted = [...sections].sort((a, b) => b.priority - a.priority);
+
+  let totalTokens = 0;
+  const included: string[] = [];
+
+  for (const section of sorted) {
+    if (!section.content) continue;
+    const sectionTokens = estimateTokens(section.content);
+
+    if (totalTokens + sectionTokens <= maxTokens) {
+      included.push(section.content);
+      totalTokens += sectionTokens;
+    } else if (section.priority === SectionPriority.CRITICAL) {
+      // Critical sections are always included regardless of budget
+      included.push(section.content);
+      totalTokens += sectionTokens;
+    } else if (section.summarizable) {
+      // Try a compressed summary instead
+      const summary = summarizeSection(section);
+      const summaryTokens = estimateTokens(summary);
+      if (totalTokens + summaryTokens <= maxTokens) {
+        included.push(summary);
+        totalTokens += summaryTokens;
+      }
+      // else: section is completely dropped
+    }
+    // else: non-summarizable section that doesn't fit is dropped
+  }
+
+  return included.join('\n\n');
+}
+
+function summarizeSection(section: PrioritizedSection): string {
+  const lineCount = section.content.split('\n').length;
+  switch (section.label) {
+    case 'tool_table':
+      // Count tool rows in the table
+      const toolLines = section.content.split('\n').filter(l => l.startsWith('| `'));
+      return `## Tool Reference\n\n${toolLines.length} tools available. Use \`get_system_prompt(include_tools=true)\` or check docs for full reference.`;
+    case 'situational': {
+      // Compress multi-section situational awareness to headlines
+      const headings = section.content.split('\n')
+        .filter(l => l.startsWith('### '))
+        .map(l => l.replace('### ', '- '));
+      if (headings.length === 0) return '';
+      return `## Situational Awareness (compressed — ${lineCount} lines trimmed to fit token budget)\n\n${headings.join('\n')}\n\nUse \`get_state()\` for full details.`;
+    }
+    default:
+      // Generic: take first 3 lines
+      const firstLines = section.content.split('\n').slice(0, 3).join('\n');
+      return `${firstLines}\n\n*(Section truncated to fit token budget — ${lineCount} lines total)*`;
+  }
 }
 
 // ============================================================
