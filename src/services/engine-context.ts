@@ -107,6 +107,8 @@ export class EngineContext {
   coldStore: ColdStore;
   opsecTracker: OpsecTracker;
   pendingActionQueue: PendingActionQueue;
+  recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
+  dedupCount: number;                        // total deduplicated findings for retrospective
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -125,6 +127,8 @@ export class EngineContext {
     this.coldStore = new ColdStore();
     this.opsecTracker = new OpsecTracker(this);
     this.pendingActionQueue = new PendingActionQueue(this);
+    this.recentFindingHashes = new Map();
+    this.dedupCount = 0;
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {

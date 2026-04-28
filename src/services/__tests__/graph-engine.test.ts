@@ -3250,6 +3250,85 @@ describe('GraphEngine', () => {
       expect(engine.removeObjective('nope')).toBe(false);
     });
   });
+
+  // =============================================
+  // 7.8 Finding Deduplication
+  // =============================================
+  describe('finding deduplication', () => {
+    it('rejects exact duplicate findings within the dedup window', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const finding = makeFinding({
+        tool_name: 'nmap',
+        nodes: [{ id: 'host-dup', type: 'host', label: 'dup-host', ip: '10.0.0.1' }],
+        edges: [],
+      });
+
+      const r1 = engine.ingestFinding(finding);
+      expect(r1.deduplicated).toBeUndefined();
+      expect(r1.new_nodes.length).toBeGreaterThan(0);
+
+      // Same finding again — should be deduped
+      const r2 = engine.ingestFinding(finding);
+      expect(r2.deduplicated).toBe(true);
+      expect(r2.new_nodes).toEqual([]);
+      expect(r2.new_edges).toEqual([]);
+    });
+
+    it('allows re-ingestion with different properties (partial overlap)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+
+      engine.ingestFinding(makeFinding({
+        tool_name: 'nmap',
+        nodes: [{ id: 'host-overlap', type: 'host', label: 'overlap-host', ip: '10.0.0.2' }],
+        edges: [],
+      }));
+
+      // Same node ID but different properties — should NOT be deduped
+      const r2 = engine.ingestFinding(makeFinding({
+        tool_name: 'nmap',
+        nodes: [{ id: 'host-overlap', type: 'host', label: 'overlap-host', ip: '10.0.0.2', os_family: 'linux' }],
+        edges: [],
+      }));
+      expect(r2.deduplicated).toBeUndefined();
+      expect(r2.updated_nodes.length).toBeGreaterThanOrEqual(0); // merge behavior
+    });
+
+    it('allows re-ingestion after dedup window expires', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const finding = makeFinding({
+        tool_name: 'masscan',
+        nodes: [{ id: 'host-expire', type: 'host', label: 'expire-host', ip: '10.0.0.3' }],
+        edges: [],
+      });
+
+      engine.ingestFinding(finding);
+
+      // Manually expire the hash entry by setting its timestamp to 6 minutes ago
+      const hashes = (engine as any).ctx.recentFindingHashes as Map<string, number>;
+      for (const [key] of hashes) {
+        hashes.set(key, Date.now() - 6 * 60 * 1000);
+      }
+
+      // Should NOT be deduped after window expires
+      const r2 = engine.ingestFinding(finding);
+      expect(r2.deduplicated).toBeUndefined();
+    });
+
+    it('increments dedup counter', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const finding = makeFinding({
+        tool_name: 'nikto',
+        nodes: [{ id: 'svc-counter', type: 'service', label: 'counter-svc' }],
+        edges: [],
+      });
+
+      expect((engine as any).ctx.dedupCount).toBe(0);
+      engine.ingestFinding(finding);
+      engine.ingestFinding(finding);
+      engine.ingestFinding(finding);
+      expect((engine as any).ctx.dedupCount).toBe(2);
+    });
+  });
 });
 
 // =============================================
@@ -3267,6 +3346,8 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
     id: 'finding-' + Math.random().toString(36).slice(2),
     agent_id: overrides.agent_id || 'test-agent',
     timestamp: overrides.timestamp || new Date().toISOString(),
+    tool_name: overrides.tool_name,
+    raw_output: overrides.raw_output,
     nodes: enrichedNodes,
     edges: overrides.edges || [],
   };

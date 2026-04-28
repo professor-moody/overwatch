@@ -1,0 +1,199 @@
+// ============================================================
+// Session Tracker
+// Session → graph integration: HAS_SESSION edge lifecycle,
+// frontier edge marking, startup reconciliation.
+// Extracted from GraphEngine.
+// ============================================================
+
+import type { EngineContext, ActivityLogEntry } from './engine-context.js';
+
+export interface SessionTrackerHost {
+  ctx: EngineContext;
+  logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry;
+  log(message: string, agentId?: string, extra?: Partial<ActivityLogEntry>): void;
+  persist(detail?: Record<string, unknown>): void;
+  invalidateFrontierCache(): void;
+  invalidatePathGraph(): void;
+}
+
+export function ingestSessionResult(
+  host: SessionTrackerHost,
+  result: {
+    success: boolean;
+    confirmed?: boolean;
+    target_node: string;
+    principal_node?: string;
+    credential_node?: string;
+    session_id?: string;
+    agent_id?: string;
+    action_id?: string;
+    frontier_item_id?: string;
+  },
+): void {
+  const { success, target_node, principal_node, credential_node, session_id, agent_id, action_id, frontier_item_id } = result;
+  const confirmed = result.confirmed !== false; // default true for backward compat
+
+  if (success) {
+    let sessionEdgeCreated = false;
+
+    // Only create HAS_SESSION edges when auth is positively confirmed.
+    // Unconfirmed success (session alive but no shell detected) is logged
+    // but does NOT create graph edges — the operator can confirm manually.
+    if (confirmed && principal_node && host.ctx.graph.hasNode(principal_node)) {
+      const principalAttrs = host.ctx.graph.getNodeAttributes(principal_node);
+      const validSourceTypes = new Set(['user', 'group', 'credential']);
+      if (validSourceTypes.has(principalAttrs.type)) {
+        sessionEdgeCreated = true;
+        const edgeId = `session-${principal_node}-${target_node}`;
+        if (!host.ctx.graph.hasEdge(edgeId)) {
+          host.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
+            type: 'HAS_SESSION',
+            confidence: 1.0,
+            discovered_at: new Date().toISOString(),
+            discovered_by: 'session-manager',
+            tested: true,
+            test_result: 'success',
+            confirmed_at: new Date().toISOString(),
+            session_live: true,
+          });
+          host.invalidateFrontierCache();
+          host.invalidatePathGraph();
+        } else {
+          host.ctx.graph.mergeEdgeAttributes(edgeId, {
+            confidence: 1.0,
+            tested: true,
+            test_result: 'success',
+            confirmed_at: new Date().toISOString(),
+            session_live: true,
+            session_unconfirmed: undefined,
+          });
+        }
+      }
+    }
+
+    // Frontier edge: confirmed = success, unconfirmed = partial (needs operator review)
+    markFrontierEdgeTested(host, frontier_item_id, action_id, confirmed ? 'success' : 'partial');
+
+    const eventType = confirmed ? 'session_access_confirmed' : 'session_access_unconfirmed';
+    host.logActionEvent({
+      event_type: eventType,
+      description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed — no shell detected'}${principal_node ? ` as ${principal_node}` : ''}`,
+      agent_id,
+      action_id,
+      frontier_item_id,
+      category: 'system',
+      details: {
+        session_id,
+        target_node,
+        principal_node,
+        credential_node,
+        confirmed,
+        has_session_edge_created: sessionEdgeCreated,
+      },
+    });
+  } else {
+    // Failure: mark only the specific frontier item's edge
+    markFrontierEdgeTested(host, frontier_item_id, action_id, 'failure');
+
+    host.logActionEvent({
+      event_type: 'session_error',
+      description: `SSH session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
+      agent_id,
+      action_id,
+      frontier_item_id,
+      category: 'system',
+      outcome: 'failure',
+      details: {
+        session_id,
+        target_node,
+        principal_node,
+        credential_node,
+      },
+    });
+  }
+
+  host.persist();
+}
+
+/**
+ * Called when a session is closed (operator close, process exit, or shutdown).
+ * Downgrades HAS_SESSION edges to historical state so get_state no longer
+ * reports the host as having live access.
+ */
+export function onSessionClosed(host: SessionTrackerHost, _sessionId: string, targetNode?: string, principalNode?: string): void {
+  if (!targetNode) return;
+
+  // Find and downgrade matching HAS_SESSION edges
+  const edgesToDowngrade: string[] = [];
+  host.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
+    if (attrs.type !== 'HAS_SESSION') return;
+    if (target !== targetNode) return;
+    if (principalNode && source !== principalNode) return;
+    edgesToDowngrade.push(_edgeId);
+  });
+
+  for (const edgeId of edgesToDowngrade) {
+    host.ctx.graph.mergeEdgeAttributes(edgeId, {
+      session_live: false,
+      session_closed_at: new Date().toISOString(),
+    });
+  }
+
+  if (edgesToDowngrade.length > 0) {
+    host.invalidateFrontierCache();
+  }
+}
+
+/**
+ * Reconcile all HAS_SESSION edges on startup: mark any that claim to be
+ * live as no longer live, since all runtime sessions are gone after restart.
+ */
+export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
+  let downgraded = 0;
+  host.ctx.graph.forEachEdge((_edgeId, attrs) => {
+    if (attrs.type !== 'HAS_SESSION') return;
+    // Only downgrade edges that are still marked as live (or have no session_live flag,
+    // meaning they were created before this feature and never closed properly)
+    if (attrs.session_live !== false) {
+      host.ctx.graph.mergeEdgeAttributes(_edgeId, {
+        session_live: false,
+        session_closed_at: attrs.session_closed_at || new Date().toISOString(),
+      });
+      downgraded++;
+    }
+  });
+  if (downgraded > 0) {
+    host.log(`Reconciled ${downgraded} stale HAS_SESSION edge(s) on startup — marked as historical`, undefined, { category: 'system', event_type: 'system' });
+    host.invalidateFrontierCache();
+  }
+}
+
+function markFrontierEdgeTested(
+  host: SessionTrackerHost,
+  frontier_item_id: string | undefined,
+  action_id: string | undefined,
+  test_result: 'success' | 'failure' | 'partial',
+): void {
+  if (!frontier_item_id && !action_id) return;
+
+  // If frontier_item_id is present, find the edge it refers to
+  if (frontier_item_id) {
+    // Frontier edge IDs follow pattern "frontier-edge-{edgeId}"
+    const edgeId = frontier_item_id.replace(/^frontier-edge-/, '');
+    if (edgeId !== frontier_item_id && host.ctx.graph.hasEdge(edgeId)) {
+      host.ctx.graph.mergeEdgeAttributes(edgeId, {
+        tested: true,
+        test_result,
+      });
+      host.invalidateFrontierCache();
+      host.invalidatePathGraph();
+      return;
+    }
+  }
+
+  // Fallback: if action_id is set, check the action→frontier mapping
+  if (action_id && frontier_item_id) {
+    // The frontier_item_id itself encodes the edge — already tried above
+    // No additional blanket marking — this is intentionally scoped
+  }
+}

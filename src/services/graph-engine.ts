@@ -4,9 +4,10 @@
 // ============================================================
 
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
-import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope, isValidCidr } from './cidr.js';
+import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -48,9 +49,31 @@ import {
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
 import type { ScopeManagerHost } from './scope-manager.js';
-import { isValidDomain } from './scope-manager.js';
 import { ingestFindingImpl } from './finding-ingestion.js';
 import type { FindingIngestionHost } from './finding-ingestion.js';
+import {
+  ingestSessionResult as _ingestSessionResult,
+  onSessionClosed as _onSessionClosed,
+  reconcileSessionEdgesOnStartup as _reconcileSessionEdgesOnStartup,
+} from './session-tracker.js';
+import type { SessionTrackerHost } from './session-tracker.js';
+import {
+  seedFromConfig as _seedFromConfig,
+  updateConfig as _updateConfig,
+} from './config-manager.js';
+import type { ConfigManagerHost } from './config-manager.js';
+import {
+  addObjective as _addObjective,
+  updateObjective as _updateObjective,
+  removeObjective as _removeObjective,
+  evaluateObjectives as _evaluateObjectives,
+  recomputeObjectives as _recomputeObjectives,
+  syncObjectiveNodes as _syncObjectiveNodes,
+  getPhaseStatuses as _getPhaseStatuses,
+  getCurrentPhaseId as _getCurrentPhaseId,
+  computeAccessLevel as _computeAccessLevel,
+} from './objective-manager.js';
+import type { ObjectiveManagerHost } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
 import { inferProfile } from '../types.js';
 import type {
@@ -58,7 +81,7 @@ import type {
   EngagementConfig, EngagementState, FrontierItem,
   Finding, InferenceRule, GraphQuery, GraphQueryResult,
   AgentTask, ExportedGraph, HealthReport, GraphCorrectionOperation,
-  ScopeSuggestion, PhaseStatus, PhaseCriterion,
+  ScopeSuggestion,
 } from '../types.js';
 
 export interface RecentOutcome {
@@ -188,77 +211,7 @@ export class GraphEngine {
   // =============================================
 
   private seedFromConfig(): void {
-    const now = new Date().toISOString();
-
-    // CIDRs are used for scope validation only — hosts are created when tools discover them
-
-    // Create host nodes from explicit hosts
-    if (this.ctx.config.scope.hosts) {
-      for (const host of this.ctx.config.scope.hosts) {
-        const id = `host-${host.replace(/[.\s]/g, '-')}`;
-        if (!this.ctx.graph.hasNode(id)) {
-          this.addNode({
-            id,
-            type: 'host',
-            label: host,
-            hostname: host,
-            discovered_at: now,
-            first_seen_at: now,
-            last_seen_at: now,
-            confidence: 1.0
-          });
-        }
-      }
-    }
-
-    // Create domain nodes
-    for (const domain of this.ctx.config.scope.domains) {
-      this.addNode({
-        id: `domain-${domain.replace(/\./g, '-')}`,
-        type: 'domain',
-        label: domain,
-        domain_name: domain,
-        discovered_at: now,
-        first_seen_at: now,
-        last_seen_at: now,
-        confidence: 1.0
-      });
-    }
-
-    // Create subnet nodes from scoped CIDRs
-    for (const cidr of this.ctx.config.scope.cidrs) {
-      const subnetId = `subnet-${cidr.replace(/[./]/g, '-')}`;
-      if (!this.ctx.graph.hasNode(subnetId)) {
-        this.addNode({
-          id: subnetId,
-          type: 'subnet',
-          label: cidr,
-          subnet_cidr: cidr,
-          discovered_at: now,
-          first_seen_at: now,
-          last_seen_at: now,
-          confidence: 1.0
-        });
-      }
-    }
-
-    // Create objective nodes
-    for (const obj of this.ctx.config.objectives) {
-      this.addNode({
-        id: `obj-${obj.id}`,
-        type: 'objective',
-        label: obj.description,
-        objective_description: obj.description,
-        objective_achieved: obj.achieved,
-        objective_achieved_at: obj.achieved_at,
-        discovered_at: now,
-        first_seen_at: now,
-        last_seen_at: now,
-        confidence: 1.0
-      });
-    }
-
-    this.persist();
+    _seedFromConfig(this.configHost);
   }
 
   // =============================================
@@ -406,7 +359,48 @@ export class GraphEngine {
   // Finding Ingestion
   // =============================================
 
-  ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[] } {
+  private static readonly DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+  ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[]; deduplicated?: boolean } {
+    // --- Finding Deduplication (7.8) ---
+    const now = Date.now();
+
+    // Prune stale entries outside the dedup window
+    for (const [hash, ts] of this.ctx.recentFindingHashes) {
+      if (now - ts > GraphEngine.DEDUP_WINDOW_MS) {
+        this.ctx.recentFindingHashes.delete(hash);
+      }
+    }
+
+    // Compute content hash: tool_name + sorted node signatures + sorted edge keys + raw_output prefix
+    // Node signatures include properties (excluding volatile fields) so that
+    // re-ingestion with updated properties is NOT treated as a duplicate.
+    const volatileKeys = new Set(['discovered_at', 'first_seen_at', 'last_seen_at', 'sources']);
+    const sortedNodeSigs = finding.nodes
+      .map(n => {
+        const stableProps = Object.entries(n)
+          .filter(([k]) => !volatileKeys.has(k))
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+          .join('&');
+        return stableProps;
+      })
+      .sort()
+      .join(',');
+    const sortedEdgeKeys = finding.edges
+      .map(e => `${e.source}-${e.target}-${e.properties.type}`)
+      .sort()
+      .join(',');
+    const rawPrefix = (finding.raw_output || '').slice(0, 500);
+    const hashInput = `${finding.tool_name || ''}|${sortedNodeSigs}|${sortedEdgeKeys}|${rawPrefix}`;
+    const contentHash = createHash('sha256').update(hashInput).digest('hex');
+
+    if (this.ctx.recentFindingHashes.has(contentHash)) {
+      this.ctx.dedupCount++;
+      return { new_nodes: [], new_edges: [], updated_nodes: [], updated_edges: [], inferred_edges: [], deduplicated: true };
+    }
+
+    this.ctx.recentFindingHashes.set(contentHash, now);
     return ingestFindingImpl(this.findingIngestionHost, finding);
   }
 
@@ -1182,7 +1176,7 @@ export class GraphEngine {
   }
 
   // =============================================
-  // Session → Graph Integration
+  // Session → Graph Integration (delegated to SessionTracker)
   // =============================================
 
   ingestSessionResult(result: {
@@ -1196,243 +1190,27 @@ export class GraphEngine {
     action_id?: string;
     frontier_item_id?: string;
   }): void {
-    const { success, target_node, principal_node, credential_node, session_id, agent_id, action_id, frontier_item_id } = result;
-    const confirmed = result.confirmed !== false; // default true for backward compat
-
-    if (success) {
-      let sessionEdgeCreated = false;
-
-      // Only create HAS_SESSION edges when auth is positively confirmed.
-      // Unconfirmed success (session alive but no shell detected) is logged
-      // but does NOT create graph edges — the operator can confirm manually.
-      if (confirmed && principal_node && this.ctx.graph.hasNode(principal_node)) {
-        const principalAttrs = this.ctx.graph.getNodeAttributes(principal_node);
-        const validSourceTypes = new Set(['user', 'group', 'credential']);
-        if (validSourceTypes.has(principalAttrs.type)) {
-          sessionEdgeCreated = true;
-          const edgeId = `session-${principal_node}-${target_node}`;
-          if (!this.ctx.graph.hasEdge(edgeId)) {
-            this.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
-              type: 'HAS_SESSION',
-              confidence: 1.0,
-              discovered_at: new Date().toISOString(),
-              discovered_by: 'session-manager',
-              tested: true,
-              test_result: 'success',
-              confirmed_at: new Date().toISOString(),
-              session_live: true,
-            });
-            this.invalidateFrontierCache();
-            this.invalidatePathGraph();
-          } else {
-            this.ctx.graph.mergeEdgeAttributes(edgeId, {
-              confidence: 1.0,
-              tested: true,
-              test_result: 'success',
-              confirmed_at: new Date().toISOString(),
-              session_live: true,
-              session_unconfirmed: undefined,
-            });
-          }
-        }
-      }
-
-      // Frontier edge: confirmed = success, unconfirmed = partial (needs operator review)
-      this.markFrontierEdgeTested(frontier_item_id, action_id, confirmed ? 'success' : 'partial');
-
-      const eventType = confirmed ? 'session_access_confirmed' : 'session_access_unconfirmed';
-      this.logActionEvent({
-        event_type: eventType,
-        description: `SSH session ${session_id || '(unknown)'} to ${target_node} ${confirmed ? 'succeeded' : 'connected but unconfirmed — no shell detected'}${principal_node ? ` as ${principal_node}` : ''}`,
-        agent_id,
-        action_id,
-        frontier_item_id,
-        category: 'system',
-        details: {
-          session_id,
-          target_node,
-          principal_node,
-          credential_node,
-          confirmed,
-          has_session_edge_created: sessionEdgeCreated,
-        },
-      });
-    } else {
-      // Failure: mark only the specific frontier item's edge
-      this.markFrontierEdgeTested(frontier_item_id, action_id, 'failure');
-
-      this.logActionEvent({
-        event_type: 'session_error',
-        description: `SSH session to ${target_node} failed${principal_node ? ` as ${principal_node}` : ''}`,
-        agent_id,
-        action_id,
-        frontier_item_id,
-        category: 'system',
-        outcome: 'failure',
-        details: {
-          session_id,
-          target_node,
-          principal_node,
-          credential_node,
-        },
-      });
-    }
-
-    this.persist();
+    _ingestSessionResult(this.sessionHost, result);
   }
 
-  /**
-   * Called when a session is closed (operator close, process exit, or shutdown).
-   * Downgrades HAS_SESSION edges to historical state so get_state no longer
-   * reports the host as having live access.
-   */
   onSessionClosed(_sessionId: string, targetNode?: string, principalNode?: string): void {
-    if (!targetNode) return;
-
-    // Find and downgrade matching HAS_SESSION edges
-    const edgesToDowngrade: string[] = [];
-    this.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
-      if (attrs.type !== 'HAS_SESSION') return;
-      if (target !== targetNode) return;
-      if (principalNode && source !== principalNode) return;
-      edgesToDowngrade.push(_edgeId);
-    });
-
-    for (const edgeId of edgesToDowngrade) {
-      this.ctx.graph.mergeEdgeAttributes(edgeId, {
-        session_live: false,
-        session_closed_at: new Date().toISOString(),
-      });
-    }
-
-    if (edgesToDowngrade.length > 0) {
-      this.invalidateFrontierCache();
-    }
+    _onSessionClosed(this.sessionHost, _sessionId, targetNode, principalNode);
   }
 
-  /**
-   * Reconcile all HAS_SESSION edges on startup: mark any that claim to be
-   * live as no longer live, since all runtime sessions are gone after restart.
-   */
   reconcileSessionEdgesOnStartup(): void {
-    let downgraded = 0;
-    this.ctx.graph.forEachEdge((_edgeId, attrs) => {
-      if (attrs.type !== 'HAS_SESSION') return;
-      // Only downgrade edges that are still marked as live (or have no session_live flag,
-      // meaning they were created before this feature and never closed properly)
-      if (attrs.session_live !== false) {
-        this.ctx.graph.mergeEdgeAttributes(_edgeId, {
-          session_live: false,
-          session_closed_at: attrs.session_closed_at || new Date().toISOString(),
-        });
-        downgraded++;
-      }
-    });
-    if (downgraded > 0) {
-      this.log(`Reconciled ${downgraded} stale HAS_SESSION edge(s) on startup — marked as historical`, undefined, { category: 'system', event_type: 'system' });
-      this.invalidateFrontierCache();
-    }
-  }
-
-  private markFrontierEdgeTested(
-    frontier_item_id: string | undefined,
-    action_id: string | undefined,
-    test_result: 'success' | 'failure' | 'partial'
-  ): void {
-    if (!frontier_item_id && !action_id) return;
-
-    // If frontier_item_id is present, find the edge it refers to
-    if (frontier_item_id) {
-      // Frontier edge IDs follow pattern "frontier-edge-{edgeId}"
-      const edgeId = frontier_item_id.replace(/^frontier-edge-/, '');
-      if (edgeId !== frontier_item_id && this.ctx.graph.hasEdge(edgeId)) {
-        this.ctx.graph.mergeEdgeAttributes(edgeId, {
-          tested: true,
-          test_result,
-        });
-        this.invalidateFrontierCache();
-        this.invalidatePathGraph();
-        return;
-      }
-    }
-
-    // Fallback: if action_id is set, check the action→frontier mapping
-    if (action_id && frontier_item_id) {
-      // The frontier_item_id itself encodes the edge — already tried above
-      // No additional blanket marking — this is intentionally scoped
-    }
+    _reconcileSessionEdgesOnStartup(this.sessionHost);
   }
 
   // =============================================
-  // Objective Tracking
+  // Objective Tracking (delegated to ObjectiveManager)
   // =============================================
 
   private evaluateObjectives(): void {
-    const DEFAULT_ACCESS_EDGE_TYPES = new Set(['HAS_SESSION', 'ADMIN_TO', 'OWNS_CRED']);
-
-    for (const obj of this.ctx.config.objectives) {
-      if (obj.achieved) continue;
-      // Check if objective criteria are met in the graph
-      if (obj.target_criteria) {
-        const matching = this.queryGraph({
-          node_type: obj.target_node_type,
-          node_filter: obj.target_criteria
-        });
-        const accessEdgeTypes = obj.achievement_edge_types
-          ? new Set(obj.achievement_edge_types)
-          : DEFAULT_ACCESS_EDGE_TYPES;
-        // A matching node must also be obtained — via an access edge, an explicit
-        // obtained flag, or (for shares) readable/writable properties.
-        const obtained = matching.nodes.some(n => {
-          const nodeProps = n.properties;
-          if (nodeProps.type === 'credential' && !isCredentialUsableForAuth(nodeProps)) {
-            return false;
-          }
-          if (n.properties.obtained === true) return true;
-          // Shares with readable/writable access count as obtained
-          if (nodeProps.type === 'share' && (nodeProps.readable === true || nodeProps.writable === true)) {
-            return true;
-          }
-          return this.ctx.graph.inEdges(n.id).some((e: string) => {
-            const ep = this.ctx.graph.getEdgeAttributes(e);
-            if (ep.type !== 'OWNS_CRED') {
-              return accessEdgeTypes.has(ep.type) && ep.confidence >= 0.9;
-            }
-            return nodeProps.type === 'credential' && isCredentialUsableForAuth(nodeProps) && ep.confidence >= 0.9;
-          });
-        });
-        if (obtained) {
-          obj.achieved = true;
-          obj.achieved_at = new Date().toISOString();
-          this.log(`OBJECTIVE ACHIEVED: ${obj.description}`, undefined, { category: 'objective', outcome: 'success', event_type: 'objective_achieved' });
-        }
-      }
-    }
-
-    this.syncObjectiveNodes();
+    _evaluateObjectives(this.objectiveHost);
   }
 
   recomputeObjectives(): { before: Array<{ id: string; achieved: boolean; achieved_at?: string }>; after: Array<{ id: string; achieved: boolean; achieved_at?: string }> } {
-    const before = this.ctx.config.objectives.map(obj => ({
-      id: obj.id,
-      achieved: obj.achieved,
-      achieved_at: obj.achieved_at,
-    }));
-
-    for (const obj of this.ctx.config.objectives) {
-      obj.achieved = false;
-      delete obj.achieved_at;
-    }
-
-    this.evaluateObjectives();
-    const after = this.ctx.config.objectives.map(obj => ({
-      id: obj.id,
-      achieved: obj.achieved,
-      achieved_at: obj.achieved_at,
-    }));
-
-    this.persist();
-    return { before, after };
+    return _recomputeObjectives(this.objectiveHost);
   }
 
   correctGraph(
@@ -1778,7 +1556,7 @@ export class GraphEngine {
       access_summary: {
         compromised_hosts: compromised,
         valid_credentials: validCreds,
-        current_access_level: this.computeAccessLevel(compromised)
+        current_access_level: _computeAccessLevel(this.objectiveHost, compromised)
       },
       warnings: summarizeHealthReport(healthReport),
       lab_readiness: labReadiness,
@@ -1792,127 +1570,46 @@ export class GraphEngine {
 
   /** Evaluate all engagement phases and return runtime statuses */
   getPhaseStatuses(): EngagementState['phases'] {
-    const phases = this.ctx.config.phases;
-    if (!phases || phases.length === 0) return [];
-
-    const sorted = [...phases].sort((a, b) => a.order - b.order);
-    const completedPhases = new Set<string>();
-    const result: EngagementState['phases'] = [];
-
-    for (const phase of sorted) {
-      const entryMet = this.evaluateCriteria(phase.entry_criteria, completedPhases);
-      const exitMet = this.evaluateCriteria(phase.exit_criteria, completedPhases);
-
-      let status: PhaseStatus;
-      if (exitMet && entryMet) {
-        status = 'completed';
-        completedPhases.add(phase.id);
-      } else if (entryMet) {
-        status = 'active';
-      } else {
-        status = 'locked';
-      }
-
-      result.push({
-        id: phase.id,
-        name: phase.name,
-        order: phase.order,
-        status,
-        strategies: phase.strategies,
-        entry_criteria_met: entryMet,
-        exit_criteria_met: exitMet,
-      });
-    }
-
-    return result;
+    return _getPhaseStatuses(this.objectiveHost);
   }
 
-  /** Get the ID of the lowest-order active phase */
   getCurrentPhaseId(): string | undefined {
-    const statuses = this.getPhaseStatuses();
-    const active = statuses.find(p => p.status === 'active');
-    return active?.id;
-  }
-
-  /** Evaluate a list of criteria — all must be met (AND logic) */
-  private evaluateCriteria(
-    criteria: PhaseCriterion[],
-    completedPhases: Set<string>,
-  ): boolean {
-    if (criteria.length === 0) return true; // no criteria = always met
-    return criteria.every(c => this.evaluateSingleCriterion(c, completedPhases));
-  }
-
-  /** Evaluate a single phase criterion against current graph state */
-  private evaluateSingleCriterion(
-    criterion: PhaseCriterion,
-    completedPhases: Set<string>,
-  ): boolean {
-    switch (criterion.type) {
-      case 'always':
-        return true;
-      case 'phase_completed':
-        return completedPhases.has(criterion.phase_id);
-      case 'objective_achieved':
-        return this.ctx.config.objectives.some(
-          o => o.id === criterion.objective_id && o.achieved,
-        );
-      case 'node_count': {
-        let count = 0;
-        this.ctx.graph.forEachNode((_, attrs) => {
-          if (attrs.type === criterion.node_type && !attrs.superseded_by) count++;
-        });
-        return count >= criterion.min;
-      }
-      case 'access_level': {
-        const levels: Record<string, number> = { none: 0, user: 1, local_admin: 2, domain_admin: 3 };
-        const compromised: string[] = [];
-        this.ctx.graph.forEachNode((_, attrs) => {
-          if (attrs.type !== 'host' || attrs.superseded_by) return;
-          const hasAccess = this.ctx.graph.inEdges(attrs.id).some((e: string) => {
-            const ep = this.ctx.graph.getEdgeAttributes(e);
-            if (ep.type === 'ADMIN_TO' && ep.confidence >= 0.9) return true;
-            if (ep.type === 'HAS_SESSION' && ep.confidence >= 0.9 && ep.session_live === true) return true;
-            return false;
-          });
-          if (hasAccess) compromised.push(attrs.label);
-        });
-        const current = this.computeAccessLevel(compromised);
-        return (levels[current] ?? 0) >= (levels[criterion.min_level] ?? 0);
-      }
-      default:
-        return false;
-    }
-  }
-
-  private computeAccessLevel(compromised: string[]): string {
-    if (compromised.length === 0) return 'none';
-    const scopeDomains = this.ctx.config.scope.domains.map(d => d.toLowerCase());
-    // Check for DA — credential must be actually obtained, not just discovered,
-    // AND must be a domain credential matching a scope domain.
-    const hasDa = this.getNodesByType('credential').some(c => {
-      if (c.privileged !== true || c.confidence < 0.9 || !isCredentialUsableForAuth(c)) return false;
-      // Must be a domain credential matching a scope domain
-      if (!c.cred_domain || !scopeDomains.includes(c.cred_domain.toLowerCase())) return false;
-      // Must have an OWNS_CRED inbound edge or explicit obtained flag
-      if (c.obtained === true) return true;
-      return this.ctx.graph.inEdges(c.id).some((e: string) => {
-        const ep = this.ctx.graph.getEdgeAttributes(e);
-        return ep.type === 'OWNS_CRED' && ep.confidence >= 0.9;
-      });
-    });
-    if (hasDa) return 'domain_admin';
-    // Check for local admin
-    const hasAdmin = !!this.ctx.graph.findEdge((_, attrs) =>
-      attrs.type === 'ADMIN_TO' && attrs.confidence >= 0.9
-    );
-    if (hasAdmin) return 'local_admin';
-    return 'user';
+    return _getCurrentPhaseId(this.objectiveHost);
   }
 
   // =============================================
   // Scope Management
   // =============================================
+
+  private get configHost(): ConfigManagerHost {
+    return {
+      ctx: this.ctx,
+      addNode: this.addNode.bind(this),
+      persist: (() => this.persist()) as () => void,
+    };
+  }
+
+  private get sessionHost(): SessionTrackerHost {
+    return {
+      ctx: this.ctx,
+      logActionEvent: this.logActionEvent.bind(this),
+      log: this.log.bind(this),
+      persist: (() => this.persist()) as () => void,
+      invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
+      invalidatePathGraph: this.invalidatePathGraph.bind(this),
+    };
+  }
+
+  private get objectiveHost(): ObjectiveManagerHost {
+    return {
+      ctx: this.ctx,
+      getNode: this.getNode.bind(this),
+      getNodesByType: this.getNodesByType.bind(this),
+      queryGraph: this.queryGraph.bind(this),
+      persist: (() => this.persist()) as () => void,
+      log: this.log.bind(this),
+    };
+  }
 
   private get scopeHost(): ScopeManagerHost {
     return {
@@ -2067,109 +1764,19 @@ export class GraphEngine {
   }
 
   updateConfig(partial: Record<string, unknown>): EngagementConfig {
-    const current = this.ctx.config;
-    // Merge top-level scalars
-    if (typeof partial.name === 'string' && partial.name.length > 0) current.name = partial.name;
-    if (typeof partial.profile === 'string') current.profile = partial.profile as EngagementConfig['profile'];
-    if (typeof partial.community_resolution === 'number') current.community_resolution = partial.community_resolution;
-
-    // Merge scope (partial merge — only overwrite provided keys)
-    // Validate CIDRs and domains before applying, matching updateScope validation.
-    if (partial.scope && typeof partial.scope === 'object') {
-      const s = partial.scope as Record<string, unknown>;
-      const scopeErrors: string[] = [];
-      for (const key of ['cidrs', 'exclusions'] as const) {
-        if (Array.isArray(s[key])) {
-          for (const cidr of s[key] as string[]) {
-            if (!isValidCidr(cidr)) scopeErrors.push(`Invalid CIDR in scope.${key}: ${cidr}`);
-          }
-        }
-      }
-      if (Array.isArray(s.domains)) {
-        for (const domain of s.domains as string[]) {
-          if (!isValidDomain(domain)) scopeErrors.push(`Invalid domain in scope.domains: ${domain}`);
-        }
-      }
-      if (scopeErrors.length > 0) {
-        throw new Error(`Scope validation failed: ${scopeErrors.join('; ')}`);
-      }
-      if (Array.isArray(s.cidrs)) current.scope.cidrs = s.cidrs;
-      if (Array.isArray(s.domains)) current.scope.domains = s.domains;
-      if (Array.isArray(s.exclusions)) current.scope.exclusions = s.exclusions;
-      if (Array.isArray(s.hosts)) current.scope.hosts = s.hosts;
-      if (Array.isArray(s.aws_accounts)) current.scope.aws_accounts = s.aws_accounts;
-      if (Array.isArray(s.azure_subscriptions)) current.scope.azure_subscriptions = s.azure_subscriptions;
-      if (Array.isArray(s.gcp_projects)) current.scope.gcp_projects = s.gcp_projects;
-      if (Array.isArray(s.url_patterns)) current.scope.url_patterns = s.url_patterns;
-    }
-
-    // Merge opsec
-    if (partial.opsec && typeof partial.opsec === 'object') {
-      const o = partial.opsec as Record<string, unknown>;
-      if (typeof o.name === 'string') current.opsec.name = o.name;
-      if (typeof o.max_noise === 'number') current.opsec.max_noise = o.max_noise;
-      if (typeof o.approval_mode === 'string') current.opsec.approval_mode = o.approval_mode as EngagementConfig['opsec']['approval_mode'];
-      if (typeof o.approval_timeout_ms === 'number') current.opsec.approval_timeout_ms = o.approval_timeout_ms;
-      if (Array.isArray(o.blacklisted_techniques)) current.opsec.blacklisted_techniques = o.blacklisted_techniques;
-      if (o.time_window === null) current.opsec.time_window = undefined;
-      else if (o.time_window && typeof o.time_window === 'object') {
-        const tw = o.time_window as Record<string, unknown>;
-        if (typeof tw.start_hour === 'number' && typeof tw.end_hour === 'number') {
-          current.opsec.time_window = { start_hour: tw.start_hour, end_hour: tw.end_hour };
-        }
-      }
-      if (typeof o.notes === 'string') current.opsec.notes = o.notes;
-    }
-
-    // Merge failure_patterns (full replace)
-    if (Array.isArray(partial.failure_patterns)) {
-      current.failure_patterns = partial.failure_patterns as EngagementConfig['failure_patterns'];
-    }
-
-    // Merge objectives (full replace if provided)
-    if (Array.isArray(partial.objectives)) {
-      current.objectives = partial.objectives as EngagementConfig['objectives'];
-    }
-
-    this.persist();
-    return current;
+    return _updateConfig(this.configHost, partial);
   }
 
   addObjective(obj: { description: string; target_node_type?: string; target_criteria?: Record<string, unknown>; achievement_edge_types?: string[] }): EngagementConfig['objectives'][0] {
-    const objective = {
-      id: uuidv4(),
-      description: obj.description,
-      target_node_type: obj.target_node_type as import('../types.js').NodeType | undefined,
-      target_criteria: obj.target_criteria,
-      achievement_edge_types: obj.achievement_edge_types as import('../types.js').EdgeType[] | undefined,
-      achieved: false,
-    };
-    this.ctx.config.objectives.push(objective);
-    this.persist();
-    return objective;
+    return _addObjective(this.objectiveHost, obj);
   }
 
   updateObjective(id: string, updates: Record<string, unknown>): boolean {
-    const obj = this.ctx.config.objectives.find(o => o.id === id);
-    if (!obj) return false;
-    if (typeof updates.description === 'string') obj.description = updates.description;
-    if (typeof updates.target_node_type === 'string') obj.target_node_type = updates.target_node_type as import('../types.js').NodeType;
-    if (typeof updates.achieved === 'boolean') {
-      obj.achieved = updates.achieved;
-      obj.achieved_at = updates.achieved ? new Date().toISOString() : undefined;
-    }
-    if (updates.target_criteria !== undefined) obj.target_criteria = updates.target_criteria as Record<string, unknown>;
-    if (Array.isArray(updates.achievement_edge_types)) obj.achievement_edge_types = updates.achievement_edge_types as import('../types.js').EdgeType[];
-    this.persist();
-    return true;
+    return _updateObjective(this.objectiveHost, id, updates);
   }
 
   removeObjective(id: string): boolean {
-    const idx = this.ctx.config.objectives.findIndex(o => o.id === id);
-    if (idx === -1) return false;
-    this.ctx.config.objectives.splice(idx, 1);
-    this.persist();
-    return true;
+    return _removeObjective(this.objectiveHost, id);
   }
 
   getAllAgents(): AgentTask[] {
@@ -2273,18 +1880,7 @@ export class GraphEngine {
   // =============================================
 
   private syncObjectiveNodes(): void {
-    const now = new Date().toISOString();
-    for (const objective of this.ctx.config.objectives) {
-      const nodeId = `obj-${objective.id}`;
-      const existing = this.getNode(nodeId);
-      if (!existing) continue;
-      this.ctx.graph.mergeNodeAttributes(nodeId, {
-        objective_description: objective.description,
-        objective_achieved: objective.achieved,
-        objective_achieved_at: objective.achieved_at,
-        last_seen_at: now,
-      } as Partial<NodeProperties>);
-    }
+    _syncObjectiveNodes(this.objectiveHost);
   }
 
   private propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean {
