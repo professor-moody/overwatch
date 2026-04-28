@@ -19,7 +19,9 @@
     "check:dist": "git diff --exit-code -- dist",
     "verify": "npm run test:source && npm run test:integration:stdio && npm run test:integration:http && npm run check:dist",
     "retrospective": "node dist/cli/retrospective.js",
-    "lab:smoke": "node dist/cli/lab-smoke.js"
+    "lab:smoke": "node dist/cli/lab-smoke.js",
+    "docs:serve": "mkdocs serve",
+    "docs:deploy": "mkdocs gh-deploy --remote-name sandbox --force"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
