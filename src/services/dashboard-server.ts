@@ -352,9 +352,9 @@ export class DashboardServer {
   private resolveDashboardDir(): string {
     if (this.dashboardDir) return this.dashboardDir;
 
-    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'legacy';
+    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'next';
 
-    if (version === 'next') {
+    if (version !== 'legacy') {
       // dashboard-next (React + Vite build)
       const nextDistPath = join(__dirname, '..', 'dashboard-next');
       if (existsSync(join(nextDistPath, 'index.html'))) {
@@ -533,8 +533,8 @@ export class DashboardServer {
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
-    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'legacy';
-    const isSPA = version === 'next';
+    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'next';
+    const isSPA = version !== 'legacy';
 
     // Multi-page routing: operator dashboard (/) and graph explorer (/graph)
     let filePath: string;

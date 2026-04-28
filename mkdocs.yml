@@ -1,8 +1,8 @@
 site_name: Overwatch
 site_description: Offensive security engagement orchestrator — MCP server with graph-based state management
-site_url: https://professor-moody.github.io/overwatch/
-repo_url: https://github.com/professor-moody/overwatch
-repo_name: professor-moody/overwatch
+site_url: https://REDACTED.github.io/overwatch/
+repo_url: https://github.com/REDACTED/overwatch
+repo_name: REDACTED/overwatch
 
 theme:
   name: material

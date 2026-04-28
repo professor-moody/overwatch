@@ -423,7 +423,7 @@ describe('DashboardServer', () => {
 
   it('static file responses include Cache-Control header', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-cc-'));
-    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
 
     const res = {
       statusCode: 0,
@@ -500,7 +500,10 @@ describe('DashboardServer', () => {
     expect(hostNodes[0].properties.community_id).toBe(hostNodes[1].properties.community_id);
   });
 
-  it('index.html redirects to operator dashboard', () => {
+  it('index.html serves SPA entry point directly', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-idx-'));
+    writeFileSync(join(tempDir, 'index.html'), '<html>SPA</html>', 'utf-8');
+
     const res = {
       statusCode: 0,
       headers: {} as Record<string, string>,
@@ -515,15 +518,18 @@ describe('DashboardServer', () => {
       setHeader() {},
     };
 
+    (dashboard as any).dashboardDir = tempDir;
     (dashboard as any).serveStaticFile('/index.html', res);
 
-    expect(res.statusCode).toBe(302);
-    expect(res.headers['Location']).toBe('/');
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('SPA');
+
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('rejects path traversal attempts in static file serving', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-trav-'));
-    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
 
     const res = {
       statusCode: 0,
@@ -541,10 +547,11 @@ describe('DashboardServer', () => {
 
     (dashboard as any).dashboardDir = tempDir;
 
+    // In SPA mode, paths WITH extensions bypass the index.html rewrite and hit traversal checks
     const traversalPaths = [
-      '/../../../etc/passwd',
-      '/..%2F..%2Fetc/passwd',
-      '/assets/../../etc/shadow',
+      '/assets/../../etc/shadow.js',
+      '/styles/../../../etc/passwd.css',
+      '/img/..%2F..%2Fetc/hosts.png',
     ];
 
     for (const p of traversalPaths) {
