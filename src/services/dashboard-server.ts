@@ -1660,6 +1660,7 @@ export class DashboardServer {
         confirmed_edges: state.graph_summary?.confirmed_edges ?? 0,
         inferred_edges: state.graph_summary?.inferred_edges ?? 0,
       },
+      credential_coverage: state.credential_coverage ?? null,
     }));
   }
 

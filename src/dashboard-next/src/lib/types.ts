@@ -503,6 +503,17 @@ export interface TelemetrySummary {
   common_sequences: SequencePattern[];
 }
 
+// --- Credential Coverage Matrix ---
+
+export interface CredentialCoverage {
+  total_credentials: number;
+  total_targets: number;
+  tested_pairs: number;
+  total_pairs: number;
+  coverage_pct: number;
+  top_untested: Array<{ credential: string; target: string; priority: number; service?: string }>;
+}
+
 export interface InferenceRuleInfo {
   id: string;
   name: string;

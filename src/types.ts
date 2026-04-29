@@ -428,7 +428,7 @@ export interface ExportedGraph {
 
 export interface FrontierItem {
   id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'network_pivot';
+  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'network_pivot' | 'credential_test';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;
@@ -437,6 +437,7 @@ export interface FrontierItem {
   missing_properties?: string[];
   via_pivot?: string;           // principal node ID enabling pivot
   pivot_host_id?: string;       // host with session enabling pivot
+  credential_id?: string;       // credential node ID for credential_test items
   description: string;
   graph_metrics: {
     hops_to_objective: number | null;
@@ -612,6 +613,16 @@ export interface EngagementState {
   }>;
   current_phase?: string;        // ID of the lowest-order active phase
   inference_rule_effectiveness?: InferenceRuleEffectiveness[];
+  credential_coverage?: CredentialCoverage;
+}
+
+export interface CredentialCoverage {
+  total_credentials: number;
+  total_targets: number;
+  tested_pairs: number;
+  total_pairs: number;
+  coverage_pct: number;
+  top_untested: Array<{ credential: string; target: string; priority: number; service?: string }>;
 }
 
 export interface InferenceRuleEffectiveness {

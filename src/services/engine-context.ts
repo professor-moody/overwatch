@@ -58,7 +58,7 @@ export type ActivityLogEntry = {
   description: string;
   agent_id?: string;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
-  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot';
+  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test';
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;
   event_type?: ActivityEventType;

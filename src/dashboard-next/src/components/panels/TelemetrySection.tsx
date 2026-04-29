@@ -115,6 +115,47 @@ export function TelemetrySection() {
             </div>
           )}
 
+          {/* Credential Coverage */}
+          {data.credential_coverage && data.credential_coverage.total_pairs > 0 && (
+            <div>
+              <h4 className="text-xs font-medium text-muted-foreground mb-2">Credential Spray Coverage</h4>
+              <div className="flex items-center gap-2 mb-1.5">
+                <div className="flex-1 h-2 bg-elevated rounded-full overflow-hidden">
+                  <div
+                    className={cn(
+                      'h-full rounded-full transition-all',
+                      data.credential_coverage.coverage_pct >= 80 ? 'bg-success' :
+                      data.credential_coverage.coverage_pct >= 40 ? 'bg-accent' : 'bg-warning',
+                    )}
+                    style={{ width: `${Math.min(data.credential_coverage.coverage_pct, 100)}%` }}
+                  />
+                </div>
+                <span className="font-mono text-xs text-foreground w-12 text-right">
+                  {data.credential_coverage.coverage_pct}%
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-[10px] text-muted-foreground mb-2">
+                <span>{data.credential_coverage.tested_pairs}/{data.credential_coverage.total_pairs} pairs</span>
+                <span>{data.credential_coverage.total_credentials} creds</span>
+                <span>{data.credential_coverage.total_targets} targets</span>
+              </div>
+              {data.credential_coverage.top_untested.length > 0 && (
+                <div className="space-y-0.5">
+                  {data.credential_coverage.top_untested.slice(0, 5).map((pair, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                      <span className="text-foreground font-mono truncate max-w-[120px]">{pair.credential}</span>
+                      <span className="text-border">→</span>
+                      <span className="text-muted-foreground truncate flex-1">{pair.target}</span>
+                      {pair.service && (
+                        <span className="text-[10px] px-1 py-0 rounded bg-elevated text-muted-foreground">{pair.service}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Health Issues */}
           {health.top_issues.length > 0 && (
             <div>

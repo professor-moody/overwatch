@@ -11,6 +11,7 @@ import { isCredentialStaleOrExpired, timeToExpiry } from './credential-utils.js'
 import { isIpInCidr } from './cidr.js';
 import type { KnowledgeBase } from './knowledge-base.js';
 import { EDGE_TO_ATTACK } from './finding-classifier.js';
+import { CredentialCoverageTracker } from './credential-coverage.js';
 
 // --- Fan-out estimates by service type ---
 export const FAN_OUT_DEFAULTS: Record<string, number> = {
@@ -343,6 +344,24 @@ export class FrontierComputer {
           });
         }
       }
+    }
+
+    // 5. Credential coverage gaps: untested (credential, target) pairs
+    const credTracker = new CredentialCoverageTracker(this.ctx);
+    const credItems = credTracker.computeFrontierItems(20, this.hopsToObjective);
+    // Deduplicate: skip credential_test items where an inferred_edge already covers
+    // the same credential → target relationship
+    const existingEdgeTargets = new Set(
+      frontier
+        .filter(f => f.type === 'inferred_edge' && f.edge_source && f.edge_target)
+        .map(f => `${f.edge_source}::${f.edge_target}`)
+    );
+    for (const item of credItems) {
+      if (item.credential_id && item.node_id) {
+        const key = `${item.credential_id}::${item.node_id}`;
+        if (existingEdgeTargets.has(key)) continue;
+      }
+      frontier.push(item);
     }
 
     return frontier;

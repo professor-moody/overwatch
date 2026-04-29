@@ -75,6 +75,7 @@ import {
 } from './objective-manager.js';
 import type { ObjectiveManagerHost } from './objective-manager.js';
 import { queryGraphImpl } from './graph-query.js';
+import { CredentialCoverageTracker } from './credential-coverage.js';
 import { inferProfile } from '../types.js';
 import type {
   NodeProperties, EdgeProperties, NodeType, EdgeType,
@@ -1597,6 +1598,7 @@ export class GraphEngine {
       phases: this.getPhaseStatuses(),
       current_phase: this.getCurrentPhaseId(),
       inference_rule_effectiveness: this.getInferenceRuleStats(),
+    credential_coverage: this.getCredentialCoverage(),
     };
   }
 
@@ -1853,6 +1855,14 @@ export class GraphEngine {
 
   logActionEvent(event: Omit<Partial<ActivityLogEntry>, 'event_id' | 'timestamp'> & { description: string }): ActivityLogEntry {
     return this.ctx.logEvent(event);
+  }
+
+  getCredentialCoverage(): import('../types.js').CredentialCoverage {
+    const tracker = new CredentialCoverageTracker(this.ctx);
+    const result = tracker.compute((nodeId) => this.hopsToNearestObjective(nodeId));
+    // Return just the CredentialCoverage part (without untested_pairs array)
+    const { untested_pairs: _, ...coverage } = result;
+    return coverage;
   }
 
   getStateFilePath(): string {

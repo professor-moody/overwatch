@@ -594,6 +594,22 @@ function generateSituationalSection(ctx: PromptContext): string {
     hasContent = true;
   }
 
+  // Credential spray coverage
+  if (state.credential_coverage && state.credential_coverage.total_pairs > 0) {
+    const cc = state.credential_coverage;
+    lines.push(`### Credential Spray Progress`);
+    lines.push(`**${cc.tested_pairs}/${cc.total_pairs}** pairs tested (${cc.coverage_pct}% coverage) — ${cc.total_credentials} credentials × ${cc.total_targets} targets`);
+    if (cc.top_untested.length > 0) {
+      lines.push('');
+      lines.push('Top untested combinations:');
+      for (const pair of cc.top_untested.slice(0, 5)) {
+        lines.push(`- **${pair.credential}** → ${pair.target}${pair.service ? ` (${pair.service})` : ''}`);
+      }
+    }
+    lines.push('');
+    hasContent = true;
+  }
+
   // Compromised hosts
   if (state.access_summary.compromised_hosts.length > 0) {
     lines.push(`### Compromised Hosts (${state.access_summary.compromised_hosts.length})`);

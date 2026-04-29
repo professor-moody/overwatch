@@ -22,6 +22,7 @@ import type {
   InferenceRuleInfo,
   TelemetrySummary,
   InferenceRuleEffectiveness,
+  CredentialCoverage,
 } from './types';
 
 const BASE = '';
@@ -392,6 +393,7 @@ export interface TelemetryResponse {
     confirmed_edges: number;
     inferred_edges: number;
   };
+  credential_coverage: CredentialCoverage | null;
 }
 
 export async function getTelemetry(): Promise<TelemetryResponse> {
