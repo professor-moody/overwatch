@@ -336,6 +336,33 @@ describe('DashboardServer', () => {
     expect(page2.total + page1.total).toBeGreaterThanOrEqual(full.total);
   });
 
+  it('serveTelemetry returns tool_telemetry, inference_effectiveness, and health', () => {
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveTelemetry(res);
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    // tool_telemetry may be null if no telemetry singleton is set
+    expect(payload).toHaveProperty('inference_effectiveness');
+    expect(payload).toHaveProperty('health');
+    expect(payload.health).toHaveProperty('status');
+    expect(payload.health).toHaveProperty('counts');
+    expect(payload).toHaveProperty('graph_stats');
+    expect(payload.graph_stats.total_nodes).toBeGreaterThanOrEqual(0);
+  });
+
   it('graph_update WS payload includes history_count', () => {
     const mockClient = {
       readyState: WebSocket.OPEN,

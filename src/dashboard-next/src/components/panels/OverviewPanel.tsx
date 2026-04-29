@@ -4,6 +4,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { NODE_COLORS } from '../../lib/graph-constants';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { SkeletonPanel } from '../shared/Skeleton';
+import { TelemetrySection } from './TelemetrySection';
 import * as api from '../../lib/api';
 import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
 
@@ -227,6 +228,9 @@ export function OverviewPanel() {
           </ul>
         </section>
       )}
+
+      {/* Telemetry */}
+      <TelemetrySection />
 
       {/* Top Frontier */}
       <section className="bg-surface border border-border rounded-lg p-4">

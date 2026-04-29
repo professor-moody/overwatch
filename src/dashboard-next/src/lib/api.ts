@@ -20,6 +20,8 @@ import type {
   EngagementDetail,
   ToolCheckResult,
   InferenceRuleInfo,
+  TelemetrySummary,
+  InferenceRuleEffectiveness,
 } from './types';
 
 const BASE = '';
@@ -372,4 +374,26 @@ export async function correctGraph(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason, operations }),
   });
+}
+
+// --- Telemetry ---
+
+export interface TelemetryResponse {
+  tool_telemetry: TelemetrySummary | null;
+  inference_effectiveness: InferenceRuleEffectiveness[];
+  health: {
+    status: 'healthy' | 'warning' | 'critical';
+    counts: { warning: number; critical: number };
+    top_issues: Array<{ check: string; severity: string; message: string; node_ids?: string[] }>;
+  };
+  graph_stats: {
+    total_nodes: number;
+    total_edges: number;
+    confirmed_edges: number;
+    inferred_edges: number;
+  };
+}
+
+export async function getTelemetry(): Promise<TelemetryResponse> {
+  return fetchJson('/api/telemetry');
 }

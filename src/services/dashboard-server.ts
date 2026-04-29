@@ -17,6 +17,7 @@ import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
+import { getTelemetry } from '../tools/error-boundary.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -471,6 +472,8 @@ export class DashboardServer {
       this.serveTools(res);
     } else if (pathname === '/api/inference-rules' && method === 'GET') {
       this.serveInferenceRules(res);
+    } else if (pathname === '/api/telemetry' && method === 'GET') {
+      this.serveTelemetry(res);
     } else if (pathname === '/api/graph/export' && method === 'POST') {
       this.handleGraphExport(res);
     } else if (pathname === '/api/graph/correct' && method === 'POST') {
@@ -1631,6 +1634,33 @@ export class DashboardServer {
     const rules = this.engine.getInferenceRules();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ rules, total: rules.length }));
+  }
+
+  // ---- Telemetry endpoint ----
+
+  private serveTelemetry(res: ServerResponse): void {
+    const telemetry = getTelemetry();
+    const toolSummary = telemetry ? telemetry.summarize([]) : null;
+    const state = this.engine.getState();
+    const inferenceEffectiveness = state.inference_rule_effectiveness || [];
+    const healthReport = this.engine.getHealthReport();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tool_telemetry: toolSummary,
+      inference_effectiveness: inferenceEffectiveness,
+      health: {
+        status: healthReport.status,
+        counts: healthReport.counts_by_severity,
+        top_issues: healthReport.issues.slice(0, 10),
+      },
+      graph_stats: {
+        total_nodes: state.graph_summary?.total_nodes ?? 0,
+        total_edges: state.graph_summary?.total_edges ?? 0,
+        confirmed_edges: state.graph_summary?.confirmed_edges ?? 0,
+        inferred_edges: state.graph_summary?.inferred_edges ?? 0,
+      },
+    }));
   }
 
   // ---- Graph export endpoint ----
