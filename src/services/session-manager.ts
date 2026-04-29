@@ -143,6 +143,7 @@ export interface SessionAdapterFactory {
 // ============================================================
 
 const MAX_CLOSED_SESSIONS = 50;
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface SessionCreateOptions {
   kind: SessionKind;
@@ -176,9 +177,11 @@ export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private adapters: Map<SessionKind, SessionAdapterFactory> = new Map();
   private engine: GraphEngine | null;
+  private idleTimeoutMs: number;
 
-  constructor(engine: GraphEngine | null = null) {
+  constructor(engine: GraphEngine | null = null, idleTimeoutMs?: number) {
     this.engine = engine;
+    this.idleTimeoutMs = idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   }
 
   registerAdapter(adapter: SessionAdapterFactory): void {
@@ -389,6 +392,7 @@ export class SessionManager {
   }
 
   write(sessionId: string, data: string, claimedBy?: string, force?: boolean): { session_id: string; end_pos: number } {
+    this.reapIdleSessions();
     const session = this.getSessionOrThrow(sessionId);
     this.assertConnected(session);
     this.assertOwnership(session, claimedBy, force);
@@ -403,6 +407,7 @@ export class SessionManager {
   }
 
   read(sessionId: string, fromPos?: number, tailBytes?: number): SessionReadResult {
+    this.reapIdleSessions();
     const session = this.getSessionOrThrow(sessionId);
 
     if (fromPos !== undefined) {
@@ -607,6 +612,7 @@ export class SessionManager {
   }
 
   list(activeOnly: boolean = false): SessionMetadata[] {
+    this.reapIdleSessions();
     const all = Array.from(this.sessions.values()).map(s => ({ ...s.metadata }));
     if (activeOnly) {
       return all.filter(m => m.state === 'pending' || m.state === 'connected');
@@ -627,6 +633,33 @@ export class SessionManager {
         } catch { /* best effort on shutdown */ }
       }
     }
+  }
+
+  reapIdleSessions(): string[] {
+    if (this.idleTimeoutMs <= 0) return [];
+    const now = Date.now();
+    const reaped: string[] = [];
+    for (const [id, session] of this.sessions) {
+      if (session.metadata.state !== 'connected' && session.metadata.state !== 'pending') continue;
+      const lastActivity = new Date(session.metadata.last_activity_at).getTime();
+      if (now - lastActivity > this.idleTimeoutMs) {
+        const title = session.metadata.title;
+        try {
+          if (session.handle) {
+            try { session.handle.close(); } catch { /* best-effort */ }
+          }
+          session.metadata.state = 'closed';
+          session.metadata.closed_at = new Date().toISOString();
+          session.metadata.claimed_by = undefined;
+          this.logSessionEvent(id, 'session_closed',
+            `Session "${title}" auto-closed after idle timeout (${Math.round(this.idleTimeoutMs / 60000)}min)`);
+          this.notifySessionClosed(session);
+          reaped.push(id);
+        } catch { /* best-effort */ }
+      }
+    }
+    this.pruneClosedSessions();
+    return reaped;
   }
 
   // --- Internal helpers ---

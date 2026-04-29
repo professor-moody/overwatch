@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { isUrlInScope, isCloudResourceInScope, isHostInScope } from '../cidr.js';
 import { inferProfile } from '../../types.js';
@@ -195,6 +195,7 @@ describe('isCloudResourceInScope', () => {
 // 8.4: validateAction with target_url and cloud_resource
 // ============================================================
 describe('validateAction scope expansion', () => {
+  beforeEach(cleanup);
   afterEach(cleanup);
 
   it('validates target_url against url_patterns', () => {

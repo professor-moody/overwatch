@@ -1097,3 +1097,54 @@ describe('SessionManager — SSH auth_status in metadata', () => {
     await mgr.shutdown();
   });
 });
+
+// ============================================================
+// 7.13: Session Idle Timeout
+// ============================================================
+
+describe('Session Idle Timeout', () => {
+  it('reaps sessions that exceed idle timeout', async () => {
+    const mgr = new SessionManager(null, 100); // 100ms timeout
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+
+    const result = await mgr.create({ kind: 'local_pty', title: 'idle-test', initial_wait_ms: 0 });
+    expect(mgr.list().filter(s => s.state === 'connected')).toHaveLength(1);
+
+    // Fast-forward last_activity_at by manipulating it
+    const session = (mgr as any).sessions.get(result.metadata.id);
+    session.metadata.last_activity_at = new Date(Date.now() - 200).toISOString();
+
+    const reaped = mgr.reapIdleSessions();
+    expect(reaped).toContain(result.metadata.id);
+    expect(mgr.list().filter(s => s.state === 'connected')).toHaveLength(0);
+  });
+
+  it('does not reap active sessions', async () => {
+    const mgr = new SessionManager(null, 100);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+
+    await mgr.create({ kind: 'local_pty', title: 'active-test', initial_wait_ms: 0 });
+    // Don't manipulate the timestamp — session was just created
+
+    const reaped = mgr.reapIdleSessions();
+    expect(reaped).toHaveLength(0);
+    expect(mgr.list().filter(s => s.state === 'connected')).toHaveLength(1);
+    await mgr.shutdown();
+  });
+
+  it('skips reaping when idleTimeoutMs is 0 (disabled)', async () => {
+    const mgr = new SessionManager(null, 0);
+    const mock = createMockAdapter();
+    mgr.registerAdapter(mock.adapter);
+
+    const result = await mgr.create({ kind: 'local_pty', title: 'no-timeout', initial_wait_ms: 0 });
+    const session = (mgr as any).sessions.get(result.metadata.id);
+    session.metadata.last_activity_at = new Date(Date.now() - 999999).toISOString();
+
+    const reaped = mgr.reapIdleSessions();
+    expect(reaped).toHaveLength(0);
+    await mgr.shutdown();
+  });
+});

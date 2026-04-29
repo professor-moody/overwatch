@@ -955,7 +955,8 @@ export class DashboardServer {
     const rawBefore = params.get('before') || undefined;
     const before = rawBefore && !isNaN(Date.parse(rawBefore)) ? rawBefore : undefined;
 
-    let entries = this.engine.getFullHistory();
+    let entries = this.engine.getFullHistory()
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
     if (after) {
       entries = entries.filter(e => e.timestamp > after);

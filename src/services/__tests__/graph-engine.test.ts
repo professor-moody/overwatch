@@ -3371,6 +3371,38 @@ describe('GraphEngine', () => {
       expect(Array.isArray(state.inference_rule_effectiveness)).toBe(true);
     });
   });
+
+  describe('7.7 Auto Health Checks', () => {
+    it('runs health check on startup and logs issues for unhealthy graphs', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // Fresh graph is healthy — no health-check log entry beyond initialization
+      const log = engine.getFullHistory();
+      const healthEntries = log.filter(e => e.description?.includes('Auto health check'));
+      // Startup check runs but clean graph produces no log (status === 'healthy')
+      expect(healthEntries.length).toBe(0);
+    });
+
+    it('triggers auto health check after large ingest (>=50 new nodes)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // Create nodes that will trigger health issues: users sharing the same credential material
+      const nodes: any[] = [];
+      const edges: any[] = [];
+      for (let i = 0; i < 55; i++) {
+        nodes.push({ id: `user-bulk-${i}`, type: 'user', label: `user${i}`, username: `user${i}` });
+        nodes.push({ id: `cred-bulk-${i}`, type: 'credential', label: `cred${i}`, cred_type: 'ntlm_hash', hash: 'aad3b435b51404eeaad3b435b51404ee' });
+        edges.push({
+          source: `user-bulk-${i}`, target: `cred-bulk-${i}`,
+          properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: '2026-03-21T10:00:00Z' },
+        });
+      }
+      engine.ingestFinding(makeFinding({ nodes, edges }));
+      // Large ingest (55 new user nodes + 55 cred nodes = 110) triggers health check
+      // Shared credential material across 55 users should produce warnings
+      const log = engine.getFullHistory();
+      const healthEntries = log.filter(e => e.description?.includes('Auto health check'));
+      expect(healthEntries.some(e => e.description?.includes('large ingest'))).toBe(true);
+    });
+  });
 });
 
 // =============================================

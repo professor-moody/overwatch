@@ -192,6 +192,9 @@ export class GraphEngine {
     this.reconcileSessionEdgesOnStartup();
     this.agentMgr.reconcileOnStartup();
     this.persistence.persistImmediate();
+
+    // 7.7: Auto health check on startup
+    this.runAutoHealthCheck('startup');
   }
 
   /** Lazy-load the cross-engagement knowledge base (returns null if file not found). */
@@ -401,7 +404,14 @@ export class GraphEngine {
     }
 
     this.ctx.recentFindingHashes.set(contentHash, now);
-    return ingestFindingImpl(this.findingIngestionHost, finding);
+    const result = ingestFindingImpl(this.findingIngestionHost, finding);
+
+    // 7.7: Auto health check after large ingests
+    if (result.new_nodes.length >= GraphEngine.HEALTH_AUTO_CHECK_THRESHOLD) {
+      this.runAutoHealthCheck(`large ingest: ${result.new_nodes.length} new nodes`);
+    }
+
+    return result;
   }
 
   // =============================================
@@ -1888,6 +1898,20 @@ export class GraphEngine {
 
   private invalidateHealthReport(): void {
     this.healthReportCache = null;
+  }
+
+  private static readonly HEALTH_AUTO_CHECK_THRESHOLD = 50;
+
+  private runAutoHealthCheck(trigger: string): void {
+    const report = this.runHealthChecks();
+    if (report.status !== 'healthy') {
+      const { critical, warning } = report.counts_by_severity;
+      this.log(
+        `Auto health check (${trigger}): ${critical} critical, ${warning} warning issue(s)`,
+        undefined,
+        { category: 'system', event_type: 'system' },
+      );
+    }
   }
 
   private invalidateAllCaches(): void {

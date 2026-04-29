@@ -204,6 +204,7 @@ export interface EngagementState {
   access_level?: string;
   history_count?: number;
   phases?: EngagementPhase[];
+  inference_rule_effectiveness?: InferenceRuleEffectiveness[];
   readiness?: {
     status: string;
     issues: string[];
@@ -466,6 +467,40 @@ export interface InferenceRuleProduction {
   source_selector: string;
   target_selector: string;
   confidence: number;
+}
+
+// --- Inference Rule Effectiveness (Sprint 7.9) ---
+
+export interface InferenceRuleEffectiveness {
+  rule_id: string;
+  total: number;
+  confirmed: number;
+  unconfirmed: number;
+  confirmation_rate: number;
+}
+
+// --- Tool Telemetry (Sprint 7.5) ---
+
+export interface ToolStats {
+  calls: number;
+  errors: number;
+  total_ms: number;
+  avg_ms: number;
+  last_error?: string;
+}
+
+export interface SequencePattern {
+  sequence: string[];
+  count: number;
+}
+
+export interface TelemetrySummary {
+  tool_stats: Record<string, ToolStats>;
+  total_calls: number;
+  total_errors: number;
+  unused_tools: string[];
+  top_tools: Array<{ name: string; calls: number; avg_ms: number; error_rate: number }>;
+  common_sequences: SequencePattern[];
 }
 
 export interface InferenceRuleInfo {

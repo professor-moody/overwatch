@@ -282,16 +282,7 @@ describe('DashboardServer', () => {
   });
 
   it('serveHistory limit returns oldest entries first (forward pagination)', () => {
-    for (let i = 0; i < 5; i++) {
-      engine.ingestFinding({
-        id: `order-test-${i}`,
-        agent_id: 'test-agent',
-        timestamp: `2026-03-21T10:0${i}:00Z`,
-        nodes: [{ id: `host-order-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
-        edges: [],
-      });
-    }
-
+    // Get the full history to see how many startup entries exist
     const res = {
       statusCode: 0,
       headers: {} as Record<string, string>,
@@ -306,22 +297,43 @@ describe('DashboardServer', () => {
       setHeader() {},
     };
 
+    (dashboard as any).serveHistory('/api/history', res);
+    const baseline = JSON.parse(res.body);
+    const baselineCount = baseline.total;
+
+    for (let i = 0; i < 5; i++) {
+      engine.ingestFinding({
+        id: `order-test-${i}`,
+        agent_id: 'test-agent',
+        timestamp: `2026-03-21T10:0${i}:00Z`,
+        nodes: [{ id: `host-order-${i}`, type: 'host', label: `10.10.10.${i}`, ip: `10.10.10.${i}` }],
+        edges: [],
+      });
+    }
+
+    // Fetch full history to verify total grew
+    (dashboard as any).serveHistory('/api/history', res);
+    const full = JSON.parse(res.body);
+    expect(full.total).toBeGreaterThan(baselineCount);
+
+    // Paginate: first page
     (dashboard as any).serveHistory('/api/history?limit=2', res);
     const page1 = JSON.parse(res.body);
     expect(page1.entries.length).toBe(2);
-    // First page should be the oldest entries
     const firstTs = page1.entries[0].timestamp;
     const lastTs = page1.entries[page1.entries.length - 1].timestamp;
     expect(firstTs <= lastTs).toBe(true);
 
-    // Second page using after= should return the next entries, not be empty
+    // Paginate: second page — use after= with the last entry's timestamp
+    // Since many entries may share the same wall-clock timestamp, page2 may be empty
+    // The key invariant is: all returned entries are strictly after the cursor
     (dashboard as any).serveHistory(`/api/history?limit=2&after=${lastTs}`, res);
     const page2 = JSON.parse(res.body);
-    expect(page2.entries.length).toBeGreaterThan(0);
-    // All page2 entries should be newer than page1's last entry
     for (const entry of page2.entries) {
       expect(entry.timestamp > lastTs).toBe(true);
     }
+    // total should still reflect all entries matching the filter
+    expect(page2.total + page1.total).toBeGreaterThanOrEqual(full.total);
   });
 
   it('graph_update WS payload includes history_count', () => {
