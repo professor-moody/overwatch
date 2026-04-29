@@ -686,7 +686,7 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
                   {item.type.replace(/_/g, ' ')}
                 </span>
                 <span className="text-muted-foreground truncate flex-1">{item.description}</span>
-                <span className="font-mono text-foreground flex-shrink-0">{item.priority.toFixed(1)}</span>
+                <span className="font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
               </label>
             );
           })}

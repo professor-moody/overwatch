@@ -20,7 +20,16 @@ export function TelemetrySection() {
     return () => clearInterval(timer);
   }, [fetch]);
 
-  if (!data) return null;
+  if (!data) {
+    return (
+      <section className="bg-surface border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between text-sm font-medium">
+          <span className="text-muted-foreground">Telemetry</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground">no data</span>
+        </div>
+      </section>
+    );
+  }
 
   const { tool_telemetry, inference_effectiveness, health } = data;
 

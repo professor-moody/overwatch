@@ -200,7 +200,7 @@ function FrontierItemCard({
         <span className="text-xs text-foreground flex-1 truncate" title={item.description}>
           {label}
         </span>
-        <span className="text-xs font-mono text-foreground flex-shrink-0">{item.priority.toFixed(1)}</span>
+        <span className="text-xs font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
       </div>
 
       {chips.length > 0 && (
@@ -221,7 +221,7 @@ function FrontierItemCard({
                 style={{ width: `${noisePercent}%`, backgroundColor: getNoiseColor(noise) }}
               />
             </span>
-            <span>noise {noise.toFixed(1)}</span>
+            <span>noise {(noise ?? 0).toFixed(1)}</span>
           </span>
           <span>hops {hops}</span>
           <span>fan {fanOut}</span>

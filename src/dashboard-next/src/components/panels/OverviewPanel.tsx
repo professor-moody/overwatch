@@ -52,7 +52,24 @@ export function OverviewPanel() {
     return campaigns.filter(c => c.status === 'active' || c.status === 'paused');
   }, [campaigns]);
 
+  const engagement = useEngagementStore((s) => s.engagement);
+
   if (!initialized) return <SkeletonPanel />;
+
+  if (!engagement && !graphSummary) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-lg font-semibold">Overview</h2>
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="text-4xl mb-4 opacity-40">⊘</div>
+          <h3 className="text-sm font-medium text-foreground mb-1">No engagement loaded</h3>
+          <p className="text-xs text-muted-foreground max-w-xs">
+            Start the Overwatch MCP server with an engagement config to see live data here.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -261,7 +278,7 @@ export function OverviewPanel() {
                     {item.type.replace(/_/g, ' ')}
                   </span>
                   <span className="text-muted-foreground flex-1 truncate">{item.description}</span>
-                  <span className="font-mono text-foreground">{item.priority.toFixed(1)}</span>
+                  <span className="font-mono text-foreground">{(item.priority ?? 0).toFixed(1)}</span>
                 </button>
               );
             })}
