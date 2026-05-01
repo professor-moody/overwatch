@@ -19,6 +19,7 @@ A **candidate next action** generated from the graph. The deterministic layer pr
 | `inferred_edge` | A hypothesis edge created by an inference rule | `RELAY_TARGET` from SMB signing disabled |
 | `network_discovery` | CIDR scope with undiscovered hosts | Network sweep of 10.10.10.0/24 |
 | `network_pivot` | Host reachable via pivot but without a session | Host in same subnet as session-holder |
+| `credential_test` | Untested credential/target pair from the coverage matrix | Test `jdoe:NTLM` against DC01 (SMB) |
 
 Frontier items include **graph metrics** (hops to objective, fan-out estimate, node degree) but are **not scored** — scoring is the LLM's job. The deterministic layer only filters out items that are out-of-scope, duplicated, or exceed the OPSEC noise ceiling.
 
@@ -236,6 +237,30 @@ The `getCredentialProvenance()` function traces a credential's full provenance c
 The dashboard visualizes provenance chains via the `/api/evidence-chains/:nodeId` endpoint.
 
 See [Graph Model — Credential Lifecycle Properties](graph-model.md#credential-lifecycle-properties) for the full property reference.
+
+### Credential Coverage Matrix
+
+The engine tracks which credentials have been tested against which targets, surfacing untested pairs as `credential_test` frontier items. This gives the LLM a systematic "spray progress" view rather than relying on ad-hoc enumeration.
+
+**How it works:**
+
+1. **Collect usable credentials** — active, non-stale, non-expired credentials with `isCredentialUsableForAuth()`
+2. **Collect auth targets** — hosts running auth-accepting services (SMB, RDP, SSH, WinRM, MSSQL, etc.)
+3. **Build tested set** — scan `TESTED_CRED`, `VALID_ON`, `HAS_SESSION`, `ADMIN_TO` edges to identify already-tested pairs
+4. **Rank untested pairs** — priority based on credential type × service type × hops-to-objective × same-domain boost
+
+**Priority scoring:**
+
+| Credential Type | Weight | Service Type | Weight |
+|----------------|--------|--------------|--------|
+| Plaintext password | 1.0 | SMB | 0.9 |
+| NTLM hash | 0.9 | RDP | 0.85 |
+| AES256 key | 0.85 | SSH / WinRM | 0.8 |
+| Kerberos TGT | 0.8 | MSSQL | 0.7 |
+| SSH key | 0.8 | LDAP | 0.7 |
+| Token / Certificate | 0.7 | HTTP(S) | 0.5 |
+
+Coverage stats appear in `get_state().credential_coverage` and in the system prompt as "Credential Spray Progress." The dashboard shows a coverage progress bar with top untested pairs.
 
 ## IAM Policy Simulation
 

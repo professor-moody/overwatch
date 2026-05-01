@@ -452,7 +452,7 @@ overwatch/
 │   │   ├── engine-context.ts       # Shared mutable state (graph, config, rules, cold store)
 │   │   ├── state-persistence.ts    # Atomic persistence + snapshots + cold store serialization
 │   │   ├── inference-engine.ts     # Rule-based edge production (53 built-in rules)
-│   │   ├── frontier.ts             # Frontier computation (5 item types)
+│   │   ├── frontier.ts             # Frontier computation (6 item types)
 │   │   ├── path-analyzer.ts        # OPSEC-weighted shortest paths (confidence/stealth/balanced)
 │   │   ├── identity-resolution.ts  # Canonical ID generation
 │   │   ├── identity-reconciliation.ts # Alias node merging
@@ -460,6 +460,7 @@ overwatch/
 │   │   ├── graph-schema.ts         # Edge endpoint constraints
 │   │   ├── graph-health.ts         # 8 integrity checks + contextual AD filtering
 │   │   ├── credential-utils.ts     # Credential classification + lifecycle
+│   │   ├── credential-coverage.ts  # Credential × target coverage matrix
 │   │   ├── parsers/              # 21 deterministic parsers (36 aliases)
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization

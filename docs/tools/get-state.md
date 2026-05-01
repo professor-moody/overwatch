@@ -40,6 +40,7 @@ An `EngagementState` object containing:
 | `warnings` | `HealthSummary` | Graph health warnings |
 | `lab_readiness` | `LabReadinessSummary` | Inline lab readiness summary (graph health severity, domain hints, stage). For full per-tool readiness, use [`run_lab_preflight`](run-lab-preflight.md). |
 | `scope_suggestions` | `string[]` | Suggested scope expansions discovered during the engagement |
+| `credential_coverage` | `CredentialCoverage` | Credential spray progress: tested/total pairs, coverage %, top untested combinations |
 
 ### graph_summary community fields
 
