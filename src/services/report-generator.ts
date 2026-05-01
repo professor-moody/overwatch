@@ -1220,7 +1220,7 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
 
   const nodeMap = new Map(graph.nodes.map(n => [n.id, n.properties]));
 
-  // Reverse lookup: label/ip/hostname → node ID for blast radius resolution
+  // Reverse lookup: label/ip/hostname/url → node ID for blast radius resolution
   const assetToNodeId = new Map<string, string>();
   for (const n of graph.nodes) {
     assetToNodeId.set(n.id, n.id);
@@ -1228,6 +1228,7 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
     if (n.properties.ip) assetToNodeId.set(n.properties.ip, n.id);
     if (n.properties.hostname) assetToNodeId.set(n.properties.hostname as string, n.id);
     if (n.properties.cred_user) assetToNodeId.set(n.properties.cred_user as string, n.id);
+    if (n.properties.url) assetToNodeId.set(n.properties.url as string, n.id);
   }
 
   const ranked = findings.map(f => {

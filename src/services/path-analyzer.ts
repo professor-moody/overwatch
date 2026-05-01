@@ -70,10 +70,10 @@ export class PathAnalyzer {
       case 'stealth':
         return attrs.opsec_noise ?? 0.3;
       case 'balanced':
-        return (1.0 - Math.min(attrs.confidence, 0.99)) * 0.5 + (attrs.opsec_noise ?? 0.3) * 0.5;
+        return Math.max((1.0 - attrs.confidence) * 0.5 + (attrs.opsec_noise ?? 0.3) * 0.5, 0.001);
       case 'confidence':
       default:
-        return 1.0 - Math.min(attrs.confidence, 0.99);
+        return Math.max(1.0 - attrs.confidence, 0.001);
     }
   }
 

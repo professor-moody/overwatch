@@ -293,12 +293,14 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
 
   // Prowler OCSF JSON output — one JSON object per line
   const lines = output.split('\n').filter(l => l.trim());
+  let parseFailures = 0;
 
   for (const line of lines) {
     let finding: Record<string, unknown>;
     try {
       finding = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      parseFailures++;
       continue;
     }
 
@@ -379,7 +381,16 @@ export function parseProwler(output: string, agentId: string = 'prowler-parser',
     }
   }
 
-  return { id: `prowler-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  if (parseFailures > 0) {
+    console.error(`[prowler-parser] ${parseFailures}/${lines.length} NDJSON lines failed to parse — data may be truncated or malformed`);
+  }
+
+  return {
+    id: `prowler-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+    raw_output: parseFailures > 0
+      ? `[PARSE WARNING] ${parseFailures} of ${lines.length} lines failed JSON parsing. Parsed ${nodes.length} nodes, ${edges.length} edges.`
+      : undefined,
+  };
 }
 
 /**

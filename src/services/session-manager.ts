@@ -439,6 +439,14 @@ export class SessionManager {
       if (/([+*]|\{\d)[^)]*[+*]|\{\d/.test(options.wait_for) || /\([^)]*[+*][^)]*\)[+*?]/.test(options.wait_for)) {
         throw new Error('wait_for pattern rejected: nested quantifiers may cause catastrophic backtracking');
       }
+      // Reject overlapping alternation with outer quantifier: (a|a)*, (ab|a)+, etc.
+      if (/\([^)]*\|[^)]*\)[+*]/.test(options.wait_for) && /\(([^)|]+)\|.*\1/.test(options.wait_for)) {
+        throw new Error('wait_for pattern rejected: overlapping alternation with quantifier may cause catastrophic backtracking');
+      }
+      // Reject backreference bombs: \1+, \2*, etc.
+      if (/\\[1-9][+*{]/.test(options.wait_for)) {
+        throw new Error('wait_for pattern rejected: quantified backreference may cause catastrophic backtracking');
+      }
       try {
         waitForRegex = new RegExp(options.wait_for);
       } catch (e) {

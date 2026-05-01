@@ -109,6 +109,8 @@ export function getEdgeConstraint(edgeType: EdgeType): EdgeConstraint | undefine
   return EDGE_CONSTRAINTS[edgeType];
 }
 
+const _warnedUnconstrainedTypes = new Set<string>();
+
 export function validateEdgeEndpoints(
   edgeType: EdgeType,
   sourceType: NodeType,
@@ -117,6 +119,10 @@ export function validateEdgeEndpoints(
 ): { valid: true; unconstrained?: boolean } | { valid: false; violation: EdgeConstraintViolation; suggested_fix?: EdgeFixSuggestion } {
   const constraint = getEdgeConstraint(edgeType);
   if (!constraint) {
+    if (!_warnedUnconstrainedTypes.has(edgeType)) {
+      _warnedUnconstrainedTypes.add(edgeType);
+      console.error(`[graph-schema] Edge type "${edgeType}" has no constraint definition — validation bypassed. Add it to EDGE_CONSTRAINTS to enforce topology checks.`);
+    }
     return { valid: true, unconstrained: true };
   }
 
