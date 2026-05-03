@@ -44,11 +44,20 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
         ctx.graph.getEdgeAttributes(e).type === 'RUNS'
       );
       if (!hasServices) m.push('services');
-      // Linux-specific enrichment
+      // Linux-specific post-exploit enrichment — only meaningful once we have
+      // local code execution on the host. Gate on inbound HAS_SESSION edge or
+      // an explicit `compromised` flag so we don't fire enrichment requests
+      // against every alive Linux host on the network.
       if (node.os && node.os.toLowerCase().includes('linux')) {
-        if (node.suid_checked === undefined) m.push('suid_checked');
-        if (node.cron_checked === undefined) m.push('cron_checked');
-        if (node.capabilities_checked === undefined) m.push('capabilities_checked');
+        const compromised = node.compromised === true || ctx.graph.inEdges(node.id).some((e: string) => {
+          const ea = ctx.graph.getEdgeAttributes(e);
+          return ea.type === 'HAS_SESSION' && (ea.confidence ?? 1) >= 0.7;
+        });
+        if (compromised) {
+          if (node.suid_checked === undefined) m.push('suid_checked');
+          if (node.cron_checked === undefined) m.push('cron_checked');
+          if (node.capabilities_checked === undefined) m.push('capabilities_checked');
+        }
       }
     }
     return m;

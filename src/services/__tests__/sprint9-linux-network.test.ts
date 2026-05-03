@@ -76,7 +76,7 @@ describe('9.1 — Linux host enrichment', () => {
     expect(node!.kernel_version).toBe('5.15.0');
   });
 
-  it('frontier flags Linux-specific missing properties', () => {
+  it('frontier flags Linux-specific missing properties for compromised hosts', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     engine.ingestFinding(makeFinding([{
       id: 'host-10-10-10-6', type: 'host', label: 'linux-bare', ip: '10.10.10.6',
@@ -86,6 +86,11 @@ describe('9.1 — Linux host enrichment', () => {
     engine.ingestFinding(makeFinding(
       [{ id: 'svc-ssh-6', type: 'service', label: 'ssh/22', port: 22, protocol: 'tcp', service_name: 'ssh', discovered_at: now, confidence: 1.0 }],
       [{ source: 'host-10-10-10-6', target: 'svc-ssh-6', properties: { type: 'RUNS', confidence: 1.0, discovered_at: now } }],
+    ));
+    // Establish a session so post-exploit enrichment becomes relevant
+    engine.ingestFinding(makeFinding(
+      [{ id: 'user-attacker-6', type: 'user', label: 'attacker', username: 'attacker', discovered_at: now, confidence: 1.0 }],
+      [{ source: 'user-attacker-6', target: 'host-10-10-10-6', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: now } }],
     ));
     const frontier = engine.computeFrontier();
     const item = frontier.find(f => f.node_id === 'host-10-10-10-6' && f.type === 'incomplete_node');

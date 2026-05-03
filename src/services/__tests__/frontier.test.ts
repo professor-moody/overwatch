@@ -93,11 +93,13 @@ describe('FrontierComputer', () => {
       expect(hostItems.length).toBe(0);
     });
 
-    it('flags Linux host for missing suid_checked/cron_checked/capabilities_checked', () => {
+    it('flags compromised Linux host for missing suid_checked/cron_checked/capabilities_checked', () => {
       const graph = makeGraph();
       addNode(graph, 'host-1', { type: 'host', ip: '10.10.10.1', alive: true, os: 'Linux Ubuntu 22.04' });
       addNode(graph, 'svc-1', { type: 'service', service_name: 'ssh', port: 22 });
+      addNode(graph, 'user-1', { type: 'user', username: 'root' });
       addEdge(graph, 'host-1', 'svc-1', 'RUNS');
+      addEdge(graph, 'user-1', 'host-1', 'HAS_SESSION', { confidence: 1.0 });
 
       const { frontier } = buildFrontier(graph);
       const items = frontier.compute();
@@ -107,6 +109,20 @@ describe('FrontierComputer', () => {
       expect(hostItems[0].missing_properties).toContain('suid_checked');
       expect(hostItems[0].missing_properties).toContain('cron_checked');
       expect(hostItems[0].missing_properties).toContain('capabilities_checked');
+    });
+
+    it('does NOT flag uncompromised Linux host for post-exploit enrichment', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-1', { type: 'host', ip: '10.10.10.1', alive: true, os: 'Linux Ubuntu 22.04' });
+      addNode(graph, 'svc-1', { type: 'service', service_name: 'ssh', port: 22 });
+      addEdge(graph, 'host-1', 'svc-1', 'RUNS');
+
+      const { frontier } = buildFrontier(graph);
+      const items = frontier.compute();
+
+      const hostItems = items.filter(i => i.type === 'incomplete_node' && i.node_id === 'host-1');
+      // Host is alive, has services, has OS, but no session — no enrichment frontier items.
+      expect(hostItems.length).toBe(0);
     });
 
     it('skips superseded nodes', () => {
