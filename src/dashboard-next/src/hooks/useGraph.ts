@@ -16,6 +16,26 @@ function getEdgeKey(edge: ExportedEdge): string {
   return `${edge.source}--${edge.type || ''}--${edge.target}`;
 }
 
+// ---- Normalize wrapped {id, properties:{...}} export shape into the flat
+// ---- shape the dashboard code expects. The backend's exportGraph() emits
+// ---- the wrapped form; legacy/test fixtures may already be flat.
+
+function flattenNode(n: ExportedNode | (ExportedNode & { properties?: Record<string, unknown> })): ExportedNode {
+  const props = (n as { properties?: Record<string, unknown> }).properties;
+  if (props && typeof props === 'object') {
+    return { ...(props as Record<string, unknown>), ...n, ...props, id: n.id } as ExportedNode;
+  }
+  return n as ExportedNode;
+}
+
+function flattenEdge(e: ExportedEdge | (ExportedEdge & { properties?: Record<string, unknown> })): ExportedEdge {
+  const props = (e as { properties?: Record<string, unknown> }).properties;
+  if (props && typeof props === 'object') {
+    return { ...(props as Record<string, unknown>), ...e, ...props, id: e.id, source: e.source, target: e.target } as ExportedEdge;
+  }
+  return e as ExportedEdge;
+}
+
 function getEdgeColor(edgeType: string, confidence: number): string {
   if (confidence < 1.0) {
     const base = EDGE_CATEGORIES[edgeType] || '#afa9ec';
@@ -220,9 +240,11 @@ export function useGraph(): UseGraphReturn {
     reachableOnlyCacheRef.current = null;
     graph.clear();
 
-    const positions = groupInitialPositions(data.nodes, data.edges || []);
+    const flatNodes = data.nodes.map(flattenNode);
+    const flatEdges = (data.edges || []).map(flattenEdge);
+    const positions = groupInitialPositions(flatNodes, flatEdges);
 
-    data.nodes.forEach(node => {
+    flatNodes.forEach(node => {
       const nodeType = node.type || 'host';
       const pos = positions[node.id] || { x: Math.random() * 10, y: Math.random() * 10 };
       graph.addNode(node.id, {
@@ -237,7 +259,7 @@ export function useGraph(): UseGraphReturn {
       });
     });
 
-    (data.edges || []).forEach(edge => {
+    flatEdges.forEach(edge => {
       if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
       const edgeKey = getEdgeKey(edge);
       const attrs = buildEdgeAttributes(edge);
@@ -260,7 +282,8 @@ export function useGraph(): UseGraphReturn {
   }) => {
     if (!delta) return;
     reachableOnlyCacheRef.current = null;
-    const deltaEdges = delta.edges || [];
+    const deltaEdges = (delta.edges || []).map(flattenEdge);
+    const deltaNodes = (delta.nodes || []).map(flattenNode);
     let structureChanged = false;
 
     // Remove edges first
@@ -274,7 +297,7 @@ export function useGraph(): UseGraphReturn {
     }
 
     // Upsert nodes
-    (delta.nodes || []).forEach(n => {
+    deltaNodes.forEach(n => {
       const nodeType = n.type || 'host';
       if (graph.hasNode(n.id)) {
         graph.mergeNodeAttributes(n.id, {
@@ -331,7 +354,7 @@ export function useGraph(): UseGraphReturn {
     });
 
     // Upsert edges
-    (delta.edges || []).forEach(e => {
+    deltaEdges.forEach(e => {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) return;
       const edgeKey = getEdgeKey(e);
       const attrs = buildEdgeAttributes(e);
