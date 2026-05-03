@@ -14,6 +14,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npx tsc --noEmit
 
@@ -25,6 +26,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npm run test:source
 
@@ -37,6 +39,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npm run test:integration:stdio
 
@@ -49,6 +52,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npm run test:integration:http
 
@@ -60,5 +64,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - run: npm audit --omit=dev
