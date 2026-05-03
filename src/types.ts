@@ -296,7 +296,8 @@ export type ApprovalMode = 'auto-approve' | 'approve-critical' | 'approve-all';
 
 export interface OpsecProfile {
   name: string;                  // 'ctf' | 'pentest' | 'redteam' | 'assumed_breach'
-  max_noise: number;             // hard ceiling, 0.0-1.0
+  enabled?: boolean;             // default false — when false, all OPSEC enforcement (vetoes, blacklist, noise budget, prompt sections) is skipped
+  max_noise: number;             // hard ceiling, 0.0-1.0 (only enforced when enabled)
   time_window?: {
     start_hour: number;          // 0-23
     end_hour: number;
@@ -343,6 +344,7 @@ export const engagementObjectiveSchema = z.object({
 
 export const opsecProfileSchema = z.object({
   name: nonEmptyString,
+  enabled: z.boolean().optional(),
   max_noise: z.number().min(0).max(1),
   time_window: z.object({
     start_hour: z.number().int().min(0).max(23),

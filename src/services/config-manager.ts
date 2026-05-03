@@ -137,6 +137,7 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   if (partial.opsec && typeof partial.opsec === 'object') {
     const o = partial.opsec as Record<string, unknown>;
     if (typeof o.name === 'string') current.opsec.name = o.name;
+    if (typeof o.enabled === 'boolean') current.opsec.enabled = o.enabled;
     if (typeof o.max_noise === 'number') current.opsec.max_noise = o.max_noise;
     if (typeof o.approval_mode === 'string') current.opsec.approval_mode = o.approval_mode as EngagementConfig['opsec']['approval_mode'];
     if (typeof o.approval_timeout_ms === 'number') current.opsec.approval_timeout_ms = o.approval_timeout_ms;

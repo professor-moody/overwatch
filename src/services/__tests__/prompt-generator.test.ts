@@ -158,6 +158,7 @@ describe('prompt-generator', () => {
 
     it('includes OPSEC profile from config', () => {
       const engine = createTestEngine();
+      engine.updateConfig({ opsec: { ...config.opsec, enabled: true } });
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       if (config.opsec) {
@@ -529,6 +530,7 @@ describe('prompt-generator', () => {
   describe('OPSEC budget in situational awareness', () => {
     it('includes OPSEC budget when noise has been spent', () => {
       const engine = createTestEngine();
+      engine.updateConfig({ opsec: { ...config.opsec, enabled: true } });
       engine.recordOpsecNoise({ noise_estimate: 0.3, host_id: 'h1' });
 
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
@@ -540,6 +542,7 @@ describe('prompt-generator', () => {
 
     it('includes defensive signals when recorded', () => {
       const engine = createTestEngine();
+      engine.updateConfig({ opsec: { ...config.opsec, enabled: true } });
       engine.recordOpsecNoise({ noise_estimate: 0.1 });
       engine.recordDefensiveSignal({
         type: 'lockout',

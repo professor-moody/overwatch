@@ -33,6 +33,7 @@
   ],
   "opsec": {
     "name": "redteam",
+    "enabled": true,
     "max_noise": 0.2,
     "time_window": {
       "start_hour": 9,

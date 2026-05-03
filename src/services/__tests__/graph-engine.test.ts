@@ -27,6 +27,7 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
     ],
     opsec: {
       name: 'pentest',
+      enabled: true,
       max_noise: 0.7,
       blacklisted_techniques: ['zerologon'],
     },
@@ -753,7 +754,7 @@ describe('GraphEngine', () => {
     });
 
     it('filters items exceeding OPSEC noise ceiling', () => {
-      const config = makeConfig({ opsec: { name: 'redteam', max_noise: 0.1 } });
+      const config = makeConfig({ opsec: { name: 'redteam', enabled: true, max_noise: 0.1 } });
       const engine = trackedEngine(config, TEST_STATE_FILE);
       const state = engine.getState();
       // With noise ceiling 0.1, most items should be filtered (ping sweep = 0.2)
@@ -925,7 +926,7 @@ describe('GraphEngine', () => {
 
     it('warns when outside normal time window (e.g. 8-18)', () => {
       const engine = trackedEngine(makeConfig({
-        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 8, end_hour: 18 } },
+        opsec: { name: 'pentest', enabled: true, max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 8, end_hour: 18 } },
       }), TEST_STATE_FILE);
       const hour = new Date().getHours();
       const result = engine.validateAction({ target_node: 'host-10-10-10-1' });
@@ -938,7 +939,7 @@ describe('GraphEngine', () => {
 
     it('handles overnight time window wrap-around (e.g. 22-06)', () => {
       const engine = trackedEngine(makeConfig({
-        opsec: { name: 'pentest', max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 22, end_hour: 6 } },
+        opsec: { name: 'pentest', enabled: true, max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: 22, end_hour: 6 } },
       }), TEST_STATE_FILE);
       const hour = new Date().getHours();
       const result = engine.validateAction({ target_node: 'host-10-10-10-1' });

@@ -85,7 +85,7 @@ function generatePrimaryPrompt(
   // Build prioritized sections
   const prioritized: PrioritizedSection[] = [
     { content: generateIdentitySection(state.config), priority: SectionPriority.CRITICAL, label: 'identity' },
-    { content: generateCoreLoopSection(profile), priority: SectionPriority.CRITICAL, label: 'core_loop' },
+    { content: generateCoreLoopSection(profile, !!state.config.opsec?.enabled), priority: SectionPriority.CRITICAL, label: 'core_loop' },
     { content: generateTacticalSection(), priority: SectionPriority.HIGH, label: 'tactical' },
     { content: generateKeyPrinciplesSection(state.config), priority: SectionPriority.HIGH, label: 'key_principles' },
   ];
@@ -228,7 +228,7 @@ function generateIdentitySection(config: EngagementConfig): string {
   if (config.scope.domains.length > 0) {
     lines.push(`- **Scope Domains:** ${config.scope.domains.join(', ')}`);
   }
-  if (config.opsec) {
+  if (config.opsec && config.opsec.enabled) {
     lines.push(`- **OPSEC Profile:** ${config.opsec.name}`);
     if (config.opsec.blacklisted_techniques && config.opsec.blacklisted_techniques.length > 0) {
       lines.push(`- **OPSEC Blacklisted Techniques:** ${config.opsec.blacklisted_techniques.join(', ')}`);
@@ -245,18 +245,19 @@ function generateIdentitySection(config: EngagementConfig): string {
   return lines.join('\n');
 }
 
-function generateCoreLoopSection(profile: LabProfile): string {
+function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): string {
+  const vetoNote = opsecEnabled ? 'out-of-scope, duplicates, and hard OPSEC vetoes are already removed' : 'out-of-scope and duplicate items are already removed';
+  const opsecScoringLine = opsecEnabled ? "\n   - What's the risk/reward ratio given our OPSEC profile?" : '';
   const base = `## Core Loop
 
 1. **Start every session** (including after compaction) by calling \`get_state()\`. This gives you the complete engagement briefing from the graph — scope, discoveries, access, objectives, frontier.
 
-2. **Assess the frontier** by calling \`next_task()\`. You'll receive candidate actions pre-filtered by the deterministic layer (out-of-scope, duplicates, and hard OPSEC vetoes are already removed). Everything else is yours to score.
+2. **Assess the frontier** by calling \`next_task()\`. You'll receive candidate actions pre-filtered by the deterministic layer (${vetoNote}). Everything else is yours to score.
 
 3. **Score and prioritize** the candidates. For each, consider:
    - Does this open a multi-step attack chain?
    - What's the likely defensive posture of the target?
-   - What sequencing makes sense (what should happen before what)?
-   - What's the risk/reward ratio given our OPSEC profile?
+   - What sequencing makes sense (what should happen before what)?${opsecScoringLine}
    - Does this move us closer to an objective?
 
 4. **Explore the graph** with \`query_graph()\` whenever the frontier doesn't capture a pattern you're seeing.
@@ -352,10 +353,8 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '- **Use `query_graph()` liberally.** The graph may contain patterns the frontier doesn\'t surface.',
   ];
 
-  if (config.opsec) {
+  if (config.opsec && config.opsec.enabled) {
     lines.push(`- **Respect OPSEC.** Profile: ${config.opsec.name}. Max noise: ${config.opsec.max_noise}. Factor noise levels into your decisions.`);
-  } else {
-    lines.push('- **Respect OPSEC.** Check the engagement\'s OPSEC profile in `get_state()` and factor noise levels into your decisions.');
   }
 
   return lines.join('\n');
@@ -650,9 +649,9 @@ function generateSituationalSection(ctx: PromptContext): string {
     hasContent = true;
   }
 
-  // OPSEC budget status
+  // OPSEC budget status (only when OPSEC enforcement is enabled)
   const opsecCtx = engine.getOpsecContext();
-  if (opsecCtx.global_noise_spent > 0 || opsecCtx.defensive_signals.length > 0) {
+  if (state.config.opsec?.enabled && (opsecCtx.global_noise_spent > 0 || opsecCtx.defensive_signals.length > 0)) {
     const maxNoise = state.config.opsec?.max_noise ?? 1;
     const pct = maxNoise > 0 ? Math.round((opsecCtx.global_noise_spent / maxNoise) * 100) : 0;
     lines.push(`### OPSEC Budget`);

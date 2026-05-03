@@ -662,6 +662,7 @@ export class DashboardServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       opsec: {
+        enabled: opsec.enabled === true,
         max_noise: opsec.max_noise,
         approval_mode: opsec.approval_mode || 'approve-critical',
         approval_timeout_ms: opsec.approval_timeout_ms || 300000,
@@ -689,6 +690,10 @@ export class DashboardServer {
       const opsec = config.opsec;
       let changed = false;
 
+      if (typeof body.enabled === 'boolean') {
+        opsec.enabled = body.enabled;
+        changed = true;
+      }
       if (typeof body.max_noise === 'number' && body.max_noise >= 0 && body.max_noise <= 2) {
         opsec.max_noise = body.max_noise;
         changed = true;

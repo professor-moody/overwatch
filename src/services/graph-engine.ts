@@ -776,8 +776,8 @@ export class GraphEngine {
         }
       }
 
-      // 2. OPSEC hard veto
-      if (item.opsec_noise > this.ctx.config.opsec.max_noise) {
+      // 2. OPSEC hard veto (only when OPSEC enforcement is enabled)
+      if (this.ctx.config.opsec.enabled && item.opsec_noise > this.ctx.config.opsec.max_noise) {
         filtered.push({ item, reason: `OPSEC veto: noise ${item.opsec_noise} exceeds max ${this.ctx.config.opsec.max_noise}` });
         continue;
       }
@@ -961,18 +961,21 @@ export class GraphEngine {
       }
     }
 
-    // Check OPSEC blacklist
-    if (action.technique && this.ctx.config.opsec.blacklisted_techniques?.includes(action.technique)) {
-      errors.push(`Technique blacklisted by OPSEC profile: ${action.technique}`);
-    }
+    // OPSEC enforcement (only when enabled)
+    if (this.ctx.config.opsec.enabled) {
+      // Check OPSEC blacklist
+      if (action.technique && this.ctx.config.opsec.blacklisted_techniques?.includes(action.technique)) {
+        errors.push(`Technique blacklisted by OPSEC profile: ${action.technique}`);
+      }
 
-    // Time window check (handles wrap-around, e.g. 22:00–06:00)
-    if (this.ctx.config.opsec.time_window) {
-      const { start_hour, end_hour } = this.ctx.config.opsec.time_window;
-      const now = new Date();
-      if (!isInTimeWindow(start_hour, end_hour, now)) {
-        const hour = now.getHours();
-        warnings.push(`Outside approved time window (${start_hour}:00-${end_hour}:00), current hour: ${hour}`);
+      // Time window check (handles wrap-around, e.g. 22:00–06:00)
+      if (this.ctx.config.opsec.time_window) {
+        const { start_hour, end_hour } = this.ctx.config.opsec.time_window;
+        const now = new Date();
+        if (!isInTimeWindow(start_hour, end_hour, now)) {
+          const hour = now.getHours();
+          warnings.push(`Outside approved time window (${start_hour}:00-${end_hour}:00), current hour: ${hour}`);
+        }
       }
     }
 
@@ -998,11 +1001,13 @@ export class GraphEngine {
     const domain = host_id ? this.resolveHostDomain(host_id) : undefined;
     const opsec_context = this.ctx.opsecTracker.getNoiseContext({ host_id: host_id || undefined, domain });
 
-    // Noise budget warning
-    if (opsec_context.noise_budget_remaining <= 0) {
-      warnings.push('Noise budget exhausted — only passive/zero-noise actions recommended.');
-    } else if (this.ctx.opsecTracker.isApproachingCeiling(host_id || undefined, domain)) {
-      warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${this.ctx.config.opsec.max_noise}).`);
+    // Noise budget warning (only when OPSEC enforcement is enabled)
+    if (this.ctx.config.opsec.enabled) {
+      if (opsec_context.noise_budget_remaining <= 0) {
+        warnings.push('Noise budget exhausted — only passive/zero-noise actions recommended.');
+      } else if (this.ctx.opsecTracker.isApproachingCeiling(host_id || undefined, domain)) {
+        warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${this.ctx.config.opsec.max_noise}).`);
+      }
     }
 
     // --- Outcome feedback loop ---
