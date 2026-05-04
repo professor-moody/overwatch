@@ -267,12 +267,15 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
 6. **Log execution start** with \`log_action_event(event_type="action_started")\` before major execution. **Always pass both \`action_id\` and \`frontier_item_id\`.**
 
 7. **Execute the action** using the appropriate tools.
+   - For one-shot shell commands, prefer \`run_bash\` — it auto-runs validation, the approval gate, action_started/completed/failed logging, evidence capture, and optional \`parse_with\` ingest in a single call. Just pass \`frontier_item_id\` and (optionally) \`technique\`/\`target_*\` and skip steps 5/6/9 manually.
+   - For interactive or long-lived shells, use \`open_session\` + \`send_to_session\`.
+   - For everything else (custom tooling, manual observations), follow the explicit validate → log_started → execute → parse/report → log_completed flow.
 
 8. **Parse or report results immediately**:
    - Use \`parse_output()\` for supported parser output. **Always pass \`action_id\` and \`frontier_item_id\`.**
    - Use \`report_finding()\` for manual observations or already-structured data. **Always pass \`action_id\` and \`frontier_item_id\`.**
 
-9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.**
+9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.** (\`run_bash\` does this for you.)
 
 10. **Dispatch sub-agents** for parallel work using \`register_agent()\`.
 
@@ -436,9 +439,9 @@ function generateSubAgentWorkflowSection(): string {
 1. Call \`get_agent_context\` to get your scoped subgraph view
 2. Call \`validate_action\` before executing any significant action
 3. Call \`log_action_event(event_type="action_started")\` before execution
-4. Execute the action
+4. Execute the action — for one-shot bash commands prefer \`run_bash\`, which auto-handles validation, the approval gate, action lifecycle logging, and evidence capture in a single call
 5. Use \`parse_output()\` for supported tool output, or \`report_finding()\` for manual observations
-6. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done
+6. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done (skip when using \`run_bash\` — it logs for you)
 7. Use \`query_graph()\` if you need more context
 8. Use \`get_skill()\` for methodology guidance
 

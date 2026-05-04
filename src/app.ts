@@ -43,6 +43,7 @@ import { registerReportingTools } from './tools/reporting.js';
 import { registerRemediationTools } from './tools/remediation.js';
 import { registerSessionTools } from './tools/sessions.js';
 import { registerScopeTools } from './tools/scope.js';
+import { registerRunBashTool } from './tools/run-bash.js';
 import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
@@ -156,6 +157,7 @@ export function registerAllTools(
   registerRemediationTools(s, deps.engine);
   registerSessionTools(s, deps.sessionManager, deps.engine);
   registerScopeTools(s, deps.engine);
+  registerRunBashTool(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
   registerInstructionTools(s, deps.engine, () => registrar.getEntries());
