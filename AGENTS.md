@@ -56,6 +56,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `log_action_event` — record action start/completion/failure
 > - `log_thought` — record reasoning, decisions, alternatives considered
 > - `run_bash` — auto-instrumented one-shot shell execution
+> - `run_tool` — auto-instrumented one-shot binary execution (argv form, no shell)
 > - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
 > - `query_graph` — explore the graph if you need more context
@@ -68,7 +69,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 
 ## Tool Reference
 
-**44 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**45 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -80,6 +81,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `log_action_event` | Record action lifecycle around real execution | Before starting and after finishing a significant action |
 | `log_thought` | Record reasoning, plans, decisions, rejections, reflections | Before committing to a frontier item; whenever you weigh alternatives; after major outcomes |
 | `run_bash` | Auto-instrumented `bash -c` execution | One-shot shell commands — wraps validate → approval → action_started → execute → evidence capture → action_completed/failed → optional parse_with ingest in one call |
+| `run_tool` | Auto-instrumented argv-form binary execution | One-shot tool invocations — same lifecycle as `run_bash` but no shell parsing (safer; preferred when you have a binary + argv) |
 | `parse_output` | Deterministically parse supported tool output into findings | When raw output comes from a supported parser |
 | `report_finding` | Submit discoveries to graph | After every discovery, immediately |
 | `get_evidence` | Retrieve evidence blobs by ID or list by action/finding | After `report_finding` stored evidence; full-fidelity review |

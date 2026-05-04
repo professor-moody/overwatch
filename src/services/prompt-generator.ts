@@ -269,7 +269,7 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
 6. **Log execution start** with \`log_action_event(event_type="action_started")\` before major execution. **Always pass both \`action_id\` and \`frontier_item_id\`.**
 
 7. **Execute the action** using the appropriate tools.
-   - For one-shot shell commands, prefer \`run_bash\` — it auto-runs validation, the approval gate, action_started/completed/failed logging, evidence capture, and optional \`parse_with\` ingest in a single call. Just pass \`frontier_item_id\` and (optionally) \`technique\`/\`target_*\` and skip steps 5/6/9 manually.
+   - For one-shot binary + argv invocations, prefer \`run_tool\` (no shell parsing, no injection risk) — it auto-runs validation, the approval gate, action_started/completed/failed logging, evidence capture, and optional \`parse_with\` ingest in a single call. Use \`run_bash\` only when you genuinely need shell features (pipes, redirects, globs).
    - For interactive or long-lived shells, use \`open_session\` + \`send_to_session\`.
    - For everything else (custom tooling, manual observations), follow the explicit validate → log_started → execute → parse/report → log_completed flow.
 
@@ -277,7 +277,7 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
    - Use \`parse_output()\` for supported parser output. **Always pass \`action_id\` and \`frontier_item_id\`.**
    - Use \`report_finding()\` for manual observations or already-structured data. **Always pass \`action_id\` and \`frontier_item_id\`.**
 
-9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.** (\`run_bash\` does this for you.)
+9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.** (\`run_bash\` and \`run_tool\` do this for you.)
 
 10. **Dispatch sub-agents** for parallel work using \`register_agent()\`.
 
@@ -442,9 +442,9 @@ function generateSubAgentWorkflowSection(): string {
 2. Call \`log_thought({ kind: "plan", thought: "..." })\` to record your intended approach for this task
 3. Call \`validate_action\` before executing any significant action
 4. Call \`log_action_event(event_type="action_started")\` before execution
-5. Execute the action — for one-shot bash commands prefer \`run_bash\`, which auto-handles validation, the approval gate, action lifecycle logging, and evidence capture in a single call
+5. Execute the action — for one-shot binary invocations prefer \`run_tool\` (argv form, no shell), or \`run_bash\` when you need shell features; both auto-handle validation, the approval gate, action lifecycle logging, and evidence capture in a single call
 6. Use \`parse_output()\` for supported tool output, or \`report_finding()\` for manual observations
-7. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done (skip when using \`run_bash\` — it logs for you)
+7. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done (skip when using \`run_bash\` or \`run_tool\` — they log for you)
 8. Call \`log_thought({ kind: "reflection", thought: "..." })\` summarizing what you learned before closing the task
 9. Use \`query_graph()\` if you need more context
 10. Use \`get_skill()\` for methodology guidance

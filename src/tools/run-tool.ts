@@ -1,8 +1,8 @@
 // ============================================================
-// Overwatch — run_bash tool
-// Shell-form alias around the shared instrumented process runner.
-// Use this when you need shell features (pipes, redirects, globs,
-// expansions). For a binary + argv invocation, prefer `run_tool`.
+// Overwatch — run_tool tool
+// Argv-form companion to `run_bash`. Spawns a binary directly with
+// an argument array — no shell parsing, no injection vectors. Use
+// this for straight tool invocations (nmap, nxc, curl, etc.).
 // ============================================================
 
 import { z } from 'zod';
@@ -16,31 +16,36 @@ import {
   MAX_TIMEOUT_MS,
 } from './_process-runner.js';
 
-export function registerRunBashTool(server: McpServer, engine: GraphEngine): void {
+function shellQuote(s: string): string {
+  // Lightweight pretty-printer for the description / evidence "command_repr".
+  // Not for actual shell execution — the runner uses argv directly.
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+export function registerRunToolTool(server: McpServer, engine: GraphEngine): void {
   server.registerTool(
-    'run_bash',
+    'run_tool',
     {
-      title: 'Run Bash Command',
-      description: `Execute a shell command via \`bash -c\` with full action-lifecycle instrumentation.
+      title: 'Run Tool (argv form)',
+      description: `Execute a binary with an explicit argv array, fully instrumented like \`run_bash\`.
 
-Use this when you need shell features (pipes, redirects, globs, env expansion).
-For straight binary + argv execution, prefer \`run_tool\` — it avoids shell
-parsing pitfalls and injection risk.
+Prefer this over \`run_bash\` whenever you have a binary + arguments to pass —
+no shell parsing means no injection risk and no escaping headaches.
+Reach for \`run_bash\` only when you genuinely need shell features (pipes,
+redirects, globs, expansions).
 
-Overwatch will automatically:
-1. Run scope/OPSEC validation (unless validate=false)
-2. Wait for operator approval if approval_mode requires it
-3. Log action_started → execute → log action_completed/action_failed
-4. Store full stdout/stderr in the evidence store (linked by action_id)
-5. Optionally parse the output via a built-in parser (parse_with) and ingest findings
+Lifecycle (identical to \`run_bash\`):
+1. Scope/OPSEC validation (unless validate=false)
+2. Operator approval if required
+3. action_started → spawn → action_completed/action_failed
+4. Stdout/stderr stored in evidence (linked by action_id)
+5. Optional inline parse_with → ingest
 
-Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_evidence).
-
-For interactive or long-lived shells use \`open_session\` + \`send_to_session\`.
-For background scans you intend to poll, run a one-shot here that backgrounds the
-process and pair with \`track_process\`.`,
+Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_evidence).`,
       inputSchema: {
-        command: z.string().min(1).describe('Shell command to execute via `bash -c`'),
+        binary: z.string().min(1).describe('Path or name of the binary to execute (resolved via PATH if not absolute).'),
+        args: z.array(z.string()).default([]).describe('Argument vector passed directly to the binary (no shell parsing).'),
         cwd: z.string().optional().describe('Working directory for the command'),
         env: z.record(z.string()).optional().describe('Extra environment variables to set on the child process'),
         timeout_ms: z.number().int().min(100).max(MAX_TIMEOUT_MS).optional()
@@ -48,8 +53,8 @@ process and pair with \`track_process\`.`,
         action_id: z.string().optional().describe('Stable action ID. Auto-generated if omitted.'),
         frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
         agent_id: z.string().optional().describe('Agent or session responsible for the action'),
-        description: z.string().optional().describe('Human-readable description of the action (defaults to the command)'),
-        tool_name: z.string().optional().describe('Tool name for attribution (defaults to first command token)'),
+        description: z.string().optional().describe('Human-readable description of the action (defaults to binary + args)'),
+        tool_name: z.string().optional().describe('Tool name for attribution (defaults to the binary basename)'),
         technique: z.string().optional().describe('Technique label (e.g. portscan, kerberoast)'),
         target_node: z.string().optional().describe('Primary target node ID for scope validation'),
         target_node_ids: z.array(z.string()).optional().describe('All target node IDs'),
@@ -72,11 +77,17 @@ process and pair with \`track_process\`.`,
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_bash', async (params) => {
+    withErrorBoundary('run_tool', async (params) => {
+      const args = params.args ?? [];
+      const command_repr = [params.binary, ...args].map(shellQuote).join(' ');
+      // Default tool_name to the binary basename for cleaner attribution.
+      const default_tool_name = params.tool_name
+        || params.binary.split('/').pop()
+        || params.binary;
       return runInstrumentedProcess(engine, {
-        binary: 'bash',
-        args: ['-c', params.command],
-        command_repr: params.command,
+        binary: params.binary,
+        args,
+        command_repr,
         cwd: params.cwd,
         env: params.env,
         timeout_ms: params.timeout_ms,
@@ -84,7 +95,7 @@ process and pair with \`track_process\`.`,
         frontier_item_id: params.frontier_item_id,
         agent_id: params.agent_id,
         description: params.description,
-        tool_name: params.tool_name,
+        tool_name: default_tool_name,
         technique: params.technique,
         target_node: params.target_node,
         target_node_ids: params.target_node_ids,
@@ -96,7 +107,7 @@ process and pair with \`track_process\`.`,
         parse_with: params.parse_with,
         parser_context: params.parser_context,
         noise_estimate: params.noise_estimate,
-        invoking_tool: 'run_bash',
+        invoking_tool: 'run_tool',
       });
     }),
   );
