@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdi
 import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
+import { FrontierLinkageTracker } from './frontier-linkage.js';
 import type { InferenceRule, NodeProperties } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
@@ -245,6 +246,7 @@ export class StatePersistence {
       trackedProcesses: this.ctx.trackedProcesses,
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
+      frontierLinkage: this.ctx.frontierLinkage.serialize(),
     };
     const json = JSON.stringify(data);
     const serializeEnd = Date.now();
@@ -365,6 +367,7 @@ export class StatePersistence {
     this.ctx.opsecTracker = data.opsecTracker
       ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
       : new OpsecTracker(this.ctx);
+    this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persistImmediate();
@@ -394,6 +397,7 @@ export class StatePersistence {
     this.ctx.opsecTracker = data.opsecTracker
       ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
       : new OpsecTracker(this.ctx);
+    this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
   }
 
@@ -426,6 +430,7 @@ export class StatePersistence {
         this.ctx.opsecTracker = data.opsecTracker
           ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
           : new OpsecTracker(this.ctx);
+        this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
         this.ctx.rebuildActionFrontierMap();
         // Overwrite corrupted state file with valid snapshot data
         this.persistImmediate();

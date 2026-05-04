@@ -114,4 +114,53 @@ describe('scoring and inference tools', () => {
     expect(payload.valid).toBe(false);
     expect(payload.errors.length).toBeGreaterThan(0);
   });
+
+  describe('next_task frontier linkage tracking', () => {
+    it('returns a linkage_status_summary on every call', async () => {
+      const r = await handlers.next_task({ max_items: 5, include_filtered: false, group_by: 'individual' });
+      expect(r.isError).toBeUndefined();
+      const payload = JSON.parse(r.content[0].text);
+      expect(payload.linkage_status_summary).toMatchObject({
+        total: expect.any(Number),
+        open: expect.any(Number),
+        validated: expect.any(Number),
+        pursued: expect.any(Number),
+        rejected_explicit: expect.any(Number),
+        dropped: expect.any(Number),
+      });
+    });
+
+    it('observes action_completed on a frontier_item_id and tallies as pursued', async () => {
+      // Manually emit a frontier item id through the tracker, then log an
+      // action_completed event with that id; the next next_task summary
+      // should reflect it as pursued.
+      const tracker = engine.getFrontierLinkage();
+      tracker.recordEmitted(['fi-fake-1']);
+      engine.logActionEvent({
+        description: 'simulated completion',
+        event_type: 'action_completed',
+        category: 'frontier',
+        frontier_item_id: 'fi-fake-1',
+        agent_id: 'primary',
+      });
+      const r = await handlers.next_task({ max_items: 5, include_filtered: false, group_by: 'individual' });
+      const payload = JSON.parse(r.content[0].text);
+      expect(payload.linkage_status_summary.pursued).toBeGreaterThanOrEqual(1);
+    });
+
+    it('emits a frontier_item_dropped system event after the threshold', async () => {
+      const tracker = engine.getFrontierLinkage();
+      tracker.recordEmitted(['fi-stale']);
+      // Burn through threshold next_task calls without the item reappearing.
+      for (let i = 0; i < 6; i++) {
+        await handlers.next_task({ max_items: 5, include_filtered: false, group_by: 'individual' });
+      }
+      const dropEvents = engine.getFullHistory().filter(
+        (e) => e.event_type === 'frontier_item_dropped' && e.frontier_item_id === 'fi-stale',
+      );
+      expect(dropEvents.length).toBe(1);
+      expect(dropEvents[0].provenance).toBe('system');
+      expect(dropEvents[0].category).toBe('frontier');
+    });
+  });
 });

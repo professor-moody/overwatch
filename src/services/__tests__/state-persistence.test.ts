@@ -157,6 +157,27 @@ describe('StatePersistence', () => {
       expect(ctx2.coldStore.has('host-cold-1')).toBe(true);
       expect(ctx2.coldStore.get('host-cold-1')?.ip).toBe('10.0.0.99');
     });
+
+    it('round-trips frontier linkage tracker', () => {
+      const { ctx, persistence } = buildPersistence();
+      ctx.frontierLinkage.recordEmitted(['fi-1', 'fi-2']);
+      ctx.logEvent({
+        description: 'pursued',
+        event_type: 'action_completed',
+        frontier_item_id: 'fi-1',
+      });
+
+      persistence.persist();
+      persistence.flushNow();
+
+      const { ctx: ctx2, persistence: persistence2 } = buildPersistence(ctx.stateFilePath);
+      persistence2.loadState();
+
+      expect(ctx2.frontierLinkage.size()).toBe(2);
+      expect(ctx2.frontierLinkage.callIndex()).toBe(1);
+      expect(ctx2.frontierLinkage.get('fi-1')?.linkage_status).toBe('pursued');
+      expect(ctx2.frontierLinkage.get('fi-2')?.linkage_status).toBe('open');
+    });
   });
 
   // =============================================

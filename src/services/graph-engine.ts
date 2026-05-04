@@ -1798,6 +1798,11 @@ export class GraphEngine {
     return [...this.ctx.activityLog];
   }
 
+  /** Frontier linkage tracker: lifecycle status of every surfaced frontier item. */
+  getFrontierLinkage(): import('./frontier-linkage.js').FrontierLinkageTracker {
+    return this.ctx.frontierLinkage;
+  }
+
   /**
    * Filter the recent activity tail for `get_state` consumers.
    * Defaults hide reasoning (high-volume `log_thought` output) and keep

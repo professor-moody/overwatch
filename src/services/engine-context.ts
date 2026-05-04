@@ -16,6 +16,7 @@ import type { TrackedProcess } from './process-tracker.js';
 import { ColdStore } from './cold-store.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
+import { FrontierLinkageTracker } from './frontier-linkage.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -44,7 +45,8 @@ export type ActivityEventType =
   | 'session_access_unconfirmed'
   | 'scope_updated'
   | 'thought'
-  | 'system';
+  | 'system'
+  | 'frontier_item_dropped';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }
@@ -113,6 +115,7 @@ export class EngineContext {
   pendingActionQueue: PendingActionQueue;
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
+  frontierLinkage: FrontierLinkageTracker;   // status of every frontier item we've surfaced
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -133,6 +136,7 @@ export class EngineContext {
     this.pendingActionQueue = new PendingActionQueue(this);
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;
+    this.frontierLinkage = new FrontierLinkageTracker();
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
@@ -190,6 +194,12 @@ export class EngineContext {
     });
     if (this.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
       this.activityLog = tieredTruncate(this.activityLog, MAX_ACTIVITY_LOG_ENTRIES);
+    }
+    // Frontier linkage observation: update status for items this event touches.
+    // Guarded so legacy code paths that initialise EngineContext indirectly
+    // won't crash if the tracker hasn't been wired yet.
+    if (this.frontierLinkage) {
+      this.frontierLinkage.observe(entry);
     }
     return entry;
   }

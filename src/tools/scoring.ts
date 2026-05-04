@@ -55,9 +55,33 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
+      const surfaced = passed.slice(0, max_items);
+
+      // Frontier linkage tracking: record what we surfaced, sweep stale items.
+      const tracker = engine.getFrontierLinkage();
+      tracker.recordEmitted(surfaced.map(item => item.id));
+      const dropped = tracker.sweepDropped();
+      for (const rec of dropped) {
+        engine.logActionEvent({
+          description: `Frontier item dropped without being pursued: ${rec.frontier_item_id}`,
+          event_type: 'frontier_item_dropped',
+          category: 'frontier',
+          provenance: 'system',
+          frontier_item_id: rec.frontier_item_id,
+          result_classification: 'neutral',
+          details: {
+            emitted_at: rec.emitted_at,
+            emitted_call_index: rec.emitted_call_index,
+            last_seen_call_index: rec.last_seen_call_index,
+            current_call_index: tracker.callIndex(),
+          },
+        });
+      }
+
       const result: Record<string, unknown> = {
         candidate_count: passed.length,
-        candidates: passed.slice(0, max_items)
+        candidates: surfaced,
+        linkage_status_summary: tracker.summary(),
       };
 
       if (group_by === 'campaign') {
