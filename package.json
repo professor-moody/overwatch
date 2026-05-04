@@ -4,6 +4,9 @@
   "description": "Offensive security engagement orchestrator - MCP server with graph-based state management",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "overwatch-mcp-tape": "dist/bin/overwatch-mcp-tape.js"
+  },
   "scripts": {
     "build": "tsc && node --eval \"import('fs').then(f=>f.cpSync('src/dashboard','dist/dashboard',{recursive:true}))\" && node scripts/vendor-dashboard-deps.js && npx vite build --config src/dashboard-next/vite.config.ts",
     "build:dashboard-next": "npx vite build --config src/dashboard-next/vite.config.ts",

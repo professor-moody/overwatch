@@ -70,7 +70,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 
 ## Tool Reference
 
-**48 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**49 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -101,6 +101,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `run_lab_preflight` | Lab readiness (tools, config, graph stage) | Before heavy lab work; supports all engagement profiles |
 | `run_graph_health` | Graph integrity and consistency checks (and activity-chain status when enabled) | After large ingests or suspected corruption |
 | `verify_activity_chain` | Verify the tamper-evident hash chain over the activity log (opt-in via `hash_chain_enabled`) | During retrospectives, after suspected log tampering, or in CI integrity checks |
+| `register_tape_session` | Register a JSON-RPC tape captured by the `overwatch-mcp-tape` proxy | After running the engagement under the proxy; retrospectives that need full wire traffic |
 | `recompute_objectives` | Refresh objective achievement from graph | After credential or access changes |
 | `ingest_bloodhound` | Import BloodHound JSON collections | AD attack path analysis |
 | `ingest_azurehound` | Import AzureHound / cloud identity JSON | Azure attack paths |
