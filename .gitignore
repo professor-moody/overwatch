@@ -17,3 +17,10 @@ site/
 .venv/
 tmp/
 retrospective/
+
+# dashboard-next: Vite handles transpilation; tsc is typecheck-only.
+# Guard against accidental emit if someone runs `tsc -p src/dashboard-next`.
+src/dashboard-next/**/*.js
+src/dashboard-next/tsconfig.tsbuildinfo
+# but keep config files that legitimately ship as .js (postcss)
+!src/dashboard-next/postcss.config.js
