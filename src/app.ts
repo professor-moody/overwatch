@@ -46,6 +46,7 @@ import { registerScopeTools } from './tools/scope.js';
 import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
+import { registerTranscriptTools } from './tools/transcripts.js';
 import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
@@ -162,6 +163,7 @@ export function registerAllTools(
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
+  registerTranscriptTools(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
   registerInstructionTools(s, deps.engine, () => registrar.getEntries());

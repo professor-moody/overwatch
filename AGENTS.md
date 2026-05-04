@@ -70,7 +70,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 
 ## Tool Reference
 
-**46 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**47 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -91,6 +91,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |
 | `update_agent` | Mark agent task done/failed | When a sub-agent finishes |
 | `submit_agent_transcript` | Sub-agent wrap-up: short summary + optional raw transcript blob linked to the agent task | Sub-agent should call this **before** the primary marks them done |
+| `ingest_transcript` | Pull an external chat/IDE transcript JSONL into the engagement after the fact | Operator/watcher post-hoc context import; turns recorded with `provenance=ingested` |
 | `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration | When network sweep needs parallelization across CIDRs |
 | `dispatch_campaign_agents` | Dispatch agents for a campaign's grouped frontier items | When launching a campaign with parallel agents |
 | `manage_campaign` | Create, monitor, pause, resume, or abort campaigns | Campaign lifecycle management |

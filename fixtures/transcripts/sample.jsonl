@@ -1,0 +1,5 @@
+{"role":"user","content":"Scan host 10.10.10.5"}
+{"role":"assistant","content":"Running validation, then nmap."}
+{"type":"tool_call","tool_name":"validate_action","arguments":{"action_id":"act-abc-1","tool":"nmap"}}
+{"type":"tool_result","tool_name":"validate_action","action_id":"act-abc-1","output":{"valid":true}}
+{"role":"assistant","content":"Validation passed; executing scan."}
