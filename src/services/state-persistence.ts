@@ -369,6 +369,7 @@ export class StatePersistence {
       : new OpsecTracker(this.ctx);
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
+    this.ctx.rebuildChainTail();
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persistImmediate();
     return true;
@@ -399,6 +400,7 @@ export class StatePersistence {
       : new OpsecTracker(this.ctx);
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
+    this.ctx.rebuildChainTail();
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[]): boolean {
@@ -432,6 +434,7 @@ export class StatePersistence {
           : new OpsecTracker(this.ctx);
         this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
         this.ctx.rebuildActionFrontierMap();
+        this.ctx.rebuildChainTail();
         // Overwrite corrupted state file with valid snapshot data
         this.persistImmediate();
         return true;

@@ -17,6 +17,7 @@ import { ColdStore } from './cold-store.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
+import { computeEventHash, shouldChainEntry, GENESIS_HASH } from './activity-chain.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -83,6 +84,14 @@ export type ActivityLogEntry = {
   noise_estimate?: number;
   noise_actual?: number;
   details?: ActivityLogDetails;
+  // Hash-chain (Phase 6): tamper-evident chain over live agent/system events.
+  // Populated only when engine.config.hash_chain_enabled === true and the entry
+  // qualifies (provenance ∈ {agent, system} and event_type !== 'thought').
+  // Ingested/inferred entries get chain_excluded:true and skip hash computation
+  // so retro-imports don't break the live chain.
+  prev_hash?: string;
+  event_hash?: string;
+  chain_excluded?: boolean;
 };
 
 export type GraphUpdateDetail = {
@@ -118,6 +127,7 @@ export class EngineContext {
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
   frontierLinkage: FrontierLinkageTracker;   // status of every frontier item we've surfaced
+  lastChainHash: string;                     // running tail of the activity hash-chain (Phase 6)
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -139,6 +149,7 @@ export class EngineContext {
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;
     this.frontierLinkage = new FrontierLinkageTracker();
+    this.lastChainHash = GENESIS_HASH;
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
@@ -191,6 +202,17 @@ export class EngineContext {
       ...enriched,
       timestamp: new Date().toISOString(),
     });
+    // Hash-chain (Phase 6): only when explicitly enabled. Computed before push
+    // so the stored entry carries the chain fields.
+    if (this.config.hash_chain_enabled) {
+      if (shouldChainEntry(entry)) {
+        entry.prev_hash = this.lastChainHash;
+        entry.event_hash = computeEventHash(entry, this.lastChainHash);
+        this.lastChainHash = entry.event_hash;
+      } else {
+        entry.chain_excluded = true;
+      }
+    }
     this.activityLog.push({
       ...entry,
     });
@@ -217,6 +239,20 @@ export class EngineContext {
         });
       }
     }
+  }
+
+  /**
+   * Rebuild the running hash-chain tail from the persisted activity log.
+   * Walks the log in order and adopts the last `event_hash` from a chained
+   * entry. Should be called after loading state from disk so subsequent
+   * `logEvent` calls extend the same chain.
+   */
+  rebuildChainTail(): void {
+    let last = GENESIS_HASH;
+    for (const entry of this.activityLog) {
+      if (entry.event_hash) last = entry.event_hash;
+    }
+    this.lastChainHash = last;
   }
 
   invalidatePathGraph(): void {
@@ -261,6 +297,9 @@ export function normalizeActivityLogEntry(
     linked_finding_ids: entry.linked_finding_ids,
     linked_agent_task_id: entry.linked_agent_task_id,
     details: entry.details,
+    prev_hash: entry.prev_hash,
+    event_hash: entry.event_hash,
+    chain_excluded: entry.chain_excluded,
   };
 }
 

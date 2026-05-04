@@ -5,6 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { checkAllTools } from '../services/tool-check.js';
 import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { verifyChain } from '../services/activity-chain.js';
 
 type StateToolOptions = {
   getDashboardStatus?: () => { enabled: boolean; running: boolean; address?: string };
@@ -211,7 +212,21 @@ Use this when you want the full health report instead of the summarized warnings
       }
     },
     withErrorBoundary('run_graph_health', async () => {
-      const report = engine.getHealthReport();
+      const report = engine.getHealthReport() as unknown as Record<string, unknown>;
+      // Phase 6: when hash chain is enabled, surface chain breaks alongside graph health.
+      const config = engine.getState().config;
+      if (config.hash_chain_enabled) {
+        const chain = verifyChain(engine.getFullHistory());
+        report.activity_chain = {
+          enabled: true,
+          valid: chain.valid,
+          chained_count: chain.chained_count,
+          excluded_count: chain.excluded_count,
+          breaks: chain.breaks,
+        };
+      } else {
+        report.activity_chain = { enabled: false };
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify(report, null, 2) }]
       };
@@ -341,5 +356,58 @@ the most recent entry instead.`,
         }]
       };
     })
+  );
+
+  // ============================================================
+  // Tool: verify_activity_chain
+  // Walk the activity log and verify the tamper-evident hash chain.
+  // Excluded entries (ingested/inferred/thought) are counted but never
+  // break the chain. Returns { valid, chained_count, excluded_count, breaks }.
+  // ============================================================
+  server.registerTool(
+    'verify_activity_chain',
+    {
+      title: 'Verify Activity Chain',
+      description: `Verify the tamper-evident hash chain over the engagement's live activity log.
+
+Only events with provenance ∈ {agent, system} and event_type !== 'thought' participate
+in the chain. Ingested/inferred/thought entries are counted as \`excluded_count\` and
+never break the chain.
+
+When \`hash_chain_enabled\` is false in the engagement config, returns valid:true with
+\`chain_disabled: true\` so callers can distinguish "no chain" from "chain ok".`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('verify_activity_chain', async () => {
+      const config = engine.getState().config;
+      if (!config.hash_chain_enabled) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              valid: true,
+              chain_disabled: true,
+              chained_count: 0,
+              excluded_count: engine.getFullHistory().length,
+              breaks: [],
+            }, null, 2),
+          }],
+        };
+      }
+      const result = verifyChain(engine.getFullHistory());
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ ...result, chain_disabled: false }, null, 2),
+        }],
+        isError: !result.valid,
+      };
+    }),
   );
 }

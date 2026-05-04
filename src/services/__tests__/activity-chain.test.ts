@@ -1,0 +1,202 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, unlinkSync, rmSync } from 'fs';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { GraphEngine } from '../../services/graph-engine.js';
+import { registerStateTools } from '../../tools/state.js';
+import { registerTranscriptTools } from '../../tools/transcripts.js';
+import { verifyChain, computeEventHash, GENESIS_HASH, shouldChainEntry } from '../activity-chain.js';
+import type { EngagementConfig } from '../../types.js';
+
+const TEST_STATE_FILE = './state-test-activity-chain.json';
+
+function makeConfig(hash_chain_enabled: boolean): EngagementConfig {
+  return {
+    id: 'test-activity-chain',
+    name: 'activity-chain test',
+    created_at: new Date().toISOString(),
+    scope: { cidrs: ['10.10.10.0/24'], domains: ['test.local'], exclusions: [] },
+    objectives: [],
+    opsec: { name: 'pentest', max_noise: 0.7 },
+    hash_chain_enabled,
+  };
+}
+
+function cleanup(): void {
+  try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
+  try { rmSync('./evidence-test-activity-chain', { recursive: true, force: true }); } catch {}
+}
+
+describe('activity-chain (Phase 6)', () => {
+  let engine: GraphEngine;
+  let handlers: Record<string, (args: any) => Promise<any>>;
+
+  beforeEach(() => {
+    cleanup();
+    engine = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    handlers = {};
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, handler: (args: any) => Promise<any>) {
+        handlers[name] = handler;
+      },
+    } as unknown as McpServer;
+    registerStateTools(fakeServer, engine);
+    registerTranscriptTools(fakeServer, engine);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shouldChainEntry rule matches plan: agent/system non-thought participate; ingested/inferred/thought excluded', () => {
+    expect(shouldChainEntry({ event_id: 'a', timestamp: 't', description: 'x', provenance: 'agent', event_type: 'action_started' })).toBe(true);
+    expect(shouldChainEntry({ event_id: 'b', timestamp: 't', description: 'x', provenance: 'system', event_type: 'instrumentation_warning' })).toBe(true);
+    expect(shouldChainEntry({ event_id: 'c', timestamp: 't', description: 'x', provenance: 'agent', event_type: 'thought' })).toBe(false);
+    expect(shouldChainEntry({ event_id: 'd', timestamp: 't', description: 'x', provenance: 'ingested', event_type: 'transcript_turn_ingested' })).toBe(false);
+    expect(shouldChainEntry({ event_id: 'e', timestamp: 't', description: 'x', provenance: 'inferred', event_type: 'inference_generated' })).toBe(false);
+  });
+
+  it('writes prev_hash + event_hash on chained entries; no hash on excluded', () => {
+    const baseline = engine.getFullHistory().length;
+    engine.logActionEvent({ description: 'agent action 1', event_type: 'action_started', provenance: 'agent' });
+    engine.logActionEvent({ description: 'a thought', event_type: 'thought', provenance: 'agent' });
+    engine.logActionEvent({ description: 'agent action 2', event_type: 'action_completed', provenance: 'agent' });
+
+    const log = engine.getFullHistory();
+    const a = log[baseline];
+    const b = log[baseline + 1];
+    const c = log[baseline + 2];
+    expect(a.event_hash).toBeTruthy();
+    expect(b.chain_excluded).toBe(true);
+    expect(b.event_hash).toBeUndefined();
+    expect(c.prev_hash).toBe(a.event_hash);
+    expect(c.event_hash).toBeTruthy();
+    expect(c.event_hash).not.toBe(a.event_hash);
+  });
+
+  it('verifyChain returns valid for an untampered chain', () => {
+    const baselineChained = verifyChain(engine.getFullHistory()).chained_count;
+    for (let i = 0; i < 10; i++) {
+      engine.logActionEvent({
+        description: `event ${i}`,
+        event_type: i % 2 === 0 ? 'action_started' : 'action_completed',
+        provenance: 'agent',
+      });
+    }
+    const result = verifyChain(engine.getFullHistory());
+    expect(result.valid).toBe(true);
+    expect(result.chained_count).toBe(baselineChained + 10);
+    expect(result.breaks.length).toBe(0);
+  });
+
+  it('detects tamper: mutating description breaks event_hash', () => {
+    engine.logActionEvent({ description: 'first', event_type: 'action_started', provenance: 'agent' });
+    engine.logActionEvent({ description: 'second', event_type: 'action_completed', provenance: 'agent' });
+    engine.logActionEvent({ description: 'third', event_type: 'finding_reported', provenance: 'agent' });
+
+    // Tamper in-memory
+    const log = engine.getFullHistory();
+    log[1].description = 'TAMPERED';
+
+    const result = verifyChain(log);
+    expect(result.valid).toBe(false);
+    // The mutated entry's recomputed hash won't match its stored hash, AND
+    // the next entry's prev_hash points to the (now-stale) stored hash so
+    // it still chains correctly. So we expect exactly one break on entry 1.
+    expect(result.breaks.length).toBeGreaterThanOrEqual(1);
+    expect(result.breaks.some(b => b.reason === 'event_hash_mismatch' && b.index === 1)).toBe(true);
+  });
+
+  it('thought + ingested events are counted as excluded but never break the chain', async () => {
+    const baseline = verifyChain(engine.getFullHistory());
+    engine.logActionEvent({ description: 'a1', event_type: 'action_started', provenance: 'agent' });
+    engine.logActionEvent({ description: 'reasoning', event_type: 'thought', provenance: 'agent' });
+    await handlers.ingest_transcript({
+      transcript_jsonl: '{"role":"user","content":"hi"}\n{"role":"assistant","content":"hello"}\n',
+      session_id: 'chain-test',
+    });
+    engine.logActionEvent({ description: 'a2', event_type: 'action_completed', provenance: 'agent' });
+
+    const result = verifyChain(engine.getFullHistory());
+    expect(result.valid).toBe(true);
+    expect(result.chained_count).toBe(baseline.chained_count + 2);
+    expect(result.excluded_count).toBeGreaterThanOrEqual(baseline.excluded_count + 3);
+  });
+
+  it('survives save/reload: chain tail is rebuilt', () => {
+    engine.logActionEvent({ description: 'before-restart-1', event_type: 'action_started', provenance: 'agent' });
+    engine.logActionEvent({ description: 'before-restart-2', event_type: 'action_completed', provenance: 'agent' });
+
+    // Force persistence then reload
+    engine.persist();
+    const engine2 = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+
+    // Engine init logs a 'Resumed engagement from persisted state' system event;
+    // it is itself part of the chain. We just need the chain to remain valid and
+    // for the new event to extend whatever the latest hash is post-restart.
+    const tailBefore = engine2.getFullHistory().slice(-1)[0].event_hash;
+    expect(tailBefore).toBeTruthy();
+
+    engine2.logActionEvent({ description: 'after-restart', event_type: 'action_started', provenance: 'agent' });
+    const newest = engine2.getFullHistory().slice(-1)[0];
+    expect(newest.prev_hash).toBe(tailBefore);
+
+    const result = verifyChain(engine2.getFullHistory());
+    expect(result.valid).toBe(true);
+  });
+
+  it('hash_chain_enabled=false: no hashes emitted, verify_activity_chain reports chain_disabled', async () => {
+    cleanup();
+    const e2 = new GraphEngine(makeConfig(false), TEST_STATE_FILE);
+    const h2: Record<string, any> = {};
+    const fakeServer = {
+      registerTool(name: string, _c: unknown, handler: any) { h2[name] = handler; },
+    } as unknown as McpServer;
+    registerStateTools(fakeServer, e2);
+
+    e2.logActionEvent({ description: 'no chain', event_type: 'action_started', provenance: 'agent' });
+    expect(e2.getFullHistory()[0].event_hash).toBeUndefined();
+    expect(e2.getFullHistory()[0].chain_excluded).toBeUndefined();
+
+    const result = await h2.verify_activity_chain({});
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.chain_disabled).toBe(true);
+    expect(payload.valid).toBe(true);
+  });
+
+  it('verify_activity_chain tool returns isError=true on tamper', async () => {
+    engine.logActionEvent({ description: 'one', event_type: 'action_started', provenance: 'agent' });
+    engine.logActionEvent({ description: 'two', event_type: 'action_completed', provenance: 'agent' });
+    engine.getFullHistory()[0].description = 'TAMPER';
+
+    const result = await handlers.verify_activity_chain({});
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.valid).toBe(false);
+    expect(payload.breaks.length).toBeGreaterThan(0);
+  });
+
+  it('run_graph_health surfaces activity_chain when enabled', async () => {
+    engine.logActionEvent({ description: 'hp-1', event_type: 'action_started', provenance: 'agent' });
+    const result = await handlers.run_graph_health({});
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.activity_chain).toBeDefined();
+    expect(payload.activity_chain.enabled).toBe(true);
+    expect(payload.activity_chain.valid).toBe(true);
+    expect(payload.activity_chain.chained_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('computeEventHash is deterministic for the same canonical entry + prev', () => {
+    const entry = {
+      event_id: 'fixed',
+      timestamp: '2026-05-04T00:00:00.000Z',
+      description: 'x',
+      provenance: 'agent' as const,
+      event_type: 'action_started' as const,
+    };
+    const h1 = computeEventHash(entry, GENESIS_HASH);
+    const h2 = computeEventHash(entry, GENESIS_HASH);
+    expect(h1).toBe(h2);
+    const h3 = computeEventHash(entry, 'a'.repeat(64));
+    expect(h3).not.toBe(h1);
+  });
+});
