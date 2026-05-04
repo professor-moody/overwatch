@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createHash } from 'crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { checkAllTools } from '../services/tool-check.js';
@@ -8,6 +9,13 @@ import { withErrorBoundary } from './error-boundary.js';
 type StateToolOptions = {
   getDashboardStatus?: () => { enabled: boolean; running: boolean; address?: string };
 };
+
+// Per-engine snapshot dedup. Skip writing a fresh evidence blob when the
+// returned state body matches the last snapshot AND less than this many
+// milliseconds have elapsed. Re-emit a lightweight system event pointing
+// at the previous evidence_id so the chain isn't broken.
+const SNAPSHOT_DEDUP_WINDOW_MS = 5_000;
+const lastSnapshotByEngine = new WeakMap<GraphEngine, { hash: string; evidence_id: string; ts: number }>();
 
 export function registerStateTools(server: McpServer, engine: GraphEngine, options: StateToolOptions = {}): void {
 
@@ -41,9 +49,15 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
           .int().min(1).max(100)
           .default(20)
           .describe('Number of recent activity entries to include'),
+        include_reasoning: z.boolean()
+          .default(false)
+          .describe('Include `event_type=thought` / `category=reasoning` entries in recent_activity. Default false to keep volume manageable; thoughts are still queryable via get_history / query_graph.'),
+        include_system: z.boolean()
+          .default(true)
+          .describe('Include `category=system` entries in recent_activity (snapshots, ingested transcript turns, instrumentation warnings). Set false to focus on operational events only.'),
         snapshot: z.boolean()
           .default(true)
-          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision.'),
+          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -52,31 +66,64 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         openWorldHint: false
       }
     },
-    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count, snapshot }) => {
-      const state = engine.getState({ activityCount: activity_count });
+    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count, include_reasoning, include_system, snapshot }) => {
+      const state = engine.getState({
+        activityCount: activity_count,
+        includeReasoning: include_reasoning,
+        includeSystem: include_system,
+      });
       if (!include_full_frontier) {
         state.frontier = state.frontier.slice(0, 10);
       }
       const stateText = JSON.stringify(state, null, 2);
       if (snapshot !== false) {
-        const evidence_id = engine.getEvidenceStore().store({
-          evidence_type: 'log',
-          filename: 'get_state.json',
-          content: stateText,
-        });
-        engine.logActionEvent({
-          description: 'State snapshot returned to caller',
-          event_type: 'system',
-          category: 'system',
-          tool_name: 'get_state',
-          result_classification: 'neutral',
-          details: {
-            evidence_id,
+        // Hash a stable view that excludes `recent_activity`. The snapshot itself
+        // appends a system event to the activity log, which would otherwise force
+        // every back-to-back call to look "different" and defeat dedup.
+        const { recent_activity: _ra, ...stateForHash } = state as any;
+        const hash = createHash('sha256').update(JSON.stringify(stateForHash)).digest('hex');
+        const now = Date.now();
+        const prev = lastSnapshotByEngine.get(engine);
+        const dedup = prev && prev.hash === hash && (now - prev.ts) < SNAPSHOT_DEDUP_WINDOW_MS;
+        if (dedup) {
+          // Lightweight breadcrumb pointing at the previous evidence — no new blob written.
+          engine.logActionEvent({
+            description: 'State snapshot deduplicated (unchanged within window)',
+            event_type: 'system',
+            category: 'system',
+            tool_name: 'get_state',
+            provenance: 'system',
+            result_classification: 'neutral',
+            details: {
+              evidence_id: prev!.evidence_id,
+              evidence_type: 'log',
+              dedup: true,
+              frontier_size: state.frontier.length,
+              activity_count,
+            },
+          });
+        } else {
+          const evidence_id = engine.getEvidenceStore().store({
             evidence_type: 'log',
-            frontier_size: state.frontier.length,
-            activity_count,
-          },
-        });
+            filename: 'get_state.json',
+            content: stateText,
+          });
+          lastSnapshotByEngine.set(engine, { hash, evidence_id, ts: now });
+          engine.logActionEvent({
+            description: 'State snapshot returned to caller',
+            event_type: 'system',
+            category: 'system',
+            tool_name: 'get_state',
+            provenance: 'system',
+            result_classification: 'neutral',
+            details: {
+              evidence_id,
+              evidence_type: 'log',
+              frontier_size: state.frontier.length,
+              activity_count,
+            },
+          });
+        }
         engine.persist();
       }
       return {

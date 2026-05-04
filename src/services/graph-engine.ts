@@ -1522,8 +1522,10 @@ export class GraphEngine {
   // State Summary
   // =============================================
 
-  getState(options?: { activityCount?: number }): EngagementState {
+  getState(options?: { activityCount?: number; includeReasoning?: boolean; includeSystem?: boolean }): EngagementState {
     const activityCount = options?.activityCount ?? 20;
+    const includeReasoning = options?.includeReasoning ?? false;
+    const includeSystem = options?.includeSystem ?? true;
     const nodesByType: Record<string, number> = {};
     const edgesByType: Record<string, number> = {};
     let confirmedEdges = 0;
@@ -1591,7 +1593,7 @@ export class GraphEngine {
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),
       active_agents: Array.from(this.ctx.agents.values()).filter(a => a.status === 'running'),
-      recent_activity: this.ctx.activityLog.slice(-activityCount),
+      recent_activity: this.filterRecentActivity({ activityCount, includeReasoning, includeSystem }),
       access_summary: {
         compromised_hosts: compromised,
         valid_credentials: validCreds,
@@ -1794,6 +1796,26 @@ export class GraphEngine {
 
   getFullHistory(): ActivityLogEntry[] {
     return [...this.ctx.activityLog];
+  }
+
+  /**
+   * Filter the recent activity tail for `get_state` consumers.
+   * Defaults hide reasoning (high-volume `log_thought` output) and keep
+   * system events. The full log remains available via `getFullHistory`.
+   */
+  private filterRecentActivity(opts: { activityCount: number; includeReasoning: boolean; includeSystem: boolean }): ActivityLogEntry[] {
+    const { activityCount, includeReasoning, includeSystem } = opts;
+    const log = this.ctx.activityLog;
+    if (includeReasoning && includeSystem) return log.slice(-activityCount);
+    // Walk backwards collecting the most recent N entries that pass the filter.
+    const out: ActivityLogEntry[] = [];
+    for (let i = log.length - 1; i >= 0 && out.length < activityCount; i--) {
+      const entry = log[i];
+      if (!includeReasoning && (entry.event_type === 'thought' || entry.category === 'reasoning')) continue;
+      if (!includeSystem && entry.category === 'system') continue;
+      out.push(entry);
+    }
+    return out.reverse();
   }
 
   getInferenceRules(): InferenceRule[] {

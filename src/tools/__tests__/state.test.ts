@@ -5,6 +5,7 @@ import { GraphEngine } from '../../services/graph-engine.js';
 import { registerStateTools } from '../state.js';
 import { registerScopeTools } from '../scope.js';
 import { registerLoggingTools } from '../logging.js';
+import { registerLogThoughtTool } from '../log-thought.js';
 import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-state-tools.json';
@@ -50,6 +51,7 @@ describe('state tools', () => {
     registerStateTools(fakeServer, engine);
     registerScopeTools(fakeServer, engine);
     registerLoggingTools(fakeServer, engine);
+    registerLogThoughtTool(fakeServer, engine);
   });
 
   afterEach(() => {
@@ -137,5 +139,119 @@ describe('state tools', () => {
     });
     const state = JSON.parse(stateResult.content[0].text);
     expect(state.config.scope.cidrs).toContain('172.16.1.0/24');
+  });
+
+  describe('get_state recent_activity filtering & snapshot dedup', () => {
+    it('hides reasoning and includes system events by default', async () => {
+      // Seed: one thought, one system, one frontier event
+      await handlers.log_thought({ kind: 'note', content: 'just thinking out loud' });
+      engine.logActionEvent({
+        description: 'system bookkeeping',
+        event_type: 'system',
+        category: 'system',
+      });
+      engine.logActionEvent({
+        description: 'frontier action',
+        event_type: 'action_completed',
+        category: 'frontier',
+        agent_id: 'primary',
+      });
+
+      const r = await handlers.get_state({
+        include_full_frontier: false,
+        activity_count: 50,
+        snapshot: false,
+      });
+      const state = JSON.parse(r.content[0].text);
+      const types = state.recent_activity.map((e: any) => e.event_type);
+      expect(types).not.toContain('thought');
+      // system events are included by default
+      expect(types).toContain('system');
+      expect(types).toContain('action_completed');
+    });
+
+    it('include_reasoning=true surfaces thoughts; include_system=false hides system', async () => {
+      await handlers.log_thought({ kind: 'plan', content: 'pivot via SMB' });
+      engine.logActionEvent({
+        description: 'system bookkeeping',
+        event_type: 'system',
+        category: 'system',
+      });
+
+      const r = await handlers.get_state({
+        include_full_frontier: false,
+        activity_count: 50,
+        include_reasoning: true,
+        include_system: false,
+        snapshot: false,
+      });
+      const state = JSON.parse(r.content[0].text);
+      const cats = state.recent_activity.map((e: any) => e.category);
+      expect(cats).toContain('reasoning');
+      expect(cats).not.toContain('system');
+    });
+
+    it('snapshot dedup reuses prior evidence_id within the window', async () => {
+      const first = await handlers.get_state({
+        include_full_frontier: false,
+        activity_count: 5,
+        snapshot: true,
+      });
+      const second = await handlers.get_state({
+        include_full_frontier: false,
+        activity_count: 5,
+        snapshot: true,
+      });
+      expect(first.isError).toBeUndefined();
+      expect(second.isError).toBeUndefined();
+
+      const events = engine.getFullHistory().filter(
+        (e) => e.tool_name === 'get_state' && e.event_type === 'system'
+      );
+      // First call writes evidence; second call dedups against it.
+      const dedupEvents = events.filter((e) => (e.details as any)?.dedup === true);
+      expect(dedupEvents.length).toBeGreaterThanOrEqual(1);
+      // Both events share the same evidence_id
+      const ids = new Set(events.map((e) => (e.details as any)?.evidence_id));
+      expect(ids.size).toBe(1);
+    });
+  });
+
+  describe('activity provenance defaults', () => {
+    it('defaults provenance based on agent_id / category / event_type', async () => {
+      engine.logActionEvent({
+        description: 'agent action',
+        event_type: 'action_completed',
+        agent_id: 'primary',
+      });
+      engine.logActionEvent({
+        description: 'system bookkeeping',
+        event_type: 'system',
+        category: 'system',
+      });
+      engine.logActionEvent({
+        description: 'inferred edge',
+        event_type: 'inference_generated',
+        category: 'inference',
+      });
+
+      const log = engine.getFullHistory();
+      const byDesc = (d: string) => log.find((e) => e.description === d);
+      expect(byDesc('agent action')?.provenance).toBe('agent');
+      expect(byDesc('system bookkeeping')?.provenance).toBe('system');
+      expect(byDesc('inferred edge')?.provenance).toBe('inferred');
+    });
+
+    it('caller-supplied provenance is preserved', async () => {
+      engine.logActionEvent({
+        description: 'ingested event',
+        event_type: 'action_completed',
+        agent_id: 'primary',
+        provenance: 'ingested',
+      });
+      const log = engine.getFullHistory();
+      const e = log.find((x) => x.description === 'ingested event');
+      expect(e?.provenance).toBe('ingested');
+    });
   });
 });

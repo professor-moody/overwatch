@@ -53,11 +53,14 @@ export type ActivityLogDetails =
   | { warning: string; [key: string]: unknown }
   | Record<string, unknown>;
 
+export type ActivityProvenance = 'agent' | 'operator' | 'system' | 'ingested' | 'inferred';
+
 export type ActivityLogEntry = {
   event_id: string;
   timestamp: string;
   description: string;
   agent_id?: string;
+  provenance?: ActivityProvenance;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'reasoning' | 'system';
   frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test';
   outcome?: 'success' | 'failure' | 'neutral';
@@ -223,11 +226,13 @@ export function normalizeActivityLogEntry(
   const resolvedOutcome = entry.outcome
     || normalizeOutcome(entry.result_classification, entry.validation_result)
     || inferOutcomeFromEventType(entry.event_type);
+  const resolvedProvenance = entry.provenance || inferProvenance(entry, resolvedCategory);
   return {
     event_id: entry.event_id || uuidv4(),
     timestamp: entry.timestamp || new Date().toISOString(),
     description: entry.description,
     agent_id: entry.agent_id,
+    provenance: resolvedProvenance,
     category: resolvedCategory,
     frontier_type: entry.frontier_type,
     outcome: resolvedOutcome,
@@ -279,6 +284,27 @@ function inferOutcomeFromEventType(eventType?: ActivityEventType): ActivityLogEn
   if (eventType === 'action_failed' || eventType === 'session_error') return 'failure';
   if (eventType === 'action_planned' || eventType === 'action_started' || eventType === 'action_validated') return 'neutral';
   return undefined;
+}
+
+/**
+ * Infer activity provenance when the caller doesn't set it explicitly.
+ *  - explicit `provenance` always wins (handled at the call site)
+ *  - inference rule output is `'inferred'`
+ *  - graph_corrected / instrumentation_warning / scope_updated / system events default to `'system'`
+ *  - anything with an agent_id defaults to `'agent'`
+ *  - everything else defaults to `'system'`
+ */
+function inferProvenance(
+  entry: Partial<ActivityLogEntry>,
+  category: ActivityLogEntry['category'] | undefined,
+): ActivityProvenance {
+  if (entry.event_type === 'inference_generated') return 'inferred';
+  if (entry.event_type === 'system' || entry.event_type === 'instrumentation_warning'
+      || entry.event_type === 'graph_corrected' || entry.event_type === 'scope_updated') return 'system';
+  if (entry.agent_id) return 'agent';
+  if (category === 'system') return 'system';
+  if (category === 'inference') return 'inferred';
+  return 'agent';
 }
 
 const MILESTONE_EVENT_TYPES: Set<ActivityEventType | undefined> = new Set([
