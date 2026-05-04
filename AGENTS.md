@@ -54,6 +54,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `get_agent_context` — scoped subgraph view
 > - `validate_action` — check before executing
 > - `log_action_event` — record action start/completion/failure
+> - `log_thought` — record reasoning, decisions, alternatives considered
 > - `run_bash` — auto-instrumented one-shot shell execution
 > - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
@@ -67,7 +68,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 
 ## Tool Reference
 
-**43 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**44 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -77,6 +78,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `find_paths` | Shortest path to objectives | When evaluating if a discovery opens a route |
 | `validate_action` | Pre-execution sanity check | Before every significant action |
 | `log_action_event` | Record action lifecycle around real execution | Before starting and after finishing a significant action |
+| `log_thought` | Record reasoning, plans, decisions, rejections, reflections | Before committing to a frontier item; whenever you weigh alternatives; after major outcomes |
 | `run_bash` | Auto-instrumented `bash -c` execution | One-shot shell commands — wraps validate → approval → action_started → execute → evidence capture → action_completed/failed → optional parse_with ingest in one call |
 | `parse_output` | Deterministically parse supported tool output into findings | When raw output comes from a supported parser |
 | `report_finding` | Submit discoveries to graph | After every discovery, immediately |

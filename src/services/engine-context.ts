@@ -43,6 +43,7 @@ export type ActivityEventType =
   | 'session_access_confirmed'
   | 'session_access_unconfirmed'
   | 'scope_updated'
+  | 'thought'
   | 'system';
 
 export type ActivityLogDetails =
@@ -57,7 +58,7 @@ export type ActivityLogEntry = {
   timestamp: string;
   description: string;
   agent_id?: string;
-  category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'system';
+  category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'reasoning' | 'system';
   frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test';
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;

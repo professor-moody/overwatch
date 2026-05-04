@@ -31,6 +31,7 @@ instructions for session initialization.
         agent_id: z.string().optional().describe('For sub_agent role: the agent ID to scope the instructions'),
         include_state: z.boolean().default(true).describe('Include current state snapshot in the prompt'),
         include_tools: z.boolean().default(true).describe('Include tool reference table in the prompt'),
+        snapshot: z.boolean().default(true).describe('Persist the generated prompt to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent was instructed with.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -39,7 +40,7 @@ instructions for session initialization.
         openWorldHint: false,
       },
     },
-    withErrorBoundary('get_system_prompt', async ({ role, agent_id, include_state, include_tools }) => {
+    withErrorBoundary('get_system_prompt', async ({ role, agent_id, include_state, include_tools, snapshot }) => {
       const tools = getRegisteredTools();
       const prompt = generateSystemPrompt(engine, tools, {
         role,
@@ -47,6 +48,31 @@ instructions for session initialization.
         include_state,
         include_tools,
       });
+
+      if (snapshot !== false) {
+        const evidence_id = engine.getEvidenceStore().store({
+          evidence_type: 'log',
+          filename: `system_prompt_${role}.md`,
+          content: prompt,
+        });
+        engine.logActionEvent({
+          description: `System prompt generated for role=${role}`,
+          agent_id,
+          event_type: 'system',
+          category: 'system',
+          tool_name: 'get_system_prompt',
+          result_classification: 'neutral',
+          details: {
+            evidence_id,
+            evidence_type: 'log',
+            role,
+            include_state,
+            include_tools,
+            prompt_length: prompt.length,
+          },
+        });
+        engine.persist();
+      }
 
       return {
         content: [{

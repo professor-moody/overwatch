@@ -260,6 +260,8 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
    - What sequencing makes sense (what should happen before what)?${opsecScoringLine}
    - Does this move us closer to an objective?
 
+   **Externalize your reasoning.** Call \`log_thought({ kind: "decision", thought: "...", frontier_item_id, considered_alternatives: [...] })\` before you commit to a candidate. This is how the engagement retains a record of *why* you chose what you chose — essential for retrospective and for surviving compaction.
+
 4. **Explore the graph** with \`query_graph()\` whenever the frontier doesn't capture a pattern you're seeing.
 
 5. **Validate before executing** by calling \`validate_action()\` with your proposed action. **Always pass \`frontier_item_id\`** from \`next_task()\`.
@@ -437,13 +439,15 @@ function generateSubAgentWorkflowSection(): string {
   return `## Workflow
 
 1. Call \`get_agent_context\` to get your scoped subgraph view
-2. Call \`validate_action\` before executing any significant action
-3. Call \`log_action_event(event_type="action_started")\` before execution
-4. Execute the action — for one-shot bash commands prefer \`run_bash\`, which auto-handles validation, the approval gate, action lifecycle logging, and evidence capture in a single call
-5. Use \`parse_output()\` for supported tool output, or \`report_finding()\` for manual observations
-6. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done (skip when using \`run_bash\` — it logs for you)
-7. Use \`query_graph()\` if you need more context
-8. Use \`get_skill()\` for methodology guidance
+2. Call \`log_thought({ kind: "plan", thought: "..." })\` to record your intended approach for this task
+3. Call \`validate_action\` before executing any significant action
+4. Call \`log_action_event(event_type="action_started")\` before execution
+5. Execute the action — for one-shot bash commands prefer \`run_bash\`, which auto-handles validation, the approval gate, action lifecycle logging, and evidence capture in a single call
+6. Use \`parse_output()\` for supported tool output, or \`report_finding()\` for manual observations
+7. Call \`log_action_event(event_type="action_completed" | "action_failed")\` when done (skip when using \`run_bash\` — it logs for you)
+8. Call \`log_thought({ kind: "reflection", thought: "..." })\` summarizing what you learned before closing the task
+9. Use \`query_graph()\` if you need more context
+10. Use \`get_skill()\` for methodology guidance
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;
 }

@@ -40,7 +40,10 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         activity_count: z.number()
           .int().min(1).max(100)
           .default(20)
-          .describe('Number of recent activity entries to include')
+          .describe('Number of recent activity entries to include'),
+        snapshot: z.boolean()
+          .default(true)
+          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -49,13 +52,35 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         openWorldHint: false
       }
     },
-    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count }) => {
+    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count, snapshot }) => {
       const state = engine.getState({ activityCount: activity_count });
       if (!include_full_frontier) {
         state.frontier = state.frontier.slice(0, 10);
       }
+      const stateText = JSON.stringify(state, null, 2);
+      if (snapshot !== false) {
+        const evidence_id = engine.getEvidenceStore().store({
+          evidence_type: 'log',
+          filename: 'get_state.json',
+          content: stateText,
+        });
+        engine.logActionEvent({
+          description: 'State snapshot returned to caller',
+          event_type: 'system',
+          category: 'system',
+          tool_name: 'get_state',
+          result_classification: 'neutral',
+          details: {
+            evidence_id,
+            evidence_type: 'log',
+            frontier_size: state.frontier.length,
+            activity_count,
+          },
+        });
+        engine.persist();
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(state, null, 2) }]
+        content: [{ type: 'text', text: stateText }]
       };
     })
   );

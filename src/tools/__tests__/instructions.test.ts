@@ -45,6 +45,7 @@ describe('get_system_prompt tool', () => {
       role: 'primary',
       include_state: true,
       include_tools: true,
+      snapshot: false,
     });
 
     expect(result.isError).toBeUndefined();
@@ -66,6 +67,7 @@ describe('get_system_prompt tool', () => {
       agent_id: 'agent-42',
       include_state: true,
       include_tools: true,
+      snapshot: false,
     });
 
     expect(result.isError).toBeUndefined();
@@ -86,6 +88,7 @@ describe('get_system_prompt tool', () => {
       role: 'primary',
       include_state: true,
       include_tools: true,
+      snapshot: false,
     });
 
     expect(getRegisteredTools).toHaveBeenCalledTimes(1);
