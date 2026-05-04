@@ -125,6 +125,36 @@ describe('run_bash tool', () => {
     expect(events.find(e => e.event_type === 'action_failed')).toBeTruthy();
   });
 
+  it('blocks when any target_ips entry is out of scope (no singular target_ip)', async () => {
+    // Regression: previously target_ips was logged but never validated, so a
+    // multi-target invocation could ride out-of-scope IPs through.
+    const result = await handlers.run_bash({
+      command: 'echo would-not-run',
+      target_ips: ['8.8.8.8'],
+      technique: 'portscan',
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.executed).toBe(false);
+    expect(payload.validation_result).toBe('invalid');
+    expect(payload.errors.join(' ')).toContain('8.8.8.8');
+    expect(payload.errors.join(' ')).toContain('out of scope');
+  });
+
+  it('blocks when one of multiple target_ips is out of scope', async () => {
+    const result = await handlers.run_bash({
+      command: 'echo would-not-run',
+      target_ips: ['10.10.10.1', '8.8.8.8'],
+      technique: 'portscan',
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.executed).toBe(false);
+    expect(payload.errors.join(' ')).toContain('8.8.8.8');
+  });
+
   it('threads frontier_item_id through events', async () => {
     const result = await handlers.run_bash({
       command: 'true',

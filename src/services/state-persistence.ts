@@ -26,6 +26,36 @@ export const MAX_SNAPSHOTS = 5;
 export const FLUSH_DEBOUNCE_MS = 100;   // Wait 100ms of quiet before flushing
 export const FLUSH_MAX_DELAY_MS = 500;  // Maximum time between dirty and flush
 
+// --- Module-level shutdown flusher registry ---
+// One process-level listener per signal regardless of how many
+// StatePersistence instances exist. Each instance registers its
+// own flush callback into this set in its ctor and removes it on dispose().
+const shutdownFlushers = new Set<() => void>();
+let shutdownListenersInstalled = false;
+
+function fireAllFlushers(): void {
+  for (const fn of shutdownFlushers) {
+    try { fn(); } catch { /* best effort */ }
+  }
+}
+
+function ensureShutdownListenersInstalled(): void {
+  if (shutdownListenersInstalled) return;
+  shutdownListenersInstalled = true;
+  process.on('SIGTERM', fireAllFlushers);
+  process.on('SIGINT', fireAllFlushers);
+  process.on('beforeExit', fireAllFlushers);
+}
+
+function registerShutdownFlusher(fn: () => void): void {
+  ensureShutdownListenersInstalled();
+  shutdownFlushers.add(fn);
+}
+
+function unregisterShutdownFlusher(fn: () => void): void {
+  shutdownFlushers.delete(fn);
+}
+
 export interface PersistMetrics {
   flushCount: number;
   totalSerializeMs: number;
@@ -199,6 +229,12 @@ export class StatePersistence {
   }
 
   // --- Shutdown safety ---
+  // Multiple StatePersistence instances (typical in tests, possible in
+  // multi-engine setups) used to each register their own SIGTERM/SIGINT/
+  // beforeExit listeners on `process`. With ~10+ engines that crosses
+  // Node's default MaxListeners (10) and prints noisy warnings that hide
+  // real lifecycle leaks. We instead keep a module-level set of pending
+  // flushers and register exactly one process listener per signal.
 
   private hookShutdown(): void {
     const flush = () => {
@@ -213,9 +249,7 @@ export class StatePersistence {
     };
 
     this.shutdownHandlers = [flush];
-    process.on('SIGTERM', flush);
-    process.on('SIGINT', flush);
-    process.on('beforeExit', flush);
+    registerShutdownFlusher(flush);
   }
 
   /**
@@ -225,9 +259,7 @@ export class StatePersistence {
   dispose(): void {
     this.cancelTimers();
     for (const handler of this.shutdownHandlers) {
-      process.removeListener('SIGTERM', handler);
-      process.removeListener('SIGINT', handler);
-      process.removeListener('beforeExit', handler);
+      unregisterShutdownFlusher(handler);
     }
     this.shutdownHandlers = [];
   }

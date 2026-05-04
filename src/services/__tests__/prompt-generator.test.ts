@@ -70,6 +70,10 @@ const ALL_REGISTERED_TOOLS: ToolEntry[] = [
   { name: 'close_session', description: 'Close a session' },
   { name: 'update_scope', description: 'Update engagement scope' },
   { name: 'get_system_prompt', description: 'Generate dynamic system prompt' },
+  { name: 'log_thought', description: 'Record reasoning, plans, decisions' },
+  { name: 'run_bash', description: 'Execute shell command' },
+  { name: 'run_tool', description: 'Execute binary with argv' },
+  { name: 'submit_agent_transcript', description: 'Sub-agent wrap-up handoff' },
 ];
 
 describe('prompt-generator', () => {
@@ -258,6 +262,21 @@ describe('prompt-generator', () => {
       expect(subAgentToolsInPrompt.length).toBeGreaterThan(0);
       for (const toolName of subAgentToolsInPrompt) {
         expect(allKnownNames.has(toolName)).toBe(true);
+      }
+    });
+
+    it('tool table includes every tool the sub-agent workflow references', () => {
+      // Regression: the workflow text told sub-agents to use log_thought,
+      // run_bash, run_tool, and submit_agent_transcript, but the tool-table
+      // allowlist omitted them — so get_system_prompt(role="sub_agent") was
+      // self-contradictory. Keep the allowlist and the workflow in lockstep.
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'sub_agent' });
+      const toolTableMatch = prompt.match(/\| `(\w+)` \|/g) || [];
+      const subAgentToolsInPrompt = new Set(toolTableMatch.map(m => m.match(/`(\w+)`/)![1]));
+
+      for (const required of ['log_thought', 'run_bash', 'run_tool', 'submit_agent_transcript']) {
+        expect(subAgentToolsInPrompt.has(required), `${required} missing from sub-agent tool table`).toBe(true);
       }
     });
   });

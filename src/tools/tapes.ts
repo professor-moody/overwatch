@@ -8,11 +8,70 @@
 // ============================================================
 
 import { z } from 'zod';
-import { readFileSync, statSync, existsSync } from 'fs';
+import { createReadStream, statSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
 import { resolve as resolvePath } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+
+/**
+ * Stream the tape file and count non-empty newline-delimited lines without
+ * loading it into memory. Tapes can be hundreds of MB; the previous
+ * `readFileSync` blew up the heap for large captures.
+ */
+async function streamTapeStats(absPath: string): Promise<{ line_count: number }> {
+  return new Promise((resolve, reject) => {
+    let lineCount = 0;
+    let pendingNonEmpty = false; // true once we have seen non-newline bytes for the current line
+    const stream = createReadStream(absPath, { highWaterMark: 64 * 1024 });
+    stream.on('data', (chunk: Buffer | string) => {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      for (let i = 0; i < buf.length; i++) {
+        const b = buf[i];
+        if (b === 0x0a /* \n */) {
+          if (pendingNonEmpty) lineCount++;
+          pendingNonEmpty = false;
+        } else if (b !== 0x0d /* \r */) {
+          pendingNonEmpty = true;
+        }
+      }
+    });
+    stream.on('end', () => {
+      if (pendingNonEmpty) lineCount++; // trailing line without final newline
+      resolve({ line_count: lineCount });
+    });
+    stream.on('error', reject);
+  });
+}
+
+/**
+ * Compute a sha256 over the first and last `windowBytes` of the tape so the
+ * manifest pins which file we registered without loading the whole tape.
+ */
+async function tapeFingerprint(absPath: string, size: number, windowBytes = 4096): Promise<string> {
+  const hash = createHash('sha256');
+  if (size === 0) return hash.digest('hex');
+  const head = await readRange(absPath, 0, Math.min(windowBytes, size));
+  hash.update(head);
+  if (size > windowBytes) {
+    const tailStart = Math.max(windowBytes, size - windowBytes);
+    const tail = await readRange(absPath, tailStart, size);
+    hash.update(tail);
+  }
+  return hash.digest('hex');
+}
+
+function readRange(absPath: string, start: number, end: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    // end is exclusive in fs terms via { start, end: end - 1 }
+    const stream = createReadStream(absPath, { start, end: end - 1 });
+    stream.on('data', (c: Buffer | string) => chunks.push(typeof c === 'string' ? Buffer.from(c) : c));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', reject);
+  });
+}
 
 export function registerTapeTools(server: McpServer, engine: GraphEngine): void {
   server.registerTool(
@@ -66,10 +125,10 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
       }
 
       const stat = statSync(absPath);
-      // Read at most the first and last 4KB to compute a cheap fingerprint
-      // without loading huge tapes into memory.
-      const fp = readFileSync(absPath, 'utf-8');
-      const lineCount = fp.length === 0 ? 0 : fp.split('\n').filter(l => l.length > 0).length;
+      // Stream-count lines so multi-hundred-MB tapes don't OOM the server,
+      // and fingerprint via head+tail windows only.
+      const { line_count: lineCount } = await streamTapeStats(absPath);
+      const fingerprint = await tapeFingerprint(absPath, stat.size);
 
       const event = engine.logActionEvent({
         description: `Tape session registered: ${session_id} (${lineCount} frames, ${stat.size} bytes)`,
@@ -81,6 +140,7 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
           tape_path: absPath,
           tape_size_bytes: stat.size,
           tape_line_count: lineCount,
+          tape_fingerprint_sha256: fingerprint,
           upstream_command,
           notes,
           captured_at: stat.mtime.toISOString(),
@@ -97,6 +157,7 @@ Emits a \`tape_session_started\` event (provenance='operator', category='system'
             session_id,
             tape_size_bytes: stat.size,
             tape_line_count: lineCount,
+            tape_fingerprint_sha256: fingerprint,
           }, null, 2),
         }],
       };

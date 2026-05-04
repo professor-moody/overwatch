@@ -182,10 +182,13 @@ function generateSubAgentPrompt(
 
   sections.push(generateSubAgentIdentitySection(state.config, agentContext));
 
-  // Scoped tool subset
+  // Scoped tool subset — must stay in sync with the sub-agent workflow
+  // section below (and the AGENTS.md sub-agent tool list).
   const subAgentToolNames = new Set([
-    'get_agent_context', 'validate_action', 'log_action_event',
-    'parse_output', 'report_finding', 'query_graph', 'get_skill',
+    'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
+    'run_bash', 'run_tool',
+    'parse_output', 'report_finding', 'submit_agent_transcript',
+    'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
     'list_sessions', 'close_session', 'resize_session', 'signal_session',
     'update_session', 'get_evidence',

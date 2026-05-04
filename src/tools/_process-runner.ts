@@ -226,15 +226,37 @@ export async function runInstrumentedProcess(
   const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
 
   // ---- 1. Validation ----
+  // Validate every target in the action — not just the singular target_node /
+  // target_ip. A command like `nmap 8.8.8.8 9.9.9.9` arrives via target_ips
+  // and must be scope-checked per-IP; otherwise out-of-scope hosts can ride
+  // along inside a multi-target invocation. We dedupe per (kind,value),
+  // run validateAction once per target, and aggregate errors/warnings.
   let noiseEstimate = noiseOverride;
   if (shouldValidate) {
-    const v = engine.validateAction({
-      target_node,
-      target_ip,
-      target_url,
-      cloud_resource,
-      technique,
-    });
+    const validationTargets: Array<Parameters<typeof engine.validateAction>[0]> = [];
+    for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique });
+    for (const ip of allTargetIps) validationTargets.push({ target_ip: ip, technique });
+    if (target_url) validationTargets.push({ target_url, technique });
+    if (cloud_resource) validationTargets.push({ cloud_resource, technique });
+    if (validationTargets.length === 0) validationTargets.push({ technique });
+
+    const aggregatedErrors: string[] = [];
+    const aggregatedWarnings: string[] = [];
+    let lastOpsecContext: ReturnType<typeof engine.validateAction>['opsec_context'] | undefined;
+    let aggregateValid = true;
+    for (const t of validationTargets) {
+      const r = engine.validateAction(t);
+      lastOpsecContext = r.opsec_context;
+      if (!r.valid) aggregateValid = false;
+      for (const e of r.errors) if (!aggregatedErrors.includes(e)) aggregatedErrors.push(e);
+      for (const w of r.warnings) if (!aggregatedWarnings.includes(w)) aggregatedWarnings.push(w);
+    }
+    const v = {
+      valid: aggregateValid,
+      errors: aggregatedErrors,
+      warnings: aggregatedWarnings,
+      opsec_context: lastOpsecContext!,
+    };
     const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
     if (noiseEstimate === undefined) noiseEstimate = v.opsec_context.global_noise_spent;
 
