@@ -299,6 +299,95 @@ auto-computed from the frontier item's target node(s).`,
   );
 
   // ============================================================
+  // Tool: submit_agent_transcript
+  // Sub-agent hands a structured wrap-up + raw transcript blob back
+  // to the primary session before calling update_agent(done).
+  // ============================================================
+  server.registerTool(
+    'submit_agent_transcript',
+    {
+      title: 'Submit Agent Transcript',
+      description: `Sub-agent wrap-up: hand the primary session a short summary plus an optional raw transcript blob.
+
+Call this **before** \`update_agent(status: "completed")\`. The transcript (if provided) is stored in evidence and an \`agent_transcript_submitted\` event links it to the agent task so retrospective analysis can attribute reasoning back to the sub-agent.
+
+Fields:
+- \`summary\` is required — a paragraph or two describing what the agent did, what it found, and what (if anything) is left.
+- \`transcript_jsonl\` is optional but strongly recommended — raw JSONL of the sub-agent's tool I/O.
+- \`key_thought_event_ids\` / \`key_finding_ids\` are optional pointers to events/findings the primary should look at first.`,
+      inputSchema: {
+        agent_id: z.string().describe('Agent task ID this transcript belongs to'),
+        summary: z.string().min(1).describe('Short wrap-up paragraph from the sub-agent'),
+        transcript_jsonl: z.string().optional().describe('Raw JSONL transcript of the sub-agent run (stored as evidence)'),
+        key_thought_event_ids: z.array(z.string()).optional().describe('Event IDs of the most important thoughts/decisions'),
+        key_finding_ids: z.array(z.string()).optional().describe('Finding IDs the primary should review first'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('submit_agent_transcript', async ({ agent_id, summary, transcript_jsonl, key_thought_event_ids, key_finding_ids }) => {
+      const task = engine.getTask(agent_id);
+      if (!task) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: `Agent task not found: ${agent_id}` }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
+      let evidence_id: string | undefined;
+      let transcript_bytes = 0;
+      if (transcript_jsonl && transcript_jsonl.length > 0) {
+        evidence_id = engine.getEvidenceStore().store({
+          evidence_type: 'log',
+          filename: 'agent_transcript.jsonl',
+          content: transcript_jsonl,
+        });
+        transcript_bytes = transcript_jsonl.length;
+      }
+
+      const details: Record<string, unknown> = {
+        summary,
+        transcript_bytes,
+      };
+      if (evidence_id) details.evidence_id = evidence_id;
+      if (key_thought_event_ids && key_thought_event_ids.length > 0) details.key_thought_event_ids = key_thought_event_ids;
+      if (key_finding_ids && key_finding_ids.length > 0) details.key_finding_ids = key_finding_ids;
+
+      const event = engine.logActionEvent({
+        description: `Agent ${agent_id} submitted transcript: ${summary.slice(0, 120)}${summary.length > 120 ? '…' : ''}`,
+        event_type: 'agent_transcript_submitted',
+        category: 'agent',
+        provenance: 'agent',
+        agent_id,
+        linked_agent_task_id: agent_id,
+        linked_finding_ids: key_finding_ids,
+        details,
+      });
+      engine.persist();
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            agent_id,
+            event_id: event.event_id,
+            evidence_id,
+            transcript_bytes,
+            submitted: true,
+          }, null, 2),
+        }],
+      };
+    }),
+  );
+
+  // ============================================================
   // Tool: update_agent
   // Update agent task status.
   // ============================================================
@@ -320,6 +409,33 @@ auto-computed from the frontier item's target node(s).`,
       }
     },
     withErrorBoundary('update_agent', async ({ task_id, status, summary }) => {
+      // Visibility hook: warn (non-blocking) when an agent reaches a terminal
+      // state without first calling submit_agent_transcript. The agent task may
+      // be referenced either by its task.id or its agent.agent_id, so check both.
+      let transcript_warning_emitted = false;
+      if (status === 'completed' || status === 'failed') {
+        const task = engine.getTask(task_id);
+        const candidateIds = new Set<string>([task_id]);
+        if (task?.agent_id) candidateIds.add(task.agent_id);
+        const history = engine.getFullHistory();
+        const submitted = history.some(e =>
+          e.event_type === 'agent_transcript_submitted'
+          && ((e.agent_id && candidateIds.has(e.agent_id))
+              || (e.linked_agent_task_id && candidateIds.has(e.linked_agent_task_id))),
+        );
+        if (!submitted) {
+          engine.logActionEvent({
+            description: `Agent ${task_id} closed with status "${status}" without calling submit_agent_transcript first`,
+            event_type: 'instrumentation_warning',
+            category: 'system',
+            provenance: 'system',
+            linked_agent_task_id: task_id,
+            details: { warning: 'missing_agent_transcript', task_id, status },
+          });
+          transcript_warning_emitted = true;
+        }
+      }
+
       const updated = engine.updateAgentStatus(task_id, status, summary);
       if (!updated) {
         return {
@@ -330,10 +446,12 @@ auto-computed from the frontier item's target node(s).`,
           isError: true
         };
       }
+      const response: Record<string, unknown> = { task_id, status, summary, updated: true };
+      if (transcript_warning_emitted) response.transcript_warning = 'Call submit_agent_transcript before update_agent on terminal status to keep the primary session in the loop.';
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ task_id, status, summary, updated: true }, null, 2)
+          text: JSON.stringify(response, null, 2)
         }]
       };
     })

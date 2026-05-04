@@ -46,7 +46,8 @@ export type ActivityEventType =
   | 'scope_updated'
   | 'thought'
   | 'system'
-  | 'frontier_item_dropped';
+  | 'frontier_item_dropped'
+  | 'agent_transcript_submitted';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }

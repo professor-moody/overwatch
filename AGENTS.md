@@ -59,6 +59,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `run_tool` — auto-instrumented one-shot binary execution (argv form, no shell)
 > - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
+> - `submit_agent_transcript` — wrap-up handoff to the primary (call before being closed out)
 > - `query_graph` — explore the graph if you need more context
 > - `get_skill` — methodology guidance
 > - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `close_session` — sessions
@@ -69,7 +70,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 
 ## Tool Reference
 
-**45 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**46 MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
@@ -89,6 +90,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `dispatch_agents` | Dispatch multiple agents | Batch agent registration |
 | `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |
 | `update_agent` | Mark agent task done/failed | When a sub-agent finishes |
+| `submit_agent_transcript` | Sub-agent wrap-up: short summary + optional raw transcript blob linked to the agent task | Sub-agent should call this **before** the primary marks them done |
 | `dispatch_subnet_agents` | One agent per scope CIDR for parallel subnet enumeration | When network sweep needs parallelization across CIDRs |
 | `dispatch_campaign_agents` | Dispatch agents for a campaign's grouped frontier items | When launching a campaign with parallel agents |
 | `manage_campaign` | Create, monitor, pause, resume, or abort campaigns | Campaign lifecycle management |

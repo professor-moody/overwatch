@@ -448,6 +448,7 @@ function generateSubAgentWorkflowSection(): string {
 8. Call \`log_thought({ kind: "reflection", thought: "..." })\` summarizing what you learned before closing the task
 9. Use \`query_graph()\` if you need more context
 10. Use \`get_skill()\` for methodology guidance
+11. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ agent_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;
 }
