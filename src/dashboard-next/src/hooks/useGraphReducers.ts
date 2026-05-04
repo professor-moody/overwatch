@@ -135,32 +135,31 @@ export function useGraphReducers(graph: Graph, reachableOnlyCacheRef: React.Muta
     return false;
   }, []);
 
-  const shouldRevealDetailNodeAtCurrentZoom = useCallback((nodeType: string): boolean => {
-    const ratio = stateRef.current.cameraRatio;
-    if (DETAIL_NODE_TYPES.has(nodeType)) return ratio <= ZOOM_REVEAL_THRESHOLDS.detail;
-    if (SUPPORTING_NODE_TYPES.has(nodeType)) return ratio <= ZOOM_REVEAL_THRESHOLDS.supporting;
-    return true;
-  }, []);
-
   const isNodeVisible = useCallback((node: string, attrs?: Record<string, unknown>): boolean => {
     const s = stateRef.current;
     const nodeAttrs = attrs || graph.getNodeAttributes(node);
     if (!nodeAttrs) return false;
 
+    // Always show contextually-relevant nodes (selected, in path, focus neighborhood).
+    if (isNodeContextuallyRelevant(node)) return true;
+
+    // Explicit user filters — the ONLY automatic hide mechanisms.
     if (s.hideOrphans && graph.degree(node) === 0) return false;
     if (s.hideReachableOnly && isReachableOnlyNode(node)) return false;
-    if (isNodeContextuallyRelevant(node)) return true;
     if (!s.activeFilters.has(nodeAttrs.nodeType as string)) return false;
-    if (s.graphMode === 'raw') return true;
+
+    // Focus neighborhood (when active) constrains the view to the chosen subgraph.
     if (s.focusNeighborhood && !s.focusNeighborhood.has(node)) return false;
-    if (s.graphMode === 'focused') {
-      if (s.selectedNeighborhood) return s.selectedNeighborhood.has(node);
-      return HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType as string);
+
+    // 'focused' mode with an explicit selection narrows to that neighborhood.
+    if (s.graphMode === 'focused' && s.selectedNeighborhood) {
+      return s.selectedNeighborhood.has(node);
     }
-    if (s.emphasizedNodeTypes.has(nodeAttrs.nodeType as string)) return true;
-    if (HIGH_SIGNAL_NODE_TYPES.has(nodeAttrs.nodeType as string)) return true;
-    return shouldRevealDetailNodeAtCurrentZoom(nodeAttrs.nodeType as string);
-  }, [graph, isReachableOnlyNode, isNodeContextuallyRelevant, shouldRevealDetailNodeAtCurrentZoom]);
+
+    // Otherwise show everything that passed the explicit filters.
+    // No node-type or zoom-based auto-hiding — the frontier needs full visibility.
+    return true;
+  }, [graph, isReachableOnlyNode, isNodeContextuallyRelevant]);
 
   const shouldShowLabel = useCallback((node: string, nodeAttrs: Record<string, unknown>): boolean => {
     const s = stateRef.current;
