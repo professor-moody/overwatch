@@ -1530,6 +1530,7 @@ export class DashboardServer {
   }
 
   private async handleCreateEngagement(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
     if (!this.engagementManager) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Engagement manager not available' }));
@@ -1589,6 +1590,7 @@ export class DashboardServer {
   }
 
   private handleUpdateEngagement(id: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
     if (!this.engagementManager) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Engagement manager not available' }));
@@ -1680,6 +1682,7 @@ export class DashboardServer {
   // ---- Graph correct endpoint ----
 
   private async handleGraphCorrect(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
     try {
       const body = await this.readJsonBody(req);
       const { reason, operations } = body;

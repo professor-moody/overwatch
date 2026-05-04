@@ -53,6 +53,27 @@ const OPSEC_PROFILES: Record<string, { name: string; max_noise: number }> = {
   loud:    { name: 'loud',    max_noise: 1.0 },
 };
 
+/**
+ * Engagement IDs become filesystem path components (`engagements/<id>.json`).
+ * Reject anything that could escape the directory (`..`, slashes, NUL,
+ * leading dot, control chars) or that is otherwise unreasonable as a slug.
+ * Mirrors the shape produced by `createEngagement` (lowercased slug + base36
+ * timestamp) but is tolerant of legacy IDs that may use uppercase / digits /
+ * hyphens / underscores / dots-in-the-middle.
+ */
+function isSafeEngagementId(id: unknown): id is string {
+  if (typeof id !== 'string') return false;
+  if (id.length === 0 || id.length > 200) return false;
+  if (id === '.' || id === '..') return false;
+  if (id.startsWith('.')) return false;
+  // Disallow path separators, NUL, and any control chars.
+  // eslint-disable-next-line no-control-regex
+  if (/[\\/\x00-\x1f]/.test(id)) return false;
+  // Whitelist: alphanum, hyphen, underscore, dot.
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) return false;
+  return true;
+}
+
 export class EngagementManager {
   readonly engagementsDir: string;
 
@@ -179,6 +200,7 @@ export class EngagementManager {
   }
 
   getEngagement(id: string): Record<string, unknown> | null {
+    if (!isSafeEngagementId(id)) return null;
     const activeId = this.getActiveId();
     // If requesting active engagement, read from active config (has live state)
     if (id === activeId && existsSync(this.activeConfigPath)) {
@@ -196,6 +218,7 @@ export class EngagementManager {
   }
 
   updateEngagement(id: string, partial: Record<string, unknown>): Record<string, unknown> | null {
+    if (!isSafeEngagementId(id)) return null;
     const filePath = join(this.engagementsDir, `${id}.json`);
     if (!existsSync(filePath)) return null;
     try {

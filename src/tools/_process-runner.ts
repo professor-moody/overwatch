@@ -21,7 +21,16 @@ import type { ParseContext } from '../types.js';
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutes
 export const MAX_TIMEOUT_MS = 60 * 60 * 1000;          // 1 hour
 const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per stream
+/**
+ * Hard memory cap per stream. Beyond this we keep a head + rolling tail
+ * window only and drop the middle, so a runaway noisy command can't OOM
+ * the MCP server before evidence is written.
+ */
+export const STREAM_HARD_CAP = 16 * 1024 * 1024;       // 16 MiB per stream
+export const STREAM_HEAD_KEEP = 4 * 1024 * 1024;       // 4 MiB head
+export const STREAM_TAIL_KEEP = 4 * 1024 * 1024;       // 4 MiB tail
 const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
+const HARD_CAP_DROPPED_MARKER = '\n…[output exceeded in-memory cap; middle bytes dropped]…\n';
 
 // Env keys the agent should never be able to leak into a child process.
 const ENV_DENYLIST = new Set<string>([
@@ -45,25 +54,110 @@ function buildChildEnv(extra: Record<string, string> | undefined): NodeJS.Proces
   return base;
 }
 
-function captureStream(buf: Buffer[], chunk: Buffer, totalLenRef: { len: number }, cap: number): boolean {
-  totalLenRef.len += chunk.length;
-  buf.push(chunk);
-  return totalLenRef.len <= cap;
+/**
+ * Bounded per-stream byte sink. Keeps every chunk until the running total
+ * exceeds STREAM_HARD_CAP, then retains only:
+ *   - the first STREAM_HEAD_KEEP bytes ever seen, and
+ *   - a rolling tail of the most recent STREAM_TAIL_KEEP bytes,
+ * dropping everything in between. `total_bytes` counts what was produced,
+ * not what is retained.
+ */
+export class BoundedStreamBuffer {
+  private head: Buffer[] = [];
+  private headBytes = 0;
+  private tailChunks: Buffer[] = [];
+  private tailBytes = 0;
+  private totalBytes = 0;
+  private droppedBytes = 0;
+  private capExceeded = false;
+
+  push(chunk: Buffer): void {
+    this.totalBytes += chunk.length;
+
+    // Phase 1: still under the hard cap → keep everything in head.
+    if (!this.capExceeded && this.headBytes + chunk.length <= STREAM_HARD_CAP) {
+      this.head.push(chunk);
+      this.headBytes += chunk.length;
+      return;
+    }
+
+    // Transition: split the incoming chunk between completing the head
+    // window and starting the tail buffer.
+    if (!this.capExceeded) {
+      this.capExceeded = true;
+      const headRoom = Math.max(0, STREAM_HEAD_KEEP - this.headBytes);
+      if (headRoom > 0) {
+        const toHead = chunk.subarray(0, headRoom);
+        this.head.push(toHead);
+        this.headBytes += toHead.length;
+        chunk = chunk.subarray(headRoom);
+      } else if (this.headBytes > STREAM_HEAD_KEEP) {
+        // Trim accumulated head down to the keep window; the trimmed bytes
+        // become the start of the tail buffer.
+        const flat = Buffer.concat(this.head, this.headBytes);
+        this.head = [flat.subarray(0, STREAM_HEAD_KEEP)];
+        this.headBytes = STREAM_HEAD_KEEP;
+        const overflow = flat.subarray(STREAM_HEAD_KEEP);
+        if (overflow.length > 0) {
+          this.tailChunks.push(overflow);
+          this.tailBytes += overflow.length;
+        }
+      }
+    }
+
+    if (chunk.length === 0) return;
+
+    // Phase 2: rolling tail window.
+    this.tailChunks.push(chunk);
+    this.tailBytes += chunk.length;
+    while (this.tailBytes > STREAM_TAIL_KEEP && this.tailChunks.length > 0) {
+      const first = this.tailChunks[0];
+      const overflow = this.tailBytes - STREAM_TAIL_KEEP;
+      if (first.length <= overflow) {
+        this.tailChunks.shift();
+        this.tailBytes -= first.length;
+        this.droppedBytes += first.length;
+      } else {
+        this.tailChunks[0] = first.subarray(overflow);
+        this.tailBytes -= overflow;
+        this.droppedBytes += overflow;
+      }
+    }
+  }
+
+  get total_bytes(): number { return this.totalBytes; }
+  get dropped_bytes(): number { return this.droppedBytes; }
+  get cap_exceeded(): boolean { return this.capExceeded; }
+
+  /** Concatenated retained output as utf-8, with a marker if middle bytes were dropped. */
+  toFullString(): string {
+    if (!this.capExceeded) {
+      return Buffer.concat(this.head, this.headBytes).toString('utf8');
+    }
+    const headStr = Buffer.concat(this.head, this.headBytes).toString('utf8');
+    const tailStr = Buffer.concat(this.tailChunks, this.tailBytes).toString('utf8');
+    return headStr + HARD_CAP_DROPPED_MARKER + tailStr;
+  }
 }
 
-function joinAndCap(buf: Buffer[], cap: number): { text: string; truncated: boolean; total: number } {
-  const full = Buffer.concat(buf).toString('utf8');
-  if (full.length <= cap) return { text: full, truncated: false, total: full.length };
+function captureStream(buf: BoundedStreamBuffer, chunk: Buffer): void {
+  buf.push(chunk);
+}
+
+function joinAndCap(buf: BoundedStreamBuffer, cap: number): { text: string; truncated: boolean; total: number } {
+  const full = buf.toFullString();
+  const total = buf.total_bytes;
+  if (full.length <= cap) return { text: full, truncated: total > full.length, total };
   const head = full.slice(0, Math.floor(cap * 0.75));
   const tail = full.slice(full.length - Math.floor(cap * 0.25));
-  return { text: head + TRUNCATION_MARKER + tail, truncated: true, total: full.length };
+  return { text: head + TRUNCATION_MARKER + tail, truncated: true, total };
 }
 
 interface ProcessResult {
   exit_code: number | null;
   signal: NodeJS.Signals | null;
-  stdout: Buffer[];
-  stderr: Buffer[];
+  stdout: BoundedStreamBuffer;
+  stderr: BoundedStreamBuffer;
   duration_ms: number;
   timed_out: boolean;
   spawn_error?: string;
@@ -76,10 +170,8 @@ function runProcess(binary: string, args: string[], opts: {
 }): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const start = Date.now();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const stdoutLen = { len: 0 };
-    const stderrLen = { len: 0 };
+    const stdout = new BoundedStreamBuffer();
+    const stderr = new BoundedStreamBuffer();
     let timedOut = false;
 
     let child;
@@ -93,8 +185,8 @@ function runProcess(binary: string, args: string[], opts: {
       resolve({
         exit_code: null,
         signal: null,
-        stdout: [],
-        stderr: [],
+        stdout,
+        stderr,
         duration_ms: Date.now() - start,
         timed_out: false,
         spawn_error: err instanceof Error ? err.message : String(err),
@@ -109,8 +201,8 @@ function runProcess(binary: string, args: string[], opts: {
     }, opts.timeout_ms);
     timer.unref();
 
-    child.stdout?.on('data', (c: Buffer) => captureStream(stdout, c, stdoutLen, STREAM_INLINE_CAP * 8));
-    child.stderr?.on('data', (c: Buffer) => captureStream(stderr, c, stderrLen, STREAM_INLINE_CAP * 8));
+    child.stdout?.on('data', (c: Buffer) => captureStream(stdout, c));
+    child.stderr?.on('data', (c: Buffer) => captureStream(stderr, c));
 
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -242,11 +334,32 @@ export async function runInstrumentedProcess(
 
     const aggregatedErrors: string[] = [];
     const aggregatedWarnings: string[] = [];
-    let lastOpsecContext: ReturnType<typeof engine.validateAction>['opsec_context'] | undefined;
+    let worstOpsecContext: ReturnType<typeof engine.validateAction>['opsec_context'] | undefined;
     let aggregateValid = true;
+    // Pick the "worst" per-target OPSEC context to drive the approval gate.
+    // Otherwise a multi-target action whose last target is clean would skip
+    // approval even when an earlier target is under defensive pressure.
+    // Severity ordering, most restrictive first:
+    //   1. lower noise_budget_remaining wins (less headroom = more pressure)
+    //   2. quiet > normal > loud recommended_approach
+    //   3. more defensive_signals wins
+    const approachRank = { quiet: 2, normal: 1, loud: 0 } as const;
+    const isWorse = (a: typeof worstOpsecContext, b: typeof worstOpsecContext): boolean => {
+      if (!a) return true;
+      if (!b) return false;
+      if (a.noise_budget_remaining !== b.noise_budget_remaining) {
+        return b.noise_budget_remaining < a.noise_budget_remaining;
+      }
+      const ar = approachRank[a.recommended_approach];
+      const br = approachRank[b.recommended_approach];
+      if (ar !== br) return br > ar;
+      return (b.defensive_signals?.length ?? 0) > (a.defensive_signals?.length ?? 0);
+    };
     for (const t of validationTargets) {
       const r = engine.validateAction(t);
-      lastOpsecContext = r.opsec_context;
+      if (isWorse(worstOpsecContext, r.opsec_context)) {
+        worstOpsecContext = r.opsec_context;
+      }
       if (!r.valid) aggregateValid = false;
       for (const e of r.errors) if (!aggregatedErrors.includes(e)) aggregatedErrors.push(e);
       for (const w of r.warnings) if (!aggregatedWarnings.includes(w)) aggregatedWarnings.push(w);
@@ -255,7 +368,7 @@ export async function runInstrumentedProcess(
       valid: aggregateValid,
       errors: aggregatedErrors,
       warnings: aggregatedWarnings,
-      opsec_context: lastOpsecContext!,
+      opsec_context: worstOpsecContext!,
     };
     const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
     if (noiseEstimate === undefined) noiseEstimate = v.opsec_context.global_noise_spent;
@@ -411,7 +524,7 @@ export async function runInstrumentedProcess(
       action_id: normalizedActionId,
       evidence_type: 'command_output',
       filename: 'stdout',
-      raw_output: Buffer.concat(result.stdout).toString('utf8'),
+      raw_output: result.stdout.toFullString(),
     });
   }
   if (stderrInfo.total > 0) {
@@ -419,7 +532,7 @@ export async function runInstrumentedProcess(
       action_id: normalizedActionId,
       evidence_type: 'command_output',
       filename: 'stderr',
-      raw_output: Buffer.concat(result.stderr).toString('utf8'),
+      raw_output: result.stderr.toFullString(),
     });
   }
 
@@ -458,6 +571,8 @@ export async function runInstrumentedProcess(
       stderr_truncated: stderrInfo.truncated,
       stdout_total_bytes: stdoutInfo.total,
       stderr_total_bytes: stderrInfo.total,
+      stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
+      stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
       spawn_error: result.spawn_error,
       reason: failureReason,
       command: command_repr,
@@ -490,7 +605,7 @@ export async function runInstrumentedProcess(
         if (Object.keys(aliases).length > 0) ctx.domain_aliases = aliases;
       }
 
-      const fullStdout = Buffer.concat(result.stdout).toString('utf8');
+      const fullStdout = result.stdout.toFullString();
       const finding = parseOutput(parse_with, fullStdout, agent_id, ctx);
       if (!finding) {
         parse_summary = { error: `Parser '${parse_with}' returned no finding` };

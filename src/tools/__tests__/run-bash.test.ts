@@ -155,6 +155,37 @@ describe('run_bash tool', () => {
     expect(payload.errors.join(' ')).toContain('8.8.8.8');
   });
 
+  it('approval gate sees the worst per-target OPSEC context, not the last (regression)', async () => {
+    // Two in-scope targets; only the first carries a defensive signal. The
+    // logged opsec_context for the action must reflect that signal — earlier
+    // versions overwrote opsec_context with the last validated target.
+    const now = new Date().toISOString();
+    engine.addNode({ id: 'host-1', type: 'host', label: '10.10.10.1', discovered_at: now, confidence: 1 });
+    engine.addNode({ id: 'host-2', type: 'host', label: '10.10.10.2', discovered_at: now, confidence: 1 });
+    engine.recordDefensiveSignal({
+      type: 'rate_limit',
+      host_id: 'host-1',
+      detected_at: now,
+      description: 'WAF rate limited /admin',
+    });
+
+    const result = await handlers.run_bash({
+      command: 'echo multi',
+      target_node_ids: ['host-1', 'host-2'],
+      technique: 'portscan',
+    });
+    const payload = parseTextResult(result);
+    expect(payload.executed).toBe(true);
+
+    const validated = engine.getFullHistory().find(
+      e => e.action_id === payload.action_id && e.event_type === 'action_validated',
+    );
+    const opsec = (validated?.details as any)?.opsec_context;
+    expect(opsec).toBeTruthy();
+    const signals = opsec.defensive_signals as Array<{ host_id?: string }>;
+    expect(signals.some(s => s.host_id === 'host-1')).toBe(true);
+  });
+
   it('threads frontier_item_id through events', async () => {
     const result = await handlers.run_bash({
       command: 'true',

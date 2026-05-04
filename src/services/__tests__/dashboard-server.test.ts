@@ -1448,6 +1448,30 @@ describe('DashboardServer', () => {
       if (origToken) process.env.OVERWATCH_DASHBOARD_TOKEN = origToken;
       else delete process.env.OVERWATCH_DASHBOARD_TOKEN;
     });
+
+    it.each([
+      ['handleCreateEngagement', (d: any, req: any, res: any) => d.handleCreateEngagement(req, res)],
+      ['handleUpdateEngagement', (d: any, req: any, res: any) => d.handleUpdateEngagement('eng-1', req, res)],
+      ['handleGraphCorrect',     (d: any, req: any, res: any) => d.handleGraphCorrect(req, res)],
+    ])('%s rejects unauthenticated non-loopback callers (regression)', async (_name, invoke) => {
+      const nonLocalDashboard = new DashboardServer(engine, 0, '192.168.1.1');
+      const origToken = process.env.OVERWATCH_DASHBOARD_TOKEN;
+      delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+
+      const req = { headers: {}, url: '/', on: vi.fn() } as any;
+      const res = {
+        statusCode: 0,
+        body: '',
+        writeHead(code: number) { this.statusCode = code; },
+        end(b?: string) { this.body = b || ''; },
+        setHeader() {},
+      };
+
+      await invoke(nonLocalDashboard, req, res);
+      expect(res.statusCode).toBe(403);
+
+      if (origToken) process.env.OVERWATCH_DASHBOARD_TOKEN = origToken;
+    });
   });
 
   // ============================================================
