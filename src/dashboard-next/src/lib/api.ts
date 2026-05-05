@@ -399,3 +399,29 @@ export interface TelemetryResponse {
 export async function getTelemetry(): Promise<TelemetryResponse> {
   return fetchJson('/api/telemetry');
 }
+
+// --- Tape recorder ---
+
+export interface TapeStatus {
+  enabled: boolean;
+  path?: string | null;
+  frame_count?: number;
+  session_id?: string | null;
+  started_at?: string | null;
+}
+
+export async function getTapeStatus(): Promise<TapeStatus> {
+  return fetchJson('/api/tape');
+}
+
+export async function toggleTape(opts?: {
+  action?: 'enable' | 'disable';
+  dir?: string;
+  file?: string;
+  session_id?: string;
+}): Promise<TapeStatus> {
+  return fetchJson('/api/tape/toggle', {
+    method: 'POST',
+    body: JSON.stringify(opts ?? {}),
+  });
+}

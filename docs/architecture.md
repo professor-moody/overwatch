@@ -168,14 +168,22 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 
 ### Dashboard
 
-| File | Purpose |
-|------|---------|
-| `src/dashboard/index.html` | Slim HTML shell loading CDN deps + local scripts |
-| `src/dashboard/styles.css` | Dark theme, animations, responsive layout |
-| `src/dashboard/graph.js` | Sigma.js, ForceAtlas2, drag, hover, path/neighborhood highlight, minimap |
-| `src/dashboard/ui.js` | Sidebar panels, node detail, search, keyboard shortcuts |
-| `src/dashboard/ws.js` | WebSocket connection, reconnect, HTTP polling |
-| `src/dashboard/main.js` | Entry point wiring modules together |
+The dashboard is a React SPA built with Vite, served from `src/dashboard-next/`
+(build output: `dist/dashboard-next/`). It exposes panels for engagements,
+campaigns, agents, sessions (xterm-based terminal multiplexer), pending
+actions, frontier, activity, evidence, settings, telemetry, and a sigma.js
+graph explorer with attack-path overlay, focus presets, community hulls,
+edit mode, and minimap.
+
+| Area | Source |
+|------|--------|
+| Entry shell | `src/dashboard-next/src/main.tsx`, `App.tsx` |
+| Layout | `src/dashboard-next/src/components/layout/` (Toolbar, Sidebar, OperatorLayout, TapeToggle) |
+| Panels | `src/dashboard-next/src/components/panels/` |
+| Graph explorer | `src/dashboard-next/src/components/graph/` (sigma.js + hooks) |
+| State | `src/dashboard-next/src/stores/` (Zustand) |
+| API client | `src/dashboard-next/src/lib/api.ts` |
+| WebSocket | `src/dashboard-next/src/providers/ws-provider.tsx` |
 
 ## State Persistence
 

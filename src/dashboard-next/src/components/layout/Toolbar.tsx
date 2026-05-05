@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useWs } from '../../providers/ws-provider';
 import { cn } from '../../lib/utils';
+import { TapeToggle } from './TapeToggle';
 
 export function Toolbar() {
   const engagement = useEngagementStore((s) => s.engagement);
@@ -33,6 +34,9 @@ export function Toolbar() {
       </div>
 
       <div className="flex-1" />
+
+      {/* Tape recorder */}
+      <TapeToggle />
 
       {/* Stats */}
       <div className="flex items-center gap-4 text-xs text-muted-foreground">

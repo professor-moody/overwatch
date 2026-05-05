@@ -21,6 +21,7 @@ import { NodeFilters } from './NodeFilters';
 import { PathInfoBar } from './PathInfoBar';
 import { FocusBanner } from './FocusBanner';
 import { Minimap } from './Minimap';
+import { EdgeLegend } from './EdgeLegend';
 import { exportScreenshot, exportSVG } from './GraphExport';
 import { NodeContextMenu, type ContextMenuState } from './NodeContextMenu';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
@@ -391,6 +392,8 @@ export function GraphPage() {
         />
 
         <Minimap graph={graph} rendererRef={rendererRef} />
+
+        <EdgeLegend />
 
         {/* Keyboard shortcuts overlay */}
         {showShortcuts && (

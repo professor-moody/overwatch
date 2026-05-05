@@ -608,7 +608,7 @@ describe('DashboardServer', () => {
   it('serves binary assets without UTF-8 corruption', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-'));
     mkdirSync(join(tempDir, 'assets'));
-    writeFileSync(join(tempDir, 'operator.html'), '<html></html>', 'utf-8');
+    writeFileSync(join(tempDir, 'index.html'), '<html></html>', 'utf-8');
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
     writeFileSync(join(tempDir, 'assets', 'test.png'), pngBytes);
 

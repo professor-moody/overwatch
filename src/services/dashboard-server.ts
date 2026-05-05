@@ -384,37 +384,23 @@ export class DashboardServer {
   private resolveDashboardDir(): string {
     if (this.dashboardDir) return this.dashboardDir;
 
-    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'next';
-
-    if (version !== 'legacy') {
-      // dashboard-next (React + Vite build)
-      const nextDistPath = join(__dirname, '..', 'dashboard-next');
-      if (existsSync(join(nextDistPath, 'index.html'))) {
-        this.dashboardDir = nextDistPath;
-        return nextDistPath;
-      }
-      // Fallback: source build output
-      const nextSrcPath = join(__dirname, '..', '..', 'dist', 'dashboard-next');
-      if (existsSync(join(nextSrcPath, 'index.html'))) {
-        this.dashboardDir = nextSrcPath;
-        return nextSrcPath;
-      }
-      console.error('Dashboard-next not found, falling back to legacy dashboard');
+    // dashboard-next (React + Vite build) is the only dashboard.
+    // dist/services/ → dist/dashboard-next/
+    const nextDistPath = join(__dirname, '..', 'dashboard-next');
+    if (existsSync(join(nextDistPath, 'index.html'))) {
+      this.dashboardDir = nextDistPath;
+      return nextDistPath;
+    }
+    // Fallback: top-level dist output (e.g. when running tsc only)
+    const nextSrcPath = join(__dirname, '..', '..', 'dist', 'dashboard-next');
+    if (existsSync(join(nextSrcPath, 'index.html'))) {
+      this.dashboardDir = nextSrcPath;
+      return nextSrcPath;
     }
 
-    // dist/services/ → dist/dashboard/
-    const distPath = join(__dirname, '..', 'dashboard');
-    if (existsSync(join(distPath, 'index.html'))) {
-      this.dashboardDir = distPath;
-      return distPath;
-    }
-    // Fallback: source path
-    const srcPath = join(__dirname, '..', '..', 'src', 'dashboard');
-    if (existsSync(join(srcPath, 'index.html'))) {
-      this.dashboardDir = srcPath;
-      return srcPath;
-    }
-    throw new Error('Dashboard directory not found');
+    throw new Error(
+      'Dashboard build not found. Run `npm run build:dashboard-next` (or `npm run build`) before starting the server.',
+    );
   }
 
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
@@ -579,28 +565,13 @@ export class DashboardServer {
   }
 
   private serveStaticFile(url: string, res: ServerResponse): void {
-    const version = process.env.OVERWATCH_DASHBOARD_VERSION || 'next';
-    const isSPA = version !== 'legacy';
-
-    // Multi-page routing: operator dashboard (/) and graph explorer (/graph)
-    let filePath: string;
-    if (isSPA) {
-      // React SPA: serve index.html for all non-asset routes (React Router handles routing)
-      const pathname = url.split('?')[0];
-      const hasExt = extname(pathname) !== '';
-      filePath = hasExt ? pathname : '/index.html';
-    } else if (url === '/' || url === '/operator' || url === '/operator.html') {
-      filePath = '/operator.html';
-    } else if (url === '/graph' || url === '/graph.html') {
-      filePath = '/graph.html';
-    } else if (url === '/index.html') {
-      // Backward compat: redirect old index.html to operator dashboard
-      res.writeHead(302, { Location: '/' });
-      res.end();
-      return;
-    } else {
-      filePath = url;
-    }
+    // React SPA: serve index.html for all non-asset routes (React Router
+    // handles `/`, `/operator`, `/graph`, `/index.html`, `/operator.html`,
+    // and any future client routes). Paths with file extensions fall
+    // through to disk lookup so static assets (.js, .css, .png, ...) work.
+    const pathname = url.split('?')[0];
+    const hasExt = extname(pathname) !== '';
+    const filePath = hasExt ? pathname : '/index.html';
 
     // Security: prevent directory traversal (including percent-encoded variants).
     // decodeURIComponent can throw URIError on malformed escapes (e.g. `%E0`),
