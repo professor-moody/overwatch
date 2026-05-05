@@ -166,18 +166,18 @@ Why this matters: without it, captured credentials float free of the listener th
 ```mermaid
 flowchart LR
     OP([operator user]):::user
-    MS[mock_service<br/>Responder<br/>0.0.0.0:445]:::mock
-    SESS[session<br/>kind=socket mode=listen]:::sess
+    MS["mock_service<br/>Responder<br/>0.0.0.0:445"]:::mock
+    SESS["session<br/>kind=socket, mode=listen"]:::sess
     HOST[(attacker host)]:::host
-    CRED[credential<br/>CORP\\victim:hash]:::cred
-    USR[user<br/>victim]:::user
+    CRED["credential<br/>CORP/victim NTLMv2"]:::cred
+    USR["user<br/>victim"]:::user
     TARGET[(target host)]:::host
 
-    SESS -- "capabilities.serves_mock_service_id" --> MS
-    MS -- "OPERATED_BY" --> OP
-    MS -- "RUNS_ON" --> HOST
-    MS -- "BAITED (auto-inferred)" --> CRED
-    CRED -- "OWNS_CRED (inferred)" --> USR
+    SESS -- "serves_mock_service_id" --> MS
+    MS -- OPERATED_BY --> OP
+    MS -- RUNS_ON --> HOST
+    MS -- "BAITED (auto)" --> CRED
+    CRED -- OWNS_CRED --> USR
     CRED -- "VALID_ON (after test)" --> TARGET
 
     classDef mock fill:#d97706,stroke:#92400e,color:#fff
