@@ -24,6 +24,7 @@ const FRIENDLY_TYPE_LABELS = {
   cloud_resource: 'Cloud Resources',
   cloud_policy: 'Cloud Policies',
   cloud_network: 'Cloud Networks',
+  mock_service: 'Mock Services',
 };
 
 function getNodeDisplayLabel(props = {}, fallbackId = '') {
@@ -49,6 +50,7 @@ function getNodeDisplayLabel(props = {}, fallbackId = '') {
   if (type === 'cloud_resource') return props.resource_name || props.arn || props.label || fallbackId;
   if (type === 'cloud_policy') return props.policy_name || props.label || fallbackId;
   if (type === 'cloud_network') return props.network_name || props.cidr || props.label || fallbackId;
+  if (type === 'mock_service') return props.label || [props.mock_purpose, `${props.bind_host || ''}:${props.bind_port || ''}`].filter(Boolean).join(' ') || fallbackId;
   return props.label || fallbackId;
 }
 
@@ -134,6 +136,14 @@ function getNodeIdentityEntries(props = {}, fallbackId = '') {
     push('vpc_id', props.vpc_id);
     push('account', props.cloud_account);
     push('region', props.cloud_region);
+  } else if (type === 'mock_service') {
+    push('purpose', props.mock_purpose);
+    push('bind', `${props.bind_host || ''}:${props.bind_port || ''}`);
+    push('protocol', props.protocol);
+    push('opsec_loud', props.opsec_loud);
+    push('started_at', props.started_at);
+    push('stopped_at', props.stopped_at);
+    push('bound_session_id', props.bound_session_id);
   }
 
   if (props.canonical_id && props.canonical_id !== fallbackId) {

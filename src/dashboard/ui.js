@@ -145,6 +145,7 @@ function updateStats(state) {
   const clickableTypes = new Set([
     'host', 'domain', 'objective', 'credential', 'service', 'share', 'user',
     'group', 'ou', 'gpo', 'certificate', 'subnet', 'ca', 'cert_template', 'pki_store',
+    'mock_service',
   ]);
 
   let html = '';

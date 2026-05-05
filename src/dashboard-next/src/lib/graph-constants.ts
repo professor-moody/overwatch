@@ -24,6 +24,7 @@ export const NODE_COLORS: Record<string, string> = {
   cloud_resource: '#e6a459',
   cloud_policy: '#a8d65c',
   cloud_network: '#8fabb8',
+  mock_service: '#d97706',
 };
 
 export const NODE_BASE_SIZES: Record<string, number> = {
@@ -48,6 +49,7 @@ export const NODE_BASE_SIZES: Record<string, number> = {
   cloud_resource: 7,
   cloud_policy: 5,
   cloud_network: 6,
+  mock_service: 7,
 };
 
 export const EDGE_CATEGORIES: Record<string, string> = {
@@ -91,6 +93,8 @@ export const EDGE_CATEGORIES: Record<string, string> = {
   EXPOSED_TO: '#6e9eff', RUNS_ON: '#6e9eff',
   // Objective
   PATH_TO_OBJECTIVE: '#f0b54a',
+  // Operator-controlled infrastructure
+  OPERATED_BY: '#d97706', BAITED: '#d97706', RELAYED_VIA: '#d97706',
   // Generic
   RELATED: '#6b6977',
 };

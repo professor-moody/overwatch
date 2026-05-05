@@ -36,6 +36,7 @@ const NODE_COLORS = {
   cloud_resource:'#e6a459',
   cloud_policy:  '#a8d65c',
   cloud_network: '#8fabb8',
+  mock_service:  '#d97706',
 };
 
 const NODE_BASE_SIZES = {
@@ -60,6 +61,7 @@ const NODE_BASE_SIZES = {
   cloud_resource: 7,
   cloud_policy: 5,
   cloud_network: 6,
+  mock_service: 7,
 };
 
 // Edge colors by category
@@ -104,6 +106,8 @@ const EDGE_CATEGORIES = {
   EXPOSED_TO: '#6e9eff', RUNS_ON: '#6e9eff',
   // Objective
   PATH_TO_OBJECTIVE: '#f0b54a',
+  // Operator-controlled infrastructure
+  OPERATED_BY: '#d97706', BAITED: '#d97706', RELAYED_VIA: '#d97706',
   // Generic
   RELATED: '#6b6977',
 };
