@@ -995,6 +995,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'tmpl-1', { type: 'cert_template', any_purpose: true, ekus: ['1.3.6.1.5.5.7.3.2'] });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBeGreaterThan(0);
@@ -1023,6 +1024,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'tmpl-1', { type: 'cert_template', enrollment_agent: true });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBeGreaterThan(0);
@@ -1071,6 +1073,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'ca-1', { type: 'ca', san_flag_enabled: true });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'ca-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('ca-1');
       expect(inferred.length).toBeGreaterThan(0);
@@ -1215,6 +1218,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'tmpl-1', { type: 'cert_template', ct_flag_no_security_extension: true });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBeGreaterThan(0);
@@ -1244,6 +1248,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'tmpl-1', { type: 'cert_template', enrollee_supplies_subject: true });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBeGreaterThan(0);
@@ -1348,6 +1353,7 @@ describe('InferenceEngine', () => {
       const graph = makeGraph();
       addNode(graph, 'tmpl-1', { type: 'cert_template', issuance_policy_oid: '1.3.6.1.4.1.311.21.8.xxx', issuance_policy_group_link: 'CN=HighPrivGroup,DC=corp,DC=local' });
       addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBeGreaterThan(0);

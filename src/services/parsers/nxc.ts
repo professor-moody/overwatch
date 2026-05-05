@@ -373,21 +373,28 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     }
 
     // --- Share enumeration: HOSTNAME  sharename  READ/WRITE ---
-    const shareMatch = rest.match(/^(\S+)\s+(READ|WRITE|READ,\s*WRITE)/i);
+    // NOTE: alternation order matters here. The combined `READ,\s*WRITE`
+    // (and reverse) variants must match BEFORE the bare tokens, otherwise
+    // "READ, WRITE" gets captured as "READ" only and writable shares are
+    // misclassified as read-only — hiding escalation/exfil paths.
+    const shareMatch = rest.match(/^(\S+)\s+(READ,\s*WRITE|WRITE,\s*READ|WRITE|READ)/i);
     if (shareMatch) {
       const [, shareName, perms] = shareMatch;
       if (shareName.startsWith('[') || shareName === '-Username-') continue;
       const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
       const shareId = `share-${ip.replace(/\./g, '-')}-${shareName.toLowerCase()}`;
 
+      // Tokenize on commas to be robust to future NXC format tweaks
+      // (e.g. extra whitespace, additional perm flags).
+      const tokens = perms.split(/,\s*/).map(t => t.trim().toUpperCase());
       if (!seenNodes.has(shareId)) {
         nodes.push({
           id: shareId,
           type: 'share',
           label: `\\\\${ip}\\${shareName}`,
           share_name: shareName,
-          readable: perms.includes('READ'),
-          writable: perms.includes('WRITE'),
+          readable: tokens.includes('READ'),
+          writable: tokens.includes('WRITE'),
         });
         seenNodes.add(shareId);
       }

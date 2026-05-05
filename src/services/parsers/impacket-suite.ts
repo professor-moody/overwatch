@@ -38,15 +38,18 @@ export function parseGetNPUsers(output: string, agentId: string = 'getnpusers-pa
       seenNodes.add(resolvedUserId);
     }
 
-    // AS-REP hash is a TGS-equivalent (not directly usable for auth)
-    const credNodeId = credentialId('kerberos_tgs', hashValue.substring(0, 32), username, domain);
+    // AS-REP roast hash. F6: this is NOT a TGS — it's an offline-crackable
+    // AS-REP material with different cracking semantics. Tag it distinctly so
+    // reporting, expiry, and downstream handoff don't conflate it with
+    // captured TGS tickets.
+    const credNodeId = credentialId('kerberos_asrep', hashValue.substring(0, 32), username, domain);
     if (!seenNodes.has(credNodeId)) {
       nodes.push({
         id: credNodeId,
         type: 'credential',
         label: `AS-REP:${username}`,
-        cred_type: 'kerberos_tgs',
-        cred_material_kind: 'kerberos_tgs',
+        cred_type: 'kerberos_asrep',
+        cred_material_kind: 'kerberos_asrep',
         cred_usable_for_auth: false,
         cred_evidence_kind: 'capture',
         cred_user: username,
@@ -191,18 +194,22 @@ export function parseGetTGT(output: string, agentId: string = 'gettgt-parser', c
   const ccacheName = ccacheMatch ? ccacheMatch[1] : '';
   // Filename format: user.ccache or domain/user.ccache
   const nameMatch = ccacheName.match(/(?:([^/]+)\/)?([^.]+)\.ccache$/);
-  const username = nameMatch?.[2] || context?.domain?.split('.')[0] || 'unknown';
+  // F10: do NOT fall back to context.domain.split('.')[0] — that fabricates
+  // a fake user (e.g. "corp" for domain corp.local) and links a TGT to it.
+  // If the ccache filename does not encode a username, leave it undefined
+  // and skip the OWNS_CRED edge below.
+  const username = nameMatch?.[2] || (typeof context?.username === 'string' ? context.username : undefined);
   const domain = nameMatch?.[1] ? resolveDomainName(nameMatch[1], context?.domain_aliases) : context?.domain;
 
   // TGT credential with ~10h lifetime
   const tgtExpiry = new Date(Date.now() + 10 * 60 * 60 * 1000).toISOString();
-  const credNodeId = credentialId('kerberos_tgt', ccacheName || 'tgt', username, domain);
+  const credNodeId = credentialId('kerberos_tgt', ccacheName || 'tgt', username || 'unknown', domain);
 
   if (!seenNodes.has(credNodeId)) {
     nodes.push({
       id: credNodeId,
       type: 'credential',
-      label: `TGT:${username}`,
+      label: username ? `TGT:${username}` : 'TGT:unknown-principal',
       cred_type: 'kerberos_tgt',
       cred_material_kind: 'kerberos_tgt',
       cred_usable_for_auth: true,
@@ -214,23 +221,28 @@ export function parseGetTGT(output: string, agentId: string = 'gettgt-parser', c
     seenNodes.add(credNodeId);
   }
 
-  const resolvedUserId = userId(username, domain);
-  if (!seenNodes.has(resolvedUserId)) {
-    nodes.push({
-      id: resolvedUserId,
-      type: 'user',
-      label: domain ? `${domain}\\${username}` : username,
-      username,
-      domain_name: domain,
-    });
-    seenNodes.add(resolvedUserId);
-  }
+  // F10: only emit a user node + OWNS_CRED edge when we actually know the
+  // principal. Otherwise we'd fabricate (e.g.) corp.local\corp from the
+  // domain prefix and falsely link a TGT to it.
+  if (username) {
+    const resolvedUserId = userId(username, domain);
+    if (!seenNodes.has(resolvedUserId)) {
+      nodes.push({
+        id: resolvedUserId,
+        type: 'user',
+        label: domain ? `${domain}\\${username}` : username,
+        username,
+        domain_name: domain,
+      });
+      seenNodes.add(resolvedUserId);
+    }
 
-  edges.push({
-    source: resolvedUserId,
-    target: credNodeId,
-    properties: { type: 'OWNS_CRED' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
-  });
+    edges.push({
+      source: resolvedUserId,
+      target: credNodeId,
+      properties: { type: 'OWNS_CRED' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
+    });
+  }
 
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
 }
@@ -238,6 +250,68 @@ export function parseGetTGT(output: string, agentId: string = 'gettgt-parser', c
 // --- getST ---
 // Success: [*] Saving ticket in user.ccache
 const ST_SUCCESS = /Saving ticket in (\S+)/i;
+
+/**
+ * F11: Extract S4U2Self/S4U2Proxy / RBCD / cross-realm context from a raw
+ * Impacket getST command line. Recognized flags (case-insensitive):
+ *   -spn <SPN>
+ *   -impersonate <user>
+ *   -altservice <SPN>
+ *   -u2u
+ * Trailing positional argument has the form `[domain/]user[:password]@target`.
+ */
+function parseGetSTCommandLine(cmd: string): {
+  target_spn?: string;
+  alt_service?: string;
+  impersonated_user?: string;
+  caller_user?: string;
+  caller_domain?: string;
+  target_host?: string;
+  u2u?: boolean;
+} {
+  const out: ReturnType<typeof parseGetSTCommandLine> = {};
+  if (!cmd || typeof cmd !== 'string') return out;
+  // Tokenize on whitespace; respect simple quoting.
+  const tokens: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    tokens.push(m[1] ?? m[2] ?? m[3] ?? '');
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i].toLowerCase();
+    const next = tokens[i + 1];
+    if (!next) continue;
+    if (t === '-spn') { out.target_spn = next; i++; continue; }
+    if (t === '-altservice') { out.alt_service = next; i++; continue; }
+    if (t === '-impersonate') { out.impersonated_user = next; i++; continue; }
+    if (t === '-u2u') { out.u2u = true; continue; }
+  }
+  // Last positional that looks like [domain/]user[:pw]@target
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const tok = tokens[i];
+    if (tok.startsWith('-')) continue;
+    const at = tok.indexOf('@');
+    if (at <= 0) continue;
+    const principal = tok.substring(0, at);
+    const target = tok.substring(at + 1);
+    if (!target) continue;
+    let user = principal;
+    let dom: string | undefined;
+    const slash = principal.indexOf('/');
+    if (slash > 0) {
+      dom = principal.substring(0, slash);
+      user = principal.substring(slash + 1);
+    }
+    const colon = user.indexOf(':');
+    if (colon > 0) user = user.substring(0, colon);
+    if (user) out.caller_user = user;
+    if (dom) out.caller_domain = dom;
+    out.target_host = target;
+    break;
+  }
+  return out;
+}
 
 export function parseGetST(output: string, agentId: string = 'getst-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
@@ -252,22 +326,77 @@ export function parseGetST(output: string, agentId: string = 'getst-parser', con
 
   const ccacheMatch = output.match(/Saving ticket in (\S+)/i);
   const ccacheName = ccacheMatch ? ccacheMatch[1] : 'st';
-  const domain = context?.domain;
 
-  const credNodeId = credentialId('kerberos_tgs', ccacheName, 'service-ticket', domain);
+  // F11: lift context from the raw command line if available so getST output
+  // doesn't fabricate `service-ticket` as a synthetic principal and does
+  // populate target SPN / impersonated user / caller bindings.
+  const cmdLine = typeof context?.command_line === 'string' ? context.command_line : '';
+  const cli = parseGetSTCommandLine(cmdLine);
+  const domain = resolveDomainName(cli.caller_domain || (typeof context?.domain === 'string' ? context.domain : '') || '', context?.domain_aliases) || cli.caller_domain || context?.domain;
+  const callerUser = cli.caller_user || (typeof context?.username === 'string' ? context.username : undefined);
+  const impersonated = cli.impersonated_user;
+  const targetSpn = cli.alt_service || cli.target_spn;
+
+  // Cred holder: in S4U flows the resulting ST is for the impersonated user.
+  // Otherwise the caller owns the ST.
+  const ticketUser = impersonated || callerUser;
+
+  const credNodeId = credentialId('kerberos_tgs', ccacheName, ticketUser || 'service-ticket', domain);
   if (!seenNodes.has(credNodeId)) {
     nodes.push({
       id: credNodeId,
       type: 'credential',
-      label: `ST:${ccacheName}`,
+      label: ticketUser ? `ST:${ticketUser}` : `ST:${ccacheName}`,
       cred_type: 'kerberos_tgs',
       cred_material_kind: 'kerberos_tgs',
       cred_usable_for_auth: true,
       cred_evidence_kind: 'capture',
+      cred_user: ticketUser,
       cred_domain: domain,
+      target_spn: targetSpn,
+      impersonated_user: impersonated,
       valid_until: new Date(Date.now() + 10 * 60 * 60 * 1000).toISOString(),
     });
     seenNodes.add(credNodeId);
+  }
+
+  // Owner edge: caller owns the credential; in S4U flows we still link the
+  // caller as the operator who minted the ticket.
+  if (callerUser) {
+    const callerId = userId(callerUser, domain);
+    if (!seenNodes.has(callerId)) {
+      nodes.push({
+        id: callerId,
+        type: 'user',
+        label: domain ? `${domain}\\${callerUser}` : callerUser,
+        username: callerUser,
+        domain_name: domain,
+      });
+      seenNodes.add(callerId);
+    }
+    edges.push({
+      source: callerId,
+      target: credNodeId,
+      properties: { type: 'OWNS_CRED' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
+    });
+  }
+
+  // Impersonated principal: surface the impersonated user as a node so the
+  // graph records the S4U target. We don't add a dedicated impersonation
+  // edge type here — `impersonated_user` on the credential node carries the
+  // semantics; downstream inference can consume it without a schema change.
+  if (impersonated) {
+    const impId = userId(impersonated, domain);
+    if (!seenNodes.has(impId)) {
+      nodes.push({
+        id: impId,
+        type: 'user',
+        label: domain ? `${domain}\\${impersonated}` : impersonated,
+        username: impersonated,
+        domain_name: domain,
+      });
+      seenNodes.add(impId);
+    }
   }
 
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };

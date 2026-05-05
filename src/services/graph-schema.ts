@@ -51,7 +51,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   WRITE_DACL: { source: ['user', 'group'], target: ['user', 'group', 'host', 'domain', 'gpo', 'ou', 'cert_template', 'ca'] },
   ADD_MEMBER: { source: ['user', 'group'], target: ['group'] },
   FORCE_CHANGE_PASSWORD: { source: ['user', 'group'], target: ['user'] },
-  ALLOWED_TO_ACT: { source: ['host', 'user'], target: ['host'] },
+  ALLOWED_TO_ACT: { source: ['host', 'user', 'group'], target: ['host'] },
   // ADCS
   CAN_ENROLL: { source: ['user', 'group'], target: ['cert_template', 'ca'] },
   ISSUED_BY: { source: ['cert_template'], target: ['ca'] },

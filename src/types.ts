@@ -3,6 +3,7 @@
 // ============================================================
 
 import { z } from 'zod';
+import { isValidCidr } from './services/cidr.js';
 
 // --- Node Types ---
 
@@ -81,14 +82,14 @@ export interface NodeProperties {
   pwd_last_set?: string;        // ISO timestamp — last password change (from LDAP pwdLastSet)
 
   // Credential
-  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep' | 'certificate' | 'token' | 'ssh_key';
   cred_value?: string;          // hash or redacted reference
   cred_hash?: string;           // normalized hash material for cracked/captured creds
   cred_user?: string;           // associated user node id
   cred_domain?: string;
   cred_domain_inferred?: boolean;
   cred_domain_source?: 'explicit' | 'graph_inference' | 'parser_context';
-  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'certificate' | 'token' | 'ssh_key';
+  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep' | 'certificate' | 'token' | 'ssh_key';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
   cred_is_default_guess?: boolean;
@@ -406,9 +407,9 @@ export const engagementConfigSchema = z.object({
     warning: z.string(),
   })).optional(),
   scope: z.object({
-    cidrs: z.array(z.string().regex(
-      /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,
-      { message: 'Each CIDR must be in format X.X.X.X/N' },
+    cidrs: z.array(z.string().refine(
+      isValidCidr,
+      { message: 'Each CIDR must be valid IPv4 X.X.X.X/N with octets 0-255 and mask 0-32' },
     )).default([]),
     domains: z.array(z.string()),
     exclusions: z.array(z.string()),

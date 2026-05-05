@@ -1,5 +1,22 @@
 # Configuration
 
+## Runtime Prerequisites
+
+Overwatch targets Node.js **>= 20** (matches `package.json#engines`). Older
+runtimes will be rejected by the npm install step. A few capabilities are
+"soft" optional and require system-level packages installed by the operator:
+
+- **Interactive PTY sessions** (`open_session` / `send_to_session` with a
+  pseudo-terminal): require `node-pty`, which compiles a native binding at
+  install time and needs the platform's build toolchain (Xcode CLI tools on
+  macOS, `build-essential` + `python3` on Debian/Ubuntu).
+- **Password-based SSH sessions**: require `sshpass` on `$PATH` so the
+  session-control layer can drive interactive password prompts non-interactively.
+
+If `node-pty` is not built, Overwatch falls back to non-PTY pipes for shell
+sessions; if `sshpass` is missing, password-based SSH sessions are reported
+as a precheck failure rather than silently hanging.
+
 ## Engagement Config (`engagement.json`)
 
 The engagement config defines scope, objectives, and OPSEC policy. It's loaded at server startup from the path specified by `OVERWATCH_CONFIG` (defaults to `./engagement.json`).

@@ -101,7 +101,23 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         config, graph, history, agents, retrospective,
       };
 
-      const options = { include_evidence, include_narrative, include_retrospective, include_compliance, include_attack_navigator, include_gap_analysis };
+      // F9: wire the evidence store loader so markdown/html previews can
+      // include head/tail snippets of captured stdout for findings whose
+      // action recorded a `stdout_evidence_id`. Without this, reports cite
+      // evidence IDs but never inline the proof preview.
+      const evidenceLoader = (id: string): string | null => {
+        try {
+          return engine.getEvidenceStore().getRawOutput(id);
+        } catch {
+          return null;
+        }
+      };
+
+      const options = {
+        include_evidence, include_narrative, include_retrospective,
+        include_compliance, include_attack_navigator, include_gap_analysis,
+        evidence_loader: evidenceLoader,
+      };
       const markdown = generateFullReport(reportInput, options);
 
       // Build JSON structured output for 'json' format

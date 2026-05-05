@@ -29,7 +29,15 @@ function parseADTimeInterval(values: string[] | undefined): number | undefined {
   if (!raw || raw === '0') return undefined;
   // AD stores these as negative 100-nanosecond intervals
   // e.g., -36288000000000 = 42 days in 100ns units
-  const val = BigInt(raw);
+  // F12: a single malformed attribute (e.g. minPwdAge: "notnum") used to
+  // throw and abort the entire LDIF parse, losing all valid users/groups
+  // downstream. Treat unparseable intervals as undefined.
+  let val: bigint;
+  try {
+    val = BigInt(raw);
+  } catch {
+    return undefined;
+  }
   if (val === 0n) return undefined;
   const absVal = val < 0n ? -val : val;
   // Convert 100-nanosecond intervals to seconds

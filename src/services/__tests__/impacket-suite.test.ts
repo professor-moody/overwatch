@@ -27,7 +27,8 @@ describe('Impacket Suite Parsers', () => {
 
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds).toHaveLength(2);
-      expect(creds[0].cred_type).toBe('kerberos_tgs');
+      expect(creds[0].cred_type).toBe('kerberos_asrep');
+      expect(creds[0].cred_material_kind).toBe('kerberos_asrep');
       expect(creds[0].cred_usable_for_auth).toBe(false);
 
       // Domain node

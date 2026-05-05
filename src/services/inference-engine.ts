@@ -274,6 +274,48 @@ export class InferenceEngine {
     return hosts;
   }
 
+  /**
+   * F2: Compute the set of `user` nodes that can enroll in a given certificate
+   * template. Walks CAN_ENROLL in-edges and transitively expands `group`
+   * principals via MEMBER_OF. Fail-closed: returns [] if no principal has
+   * CAN_ENROLL, never the universe of users.
+   */
+  private resolveEnrollablePrincipals(templateNodeId: string): string[] {
+    const enrolleeIds = new Set<string>();
+    const visited = new Set<string>();
+    const queue: string[] = [];
+
+    // Seed with direct CAN_ENROLL principals.
+    for (const edge of this.ctx.graph.inEdges(templateNodeId) as string[]) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edge);
+      if (attrs.type === 'CAN_ENROLL') {
+        queue.push(this.ctx.graph.source(edge));
+      }
+    }
+
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const n = this.getNode(id);
+      if (!n) continue;
+      if (n.type === 'user') {
+        enrolleeIds.add(id);
+        continue;
+      }
+      if (n.type === 'group') {
+        // Expand: anything that is MEMBER_OF this group.
+        for (const edge of this.ctx.graph.inEdges(id) as string[]) {
+          const a = this.ctx.graph.getEdgeAttributes(edge);
+          if (a.type === 'MEMBER_OF') queue.push(this.ctx.graph.source(edge));
+        }
+      }
+      // host/computer/cert principals: ignore for user-targeted ESC paths.
+    }
+
+    return Array.from(enrolleeIds);
+  }
+
   private getNodeDomains(nodeId: string): string[] {
     const domains: string[] = [];
     for (const edge of this.ctx.graph.outEdges(nodeId) as string[]) {
@@ -500,20 +542,38 @@ export class InferenceEngine {
       }
 
       case 'enrollable_users':
-        return this.getNodesByType('user').map(n => n.id);
+        // F2: only users who actually have CAN_ENROLL on this template
+        // (directly or via group membership) are enrollable. The previous
+        // implementation returned every user in the graph, producing
+        // spurious ESC paths.
+        return this.resolveEnrollablePrincipals(triggerNodeId);
 
       case 'enrollable_users_if_client_auth': {
-        const ekus = node.ekus as string[] | undefined;
-        const hasClientAuth = !ekus || ekus.length === 0
-          || ekus.some(e => e === '1.3.6.1.5.5.7.3.2' || e.toLowerCase().includes('client authentication'));
+        // F2 fail-closed: if the template has no recorded EKU info we MUST
+        // NOT assume client-auth is allowed. Read both the canonical
+        // `ekus` (array) and legacy `eku` field. Empty/missing → no path.
+        const ekuRaw = (node.ekus ?? node.eku) as unknown;
+        const ekus: string[] = Array.isArray(ekuRaw)
+          ? ekuRaw.filter((e): e is string => typeof e === 'string')
+          : typeof ekuRaw === 'string' ? [ekuRaw] : [];
+        if (ekus.length === 0) return [];
+        const hasClientAuth = ekus.some(e =>
+          e === '1.3.6.1.5.5.7.3.2'
+          || e === '2.5.29.37.0' // anyExtendedKeyUsage
+          || e === '1.3.6.1.5.2.3.4' // PKINIT client auth
+          || e === '1.3.6.1.4.1.311.20.2.2' // smartcard logon
+          || e.toLowerCase().includes('client authentication')
+          || e.toLowerCase().includes('smartcard logon')
+          || e.toLowerCase().includes('any purpose')
+        );
         if (!hasClientAuth) return [];
-        return this.getNodesByType('user').map(n => n.id);
+        return this.resolveEnrollablePrincipals(triggerNodeId);
       }
 
       case 'enrollable_users_if_issuance_policy': {
         // ESC13: Only return enrollable users if the template has both issuance_policy_oid and issuance_policy_group_link set
         if (!node.issuance_policy_oid || !node.issuance_policy_group_link) return [];
-        return this.getNodesByType('user').map(n => n.id);
+        return this.resolveEnrollablePrincipals(triggerNodeId);
       }
 
       case 'edge_peers': {

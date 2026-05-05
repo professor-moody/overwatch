@@ -77,9 +77,14 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
   if (!maskStr) return ip === base;
 
   const mask = parseInt(maskStr);
+  // Defensive clamp: an out-of-range mask (e.g. /33 from a hand-rolled
+  // config that bypassed isValidCidr) would otherwise produce a bogus
+  // mask via signed-shift wraparound and broaden the in-scope range.
+  // Fail closed.
+  if (!Number.isFinite(mask) || mask < 0 || mask > 32) return false;
   const ipNum = ipToNum(ip);
   const baseNum = ipToNum(base);
-  const maskBits = (0xFFFFFFFF << (32 - mask)) >>> 0;
+  const maskBits = mask === 0 ? 0 : (0xFFFFFFFF << (32 - mask)) >>> 0;
 
   return (ipNum & maskBits) === (baseNum & maskBits);
 }

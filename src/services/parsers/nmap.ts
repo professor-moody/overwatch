@@ -108,7 +108,12 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
     for (const port of host.ports) {
       if (port.state !== 'open') continue;
 
-      const svcId = `svc-${host.ip.replace(/[.:]/g, '-')}-${port.port}`;
+      // F7: include protocol in svc id ONLY for non-TCP, so TCP/53 and UDP/53
+      // become distinct nodes (`svc-<host>-53` vs `svc-<host>-udp-53`).
+      // Keeping bare-port IDs for TCP preserves stability with existing
+      // graphs and other parsers (nxc/web/etc.) which all assume TCP.
+      const protoPrefix = port.protocol && port.protocol !== 'tcp' ? `${port.protocol}-` : '';
+      const svcId = `svc-${host.ip.replace(/[.:]/g, '-')}-${protoPrefix}${port.port}`;
       nodes.push({
         id: svcId,
         type: 'service',

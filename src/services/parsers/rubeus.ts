@@ -141,14 +141,15 @@ function parseRubeusAsreproast(
     }
 
     if (hash) {
-      const resolvedCredId = credentialId('kerberos_tgs', hash, username, domain);
+      // F6: AS-REP roast hashes are tagged distinctly from TGS captures.
+      const resolvedCredId = credentialId('kerberos_asrep', hash, username, domain);
       if (!seenNodes.has(resolvedCredId)) {
         nodes.push({
           id: resolvedCredId,
           type: 'credential',
           label: `ASREP:${username}`,
-          cred_type: 'kerberos_tgs',
-          cred_material_kind: 'kerberos_tgs',
+          cred_type: 'kerberos_asrep',
+          cred_material_kind: 'kerberos_asrep',
           cred_usable_for_auth: false,
           cred_evidence_kind: 'dump',
           cred_value: hash,

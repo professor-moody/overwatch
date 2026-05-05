@@ -4,6 +4,9 @@
   "description": "Offensive security engagement orchestrator - MCP server with graph-based state management",
   "type": "module",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "overwatch-mcp-tape": "dist/bin/overwatch-mcp-tape.js"
   },

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { expandCidr, expandCidrDetailed, isIpInCidr, isIpInScope, isHostnameInScope, isValidCidr, inferCidrFromIps, isIPv6 } from '../cidr.js';
+import { engagementConfigSchema } from '../../types.js';
 
 describe('expandCidr', () => {
   it('expands a /24 to 254 hosts (skips network + broadcast)', () => {
@@ -233,6 +234,31 @@ describe('isValidCidr', () => {
   it('rejects out-of-range mask', () => {
     expect(isValidCidr('10.10.10.0/33')).toBe(false);
   });
+
+  it('rejects negative mask, non-numeric mask, and leading zeros', () => {
+    expect(isValidCidr('10.10.10.0/-1')).toBe(false);
+    expect(isValidCidr('10.10.10.0/abc')).toBe(false);
+    expect(isValidCidr('10.10.10.0/99')).toBe(false);
+  });
+});
+
+describe('isIpInCidr defensive clamp (P0 scope bypass regression)', () => {
+  // Before the clamp, mask=/33 produced (0xFFFFFFFF << -1) >>> 0 = 0x7FFFFFFF,
+  // matching ~half the IPv4 space. Any hand-rolled config or pre-validation
+  // CIDR check would broaden scope dramatically.
+  it('returns false for /33 mask regardless of IP', () => {
+    expect(isIpInCidr('10.0.0.1', '10.0.0.0/33')).toBe(false);
+    expect(isIpInCidr('10.0.0.2', '10.0.0.0/33')).toBe(false);
+    expect(isIpInCidr('192.168.1.1', '10.0.0.0/33')).toBe(false);
+  });
+  it('returns false for negative or non-numeric mask', () => {
+    expect(isIpInCidr('10.0.0.1', '10.0.0.0/-1')).toBe(false);
+    expect(isIpInCidr('10.0.0.1', '10.0.0.0/abc')).toBe(false);
+  });
+  it('still works for valid edge masks', () => {
+    expect(isIpInCidr('10.0.0.1', '10.0.0.0/0')).toBe(true);
+    expect(isIpInCidr('10.0.0.1', '10.0.0.1/32')).toBe(true);
+  });
 });
 
 describe('inferCidrFromIps', () => {
@@ -308,5 +334,39 @@ describe('IPv6 rejection across CIDR helpers', () => {
   it('inferCidrFromIps skips IPv6 addresses', () => {
     const result = inferCidrFromIps(['10.0.0.1', 'fe80::1', '::1', '10.0.0.2']);
     expect(result).toEqual(['10.0.0.0/24']);
+  });
+});
+
+describe('engagementConfigSchema CIDR validation (P0 scope bypass regression)', () => {
+  const baseConfig = {
+    id: 'test', name: 'test', profile: 'network',
+    created_at: new Date().toISOString(),
+    scope: { domains: [], exclusions: [] },
+    objectives: [],
+    opsec: { name: 'test-opsec', max_noise: 0.5 },
+  };
+
+  it('rejects /33 mask in scope.cidrs', () => {
+    const r = engagementConfigSchema.safeParse({
+      ...baseConfig,
+      scope: { ...baseConfig.scope, cidrs: ['10.0.0.0/33'] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects out-of-range octets in scope.cidrs', () => {
+    const r = engagementConfigSchema.safeParse({
+      ...baseConfig,
+      scope: { ...baseConfig.scope, cidrs: ['256.0.0.0/24'] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts well-formed CIDRs in scope.cidrs', () => {
+    const r = engagementConfigSchema.safeParse({
+      ...baseConfig,
+      scope: { ...baseConfig.scope, cidrs: ['10.0.0.0/24', '192.168.1.1/32'] },
+    });
+    expect(r.success).toBe(true);
   });
 });

@@ -18,8 +18,73 @@ import { parseOutput, getSupportedParsers, isAcceptableParserExit } from '../ser
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import type { ParseContext } from '../types.js';
 
-export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutes
+// F3: argv/command target extraction.
+//
+// Several techniques are inherently target-facing — recon scans, web
+// fuzzing, smb enumeration, brute-force, etc. When the caller forgets to
+// populate `target_node*` / `target_ip*`, we previously fell through to a
+// no-target validate() which trivially passed scope, allowing scans of
+// arbitrary IPs/hosts/URLs to slip through. We now sniff the argv (and the
+// raw command repr for shell form) for IPv4, IPv6, URL, and hostname-like
+// tokens and feed them back through validateAction.
+const TARGET_FACING_TECHNIQUES = new Set([
+  'recon', 'scan', 'port_scan', 'service_scan', 'host_discovery',
+  'enum', 'enum_smb', 'enum_dns', 'enum_ldap', 'enum_kerberos',
+  'web_scan', 'web_fuzz', 'web_brute', 'dir_brute', 'vuln_scan',
+  'smb_enum', 'rpc_enum', 'snmp_enum',
+  'cred_brute', 'auth_brute', 'spray', 'password_spray',
+]);
+
+const IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\/\d{1,2})?\b/g;
+// Bracketed IPv6 (with optional :port) or bare IPv6 with at least two colons.
+const IPV6 = /\[([0-9a-fA-F:]+)\](?::\d+)?|\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]*\b/g;
+const URL_RE = /\b(?:https?|ftp|smb|ssh|ldaps?|rdp):\/\/[^\s'"`]+/gi;
+const HOSTNAME = /\b(?=[a-zA-Z0-9.-]{1,253}\b)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g;
+
+interface ImplicitTargets {
+  ips: string[];
+  urls: string[];
+  hostnames: string[];
+}
+
+function extractImplicitTargets(_toolName: string, args: string[], commandRepr: string): ImplicitTargets {
+  const ips = new Set<string>();
+  const urls = new Set<string>();
+  const hostnames = new Set<string>();
+
+  const stringsToScan: string[] = [];
+  for (const a of args) {
+    if (typeof a === 'string' && a.length > 0 && !a.startsWith('-')) stringsToScan.push(a);
+  }
+  if (commandRepr) stringsToScan.push(commandRepr);
+
+  for (const s of stringsToScan) {
+    for (const m of s.matchAll(IPV4)) ips.add(m[0]);
+    for (const m of s.matchAll(IPV6)) ips.add(m[1] ?? m[0]);
+    for (const m of s.matchAll(URL_RE)) urls.add(m[0]);
+  }
+  // Hostname pass — exclude tokens that already matched as a URL host or
+  // are obviously a binary path / file extension noise.
+  for (const s of stringsToScan) {
+    for (const m of s.matchAll(HOSTNAME)) {
+      const host = m[0];
+      if (host.startsWith('.') || host.endsWith('.')) continue;
+      // Skip host-looking strings that are actually file basenames.
+      if (/\.(?:py|sh|conf|json|xml|txt|log|yaml|yml|html|js|ts|md|out|csv)$/i.test(host)) continue;
+      // Skip if it overlaps with an already-extracted URL.
+      let inUrl = false;
+      for (const u of urls) { if (u.includes(host)) { inUrl = true; break; } }
+      if (inUrl) continue;
+      hostnames.add(host);
+    }
+  }
+
+  return { ips: [...ips], urls: [...urls], hostnames: [...hostnames] };
+}
+
+
 export const MAX_TIMEOUT_MS = 60 * 60 * 1000;          // 1 hour
+export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutes
 const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per stream
 /**
  * Hard memory cap per stream. Beyond this we keep a head + rolling tail
@@ -351,6 +416,26 @@ export async function runInstrumentedProcess(
     for (const ip of allTargetIps) validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
     if (target_url) validationTargets.push({ target_url, technique, allow_unverified_scope });
     if (cloud_resource) validationTargets.push({ cloud_resource, technique, allow_unverified_scope });
+
+    // F3: if the caller declared no targets but the action is target-facing
+    // (recon/scan/web/etc.), fall back to extracting implicit targets from
+    // argv + command. Without this a `nmap 8.8.8.8` invocation that never
+    // populated target_ip would slip through scope. We fail closed when
+    // implicit targets are found and `allow_unverified_scope` is not set.
+    if (validationTargets.length === 0 && technique && TARGET_FACING_TECHNIQUES.has(technique)) {
+      const implicit = extractImplicitTargets(tool_name, args, command_repr);
+      for (const ip of implicit.ips) {
+        validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
+      }
+      for (const u of implicit.urls) {
+        validationTargets.push({ target_url: u, technique, allow_unverified_scope });
+      }
+      for (const h of implicit.hostnames) {
+        // Hostnames go through target_ip (validateAction resolves both forms).
+        validationTargets.push({ target_ip: h, technique, allow_unverified_scope });
+      }
+    }
+
     if (validationTargets.length === 0) validationTargets.push({ technique, allow_unverified_scope });
 
     const aggregatedErrors: string[] = [];
@@ -586,20 +671,26 @@ export async function runInstrumentedProcess(
   const stderr_evidence_id = stderrInfo.total > 0 && !stderrCaptureError ? stderrSink.evidence_id : undefined;
 
   // ---- 5. Terminal lifecycle event ----
-  const succeeded = !result.spawn_error && !result.timed_out && result.exit_code === 0;
   // Phase I: a non-zero exit no longer suppresses parsing. Tools like
   // nuclei/sqlmap/gobuster routinely return 1 to signal "no match" — the
   // captured output is still parseable. Parsing is gated only on having a
   // captured stream and not having crashed before producing output.
   const parseable = !result.spawn_error && (result.stdout.total_bytes > 0 || result.stderr.total_bytes > 0);
-  const parserExitOk = parse_with ? isAcceptableParserExit(parse_with, result.exit_code) : succeeded;
-  const partialParse = parseable && !parserExitOk;
+  const parserExitOk = parse_with ? isAcceptableParserExit(parse_with, result.exit_code) : true;
+  // F8: when an explicit parser is supplied, let parser-aware exit handling
+  // drive overall success — a known "no findings" exit (e.g. nuclei exit 1
+  // with empty result set) should not surface as `action_failed`/isError:true.
+  // Without `parse_with`, fall back to strict exit-code 0.
+  const succeeded = !result.spawn_error && !result.timed_out && (
+    parse_with ? parserExitOk : result.exit_code === 0
+  );
+  const partialParse = parseable && parse_with !== undefined && !parserExitOk;
   const terminalEventType = succeeded ? 'action_completed' as const : 'action_failed' as const;
   const failureReason = result.spawn_error
     ? 'spawn_error'
     : result.timed_out
       ? 'timeout'
-      : result.exit_code !== 0
+      : !succeeded && result.exit_code !== 0
         ? 'nonzero_exit'
         : undefined;
 

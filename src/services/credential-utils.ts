@@ -27,6 +27,8 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
       return 'kerberos_tgt';
     case 'kerberos_tgs':
       return 'kerberos_tgs';
+    case 'kerberos_asrep':
+      return 'kerberos_asrep';
     case 'certificate':
       return 'certificate';
     case 'token':
@@ -130,6 +132,11 @@ export function estimateCredentialExpiry(
       // Default TGS lifetime: 10 hours
       const expiresAt = new Date(discoveredAt + 10 * 60 * 60 * 1000).toISOString();
       return { expires_at: expiresAt, confidence: 'estimated', source: 'default_tgs_lifetime_10h' };
+    }
+    case 'kerberos_asrep': {
+      // AS-REP roastable hashes are an offline crackable artifact, not a
+      // time-bound ticket. They do not expire on their own.
+      return { confidence: 'unknown', source: 'asrep_hash_no_expiry' };
     }
     case 'token': {
       // Tokens without explicit valid_until are unknown

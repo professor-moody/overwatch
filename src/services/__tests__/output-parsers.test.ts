@@ -155,6 +155,40 @@ describe('Output Parsers', () => {
       expect(services.length).toBe(1);
       expect(services[0].port).toBe(22);
     });
+
+    it('emits distinct service nodes for TCP and UDP on the same port (F7 regression)', () => {
+      // Previously the svc id `svc-<host>-<port>` collided across protocols
+      // and ingest would merge/overwrite the second one. UDP now carries a
+      // protocol prefix; TCP keeps the bare-port id for back-compat.
+      const tcpUdpNmap = `<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="10.0.0.1" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="53">
+        <state state="open"/>
+        <service name="domain"/>
+      </port>
+      <port protocol="udp" portid="53">
+        <state state="open"/>
+        <service name="domain"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>`;
+      const finding = parseNmapXml(tcpUdpNmap);
+      const services = finding.nodes.filter(n => n.type === 'service');
+      expect(services.length).toBe(2);
+      const ids = new Set(services.map(s => s.id));
+      expect(ids.size).toBe(2);
+      expect(ids.has('svc-10-0-0-1-53')).toBe(true);       // TCP keeps bare-port id
+      expect(ids.has('svc-10-0-0-1-udp-53')).toBe(true);   // UDP gets protocol prefix
+      const tcpSvc = services.find(s => s.id === 'svc-10-0-0-1-53');
+      const udpSvc = services.find(s => s.id === 'svc-10-0-0-1-udp-53');
+      expect(tcpSvc?.protocol).toBe('tcp');
+      expect(udpSvc?.protocol).toBe('udp');
+    });
   });
 
   describe('parseNxc', () => {
@@ -230,7 +264,31 @@ describe('Output Parsers', () => {
       expect(relatedEdges[0].target).toBe(shares[0].id);
     });
 
-    it('deduplicates repeated host, service, and share discoveries', () => {
+    it('parses share permissions correctly across READ/WRITE orderings (F5 regression)', () => {
+      // The original alternation `(READ|WRITE|READ,\s*WRITE)` matched READ
+      // first, dropping the WRITE token. Writable shares were silently
+      // hidden from operators.
+      const output = [
+        'SMB  10.10.10.5  445  DC01  ReadOnly  READ',
+        'SMB  10.10.10.5  445  DC01  WriteOnly  WRITE',
+        'SMB  10.10.10.5  445  DC01  ReadWrite  READ, WRITE',
+        'SMB  10.10.10.5  445  DC01  WriteRead  WRITE, READ',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const shares = finding.nodes.filter(n => n.type === 'share');
+      const byName = (name: string) => shares.find(s => s.share_name === name);
+
+      expect(byName('ReadOnly')?.readable).toBe(true);
+      expect(byName('ReadOnly')?.writable).toBe(false);
+      expect(byName('WriteOnly')?.readable).toBe(false);
+      expect(byName('WriteOnly')?.writable).toBe(true);
+      expect(byName('ReadWrite')?.readable).toBe(true);
+      expect(byName('ReadWrite')?.writable).toBe(true);
+      expect(byName('WriteRead')?.readable).toBe(true);
+      expect(byName('WriteRead')?.writable).toBe(true);
+    });
+
+    it('deduplicates repeated SMB host/service/share/auth tuples', () => {
       const output = [
         'SMB  10.10.10.5  445  DC01  [+] ACME\\scanner Windows Server 2019',
         'SMB  10.10.10.5  445  DC01  [+] ACME\\scanner Windows Server 2019',
@@ -1734,7 +1792,8 @@ describe('Output Parsers', () => {
       const finding = parseRubeus(asrepOutput);
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.length).toBe(1);
-      expect(creds[0].cred_type).toBe('kerberos_tgs');
+      expect(creds[0].cred_type).toBe('kerberos_asrep');
+      expect(creds[0].cred_material_kind).toBe('kerberos_asrep');
       expect(creds[0].cred_usable_for_auth).toBe(false);
     });
 
