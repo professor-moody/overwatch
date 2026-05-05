@@ -46,6 +46,7 @@ Overwatch exposes 42 MCP tools organized by function. Each tool uses Zod schemas
 | [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | Yes |
 | [`generate_report`](generate-report.md) | Full pentest report with findings, narrative, evidence, remediation | Yes |
 | [`ingest_azurehound`](ingest-azurehound.md) | Import AzureHound / ROADtools JSON collections | No |
+| [`register_mock_service`](register-mock-service.md) | Register an operator-controlled decoy / listener / relay as a graph node | No |
 
 ## Tool Categories
 
@@ -78,6 +79,9 @@ Persistent interactive sessions — SSH, local PTY, and TCP socket (reverse shel
 
 ### Reporting
 Pentest report generation with per-finding detail, attack narrative, evidence chains, and HTML export.
+
+### Operator Infrastructure
+First-class graph nodes for decoys, listeners, and relays the operator stands up — Responder, `ntlmrelayx`, fake LDAP, redirectors, reverse-shell catchers — so captured credentials, baited callers, and relay chains attribute back to the listener that caused them. See [`register_mock_service`](register-mock-service.md).
 
 ### Analysis
 Post-engagement retrospective and training data export.

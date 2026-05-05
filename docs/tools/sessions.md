@@ -33,8 +33,11 @@ Create a new persistent session.
 | `rows` | number? | Terminal rows (default: 30) |
 | `agent_id` | string? | Owning agent (sets `claimed_by`) |
 | `target_node` | string? | Graph node ID this session targets |
+| `mock_service_purpose` | enum? | When opening a `socket`/`listen` session, auto-register it as an operator-controlled `mock_service`. See [`register_mock_service`](register-mock-service.md). |
+| `mock_service_protocol` | string? | Wire protocol of the mock service (defaults to socket protocol). |
+| `mock_service_notes` | string? | Free-form notes carried onto the `mock_service` node. |
 
-Returns `{ session, initial_output }` — `session` is the full session metadata object and `initial_output` is a `SessionReadResult` with the first bytes of output.
+Returns `{ session, initial_output, mock_service? }` — `session` is the full session metadata object and `initial_output` is a `SessionReadResult` with the first bytes of output. When `mock_service_purpose` is set the response also contains `mock_service: { mock_service_id, new }` and the session's `capabilities.serves_mock_service_id` is stamped, enabling dashboard pivot session ↔ listener.
 
 > **Scope check:** Remote sessions (SSH and socket connect mode) are **scope-enforced and fail closed**. If `host` resolves to an out-of-scope address, the request is rejected with an error containing `scope_reason: "host_out_of_scope"`. Local PTY and socket listen sessions are not scope-checked.
 

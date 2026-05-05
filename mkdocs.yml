@@ -103,6 +103,8 @@ nav:
       - check_processes: tools/check-processes.md
     - Sessions:
       - Session Management: tools/sessions.md
+    - Operator Infrastructure:
+      - register_mock_service: tools/register-mock-service.md
     - Reporting:
       - generate_report: tools/generate-report.md
     - Analysis:
