@@ -10,7 +10,8 @@ export const NODE_TYPES = [
   'host', 'service', 'domain', 'user', 'group', 'credential',
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
   'webapp', 'vulnerability', 'api_endpoint',
-  'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network'
+  'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network',
+  'mock_service'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
@@ -198,6 +199,16 @@ export interface NodeProperties {
   hvt?: boolean;
   hvt_reason?: string;
 
+  // Mock service (operator-controlled decoy / listener / relay)
+  mock_purpose?: 'fake_ldap' | 'responder' | 'ntlmrelayx' | 'redirector' | 'reverse_shell_catcher' | 'http_capture' | 'smb_capture' | 'other';
+  bind_host?: string;
+  bind_port?: number;
+  bound_session_id?: string;
+  bound_process_id?: number;
+  started_at?: string;
+  stopped_at?: string;
+  opsec_loud?: boolean;
+
   // Extensible
   [key: string]: unknown;
 }
@@ -237,6 +248,8 @@ export const EDGE_TYPES = [
   'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS', 'HAS_ENDPOINT', 'AUTH_BYPASS',
   // Cloud infrastructure
   'ASSUMES_ROLE', 'HAS_POLICY', 'POLICY_ALLOWS', 'EXPOSED_TO', 'RUNS_ON', 'MANAGED_BY',
+  // Operator-controlled infrastructure (mock_service / decoy listeners)
+  'OPERATED_BY', 'BAITED', 'RELAYED_VIA',
   // Objective
   'PATH_TO_OBJECTIVE',
   // Generic
@@ -891,6 +904,11 @@ export interface SessionCapabilities {
   supports_resize: boolean;
   supports_signals: boolean;
   tty_quality: TtyQuality;
+  /** When this session is bound to an operator-controlled mock service
+   * (e.g. socket listener, fake LDAP, responder, reverse-shell catcher),
+   * this points back at the mock_service node id so the dashboard /
+   * retrospectives can pivot session ↔ listener bidirectionally. */
+  serves_mock_service_id?: string;
 }
 
 export interface SessionMetadata {

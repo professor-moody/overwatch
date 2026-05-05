@@ -791,4 +791,17 @@ export const BUILTIN_RULES: InferenceRule[] = [
       confidence: 0.3
     }]
   },
+  {
+    id: 'rule-baited-credential',
+    name: 'Credential captured by mock service emits BAITED edge',
+    description: 'When a credential is reported with via_mock_service_id pointing at an active operator-controlled listener (Responder, ntlmrelayx, fake LDAP, etc.), emit a BAITED edge from the listener to the credential so chain analysis and retrospectives can attribute the capture.',
+    trigger: { node_type: 'credential' },
+    produces: [{
+      edge_type: 'BAITED',
+      source_selector: 'via_mock_service',
+      target_selector: 'trigger_node',
+      confidence: 0.95
+    }],
+    self_confirming: true
+  },
 ];

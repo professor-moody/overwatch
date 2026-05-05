@@ -50,7 +50,9 @@ export type ActivityEventType =
   | 'frontier_item_dropped'
   | 'agent_transcript_submitted'
   | 'transcript_turn_ingested'
-  | 'tape_session_started';
+  | 'tape_session_started'
+  | 'mock_service_registered'
+  | 'mock_service_refreshed';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }

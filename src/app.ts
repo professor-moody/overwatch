@@ -48,6 +48,7 @@ import { registerRunToolTool } from './tools/run-tool.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerTranscriptTools } from './tools/transcripts.js';
 import { registerTapeTools } from './tools/tapes.js';
+import { registerOperatorInfraTools } from './tools/operator-infra.js';
 import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
@@ -166,6 +167,7 @@ export function registerAllTools(
   registerLogThoughtTool(s, deps.engine);
   registerTranscriptTools(s, deps.engine);
   registerTapeTools(s, deps.engine);
+  registerOperatorInfraTools(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
   registerInstructionTools(s, deps.engine, () => registrar.getEntries());

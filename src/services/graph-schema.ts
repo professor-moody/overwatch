@@ -103,8 +103,12 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   HAS_POLICY: { source: ['cloud_identity', 'group'], target: ['cloud_policy'] },
   POLICY_ALLOWS: { source: ['cloud_policy'], target: ['cloud_resource'] },
   EXPOSED_TO: { source: ['cloud_resource'], target: ['cloud_network', 'subnet'] },
-  RUNS_ON: { source: ['service', 'host'], target: ['cloud_resource'] },
+  RUNS_ON: { source: ['service', 'host', 'mock_service'], target: ['cloud_resource', 'host'] },
   MANAGED_BY: { source: ['cloud_resource'], target: ['cloud_identity'] },
+  // Operator-controlled infrastructure
+  OPERATED_BY: { source: ['mock_service'], target: ['user'] },
+  BAITED: { source: ['mock_service'], target: ['credential'] },
+  RELAYED_VIA: { source: ['credential'], target: ['mock_service'] },
   // Objective
   PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource'], target: ['objective'] },
   // RELATED is intentionally unconstrained

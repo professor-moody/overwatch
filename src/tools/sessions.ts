@@ -9,6 +9,7 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isHostInScope as isScopedHostInScope, isIPv6 } from '../services/cidr.js';
+import { registerMockServiceCore } from './operator-infra.js';
 
 function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'connect' | 'listen'): boolean {
   return kind === 'ssh' || (kind === 'socket' && mode !== 'listen');
@@ -58,6 +59,12 @@ The session is claimed by the opening agent — other agents can read but not wr
         credential_node: z.string().optional().describe('Graph node ID of the credential used for authentication'),
         action_id: z.string().optional().describe('Action ID to correlate session result with planned action'),
         frontier_item_id: z.string().optional().describe('Frontier item this session attempt came from'),
+        mock_service_purpose: z.enum([
+          'fake_ldap', 'responder', 'ntlmrelayx', 'redirector',
+          'reverse_shell_catcher', 'http_capture', 'smb_capture', 'other',
+        ]).optional().describe('When opening a socket listener, auto-register this session as an operator-controlled mock_service of the given purpose. Adds a mock_service node + RUNS_ON/OPERATED_BY edges and stamps serves_mock_service_id back onto the session capabilities.'),
+        mock_service_protocol: z.string().optional().describe('Wire protocol of the mock service (defaults to the socket protocol).'),
+        mock_service_notes: z.string().optional(),
       },
       annotations: {
         readOnlyHint: false,
@@ -123,12 +130,43 @@ The session is claimed by the opening agent — other agents can read but not wr
         frontier_item_id: params.frontier_item_id,
       });
 
+      // Operator-infra integration: when a socket listener is opened with
+      // `mock_service_purpose`, auto-register the listener as a
+      // mock_service node and stamp serves_mock_service_id back onto the
+      // session capabilities so the dashboard can pivot session ↔ listener.
+      let mock_service: { mock_service_id: string; new: boolean } | undefined;
+      if (
+        params.mock_service_purpose
+        && params.kind === 'socket'
+        && params.mode === 'listen'
+        && typeof params.port === 'number'
+      ) {
+        const reg = registerMockServiceCore(engine, {
+          purpose: params.mock_service_purpose,
+          protocol: params.mock_service_protocol ?? 'tcp',
+          bind_host: params.host ?? '0.0.0.0',
+          bind_port: params.port,
+          notes: params.mock_service_notes,
+          bound_session_id: result.metadata.id,
+          target_node: params.target_node,
+          agent_id: params.agent_id,
+          action_id: params.action_id,
+          frontier_item_id: params.frontier_item_id,
+        });
+        sessionManager.update(result.metadata.id, {
+          capabilities: { serves_mock_service_id: reg.mock_service_id },
+        });
+        result.metadata.capabilities.serves_mock_service_id = reg.mock_service_id;
+        mock_service = { mock_service_id: reg.mock_service_id, new: reg.is_new };
+      }
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             session: result.metadata,
             initial_output: result.initial,
+            ...(mock_service ? { mock_service } : {}),
             ...(warnings.length > 0 ? { warnings } : {}),
           }, null, 2),
         }],
@@ -474,6 +512,20 @@ Use SIGINT to cancel a running command, SIGTERM/SIGKILL to force-terminate.`,
       const duration = result.metadata.started_at && result.metadata.closed_at
         ? (new Date(result.metadata.closed_at).getTime() - new Date(result.metadata.started_at).getTime()) / 1000
         : 0;
+
+      // If this session was bound to a mock_service, stamp stopped_at on
+      // the listener node so the dashboard / retrospective know it is no
+      // longer live.
+      const mockId = result.metadata.capabilities.serves_mock_service_id;
+      if (mockId) {
+        const node = engine.getNode(mockId);
+        if (node && node.type === 'mock_service') {
+          engine.addNode({
+            ...node,
+            stopped_at: result.metadata.closed_at ?? new Date().toISOString(),
+          });
+        }
+      }
 
       return {
         content: [{

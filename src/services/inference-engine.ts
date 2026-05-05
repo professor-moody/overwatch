@@ -939,6 +939,18 @@ export class InferenceEngine {
           .map(u => u.id);
       }
 
+      case 'via_mock_service': {
+        // Operator-controlled listener attribution: if the credential
+        // carries `via_mock_service_id` (set by parsers / report_finding
+        // for captures that came in through a mock_service), resolve it
+        // to that node so the BAITED edge can be emitted.
+        const mockId = node.via_mock_service_id;
+        if (typeof mockId !== 'string' || !mockId) return [];
+        const mockNode = this.getNode(mockId);
+        if (!mockNode || mockNode.type !== 'mock_service') return [];
+        return [mockId];
+      }
+
       default:
         console.error(`[InferenceEngine] Unknown selector: '${selector}' — check inference rule configuration`);
         return [];
