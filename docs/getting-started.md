@@ -22,19 +22,10 @@ Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
 
 ### 2. Pick a template
 
-Overwatch ships with ready-made engagement templates in `engagement-templates/`. Copy the one closest to your engagement and edit the scope:
-
-| Template | When to use |
-|----------|-------------|
-| `internal-pentest.json` | Internal AD-heavy network with standard noise tolerance |
-| `external-assessment.json` | External attack surface, careful with noise |
-| `red-team.json` | Stealth-first, approval-gated, minimal footprint |
-| `assumed-breach.json` | Starting with a foothold credential |
-| `cloud-assessment.json` | AWS / Azure / GCP focus |
-| `ctf.json` | Lab / HTB / CTF — no constraints |
+Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
 
 ```bash
-cp engagement-templates/internal-pentest.json engagement.json
+cp engagement-templates/ctf.json engagement.json
 ```
 
 Then open `engagement.json` and fill in **just two things**:
@@ -42,8 +33,8 @@ Then open `engagement.json` and fill in **just two things**:
 ```jsonc
 {
   "scope": {
-    "cidrs": ["10.10.10.0/24"],          // your target network
-    "domains": ["target.local"],          // your target AD domain
+    "cidrs": ["10.10.10.0/24"],          // your target network or single IP
+    "domains": [],                        // leave empty if no AD; fill in if you have one
     "exclusions": []
   }
   // leave the rest alone for now
@@ -51,6 +42,20 @@ Then open `engagement.json` and fill in **just two things**:
 ```
 
 That's enough to start. The full schema is in [Configuration](configuration.md) when you want it.
+
+??? info "Other templates (for real engagements)"
+    Once you've gotten comfortable with the basics, swap in the template that matches your engagement profile. Each one preconfigures sensible objectives, OPSEC posture, and the right `profile` field so preflight checks the right tools.
+
+    | Template | What it does | Use when |
+    |----------|-------------|----------|
+    | **`ctf.json`** | No OPSEC, auto-approve, network profile, single "compromise everything" objective | Labs, CTFs, HTB, kicking the tires |
+    | **`internal-pentest.json`** | `goad_ad` profile, Domain Admin + DCSync objectives, `max_noise=0.7`, `approve-critical` mode | Internal AD-heavy networks where you can be moderately loud |
+    | **`external-assessment.json`** | `web_app` profile, "initial access" objective, conservative noise, full approval gates | External attack surface against web apps and cloud perimeter |
+    | **`red-team.json`** | `hybrid` profile, full kill-chain objectives (initial access → persistence → lateral → exfil), strict OPSEC, low-and-slow | Stealth engagements with detection-aware adversary simulation |
+    | **`assumed-breach.json`** | `network` profile, lateral movement + data access objectives, post-foothold posture | Starting from a known foothold credential or compromised host |
+    | **`cloud-assessment.json`** | `cloud` profile, AWS/Azure/GCP scope fields, IAM-escalation + cross-account-pivot objectives | Multi-account cloud security assessments |
+
+    All templates live in `engagement-templates/`. Open the one closest to your engagement, read the `description` and `objectives` fields, and tweak as needed.
 
 ### 3. Wire Overwatch into Claude Code
 

@@ -1,121 +1,64 @@
-# GOAD AD Lab Workflow
+# GOAD AD Lab
 
-Step-by-step guide for a first run against a GOAD (Game of Active Directory) or Proxmox AD lab.
+**Goal:** Run a full Active Directory engagement against GOAD (Game of Active Directory), Proxmox AD, or any multi-host AD lab.
 
-## Prerequisites
+## Do this
 
-- GOAD lab running and network-accessible
-- Overwatch server configured with the lab's scope (CIDRs, domains)
-- Claude Code connected to Overwatch
+After [Quick Start](../getting-started.md#quick-start-5-minutes), in your `engagement.json` set:
 
-## Step-by-Step
-
-### 1. Verify Environment
-
-Start the MCP server and confirm Claude can connect:
-
-```
-→ Call get_state
-```
-
-Verify the scope shows your lab's CIDR and domain.
-
-### 2. Run Lab Preflight
-
-```
-→ Call run_lab_preflight with profile: "goad_ad"
+```jsonc
+{
+  "profile": "goad_ad",
+  "scope": {
+    "cidrs": ["192.168.56.0/24"],                              // your lab network
+    "domains": ["sevenkingdoms.local", "north.sevenkingdoms.local"],  // your AD domains
+    "exclusions": []
+  }
+}
 ```
 
-This checks:
+Then in Claude:
 
-- Engagement config is valid
-- Required tools are installed (nmap, nxc, impacket, bloodhound-python, certipy, etc.)
-- Graph health is clean
-- Dashboard is accessible
-- Persistence is working
+> **"Run preflight for goad_ad. Once it passes, scan the lab, ingest BloodHound, and start working the frontier."**
 
-!!! warning "Blocked status"
-    If the preflight returns `blocked`, resolve the missing tools or config issues before continuing.
+The AI will:
 
-### 3. Ingest BloodHound Data
+1. Verify nmap, nxc, impacket, bloodhound-python, certipy are installed.
+2. Sweep the lab with nmap.
+3. Ingest BloodHound (it will ask you for the path or run collection itself if creds are available).
+4. Watch inference rules fire — Kerberoastable, AS-REP-roastable, GenericAll, ESC1-13, DCSync paths, the works.
 
-If you have SharpHound or bloodhound-python output:
+## You'll watch the graph explode
 
-```
-→ Call ingest_bloodhound with path: "/path/to/bloodhound/output/"
-```
+Once BloodHound lands, expect:
 
-This populates the graph with AD structure — users, groups, computers, ACLs, sessions, and local admins. Inference rules fire automatically.
+- Hundreds of `user`, `group`, `computer` nodes.
+- ACL edges (`GENERIC_ALL`, `WRITEABLE_BY`, `FORCE_CHANGE_PASSWORD`, `ADD_MEMBER`).
+- ADCS edges if certipy ran (`ESC1` through `ESC13`).
+- Trust edges between domains (`TRUSTS`).
 
-### 4. Parse Nmap Results
+The dashboard's path overlays become useful here — Shift+click any owned credential and a target group like Domain Admins to see the shortest attack chain.
 
-If you have Nmap XML output:
+## Common AD workflows
 
-```
-→ Call parse_output with tool_name: "nmap", output: "<nmap XML content>"
-```
+> **"Kerberoast every SPN in the domain and feed the hashes to hashcat with the rockyou wordlist."**
+> The AI runs `GetUserSPNs.py`, parses output, runs hashcat, parses cracked hashes back into the graph as `cred_value` properties on the existing user nodes.
 
-This creates host and service nodes with `RUNS` edges.
+> **"Find every path from any owned credential to Domain Admin and pick the shortest one."**
+> Triggers `find_paths` and the AI proposes the next concrete action (e.g., "abuse `GenericAll` on `dc01$` via shadow credentials").
 
-### 5. Parse NXC Results
-
-If you have NXC/NetExec output:
-
-```
-→ Call parse_output with tool_name: "nxc", output: "<nxc output>"
-```
-
-This creates host, service, and share nodes with access edges.
-
-### 6. Verify Graph Health
-
-```
-→ Call get_state
-→ Call run_graph_health
-```
-
-Confirm:
-
-- Nodes and edges were created as expected
-- No critical health issues
-- Frontier items are populated
-
-### 7. Check the Dashboard
-
-Open `http://localhost:8384` to visually inspect:
-
-- Graph structure and node layout
-- Frontier items in the side panel
-- Objectives and progress
-
-### 8. Test Persistence
-
-Restart the server once and verify the engagement resumes cleanly:
-
-```
-→ Call get_state
-```
-
-The graph should match pre-restart state exactly.
-
-### 9. Enter the Main Loop
-
-Now start the main engagement loop:
-
-1. Call `next_task` to see frontier candidates
-2. Score and prioritize them
-3. Validate with `validate_action`
-4. Execute and report findings
-5. Dispatch sub-agents for parallel work
+> **"Set up Responder on my interface and watch for hashes during the lunch window."**
+> See [Operator Infrastructure](operator-infra.md). The captured hashes will be tied via `BAITED` edges back to your listener.
 
 ## Tips
 
-- **Report early, report often** — every `report_finding` triggers inference rules that may surface new attack paths
-- **Use `parse_output`** for supported tools to keep parsing deterministic
-- **Monitor the dashboard** for visual context on graph growth
-- **Run `run_graph_health`** periodically, especially after large ingestions
-- **Dispatch sub-agents** for independent tasks to parallelize work
+- **Run BloodHound early.** Inference rules need the structural data. Without it, the AI is guessing.
+- **Sub-agents are your friend.** AD engagements have lots of independent enum tasks — dispatch them in parallel with `register_agent` or `dispatch_campaign_agents`.
+- **`run_graph_health` after big ingests.** Catches dangling edges or property issues before they propagate.
+- **Watch for ESC1-13 frontier items.** ADCS misconfigs are often the fastest path.
 
-## Example Config
+## See also
 
-The repo-root `engagement.json` can be adapted for GOAD by changing `"profile"` to `"goad_ad"` and adding your lab's domains to `scope.domains`. See also `examples/` for cloud, web app, and hybrid engagement configs.
+- [Operator Infrastructure](operator-infra.md) — Responder/relay workflows
+- [End-to-End Walkthrough](walkthrough.md) — narrated GOAD-style engagement
+- [Concepts — Credential Lifecycle](../concepts.md#credential-lifecycle) — how creds flow through the graph

@@ -1,134 +1,101 @@
 # parse_output vs report_finding
 
-When to use each tool for getting data into the graph.
+**The one-line answer:** if a parser exists for your tool, use `parse_output`. Otherwise, use `report_finding`.
 
-## Decision Rule
+## Decision tree
 
-```
-Is the output from a supported parser?
-  ├── Yes → use parse_output
-  └── No  → use report_finding
-```
+```mermaid
+flowchart TD
+    A{Where did the data<br/>come from?} -->|Supported tool's<br/>raw output| B[parse_output]
+    A -->|Manual observation,<br/>unsupported tool, or<br/>analyst conclusion| C[report_finding]
+    A -->|Already structured<br/>nodes & edges| C
 
-## Use `parse_output` When
-
-The raw output comes from one of these supported tools:
-
-| Tool | Parser Names |
-|------|-------------|
-| Nmap | `nmap`, `nmap-xml` |
-| NXC/NetExec | `nxc`, `netexec` |
-| Certipy | `certipy` |
-| Secretsdump | `secretsdump`, `impacket-secretsdump` |
-| Kerbrute | `kerbrute` |
-| Hashcat | `hashcat` |
-| Responder | `responder` |
-| Ldapsearch | `ldapsearch`, `ldapdomaindump`, `ldap` |
-| Enum4linux | `enum4linux`, `enum4linux-ng` |
-| Rubeus | `rubeus` |
-| Web Dir Enum | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` |
-| Linpeas/LinEnum | `linpeas`, `linenum` |
-| Nuclei | `nuclei` |
-| Nikto | `nikto` |
-| TLS Testing | `testssl`, `sslscan` |
-| AWS Cloud | `pacu` |
-| Cloud Audit | `prowler` |
-
-### Why
-
-- **Deterministic** — parsing is consistent and accurate
-- **Token-efficient** — the LLM doesn't need to interpret raw output
-- **Structured** — produces correctly typed nodes and edges
-- **Auditable** — the raw output is preserved in the finding
-
-### How
-
-```json
-{
-  "tool_name": "nmap",
-  "output": "<?xml version=\"1.0\"?>...",
-  "agent_id": "agent-recon-01",
-  "action_id": "act-abc123"
-}
+    classDef parse fill:#22c55e,stroke:#15803d,color:#fff
+    classDef report fill:#3b82f6,stroke:#1e40af,color:#fff
+    class B parse
+    class C report
 ```
 
-### With Context
+## Supported parsers (`parse_output`)
 
-For parsers that benefit from ambient context (secretsdump, hashcat), pass the `context` parameter:
+| Category | Parsers |
+|----------|---------|
+| Network scanning | `nmap`, `nxc` (alias `netexec`) |
+| AD enumeration | `ldapsearch` (aliases: `ldapdomaindump`, `ldap`), `enum4linux` (alias `enum4linux-ng`) |
+| AD attacks | `kerbrute`, `rubeus`, `certipy`, `getnpusers`, `getuserspns`, `gettgt`, `getst` |
+| Credential extraction | `secretsdump` (alias `impacket-secretsdump`), `responder`, `hashcat` |
+| SMB/Lateral | `smbclient`, `wmiexec`, `psexec` |
+| Web | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster`, `nuclei`, `nikto`, `wpscan`, `sqlmap`, `burp`, `zap` |
+| TLS | `testssl`, `sslscan` |
+| Linux privesc | `linpeas`, `linenum` |
+| Cloud | `pacu`, `prowler` |
 
-```json
+Run `parse_output list_parsers=true` to get the live list.
+
+### Why prefer `parse_output`
+
+- **Deterministic** — same input, same nodes/edges, every time.
+- **Token-efficient** — the AI doesn't burn context interpreting raw output.
+- **Auditable** — original output is stored as evidence, linked to the action.
+
+### Pass `context` when you have it
+
+For parsers that don't always include attribution (secretsdump, hashcat, linpeas):
+
+```jsonc
 {
   "tool_name": "secretsdump",
   "output": "Administrator:500:aad3b...",
-  "action_id": "act-dump-01",
-  "context": { "domain": "corp.local", "source_host": "10.10.10.5" }
+  "context": {
+    "domain": "corp.local",
+    "source_host": "10.10.10.5"
+  }
 }
 ```
 
-- **`domain`** — soft hint for `cred_domain` when output lacks domain prefixes
-- **`source_host`** — creates `DUMPED_FROM` edges linking credentials to source
+- `domain` — soft hint for `cred_domain` when the output lacks domain prefixes.
+- `source_host` — adds `DUMPED_FROM` edges so the credential traces back to where it came from.
 
-## Use `report_finding` When
+## When to use `report_finding`
 
-- **Manual observations** — something you noticed that isn't tool output
-- **Unsupported tools** — output from tools without a parser
-- **Analyst judgment** — conclusions drawn from multiple data points
-- **Already-structured data** — you already have nodes and edges to report
+Anything that isn't a supported parser's output:
 
-### How
+- Manual observations ("the login portal at `/admin` accepts `admin:admin`").
+- Output from custom scripts or one-off tools.
+- Analyst conclusions drawn from multiple data points.
+- Already-structured nodes/edges you want to add directly.
 
-```json
+```jsonc
 {
-  "agent_id": "agent-manual",
-  "action_id": "act-xyz789",
   "nodes": [
-    {
-      "id": "host-10-10-10-5",
-      "type": "host",
-      "label": "10.10.10.5",
-      "properties": { "ip": "10.10.10.5", "os": "Windows Server 2019", "alive": true }
-    }
+    { "id": "host-10-10-10-5", "type": "host",
+      "properties": { "ip": "10.10.10.5", "os": "Windows Server 2019", "alive": true } }
   ],
   "edges": [
-    {
-      "source": "host-10-10-10-5",
-      "target": "domain-target-local",
-      "type": "MEMBER_OF_DOMAIN",
-      "confidence": 1.0
-    }
+    { "source": "host-10-10-10-5", "target": "domain-target-local",
+      "type": "MEMBER_OF_DOMAIN", "confidence": 1.0 }
   ]
 }
 ```
 
-## Common Patterns
+## Quick pattern lookup
 
-| Scenario | Tool |
-|----------|------|
-| Nmap scan completed | `parse_output` with `tool_name: "nmap"` |
-| NXC SMB enumeration | `parse_output` with `tool_name: "nxc"` |
+| Scenario | Use |
+|----------|-----|
+| Nmap XML output | `parse_output tool_name=nmap` |
+| nxc/netexec SMB enum | `parse_output tool_name=nxc` |
 | Manual web app discovery | `report_finding` with host + service nodes |
-| Certipy find results | `parse_output` with `tool_name: "certipy"` |
-| Observed a login prompt | `report_finding` with service node |
-| Secretsdump output | `parse_output` with `tool_name: "secretsdump"` + `context` |
-| Custom script output | `report_finding` with structured nodes/edges |
-| Hashcat cracked hashes | `parse_output` with `tool_name: "hashcat"` |
-| Responder captured hash | `parse_output` with `tool_name: "responder"` |
-| LDAP domain dump | `parse_output` with `tool_name: "ldapsearch"` |
-| Enum4linux-ng JSON | `parse_output` with `tool_name: "enum4linux"` |
-| Rubeus Kerberoast | `parse_output` with `tool_name: "rubeus"` |
-| Gobuster/Feroxbuster scan | `parse_output` with `tool_name: "gobuster"` or `"feroxbuster"` |
-| ffuf fuzzing results | `parse_output` with `tool_name: "ffuf"` |
-| Linpeas/LinEnum output | `parse_output` with `tool_name: "linpeas"` + `context.source_host` |
-| Nuclei scan results | `parse_output` with `tool_name: "nuclei"` |
-| Nikto scan results | `parse_output` with `tool_name: "nikto"` |
-| TLS/SSL testing | `parse_output` with `tool_name: "testssl"` or `"sslscan"` |
-| AWS Pacu output | `parse_output` with `tool_name: "pacu"` |
-| Prowler audit | `parse_output` with `tool_name: "prowler"` |
+| Certipy `find` results | `parse_output tool_name=certipy` |
+| Spotted a login prompt during recon | `report_finding` with service node |
+| Secretsdump hashes | `parse_output tool_name=secretsdump` + `context.source_host` |
+| Custom shell-script output | `report_finding` with structured nodes/edges |
+| Hashcat cracked hashes | `parse_output tool_name=hashcat` |
+| Responder log | `parse_output tool_name=responder` (+ `via_mock_service_id` for BAITED edge) |
+| Linpeas | `parse_output tool_name=linpeas` + `context.source_host` |
 
 ## Tips
 
-- Use `parse_output` with `list_parsers: true` to see the current list of supported parsers (36 aliases across 21 parsers)
-- Use `parse_output` with `ingest: false` to preview what would be parsed without modifying the graph
-- Include `action_id` from `validate_action` for traceability (optional but strongly recommended)
-- Pass `context` with `domain` and `source_host` when available for better credential attribution
-- Node IDs should follow conventions: `host-<ip>`, `svc-<ip>-<port>`, `user-<domain>-<name>`
+- **`ingest: false`** — preview what would be parsed without modifying the graph. Useful when you're unsure.
+- **Always pass `action_id`** if you have one (from `validate_action`) — it links the finding to the action that produced it.
+- **Always pass `frontier_item_id`** if the action came from a frontier candidate — required for retrospective attribution.
+- **Node IDs follow conventions** — `host-<ip>`, `svc-<ip>-<port>`, `user-<domain>-<name>`. The parsers do this automatically; for `report_finding` you should match the pattern.

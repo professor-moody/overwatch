@@ -1,181 +1,183 @@
-# CLI Adapter Playbook
+# CLI Adapter
 
-How to operate Overwatch through the CLI adapter — for environments where native MCP is unavailable (policy restrictions, non-MCP clients, manual operator use).
+**Goal:** Run Overwatch from a non-MCP environment — when policy blocks MCP, when you're using a non-MCP client, or when you want shell-level auditability.
 
-## Operator Flow — Three Transport Modes
+!!! tip "Most operators don't need this"
+    If Claude Code can speak MCP (the default), you're already in the easiest mode. This page is for cases where MCP is unavailable.
 
-Overwatch supports three transport modes. The graph, state, and tools are identical across all three — only the transport differs.
+## Three transport modes (pick one)
 
-### Mode A: MCP over stdio (default)
+```mermaid
+flowchart LR
+    subgraph A["Mode A: stdio MCP (default)"]
+        CC1[Claude Code] <-->|stdio| OW1[Overwatch server]
+    end
+    subgraph B["Mode B: HTTP MCP"]
+        CC2[Claude Code] <-->|HTTP MCP| OW2[Overwatch server]
+    end
+    subgraph C["Mode C: CLI adapter"]
+        CC3[Claude Code] -->|bash| CLI[ow CLI]
+        CLI <-->|HTTP MCP| OW3[Overwatch server]
+    end
 
-```
-+----------------+              +------------------------+
-|  Claude Code   | --stdio----> |  Overwatch MCP Server  |
-|  (Opus/Sonnet) | <--stdio---- |  (graph + inference)   |
-+----------------+              +------------------------+
-```
-
-- Claude Code connects as a native MCP client over stdin/stdout
-- Tools appear directly in Claude's tool palette
-- No network required — server runs as a child process
-- **Env:** `OVERWATCH_TRANSPORT=stdio` (default)
-- **Use when:** Claude Code has unrestricted MCP access
-
-### Mode B: MCP over HTTP
-
-```
-+----------------+              +------------------------+
-|  Claude Code   | --HTTP-----> |  Overwatch MCP Server  |
-|  (Opus/Sonnet) | <--JSON----- |  (graph + inference)   |
-+----------------+              +------------------------+
+    classDef mode fill:#1e293b,stroke:#475569,color:#e2e8f0
+    class A,B,C mode
 ```
 
-- Claude Code connects as a native MCP client over StreamableHTTP
-- Same MCP protocol, but over the network instead of stdio
-- Server runs independently — survives Claude Code restarts
-- **Env:** `OVERWATCH_TRANSPORT=http` (binds to `http://127.0.0.1:3000/mcp`)
-- **Use when:** You want the server to persist independently, or multiple clients need to connect
+| Mode | When to use | Setup |
+|------|-------------|-------|
+| **A. stdio MCP** *(default)* | Claude Code with unrestricted MCP | Nothing extra — see [Quick Start](../getting-started.md) |
+| **B. HTTP MCP** | Server should persist across client restarts; multiple clients | `OVERWATCH_TRANSPORT=http node dist/index.js` |
+| **C. CLI adapter** | MCP blocked by policy / non-MCP client / shell auditability | This page |
 
-### Mode C: CLI Adapter
+The graph, state, and tools are identical across all three. Only the transport differs.
 
-```
-+----------------+              +-----------------+              +------------------------+
-|  Claude Code   | --bash-----> |  overwatch CLI  | --HTTP-----> |  Overwatch MCP Server  |
-|  (Opus/Sonnet) | <--stdout--- |  (thin relay)   | <--JSON----- |  (graph + inference)   |
-+----------------+              +-----------------+              +------------------------+
-```
+## Do this (CLI adapter setup)
 
-- Claude Code invokes `overwatch` shell commands via its bash tool
-- CLI handles MCP session caching between invocations (transparent)
-- Output is JSON by default (machine-readable for Claude)
-- Requires the server running in HTTP mode (Mode B)
-- **Env:** `OVERWATCH_URL=http://127.0.0.1:3000`
-- **Use when:** MCP is blocked by policy, or you want shell-level auditability
-
-!!! note "Manual operator use"
-    The CLI adapter also works for humans typing commands in a terminal. Add `--human` for readable output. Same commands, same graph — just a different consumer.
-
-## Do I Need a Skill File?
-
-**No.** The `get_system_prompt` tool generates dynamic instructions at runtime — engagement-aware, with the live tool table, current state snapshot, and OPSEC constraints. No static skill file can match that. The bootstrap is:
-
-```bash
-overwatch get-system-prompt --role primary
-```
-
-This returns the full operator instructions that Claude Code needs. The existing 33 offensive technique skills (network-recon, kerberoasting, lateral-movement, etc.) are still available via `get_skill` during the engagement — they're methodology guides, not adapter-specific.
-
-## Bootstrap Sequence
-
-### 1. Start the Overwatch HTTP server
+### 1. Start Overwatch in HTTP mode
 
 ```bash
 cd /path/to/overwatch
 OVERWATCH_TRANSPORT=http node dist/index.js
 ```
 
-The server binds to `http://127.0.0.1:3000/mcp` by default.
+Binds to `http://127.0.0.1:3000/mcp`.
 
 ### 2. Build the CLI adapter
 
 ```bash
 cd /path/to/overwatch-adapter
-npm install
-npm run build
+npm install && npm run build
 ```
 
-Note the absolute path to the built adapter (e.g., `/home/op/overwatch-adapter`). Claude Code will invoke it as `node /home/op/overwatch-adapter/dist/cli.js <command>`.
+Note the absolute path — Claude Code will invoke it as `node /absolute/path/to/overwatch-adapter/dist/cli.js <command>`.
 
-### 3. Place the CLAUDE.md template
+### 3. Drop in the AGENTS.md template
 
-Create `CLAUDE.md` in your project root **before starting Claude Code**. Claude Code reads it automatically at session start.
+Create `AGENTS.md` (or `CLAUDE.md` for Claude Code) in your project root **before launching the AI**. The template tells the AI how to work in CLI mode. Replace `/home/op/overwatch-adapter` and `<OVERWATCH_SERVER>` with your actual values.
 
-!!! note "Windsurf uses AGENTS.md"
-    If you're using Windsurf instead of Claude Code, save this template as `AGENTS.md` instead of `CLAUDE.md`. The content is identical — only the filename differs.
+??? example "AGENTS.md / CLAUDE.md template (click to expand)"
 
-Replace `/home/op/overwatch-adapter` and `<OVERWATCH_SERVER>` with the actual values from steps 1-2:
+    ````markdown
+    # Overwatch — CLI Adapter Mode
 
-```text
-# Overwatch — CLI Adapter Mode
+    MCP is not available in this environment. Use the Overwatch CLI adapter instead.
+    All Overwatch tools are available as shell commands. Output is JSON by default.
 
-MCP is not available in this environment. Use the Overwatch CLI adapter instead.
-All Overwatch tools are available as shell commands. Output is JSON by default.
+    ## Bootstrap
 
-## Bootstrap
+    Create a wrapper script as your FIRST action. This persists across bash calls:
 
-Create a wrapper script as your FIRST action. This persists across bash calls:
+        cat > ./ow << 'WRAPPER'
+        #!/bin/bash
+        export OVERWATCH_URL="http://<OVERWATCH_SERVER>:3000"
+        exec node /home/op/overwatch-adapter/dist/cli.js "$@"
+        WRAPPER
+        chmod +x ./ow
 
-    cat > ./ow << 'WRAPPER'
-    #!/bin/bash
-    export OVERWATCH_URL="http://<OVERWATCH_SERVER>:3000"
-    exec node /home/op/overwatch-adapter/dist/cli.js "$@"
-    WRAPPER
-    chmod +x ./ow
+    Then use `./ow <command>` for ALL subsequent Overwatch calls.
 
-Then use `./ow <command>` for ALL subsequent Overwatch calls.
+    ## Execution Model — READ THIS CAREFULLY
 
-## Execution Model — READ THIS CAREFULLY
+    There are TWO execution contexts. Confusing them is the #1 failure mode.
 
-There are TWO execution contexts. Confusing them is the #1 failure mode.
+    `./ow` commands run locally and talk to the Overwatch server via HTTP.
+    Use `./ow` for ALL Overwatch API calls.
 
-**`./ow` commands** run locally and talk to the Overwatch server via HTTP.
-Use `./ow` for ALL Overwatch API calls (get-state, validate-action, report-finding, etc.).
+    Offensive tools (nmap, nxc, ldapsearch, smbclient, etc.) must run on the
+    target VM, not on your local machine. Either SSH:
 
-**Offensive tools** (nmap, nxc, ldapsearch, smbclient, etc.) must run on the
-**target VM**, not on your local machine. You have two options:
+        ssh op@<VM_IP> "nmap -Pn -sT -oX - 10.0.0.1"
 
-Option A — SSH into the VM and run tools there:
+    or use Overwatch sessions:
 
-    ssh op@<VM_IP> "nmap -Pn -sT -oX - 10.0.0.1"
+        ./ow open-session --kind ssh --target <VM_IP> --title "recon-shell"
+        ./ow send-to-session --id SID --command "nmap -Pn -sT -oX - 10.0.0.1" --wait-ms 60000
 
-Option B — Use Overwatch sessions for a persistent remote shell:
+    `check-tools` reports what is installed on the Overwatch server, not the SSH target.
 
-    ./ow open-session --kind ssh --target <VM_IP> --title "recon-shell"
-    # Returns a session_id (SID)
-    ./ow send-to-session --id SID --command "nmap -Pn -sT -oX - 10.0.0.1" --wait-ms 60000
-    ./ow read-session --id SID
+    ## Session Start
 
-Note: `--kind ssh` opens a shell on the remote VM. `--kind local_pty` opens a
-shell on the Overwatch server itself — only use that if the server IS the VM.
+    At the start of every session (including after compaction):
 
-`check-tools` reports what is installed on the **Overwatch server**, not locally
-and not on the SSH target. If the server and target VM are different machines,
-verify tool availability on the VM itself (e.g. `which nmap` via a session).
+        ./ow get-system-prompt --role primary
+        ./ow get-state
 
-## Session Start
+    ## Critical Field Names
 
-Run these commands at the start of every session (including after compaction):
+    - edges use `source`/`target`, NOT `from`/`to`
+    - parse-output uses `tool_name` (or `tool`), NOT `parser`
+    - update-scope REQUIRES `reason`
+    - thread `frontier_item_id` from `next-task` through every call
+    - nmap MUST use `-oX -` for parseable XML
 
-    ./ow get-system-prompt --role primary
+    ## Output Convention
 
-Read the returned instructions carefully — they contain the engagement briefing,
-core loop, tool table, and OPSEC constraints. Then:
+    All output is JSON. Parse it directly. Do not add `--human` flag.
+    ````
 
-    ./ow get-state
+### 4. Launch
 
-## Command Patterns
+```bash
+claude
+```
 
-Scalar inputs use flags:
+The AI reads the template, creates the wrapper script, calls `./ow get-system-prompt --role primary` for the live instructions, and starts driving.
 
-    ./ow get-state
-    ./ow next-task --count 5
-    ./ow log-action --action-id ID --type action_started --frontier-item-id FRONTIER_ID
+## What's manual vs. automatic
 
-Complex payloads use --stdin:
+The human does setup once; everything after `claude` launches is autonomous.
 
-    cat << 'EOF' | ./ow validate-action --stdin
-    {
-      "description": "Port scan host for open services",
-      "target_ip": "10.0.0.1",
-      "technique": "portscan",
-      "frontier_item_id": "frontier-abc123"
-    }
-    EOF
+| Step | Who | When |
+|------|-----|------|
+| Write `engagement.json` | Human | Once |
+| Start Overwatch HTTP server | Human | Once |
+| Build CLI adapter | Human | Once |
+| Place `AGENTS.md` / `CLAUDE.md` | Human | Once |
+| Start Claude Code | Human | Once |
+| **Everything below** | **AI** | **Autonomous** |
 
-## JSON Cheat Sheet — Exact Field Names
+---
 
-### validate-action
+## Reference
 
+### Common mistakes
+
+| Wrong | Right |
+|-------|-------|
+| `from`/`to` on edges | `source`/`target` |
+| `parser` in parse-output | `tool_name` (or `tool`) |
+| Running nmap/nxc locally | Run on VM via SSH or `open-session` |
+| Omitting `frontier_item_id` | Thread from `next-task` through every call |
+| `nmap -sT 10.0.0.1` (text output) | `nmap -oX - 10.0.0.1` (XML for parser) |
+| `update-scope` without `reason` | Always include `reason` |
+| Free-text observations for structured data | Use `nodes`/`edges` arrays |
+
+### Key commands
+
+```
+./ow get-state                  # full engagement briefing
+./ow next-task                  # frontier candidates (returns frontier_item_id)
+./ow validate-action --stdin    # validate before executing
+./ow log-action                 # log lifecycle (--action-id ID --type action_started)
+./ow parse-output --stdin       # parse tool output (use tool_name)
+./ow report-finding --stdin     # structured findings (source/target on edges)
+./ow query-graph --stdin        # query nodes/edges
+./ow check-tools                # tools installed on the SERVER
+./ow open-session               # shell (--kind ssh for remote, local_pty for server)
+./ow send-to-session            # run command in session
+./ow read-session               # read session output
+./ow health                     # verify connectivity
+./ow reset-session              # clear local cache (no network)
+./ow close                      # terminate session + clear cache
+./ow tools                      # list all available tools
+./ow call <tool_name> --stdin   # escape hatch for any tool
+```
+
+### JSON cheat sheet
+
+??? example "validate-action"
+    ```bash
     cat << 'EOF' | ./ow validate-action --stdin
     {
       "description": "Enumerate SMB shares on DC",
@@ -184,25 +186,29 @@ Complex payloads use --stdin:
       "frontier_item_id": "frontier-abc123"
     }
     EOF
+    ```
 
-### report-finding (edges use `source`/`target`, NOT `from`/`to`)
-
+??? example "report-finding (edges use source/target, NOT from/to)"
+    ```bash
     cat << 'EOF' | ./ow report-finding --stdin
     {
       "action_id": "ACTION_ID",
       "frontier_item_id": "frontier-abc123",
       "nodes": [
-        {"id": "host-10-0-0-1", "type": "host", "label": "10.0.0.1", "properties": {"ip": "10.0.0.1"}},
-        {"id": "svc-10-0-0-1-445", "type": "service", "label": "SMB:445", "properties": {"port": 445, "protocol": "tcp", "service_name": "smb"}}
+        {"id": "host-10-0-0-1", "type": "host", "label": "10.0.0.1",
+         "properties": {"ip": "10.0.0.1"}},
+        {"id": "svc-10-0-0-1-445", "type": "service", "label": "SMB:445",
+         "properties": {"port": 445, "protocol": "tcp", "service_name": "smb"}}
       ],
       "edges": [
         {"source": "host-10-0-0-1", "target": "svc-10-0-0-1-445", "type": "RUNS"}
       ]
     }
     EOF
+    ```
 
-### parse-output (field is `tool_name` or `tool`, NOT `parser`)
-
+??? example "parse-output (field is tool_name, NOT parser)"
+    ```bash
     cat << 'EOF' | ./ow parse-output --stdin
     {
       "tool_name": "nmap",
@@ -211,9 +217,10 @@ Complex payloads use --stdin:
       "frontier_item_id": "frontier-abc123"
     }
     EOF
+    ```
 
-### update-scope (`reason` is required)
-
+??? example "update-scope (reason is required)"
+    ```bash
     cat << 'EOF' | ./ow update-scope --stdin
     {
       "add_cidrs": ["10.0.0.0/24"],
@@ -221,305 +228,32 @@ Complex payloads use --stdin:
       "confirm": false
     }
     EOF
+    ```
+    Set `confirm: false` first to preview, then `confirm: true` to apply.
 
-Set `confirm: false` first to preview, then `confirm: true` to apply.
-
-### log-action (flags only)
-
+??? example "log-action (flags only)"
+    ```bash
     ./ow log-action --action-id ACTION_ID --type action_started --frontier-item-id FRONTIER_ID
     ./ow log-action --action-id ACTION_ID --type action_completed
     ./ow log-action --action-id ACTION_ID --type action_failed --description "Connection refused"
+    ```
 
-## Common Mistakes
+### Parser tips
 
-- **Wrong:** `from`/`to` on edges — **Right:** `source`/`target`
-- **Wrong:** `parser` in parse-output — **Right:** `tool_name` (or `tool`)
-- **Wrong:** Running nmap/nxc locally — **Right:** Run on VM via SSH or `open-session`
-- **Wrong:** Omitting `frontier_item_id` — **Right:** Thread it from `next-task` through every call (optional but strongly recommended)
-- **Wrong:** `nmap -sT 10.0.0.1` (text) — **Right:** `nmap -oX - 10.0.0.1` (XML for parser)
-- **Wrong:** `update-scope` without `reason` — **Right:** Always include `reason`
-- **Wrong:** Observations for structured data — **Right:** Use `nodes`/`edges` arrays
+- **nmap**: output MUST be XML — use `-oX -` to write XML to stdout, then pipe into `parse-output`.
+- **nxc / netexec**: raw terminal output works directly.
+- **ldapsearch**: aliases `ldapsearch`, `ldapdomaindump`, `ldap`. Parses LDIF and ldapdomaindump JSON.
+- **certipy, secretsdump, kerbrute, hashcat, responder, enum4linux, rubeus**: all supported, use the tool name.
+- **linpeas / linenum**: ANSI text output. Pass `source_host` in `context`.
+- **nuclei, nikto, testssl/sslscan, pacu, prowler**: all supported.
+- Run `./ow tools` for the full list.
 
-## Parser Tips
+### Walkthrough
 
-- **nmap**: Output MUST be XML. Use `-oX -` to write XML to stdout.
-  `nmap -Pn -sT -oX - 10.0.0.1` then pipe the XML into `parse-output`.
-- **nxc / netexec**: Raw terminal output works directly as `tool_name: "nxc"`.
-- **ldapsearch**: Supported (aliases: `ldapsearch`, `ldapdomaindump`, `ldap`). Parses LDIF and ldapdomaindump JSON.
-- **certipy, secretsdump, kerbrute, hashcat, responder, enum4linux, rubeus**:
-  All supported. Use the tool name as `tool_name`.
-- **linpeas / linenum**: ANSI text output. Set `source_host` in context.
-- **nuclei, nikto, testssl / sslscan, pacu, prowler**: All supported.
-- Run `./ow tools` to see the full list of supported parsers.
+For a step-by-step example (network engagement against a Dante-style ProLab via the CLI adapter), see the [End-to-End Walkthrough](walkthrough.md). The patterns are identical to MCP mode — only the transport changes.
 
-## Key Commands
+## See also
 
-    ./ow get-state              # Load engagement briefing
-    ./ow next-task              # Get frontier candidates (returns frontier_item_id)
-    ./ow validate-action --stdin # Validate before executing (pass frontier_item_id)
-    ./ow log-action             # Log action lifecycle (pass frontier_item_id)
-    ./ow parse-output --stdin   # Parse tool output (use tool_name, not parser)
-    ./ow report-finding --stdin # Report findings (nodes/edges with source/target)
-    ./ow query-graph --stdin    # Query the graph
-    ./ow check-tools            # List tools installed on the SERVER
-    ./ow open-session           # Open shell (--kind ssh for remote VM, local_pty for server)
-    ./ow send-to-session        # Run command in session (--id SID --command "...")
-    ./ow read-session           # Read session output (--id SID)
-    ./ow health                 # Verify connectivity
-
-## Session Management
-
-Session continuity is automatic — the CLI caches the MCP session ID between
-invocations. If things go wrong:
-
-    ./ow reset-session          # Clear local cache (no network)
-    ./ow close                  # Terminate server session + clear cache
-
-## Output Convention
-
-All output is JSON. Parse it directly. Do not add --human flag.
-```
-
-### 4. Start Claude Code
-
-```bash
-claude
-```
-
-Claude reads the CLAUDE.md, creates the wrapper script, calls `./ow get-system-prompt --role primary` to fetch dynamic instructions, then drives the engagement autonomously.
-
-## What's Manual vs. Automatic
-
-Once the CLAUDE.md is in place and Claude Code starts, **everything is autonomous**. Claude reads the CLAUDE.md, bootstraps via `get-system-prompt`, then drives the entire engagement loop through bash.
-
-| Step | Who | When |
-|------|-----|------|
-| Write `engagement.json` | Human | Once, before engagement |
-| Start Overwatch HTTP server | Human | Once, before engagement |
-| Build CLI adapter (`npm install && npm run build`) | Human | Once, before engagement |
-| Place `CLAUDE.md` in project root (with adapter path) | Human | Once, before engagement |
-| Start Claude Code | Human | Once |
-| Everything else below | Claude Code | Autonomous |
-
-The walkthrough below shows exactly what Claude Code does — every command is run by Claude via its bash tool. The human just watches (and approves bash commands if Claude Code's policy requires it).
-
-## Walkthrough: Network Engagement via CLI
-
-What Claude Code actually does during a Dante-style network engagement, step by step.
-
-### Phase 0 — Human Setup (one-time)
-
-The human creates `engagement.json` in the Overwatch directory, places the CLAUDE.md template (see [Bootstrap Sequence](#bootstrap-sequence) above), then:
-
-```json
-{
-  "id": "dante-1",
-  "name": "Dante Run",
-  "profile": "network",
-  "scope": { "cidrs": ["10.10.110.0/24"], "domains": [], "exclusions": ["10.10.110.2"] },
-  "objectives": [{ "id": "compromise", "description": "Compromise the Dante infrastructure", "target_node_type": "credential", "target_criteria": { "privileged": true }, "achieved": false }],
-  "opsec": { "name": "pentest", "max_noise": 0.7 }
-}
-```
-
-The human starts the server and launches Claude Code:
-
-```bash
-OVERWATCH_TRANSPORT=http node dist/index.js
-claude
-```
-
-**From here on, Claude Code runs everything.**
-
-### Phase 1 — Claude Bootstraps
-
-Claude reads the CLAUDE.md, then:
-
-```bash
-# Create the wrapper script (see CLAUDE.md template)
-cat > ./ow << 'WRAPPER'
-#!/bin/bash
-export OVERWATCH_URL="http://<VM_IP>:3000"
-exec node /home/op/overwatch-adapter/dist/cli.js "$@"
-WRAPPER
-chmod +x ./ow
-
-# Fetch full dynamic instructions (core loop, tool table, state, OPSEC)
-./ow get-system-prompt --role primary
-
-# Load engagement state
-./ow get-state
-
-# Run preflight — checks tools, config, graph health
-echo '{"profile":"network"}' | ./ow call run_lab_preflight --stdin
-
-# See what offensive tools are available on PATH
-./ow call check_tools
-```
-
-Claude now has the engagement briefing, knows the scope, and has the full tool table.
-
-### Phase 2 — Claude Discovers the Network
-
-Claude validates, runs nmap, and parses — all in one flow:
-
-```bash
-# 1. Validate the scan
-echo '{
-  "description": "Full port scan of target subnet",
-  "target_ip": "10.10.110.0",
-  "technique": "portscan",
-  "frontier_item_id": "fi-yyy"
-}' | ./ow validate-action --stdin
-# → returns action_id: "act-xxx"
-
-# 2. Log execution start
-./ow log-action --action-id act-xxx --type action_started --frontier-item-id fi-yyy
-
-# 3. Run nmap ON THE VM (not locally — tools live on the server)
-#    Option A: SSH
-ssh op@<VM_IP> "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX - 10.10.110.0/24" > /tmp/scan.xml
-#    Option B: Overwatch session
-#    ./ow open-session --type local_pty --title "nmap-scan"
-#    ./ow send-to-session --session-id SID --command "nmap -sS -sV -sC -O -p- --min-rate=1000 -oX - 10.10.110.0/24" --timeout 300
-
-# 4. Feed results into the graph (use tool_name, not parser)
-cat /tmp/scan.xml | jq -Rs '{tool_name: "nmap", output: ., agent_id: "primary", action_id: "act-xxx", frontier_item_id: "fi-yyy"}' | ./ow parse-output --stdin
-
-# 5. Log completion
-./ow log-action --action-id act-xxx --type action_completed
-```
-
-### Phase 3 — Claude Enumerates Services
-
-Claude checks the frontier, picks the highest-priority target, and works it:
-
-```bash
-# See what the frontier suggests
-./ow next-task --count 10
-
-# Validate SMB enumeration on the top candidate
-echo '{
-  "description": "Enumerate SMB shares with null session",
-  "target_node": "svc-10-10-110-10-445",
-  "technique": "smb_enum",
-  "frontier_item_id": "fi-zzz"
-}' | ./ow validate-action --stdin
-
-./ow log-action --action-id act-002 --type action_started
-
-# Run nxc ON THE VM (not locally)
-NXC_OUTPUT=$(ssh op@<VM_IP> "nxc smb 10.10.110.10 --shares -u '' -p ''" 2>&1)
-
-# Parse results into the graph (field is tool_name, not parser)
-echo "{\"tool_name\": \"nxc\", \"output\": $(echo "$NXC_OUTPUT" | jq -Rs .), \"agent_id\": \"primary\", \"action_id\": \"act-002\", \"frontier_item_id\": \"fi-zzz\"}" | ./ow parse-output --stdin
-
-./ow log-action --action-id act-002 --type action_completed
-```
-
-Claude repeats this loop for each frontier candidate — validate, execute, parse, log.
-
-### Phase 4 — Claude Reports Findings
-
-When Claude uses a tool without a built-in parser, it structures the findings manually:
-
-```bash
-echo '{
-  "agent_id": "primary",
-  "action_id": "act-003",
-  "frontier_item_id": "fi-aaa",
-  "nodes": [
-    {"id": "cred-plaintext-sql-svc", "type": "credential", "label": "sql_svc:Password123!", "properties": {"cred_type": "plaintext", "username": "sql_svc", "cred_value": "Password123!"}}
-  ],
-  "edges": [
-    {"source": "user-north-sql-svc", "target": "cred-plaintext-sql-svc", "type": "OWNS_CRED", "confidence": 1.0}
-  ]
-}' | ./ow report-finding --stdin
-```
-
-### Phase 5 — Claude Explores the Graph
-
-Claude queries the graph to plan attack paths:
-
-```bash
-# Query all hosts
-echo '{"node_type": "host"}' | ./ow query-graph --stdin
-
-# Find paths from a credential to the objective
-echo '{"from_node": "cred-plaintext-sql-svc", "to_node": "obj-compromise"}' | ./ow call find_paths --stdin
-
-# Look up methodology for a technique
-echo '{"query": "kerberoasting"}' | ./ow call get_skill --stdin
-```
-
-### Phase 6 — Session Recovery
-
-If the server restarts or the session expires, Claude handles it transparently. The CLI retries once with a fresh session automatically. If things are truly broken:
-
-```bash
-# Clear stale local cache
-./ow reset-session
-
-# Reconnect
-./ow health
-
-# Resume — graph state is intact on the server
-./ow get-state
-```
-
-When the engagement is complete:
-
-```bash
-./ow close
-```
-
-## Quick Reference Card
-
-```
-SESSION
-  ./ow health                          # verify connectivity
-  ./ow get-system-prompt --role primary # fetch dynamic instructions
-  ./ow reset-session                   # clear local cache (no network)
-  ./ow close                           # terminate session + clear cache
-  ./ow --version                       # show adapter version
-
-STATE
-  ./ow get-state                       # full engagement briefing
-  ./ow next-task                       # frontier candidates
-  ./ow next-task --count 5             # limit results
-
-ACTIONS
-  ... | ./ow validate-action --stdin   # validate before executing
-  ./ow log-action --action-id ID --type action_started
-  ./ow log-action --action-id ID --type action_completed
-  ./ow log-action --action-id ID --type action_failed
-
-FINDINGS
-  ... | ./ow parse-output --stdin      # deterministic parser (nmap, nxc, etc.)
-  ... | ./ow report-finding --stdin    # structured findings (nodes + edges)
-  ./ow report-finding --file f.json    # from file
-
-GRAPH
-  ... | ./ow query-graph --stdin       # query nodes/edges
-  ./ow call find_paths --stdin         # shortest path analysis
-  ./ow call export_graph               # full graph dump
-
-TOOLS
-  ./ow tools                           # list all available tools
-  ./ow call <tool_name> --stdin        # generic escape hatch
-  ./ow call <tool_name> --file p.json  # from file
-  ./ow call <tool_name>                # no args
-
-SESSIONS (managed shells)
-  ./ow open-session --kind ssh --target <VM_IP> --title "recon"  # remote shell
-  ./ow open-session --kind local_pty --title "local"             # local server shell
-  ./ow write-session --id SID --data "whoami\n"
-  ./ow read-session --id SID --from-pos 0
-  ./ow send-to-session --id SID --command "id" --wait-ms 2000
-  ./ow list-sessions
-  ./ow close-session --id SID
-
-OUTPUT
-  ./ow get-state                       # JSON (default, for Claude)
-  ./ow get-state --human               # human-readable (for operator)
-```
+- [Getting Started](../getting-started.md) — the easier MCP-native path
+- [Session Instructions](session-instructions.md) — what the AI is being told to do (same in either mode)
+- [Operator Playbook](index.md) — pick the right workflow for your engagement

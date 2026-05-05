@@ -1,100 +1,54 @@
-# HTB / Network Lab Workflow
+# HTB / Network
 
-Step-by-step guide for a multi-host CIDR-scoped engagement like an HTB ProLab (Dante, Offshore, RastaLabs, etc.) or any network range where AD domains may be discovered organically.
+**Goal:** Sweep a network range and work whatever you find — HTB ProLab (Dante, Offshore, RastaLabs), internal CIDR, or any range where AD may or may not exist.
 
-## Prerequisites
+## Do this
 
-- Target network accessible (VPN connected)
-- Overwatch server configured with the target CIDR(s) in scope
-- `"profile": "network"` set explicitly in `engagement.json` (required — unprofiled configs default to `single_host`)
-- Claude Code connected to Overwatch
+After [Quick Start](../getting-started.md#quick-start-5-minutes), in your `engagement.json` set:
 
-## Profile Semantics
+```jsonc
+{
+  "profile": "network",       // required — defaults to single_host otherwise
+  "scope": {
+    "cidrs": ["10.10.110.0/24"],
+    "domains": [],             // leave empty — AD will be discovered
+    "exclusions": []
+  }
+}
+```
+
+Then in Claude:
+
+> **"Run preflight for network profile, sweep the scope, then work the frontier in priority order."**
+
+The AI will sweep with nmap, ingest results, and start enumerating live hosts. As AD shows up (DCs, Kerberos, LDAP), domain nodes appear automatically.
+
+## When AD is discovered
+
+The AI will flag this. At that point:
+
+> **"AD is in scope now. Run BloodHound collection from one of the hosts and ingest it."**
+
+`ingest_bloodhound` populates users, groups, ACLs, sessions, and local admins. Inference rules fire — Kerberoastable, AS-REP-roastable, GenericAll, ESC1-13, etc.
+
+## Why "network" matters
 
 The `network` profile is the middle ground between `single_host` and `goad_ad`:
 
-- **CIDR-scoped**: One or more network ranges to sweep
-- **Multi-host**: Expects multiple targets discovered via scanning
-- **Domains not required**: AD may or may not be present; domains are discovered organically
-- **BloodHound optional**: Not required upfront; useful once AD is confirmed
-- **Credential warnings suppressed**: Domain-qualification warnings are hidden until AD context is actually discovered in the graph
+- **Multi-host:** expects many targets across the CIDR
+- **AD optional:** domain-qualification warnings are suppressed until AD is actually discovered
+- **Network discovery frontier items:** track CIDR coverage; `fan_out_estimate` shrinks as hosts are found
 
-## Step-by-Step
-
-### 1. Run Lab Preflight
-
-```
-→ Call run_lab_preflight with profile: "network"
-```
-
-The network profile checks for nmap (required) and optional credential tools. It will not block on missing domains or BloodHound.
-
-### 2. Sweep the Network
-
-Run an initial Nmap sweep of the CIDR scope and parse results:
-
-```
-→ Call parse_output with tool_name: "nmap", output: "<nmap XML content>"
-```
-
-This creates host and service nodes across the range. The frontier will emit `network_discovery` items for partially explored CIDRs.
-
-### 3. Enumerate Discovered Hosts
-
-For each discovered host, use the frontier to guide enumeration:
-
-```
-→ Call next_task
-→ Call validate_action
-→ Execute the tool
-→ Call parse_output or report_finding
-```
-
-Common early tools: nmap service scans, NXC/NetExec SMB enumeration, web directory scanning.
-
-### 4. When AD Is Discovered
-
-If SMB enumeration or service scanning reveals AD (domain controllers, Kerberos, LDAP):
-
-- Domain nodes will be created automatically from parser output
-- Credential domain-qualification warnings will **re-escalate** once AD context is detected
-- Consider running BloodHound at this point for richer AD graph data:
-
-```
-→ Call ingest_bloodhound with path: "/path/to/bloodhound/output/"
-```
-
-### 5. Check State and Health
-
-```
-→ Call get_state
-→ Call run_graph_health
-```
-
-Verify:
-
-- Hosts and services are populating across the range
-- Frontier items suggest reasonable next steps (service enumeration, credential testing)
-- Health issues are relevant (not just domain-qualification noise)
-
-### 6. Work the Engagement
-
-Follow the main loop:
-
-1. `next_task` — see frontier candidates
-2. Score and prioritize them
-3. `validate_action` — check before executing
-4. Execute and report findings
-5. Dispatch sub-agents for parallel work on independent hosts
+If you set `profile: single_host` on a network engagement, you'll get noisy warnings about missing domains. If you set `profile: goad_ad` on a network engagement with no AD, preflight will block on missing domain config. The middle profile fixes both.
 
 ## Tips
 
-- **Network discovery frontier items** track how much of each CIDR has been explored; `fan_out_estimate` decreases as hosts are found
-- **Credential warnings are context-aware**: unqualified credentials are expected early in network engagements and won't clutter the health report until AD is confirmed
-- **Use `get_skill`** to look up methodology for discovered services
-- **Pivot tracking**: As you compromise hosts and find credentials, the graph builds attack paths across the network automatically
-- **Track long-running scans** with `track_process` and check with `check_processes`
+- Use `track_process` for long sweeps; `check_processes` reaps them.
+- Dispatch sub-agents per CIDR with `dispatch_subnet_agents` for parallel sweeps on big ranges.
+- The dashboard will show CIDR coverage in real time as the sweep progresses.
 
-## Example Config
+## See also
 
-The `engagement.json` at the repo root is a network-profile config for an HTB ProLab (Dante). See also `examples/` for cloud, web app, and hybrid engagement configs.
+- [GOAD AD Lab](goad-lab.md) — once AD is confirmed, the AD-specific playbook applies
+- [Operator Infrastructure](operator-infra.md) — for Responder/relay during the sweep
+- [End-to-End Walkthrough](walkthrough.md) — narrated example

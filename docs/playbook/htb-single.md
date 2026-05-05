@@ -1,83 +1,52 @@
-# HTB / Single Host Workflow
+# HTB / Single Host
 
-Step-by-step guide for a single-target workflow like a Hack The Box machine or standalone VM.
+**Goal:** Pop a single target machine — HTB box, standalone VM, or any one IP.
 
-## Prerequisites
+## Do this
 
-- Target host accessible
-- Overwatch server configured with the target's IP in scope
-- Claude Code connected to Overwatch
+After [Quick Start](../getting-started.md#quick-start-5-minutes), in your `engagement.json` set:
 
-## Step-by-Step
-
-### 1. Run Lab Preflight
-
-```
-→ Call run_lab_preflight with profile: "single_host"
-```
-
-The single-host profile checks for basic reconnaissance tools (nmap, gobuster/feroxbuster, etc.) and validates the engagement config.
-
-### 2. Parse Nmap Results
-
-Run your initial port scan and parse the results:
-
-```
-→ Call parse_output with tool_name: "nmap", output: "<nmap XML content>"
+```jsonc
+{
+  "profile": "single_host",
+  "scope": {
+    "cidrs": ["10.10.10.5/32"],   // your target IP
+    "domains": [],
+    "exclusions": []
+  }
+}
 ```
 
-This creates the host node and service nodes with `RUNS` edges.
+Then in Claude:
 
-### 3. Report Initial Findings
+> **"Run preflight for single_host, scan the target, and start working the frontier."**
 
-For any manual observations or unsupported tool output, use `report_finding`:
+That's it. The AI will:
 
-```
-→ Call report_finding with nodes and edges describing what you found
-```
+1. Call `run_lab_preflight` to verify nmap/gobuster/etc. are present.
+2. Run `nmap` against the target and feed XML to `parse_output`.
+3. Pull the frontier and start enumerating discovered services one by one.
 
-Prefer `parse_output` for supported tools; use `report_finding` for manual observations.
+## What you'll see in the dashboard
 
-### 4. Check State and Health
+- A single `host` node with `service` nodes for each open port (`RUNS` edges).
+- Frontier items prioritized by service — often web enum first, then SMB, then anything else.
+- Inference rules will flag obvious wins (anonymous SMB, default creds, known-vulnerable banners).
 
-```
-→ Call get_state
-→ Call next_task
-→ Call run_graph_health
-```
+## When you find a foothold
 
-Verify:
+> **"I have a shell on the target as `www-data`. Open a session and start linpeas."**
 
-- Host and services are in the graph
-- Frontier items suggest reasonable next steps
-- No health issues
-
-### 5. Test Persistence
-
-Verify a restart/load round-trip before relying on the workflow for longer sessions:
-
-```
-→ Restart server
-→ Call get_state
-```
-
-### 6. Work the Target
-
-Follow the main loop:
-
-1. `next_task` — see what to enumerate/exploit next
-2. `validate_action` — check before executing
-3. Execute the tool
-4. `parse_output` or `report_finding` — ingest results
-5. Repeat
+The AI opens a PTY/SSH session, runs `linpeas`, parses the output, and starts producing privesc frontier items.
 
 ## Tips
 
-- For single hosts, the graph will be smaller but the same patterns apply
-- Use `get_skill` to look up methodology for discovered services
-- The frontier will suggest service-specific enumeration based on discovered ports
-- Track long-running scans with `track_process` and check with `check_processes`
+- The single-host profile suppresses domain-related warnings (no AD context expected).
+- `track_process` long-running scans so they don't block the loop — `check_processes` reaps them.
+- Use `get_skill <service-name>` to pull methodology before tackling something unfamiliar.
 
-## Example Config
+## See also
 
-See `examples/` for sample engagement configs covering cloud, web app, and hybrid profiles. The repo-root `engagement.json` shows a network-profile config that can be simplified for single-host use by setting `"profile": "single_host"` and scoping to a single IP.
+- [parse_output vs report_finding](parse-vs-report.md) — which to use for what
+- [End-to-End Walkthrough](walkthrough.md) — what the full arc looks like
+- [Session Instructions](session-instructions.md) — what the AI does under the hood

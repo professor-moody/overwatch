@@ -1,91 +1,58 @@
 # Operator Playbook
 
-Step-by-step guides for running engagements with Overwatch.
+What to do once Overwatch is running. Pick the page that matches your situation:
 
-!!! tip "First time here?"
-    Make sure you've followed the [5-minute Quick Start](../getting-started.md#quick-start-5-minutes) first. This page assumes `claude` is already running and connected to Overwatch.
+!!! tip "Haven't installed yet?"
+    Stop here and do the [5-minute Quick Start](../getting-started.md#quick-start-5-minutes) first.
 
-    Don't know where to start? Try the [End-to-End Walkthrough](walkthrough.md) — it narrates a full engagement from empty graph to Domain Admin so you can see what "good" looks like.
+## Pick your situation
 
-## Engagement Lifecycle
+| You have... | Go to |
+|-------------|-------|
+| **One target VM** (HTB box, single host) | [HTB / Single Host](htb-single.md) |
+| **A network range** to sweep (HTB ProLab, internal scope) | [HTB / Network](htb-network.md) |
+| **An Active Directory lab** (GOAD, Proxmox AD) | [GOAD AD Lab](goad-lab.md) |
+| **A foothold and want to capture creds** (Responder, ntlmrelayx, fake LDAP) | [Operator Infrastructure](operator-infra.md) |
+| **An engagement that just wrapped** | [Retrospectives](retrospective.md) |
 
+## Want to see the full arc?
+
+Read the [End-to-End Walkthrough](walkthrough.md) — a narrated example taking an engagement from empty graph to Domain Admin on a GOAD-like lab. It's the best way to understand what "good" looks like.
+
+## Reference
+
+These pages aren't tutorials — they're answers to specific questions:
+
+- **[parse_output vs report_finding](parse-vs-report.md)** — which tool to use to get data into the graph
+- **[Session Instructions](session-instructions.md)** — the core loop (`AGENTS.md` content) for the AI to follow
+- **[CLI Adapter](cli-adapter.md)** — operate Overwatch via shell when MCP is unavailable
+
+---
+
+## How an Engagement Actually Flows
+
+The same pattern applies regardless of target type:
+
+```mermaid
+flowchart LR
+    A[Start<br/>get_state] --> B[Preflight<br/>run_lab_preflight]
+    B --> C[Bootstrap<br/>scan + ingest]
+    C --> D{Main loop}
+    D --> E[next_task]
+    E --> F[validate_action]
+    F --> G[execute]
+    G --> H[parse_output<br/>or report_finding]
+    H --> I[log_action_event]
+    I --> D
+    D -.objective hit.-> J[generate_report]
+    J --> K[run_retrospective]
+
+    classDef start fill:#22c55e,stroke:#15803d,color:#fff
+    classDef loop fill:#3b82f6,stroke:#1e40af,color:#fff
+    classDef end_ fill:#d97706,stroke:#92400e,color:#fff
+    class A,B start
+    class D,E,F,G,H,I loop
+    class J,K end_
 ```
-Init → Bootstrap → Main Loop → Recovery → Report → Retrospective
-```
 
-### 1. Init
-
-The operator writes the engagement config (`engagement.json`) defining scope, objectives, and OPSEC policy. The server starts, seeds the graph with scope nodes (CIDR ranges, domains).
-
-### 2. Bootstrap
-
-The primary session discovers live hosts, enumerates services, and populates the graph. Inference rules fire automatically on new findings to generate hypothesis edges.
-
-Key tools:
-
-- [`get_state`](../tools/get-state.md) — load the engagement briefing
-- [`run_lab_preflight`](../tools/run-lab-preflight.md) — validate the environment
-- [`check_tools`](../tools/check-tools.md) — verify available tooling
-- [`ingest_bloodhound`](../tools/ingest-bloodhound.md) — bulk import AD data
-- [`parse_output`](../tools/parse-output.md) — ingest nmap/nxc results
-
-### 3. Main Loop
-
-The core cycle:
-
-1. **Get frontier** — [`next_task`](../tools/next-task.md) returns filtered candidates
-2. **Score and prioritize** — the LLM evaluates attack chains, sequencing, risk
-3. **Validate** — [`validate_action`](../tools/validate-action.md) checks scope, OPSEC, existence
-4. **Log start** — [`log_action_event`](../tools/log-action-event.md) with `action_started`
-5. **Execute** — run the tool/command
-6. **Report** — [`parse_output`](../tools/parse-output.md) or [`report_finding`](../tools/report-finding.md)
-7. **Log completion** — [`log_action_event`](../tools/log-action-event.md) with `action_completed`
-8. **Dispatch agents** — [`register_agent`](../tools/register-agent.md) for parallel work
-
-### 4. Recovery
-
-After context compaction, `get_state()` rebuilds the full engagement context from the graph. Zero information loss. The engagement can also resume after:
-
-- Claude Code restart
-- Server restart
-- Days later from a fresh session
-
-### 5. Objective Tracking
-
-Graph path analysis detects when objectives are achieved. The engine matches graph nodes against objective criteria and updates status automatically.
-
-### 6. Report Generation
-
-Generate a client-deliverable pentest report with [`generate_report`](../tools/generate-report.md):
-
-- Per-finding sections with evidence and auto-remediation
-- Attack narrative by phase (Recon → Access → Lateral → PrivEsc → Objective)
-- Evidence chains linking actions to graph mutations
-- Severity distribution and risk scoring
-- Markdown (`markdown` or `md`) or self-contained HTML output
-
-### 7. Retrospective
-
-Post-engagement analysis produces:
-
-- Skill updates and gap analysis
-- New inference rule suggestions
-- Context improvement recommendations
-- Client-deliverable report
-- Training traces for model improvement
-
-See [Retrospectives](retrospective.md) for details.
-
-## Lab Workflows
-
-- [GOAD AD Lab](goad-lab.md) — multi-host Active Directory lab
-- [HTB / Single Host](htb-single.md) — standalone target VM
-- [HTB / Network](htb-network.md) — network-only engagement without AD
-
-## Guides
-
-- [CLI Adapter](cli-adapter.md) — operate Overwatch via shell when MCP is unavailable
-- [Session Instructions](session-instructions.md) — primary session and sub-agent setup
-- [Operator Infrastructure](operator-infra.md) — register listeners (Responder, ntlmrelayx, redirectors) and earn auto-attributed BAITED credentials
-- [parse_output vs report_finding](parse-vs-report.md) — when to use which
-- [Retrospectives](retrospective.md) — post-engagement analysis
+You give direction; the AI does the bookkeeping. See [Session Instructions](session-instructions.md) for the exact tool sequence the AI follows.

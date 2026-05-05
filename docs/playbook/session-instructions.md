@@ -1,82 +1,87 @@
 # Session Instructions
 
-How to configure the primary session and sub-agents for Overwatch.
+**Goal:** Tell the AI how to drive Overwatch correctly. This is the content that lives in `AGENTS.md` (or `CLAUDE.md` for Claude Code) at the project root.
 
-## Primary Session
+!!! tip "You probably don't need to read this"
+    The repo already ships an [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md) at the root. Claude Code reads it automatically. This page exists so you understand what the AI is being told to do, and so you can customize it if you need to.
 
-The primary session runs Claude Code (Opus) with Overwatch as an MCP server. It follows this core loop:
+## What the AI does (the core loop)
 
-### Core Loop
+```mermaid
+flowchart TD
+    START([Session start]) --> A[get_state]
+    A --> B[next_task]
+    B --> C{Score & pick<br/>highest leverage}
+    C --> D[validate_action]
+    D -->|valid| E[log_action_event<br/>action_started]
+    D -->|invalid| B
+    E --> F[Execute<br/>run_bash / run_tool / shell]
+    F --> G[parse_output<br/>or report_finding]
+    G --> H[log_action_event<br/>action_completed]
+    H -->|new findings| I[Inference rules fire]
+    I --> B
+    H -.parallel work.-> J[register_agent]
+    J -.results back.-> B
 
-1. **Start every session** by calling `get_state()` — this gives the complete engagement briefing from the graph (scope, discoveries, access, objectives, frontier)
+    classDef state fill:#22c55e,stroke:#15803d,color:#fff
+    classDef decide fill:#f59e0b,stroke:#92400e,color:#000
+    classDef act fill:#3b82f6,stroke:#1e40af,color:#fff
+    class A,B state
+    class C,D decide
+    class E,F,G,H,I,J act
+```
 
-2. **Assess the frontier** by calling `next_task()` — candidates are pre-filtered by the deterministic layer (out-of-scope, duplicates, OPSEC vetoes already removed)
+In plain words:
 
-3. **Score and prioritize** the candidates. For each, consider:
-    - Does this open a multi-step attack chain?
-    - What's the likely defensive posture?
-    - What sequencing makes sense?
-    - What's the risk/reward ratio given the OPSEC profile?
-    - Does this move toward an objective?
+1. **Start by reading state.** `get_state()` gives the full briefing — scope, discoveries, access, objectives, frontier. Every session starts here, including after compaction.
+2. **Look at the frontier.** `next_task()` returns candidates already filtered by the deterministic layer (out-of-scope / duplicate / OPSEC-vetoed items are gone).
+3. **Pick the best one.** This is where the AI does real work — score by chain potential, sequencing, risk, distance to objective.
+4. **Validate.** `validate_action()` returns an `action_id` and a verdict.
+5. **Log start, execute, parse/report, log finish.** Always carry `action_id` and `frontier_item_id` through.
+6. **Repeat.** New findings fire inference rules, which create new frontier items.
+7. **Parallelize.** Independent tasks → `register_agent()` for sub-agents.
 
-4. **Explore the graph** with `query_graph()` when the frontier doesn't capture a pattern you're seeing
+## Key principles
 
-5. **Validate before executing** with `validate_action()` — catches scope violations, OPSEC blacklist hits, and impossible targets. Pass `frontier_item_id` from `next_task()` when available — this is optional but strongly recommended for retrospective attribution. Returns an `action_id` to use for subsequent calls.
+- **The graph is memory.** After compaction, `get_state()` rebuilds everything. Don't try to hold engagement state in context.
+- **Report early, report often.** Every `report_finding` triggers inference rules that may surface new attack paths.
+- **Always thread `frontier_item_id`.** From `next_task` → `validate_action` → `log_action_event` → `parse_output` / `report_finding`. Without it, retrospectives lose causal attribution.
+- **Validate before executing.** Catches scope, OPSEC, and impossible-target issues before you waste an action.
+- **Use `query_graph` liberally.** If the frontier doesn't surface a pattern you're seeing, query for it directly.
+- **Respect OPSEC.** Read the engagement's OPSEC profile and weight noise into your decisions.
 
-6. **Log execution start** with `log_action_event(event_type="action_started")` before major tool execution. Pass `action_id` and `frontier_item_id` when available.
+## Sub-agent instructions
 
-7. **Execute** using shell commands, scripts, or other tools
-
-8. **Parse or report results**:
-    - Use `parse_output()` for supported tool output (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, gobuster/feroxbuster/ffuf, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler). Pass `action_id` and `frontier_item_id` when available. Accepts `tool` as an alias for `tool_name`.
-    - Use `report_finding()` for manual observations or unsupported tools. `agent_id` is optional (defaults to `'primary'`). Pass `action_id` and `frontier_item_id` when available.
-
-9. **Log completion** with `log_action_event(event_type="action_completed" | "action_failed")`. Pass `action_id` — the server auto-threads `frontier_item_id` from earlier calls with the same `action_id`. Also accepts `type` as an alias for `event_type`.
-
-10. **Dispatch sub-agents** with `register_agent()` for parallel work
-
-11. **Monitor and re-plan** by periodically calling `get_state()` to see new frontier items from agent findings
-
-### Key Principles
-
-- **The graph is your memory** — after compaction, `get_state()` reconstructs everything
-- **Report early, report often** — every finding triggers inference rules that may surface new attack paths
-- **Use structured action logging** — `validate_action()` gives the `action_id`; `log_action_event()` records execution. Thread `frontier_item_id` through calls when available for retrospective attribution
-- **The deterministic layer is a guardrail, not a brain** — it filters the impossible; the LLM does the offensive thinking
-- **Validate before you execute** — every significant action goes through `validate_action()` first
-- **Use `query_graph()` liberally** — if you have a hunch about a relationship, query for it
-- **Respect OPSEC** — check the engagement's OPSEC profile and factor noise levels into decisions
-
-## Sub-Agent Instructions
-
-When dispatching sub-agents via `register_agent`, give them these instructions:
+When dispatching agents with `register_agent`, give them this charter:
 
 > You are an Overwatch sub-agent working a specific task. Your tools:
 >
 > - `get_agent_context` — scoped subgraph view
 > - `validate_action` — check before executing
 > - `log_action_event` — record action start/completion/failure
-> - `parse_output` — supported raw tool output → graph artifacts
-> - `report_finding` — report every discovery immediately
-> - `query_graph` — explore the graph if you need more context
-> - `get_skill` — methodology guidance
-> - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `close_session` — sessions
-> - `resize_session`, `signal_session`, `update_session` — session control
-> - `get_evidence` — retrieve full-fidelity evidence by ID
+> - `log_thought` — record reasoning, decisions, alternatives
+> - `run_bash`, `run_tool` — auto-instrumented one-shot execution
+> - `parse_output`, `report_finding` — get findings into the graph
+> - `query_graph`, `get_skill` — context lookup
+> - `open_session` / `write_session` / `read_session` / `send_to_session` / `list_sessions` / `close_session` — sessions
+> - `submit_agent_transcript` — wrap-up handoff before you're closed out
 >
-> Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure. When done, your task will be marked complete by the primary session.
+> Validate first, log start, execute, parse/report, log completion. The primary will mark you done.
 
-### Sub-Agent Workflow
+The full charter (with all 49 sub-agent tools and per-tool guidance) is in [`AGENTS.md`](https://github.com/professor-moody/overwatch/blob/main/AGENTS.md).
 
-1. Call `get_agent_context` with the `task_id` to receive the scoped subgraph
-2. Review the frontier item and assigned skill
-3. Call `validate_action` before each significant action
-4. Call `log_action_event(event_type="action_started")`
-5. Execute the tool/command
-6. Call `parse_output` or `report_finding` with results
-7. Call `log_action_event(event_type="action_completed" | "action_failed")`
-8. The primary session will call `update_agent` to mark the task complete
+## Customizing the prompt
 
-## AGENTS.md
+The AI bootstraps from one of these sources, in order of preference:
 
-Place the primary session instructions in an `AGENTS.md` file at the project root (gitignored by default). Claude Code reads this file automatically at session start.
+1. **`get_system_prompt(role="primary")`** — generated dynamically from current state (preferred). Includes live tool table, briefing, OPSEC constraints.
+2. **`AGENTS.md`** at the project root — static fallback when MCP isn't available.
+3. **`CLAUDE.md`** — Claude Code reads this first if present; in our repo it just points at `AGENTS.md`.
+
+If you want to change how the AI behaves (different scoring weights, additional principles, custom workflows), edit `AGENTS.md` and the AI will pick it up on next session start. Don't edit it during an active session — Claude Code only reads it at startup.
+
+## See also
+
+- [Operator Playbook](index.md) — what to actually do once the AI is running
+- [parse_output vs report_finding](parse-vs-report.md) — which to use for what
+- [Concepts — Action Lifecycle](../concepts.md#action-lifecycle) — the deeper "why" behind the loop
