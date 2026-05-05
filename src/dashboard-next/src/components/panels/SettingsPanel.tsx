@@ -4,7 +4,6 @@ import { cn } from '../../lib/utils';
 import {
   getConfig,
   updateConfig,
-  updateScope,
   addObjective,
   updateObjective,
   deleteObjective,
@@ -20,7 +19,6 @@ import {
 } from '../../lib/api';
 import type {
   EngagementConfig,
-  ScopeConfig,
   Objective,
   FailurePattern,
   HealthStatus,
@@ -82,9 +80,6 @@ export function SettingsPanel() {
 
       {config && <IdentitySection config={config} onSave={async (body) => {
         try { await updateConfig(body); flash('Saved \u2713'); load(); } catch { flash('Error saving', false); }
-      }} />}
-      {config && <ScopeSection scope={config.scope || {}} onSave={async (s) => {
-        try { await updateScope(s); flash('Scope saved \u2713'); load(); } catch { flash('Error saving scope', false); }
       }} />}
       {config && <ObjectivesSection objectives={config.objectives || []} onReload={load} />}
       {config && <FailurePatternsSection patterns={config.failure_patterns || []} onSave={async (fp) => {
@@ -152,42 +147,6 @@ function IdentitySection({ config, onSave }: { config: EngagementConfig; onSave:
       </div>
       <button onClick={() => onSave({ name, profile: profile || undefined, community_resolution: communityRes })}
         className="settings-save-btn">Save Identity</button>
-    </Section>
-  );
-}
-
-/* ============ Scope ============ */
-
-const SCOPE_FIELDS: { key: keyof ScopeConfig; label: string; placeholder: string }[] = [
-  { key: 'cidrs', label: 'CIDRs', placeholder: '10.0.0.0/24' },
-  { key: 'domains', label: 'Domains', placeholder: 'corp.local' },
-  { key: 'exclusions', label: 'Exclusions', placeholder: '10.0.0.1' },
-  { key: 'hosts', label: 'Hosts', placeholder: 'dc01.corp.local' },
-  { key: 'url_patterns', label: 'URL Patterns', placeholder: 'https://app.*' },
-  { key: 'aws_accounts', label: 'AWS Accounts', placeholder: '123456789012' },
-  { key: 'azure_subscriptions', label: 'Azure Subscriptions', placeholder: 'sub-id' },
-  { key: 'gcp_projects', label: 'GCP Projects', placeholder: 'project-id' },
-];
-
-function ScopeSection({ scope, onSave }: { scope: ScopeConfig; onSave: (s: ScopeConfig) => Promise<void> }) {
-  const [data, setData] = useState<ScopeConfig>({ ...scope });
-
-  useEffect(() => { setData({ ...scope }); }, [scope]);
-
-  return (
-    <Section title="Scope">
-      <div className="space-y-3">
-        {SCOPE_FIELDS.map(f => (
-          <Field key={f.key} label={f.label}>
-            <TagInput
-              tags={(data[f.key] as string[]) || []}
-              onChange={(tags) => setData(prev => ({ ...prev, [f.key]: tags }))}
-              placeholder={f.placeholder}
-            />
-          </Field>
-        ))}
-      </div>
-      <button onClick={() => onSave(data)} className="settings-save-btn">Save Scope</button>
     </Section>
   );
 }
