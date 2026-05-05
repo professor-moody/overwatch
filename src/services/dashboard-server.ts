@@ -423,6 +423,14 @@ export class DashboardServer {
 
     const pathname = url.split('?')[0];
 
+    // Require token auth for /api/* reads (and writes) when bound non-loopback.
+    // Mutations have their own checkMutationAuth (which also enforces CSRF /
+    // Origin); this gate covers GET endpoints that would otherwise leak
+    // graph/state/history to anyone able to reach the dashboard host.
+    if (pathname.startsWith('/api/') && !this.checkReadAuth(req, res)) {
+      return;
+    }
+
     if (pathname === '/api/state') {
       this.serveState(res);
     } else if (pathname === '/api/graph') {
@@ -574,8 +582,17 @@ export class DashboardServer {
       filePath = url;
     }
 
-    // Security: prevent directory traversal (including percent-encoded variants)
-    const decoded = decodeURIComponent(filePath);
+    // Security: prevent directory traversal (including percent-encoded variants).
+    // decodeURIComponent can throw URIError on malformed escapes (e.g. `%E0`),
+    // so guard it explicitly rather than letting it crash the request handler.
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(filePath);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Bad request');
+      return;
+    }
     if (filePath.includes('..') || decoded.includes('..')) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end('Forbidden');
@@ -768,9 +785,14 @@ export class DashboardServer {
       // Prevent overwriting immutable fields
       delete (body as Record<string, unknown>).id;
       delete (body as Record<string, unknown>).created_at;
-      const updated = this.engine.updateConfig(body as Record<string, unknown>);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: true, config: updated }));
+      try {
+        const updated = this.engine.updateConfig(body as Record<string, unknown>);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ updated: true, config: updated }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -785,9 +807,14 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Expected JSON object' }));
         return;
       }
-      const updated = this.engine.updateConfig({ scope: body });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: true, scope: updated.scope }));
+      try {
+        const updated = this.engine.updateConfig({ scope: body });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ updated: true, scope: updated.scope }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -977,6 +1004,10 @@ export class DashboardServer {
     const after = rawAfter && !isNaN(Date.parse(rawAfter)) ? rawAfter : undefined;
     const rawBefore = params.get('before') || undefined;
     const before = rawBefore && !isNaN(Date.parse(rawBefore)) ? rawBefore : undefined;
+    // order=asc|desc; default desc so `?limit=N` returns the *most recent* N
+    // entries (operators care about latest activity, not oldest).
+    const orderParam = (params.get('order') || 'desc').toLowerCase();
+    const order: 'asc' | 'desc' = orderParam === 'asc' ? 'asc' : 'desc';
 
     let entries = this.engine.getFullHistory()
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -991,11 +1022,15 @@ export class DashboardServer {
     const total = entries.length;
 
     if (limit && limit > 0) {
-      entries = entries.slice(0, limit);
+      // Take the last `limit` entries (most recent in ascending order).
+      entries = entries.slice(-limit);
+    }
+    if (order === 'desc') {
+      entries = entries.slice().reverse();
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ entries, total }));
+    res.end(JSON.stringify({ entries, total, order }));
   }
 
   private serveGraph(res: ServerResponse): void {
@@ -1066,7 +1101,13 @@ export class DashboardServer {
       return;
     }
     const agentId = task.agent_id;
-    const entries = this.engine.getFullHistory().filter(e => e.agent_id === agentId);
+    // Include events tagged with either the human-readable agent_id or the
+    // task UUID — submit_agent_transcript / log_action_event events are
+    // recorded against linked_agent_task_id, which the simple agent_id filter
+    // would miss.
+    const entries = this.engine.getFullHistory().filter(e =>
+      e.agent_id === agentId || (e as { linked_agent_task_id?: string }).linked_agent_task_id === taskId
+    );
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ entries, total: entries.length }));
   }
@@ -1345,6 +1386,36 @@ export class DashboardServer {
   }
 
   // ---- Mutation auth & body parsing helpers ----
+
+  /**
+   * Read-side auth gate. On loopback binds we trust the local user (consistent
+   * with the rest of the codebase). On any non-loopback bind we require
+   * OVERWATCH_DASHBOARD_TOKEN to be set and presented via Authorization
+   * header or `?token=` query param. Without this, /api/state, /api/graph,
+   * /api/history, /api/sessions, /api/agents, /api/graph/export and friends
+   * would expose engagement data to anyone who can reach the host.
+   */
+  private checkReadAuth(req: IncomingMessage, res: ServerResponse): boolean {
+    if (this.isLoopback(this.host)) return true;
+    const expected = process.env.OVERWATCH_DASHBOARD_TOKEN;
+    if (!expected) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token not configured for non-loopback host' }));
+      return false;
+    }
+    const authHeader = req.headers.authorization;
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    let urlToken: string | null = null;
+    try {
+      urlToken = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams.get('token');
+    } catch { /* malformed URL — fall through, header check below decides */ }
+    if (headerToken !== expected && urlToken !== expected) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return false;
+    }
+    return true;
+  }
 
   private checkMutationAuth(req: IncomingMessage, res: ServerResponse): boolean {
     // CSRF: Always check Origin header for mutation requests, even on loopback.

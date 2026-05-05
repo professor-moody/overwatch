@@ -281,7 +281,7 @@ describe('DashboardServer', () => {
     }
   });
 
-  it('serveHistory limit returns oldest entries first (forward pagination)', () => {
+  it('serveHistory returns most recent entries first by default', () => {
     // Get the full history to see how many startup entries exist
     const res = {
       statusCode: 0,
@@ -315,25 +315,27 @@ describe('DashboardServer', () => {
     (dashboard as any).serveHistory('/api/history', res);
     const full = JSON.parse(res.body);
     expect(full.total).toBeGreaterThan(baselineCount);
+    expect(full.order).toBe('desc');
 
-    // Paginate: first page
+    // Default: limit=2 should return the two newest entries, newest first
     (dashboard as any).serveHistory('/api/history?limit=2', res);
     const page1 = JSON.parse(res.body);
     expect(page1.entries.length).toBe(2);
+    expect(page1.order).toBe('desc');
     const firstTs = page1.entries[0].timestamp;
     const lastTs = page1.entries[page1.entries.length - 1].timestamp;
-    expect(firstTs <= lastTs).toBe(true);
+    expect(firstTs >= lastTs).toBe(true);
 
-    // Paginate: second page — use after= with the last entry's timestamp
-    // Since many entries may share the same wall-clock timestamp, page2 may be empty
-    // The key invariant is: all returned entries are strictly after the cursor
-    (dashboard as any).serveHistory(`/api/history?limit=2&after=${lastTs}`, res);
-    const page2 = JSON.parse(res.body);
-    for (const entry of page2.entries) {
-      expect(entry.timestamp > lastTs).toBe(true);
-    }
-    // total should still reflect all entries matching the filter
-    expect(page2.total + page1.total).toBeGreaterThanOrEqual(full.total);
+    // Explicit ascending order returns oldest first
+    (dashboard as any).serveHistory('/api/history?limit=2&order=asc', res);
+    const ascPage = JSON.parse(res.body);
+    expect(ascPage.entries.length).toBe(2);
+    expect(ascPage.order).toBe('asc');
+    const ascFirst = ascPage.entries[0].timestamp;
+    const ascLast = ascPage.entries[ascPage.entries.length - 1].timestamp;
+    expect(ascFirst <= ascLast).toBe(true);
+    // Asc page should still be the *most recent* slice (last N), just ordered oldest-first
+    expect(ascLast).toBe(firstTs);
   });
 
   it('serveTelemetry returns tool_telemetry, inference_effectiveness, and health', () => {
@@ -1537,6 +1539,159 @@ describe('DashboardServer', () => {
       const res = mockRes();
       (dashboard as any).handleHttp(req, res);
       expect(spy).toHaveBeenCalledWith('abc-123-def', req, res);
+    });
+  });
+
+  // ============================================================
+  // Read-side auth & misc dashboard fixes
+  // ============================================================
+
+  describe('non-loopback read auth', () => {
+    let nlEngine: GraphEngine;
+    let nlDashboard: DashboardServer;
+    const NL_STATE = './state-test-dashboard-nl.json';
+
+    beforeEach(() => {
+      try { if (existsSync(NL_STATE)) unlinkSync(NL_STATE); } catch {}
+      nlEngine = new GraphEngine(makeConfig({ id: 'test-dashboard-nl' }), NL_STATE);
+      nlDashboard = new DashboardServer(nlEngine, 0, '0.0.0.0');
+    });
+
+    afterEach(async () => {
+      delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+      await nlDashboard.stop().catch(() => {});
+      try { if (existsSync(NL_STATE)) unlinkSync(NL_STATE); } catch {}
+    });
+
+    function nlReq(url: string, headers: Record<string, string> = {}) {
+      return { url, method: 'GET', headers: { host: 'example.com', ...headers }, on: vi.fn(), destroy: vi.fn() } as any;
+    }
+    function nlRes() {
+      return {
+        statusCode: 0,
+        headers: {} as Record<string, string>,
+        body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; },
+        setHeader(_k: string, _v: string) {},
+      };
+    }
+
+    it('rejects /api/state without token when token is unset', () => {
+      delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+      const res = nlRes();
+      (nlDashboard as any).handleHttp(nlReq('/api/state'), res);
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toContain('engagement');
+    });
+
+    it('rejects /api/state with wrong token', () => {
+      process.env.OVERWATCH_DASHBOARD_TOKEN = 'right-token';
+      const res = nlRes();
+      (nlDashboard as any).handleHttp(nlReq('/api/state', { authorization: 'Bearer wrong-token' }), res);
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('accepts /api/state with correct Bearer token', () => {
+      process.env.OVERWATCH_DASHBOARD_TOKEN = 'right-token';
+      const res = nlRes();
+      (nlDashboard as any).handleHttp(nlReq('/api/state', { authorization: 'Bearer right-token' }), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('state');
+    });
+
+    it('accepts /api/state with token query param', () => {
+      process.env.OVERWATCH_DASHBOARD_TOKEN = 'right-token';
+      const res = nlRes();
+      (nlDashboard as any).handleHttp(nlReq('/api/state?token=right-token'), res);
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('does not gate /api/* on loopback binds', () => {
+      // dashboard from outer beforeEach is loopback (127.0.0.1)
+      const res = {
+        statusCode: 0, headers: {} as Record<string, string>, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      const req = { url: '/api/state', method: 'GET', headers: { host: 'localhost' }, on: vi.fn() } as any;
+      delete process.env.OVERWATCH_DASHBOARD_TOKEN;
+      (dashboard as any).handleHttp(req, res);
+      expect(res.statusCode).toBe(200);
+    });
+  });
+
+  describe('config validation error reporting', () => {
+    it('surfaces validation error message instead of "Invalid JSON body"', async () => {
+      const req: any = {
+        url: '/api/config/scope',
+        method: 'PATCH',
+        headers: { host: 'localhost', 'content-type': 'application/json' },
+        on(event: string, cb: (chunk?: Buffer) => void) {
+          if (event === 'data') cb(Buffer.from(JSON.stringify({ cidrs: ['not-a-cidr'] })));
+          if (event === 'end') cb();
+        },
+      };
+      const res: any = {
+        statusCode: 0, headers: {}, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      await (dashboard as any).handleUpdateScope(req, res);
+      // Allow the readJsonBody promise to resolve
+      await new Promise(r => setTimeout(r, 10));
+      expect(res.statusCode).toBe(400);
+      const payload = JSON.parse(res.body);
+      expect(payload.error).toMatch(/CIDR|Scope/i);
+      expect(payload.error).not.toBe('Invalid JSON body');
+    });
+  });
+
+  describe('static file decode errors', () => {
+    it('returns 400 (not crash) for malformed percent-encoded path', () => {
+      const res: any = {
+        statusCode: 0, headers: {}, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      // %E0 is an invalid UTF-8 starter — decodeURIComponent throws URIError.
+      // Use a path with an extension so the SPA fallback doesn't rewrite to /index.html.
+      expect(() => (dashboard as any).serveStaticFile('/asset-%E0.js', res)).not.toThrow();
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('agent history task-link fallback', () => {
+    it('includes events linked by linked_agent_task_id, not just agent_id', () => {
+      const taskId = '11111111-1111-1111-1111-111111111111';
+      engine.registerAgent({
+        id: taskId,
+        agent_id: 'sub-recon-1',
+        objective: 'Recon',
+        subgraph_node_ids: [],
+        status: 'running',
+        assigned_at: new Date().toISOString(),
+      } as any);
+      // log an event keyed by task id (linked_agent_task_id) but a *different*
+      // agent_id (e.g. event was attributed to primary on behalf of the task)
+      engine.logActionEvent({
+        description: 'transcript submitted',
+        event_type: 'agent_transcript_submitted',
+        category: 'agent',
+        provenance: 'agent',
+        agent_id: 'primary',
+        linked_agent_task_id: taskId,
+      });
+      const res: any = {
+        statusCode: 0, headers: {}, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      (dashboard as any).serveAgentHistory(taskId, res);
+      expect(res.statusCode).toBe(200);
+      const payload = JSON.parse(res.body);
+      const types = payload.entries.map((e: any) => e.event_type);
+      expect(types).toContain('agent_transcript_submitted');
     });
   });
 });
