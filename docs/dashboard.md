@@ -107,6 +107,18 @@ Click any panel header to collapse/expand it. Panel state is persisted in `local
 
 ## Controls
 
+### Tape Toggle (Toolbar)
+
+The top toolbar shows a **Tape** pill that mirrors the in-process JSON-RPC recorder:
+
+- **Grey** — recorder off (default).
+- **Red, pulsing** — recorder on; the label includes the live frame count.
+- **Hover** — shows the active tape file path.
+
+Click to flip state. The toggle calls `POST /api/tape/toggle`; mutation auth applies on non-loopback dashboards. The pill hides itself if the build was started without a tape controller attached.
+
+See [Tape Recording](tape-recording.md) for env vars, config, and the standalone proxy.
+
 ### Buttons
 
 | Button | Action |

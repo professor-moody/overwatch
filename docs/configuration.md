@@ -57,6 +57,11 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
     },
     "blacklisted_techniques": ["zerologon"],
     "notes": "Free-form notes"
+  },
+  "tape": {
+    "enabled": false,
+    "dir": "./tapes",
+    "file": null
   }
 }
 ```
@@ -220,3 +225,6 @@ When an action targets something outside scope:
 | `OVERWATCH_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
 | `OVERWATCH_HTTP_PORT` | `3000` | Port for HTTP/SSE transport (when `OVERWATCH_TRANSPORT=http`) |
 | `OVERWATCH_HTTP_HOST` | `127.0.0.1` | Bind address for HTTP/SSE transport |
+| `OVERWATCH_TAPE` | unset | Force the in-process JSON-RPC tape recorder on (`1`/`true`/`on`) or off (`0`/`false`/`off`). Overrides `engagement.tape.enabled`. See [Tape Recording](tape-recording.md). |
+| `OVERWATCH_TAPE_DIR` | `./tapes` | Directory for auto-named tape files when the recorder is enabled |
+| `OVERWATCH_TAPE_FILE` | unset | Explicit tape file path (overrides `OVERWATCH_TAPE_DIR`) |
