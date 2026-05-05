@@ -91,7 +91,7 @@ describe('submit_agent_transcript', () => {
     expect(events.length).toBe(1);
     const ev = events[0];
     expect(ev.linked_agent_task_id).toBe(task_id);
-    expect(ev.agent_id).toBe(task_id);
+    expect(ev.agent_id).toBe('agent-A');
     expect((ev.details as any).evidence_id).toBe(payload.evidence_id);
     expect((ev.details as any).summary).toBeTruthy();
     expect(ev.linked_finding_ids).toEqual(['fnd-1']);

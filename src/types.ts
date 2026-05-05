@@ -602,6 +602,14 @@ export interface Campaign {
   strategy: CampaignStrategy;
   status: CampaignStatus;
   items: string[];               // frontier item IDs
+  /**
+   * Per-item terminal state, keyed by frontier_item_id. Items absent from
+   * the map are implicitly `pending`. dispatchCampaignAgents() skips items
+   * whose status is `succeeded` or `failed` so completed work isn't reissued
+   * on a follow-up dispatch. Updated by updateCampaignProgress() which
+   * also gates progress counters for idempotency.
+   */
+  item_status?: Record<string, 'succeeded' | 'failed'>;
   abort_conditions: AbortCondition[];
   progress: CampaignProgress;
   chain_id?: string;             // links to ChainScorer chain for spray campaigns

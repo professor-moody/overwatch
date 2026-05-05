@@ -308,6 +308,7 @@ export class CampaignPlanner {
       findings: [],
     };
     this.campaigns.set(id, campaign);
+    for (const item of campaign.items) this.itemToCampaign.set(item, id);
     return campaign;
   }
 
@@ -332,12 +333,17 @@ export class CampaignPlanner {
       for (const itemId of patch.add_items) {
         if (!c.items.includes(itemId)) {
           c.items.push(itemId);
+          this.itemToCampaign.set(itemId, id);
         }
       }
       c.progress.total = c.items.length;
     }
     if (patch.remove_items) {
-      c.items = c.items.filter(id => !patch.remove_items!.includes(id));
+      const removed = new Set(patch.remove_items);
+      c.items = c.items.filter(id => !removed.has(id));
+      for (const removedId of removed) {
+        if (this.itemToCampaign.get(removedId) === id) this.itemToCampaign.delete(removedId);
+      }
       c.progress.total = c.items.length;
     }
     return c;
@@ -353,6 +359,9 @@ export class CampaignPlanner {
       throw new Error(`Cannot delete campaign in '${c.status}' status (must be draft)`);
     }
     this.campaigns.delete(id);
+    for (const item of c.items) {
+      if (this.itemToCampaign.get(item) === id) this.itemToCampaign.delete(item);
+    }
     // Clean up chain mapping if present
     for (const [key, cid] of this.chainToCampaign) {
       if (cid === id) {
@@ -383,6 +392,7 @@ export class CampaignPlanner {
       chain_id: source.chain_id,
     };
     this.campaigns.set(newId, campaign);
+    for (const item of campaign.items) this.itemToCampaign.set(item, newId);
     return campaign;
   }
 
@@ -401,6 +411,22 @@ export class CampaignPlanner {
 
     // Only track items that belong to this campaign
     if (!c.items.includes(frontierItemId)) return c;
+
+    // Idempotency: if this frontier item already has a terminal status,
+    // do not double-count progress. Repeated update_agent calls (or
+    // retried agent completion paths) used to inflate `completed`,
+    // `succeeded`, and `failed` past the campaign's total. We still
+    // append a fresh findingId if one is provided and not already
+    // recorded — multiple agents working the same item can legitimately
+    // produce additional findings.
+    if (!c.item_status) c.item_status = {};
+    if (c.item_status[frontierItemId]) {
+      if (result === 'success' && findingId && !c.findings.includes(findingId)) {
+        c.findings.push(findingId);
+      }
+      return c;
+    }
+    c.item_status[frontierItemId] = result === 'success' ? 'succeeded' : 'failed';
 
     c.progress.completed++;
     if (result === 'success') {
@@ -520,6 +546,7 @@ export class CampaignPlanner {
         findings: [],
       };
       this.campaigns.set(childId, child);
+      for (const item of child.items) this.itemToCampaign.set(item, childId);
       children.push(child);
     }
 

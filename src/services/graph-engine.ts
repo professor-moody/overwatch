@@ -596,41 +596,59 @@ export class GraphEngine {
   }
 
   pauseCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.pauseCampaign(id);
+    const c = this.campaignPlanner.pauseCampaign(id);
+    if (c) this.persist();
+    return c;
   }
 
   resumeCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.resumeCampaign(id);
+    const c = this.campaignPlanner.resumeCampaign(id);
+    if (c) this.persist();
+    return c;
   }
 
   abortCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.abortCampaign(id);
+    const c = this.campaignPlanner.abortCampaign(id);
+    if (c) this.persist();
+    return c;
   }
 
   activateCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.activateCampaign(id);
+    const c = this.campaignPlanner.activateCampaign(id);
+    if (c) this.persist();
+    return c;
   }
 
   createCampaign(params: import('../services/campaign-planner.js').CreateCampaignParams): import('../types.js').Campaign {
-    return this.campaignPlanner.createCampaign(params);
+    const c = this.campaignPlanner.createCampaign(params);
+    this.persist();
+    return c;
   }
 
   updateCampaign(id: string, patch: import('../services/campaign-planner.js').UpdateCampaignParams): import('../types.js').Campaign | null {
-    return this.campaignPlanner.updateCampaign(id, patch);
+    const c = this.campaignPlanner.updateCampaign(id, patch);
+    if (c) this.persist();
+    return c;
   }
 
   deleteCampaign(id: string): boolean {
-    return this.campaignPlanner.deleteCampaign(id);
+    const ok = this.campaignPlanner.deleteCampaign(id);
+    if (ok) this.persist();
+    return ok;
   }
 
   cloneCampaign(id: string): import('../types.js').Campaign | null {
-    return this.campaignPlanner.cloneCampaign(id);
+    const c = this.campaignPlanner.cloneCampaign(id);
+    if (c) this.persist();
+    return c;
   }
 
   updateCampaignProgress(
     campaignId: string, frontierItemId: string, result: 'success' | 'failure', findingId?: string,
   ): import('../types.js').Campaign | null {
-    return this.campaignPlanner.updateCampaignProgress(campaignId, frontierItemId, result, findingId);
+    const c = this.campaignPlanner.updateCampaignProgress(campaignId, frontierItemId, result, findingId);
+    if (c) this.persist();
+    return c;
   }
 
   checkCampaignAbortConditions(campaignId: string): { should_abort: boolean; reason?: string } {
@@ -642,7 +660,9 @@ export class GraphEngine {
   }
 
   splitCampaign(id: string, count?: number): import('../types.js').Campaign[] | null {
-    return this.campaignPlanner.splitCampaign(id, count);
+    const cs = this.campaignPlanner.splitCampaign(id, count);
+    if (cs) this.persist();
+    return cs;
   }
 
   getCampaignChildren(parentId: string): import('../types.js').Campaign[] {
@@ -1428,6 +1448,11 @@ export class GraphEngine {
 
   getTask(taskId: string): AgentTask | null {
     return this.agentMgr.getTask(taskId);
+  }
+
+  /** All known agent tasks (running, completed, failed, interrupted). */
+  getAgentTasks(): AgentTask[] {
+    return this.agentMgr.getAll();
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {

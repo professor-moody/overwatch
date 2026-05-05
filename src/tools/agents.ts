@@ -316,7 +316,8 @@ Fields:
 - \`transcript_jsonl\` is optional but strongly recommended — raw JSONL of the sub-agent's tool I/O.
 - \`key_thought_event_ids\` / \`key_finding_ids\` are optional pointers to events/findings the primary should look at first.`,
       inputSchema: {
-        agent_id: z.string().describe('Agent task ID this transcript belongs to'),
+        task_id: z.string().optional().describe('Agent task ID this transcript belongs to (preferred). Returned by register_agent as `task_id`.'),
+        agent_id: z.string().optional().describe('Agent task ID this transcript belongs to. Accepted as a legacy alias for `task_id`; if it does not match a task ID, we fall back to looking up the most recent task whose agent_id matches.'),
         summary: z.string().min(1).describe('Short wrap-up paragraph from the sub-agent'),
         transcript_jsonl: z.string().optional().describe('Raw JSONL transcript of the sub-agent run (stored as evidence)'),
         key_thought_event_ids: z.array(z.string()).optional().describe('Event IDs of the most important thoughts/decisions'),
@@ -329,17 +330,45 @@ Fields:
         openWorldHint: false,
       },
     },
-    withErrorBoundary('submit_agent_transcript', async ({ agent_id, summary, transcript_jsonl, key_thought_event_ids, key_finding_ids }) => {
-      const task = engine.getTask(agent_id);
-      if (!task) {
+    withErrorBoundary('submit_agent_transcript', async ({ task_id, agent_id, summary, transcript_jsonl, key_thought_event_ids, key_finding_ids }) => {
+      // Resolve the target task. Historically this tool only accepted a
+      // parameter named `agent_id` but used it as a *task* ID, which
+      // tripped operators up since register_agent returns both. We now
+      // prefer `task_id`, accept `agent_id` as a legacy alias, and as a
+      // last resort scan tasks for one whose `agent_id` field matches —
+      // covering the case where a sub-agent only kept the agent name.
+      const lookupId = task_id ?? agent_id;
+      if (!lookupId) {
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ error: `Agent task not found: ${agent_id}` }, null, 2),
+            text: JSON.stringify({ error: 'Either task_id or agent_id is required' }, null, 2),
           }],
           isError: true,
         };
       }
+      let task = engine.getTask(lookupId);
+      if (!task) {
+        // Fallback: maybe the caller passed an agent_id (the human-readable
+        // name) instead of the task UUID. Find the most recent task that
+        // matches; tie-break on assigned_at to prefer the freshest.
+        const candidates = engine.getAgentTasks?.() ?? [];
+        const match = candidates
+          .filter((t) => t.agent_id === lookupId)
+          .sort((a, b) => (b.assigned_at || '').localeCompare(a.assigned_at || ''))[0];
+        if (match) task = match;
+      }
+      if (!task) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: `Agent task not found: ${lookupId}` }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const resolvedTaskId = task.id;
+      const resolvedAgentId = task.agent_id;
 
       let evidence_id: string | undefined;
       let transcript_bytes = 0;
@@ -361,12 +390,12 @@ Fields:
       if (key_finding_ids && key_finding_ids.length > 0) details.key_finding_ids = key_finding_ids;
 
       const event = engine.logActionEvent({
-        description: `Agent ${agent_id} submitted transcript: ${summary.slice(0, 120)}${summary.length > 120 ? '…' : ''}`,
+        description: `Agent ${resolvedAgentId} submitted transcript: ${summary.slice(0, 120)}${summary.length > 120 ? '…' : ''}`,
         event_type: 'agent_transcript_submitted',
         category: 'agent',
         provenance: 'agent',
-        agent_id,
-        linked_agent_task_id: agent_id,
+        agent_id: resolvedAgentId,
+        linked_agent_task_id: resolvedTaskId,
         linked_finding_ids: key_finding_ids,
         details,
       });
@@ -376,7 +405,8 @@ Fields:
         content: [{
           type: 'text',
           text: JSON.stringify({
-            agent_id,
+            task_id: resolvedTaskId,
+            agent_id: resolvedAgentId,
             event_id: event.event_id,
             evidence_id,
             transcript_bytes,
@@ -662,6 +692,16 @@ export function dispatchCampaignAgents(
 
   for (const itemId of campaign.items) {
     if (dispatched.length >= max_agents) break;
+
+    // Skip items that already reached a terminal status in a prior dispatch.
+    // Without this guard, calling dispatch_campaign_agents twice on the same
+    // campaign re-issues completed work and can re-run scans / credential
+    // checks that an earlier agent already finished.
+    const itemStatus = campaign.item_status?.[itemId];
+    if (itemStatus === 'succeeded' || itemStatus === 'failed') {
+      skipped.push({ frontier_item_id: itemId, reason: `already_${itemStatus}` });
+      continue;
+    }
 
     const existing = engine.getRunningTaskForFrontierItem(itemId);
     if (existing) {

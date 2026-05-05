@@ -47,6 +47,17 @@ export class AgentManager {
   updateStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
     const task = this.ctx.agents.get(taskId);
     if (!task) return false;
+    // Idempotency guard: once an agent has reached a terminal state, swallow
+    // duplicate terminal transitions instead of re-emitting events and
+    // double-counting downstream campaign progress. We allow `interrupted`
+    // to win over a prior `completed`/`failed` so external cancellation
+    // signals are still expressible, but symmetric replays no-op.
+    const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
+    const currentTerminal = TERMINAL.includes(task.status);
+    const incomingTerminal = TERMINAL.includes(status);
+    if (currentTerminal && incomingTerminal && task.status === status) {
+      return false;
+    }
     task.status = status;
     if (summary) task.result_summary = summary;
     if (status === 'completed' || status === 'failed') {

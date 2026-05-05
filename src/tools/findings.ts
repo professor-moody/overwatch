@@ -187,12 +187,30 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
 
       const result = engine.ingestFinding(prepared.finding);
 
+      // Link this finding to its campaign (if any) so campaign-level
+      // reporting and the dashboard's campaign detail view see it. Before
+      // this, campaign.findings stayed empty until updateAgentStatus ran
+      // — and even then it never received a findingId, so the list was
+      // effectively never populated.
+      let campaign_id: string | undefined;
+      if (frontier_item_id) {
+        const campaign = engine.findCampaignForItem(frontier_item_id);
+        if (campaign && !campaign.findings.includes(finding.id)) {
+          campaign.findings.push(finding.id);
+          engine.persist();
+          campaign_id = campaign.id;
+        } else if (campaign) {
+          campaign_id = campaign.id;
+        }
+      }
+
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             action_id: normalizedActionId,
             finding_id: finding.id,
+            campaign_id,
             new_nodes: result.new_nodes,
             new_edges: result.new_edges,
             inferred_edges: result.inferred_edges,
