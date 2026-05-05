@@ -105,7 +105,16 @@ Once connected, ask Claude to:
 2. Call `run_lab_preflight` — validates tool availability, graph health, and dashboard readiness
 3. Call `check_tools` — shows which offensive tools are installed
 
-If all three succeed, you're ready to start. See the [Operator Playbook](playbook/index.md) for step-by-step lab workflows.
+If all three succeed, you're ready to start. See the [Operator Playbook](playbook/index.md) for step-by-step lab workflows, or jump straight to [Operator Infrastructure](playbook/operator-infra.md) if your first move is standing up Responder or `ntlmrelayx`.
+
+## Audit Trail (optional but recommended)
+
+For engagements where you need defensible evidence (client deliverables, research, training data), enable the two audit features:
+
+1. **Hash-chained activity log** — set `"hash_chain_enabled": true` in `engagement.json`. Every agent and system event becomes tamper-evident.
+2. **JSON-RPC tape proxy** — run the AI client through `overwatch-mcp-tape` to capture every wire-level tool call and response. Import the tape afterward with `register_tape_session` for full ground-truth replay.
+
+See [Concepts — Audit Trail](concepts.md#audit-trail) for what each one buys you.
 
 ## Accessing the Dashboard
 

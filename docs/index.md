@@ -23,9 +23,11 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 - **[Hybrid scoring](architecture.md#hybrid-scoring)** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
 - **[Inference rules](architecture.md#inference-rules)** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
 - **[Full graph access](tools/query-graph.md)** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
-- **[42 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation.
+- **[51 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation, plus first-class [operator-infrastructure registration](tools/register-mock-service.md).
 - **[34 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
-- **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking.
+- **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking. Listener-mode sessions auto-register as `mock_service` graph nodes so captured credentials attribute back to the listener that caught them.
+- **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus. Operator-controlled infrastructure renders alongside discovered targets.
+- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log + JSON-RPC tape proxy let retrospectives prove the AI did exactly what it claimed, in the order it claimed.
 - **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
 - **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, RLVR training traces, automatic inference rule application, technique priors, and skill annotations.
 - **[IAM policy simulation](concepts.md#iam-policy-simulation)** — Cloud-native permission evaluation for AWS (deny-overrides-allow), Azure (RBAC scope hierarchy), and GCP (deny policy precedence).
@@ -36,9 +38,9 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 
 | | |
 |---|---|
-| **42** MCP tools | **34** offensive skills |
-| **28** output parsers with 50 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, burp, zap, sqlmap, wpscan, getnpusers, getuserspns, gettgt, getst, smbclient, wmiexec, psexec) | **55** built-in declarative inference rules |
-| **2100+** tests across **79** files | **22** node types, **65** edge types |
+| **51** MCP tools | **34** offensive skills |
+| **28** output parsers with 50 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, burp, zap, sqlmap, wpscan, getnpusers, getuserspns, gettgt, getst, smbclient, wmiexec, psexec) | **61** built-in declarative inference rules |
+| **2440+** tests across **99** files | **23** node types, **73** edge types |
 
 ## Quick Start
 

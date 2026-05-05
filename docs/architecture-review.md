@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **42 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **51 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,7 +31,7 @@ The server exposes **42 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              42 MCP Tools (Zod-validated)                  │  │
+│  │              51 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · azurehound · inference   │  │
 │  │  remediation · skills · toolcheck · processes · sessions   │  │
@@ -387,8 +387,8 @@ The `run_retrospective` tool produces five structured outputs:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (42 tools) |
-| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 42 tools via stdio + HTTP/SSE transport |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (51 tools) |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 51 tools via stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
 | Services | 24 test files | CIDR, BloodHound, parsers (21), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |

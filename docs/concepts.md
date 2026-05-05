@@ -157,6 +157,86 @@ The `action_id` links all steps together. This enables:
 - **RLVR training traces** — state→action→outcome triplets
 - **Audit trail** — every graph change is attributable to a specific action
 
+## Operator Infrastructure
+
+Anything the operator stands up to **receive** incoming connections — Responder, ntlmrelayx, fake LDAP, socat redirector, reverse-shell catcher, HTTP/SMB capture endpoint — is a first-class graph object: a `mock_service` node.
+
+Why this matters: without it, captured credentials float free of the listener that caught them, and retrospectives can't tell "we found 3 hashes" from "our Responder caught 3 hashes." With it, the capture chain is structural and queryable.
+
+```mermaid
+flowchart LR
+    OP([operator user]):::user
+    MS[mock_service<br/>Responder<br/>0.0.0.0:445]:::mock
+    SESS[session<br/>kind=socket mode=listen]:::sess
+    HOST[(attacker host)]:::host
+    CRED[credential<br/>CORP\\victim:hash]:::cred
+    USR[user<br/>victim]:::user
+    TARGET[(target host)]:::host
+
+    SESS -- "capabilities.serves_mock_service_id" --> MS
+    MS -- "OPERATED_BY" --> OP
+    MS -- "RUNS_ON" --> HOST
+    MS -- "BAITED (auto-inferred)" --> CRED
+    CRED -- "OWNS_CRED (inferred)" --> USR
+    CRED -- "VALID_ON (after test)" --> TARGET
+
+    classDef mock fill:#d97706,stroke:#92400e,color:#fff
+    classDef cred fill:#f0b54a,stroke:#92400e,color:#000
+    classDef user fill:#afa9ec,stroke:#3730a3,color:#000
+    classDef host fill:#6e9eff,stroke:#1e40af,color:#fff
+    classDef sess fill:#94a3b8,stroke:#334155,color:#000
+```
+
+**The capture chain in plain words:**
+
+1. The operator opens a listening session with `open_session kind=socket mode=listen mock_service_purpose=responder`. The server auto-registers a `mock_service` node and stamps `capabilities.serves_mock_service_id` onto the session.
+2. The target environment fires off a poisoned NetBIOS query and authenticates to the listener.
+3. Whoever parses the capture (Responder log parser, manual `report_finding`, future agent) reports the credential with `via_mock_service_id` set.
+4. The built-in `rule-baited-credential` inference rule fires and emits a `BAITED` edge from the listener to the credential.
+5. When `close_session` is called, the server stamps `stopped_at` on the listener so the dashboard renders it inactive and retrospectives know the active window.
+
+**Idempotency.** `register_mock_service` dedupes on `(purpose, bind_host, bind_port, agent_id)`. Re-registering is safe and refreshes `last_seen_at` without duplicating the node.
+
+**OPSEC defaults.** `opsec_loud=true` is the default for `responder`, `ntlmrelayx`, `fake_ldap`, and `smb_capture`. The OPSEC scorer can read this directly instead of hardcoding a noisy-tool list.
+
+See [`register_mock_service`](tools/register-mock-service.md) and [Playbook — Operator Infrastructure](playbook/operator-infra.md).
+
+## Audit Trail
+
+Three independent layers make engagement evidence defensible. Each one is opt-in and orthogonal — you can run with all three, none, or any combination.
+
+### 1. Activity Log with Causal Linkage
+
+Every action emits structured events (`action_planned`, `action_validated`, `action_started`, `action_completed`/`action_failed`, plus parse and finding events). Each event carries `action_id`, `frontier_item_id`, and `agent_id`, so the entire decision chain is reconstructable as a directed graph — not as a stream of timestamps you have to correlate.
+
+The activity log also captures **`mock_service_registered`** / **`mock_service_refreshed`** events with `provenance: 'operator'`, so the operator-infrastructure timeline interleaves cleanly with discovery and exploitation events.
+
+### 2. Evidence Stream Integrity
+
+`run_bash` and `run_tool` stream stdout/stderr **directly** into the evidence store rather than buffering, with backpressure-aware writes. Every action's evidence file has a manifest record that says either:
+
+- `bytes_written: N, capture_error: null` — the full output is on disk, and it's exactly N bytes.
+- `bytes_written: N, capture_error: "<reason>"` — partial capture; the system explicitly knows how much was lost and why.
+
+Evidence can never be silently truncated. If your report cites an nmap scan, the manifest tells you whether you have the whole thing.
+
+### 3. Hash Chain (`hash_chain_enabled`)
+
+When enabled, every qualifying activity event (provenance ∈ `{agent, system}`, excluding `thought` events) is given a `prev_hash` and `event_hash`, forming a tamper-evident chain. The `verify_activity_chain` tool walks the chain and confirms it's intact.
+
+If anyone — including the AI itself, a bug, or a malicious operator — modifies an old entry, the chain breaks and the system can prove it. Ingested events (from external transcripts) get `chain_excluded: true` so they don't pollute the live chain.
+
+### 4. JSON-RPC Tape Proxy
+
+`overwatch-mcp-tape` sits between the AI client and the Overwatch MCP server, recording every wire-level frame in both directions to a JSONL tape. The tape captures things the server might never log itself (malformed requests, requests that errored before reaching a handler, batched calls).
+
+After the engagement, `register_tape_session` imports the tape and emits `tape_session_started` events linked to the live activity log. A retrospective can then ask:
+
+- "Did the AI actually validate every command before running it?" → join tape `tools/call validate_action` against tape `tools/call run_bash`.
+- "Did the AI claim a result the server never produced?" → diff tape responses against AI transcript turns.
+
+This is the difference between trusting the AI's narrative and being able to independently verify it.
+
 ## Deterministic Layer vs LLM Layer
 
 Overwatch splits decision-making into two layers:
@@ -340,6 +420,17 @@ pending → connected → closed
 ```
 
 Socket sessions (reverse shells, listeners) start in `pending` and transition to `connected` when a connection is established. PTY and SSH sessions connect immediately. Sessions are ephemeral across server restarts — PTY file descriptors cannot be serialized.
+
+### Listener Mode and Mock-Service Binding
+
+`open_session` with `kind=socket mode=listen mock_service_purpose=<purpose>` does two things atomically:
+
+1. Creates the listener session.
+2. Auto-registers a `mock_service` graph node and stamps `capabilities.serves_mock_service_id` on the session, so anything captured through that listener can be attributed back to the operator-controlled infrastructure that caught it.
+
+Closing the session stamps `stopped_at` on the bound `mock_service` node — the listener stays in the graph for retrospective analysis but is rendered inactive in the dashboard.
+
+See [Operator Infrastructure](#operator-infrastructure) for the full capture chain.
 
 See [Session Tools](tools/sessions.md) for the full API reference.
 

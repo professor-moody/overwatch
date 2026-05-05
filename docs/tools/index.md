@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 42 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 51 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 

@@ -28,6 +28,7 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment | `policy_name`, `effect`, `actions`, `resources` |
 | `cloud_network` | Cloud network construct (VPC, security group) | `network_type`, `ingress_rules`, `egress_rules` |
 | `api_endpoint` | A web API endpoint | `path`, `method`, `auth_required`, `response_type` |
+| `mock_service` | An **operator-controlled** decoy / listener / relay (Responder, ntlmrelayx, fake LDAP, redirector, reverse-shell catcher, etc.) | `mock_purpose`, `bind_host`, `bind_port`, `protocol`, `opsec_loud`, `started_at`, `stopped_at`, `bound_session_id` |
 
 ### Common Node Properties
 
@@ -301,6 +302,17 @@ Identity resolution runs automatically on ingest. Alias nodes sharing identity m
 | Edge | Description |
 |------|-------------|
 | `PATH_TO_OBJECTIVE` | Computed path toward an engagement objective |
+
+### Operator Infrastructure
+
+Edges that attribute captures and relays to operator-controlled `mock_service` nodes. See [`register_mock_service`](tools/register-mock-service.md) and [Operator Infrastructure](playbook/operator-infra.md).
+
+| Edge | Description |
+|------|-------------|
+| `OPERATED_BY` | `mock_service → user` — the operator (user node) running the listener. Auto-emitted when `agent_id` matches an existing user. |
+| `BAITED` | `mock_service → credential` — the listener captured this credential. Auto-emitted by the `rule-baited-credential` inference rule when a credential is reported with `via_mock_service_id` set. |
+| `RELAYED_VIA` | `credential → mock_service` — the credential was relayed through this listener (e.g. ntlmrelayx). Operator-asserted via `report_finding`. |
+| `RUNS_ON` | `mock_service → host` — the listener is hosted on the attacker box (added when `target_node` resolves to a host). |
 
 ### Generic
 

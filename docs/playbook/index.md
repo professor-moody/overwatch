@@ -81,5 +81,6 @@ See [Retrospectives](retrospective.md) for details.
 
 - [CLI Adapter](cli-adapter.md) — operate Overwatch via shell when MCP is unavailable
 - [Session Instructions](session-instructions.md) — primary session and sub-agent setup
+- [Operator Infrastructure](operator-infra.md) — register listeners (Responder, ntlmrelayx, redirectors) and earn auto-attributed BAITED credentials
 - [parse_output vs report_finding](parse-vs-report.md) — when to use which
 - [Retrospectives](retrospective.md) — post-engagement analysis

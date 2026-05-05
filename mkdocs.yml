@@ -120,6 +120,7 @@ nav:
     - HTB / Network: playbook/htb-network.md
     - CLI Adapter: playbook/cli-adapter.md
     - Session Instructions: playbook/session-instructions.md
+    - Operator Infrastructure: playbook/operator-infra.md
     - parse_output vs report_finding: playbook/parse-vs-report.md
     - Retrospectives: playbook/retrospective.md
   - FAQ: faq.md
