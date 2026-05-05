@@ -118,6 +118,43 @@ export function getSupportedParsers(): string[] {
   return Object.keys(PARSERS);
 }
 
+/**
+ * Per-parser map of exit codes that should still be treated as a successful
+ * run when the upstream tool routinely uses non-zero exits to communicate
+ * "found nothing" or "partial result" rather than a real failure.
+ *
+ * Keys are normalized parser aliases (the keys of `PARSERS`). Any exit code
+ * not listed here is interpreted as a hard failure for the purposes of
+ * action lifecycle classification, but the runner still attempts to parse
+ * the captured output and tags the resulting finding `partial: true`.
+ *
+ * Examples of well-known non-zero "ok" exit codes:
+ *   - nuclei      → 1 means "no matches" (all templates ran cleanly)
+ *   - sqlmap      → 1 means "not vulnerable"
+ *   - gobuster    → 1 means "no results"
+ *   - feroxbuster → 1 means "no results"
+ *   - ffuf        → 1 means "no matches"
+ *   - nikto       → 1 means "scan completed, nothing found"
+ *   - wpscan      → 4 means "no findings"
+ */
+export const PARSER_ACCEPTABLE_EXIT_CODES: Record<string, ReadonlySet<number>> = {
+  nuclei: new Set([0, 1]),
+  sqlmap: new Set([0, 1]),
+  gobuster: new Set([0, 1]),
+  feroxbuster: new Set([0, 1]),
+  ffuf: new Set([0, 1]),
+  dirbuster: new Set([0, 1]),
+  nikto: new Set([0, 1]),
+  wpscan: new Set([0, 4]),
+};
+
+export function isAcceptableParserExit(toolName: string, exitCode: number | null): boolean {
+  if (exitCode === null) return false;
+  const allowed = PARSER_ACCEPTABLE_EXIT_CODES[toolName.toLowerCase()];
+  if (!allowed) return exitCode === 0;
+  return allowed.has(exitCode);
+}
+
 export function parseOutput(toolName: string, output: string, agentId?: string, context?: ParseContext): Finding | null {
   const parser = PARSERS[toolName.toLowerCase()];
   if (!parser) return null;

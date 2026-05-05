@@ -4,7 +4,7 @@
 // ============================================================
 
 import type { Finding } from '../types.js';
-import { cloudIdentityId, cloudPolicyId, normalizeKeyPart } from './parser-utils.js';
+import { cloudIdentityId, cloudPolicyId, cloudResourceId, normalizeKeyPart } from './parser-utils.js';
 
 export interface AzureHoundIngestResult {
   findings: Finding[];
@@ -60,6 +60,10 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
   ]);
   if (!SUPPORTED_KINDS.has(kind) && kind !== 'unknown') {
     warnings.push(`${filename}: unsupported AzureHound kind '${kind}', skipping ${items.length} item(s)`);
+  }
+  // Phase D: surface silent zero-result collapses when kind inference failed.
+  if (kind === 'unknown' && items.length > 0) {
+    warnings.push(`${filename}: could not infer AzureHound kind from filename or 'kind' field; skipping ${items.length} item(s)`);
   }
 
   for (const item of items) {
@@ -201,6 +205,9 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const roleDefId = props.roleDefinitionId || props.RoleDefinitionId || '';
         const principalId = props.principalId || props.PrincipalId || '';
         const roleName = props.roleDefinitionName || props.RoleDefinitionName || roleDefId;
+        // Scope of the assignment (subscription / RG / single resource path).
+        // Without this, Reader-on-one-RG looks identical to Owner-on-tenant.
+        const scope = (props.scope || props.Scope || '') as string;
         if (!principalId || !roleName) break;
 
         const policyNodeId = cloudPolicyId('azure', roleName);
@@ -229,10 +236,42 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           } as Finding['nodes'][0]);
         }
 
-        edges.push({
-          source: principalNodeId, target: policyNodeId,
-          properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID },
-        });
+        // Phase C: when the assignment scope is known, materialize a stub
+        // cloud_resource for it and link the role to that scope so distinct
+        // scopes produce distinct edges (no more Reader vs Owner collapse).
+        if (scope) {
+          const resNodeId = cloudResourceId(scope);
+          if (!seenNodes.has(resNodeId)) {
+            seenNodes.add(resNodeId);
+            const label = scope.split('/').filter(Boolean).pop() || scope;
+            nodes.push({
+              id: resNodeId, type: 'cloud_resource',
+              label,
+              discovered_at: now, discovered_by: AGENT_ID, confidence: 0.9,
+              provider: 'azure', arn: scope,
+            } as Finding['nodes'][0]);
+          }
+          // role definition applies to this scope
+          edges.push({
+            source: policyNodeId, target: resNodeId,
+            properties: { type: 'POLICY_ALLOWS', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID, scope },
+          });
+          // principal holds this role at this scope (scope on edge for retros)
+          edges.push({
+            source: principalNodeId, target: policyNodeId,
+            properties: {
+              type: 'HAS_POLICY', confidence: 1.0,
+              discovered_at: now, discovered_by: AGENT_ID,
+              scope, role_definition_name: roleName,
+            },
+          });
+        } else {
+          // Backwards compatible: no scope known → keep the legacy edge shape
+          edges.push({
+            source: principalNodeId, target: policyNodeId,
+            properties: { type: 'HAS_POLICY', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID },
+          });
+        }
         break;
       }
 

@@ -367,8 +367,11 @@ describe('10.4 — Nuclei parser', () => {
   });
 
   it('maps severity to CVSS correctly', () => {
-    const severities = ['critical', 'high', 'medium', 'low', 'info'];
-    const expected = [9.5, 7.5, 5.0, 2.5, 0];
+    // Phase F: severity=info no longer creates a vulnerability node (it's
+    // treated as service enrichment). The remaining severities still map
+    // to their canonical CVSS bands.
+    const severities = ['critical', 'high', 'medium', 'low'];
+    const expected = [9.5, 7.5, 5.0, 2.5];
 
     for (let i = 0; i < severities.length; i++) {
       const input = JSON.stringify({
@@ -764,11 +767,19 @@ describe('regression — Nuclei text output parsing', () => {
 
     expect(result.nodes.length).toBeGreaterThan(0);
     const vulns = result.nodes.filter(n => n.type === 'vulnerability');
-    expect(vulns.length).toBe(2);
+    // Phase F: severity=info templates without a CVE no longer create a
+    // vulnerability node — they enrich the target service/webapp.
+    expect(vulns.length).toBe(1);
     const cveVuln = vulns.find(v => v.cve === 'CVE-2021-41773');
     expect(cveVuln).toBeDefined();
     expect(cveVuln!.cvss).toBe(9.5);
     expect(cveVuln!.exploitable).toBe(true);
+
+    const enriched = result.nodes.find(n =>
+      Array.isArray((n as Record<string, unknown>).technologies) &&
+      ((n as Record<string, unknown>).technologies as string[]).includes('nginx')
+    );
+    expect(enriched).toBeDefined();
   });
 
   it('handles mixed text lines with non-matching lines', () => {

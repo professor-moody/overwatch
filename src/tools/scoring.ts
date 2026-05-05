@@ -133,7 +133,8 @@ Call this before every significant action. Returns valid/invalid with specific e
         tool_name: z.string().optional().describe('Tool expected to be used for this action'),
         tool: z.string().optional().describe('Alias for tool_name'),
         frontier_item_id: z.string().optional().describe('Frontier item this action came from'),
-        description: z.string().optional().describe('Human-readable description of the planned action')
+        description: z.string().optional().describe('Human-readable description of the planned action'),
+        allow_unverified_scope: z.boolean().optional().describe('Operator override: skip the fail-closed check for host/service/share nodes whose IP/hostname cannot be verified against the engagement scope. Use sparingly and only with explicit operator intent.')
       },
       annotations: {
         readOnlyHint: false,
@@ -142,10 +143,10 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name: rawToolName, tool, frontier_item_id, description }) => {
+    withErrorBoundary('validate_action', async ({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name: rawToolName, tool, frontier_item_id, description, allow_unverified_scope }) => {
       const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
-      const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource });
+      const result = engine.validateAction({ target_node, target_ip, edge_source, edge_target, technique, target_url, cloud_resource, allow_unverified_scope });
       const validationResult = !result.valid
         ? 'invalid'
         : result.warnings.length > 0

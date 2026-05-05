@@ -574,6 +574,41 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBe(0);
     });
 
+    // Phase J: tolerate stringy booleans + single-string EKU on cert templates
+    it('coerces stringy "Enrollee Supplies Subject" booleans on templates', () => {
+      const data = {
+        'Certificate Templates': {
+          'StringyBoolTpl': {
+            'Enrollee Supplies Subject': 'true',
+            'Extended Key Usage': ['Client Authentication'],
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const tpl = finding.nodes.find(n => n.type === 'cert_template') as Record<string, unknown>;
+      expect(tpl).toBeDefined();
+      expect(tpl.enrollee_supplies_subject).toBe(true);
+    });
+
+    it('coerces a single-string EKU into a string array on templates', () => {
+      const data = {
+        'Certificate Templates': {
+          'SingleEkuTpl': {
+            'Enrollee Supplies Subject': true,
+            // Single EKU emitted as a plain string, not an array.
+            'Extended Key Usage': 'Client Authentication',
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const tpl = finding.nodes.find(n => n.type === 'cert_template') as Record<string, unknown>;
+      expect(tpl).toBeDefined();
+      expect(Array.isArray(tpl.eku)).toBe(true);
+      expect(tpl.eku).toEqual(['Client Authentication']);
+    });
+
     it('creates edges for ESC5 and ESC13 vulnerability types', () => {
       const data = {
         'Certificate Templates': {

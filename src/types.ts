@@ -214,12 +214,13 @@ export const EDGE_TYPES = [
   // Credential relationships
   'VALID_ON', 'OWNS_CRED', 'DERIVED_FROM', 'DUMPED_FROM',
   // AD attack paths
-  'CAN_DCSYNC', 'DELEGATES_TO', 'WRITEABLE_BY', 'GENERIC_ALL',
+  'CAN_DCSYNC', 'CAN_GET_CHANGES', 'CAN_GET_CHANGES_ALL',
+  'DELEGATES_TO', 'WRITEABLE_BY', 'GENERIC_ALL', 'OWNS',
   'GENERIC_WRITE', 'WRITE_OWNER', 'WRITE_DACL', 'ADD_MEMBER',
   'FORCE_CHANGE_PASSWORD', 'ALLOWED_TO_ACT',
   // ADCS
   'CAN_ENROLL', 'ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13',
-  'ISSUED_BY', 'OPERATES_CA',
+  'ISSUED_BY', 'OPERATES_CA', 'MANAGE_CA', 'MANAGE_CERTIFICATES',
   // Trust
   'TRUSTS', 'SAME_DOMAIN',
   // Roasting
@@ -726,7 +727,7 @@ export interface InferenceRule {
     edge_type?: EdgeType;
     property_match?: Record<string, unknown>;
     requires_edge?: {
-      type: EdgeType;
+      type: EdgeType | EdgeType[];
       direction: 'inbound' | 'outbound';
       peer_match?: Record<string, unknown>;
     };

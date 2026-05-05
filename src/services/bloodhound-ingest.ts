@@ -117,9 +117,9 @@ const BH_EDGE_MAP: Record<string, EdgeType> = {
   'AllowedToDelegate': 'DELEGATES_TO',
   'AllowedToAct': 'ALLOWED_TO_ACT',
   'DCSync': 'CAN_DCSYNC',
-  'GetChanges': 'CAN_DCSYNC',
-  'GetChangesAll': 'CAN_DCSYNC',
-  'Owns': 'GENERIC_ALL',
+  'GetChanges': 'CAN_GET_CHANGES',
+  'GetChangesAll': 'CAN_GET_CHANGES_ALL',
+  'Owns': 'OWNS',
   'WriteSPN': 'GENERIC_WRITE',
   'AddSelf': 'ADD_MEMBER',
   'ReadLAPSPassword': 'CAN_READ_LAPS',
@@ -143,8 +143,8 @@ const BH_EDGE_MAP: Record<string, EdgeType> = {
   'ADCSESC10b': 'ESC10',
   'ADCSESC11': 'ESC11',
   'ADCSESC13': 'ESC13',
-  'ManageCertificates': 'GENERIC_ALL',
-  'ManageCA': 'GENERIC_ALL',
+  'ManageCertificates': 'MANAGE_CERTIFICATES',
+  'ManageCA': 'MANAGE_CA',
 };
 
 const BH_RELATION_ARRAY_MAP: Array<{
@@ -383,6 +383,12 @@ export function parseBloodHoundFile(
   const resolveSid = (sid: string, fallbackType: NodeType): string =>
     sidMap.get(sid) || makeNodeId(sid, fallbackType);
 
+  // Track partial DCSync replication rights so we only synthesize
+  // CAN_DCSYNC when a principal holds BOTH GetChanges AND GetChangesAll
+  // on the same target (matching BloodHound CE / SharpHound semantics).
+  // Key: `${sourceId}|${targetId}` → set of right names seen.
+  const replicationRights = new Map<string, Set<'GetChanges' | 'GetChangesAll' | 'DCSync'>>();
+
   // Second pass: build edges using resolved IDs
   for (const obj of parsed.data) {
     const sid = obj.ObjectIdentifier;
@@ -407,7 +413,25 @@ export function parseBloodHoundFile(
             inherited: ace.IsInherited,
           },
         });
-        // Mark DCSync-capable principals for frontier visibility
+        // Track replication-rights ACEs so we can synthesize CAN_DCSYNC
+        // only when both GetChanges + GetChangesAll are present (or the
+        // explicit DCSync edge was already emitted by SharpHound).
+        if (
+          ace.RightName === 'GetChanges' ||
+          ace.RightName === 'GetChangesAll' ||
+          ace.RightName === 'DCSync'
+        ) {
+          const key = `${sourceId}|${nodeId}`;
+          let rights = replicationRights.get(key);
+          if (!rights) {
+            rights = new Set();
+            replicationRights.set(key, rights);
+          }
+          rights.add(ace.RightName as 'GetChanges' | 'GetChangesAll' | 'DCSync');
+        }
+        // Mark DCSync-capable principals only on the explicit DCSync edge.
+        // Granular rights alone do not flip can_dcsync; the synthesis pass
+        // below handles the (GetChanges + GetChangesAll) case.
         if (edgeType === 'CAN_DCSYNC') {
           const existingNode = nodes.find(n => n.id === sourceId);
           if (existingNode) {
@@ -652,6 +676,32 @@ export function parseBloodHoundFile(
           relationWarnings.add(`${filename}: unmapped ADCS relationship '${key}', skipping`);
         }
       }
+    }
+  }
+
+  // DCSync synthesis: emit CAN_DCSYNC only when a principal holds BOTH
+  // GetChanges AND GetChangesAll on the same target (or had an explicit
+  // DCSync edge, in which case the granular synthesis is redundant but
+  // harmless). Single-right ACEs leave only the granular edges in place.
+  for (const [key, rights] of replicationRights) {
+    const hasBoth = rights.has('GetChanges') && rights.has('GetChangesAll');
+    const hasExplicit = rights.has('DCSync');
+    if (!hasBoth || hasExplicit) continue;
+    const [sourceId, targetId] = key.split('|');
+    edges.push({
+      source: sourceId,
+      target: targetId,
+      properties: {
+        type: 'CAN_DCSYNC',
+        confidence: 1.0,
+        discovered_at: new Date().toISOString(),
+        discovered_by: 'bloodhound-ingest',
+        notes: 'synthesized from GetChanges + GetChangesAll',
+      },
+    });
+    const existingNode = nodes.find(n => n.id === sourceId);
+    if (existingNode) {
+      (existingNode as Record<string, unknown>).can_dcsync = true;
     }
   }
 

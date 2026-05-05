@@ -588,7 +588,9 @@ export const BUILTIN_RULES: InferenceRule[] = [
     description: 'Principal with ManageCA or ManageCertificates on a CA can issue arbitrary certificates',
     trigger: {
       node_type: 'ca',
-      requires_edge: { type: 'GENERIC_ALL', direction: 'inbound' }
+      // Trigger on the specific CA management rights, plus broader ACLs
+      // (GENERIC_ALL / WRITE_DACL) that imply the ability to grant them.
+      requires_edge: { type: ['MANAGE_CA', 'MANAGE_CERTIFICATES', 'GENERIC_ALL', 'WRITE_DACL'], direction: 'inbound' }
     },
     produces: [{
       edge_type: 'ESC7',

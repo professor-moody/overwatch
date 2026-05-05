@@ -1,4 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
+import { spawnSync } from 'child_process';
 import { formatConfigError, parseEngagementConfig, listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { loadConfig } from '../app.js';
 
@@ -143,5 +146,32 @@ describe('engagement templates', () => {
       opsec: { name: 'lab', max_noise: 0.5 },
     });
     expect(config.opsec.max_noise).toBe(0.5);
+  });
+});
+
+// =============================================
+// Built-dist smoke test (Phase G regression)
+// =============================================
+//
+// vitest runs TS sources through its own transformer, so a CommonJS
+// `__dirname` reference in src/config.ts can pass tests but blow up the
+// real ESM build with `ReferenceError: __dirname is not defined`. This
+// test loads the actual compiled output and calls listTemplates() to
+// confirm dist/config.js works end-to-end.
+describe('built dist smoke (config.js)', () => {
+  const distConfig = resolve('./dist/config.js');
+  const hasDist = existsSync(distConfig);
+  const t = hasDist ? it : it.skip;
+
+  t('compiled config.js loads templates without ReferenceError', () => {
+    const r = spawnSync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `import('${distConfig}').then(m => { const ts = m.listTemplates(); console.log(JSON.stringify({ count: ts.length, ids: ts.map(t => t.id) })); }).catch(e => { console.error(e && e.message ? e.message : String(e)); process.exit(1); });`,
+    ], { encoding: 'utf-8' });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    const out = JSON.parse(r.stdout.trim());
+    expect(out.count).toBeGreaterThanOrEqual(6);
+    expect(out.ids).toContain('internal-pentest');
   });
 });

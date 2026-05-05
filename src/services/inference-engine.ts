@@ -142,9 +142,10 @@ export class InferenceEngine {
     const edges = req.direction === 'inbound'
       ? this.ctx.graph.inEdges(nodeId) as string[]
       : this.ctx.graph.outEdges(nodeId) as string[];
+    const allowedTypes = Array.isArray(req.type) ? new Set<string>(req.type) : null;
     for (const e of edges) {
       const attrs = this.ctx.graph.getEdgeAttributes(e);
-      if (attrs.type !== req.type) continue;
+      if (allowedTypes ? !allowedTypes.has(attrs.type) : attrs.type !== req.type) continue;
       if (req.peer_match) {
         const peerId = req.direction === 'inbound'
           ? this.ctx.graph.source(e)
@@ -165,10 +166,11 @@ export class InferenceEngine {
     const edges = req.direction === 'inbound'
       ? this.ctx.graph.inEdges(nodeId) as string[]
       : this.ctx.graph.outEdges(nodeId) as string[];
+    const allowedTypes = Array.isArray(req.type) ? new Set<string>(req.type) : null;
     const peers: string[] = [];
     for (const e of edges) {
       const attrs = this.ctx.graph.getEdgeAttributes(e);
-      if (attrs.type !== req.type) continue;
+      if (allowedTypes ? !allowedTypes.has(attrs.type) : attrs.type !== req.type) continue;
       const peerId = req.direction === 'inbound'
         ? this.ctx.graph.source(e)
         : this.ctx.graph.target(e);
@@ -827,10 +829,14 @@ export class InferenceEngine {
       }
 
       case 'manage_ca_peers': {
-        // Find principals with GENERIC_ALL or WRITE_DACL on a CA (for ESC7)
+        // Find principals with explicit CA management rights (ESC7).
+        // MANAGE_CA / MANAGE_CERTIFICATES are the actual abuse paths;
+        // GENERIC_ALL / WRITE_DACL are kept as broader-permission fallbacks
+        // because they grant the ability to grant the management rights.
         const peers = new Set<string>();
+        const ESC7_TYPES = new Set(['MANAGE_CA', 'MANAGE_CERTIFICATES', 'GENERIC_ALL', 'WRITE_DACL']);
         this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
-          if (attrs.type === 'GENERIC_ALL' || attrs.type === 'WRITE_DACL') peers.add(src);
+          if (ESC7_TYPES.has(attrs.type)) peers.add(src);
         });
         return Array.from(peers);
       }

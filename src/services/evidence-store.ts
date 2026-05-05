@@ -5,7 +5,7 @@
 // this store holds the full-fidelity payloads.
 // ============================================================
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, createWriteStream, type WriteStream } from 'fs';
 import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -99,6 +99,76 @@ export class EvidenceStore {
     this.saveManifest();
 
     return evidenceId;
+  }
+
+  /**
+   * Open a streaming evidence sink. Useful for piping live process output
+   * (stdout/stderr) to disk without buffering the entire stream in memory.
+   *
+   * The returned handle exposes a synchronous `write(chunk)` and an async
+   * `end()`. The manifest is updated when `end()` resolves so that
+   * downstream consumers always observe a consistent record.
+   *
+   *   const sink = store.createBlobStream({ action_id, evidence_type: 'command_output', kind: 'content' });
+   *   process.stdout.on('data', c => sink.write(c));
+   *   process.on('close', async () => { await sink.end(); });
+   */
+  createBlobStream(opts: {
+    action_id?: string;
+    finding_id?: string;
+    evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
+    filename?: string;
+    /** 'content' writes to <id>.content; 'raw_output' writes to <id>.raw. */
+    kind?: 'content' | 'raw_output';
+  }): {
+    evidence_id: string;
+    write: (chunk: Buffer | string) => void;
+    end: () => Promise<void>;
+  } {
+    const evidenceId = uuidv4();
+    const timestamp = new Date().toISOString();
+    const kind = opts.kind ?? 'content';
+    const ext = kind === 'raw_output' ? 'raw' : 'content';
+    const path = join(this.dir, `${evidenceId}.${ext}`);
+    let stream: WriteStream | null = null;
+    let bytes = 0;
+    let finalized = false;
+
+    const ensureStream = (): WriteStream => {
+      if (!stream) stream = createWriteStream(path, { flags: 'w' });
+      return stream;
+    };
+
+    return {
+      evidence_id: evidenceId,
+      write: (chunk: Buffer | string) => {
+        if (finalized) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bytes += buf.length;
+        ensureStream().write(buf);
+      },
+      end: async () => {
+        if (finalized) return;
+        finalized = true;
+        if (stream) {
+          await new Promise<void>((resolve, reject) => {
+            stream!.end((err?: Error | null) => err ? reject(err) : resolve());
+          });
+        }
+        const record: EvidenceRecord = {
+          evidence_id: evidenceId,
+          action_id: opts.action_id,
+          finding_id: opts.finding_id,
+          timestamp,
+          evidence_type: opts.evidence_type,
+          filename: opts.filename,
+          content_length: kind === 'content' ? bytes : 0,
+          raw_output_length: kind === 'raw_output' ? bytes : 0,
+        };
+        this.manifest.push(record);
+        this.saveManifest();
+      },
+    };
   }
 
   /** Retrieve full evidence content by ID. */

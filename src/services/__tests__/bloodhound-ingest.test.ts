@@ -389,9 +389,12 @@ describe('BloodHound Ingestion', () => {
       };
 
       const result = parseBloodHoundFile(JSON.stringify(bhData), 'enterprisecas.json');
-      const edge = result.finding!.edges.find(e => e.properties.type === 'GENERIC_ALL');
+      // ManageCA preserves its precise semantics — it does not collapse to GENERIC_ALL.
+      const edge = result.finding!.edges.find(e => e.properties.type === 'MANAGE_CA');
       expect(edge).toBeDefined();
       expect(edge!.target).toBe('ca-acme-ca');
+      const overBroad = result.finding!.edges.find(e => e.properties.type === 'GENERIC_ALL');
+      expect(overBroad).toBeUndefined();
     });
 
     it('maps ADCS relation arrays using the shared SID map', () => {
@@ -620,6 +623,125 @@ describe('BloodHound Ingestion', () => {
       const reverse = buildBloodHoundSidMap([computers, users]).sidMap;
 
       expect(Object.fromEntries(forward)).toEqual(Object.fromEntries(reverse));
+    });
+
+    // ---------------------------------------------------------------
+    // DCSync synthesis (regression — see review round 3)
+    // ---------------------------------------------------------------
+    describe('DCSync synthesis from replication rights', () => {
+      const buildDomain = (aces: Array<Record<string, unknown>>) => ({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1111-2222-3333',
+          Properties: { name: 'CORP.LOCAL', domain: 'corp.local' },
+          Aces: aces,
+        }],
+        meta: { type: 'domains', count: 1, version: 5 },
+      });
+
+      it('does NOT synthesize CAN_DCSYNC from GetChanges alone', () => {
+        const result = parseBloodHoundFile(
+          JSON.stringify(buildDomain([{
+            PrincipalSID: 'S-1-5-21-1111-2222-3333-1100',
+            PrincipalType: 'User',
+            RightName: 'GetChanges',
+            IsInherited: false,
+          }])),
+          'domains.json',
+        );
+        const dcsync = result.finding!.edges.filter(e => e.properties.type === 'CAN_DCSYNC');
+        expect(dcsync.length).toBe(0);
+        const granular = result.finding!.edges.filter(e => e.properties.type === 'CAN_GET_CHANGES');
+        expect(granular.length).toBe(1);
+      });
+
+      it('does NOT synthesize CAN_DCSYNC from GetChangesAll alone', () => {
+        const result = parseBloodHoundFile(
+          JSON.stringify(buildDomain([{
+            PrincipalSID: 'S-1-5-21-1111-2222-3333-1100',
+            PrincipalType: 'User',
+            RightName: 'GetChangesAll',
+            IsInherited: false,
+          }])),
+          'domains.json',
+        );
+        expect(result.finding!.edges.filter(e => e.properties.type === 'CAN_DCSYNC').length).toBe(0);
+        expect(result.finding!.edges.filter(e => e.properties.type === 'CAN_GET_CHANGES_ALL').length).toBe(1);
+      });
+
+      it('synthesizes CAN_DCSYNC when both GetChanges and GetChangesAll are present', () => {
+        const result = parseBloodHoundFile(
+          JSON.stringify(buildDomain([
+            { PrincipalSID: 'S-1-5-21-1111-2222-3333-1100', PrincipalType: 'User', RightName: 'GetChanges', IsInherited: false },
+            { PrincipalSID: 'S-1-5-21-1111-2222-3333-1100', PrincipalType: 'User', RightName: 'GetChangesAll', IsInherited: false },
+          ])),
+          'domains.json',
+        );
+        const dcsync = result.finding!.edges.filter(e => e.properties.type === 'CAN_DCSYNC');
+        expect(dcsync.length).toBe(1);
+        expect(dcsync[0].properties.notes).toMatch(/GetChanges \+ GetChangesAll/);
+        // Granular edges retained too — they are the underlying ACL evidence.
+        expect(result.finding!.edges.some(e => e.properties.type === 'CAN_GET_CHANGES')).toBe(true);
+        expect(result.finding!.edges.some(e => e.properties.type === 'CAN_GET_CHANGES_ALL')).toBe(true);
+      });
+
+      it('honors an explicit DCSync ACE without re-synthesizing', () => {
+        const result = parseBloodHoundFile(
+          JSON.stringify(buildDomain([{
+            PrincipalSID: 'S-1-5-21-1111-2222-3333-1100',
+            PrincipalType: 'User',
+            RightName: 'DCSync',
+            IsInherited: false,
+          }])),
+          'domains.json',
+        );
+        const dcsync = result.finding!.edges.filter(e => e.properties.type === 'CAN_DCSYNC');
+        expect(dcsync.length).toBe(1);
+        // Direct ACE — not a synthesis note.
+        expect(dcsync[0].properties.notes).toBeUndefined();
+      });
+
+      it('does not flag distinct principals from each other on the same target', () => {
+        // Each principal holds only one of the two rights — neither should DCSync.
+        const result = parseBloodHoundFile(
+          JSON.stringify(buildDomain([
+            { PrincipalSID: 'S-1-5-21-1111-2222-3333-1100', PrincipalType: 'User', RightName: 'GetChanges', IsInherited: false },
+            { PrincipalSID: 'S-1-5-21-1111-2222-3333-1101', PrincipalType: 'User', RightName: 'GetChangesAll', IsInherited: false },
+          ])),
+          'domains.json',
+        );
+        expect(result.finding!.edges.filter(e => e.properties.type === 'CAN_DCSYNC').length).toBe(0);
+      });
+    });
+
+    // ---------------------------------------------------------------
+    // ADCS rights granularity (regression — see review round 3)
+    // ---------------------------------------------------------------
+    describe('ADCS management rights granularity', () => {
+      const buildCa = (rightName: string) => JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'CA-OBJECT-1',
+          Properties: { name: 'ACME-CA' },
+          Aces: [{
+            PrincipalSID: 'S-1-5-21-1234-5678-9012-512',
+            PrincipalType: 'Group',
+            RightName: rightName,
+            IsInherited: false,
+          }],
+        }],
+        meta: { type: 'enterprisecas', count: 1, version: 5 },
+      });
+
+      it('preserves Owns as its own edge type', () => {
+        const result = parseBloodHoundFile(buildCa('Owns'), 'enterprisecas.json');
+        expect(result.finding!.edges.filter(e => e.properties.type === 'OWNS').length).toBe(1);
+        expect(result.finding!.edges.filter(e => e.properties.type === 'GENERIC_ALL').length).toBe(0);
+      });
+
+      it('preserves ManageCertificates as its own edge type', () => {
+        const result = parseBloodHoundFile(buildCa('ManageCertificates'), 'enterprisecas.json');
+        expect(result.finding!.edges.filter(e => e.properties.type === 'MANAGE_CERTIFICATES').length).toBe(1);
+        expect(result.finding!.edges.filter(e => e.properties.type === 'GENERIC_ALL').length).toBe(0);
+      });
     });
   });
 

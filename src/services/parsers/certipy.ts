@@ -166,8 +166,14 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
             type: 'cert_template',
             label: templateName,
             template_name: templateName,
-            enrollee_supplies_subject: tmpl['Enrollee Supplies Subject'] === true,
-            eku: Array.isArray(tmpl['Extended Key Usage']) ? tmpl['Extended Key Usage'] : undefined,
+            // Phase J: tolerate both boolean and string ("true"/"yes"/"enabled")
+            // shapes for these fields. Older Certipy versions (and some JSON
+            // post-processors) emit them as strings instead of booleans.
+            enrollee_supplies_subject: parseBool(tmpl['Enrollee Supplies Subject']),
+            // EKU may arrive as an array OR a single string (one EKU). Coerce
+            // both shapes through parseStringArray so the cert_template node
+            // always carries a string[] (or undefined when absent).
+            eku: parseStringArray(tmpl['Extended Key Usage']),
             ...(ctFlagNoSecExt !== undefined ? { ct_flag_no_security_extension: ctFlagNoSecExt } : {}),
             ...(hasEsc9 && ctFlagNoSecExt === undefined ? { ct_flag_no_security_extension: true } : {}),
             ...(policyOid ? { issuance_policy_oid: policyOid } : {}),

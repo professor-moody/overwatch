@@ -885,6 +885,8 @@ export class GraphEngine {
     edge_source?: string; edge_target?: string;
     technique?: string;
     target_url?: string; cloud_resource?: string;
+    /** Operator override: skip the fail-closed check for unverified host/service/share nodes. */
+    allow_unverified_scope?: boolean;
   }): {
     valid: boolean;
     errors: string[];
@@ -946,7 +948,11 @@ export class GraphEngine {
     // Check scope — target_node, edge_source, and edge_target
     //    Resolves child nodes (services, shares) to their parent host IP.
     //    isNodeExcluded returns truthy only for explicitly excluded nodes.
-    //    Nodes that can't be verified in-scope get a warning, not an error.
+    //    For host/service/share nodes that cannot be verified in-scope we
+    //    fail closed (error) unless the caller passes
+    //    allow_unverified_scope=true. For other node types (user, group,
+    //    credential, …) we keep the historical warning behavior because
+    //    they have no IP/hostname to scope-check against.
     for (const [label, nodeId] of [
       ['Target', action.target_node],
       ['Edge source', action.edge_source],
@@ -957,7 +963,19 @@ export class GraphEngine {
       if (excludedIp) {
         errors.push(`${label} is out of scope: ${excludedIp}`);
       } else if (!this.isNodeVerifiedInScope(nodeId)) {
-        warnings.push(`${label} scope unverified: ${nodeId} — not explicitly in-scope CIDRs/domains`);
+        const nodeAttrs = this.ctx.graph.hasNode(nodeId)
+          ? (this.ctx.graph.getNodeAttributes(nodeId) as { type?: string })
+          : undefined;
+        const nodeType = nodeAttrs?.type;
+        const isNetworkNode = nodeType === 'host' || nodeType === 'service' || nodeType === 'share';
+        if (isNetworkNode && !action.allow_unverified_scope) {
+          errors.push(
+            `${label} scope unverified: ${nodeId} — not explicitly in-scope CIDRs/domains. ` +
+              `Set allow_unverified_scope:true to override.`,
+          );
+        } else {
+          warnings.push(`${label} scope unverified: ${nodeId} — not explicitly in-scope CIDRs/domains`);
+        }
       }
     }
 

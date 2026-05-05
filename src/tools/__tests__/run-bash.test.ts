@@ -209,4 +209,46 @@ describe('run_bash tool', () => {
     expect(payload.parse_summary).toBeTruthy();
     expect(String(payload.parse_summary.error)).toContain('No parser found');
   });
+
+  // -----------------------------------------------------------------
+  // Phase I: parse output even on non-zero exit; tag findings partial
+  // -----------------------------------------------------------------
+  it('parses output on non-zero exit and tags the finding partial', async () => {
+    // emit a single line that the nuclei text parser will accept, then exit 7
+    const cmd = `echo '[CVE-2099-9999] [http] [high] http://10.10.10.1/x'; exit 7`;
+    const result = await handlers.run_bash({
+      command: cmd,
+      validate: false,
+      parse_with: 'nuclei',
+    });
+    const payload = parseTextResult(result);
+    expect(payload.parse_summary).toBeTruthy();
+    expect(payload.parse_summary.parsed).toBe(true);
+    expect(payload.parse_summary.partial).toBe(true);
+    expect(payload.parse_summary.exit_code).toBe(7);
+
+    const findingId = payload.parse_summary.finding_id as string;
+    const vuln = engine.getNodesByType('vulnerability').find(
+      v => (v as Record<string, unknown>).cve === 'CVE-2099-9999',
+    );
+    expect(vuln).toBeTruthy();
+    expect((vuln as Record<string, unknown>).partial).toBe(true);
+    expect(findingId).toBeTruthy();
+  });
+
+  it('treats an acceptable_exit_code (nuclei exit 1 = no match) as non-partial', async () => {
+    // nuclei exits 1 when no template matched. Output is empty so the
+    // parser will produce no nodes — but partial must NOT be true because
+    // exit 1 is whitelisted for nuclei.
+    const result = await handlers.run_bash({
+      command: 'exit 1',
+      validate: false,
+      parse_with: 'nuclei',
+    });
+    const payload = parseTextResult(result);
+    // No bytes produced → parser path is skipped entirely; no parse_summary.
+    // We only assert that the runner did not crash and reported the exit.
+    expect(payload.executed).toBe(true);
+    expect(payload.exit_code).toBe(1);
+  });
 });

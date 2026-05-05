@@ -219,9 +219,52 @@ export function parseNuclei(output: string, agentId: string = 'nuclei-parser', _
     // Create vulnerability node
     const cve = extractCveFromNuclei(info);
     const vulnType = extractVulnTypeFromNuclei(info);
+    const name = (info.name || templateId) as string;
+
+    // Phase F: severity=info templates (tech-detect, banner grabs, etc.) are
+    // not vulnerabilities — they are service enrichments. Treat them as such
+    // unless they carry a CVE. This prevents the graph from drowning in
+    // "info" severity vulnerability nodes that tools like nuclei emit by the
+    // hundreds during recon.
+    if (severity === 'info' && !cve) {
+      // Best-effort: enrich the target service/webapp with detected
+      // technology and tags. Don't create a vulnerability node, don't
+      // create a VULNERABLE_TO edge.
+      for (const node of nodes) {
+        if (node.id !== targetNodeId) continue;
+        const tags = Array.isArray(info.tags)
+          ? (info.tags as unknown[]).filter((t): t is string => typeof t === 'string')
+          : typeof info.tags === 'string'
+            ? (info.tags as string).split(',').map(s => s.trim()).filter(Boolean)
+            : [];
+        const existingTech = Array.isArray((node as Record<string, unknown>).technologies)
+          ? ((node as Record<string, unknown>).technologies as string[])
+          : [];
+        const techSet = new Set<string>(existingTech);
+        // tech-detect:<name> templates encode the technology in the template id.
+        const techMatch = templateId.match(/^tech-detect:(.+)$/i);
+        if (techMatch) techSet.add(techMatch[1].toLowerCase());
+        for (const t of tags) {
+          if (t.startsWith('tech') || t === 'detect') continue;
+          techSet.add(t.toLowerCase());
+        }
+        if (techSet.size > 0) {
+          (node as Record<string, unknown>).technologies = Array.from(techSet);
+        }
+        const existingNotes = ((node as Record<string, unknown>).notes as string | undefined) || '';
+        const enrichLine = `nuclei:${templateId}`;
+        if (!existingNotes.includes(enrichLine)) {
+          (node as Record<string, unknown>).notes = existingNotes
+            ? `${existingNotes}\n${enrichLine}`
+            : enrichLine;
+        }
+        break;
+      }
+      continue;
+    }
+
     const vulnId = vulnerabilityId(cve || templateId, targetNodeId);
     const cvss = NUCLEI_SEVERITY_CVSS[severity] ?? 0;
-    const name = (info.name || templateId) as string;
 
     if (!seenNodes.has(vulnId)) {
       seenNodes.add(vulnId);

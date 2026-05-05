@@ -1,7 +1,13 @@
 import { readFileSync, readdirSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { ZodError } from 'zod';
 import { engagementConfigSchema, type EngagementConfig, type EngagementPhase } from './types.js';
+
+// ESM-safe __dirname. The TypeScript compiler emits ESM (`module: Node16`)
+// so the CommonJS `__dirname` global is not defined at runtime in the
+// distributed build — referencing it throws ReferenceError.
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function parseEngagementConfig(raw: string): EngagementConfig {
   return engagementConfigSchema.parse(JSON.parse(raw));

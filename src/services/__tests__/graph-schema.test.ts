@@ -38,8 +38,14 @@ describe('edge constraints', () => {
     const validEdges = new Set(EDGE_TYPES as readonly string[]);
     const invalid: string[] = [];
     for (const rule of BUILTIN_RULES) {
-      if (rule.trigger.requires_edge && !validEdges.has(rule.trigger.requires_edge.type)) {
-        invalid.push(`${rule.id} requires_edge ${rule.trigger.requires_edge.type}`);
+      if (!rule.trigger.requires_edge) continue;
+      const types = Array.isArray(rule.trigger.requires_edge.type)
+        ? rule.trigger.requires_edge.type
+        : [rule.trigger.requires_edge.type];
+      for (const t of types) {
+        if (!validEdges.has(t)) {
+          invalid.push(`${rule.id} requires_edge ${t}`);
+        }
       }
     }
     expect(invalid).toEqual([]);

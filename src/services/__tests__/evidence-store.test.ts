@@ -116,4 +116,41 @@ describe('EvidenceStore', () => {
     expect(record!.content_length).toBe(5);
     expect(record!.raw_output_length).toBe(22);
   });
+
+  // -----------------------------------------------------------------
+  // Phase H: streaming sink for large process output
+  // -----------------------------------------------------------------
+  it('createBlobStream writes chunks incrementally and finalizes the manifest', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      action_id: 'act-stream-1',
+      evidence_type: 'command_output',
+      filename: 'stdout',
+      kind: 'raw_output',
+    });
+    sink.write(Buffer.from('hello '));
+    sink.write(Buffer.from('world'));
+    await sink.end();
+
+    const record = store.getRecord(sink.evidence_id);
+    expect(record).toBeDefined();
+    expect(record!.action_id).toBe('act-stream-1');
+    expect(record!.raw_output_length).toBe(11);
+    expect(record!.content_length).toBe(0);
+    expect(store.getRawOutput(sink.evidence_id)).toBe('hello world');
+  });
+
+  it('createBlobStream captures payloads larger than the in-memory inline cap', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      evidence_type: 'command_output',
+      kind: 'raw_output',
+    });
+    // 32 MiB — deliberately larger than the 16 MiB BoundedStreamBuffer cap.
+    const chunk = Buffer.alloc(1024 * 1024, 0x41);
+    for (let i = 0; i < 32; i++) sink.write(chunk);
+    await sink.end();
+    const record = store.getRecord(sink.evidence_id);
+    expect(record!.raw_output_length).toBe(32 * 1024 * 1024);
+  });
 });

@@ -2631,7 +2631,7 @@ describe('GraphEngine', () => {
   // Sprint 1: Hostname scope enforcement
   // =============================================
   describe('hostname scope enforcement', () => {
-    it('warns (not rejects) hostname-only node when hostname does not match scope domains', () => {
+    it('rejects host node when hostname does not match scope domains (fail-closed)', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Identity resolution renames to host-dc01-other-local
       engine.ingestFinding(makeFinding({
@@ -2641,7 +2641,21 @@ describe('GraphEngine', () => {
       }));
       const resolvedId = 'host-dc01-other-local';
       const result = engine.validateAction({ target_node: resolvedId });
-      // Node is not explicitly excluded, so validation passes with a scope warning
+      // Phase E: host nodes that can't be verified in-scope fail closed.
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('scope unverified'))).toBe(true);
+      expect(result.errors.some(e => e.includes('allow_unverified_scope'))).toBe(true);
+    });
+
+    it('allows host node with allow_unverified_scope override (warning only)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-oos', type: 'host', label: 'dc01.other.local', hostname: 'dc01.other.local' },
+        ],
+      }));
+      const resolvedId = 'host-dc01-other-local';
+      const result = engine.validateAction({ target_node: resolvedId, allow_unverified_scope: true });
       expect(result.valid).toBe(true);
       expect(result.warnings.some(w => w.includes('scope unverified'))).toBe(true);
     });

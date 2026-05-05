@@ -14,7 +14,7 @@
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from '../services/graph-engine.js';
-import { parseOutput, getSupportedParsers } from '../services/parsers/index.js';
+import { parseOutput, getSupportedParsers, isAcceptableParserExit } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import type { ParseContext } from '../types.js';
 
@@ -167,6 +167,9 @@ function runProcess(binary: string, args: string[], opts: {
   cwd?: string;
   env?: Record<string, string>;
   timeout_ms: number;
+  /** Optional streaming sinks. Receive every byte of stdout/stderr regardless of inline cap. */
+  stdoutSink?: { write: (chunk: Buffer) => void };
+  stderrSink?: { write: (chunk: Buffer) => void };
 }): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -201,8 +204,14 @@ function runProcess(binary: string, args: string[], opts: {
     }, opts.timeout_ms);
     timer.unref();
 
-    child.stdout?.on('data', (c: Buffer) => captureStream(stdout, c));
-    child.stderr?.on('data', (c: Buffer) => captureStream(stderr, c));
+    child.stdout?.on('data', (c: Buffer) => {
+      captureStream(stdout, c);
+      try { opts.stdoutSink?.write(c); } catch { /* sink errors must not kill the process */ }
+    });
+    child.stderr?.on('data', (c: Buffer) => {
+      captureStream(stderr, c);
+      try { opts.stderrSink?.write(c); } catch { /* sink errors must not kill the process */ }
+    });
 
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -255,6 +264,8 @@ export interface InstrumentedProcessOpts {
   target_url?: string;
   cloud_resource?: string;
   validate?: boolean;
+  /** Operator override: skip the fail-closed check for unverified host/service/share targets. */
+  allow_unverified_scope?: boolean;
   parse_with?: string;
   parser_context?: ParseContext;
   noise_estimate?: number;
@@ -300,6 +311,7 @@ export async function runInstrumentedProcess(
     parse_with,
     parser_context,
     noise_estimate: noiseOverride,
+    allow_unverified_scope,
   } = opts;
 
   const normalizedActionId = action_id || uuidv4();
@@ -326,11 +338,11 @@ export async function runInstrumentedProcess(
   let noiseEstimate = noiseOverride;
   if (shouldValidate) {
     const validationTargets: Array<Parameters<typeof engine.validateAction>[0]> = [];
-    for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique });
-    for (const ip of allTargetIps) validationTargets.push({ target_ip: ip, technique });
-    if (target_url) validationTargets.push({ target_url, technique });
-    if (cloud_resource) validationTargets.push({ cloud_resource, technique });
-    if (validationTargets.length === 0) validationTargets.push({ technique });
+    for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique, allow_unverified_scope });
+    for (const ip of allTargetIps) validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
+    if (target_url) validationTargets.push({ target_url, technique, allow_unverified_scope });
+    if (cloud_resource) validationTargets.push({ cloud_resource, technique, allow_unverified_scope });
+    if (validationTargets.length === 0) validationTargets.push({ technique, allow_unverified_scope });
 
     const aggregatedErrors: string[] = [];
     const aggregatedWarnings: string[] = [];
@@ -511,33 +523,51 @@ export async function runInstrumentedProcess(
   engine.persist();
 
   // ---- 3. Execute ----
-  const result = await runProcess(binary, args, { cwd, env, timeout_ms: effectiveTimeout });
+  // Phase H: pipe stdout/stderr to evidence files as the process runs so
+  // the full-fidelity output is captured even when it exceeds the in-memory
+  // BoundedStreamBuffer cap. The bounded buffer still drives the inline
+  // tool response and truncation flags; the streamed evidence files hold
+  // the complete bytes for later inspection via get_evidence.
+  const evidenceStore = engine.getEvidenceStore();
+  const stdoutSink = evidenceStore.createBlobStream({
+    action_id: normalizedActionId,
+    evidence_type: 'command_output',
+    filename: 'stdout',
+    kind: 'raw_output',
+  });
+  const stderrSink = evidenceStore.createBlobStream({
+    action_id: normalizedActionId,
+    evidence_type: 'command_output',
+    filename: 'stderr',
+    kind: 'raw_output',
+  });
+  const result = await runProcess(binary, args, {
+    cwd,
+    env,
+    timeout_ms: effectiveTimeout,
+    stdoutSink,
+    stderrSink,
+  });
   const stdoutInfo = joinAndCap(result.stdout, STREAM_INLINE_CAP);
   const stderrInfo = joinAndCap(result.stderr, STREAM_INLINE_CAP);
 
-  // ---- 4. Store evidence ----
-  const evidenceStore = engine.getEvidenceStore();
-  let stdout_evidence_id: string | undefined;
-  let stderr_evidence_id: string | undefined;
-  if (stdoutInfo.total > 0) {
-    stdout_evidence_id = evidenceStore.store({
-      action_id: normalizedActionId,
-      evidence_type: 'command_output',
-      filename: 'stdout',
-      raw_output: result.stdout.toFullString(),
-    });
-  }
-  if (stderrInfo.total > 0) {
-    stderr_evidence_id = evidenceStore.store({
-      action_id: normalizedActionId,
-      evidence_type: 'command_output',
-      filename: 'stderr',
-      raw_output: result.stderr.toFullString(),
-    });
-  }
+  // ---- 4. Finalize evidence ----
+  // The streaming sinks always emit a manifest record (so action lifecycle
+  // events can reference them by ID) but we only surface the IDs in the
+  // lifecycle event when there was actually output to record.
+  await Promise.all([stdoutSink.end(), stderrSink.end()]);
+  const stdout_evidence_id = stdoutInfo.total > 0 ? stdoutSink.evidence_id : undefined;
+  const stderr_evidence_id = stderrInfo.total > 0 ? stderrSink.evidence_id : undefined;
 
   // ---- 5. Terminal lifecycle event ----
   const succeeded = !result.spawn_error && !result.timed_out && result.exit_code === 0;
+  // Phase I: a non-zero exit no longer suppresses parsing. Tools like
+  // nuclei/sqlmap/gobuster routinely return 1 to signal "no match" — the
+  // captured output is still parseable. Parsing is gated only on having a
+  // captured stream and not having crashed before producing output.
+  const parseable = !result.spawn_error && (result.stdout.total_bytes > 0 || result.stderr.total_bytes > 0);
+  const parserExitOk = parse_with ? isAcceptableParserExit(parse_with, result.exit_code) : succeeded;
+  const partialParse = parseable && !parserExitOk;
   const terminalEventType = succeeded ? 'action_completed' as const : 'action_failed' as const;
   const failureReason = result.spawn_error
     ? 'spawn_error'
@@ -585,7 +615,7 @@ export async function runInstrumentedProcess(
 
   // ---- 6. Optional inline parse + ingest ----
   let parse_summary: Record<string, unknown> | undefined;
-  if (parse_with && succeeded) {
+  if (parse_with && parseable) {
     const supported = getSupportedParsers();
     if (!supported.includes(parse_with)) {
       parse_summary = { error: `No parser found for: ${parse_with}`, supported_parsers: supported };
@@ -624,6 +654,14 @@ export async function runInstrumentedProcess(
         finding.action_id = normalizedActionId;
         finding.tool_name = parse_with;
         finding.frontier_item_id = frontier_item_id;
+        // Phase I: when the run finished with an unexpected non-zero exit,
+        // mark every parsed node so downstream consumers (UI, retrospectives,
+        // inference) can recognize that the data may be incomplete.
+        if (partialParse) {
+          for (const node of finding.nodes) {
+            (node as Record<string, unknown>).partial = true;
+          }
+        }
 
         const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
         if (prepared.errors.length > 0) {
@@ -649,6 +687,8 @@ export async function runInstrumentedProcess(
             finding_id: finding.id,
             nodes_parsed: finding.nodes.length,
             edges_parsed: finding.edges.length,
+            partial: partialParse || undefined,
+            exit_code: result.exit_code,
             ingested: {
               new_nodes: ingestResult.new_nodes.length,
               new_edges: ingestResult.new_edges.length,

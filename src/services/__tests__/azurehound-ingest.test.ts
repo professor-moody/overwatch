@@ -354,5 +354,86 @@ describe('AzureHound Ingest', () => {
       expect(result.warnings.length).toBeGreaterThan(0);
       expect(result.warnings[0]).toContain('failed to parse JSON');
     });
+
+    // -----------------------------------------------------------------
+    // Phase C — RBAC scope preserved on the role assignment edge
+    // -----------------------------------------------------------------
+    describe('RBAC scope preservation', () => {
+      it('records the scope on the HAS_POLICY edge and creates a stub cloud_resource', () => {
+        const scope = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/RG-PROD';
+        const data = {
+          kind: 'azroleassignments',
+          data: [{
+            Properties: {
+              principalId: 'user-obj-1',
+              roleDefinitionName: 'Reader',
+              scope,
+            },
+          }],
+        };
+        const { finding } = parseAzureHoundFile(JSON.stringify(data), 'roles.json');
+        const policyEdge = finding.edges.find(e => e.properties.type === 'HAS_POLICY');
+        expect(policyEdge).toBeDefined();
+        expect(policyEdge!.properties.scope).toBe(scope);
+        expect(policyEdge!.properties.role_definition_name).toBe('Reader');
+
+        const resource = finding.nodes.find(n => n.type === 'cloud_resource');
+        expect(resource).toBeDefined();
+        expect(resource!.label).toBe('RG-PROD');
+
+        // Role definition should be linked to the scope it applies at.
+        const policyAllows = finding.edges.find(e => e.properties.type === 'POLICY_ALLOWS');
+        expect(policyAllows).toBeDefined();
+        expect(policyAllows!.target).toBe(resource!.id);
+      });
+
+      it('produces distinct cloud_resource targets for the same role at different scopes', () => {
+        const sub = '/subscriptions/00000000-0000-0000-0000-000000000001';
+        const rg = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/RG-DEV';
+        const data = {
+          kind: 'azroleassignments',
+          data: [
+            { Properties: { principalId: 'p-1', roleDefinitionName: 'Owner', scope: sub } },
+            { Properties: { principalId: 'p-2', roleDefinitionName: 'Owner', scope: rg } },
+          ],
+        };
+        const { finding } = parseAzureHoundFile(JSON.stringify(data), 'roles.json');
+        const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+        expect(resources.length).toBe(2);
+        const scopes = finding.edges
+          .filter(e => e.properties.type === 'HAS_POLICY')
+          .map(e => e.properties.scope as string)
+          .sort();
+        expect(scopes).toEqual([rg, sub].sort());
+      });
+
+      it('falls back to the legacy edge shape when scope is absent', () => {
+        const data = {
+          kind: 'azroleassignments',
+          data: [{ Properties: { principalId: 'p-1', roleDefinitionName: 'Reader' } }],
+        };
+        const { finding } = parseAzureHoundFile(JSON.stringify(data), 'roles.json');
+        const policyEdge = finding.edges.find(e => e.properties.type === 'HAS_POLICY');
+        expect(policyEdge).toBeDefined();
+        expect(policyEdge!.properties.scope).toBeUndefined();
+        expect(finding.nodes.some(n => n.type === 'cloud_resource')).toBe(false);
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Phase D — unknown-kind warning when items would be silently dropped
+    // -----------------------------------------------------------------
+    it('warns when kind cannot be inferred but items are present', () => {
+      const data = {
+        // No `kind` field, and the filename has no recognizable hint.
+        data: [
+          { Properties: { id: 'x1', displayName: 'Mystery' } },
+          { Properties: { id: 'x2', displayName: 'Mystery 2' } },
+        ],
+      };
+      const result = parseAzureHoundFile(JSON.stringify(data), 'mystery_export.json');
+      expect(result.warnings.some(w => /could not infer AzureHound kind/i.test(w))).toBe(true);
+      expect(result.finding.nodes.length).toBe(0);
+    });
   });
 });
