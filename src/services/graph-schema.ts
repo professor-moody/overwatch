@@ -100,6 +100,9 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   AUTH_BYPASS: { source: ['vulnerability'], target: ['webapp', 'api_endpoint'] },
   // Cloud infrastructure
   ASSUMES_ROLE: { source: ['cloud_identity', 'cloud_resource'], target: ['cloud_identity'] },
+  // Service principal → app registration directory binding (Azure AD).
+  // Distinct from ASSUMES_ROLE which implies RBAC takeover semantics.
+  SERVICE_PRINCIPAL_FOR: { source: ['cloud_identity'], target: ['cloud_identity'] },
   HAS_POLICY: { source: ['cloud_identity', 'group'], target: ['cloud_policy'] },
   POLICY_ALLOWS: { source: ['cloud_policy'], target: ['cloud_resource'] },
   EXPOSED_TO: { source: ['cloud_resource'], target: ['cloud_network', 'subnet'] },

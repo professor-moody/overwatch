@@ -329,6 +329,32 @@ function renderEvidenceHtml(ev: EvidenceChain): string {
     const truncated = truncateText(ev.raw_output, 2048, 30);
     html += `\n<details><summary>Raw Output</summary><pre>${esc(truncated)}</pre></details>`;
   }
+  // R2-7: streamed-evidence diagnostics. Mirrors the markdown report so
+  // operators consuming the HTML deliverable can also see when evidence is
+  // partial / truncated / failed to capture, instead of silently believing
+  // the rendered output is complete.
+  if (ev.partial) {
+    const reason = ev.partial_reason ? ` (${esc(ev.partial_reason)})` : '';
+    html += `\n<div class="evidence-warning">⚠️ Parser saw partial output${reason}</div>`;
+  }
+  if (ev.stdout_truncated) {
+    const dropped = ev.stdout_dropped_bytes ? ` — ${ev.stdout_dropped_bytes.toLocaleString()} bytes dropped` : '';
+    const total = ev.stdout_total_bytes ? ` of ${ev.stdout_total_bytes.toLocaleString()} bytes total` : '';
+    html += `\n<div class="evidence-warning">⚠️ stdout truncated${dropped}${total}</div>`;
+  }
+  if (ev.evidence_capture_error) {
+    html += `\n<div class="evidence-error">❌ Evidence capture error: ${esc(ev.evidence_capture_error)}</div>`;
+  }
+  if (ev.stdout_evidence_id) {
+    html += `\n<div class="evidence-meta">Full stdout evidence ID: <code>${esc(ev.stdout_evidence_id)}</code></div>`;
+  }
+  if (ev.stderr_evidence_id) {
+    html += `\n<div class="evidence-meta">Full stderr evidence ID: <code>${esc(ev.stderr_evidence_id)}</code></div>`;
+  }
+  if (ev.stdout_preview) {
+    const preview = ev.stdout_preview.split('\n').slice(0, 80).join('\n');
+    html += `\n<details><summary>stdout preview (head + tail)</summary><pre>${esc(preview)}</pre></details>`;
+  }
   return html;
 }
 

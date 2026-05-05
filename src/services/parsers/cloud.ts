@@ -1,5 +1,26 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { cloudIdentityId, cloudPolicyId, cloudResourceId, hostId, vulnerabilityId } from '../parser-utils.js';
+import { iterateTrustGrants, trustConditionsToEdgeProps, type AwsPrincipalKind } from './aws-policy-utils.js';
+
+/**
+ * Map an AWS trust-principal kind to the schema's principal_type enum so
+ * non-ARN principals (Service, Federated, wildcard) survive ingest with a
+ * stable type label rather than being collapsed into role/user.
+ */
+function mapPrincipalKindToType(
+  kind: AwsPrincipalKind,
+  raw: string,
+): 'user' | 'role' | 'service' | 'federated' | 'canonical' | 'wildcard' {
+  switch (kind) {
+    case 'service': return 'service';
+    case 'federated': return 'federated';
+    case 'canonical': return 'canonical';
+    case 'wildcard': return 'wildcard';
+    case 'aws':
+    default:
+      return raw.includes(':role/') ? 'role' : 'user';
+  }
+}
 
 export function parsePacu(output: string, agentId: string = 'pacu-parser', context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
@@ -68,37 +89,58 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
           // Malformed trust policy document — skip this role's trust edges, continue processing
         }
         if (doc) {
-          const statements = Array.isArray(doc?.Statement) ? doc.Statement : [];
-          for (const stmt of statements) {
-            if (stmt.Effect !== 'Allow') continue;
-            const principals = stmt.Principal?.AWS;
-            const arnList = Array.isArray(principals) ? principals : (principals ? [principals] : []);
-            for (const trustedArn of arnList) {
-              if (typeof trustedArn !== 'string' || trustedArn === '*') continue;
-              const trustedId = cloudIdentityId(trustedArn);
-              if (!seenNodes.has(trustedId)) {
-                seenNodes.add(trustedId);
-                nodes.push({
-                  id: trustedId, type: 'cloud_identity',
-                  label: trustedArn.split('/').pop() || trustedArn,
-                  discovered_at: now, discovered_by: agentId, confidence: 0.8,
-                  provider: 'aws', arn: trustedArn,
-                  principal_type: trustedArn.includes(':role/') ? 'role' : 'user',
-                  cloud_account: (trustedArn.match(/:(\d{12}):/)?.[1]) || '',
-                } as Finding['nodes'][0]);
-              }
-              edges.push({
-                source: trustedId, target: nodeId,
-                properties: {
-                  type: 'ASSUMES_ROLE',
-                  confidence: 0.9,
-                  discovered_at: now,
-                  discovered_by: agentId,
-                  assumption_confirmed: false,
-                  assumption_basis: 'trust_policy',
-                },
-              });
+          // R2-2/R2-4/R2-5: use shared trust-policy normalizer.
+          // - Statement may be a single object (was previously dropped).
+          // - Conditions (ExternalId / MFA / SourceArn) are surfaced on
+          //   the edge so operators see when a path is conditional.
+          // - Principal.Service / Federated / wildcard are now emitted as
+          //   distinct cloud_identity nodes with principal_kind metadata
+          //   instead of being silently ignored.
+          for (const grant of iterateTrustGrants(doc)) {
+            if (grant.effect !== 'Allow') continue;
+            const trustedArn = grant.principal;
+            if (trustedArn === '*' && grant.principal_kind !== 'wildcard') continue;
+            // Synthesize a stable id for non-ARN principal kinds so service /
+            // federated / wildcard trusts still appear in the graph.
+            const trustedId = grant.principal_kind === 'aws'
+              ? cloudIdentityId(trustedArn)
+              : cloudIdentityId(`aws:${grant.principal_kind}:${trustedArn}`);
+            if (!seenNodes.has(trustedId)) {
+              seenNodes.add(trustedId);
+              const principalType = mapPrincipalKindToType(grant.principal_kind, trustedArn);
+              nodes.push({
+                id: trustedId, type: 'cloud_identity',
+                label: grant.principal_kind === 'aws'
+                  ? (trustedArn.split('/').pop() || trustedArn)
+                  : `${grant.principal_kind}:${trustedArn}`,
+                discovered_at: now, discovered_by: agentId, confidence: 0.8,
+                provider: 'aws',
+                arn: grant.principal_kind === 'aws' ? trustedArn : undefined,
+                principal_type: principalType,
+                principal_kind: grant.principal_kind,
+                principal_value: trustedArn,
+                cloud_account: grant.principal_kind === 'aws'
+                  ? (trustedArn.match(/:(\d{12}):/)?.[1]) || ''
+                  : '',
+              } as Finding['nodes'][0]);
             }
+            const condProps = trustConditionsToEdgeProps(grant.conditions);
+            // Lower confidence on conditional trust so attack-path scoring
+            // reflects that the assumption is gated on an extra requirement.
+            const baseConfidence = grant.conditional ? 0.6 : 0.9;
+            edges.push({
+              source: trustedId, target: nodeId,
+              properties: {
+                type: 'ASSUMES_ROLE',
+                confidence: baseConfidence,
+                discovered_at: now,
+                discovered_by: agentId,
+                assumption_confirmed: false,
+                assumption_basis: 'trust_policy',
+                principal_kind: grant.principal_kind,
+                ...(condProps ?? {}),
+              },
+            });
           }
         }
       }

@@ -123,7 +123,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       // Build JSON structured output for 'json' format
       let jsonOutput: string | undefined;
       if (format === 'json') {
-        const findings = buildFindings(graph, history, config);
+        const findings = buildFindings(graph, history, config, { evidenceLoader });
         const classifications = classifyAllFindings(findings, graph);
         const navigatorLayer = include_attack_navigator
           ? generateNavigatorLayer(findings, graph, config.name)
@@ -143,7 +143,11 @@ Use this at the end of an engagement to produce the final deliverable report.`,
 
       let html: string | undefined;
       if (format === 'html') {
-        const htmlFindings = buildFindings(graph, history, config);
+        // R2-7: thread the same evidenceLoader used for markdown so HTML
+        // findings include head/tail stdout previews and streamed-evidence
+        // diagnostics. Without this, the HTML deliverable cited
+        // stdout_evidence_id but never inlined the proof preview.
+        const htmlFindings = buildFindings(graph, history, config, { evidenceLoader });
         const htmlNarrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
         const credentialChains = buildCredentialChains(graph);
 

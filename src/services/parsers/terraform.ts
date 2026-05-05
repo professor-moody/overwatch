@@ -1,5 +1,21 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { cloudIdentityId, cloudNetworkId, cloudPolicyId, cloudResourceId, hostId } from '../parser-utils.js';
+import { iterateTrustGrants, trustConditionsToEdgeProps, type AwsPrincipalKind } from './aws-policy-utils.js';
+
+function mapPrincipalKindToType(
+  kind: AwsPrincipalKind,
+  raw: string,
+): 'user' | 'role' | 'service' | 'federated' | 'canonical' | 'wildcard' {
+  switch (kind) {
+    case 'service': return 'service';
+    case 'federated': return 'federated';
+    case 'canonical': return 'canonical';
+    case 'wildcard': return 'wildcard';
+    case 'aws':
+    default:
+      return raw.includes(':role/') ? 'role' : 'user';
+  }
+}
 
 /**
  * Parse Terraform state JSON (`terraform show -json` or raw `.tfstate`).
@@ -189,34 +205,43 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
       if (typeof trustPolicy === 'string') {
         try {
           const doc = JSON.parse(trustPolicy) as Record<string, unknown>;
-          const stmts = Array.isArray(doc.Statement) ? doc.Statement : [];
-          for (const stmt of stmts) {
-            if ((stmt as Record<string, unknown>).Effect !== 'Allow') continue;
-            const principals = ((stmt as Record<string, unknown>).Principal as Record<string, unknown>)?.AWS;
-            const arnList = Array.isArray(principals) ? principals : (principals ? [principals] : []);
-            for (const trustedArn of arnList) {
-              if (typeof trustedArn !== 'string' || trustedArn === '*') continue;
-              const trustedId = cloudIdentityId(trustedArn);
-              addNode({
-                id: trustedId, type: 'cloud_identity',
-                label: trustedArn.split('/').pop() || trustedArn,
-                discovered_at: now, discovered_by: agentId, confidence: 0.8,
-                provider, arn: trustedArn,
-                principal_type: trustedArn.includes(':role/') ? 'role' : 'user',
-                cloud_account: (trustedArn.match(/:(\d{12}):/)?.[1]) || '',
-              } as Finding['nodes'][0]);
-              edges.push({
-                source: trustedId, target: nodeId,
-                properties: {
-                  type: 'ASSUMES_ROLE',
-                  confidence: 0.9,
-                  discovered_at: now,
-                  discovered_by: agentId,
-                  assumption_confirmed: false,
-                  assumption_basis: 'trust_policy',
-                },
-              });
-            }
+          // R2-2/R2-4/R2-5: shared trust-policy normalizer.
+          for (const grant of iterateTrustGrants(doc)) {
+            if (grant.effect !== 'Allow') continue;
+            const trustedArn = grant.principal;
+            if (trustedArn === '*' && grant.principal_kind !== 'wildcard') continue;
+            const trustedId = grant.principal_kind === 'aws'
+              ? cloudIdentityId(trustedArn)
+              : cloudIdentityId(`aws:${grant.principal_kind}:${trustedArn}`);
+            addNode({
+              id: trustedId, type: 'cloud_identity',
+              label: grant.principal_kind === 'aws'
+                ? (trustedArn.split('/').pop() || trustedArn)
+                : `${grant.principal_kind}:${trustedArn}`,
+              discovered_at: now, discovered_by: agentId, confidence: 0.8,
+              provider,
+              arn: grant.principal_kind === 'aws' ? trustedArn : undefined,
+              principal_type: mapPrincipalKindToType(grant.principal_kind, trustedArn),
+              principal_kind: grant.principal_kind,
+              principal_value: trustedArn,
+              cloud_account: grant.principal_kind === 'aws'
+                ? (trustedArn.match(/:(\d{12}):/)?.[1]) || ''
+                : '',
+            } as Finding['nodes'][0]);
+            const condProps = trustConditionsToEdgeProps(grant.conditions);
+            edges.push({
+              source: trustedId, target: nodeId,
+              properties: {
+                type: 'ASSUMES_ROLE',
+                confidence: grant.conditional ? 0.6 : 0.9,
+                discovered_at: now,
+                discovered_by: agentId,
+                assumption_confirmed: false,
+                assumption_basis: 'trust_policy',
+                principal_kind: grant.principal_kind,
+                ...(condProps ?? {}),
+              },
+            });
           }
         } catch { /* ignore malformed policy */ }
       }

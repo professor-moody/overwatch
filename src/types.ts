@@ -164,7 +164,12 @@ export interface NodeProperties {
   // Cloud Identity (IAM user, role, service account, managed identity)
   provider?: 'aws' | 'azure' | 'gcp';
   arn?: string;
-  principal_type?: 'user' | 'role' | 'service_account' | 'managed_identity' | 'app';
+  principal_type?: 'user' | 'role' | 'service_account' | 'managed_identity' | 'app' | 'service' | 'federated' | 'canonical' | 'wildcard';
+  /** AWS-specific principal classification preserved from the trust policy
+   * (Principal.AWS / Service / Federated / CanonicalUser / "*"). */
+  principal_kind?: 'aws' | 'service' | 'federated' | 'canonical' | 'wildcard';
+  /** Raw principal value when it isn't a real ARN (e.g. lambda.amazonaws.com). */
+  principal_value?: string;
   policies?: string[];
   mfa_enabled?: boolean;
   last_used?: string;
@@ -249,6 +254,12 @@ export const EDGE_TYPES = [
   'HOSTS', 'AUTHENTICATED_AS', 'VULNERABLE_TO', 'EXPLOITS', 'HAS_ENDPOINT', 'AUTH_BYPASS',
   // Cloud infrastructure
   'ASSUMES_ROLE', 'HAS_POLICY', 'POLICY_ALLOWS', 'EXPOSED_TO', 'RUNS_ON', 'MANAGED_BY',
+  // Cloud identity relationships
+  // SERVICE_PRINCIPAL_FOR: SP node → app-registration node it represents.
+  // This is a directory binding, NOT an RBAC role assumption (which is
+  // what ASSUMES_ROLE implies). Modeling it separately keeps attack-path
+  // scoring honest about what a service principal can actually do.
+  'SERVICE_PRINCIPAL_FOR',
   // Operator-controlled infrastructure (mock_service / decoy listeners)
   'OPERATED_BY', 'BAITED', 'RELAYED_VIA',
   // Objective
@@ -944,6 +955,16 @@ export interface SessionReadResult {
   end_pos: number;
   text: string;
   truncated: boolean;
+  /**
+   * Why the read returned. Lets callers distinguish "command finished and
+   * the prompt came back" (`wait_for` / `idle`) from "we gave up waiting"
+   * (`timeout`) or "the session went away" (`session_closed`).
+   * Optional for backwards compatibility — older callers and the plain
+   * `read()` (non-waiting) variant don't set it.
+   */
+  completion_reason?: 'wait_for' | 'idle' | 'timeout' | 'session_closed';
+  /** Convenience boolean: true iff completion_reason === 'timeout'. */
+  timed_out?: boolean;
 }
 
 export interface AdapterHandle {

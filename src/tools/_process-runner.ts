@@ -248,6 +248,13 @@ function runProcess(binary: string, args: string[], opts: {
         cwd: opts.cwd,
         env: buildChildEnv(opts.env),
         stdio: ['ignore', 'pipe', 'pipe'],
+        // R2-1: put the child in its own process group on POSIX so the
+        // timeout path can signal the entire descendant tree via -pid.
+        // Without this, bash -c 'tool & wait' style invocations leave
+        // grandchildren running after Overwatch reports the action killed.
+        // No-op on Windows (where spawn ignores `detached:true` for
+        // signaling purposes); we document the gap rather than fake it.
+        detached: process.platform !== 'win32',
       });
     } catch (err) {
       resolve({
@@ -262,10 +269,27 @@ function runProcess(binary: string, args: string[], opts: {
       return;
     }
 
+    // Helper: kill the entire child process group (POSIX) or the direct
+    // child (Windows). Returns whether the group-kill path was used.
+    const killTree = (sig: NodeJS.Signals): boolean => {
+      const pid = child!.pid;
+      if (pid && process.platform !== 'win32') {
+        try {
+          // Negative PID targets the process group.
+          process.kill(-pid, sig);
+          return true;
+        } catch {
+          // Group may have already exited; fall through to direct kill.
+        }
+      }
+      try { child!.kill(sig); } catch { /* already gone */ }
+      return false;
+    };
+
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ok */ } }, 5000).unref();
+      killTree('SIGTERM');
+      setTimeout(() => { killTree('SIGKILL'); }, 5000).unref();
     }, opts.timeout_ms);
     timer.unref();
 

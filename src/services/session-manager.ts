@@ -474,14 +474,27 @@ export class SessionManager {
       let hasReceivedOutput = false;
       let finished = false;
 
-      const finish = () => {
+      // R2-3: surface *why* the wait returned so callers can distinguish a
+      // settled prompt (`idle` / `wait_for`) from a forced give-up
+      // (`timeout`) or a session that disappeared mid-command
+      // (`session_closed`). Defaults to `idle` and is overridden at each
+      // exit site.
+      const finish = (reason: 'wait_for' | 'idle' | 'timeout' | 'session_closed' = 'idle') => {
         if (finished) return;
         finished = true;
         if (idleTimer) clearTimeout(idleTimer);
         if (overallTimer) clearTimeout(overallTimer);
         if (waitInterval) clearInterval(waitInterval);
         const result = session.buffer.read(startPos);
-        resolve({ session_id: sessionId, start_pos: result.startPos, end_pos: result.endPos, text: result.text, truncated: result.truncated });
+        resolve({
+          session_id: sessionId,
+          start_pos: result.startPos,
+          end_pos: result.endPos,
+          text: result.text,
+          truncated: result.truncated,
+          completion_reason: reason,
+          timed_out: reason === 'timeout',
+        });
       };
 
       const checkIdle = () => {
@@ -491,13 +504,13 @@ export class SessionManager {
         if (waitForRegex) {
           const data = session.buffer.read(startPos);
           if (waitForRegex.test(data.text)) {
-            finish();
+            finish('wait_for');
             return;
           }
         }
 
         if (currentEnd === lastEndPos) {
-          finish();
+          finish('idle');
           return;
         }
 
@@ -509,6 +522,12 @@ export class SessionManager {
       // Check every 50ms. Once output arrives, transition to Phase 2.
       const waitInterval = setInterval(() => {
         if (finished) { clearInterval(waitInterval); return; }
+        // Detect session shutdown mid-command so callers don't have to
+        // infer it from an empty `idle` return.
+        if (session.metadata.state === 'closed' || session.metadata.state === 'error' || !session.handle) {
+          finish('session_closed');
+          return;
+        }
         const currentEnd = session.buffer.endPos;
 
         // Check wait_for even before any output (covers edge case of
@@ -516,7 +535,7 @@ export class SessionManager {
         if (waitForRegex) {
           const data = session.buffer.read(startPos);
           if (waitForRegex.test(data.text)) {
-            finish();
+            finish('wait_for');
             return;
           }
         }
@@ -531,7 +550,7 @@ export class SessionManager {
       }, 50);
 
       // Overall timeout — hard deadline regardless of phase
-      const overallTimer = setTimeout(finish, timeoutMs);
+      const overallTimer = setTimeout(() => finish('timeout'), timeoutMs);
     });
   }
 

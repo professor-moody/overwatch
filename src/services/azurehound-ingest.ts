@@ -196,7 +196,11 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           }
           edges.push({
             source: nodeId, target: appNodeId,
-            properties: { type: 'ASSUMES_ROLE', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID },
+            // R2-6: SP→App is a directory binding, not RBAC role assumption.
+            // Using SERVICE_PRINCIPAL_FOR keeps attack-path scoring honest:
+            // representing an app does not imply control over the underlying
+            // role-assumable identity.
+            properties: { type: 'SERVICE_PRINCIPAL_FOR', confidence: 1.0, discovered_at: now, discovered_by: AGENT_ID },
           });
         }
         break;

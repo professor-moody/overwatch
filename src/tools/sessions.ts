@@ -266,7 +266,13 @@ For password prompts, REPLs, partial input, or streaming tools (tail -f, tcpdump
 
 idle_ms: return after this much silence (default 500ms)
 timeout_ms: max wait time (default 10s)
-wait_for: regex — return immediately when matched in output`,
+wait_for: regex — return immediately when matched in output
+
+Result includes a completion_reason field:
+- 'wait_for'       — wait_for regex matched
+- 'idle'           — output went quiet for idle_ms
+- 'timeout'        — hit timeout_ms before settling (timed_out: true)
+- 'session_closed' — session went away mid-command`,
       inputSchema: {
         session_id: z.string().describe('Session ID'),
         command: z.string().describe('Command to send (newline appended automatically)'),

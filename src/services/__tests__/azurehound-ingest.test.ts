@@ -82,9 +82,11 @@ describe('AzureHound Ingest', () => {
       expect(finding.nodes.length).toBe(2); // SP node + stub app node
       expect(finding.nodes.find(n => n.principal_type === 'service_account')).toBeTruthy();
       expect(finding.nodes.find(n => n.principal_type === 'app')).toBeTruthy();
-      const assumesEdges = finding.edges.filter(e => e.properties.type === 'ASSUMES_ROLE');
-      expect(assumesEdges.length).toBe(1);
-      expect(assumesEdges[0].target).toContain('app-1');
+      // R2-6: SP→App is now SERVICE_PRINCIPAL_FOR (directory binding),
+      // not ASSUMES_ROLE (which would imply RBAC takeover semantics).
+      const spForEdges = finding.edges.filter(e => e.properties.type === 'SERVICE_PRINCIPAL_FOR');
+      expect(spForEdges.length).toBe(1);
+      expect(spForEdges[0].target).toContain('app-1');
     });
 
     it('extracts role assignments with HAS_POLICY edges', () => {
@@ -258,13 +260,13 @@ describe('AzureHound Ingest', () => {
       expect(appNode!.id).toContain('app-1');
       expect(appNode!.provider).toBe('azure');
 
-      // ASSUMES_ROLE edge target should match the app node ID
-      const assumesEdge = finding.edges.find(e => e.properties.type === 'ASSUMES_ROLE');
-      expect(assumesEdge).toBeDefined();
-      expect(assumesEdge!.target).toBe(appNode!.id);
+      // R2-6: SP→App edge is SERVICE_PRINCIPAL_FOR (directory binding).
+      const spForEdge = finding.edges.find(e => e.properties.type === 'SERVICE_PRINCIPAL_FOR');
+      expect(spForEdge).toBeDefined();
+      expect(spForEdge!.target).toBe(appNode!.id);
     });
 
-    it('SP without appId does not create an ASSUMES_ROLE edge or app node', () => {
+    it('SP without appId does not create an SERVICE_PRINCIPAL_FOR edge or app node', () => {
       const data = {
         kind: 'azserviceprincipals',
         data: [

@@ -713,7 +713,8 @@ describe('11.6 — AzureHound ingest', () => {
     const { finding } = parseAzureHoundFile(JSON.stringify(data), 'serviceprincipals.json');
     expect(finding.nodes[0].type).toBe('cloud_identity');
     expect(finding.nodes[0].principal_type).toBe('service_account');
-    expect(finding.edges.some(e => e.properties.type === 'ASSUMES_ROLE')).toBe(true);
+    // R2-6: directory binding edge type, not RBAC role assumption.
+    expect(finding.edges.some(e => e.properties.type === 'SERVICE_PRINCIPAL_FOR')).toBe(true);
   });
 
   it('parses Azure role assignments → HAS_POLICY edges', () => {
