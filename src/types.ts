@@ -357,6 +357,12 @@ export interface EngagementConfig {
   phases?: EngagementPhase[];     // ordered engagement phases with entry/exit criteria
   max_prompt_tokens?: number;     // Token budget for system prompt generation (default 8000)
   hash_chain_enabled?: boolean;   // Enable tamper-evident hash chain over agent/system events (default false)
+  /** In-process JSON-RPC tape recorder. Off by default. */
+  tape?: {
+    enabled?: boolean;
+    dir?: string;
+    file?: string;
+  };
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -435,6 +441,19 @@ export const engagementConfigSchema = z.object({
   phases: z.array(engagementPhaseSchema).optional(),
   max_prompt_tokens: z.number().int().min(1000).max(100000).optional(),
   hash_chain_enabled: z.boolean().optional(),
+  /**
+   * In-process JSON-RPC tape recorder. When `enabled: true` the MCP server
+   * captures every wire frame (both directions) into a JSONL tape and
+   * auto-registers it with the engagement on startup. Off by default; can
+   * also be toggled at runtime via dashboard or env vars.
+   */
+  tape: z.object({
+    enabled: z.boolean().default(false),
+    /** Directory for auto-named tape files. Defaults to ./tapes. */
+    dir: z.string().optional(),
+    /** Explicit tape file path. Overrides `dir` when set. */
+    file: z.string().optional(),
+  }).optional(),
 });
 
 export interface ExportedGraphNode {

@@ -127,6 +127,7 @@ nav:
     - Operator Infrastructure: playbook/operator-infra.md
     - parse_output vs report_finding: playbook/parse-vs-report.md
     - Retrospectives: playbook/retrospective.md
+    - Tape Recording: tape-recording.md
   - FAQ: faq.md
   - Development:
     - development.md

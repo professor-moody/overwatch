@@ -53,6 +53,7 @@ import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
+import { InProcessTapeController } from './services/in-process-tape.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -89,6 +90,7 @@ export type OverwatchApp = {
   server: McpServer;
   dashboard: DashboardServer | null;
   telemetry: ToolTelemetry;
+  tape: InProcessTapeController;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
   sessionAbortControllers?: Record<string, AbortController>;
   httpServer?: Server;
@@ -206,6 +208,16 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const dashboardPort = options.dashboardPort ?? parseInt(process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
   const dashboard = dashboardPort > 0 ? new DashboardServer(engine, dashboardPort, undefined, sessionManager, configPath) : null;
 
+  // In-process tape controller. Always constructed; only opens a writer when
+  // explicitly enabled via env, engagement config, or dashboard toggle.
+  const tape = new InProcessTapeController(engine, {
+    defaultDir: process.env.OVERWATCH_TAPE_DIR ?? config.tape?.dir,
+    file: process.env.OVERWATCH_TAPE_FILE ?? config.tape?.file,
+  });
+  if (dashboard) {
+    dashboard.attachTape(tape);
+  }
+
   registerAllTools(server, {
     engine,
     skills,
@@ -227,6 +239,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     server,
     dashboard,
     telemetry: getTelemetry()!,
+    tape,
   };
 }
 
@@ -238,9 +251,31 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
     }
   }
 
-  const transport = new StdioServerTransport();
+  // Auto-enable tape recorder if env or engagement config asks for it.
+  // Off by default; opt in via OVERWATCH_TAPE=1 or engagement.tape.enabled.
+  if (shouldAutoEnableTape(app.config)) {
+    app.tape.enable();
+    console.error(`Overwatch tape recording to ${app.tape.getStatus().path}`);
+  }
+
+  const baseTransport = new StdioServerTransport();
+  // Wrap unconditionally so the dashboard can flip recording on/off without
+  // restarting the transport.
+  const transport = app.tape.wrapTransport(baseTransport);
   await app.server.connect(transport);
   console.error('Overwatch MCP server running on stdio');
+}
+
+/**
+ * Decide whether to auto-enable the in-process tape at startup. Env wins
+ * over engagement config (operator override). `OVERWATCH_TAPE=0` forces off
+ * even when the config says on, so a single shell prefix can disable it.
+ */
+function shouldAutoEnableTape(config: EngagementConfig): boolean {
+  const env = process.env.OVERWATCH_TAPE;
+  if (env === '0' || env === 'false' || env === 'off') return false;
+  if (env === '1' || env === 'true' || env === 'on') return true;
+  return config.tape?.enabled === true;
 }
 
 export const MAX_HTTP_SESSIONS = 50;
@@ -301,24 +336,29 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
         });
         return;
       }
-      const transport = new StreamableHTTPServerTransport({
+      const baseTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
-          transports[sid] = transport;
+          // Store the *base* transport — handleRequest() is HTTP-specific
+          // and lives on StreamableHTTPServerTransport, not on the generic
+          // wrapper. The wrapper is only used for the MCP Server connect
+          // path so its send/recv hooks can mirror frames into the tape.
+          transports[sid] = baseTransport;
           sessionAbortControllers[sid] = new AbortController();
         },
       });
-      transport.onclose = () => {
-        const sid = transport.sessionId;
+      baseTransport.onclose = () => {
+        const sid = baseTransport.sessionId;
         if (sid) {
           delete transports[sid];
           sessionAbortControllers[sid]?.abort();
           delete sessionAbortControllers[sid];
         }
       };
+      const wrappedTransport = app.tape.wrapTransport(baseTransport);
       const server = createSessionServer();
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await server.connect(wrappedTransport);
+      await baseTransport.handleRequest(req, res, req.body);
       return;
     }
 

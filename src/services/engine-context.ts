@@ -51,6 +51,7 @@ export type ActivityEventType =
   | 'agent_transcript_submitted'
   | 'transcript_turn_ingested'
   | 'tape_session_started'
+  | 'tape_session_stopped'
   | 'mock_service_registered'
   | 'mock_service_refreshed';
 

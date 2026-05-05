@@ -42,6 +42,46 @@
   border-color: var(--accent);
 }
 
+/* ---- Tape Toggle Button (toolbar) ---- */
+
+.op-tape-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+.op-tape-btn:hover { border-color: var(--accent); color: var(--text-default); }
+.op-tape-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  display: inline-block;
+}
+.op-tape-btn[data-state="on"] {
+  color: #d24545;
+  border-color: rgba(210,69,69,0.4);
+  background: rgba(210,69,69,0.08);
+}
+.op-tape-btn[data-state="on"] .op-tape-dot {
+  background: #d24545;
+  box-shadow: 0 0 6px rgba(210,69,69,0.6);
+  animation: tape-pulse 1.6s ease-in-out infinite;
+}
+@keyframes tape-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* ---- Navigation Sidebar ---- */
 
 .op-nav {

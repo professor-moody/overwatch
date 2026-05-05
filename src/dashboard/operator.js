@@ -44,6 +44,59 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // ============================================================
+  // Tape Toggle (toolbar)
+  // Mirrors the in-process tape recorder. The button reflects the live
+  // controller state via /api/tape; clicking POSTs to /api/tape/toggle.
+  // Fails quietly when the feature isn't attached (e.g. dev builds).
+  // ============================================================
+
+  const tapeBtn = document.getElementById('tape-toggle');
+  if (tapeBtn) {
+    const renderTape = (status) => {
+      const enabled = !!(status && status.enabled);
+      tapeBtn.dataset.state = enabled ? 'on' : 'off';
+      const label = tapeBtn.querySelector('.op-tape-label');
+      if (label) {
+        label.textContent = enabled
+          ? `Tape ● ${status.frame_count ?? 0}`
+          : 'Tape';
+      }
+      tapeBtn.title = enabled
+        ? `Recording → ${status.path || '(memory)'} — click to stop`
+        : 'JSON-RPC tape: off — click to start recording';
+    };
+    const fetchStatus = async () => {
+      try {
+        const r = await fetch('/api/tape');
+        if (!r.ok) {
+          tapeBtn.style.display = 'none';
+          return;
+        }
+        renderTape(await r.json());
+      } catch {
+        tapeBtn.style.display = 'none';
+      }
+    };
+    tapeBtn.addEventListener('click', async () => {
+      tapeBtn.disabled = true;
+      try {
+        const r = await fetch('/api/tape/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        if (r.ok) renderTape(await r.json());
+      } catch (err) {
+        console.warn('[tape] toggle failed', err);
+      } finally {
+        tapeBtn.disabled = false;
+      }
+    });
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  }
+
+  // ============================================================
   // Keyboard Shortcuts
   // ============================================================
 

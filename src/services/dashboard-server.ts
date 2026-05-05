@@ -50,6 +50,17 @@ export class DashboardServer {
 
   private host: string;
   private engagementManager: EngagementManager | null = null;
+  /**
+   * Optional in-process tape controller. Attached by app bootstrap so the
+   * dashboard can expose status + a runtime on/off toggle. The dashboard
+   * never owns the controller — toggling here mirrors what env / config
+   * achieve at startup.
+   */
+  private tape: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string }): unknown; disable(): Promise<unknown> } | null = null;
+
+  attachTape(controller: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string }): unknown; disable(): Promise<unknown> }): void {
+    this.tape = controller;
+  }
 
   constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
     this.engine = engine;
@@ -478,6 +489,10 @@ export class DashboardServer {
       this.handleGraphExport(res);
     } else if (pathname === '/api/graph/correct' && method === 'POST') {
       this.handleGraphCorrect(req, res);
+    } else if (pathname === '/api/tape' && method === 'GET') {
+      this.handleTapeStatus(res);
+    } else if (pathname === '/api/tape/toggle' && method === 'POST') {
+      this.handleTapeToggle(req, res);
     } else {
       // Parameterized routes
       const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
@@ -1677,6 +1692,56 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
+  }
+
+  // ---- Tape recorder status / toggle ----
+  // Surfaces the in-process tape controller so operators can flip recording
+  // on/off from the dashboard without restarting the server. The controller
+  // is optional: when not attached (e.g. in tests) these endpoints return
+  // 503 so callers know the feature isn't wired in this build.
+
+  private handleTapeStatus(res: ServerResponse): void {
+    if (!this.tape) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'tape_controller_not_attached' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.tape.getStatus()));
+  }
+
+  private async handleTapeToggle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    if (!this.tape) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'tape_controller_not_attached' }));
+      return;
+    }
+    try {
+      const body = await this.readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+      const action = (body as { action?: string }).action;
+      const dir = (body as { dir?: string }).dir;
+      const file = (body as { file?: string }).file;
+      const sessionId = (body as { session_id?: string }).session_id;
+      let status;
+      if (action === 'enable') {
+        status = this.tape.enable({ defaultDir: dir, file, sessionId });
+      } else if (action === 'disable') {
+        status = await this.tape.disable();
+      } else {
+        // Default = toggle: if currently enabled, disable; else enable.
+        const cur = this.tape.getStatus() as { enabled?: boolean };
+        status = cur.enabled
+          ? await this.tape.disable()
+          : this.tape.enable({ defaultDir: dir, file, sessionId });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    }
   }
 
   // ---- Graph correct endpoint ----
