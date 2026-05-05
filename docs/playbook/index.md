@@ -2,6 +2,11 @@
 
 Step-by-step guides for running engagements with Overwatch.
 
+!!! tip "First time here?"
+    Make sure you've followed the [5-minute Quick Start](../getting-started.md#quick-start-5-minutes) first. This page assumes `claude` is already running and connected to Overwatch.
+
+    Don't know where to start? Try the [End-to-End Walkthrough](walkthrough.md) — it narrates a full engagement from empty graph to Domain Admin so you can see what "good" looks like.
+
 ## Engagement Lifecycle
 
 ```

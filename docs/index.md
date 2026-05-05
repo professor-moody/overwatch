@@ -28,7 +28,6 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 - **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking. Listener-mode sessions auto-register as `mock_service` graph nodes so captured credentials attribute back to the listener that caught them.
 - **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus. Operator-controlled infrastructure renders alongside discovered targets.
 - **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log + JSON-RPC tape proxy let retrospectives prove the AI did exactly what it claimed, in the order it claimed.
-- **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus.
 - **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, RLVR training traces, automatic inference rule application, technique priors, and skill annotations.
 - **[IAM policy simulation](concepts.md#iam-policy-simulation)** — Cloud-native permission evaluation for AWS (deny-overrides-allow), Azure (RBAC scope hierarchy), and GCP (deny policy precedence).
 - **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Automatic expiry estimation, graduated frontier scoring, and provenance chain tracking.
@@ -44,31 +43,19 @@ LLM-powered penetration testing has a fundamental problem: the context window is
 
 ## Quick Start
 
+!!! tip "Just want to get running?"
+    The [**Getting Started**](getting-started.md) guide is a tight 5-minute path: clone, copy a template, wire the MCP config, launch `claude`. Everything else here is reference material you can come back to.
+
 ```bash
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
-npm install
-npm run build
+npm install && npm run build
+cp engagement-templates/internal-pentest.json engagement.json
+# edit scope.cidrs and scope.domains, then add to ~/.claude/settings.json
+claude
 ```
 
-Configure your engagement in `engagement.json`, then add Overwatch to your Claude Code MCP config:
-
-```json
-{
-  "mcpServers": {
-    "overwatch": {
-      "command": "node",
-      "args": ["<path-to-overwatch>/dist/index.js"],
-      "env": {
-        "OVERWATCH_CONFIG": "<path-to-engagement.json>",
-        "OVERWATCH_SKILLS": "<path-to-overwatch>/skills"
-      }
-    }
-  }
-}
-```
-
-Then just run `claude` — see the full [Getting Started](getting-started.md) guide, or jump to a [lab workflow](playbook/index.md).
+Full walk-through with template list, dashboard tour, and "what to say to the AI first" prompts: [Getting Started](getting-started.md). Or jump straight to a [lab workflow](playbook/index.md).
 
 ## Architecture at a Glance
 

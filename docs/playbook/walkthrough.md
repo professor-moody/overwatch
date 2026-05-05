@@ -2,6 +2,9 @@
 
 A narrated example taking an engagement from empty graph to Domain Admin on a GOAD-like Active Directory lab.
 
+!!! note "This is the deep dive"
+    Read this when you want to understand **what the AI actually does** during an engagement — every tool call, every inference, every decision. If you just want to get Overwatch running, the [Quick Start](../getting-started.md#quick-start-5-minutes) is faster. If you want to see specific lab playbooks, see [GOAD AD Lab](goad-lab.md), [HTB / Single Host](htb-single.md), or [HTB / Network](htb-network.md).
+
 ## Phase 0 — Configuration
 
 Create `engagement.json`:
