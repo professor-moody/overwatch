@@ -861,7 +861,7 @@ describe('DashboardServer', () => {
 
     // Send input
     messageHandler(JSON.stringify({ type: 'input', data: 'ls -la\n' }));
-    expect(writeSpy).toHaveBeenCalledWith('sess-1', 'ls -la\n');
+    expect(writeSpy).toHaveBeenCalledWith('sess-1', 'ls -la\n', 'dashboard', true);
 
     // Send resize
     messageHandler(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));

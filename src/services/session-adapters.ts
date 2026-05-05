@@ -243,7 +243,15 @@ export class SocketAdapter implements SessionAdapterFactory {
           return;
         }
         activeSocket = socket;
-        this.wireSocket(socket, dataCallbacks, exitCallbacks, () => { closed = true; });
+        this.wireSocket(socket, dataCallbacks, exitCallbacks, () => {
+          // When the accepted socket disconnects, tear down the listener too.
+          // Otherwise the TCP server stays bound and rejects later reconnects
+          // forever, while the session shows as closed.
+          closed = true;
+          activeSocket = null;
+          try { server.close(); } catch { /* best-effort */ }
+          if (sessionId) self.activeServers.delete(sessionId);
+        });
         if (onConnect) onConnect();
       });
 

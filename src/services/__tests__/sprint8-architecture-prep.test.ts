@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, beforeEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { isUrlInScope, isCloudResourceInScope, isHostInScope } from '../cidr.js';
 import { inferProfile } from '../../types.js';
@@ -547,6 +547,67 @@ describe('ingestSessionResult', () => {
     expect(sessionEvent).toBeDefined();
     expect(sessionEvent!.description).toContain('host-10-10-10-1');
     expect(sessionEvent!.description).toContain('succeeded');
+  });
+});
+
+// ============================================================
+// onSessionClosed safety: do not erase live access from concurrent sessions
+// ============================================================
+
+describe('onSessionClosed scoped downgrade', () => {
+  beforeEach(() => cleanup());
+  afterAll(() => cleanup());
+
+  it('does not downgrade other principals\' HAS_SESSION when principal_node is omitted', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'f-multi-session', agent_id: 'test', timestamp: new Date().toISOString(),
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), confidence: 1.0 },
+        { id: 'user-alice', type: 'user', label: 'alice', discovered_at: new Date().toISOString(), confidence: 1.0 },
+        { id: 'user-bob', type: 'user', label: 'bob', discovered_at: new Date().toISOString(), confidence: 1.0 },
+      ],
+      edges: [],
+    });
+
+    // Two independent live sessions to the same host, different principals
+    engine.ingestSessionResult({
+      success: true, target_node: 'host-10-10-10-1', principal_node: 'user-alice', session_id: 'sess-alice',
+    });
+    engine.ingestSessionResult({
+      success: true, target_node: 'host-10-10-10-1', principal_node: 'user-bob', session_id: 'sess-bob',
+    });
+
+    // Close an auxiliary/metadata-incomplete session with no principal info.
+    // It should NOT mark either real session as historical.
+    engine.onSessionClosed('sess-aux-unknown', 'host-10-10-10-1', undefined);
+
+    const g = engine.exportGraph();
+    const aliceEdge = g.edges.find(e => e.id === 'session-user-alice-host-10-10-10-1');
+    const bobEdge = g.edges.find(e => e.id === 'session-user-bob-host-10-10-10-1');
+    expect(aliceEdge!.properties.session_live).toBe(true);
+    expect(bobEdge!.properties.session_live).toBe(true);
+  });
+
+  it('downgrades only the matching principal\'s edge when principal_node is provided', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    engine.ingestFinding({
+      id: 'f-pair', agent_id: 'test', timestamp: new Date().toISOString(),
+      nodes: [
+        { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), confidence: 1.0 },
+        { id: 'user-alice', type: 'user', label: 'alice', discovered_at: new Date().toISOString(), confidence: 1.0 },
+        { id: 'user-bob', type: 'user', label: 'bob', discovered_at: new Date().toISOString(), confidence: 1.0 },
+      ],
+      edges: [],
+    });
+    engine.ingestSessionResult({ success: true, target_node: 'host-10-10-10-1', principal_node: 'user-alice', session_id: 'sa' });
+    engine.ingestSessionResult({ success: true, target_node: 'host-10-10-10-1', principal_node: 'user-bob', session_id: 'sb' });
+
+    engine.onSessionClosed('sa', 'host-10-10-10-1', 'user-alice');
+
+    const g = engine.exportGraph();
+    expect(g.edges.find(e => e.id === 'session-user-alice-host-10-10-10-1')!.properties.session_live).toBe(false);
+    expect(g.edges.find(e => e.id === 'session-user-bob-host-10-10-10-1')!.properties.session_live).toBe(true);
   });
 });
 

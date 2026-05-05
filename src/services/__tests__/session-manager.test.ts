@@ -1148,3 +1148,60 @@ describe('Session Idle Timeout', () => {
     await mgr.shutdown();
   });
 });
+
+// ============================================================
+// detectSshAuthSuccess — username/login + echo-not-output guards
+// ============================================================
+
+describe('SessionManager.detectSshAuthSuccess — prompt guards', () => {
+  function makeFakeSession(text: string, writeFn: (data: string) => void) {
+    const buf = new RingBuffer(8192);
+    buf.write(text);
+    return {
+      metadata: { id: '12345678-aaaa-bbbb-cccc-000000000001' },
+      buffer: buf,
+      handle: { write: writeFn } as any,
+    } as any;
+  }
+
+  it('returns false at a Username: prompt even if probe is echoed back', async () => {
+    const mgr = new SessionManager(null);
+    const session = makeFakeSession('Username: ', (data) => {
+      // appliance-style echo: input is mirrored back as terminal echo
+      session.buffer.write(data);
+    });
+    const ok = await (mgr as any).detectSshAuthSuccess(session);
+    expect(ok).toBe(false);
+  });
+
+  it('returns false at a login: prompt', async () => {
+    const mgr = new SessionManager(null);
+    const session = makeFakeSession('login: ', () => {});
+    const ok = await (mgr as any).detectSshAuthSuccess(session);
+    expect(ok).toBe(false);
+  });
+
+  it('does not accept marker that only appears as terminal echo of the probe', async () => {
+    const mgr = new SessionManager(null);
+    // No shell prompt suffix, no non-shell prompt match — falls through to
+    // the echo probe. The fake handle echoes the full `echo MARKER` line
+    // back but never produces a separate output line. Should return false.
+    const session = makeFakeSession('connecting...\r\n', (data) => {
+      session.buffer.write(data); // echo only
+    });
+    const ok = await (mgr as any).detectSshAuthSuccess(session);
+    expect(ok).toBe(false);
+  });
+
+  it('accepts marker that appears on its own line (real shell behavior)', async () => {
+    const mgr = new SessionManager(null);
+    const session = makeFakeSession('connecting...\r\n', (data) => {
+      // echo back, then output marker on its own line as a shell would
+      session.buffer.write(data);
+      const m = data.match(/__OW_READY_[a-f0-9]+__/);
+      if (m) session.buffer.write('\r\n' + m[0] + '\r\n');
+    });
+    const ok = await (mgr as any).detectSshAuthSuccess(session);
+    expect(ok).toBe(true);
+  });
+});

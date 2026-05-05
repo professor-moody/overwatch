@@ -819,7 +819,7 @@ export class SessionManager {
     }
 
     // Guard: Do not probe if session appears to be at a non-shell prompt
-    // (password, passphrase, host-key, MFA, or appliance/menu prompt)
+    // (password, passphrase, host-key, MFA, login/username, or appliance/menu prompt)
     const NON_SHELL_PROMPTS = [
       /password\s*:/i,
       /password for\s/i,
@@ -831,6 +831,12 @@ export class SessionManager {
       /enter.*selection/i,
       /press.*to continue/i,
       /choice\s*:/i,
+      // Username / login prompts — some appliances and unusual SSH flows
+      // present these *after* the SSH transport is up. Treat as non-shell
+      // so the echo probe doesn't accept their echo as a confirmed shell.
+      /^\s*username\s*:/i,
+      /^\s*login\s*:/i,
+      /\blogin as\b/i,
     ];
     if (NON_SHELL_PROMPTS.some(re => re.test(lastLine))) {
       return false;
@@ -848,12 +854,19 @@ export class SessionManager {
       return false;
     }
 
-    // Wait up to 3 seconds for the marker to appear
+    // Wait up to 3 seconds for the marker to appear *as command output*,
+    // not merely as the echoed probe input. We require the marker to appear
+    // on a line that does NOT also contain the literal `echo <marker>` we
+    // just sent — otherwise terminal echo of the input alone would
+    // falsely confirm a shell on appliances at a Username:/login: prompt.
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 200));
       const newOutput = session.buffer.read(preProbePos).text;
-      if (newOutput.includes(marker)) {
+      if (!newOutput.includes(marker)) continue;
+      const lines = newOutput.split(/\r?\n/);
+      const outputLine = lines.find(l => l.includes(marker) && !/echo\s+__OW_READY_/.test(l));
+      if (outputLine !== undefined) {
         return true;
       }
     }

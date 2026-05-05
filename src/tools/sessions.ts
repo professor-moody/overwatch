@@ -108,6 +108,50 @@ The session is claimed by the opening agent — other agents can read but not wr
         }
       }
 
+      // If the caller declared a target_node, ensure that node exists and
+      // matches the host they're actually connecting to. Otherwise a
+      // successful SSH to host A could be recorded as a HAS_SESSION edge
+      // against host B due to an operator/agent metadata bug.
+      if (params.target_node && params.host && isRemoteScopedSession(params.kind, params.mode)) {
+        const node = engine.getNode(params.target_node);
+        if (!node) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `target_node "${params.target_node}" does not exist in the graph`,
+                target_node: params.target_node,
+                host: params.host,
+                scope_reason: 'target_node_missing',
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+        const candidates = [
+          (node as { ip?: string }).ip,
+          (node as { hostname?: string }).hostname,
+          (node as { fqdn?: string }).fqdn,
+          (node as { label?: string }).label,
+        ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+        const matches = candidates.some(c => c === params.host);
+        if (!matches) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `target_node "${params.target_node}" does not match host "${params.host}" (node has: ${candidates.join(', ') || '<no host fields>'})`,
+                target_node: params.target_node,
+                host: params.host,
+                node_host_fields: candidates,
+                scope_reason: 'target_node_host_mismatch',
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+      }
+
       const result = await sessionManager.create({
         kind: params.kind,
         title: params.title,

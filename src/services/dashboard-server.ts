@@ -316,14 +316,34 @@ export class DashboardServer {
 
     this.sessionPollers.set(ws, poller);
 
-    // Handle input from client
+    // Handle input from client. Dashboard terminal writes act on behalf of
+    // the operator, so always pass force=true — otherwise writes to a
+    // session claimed by an agent silently fail (assertOwnership throws,
+    // and the catch below would swallow it). Surface any write/resize
+    // errors back over the WS so the user sees something change.
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(String(raw));
         if (msg.type === 'input' && typeof msg.data === 'string') {
-          this.sessionManager!.write(sessionId, msg.data);
+          try {
+            this.sessionManager!.write(sessionId, msg.data, 'dashboard', true);
+          } catch (err) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              op: 'input',
+              error: err instanceof Error ? err.message : String(err),
+            }));
+          }
         } else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          this.sessionManager!.resize(sessionId, msg.cols, msg.rows);
+          try {
+            this.sessionManager!.resize(sessionId, msg.cols, msg.rows);
+          } catch (err) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              op: 'resize',
+              error: err instanceof Error ? err.message : String(err),
+            }));
+          }
         }
       } catch { /* ignore malformed messages */ }
     });

@@ -55,6 +55,7 @@ export function ingestSessionResult(
             test_result: 'success',
             confirmed_at: new Date().toISOString(),
             session_live: true,
+            session_id,
           });
           host.invalidateFrontierCache();
           host.invalidatePathGraph();
@@ -65,6 +66,7 @@ export function ingestSessionResult(
             test_result: 'success',
             confirmed_at: new Date().toISOString(),
             session_live: true,
+            session_id,
             session_unconfirmed: undefined,
           });
         }
@@ -120,15 +122,28 @@ export function ingestSessionResult(
  * Downgrades HAS_SESSION edges to historical state so get_state no longer
  * reports the host as having live access.
  */
-export function onSessionClosed(host: SessionTrackerHost, _sessionId: string, targetNode?: string, principalNode?: string): void {
+export function onSessionClosed(host: SessionTrackerHost, sessionId: string, targetNode?: string, principalNode?: string): void {
   if (!targetNode) return;
 
-  // Find and downgrade matching HAS_SESSION edges
+  // Find and downgrade matching HAS_SESSION edges.
+  //
+  // Safety: a HAS_SESSION edge to `targetNode` may have been created by a
+  // *different* live session (different user/credential). If the caller
+  // does not tell us which principal owned this session, the only edges we
+  // can safely downgrade are ones tagged with this exact session_id.
+  // Downgrading every edge on (target) would erase legitimate live access
+  // from other concurrent sessions.
   const edgesToDowngrade: string[] = [];
   host.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
     if (attrs.type !== 'HAS_SESSION') return;
     if (target !== targetNode) return;
-    if (principalNode && source !== principalNode) return;
+    if (principalNode) {
+      if (source !== principalNode) return;
+    } else {
+      // No principal — only match by recorded session_id.
+      const edgeSessionId = (attrs as { session_id?: string }).session_id;
+      if (!edgeSessionId || edgeSessionId !== sessionId) return;
+    }
     edgesToDowngrade.push(_edgeId);
   });
 
