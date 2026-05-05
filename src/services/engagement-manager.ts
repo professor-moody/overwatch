@@ -263,7 +263,10 @@ export class EngagementManager {
     if (input.opsec.max_noise != null) o.max_noise = input.opsec.max_noise;
     if (input.opsec.approval_mode) o.approval_mode = input.opsec.approval_mode;
     if (input.opsec.approval_timeout_ms != null) o.approval_timeout_ms = input.opsec.approval_timeout_ms;
-    if (input.opsec.time_window !== undefined) {
+    // Only persist a time_window when caller supplies a real object; the
+    // UI sends `null` to mean "no window", but the schema treats the field
+    // as an optional object and would reject `null`.
+    if (input.opsec.time_window) {
       o.time_window = input.opsec.time_window;
     }
     if (input.opsec.blacklisted_techniques?.length) o.blacklisted_techniques = input.opsec.blacklisted_techniques;
