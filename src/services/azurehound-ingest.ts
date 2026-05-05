@@ -5,6 +5,8 @@
 
 import type { Finding } from '../types.js';
 import { cloudIdentityId, cloudPolicyId, cloudResourceId, normalizeKeyPart } from './parser-utils.js';
+import { expandAzureRole } from './azure-roles.js';
+import { createHash } from 'node:crypto';
 
 export interface AzureHoundIngestResult {
   findings: Finding[];
@@ -210,16 +212,40 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const scope = (props.scope || props.Scope || '') as string;
         if (!principalId || !roleName) break;
 
-        const policyNodeId = cloudPolicyId('azure', roleName);
+        // Per-assignment policy node: (principal, role, scope) is the natural
+        // identity of an Azure RBAC assignment. Without this, two distinct
+        // Reader assignments at different scopes would collapse into one
+        // node, losing the scope distinction entirely.
+        const scopeKey = scope || 'tenant-root';
+        const scopeHash = createHash('sha1').update(scopeKey).digest('hex').slice(0, 10);
+        const policyDiscriminator = `${roleName}--${normalizeKeyPart(principalId)}--${scopeHash}`;
+        const policyNodeId = cloudPolicyId('azure', policyDiscriminator);
         if (!seenNodes.has(policyNodeId)) {
           seenNodes.add(policyNodeId);
-          nodes.push({
+          const expansion = expandAzureRole(roleName);
+          const policyNode: Record<string, unknown> = {
             id: policyNodeId, type: 'cloud_policy',
-            label: roleName,
+            label: scope ? `${roleName} @ ${scope.split('/').pop() || scope}` : roleName,
             discovered_at: now, discovered_by: AGENT_ID, confidence: 1.0,
             provider: 'azure', policy_name: roleName,
             effect: 'allow',
-          } as Finding['nodes'][0]);
+            role_definition_name: roleName,
+            role_definition_id: roleDefId || undefined,
+            assignment_scope: scope || undefined,
+          };
+          if (expansion.expanded) {
+            policyNode.actions = expansion.actions;
+            policyNode.resources = scope ? [scope] : ['*'];
+            if (expansion.not_actions.length > 0) policyNode.not_actions = expansion.not_actions;
+            policyNode.permission_expansion = 'expanded';
+          } else {
+            // Unknown role — record what we know so the simulator can flag
+            // results as "enumerated only, not permission-expanded" instead
+            // of silently treating the assignment as no-op.
+            policyNode.permission_expansion = 'enumerated_only';
+            policyNode.resources = scope ? [scope] : ['*'];
+          }
+          nodes.push(policyNode as Finding['nodes'][0]);
         }
 
         // Resolve principal: try azure-{id} first, fall back to azure:app:{id} if

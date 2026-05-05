@@ -317,6 +317,28 @@ describe('FrontierComputer', () => {
       // Should be capped at 254, not negative due to bit-shift overflow
       expect(discoveryItems[0].graph_metrics.fan_out_estimate).toBe(254);
     });
+
+    it('counts /31 point-to-point networks as 2 hosts (RFC 3021)', () => {
+      const graph = makeGraph();
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.0/31'], domains: ['test.local'], exclusions: [] } });
+      const { frontier } = buildFrontier(graph, config);
+      const items = frontier.compute();
+
+      const discoveryItems = items.filter(i => i.type === 'network_discovery');
+      expect(discoveryItems.length).toBe(1);
+      expect(discoveryItems[0].graph_metrics.fan_out_estimate).toBe(2);
+    });
+
+    it('counts /32 single-host networks as 1', () => {
+      const graph = makeGraph();
+      const config = makeConfig({ scope: { cidrs: ['10.10.10.5/32'], domains: ['test.local'], exclusions: [] } });
+      const { frontier } = buildFrontier(graph, config);
+      const items = frontier.compute();
+
+      const discoveryItems = items.filter(i => i.type === 'network_discovery');
+      expect(discoveryItems.length).toBe(1);
+      expect(discoveryItems[0].graph_metrics.fan_out_estimate).toBe(1);
+    });
   });
 
   // =============================================

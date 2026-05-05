@@ -52,6 +52,21 @@ export interface EvidenceChain {
   evidence_content?: string;
   evidence_filename?: string;
   raw_output?: string;
+  /** Evidence-store IDs for full-fidelity stdout/stderr capture from
+   * the terminal action that produced this finding. Reports cite these
+   * IDs and inline a head/tail snippet of the content. */
+  stdout_evidence_id?: string;
+  stderr_evidence_id?: string;
+  /** Truncation / capture diagnostics from the streamed evidence sink. */
+  stdout_truncated?: boolean;
+  stdout_dropped_bytes?: number;
+  stdout_total_bytes?: number;
+  evidence_capture_error?: string;
+  /** Set when the parser had to fall back to bounded buffer output. */
+  partial?: boolean;
+  partial_reason?: string;
+  /** Optional inline preview of stdout (head/tail with elision marker). */
+  stdout_preview?: string;
 }
 
 export interface NarrativePhase {
@@ -69,6 +84,12 @@ export interface ReportOptions {
   include_attack_navigator?: boolean;
   include_gap_analysis?: boolean;
   max_timeline_entries?: number;
+  /** Lazy fetcher for full evidence-store content. When provided,
+   * evidence chains will include a head/tail preview of stdout for
+   * findings whose action recorded a `stdout_evidence_id`. */
+  evidence_loader?: (evidenceId: string) => string | null;
+  /** Bytes of head + tail to show in the inline preview (default 8 KiB). */
+  evidence_preview_bytes?: number;
 }
 
 export interface ReportInput {
@@ -92,7 +113,7 @@ export interface ReportInput {
 // Per-Finding Sections
 // ============================================================
 
-export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[], config: EngagementConfig): ReportFinding[] {
+export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[], config: EngagementConfig, opts?: { evidenceLoader?: (id: string) => string | null; previewBytes?: number }): ReportFinding[] {
   const findings: ReportFinding[] = [];
   const nodeMap = new Map<string, NodeProperties>();
   for (const n of graph.nodes) nodeMap.set(n.id, n.properties);
@@ -125,7 +146,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       const src = nodeMap.get(e.source);
       return `${e.properties.type} from ${src?.label || e.source}`;
     });
-    const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+    const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
     const hopsToObj = computeHopsToObjective(n.id, graph, config);
 
     findings.push({
@@ -149,7 +170,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     const host = nodeMap.get(e.target);
     if (host?.type !== 'host' || compromisedHostIds.has(e.target)) continue;
     const src = nodeMap.get(e.source);
-    const evidence = buildEvidenceChainsForNode(e.target, graph, history);
+    const evidence = buildEvidenceChainsForNode(e.target, graph, history, opts);
     findings.push({
       id: `finding-access-${e.source}-${e.target}`,
       title: `Administrative Access Path: ${host.label || host.ip || e.target}`,
@@ -168,7 +189,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     if (n.properties.type !== 'credential') continue;
     if (n.properties.confidence < 0.9 || !isCredentialUsableForAuth(n.properties)) continue;
 
-    const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+    const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
     const validOnEdges = graph.edges.filter(e =>
       e.source === n.id && e.properties.type === 'VALID_ON'
     );
@@ -213,7 +234,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     const exploitEdges = graph.edges.filter(e =>
       e.properties.type === 'EXPLOITS' && e.source === n.id
     );
-    const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+    const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
 
     findings.push({
       id: `finding-vuln-${n.id}`,
@@ -252,7 +273,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
 
       const policyNames = policyEdges.map(e => nodeMap.get(e.target)?.label || e.target);
       const trustedBy = assumedByEdges.map(e => nodeMap.get(e.source)?.label || e.source);
-      const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+      const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
 
       const isAdmin = policyNames.some(p =>
         /administrator|admin|fullaccess|\*/i.test(p)
@@ -283,7 +304,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       );
       if (!isPublic && vulnEdges.length === 0) continue;
 
-      const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+      const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
 
       findings.push({
         id: `finding-cloud-${n.id}`,
@@ -317,7 +338,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
 
     const vulnLabels = vulnEdges.map(e => nodeMap.get(e.target)?.label || e.target);
     const authSources = authEdges.map(e => nodeMap.get(e.source)?.label || e.source);
-    const evidence = buildEvidenceChainsForNode(n.id, graph, history);
+    const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
     const url = n.properties.url || n.properties.label || n.id;
 
     findings.push({
@@ -386,8 +407,11 @@ export function buildEvidenceChainsForNode(
   nodeId: string,
   graph: ExportedGraph,
   history: ActivityLogEntry[],
+  opts?: { evidenceLoader?: (evidenceId: string) => string | null; previewBytes?: number },
 ): EvidenceChain[] {
   const chains: EvidenceChain[] = [];
+  const previewBytes = opts?.previewBytes ?? 8 * 1024;
+  const loader = opts?.evidenceLoader;
 
   // 1. Find activity log entries that reference this node
   const relatedEntries = history.filter(entry => {
@@ -408,8 +432,25 @@ export function buildEvidenceChainsForNode(
     }
   }
 
+  // For each related action_id, also pull every history entry sharing
+  // that action_id (e.g. action_started / action_completed) so we can
+  // attach stdout_evidence_id / stderr_evidence_id from the terminal
+  // execution event even though those events do not carry node refs.
+  const allByAction = new Map<string, ActivityLogEntry[]>();
+  if (byAction.size > 0) {
+    const wantedIds = new Set(byAction.keys());
+    for (const entry of history) {
+      if (entry.action_id && wantedIds.has(entry.action_id)) {
+        const group = allByAction.get(entry.action_id) || [];
+        group.push(entry);
+        allByAction.set(entry.action_id, group);
+      }
+    }
+  }
+
   for (const [actionId, entries] of byAction) {
     const first = entries[0];
+    const allEntries = allByAction.get(actionId) || entries;
 
     // Merge evidence from all entries in the action cluster.
     // Later lifecycle events (finding_ingested, action_completed) are more
@@ -421,7 +462,7 @@ export function buildEvidenceChainsForNode(
     };
     let bestEvidence: Record<string, unknown> | undefined;
     let bestPriority = -1;
-    for (const entry of entries) {
+    for (const entry of allEntries) {
       const det = entry.details as Record<string, unknown> | undefined;
       if (!det) continue;
       if (det.evidence_type || det.evidence_content || det.evidence_filename || det.raw_output) {
@@ -434,6 +475,31 @@ export function buildEvidenceChainsForNode(
     }
     // Fall back to first entry's details if no entry carried evidence fields
     const d = bestEvidence ?? (first.details as Record<string, unknown> | undefined);
+
+    // Pull terminal-execution diagnostics from the action lifecycle events.
+    let stdoutEvidenceId: string | undefined;
+    let stderrEvidenceId: string | undefined;
+    let stdoutTruncated: boolean | undefined;
+    let stdoutDropped: number | undefined;
+    let stdoutTotal: number | undefined;
+    let evidenceCaptureError: string | undefined;
+    let partial: boolean | undefined;
+    let partialReason: string | undefined;
+    for (const entry of allEntries) {
+      const det = entry.details as Record<string, unknown> | undefined;
+      if (!det) continue;
+      if (typeof det.stdout_evidence_id === 'string') stdoutEvidenceId = det.stdout_evidence_id;
+      if (typeof det.stderr_evidence_id === 'string') stderrEvidenceId = det.stderr_evidence_id;
+      if (typeof det.stdout_truncated === 'boolean') stdoutTruncated = det.stdout_truncated;
+      if (typeof det.stdout_dropped_bytes === 'number') stdoutDropped = det.stdout_dropped_bytes;
+      if (typeof det.stdout_total_bytes === 'number') stdoutTotal = det.stdout_total_bytes;
+      if (typeof det.evidence_capture_error === 'string') evidenceCaptureError = det.evidence_capture_error;
+      const ps = det.parse_summary as Record<string, unknown> | undefined;
+      if (ps) {
+        if (typeof ps.partial === 'boolean') partial = ps.partial;
+        if (typeof ps.partial_reason === 'string') partialReason = ps.partial_reason;
+      }
+    }
 
     const chain: EvidenceChain = {
       claim: first.description,
@@ -449,6 +515,27 @@ export function buildEvidenceChainsForNode(
     if (d?.evidence_content) chain.evidence_content = d.evidence_content as string;
     if (d?.evidence_filename) chain.evidence_filename = d.evidence_filename as string;
     if (d?.raw_output) chain.raw_output = d.raw_output as string;
+    if (stdoutEvidenceId) chain.stdout_evidence_id = stdoutEvidenceId;
+    if (stderrEvidenceId) chain.stderr_evidence_id = stderrEvidenceId;
+    if (stdoutTruncated !== undefined) chain.stdout_truncated = stdoutTruncated;
+    if (stdoutDropped !== undefined) chain.stdout_dropped_bytes = stdoutDropped;
+    if (stdoutTotal !== undefined) chain.stdout_total_bytes = stdoutTotal;
+    if (evidenceCaptureError) chain.evidence_capture_error = evidenceCaptureError;
+    if (partial !== undefined) chain.partial = partial;
+    if (partialReason) chain.partial_reason = partialReason;
+
+    // Lazily resolve a head/tail preview of stdout from the evidence store
+    // so reports show what the parser actually saw without bloating output.
+    if (loader && stdoutEvidenceId) {
+      try {
+        const full = loader(stdoutEvidenceId);
+        if (full !== null) {
+          chain.stdout_preview = formatPreview(full, previewBytes);
+        }
+      } catch {
+        // best-effort — never fail report generation on a missing blob
+      }
+    }
     chains.push(chain);
   }
 
@@ -489,6 +576,7 @@ export function buildEvidenceChainsForNode(
 export function buildAllEvidenceChains(
   graph: ExportedGraph,
   history: ActivityLogEntry[],
+  opts?: { evidenceLoader?: (id: string) => string | null; previewBytes?: number },
 ): Map<string, EvidenceChain[]> {
   const result = new Map<string, EvidenceChain[]>();
 
@@ -498,13 +586,23 @@ export function buildAllEvidenceChains(
   ]);
   const interestingNodes = graph.nodes.filter(n => interestingTypes.has(n.properties.type));
   for (const n of interestingNodes) {
-    const chains = buildEvidenceChainsForNode(n.id, graph, history);
+    const chains = buildEvidenceChainsForNode(n.id, graph, history, opts);
     if (chains.length > 0) {
       result.set(n.id, chains);
     }
   }
 
   return result;
+}
+
+/** Render a head/tail preview of large evidence content with an
+ * elision marker citing the byte count. Always returns ≤ 2*budget. */
+function formatPreview(text: string, budget: number): string {
+  if (text.length <= budget * 2 + 64) return text;
+  const head = text.slice(0, budget);
+  const tail = text.slice(-budget);
+  const elided = text.length - head.length - tail.length;
+  return `${head}\n\n[… ${elided.toLocaleString()} bytes elided — fetch full content via evidence ID …]\n\n${tail}`;
 }
 
 // ============================================================
@@ -688,7 +786,10 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   const graph = input.graph;
   const history = input.history;
 
-  const findings = buildFindings(graph, history, config);
+  const evidenceOpts = options.evidence_loader
+    ? { evidenceLoader: options.evidence_loader, previewBytes: options.evidence_preview_bytes }
+    : undefined;
+  const findings = buildFindings(graph, history, config, evidenceOpts);
   const narrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
   const credChains = buildCredentialChains(graph);
 
@@ -844,6 +945,34 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
           lines.push('  ```');
           for (const rl of ev.raw_output.slice(0, 2048).split('\n').slice(0, 30)) {
             lines.push(`  ${rl}`);
+          }
+          lines.push('  ```');
+          lines.push('  </details>');
+        }
+        // Streamed-evidence diagnostics (round-3 fields).
+        if (ev.partial) {
+          lines.push(`  - ⚠️ Parser saw partial output${ev.partial_reason ? ` (${ev.partial_reason})` : ''}`);
+        }
+        if (ev.stdout_truncated) {
+          const dropped = ev.stdout_dropped_bytes ? ` — ${ev.stdout_dropped_bytes.toLocaleString()} bytes dropped` : '';
+          const total = ev.stdout_total_bytes ? ` of ${ev.stdout_total_bytes.toLocaleString()} bytes total` : '';
+          lines.push(`  - ⚠️ stdout truncated${dropped}${total}`);
+        }
+        if (ev.evidence_capture_error) {
+          lines.push(`  - ❌ Evidence capture error: ${ev.evidence_capture_error}`);
+        }
+        if (ev.stdout_evidence_id) {
+          lines.push(`  - Full stdout evidence ID: \`${ev.stdout_evidence_id}\``);
+        }
+        if (ev.stderr_evidence_id) {
+          lines.push(`  - Full stderr evidence ID: \`${ev.stderr_evidence_id}\``);
+        }
+        if (ev.stdout_preview) {
+          lines.push('  <details><summary>stdout preview (head + tail)</summary>');
+          lines.push('');
+          lines.push('  ```');
+          for (const pl of ev.stdout_preview.split('\n').slice(0, 80)) {
+            lines.push(`  ${pl}`);
           }
           lines.push('  ```');
           lines.push('  </details>');

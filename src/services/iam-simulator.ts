@@ -8,6 +8,20 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { EdgeProperties, NodeProperties } from '../types.js';
+import { expandAzureRole } from './azure-roles.js';
+
+/**
+ * A policy attached to a principal (directly or via group), enriched
+ * with the edge attrs that attached it. For Azure the edge carries
+ * the assignment `scope` and `role_definition_name` — without those
+ * the simulator cannot answer scoped questions correctly.
+ */
+type AttachedPolicy = {
+  id: string;
+  node: NodeProperties;
+  assignment_scope?: string;
+  role_definition_name?: string;
+};
 
 export interface IAMEvalResult {
   allowed: boolean;
@@ -17,6 +31,10 @@ export interface IAMEvalResult {
   provider?: 'aws' | 'azure' | 'gcp';
   evaluated_principals?: string[];
   assumption_paths?: string[][];
+  /** Policies that were enumerated but not permission-expanded (e.g.
+   * Azure built-in roles not yet in our mapping table). Caller should
+   * treat these as "unknown — could be allow OR deny". */
+  enumerated_only_policies?: string[];
 }
 
 /**
@@ -74,7 +92,7 @@ export function evaluateIAM(
   const provider = principal.provider || detectProvider(principal);
 
   // Collect all policies attached to the principal and confirmed assumable roles.
-  const policyNodes: Array<{ id: string; node: NodeProperties }> = [];
+  const policyNodes: AttachedPolicy[] = [];
   const seenPolicies = new Set<string>();
   const evaluatedPrincipals: string[] = [];
   const assumptionPaths: string[][] = [];
@@ -82,9 +100,12 @@ export function evaluateIAM(
   const visited = new Set<string>();
   const maxAssumeDepth = 5;
 
-  function addPolicy(policy: { id: string; node: NodeProperties }): void {
-    if (seenPolicies.has(policy.id)) return;
-    seenPolicies.add(policy.id);
+  function addPolicy(policy: AttachedPolicy): void {
+    // Same policy node may be attached at multiple scopes / via group +
+    // direct: keep distinct by id+scope so Azure scope analysis sees both.
+    const key = `${policy.id}::${policy.assignment_scope ?? ''}`;
+    if (seenPolicies.has(key)) return;
+    seenPolicies.add(key);
     policyNodes.push(policy);
   }
 
@@ -154,28 +175,38 @@ function detectProvider(node: NodeProperties): 'aws' | 'azure' | 'gcp' | undefin
 function collectDirectAndGroupPolicies(
   principalId: string,
   ctx: EngineContext,
-): Array<{ id: string; node: NodeProperties }> {
-  const policies: Array<{ id: string; node: NodeProperties }> = [];
+): AttachedPolicy[] {
+  const policies: AttachedPolicy[] = [];
   const seen = new Set<string>();
 
-  function addPolicy(policyTarget: string): void {
-    if (!ctx.graph.hasNode(policyTarget) || seen.has(policyTarget)) return;
+  function addPolicy(policyTarget: string, edgeAttrs: EdgeProperties): void {
+    if (!ctx.graph.hasNode(policyTarget)) return;
     const policyNode = ctx.graph.getNodeAttributes(policyTarget) as NodeProperties;
     if (policyNode.type !== 'cloud_policy') return;
-    seen.add(policyTarget);
-    policies.push({ id: policyTarget, node: policyNode });
+    // Allow same policy with different scope to register twice — the
+    // simulator's outer dedupe handles id+scope uniqueness.
+    const e = edgeAttrs as unknown as { scope?: string; role_definition_name?: string };
+    const key = `${policyTarget}::${e.scope ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    policies.push({
+      id: policyTarget,
+      node: policyNode,
+      assignment_scope: e.scope,
+      role_definition_name: e.role_definition_name,
+    });
   }
 
   ctx.graph.forEachOutEdge(principalId, (_edge, attrs, _src, target) => {
     if (attrs.type === 'HAS_POLICY') {
-      addPolicy(target);
+      addPolicy(target, attrs as EdgeProperties);
       return;
     }
 
     // Group memberships: principal → MEMBER_OF → group → HAS_POLICY → policy
     if (attrs.type === 'MEMBER_OF') {
       ctx.graph.forEachOutEdge(target, (_e2, a2, _s2, policyTarget) => {
-        if (a2.type === 'HAS_POLICY') addPolicy(policyTarget);
+        if (a2.type === 'HAS_POLICY') addPolicy(policyTarget, a2 as EdgeProperties);
       });
     }
   });
@@ -204,7 +235,7 @@ function canUseAssumeRoleEdge(
  * AWS IAM evaluation: explicit deny → allow → implicit deny.
  */
 function evaluateAWS(
-  policies: Array<{ id: string; node: NodeProperties }>,
+  policies: AttachedPolicy[],
   action: string,
   resource: string,
 ): IAMEvalResult {
@@ -259,28 +290,68 @@ function evaluateAWS(
 
 /**
  * Azure RBAC evaluation: role assignments with scope hierarchy matching.
+ *
+ * For each attached policy we use:
+ *  - `actions` from the policy node if present (set during ingest from the
+ *    azure-roles built-in mapping table);
+ *  - if missing, expand on the fly from `role_definition_name` carried on
+ *    the edge — and if still unknown, record the policy as `enumerated_only`
+ *    so the caller does not silently get an "implicit deny".
+ *  - the assignment `scope` from the edge constrains resource matching:
+ *    a Reader@RG/foo assignment must NOT match resources outside RG/foo.
  */
 function evaluateAzure(
-  policies: Array<{ id: string; node: NodeProperties }>,
+  policies: AttachedPolicy[],
   action: string,
   resource: string,
 ): IAMEvalResult {
   const denyPolicies: string[] = [];
   const allowPolicies: string[] = [];
+  const enumeratedOnly: string[] = [];
 
-  for (const { id, node } of policies) {
-    const policyActions = (node.actions as string[]) || [];
-    const policyResources = (node.resources as string[]) || ['*'];
-    const effect = node.effect || 'allow';
+  for (const { id, node, assignment_scope, role_definition_name } of policies) {
     const policyName = node.policy_name || node.label || id;
+    const effect = node.effect || 'allow';
+
+    // Resolve effective actions: prefer node-stored, then expand role on demand.
+    let policyActions = (node.actions as string[]) || [];
+    let notActions: string[] = (node.not_actions as string[]) || [];
+    let expanded = policyActions.length > 0 || (node.permission_expansion as string) === 'expanded';
+    if (!expanded) {
+      const roleName = role_definition_name || (node.role_definition_name as string) || policyName;
+      const exp = expandAzureRole(roleName);
+      if (exp.expanded) {
+        policyActions = exp.actions;
+        notActions = exp.not_actions;
+        expanded = true;
+      }
+    }
+
+    // Effective scope: prefer the edge scope (per-assignment), then the
+    // node's recorded scope, then policy.resources, then '*'.
+    const scopeFromNode = (node.assignment_scope as string) || undefined;
+    const scopes: string[] = assignment_scope
+      ? [assignment_scope]
+      : scopeFromNode
+        ? [scopeFromNode]
+        : (node.resources as string[]) || ['*'];
+
+    if (!expanded) {
+      // We know the role exists and is assigned at this scope, but cannot
+      // tell if it grants `action`. Surface as enumerated_only.
+      enumeratedOnly.push(policyName);
+      continue;
+    }
 
     const actionMatch = policyActions.some(a => matchAction(a, action));
-    // Azure scope: resource must be at or below the scope
-    const resourceMatch = policyResources.some(r =>
-      matchResource(r, resource) || resource.toLowerCase().startsWith(r.toLowerCase() + '/')
+    const notActionMatch = notActions.some(a => matchAction(a, action));
+    const resourceMatch = scopes.some(r =>
+      r === '*' ||
+      matchResource(r, resource) ||
+      resource.toLowerCase().startsWith(r.toLowerCase() + '/')
     );
 
-    if (actionMatch && resourceMatch) {
+    if (actionMatch && !notActionMatch && resourceMatch) {
       if (effect === 'deny') {
         denyPolicies.push(policyName);
       } else {
@@ -297,6 +368,7 @@ function evaluateAzure(
       matching_policies: allowPolicies,
       deny_policies: denyPolicies,
       provider: 'azure',
+      enumerated_only_policies: enumeratedOnly.length ? enumeratedOnly : undefined,
     };
   }
 
@@ -306,6 +378,19 @@ function evaluateAzure(
       reason: `Allowed by RBAC: ${allowPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       provider: 'azure',
+      enumerated_only_policies: enumeratedOnly.length ? enumeratedOnly : undefined,
+    };
+  }
+
+  if (enumeratedOnly.length > 0) {
+    // We saw role assignments but cannot expand them — caller MUST treat
+    // this as “unknown” rather than “denied”.
+    return {
+      allowed: false,
+      reason: `Indeterminate — ${enumeratedOnly.length} role assignment(s) enumerated but not permission-expanded: ${enumeratedOnly.join(', ')}`,
+      matching_policies: [],
+      provider: 'azure',
+      enumerated_only_policies: enumeratedOnly,
     };
   }
 
@@ -322,7 +407,7 @@ function evaluateAzure(
  * Basic evaluation without CEL conditions.
  */
 function evaluateGCP(
-  policies: Array<{ id: string; node: NodeProperties }>,
+  policies: AttachedPolicy[],
   action: string,
   resource: string,
 ): IAMEvalResult {

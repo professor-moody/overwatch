@@ -268,6 +268,14 @@ export interface InstrumentedProcessOpts {
   allow_unverified_scope?: boolean;
   parse_with?: string;
   parser_context?: ParseContext;
+  /**
+   * Which captured stream feeds the parser.
+   *  - `stdout` (default for most parsers): only stdout.
+   *  - `stderr`: only stderr (for tools that emit machine-readable output to stderr).
+   *  - `combined`: stdout + stderr concatenated.
+   *  - `auto`: stdout if non-empty, else stderr.
+   */
+  parse_stream?: 'stdout' | 'stderr' | 'combined' | 'auto';
   noise_estimate?: number;
 
   /**
@@ -310,6 +318,7 @@ export async function runInstrumentedProcess(
     validate,
     parse_with,
     parser_context,
+    parse_stream,
     noise_estimate: noiseOverride,
     allow_unverified_scope,
   } = opts;
@@ -555,9 +564,26 @@ export async function runInstrumentedProcess(
   // The streaming sinks always emit a manifest record (so action lifecycle
   // events can reference them by ID) but we only surface the IDs in the
   // lifecycle event when there was actually output to record.
-  await Promise.all([stdoutSink.end(), stderrSink.end()]);
-  const stdout_evidence_id = stdoutInfo.total > 0 ? stdoutSink.evidence_id : undefined;
-  const stderr_evidence_id = stderrInfo.total > 0 ? stderrSink.evidence_id : undefined;
+  // Sink finalization may reject if a write failed (ENOSPC, EIO, etc.).
+  // We capture the error rather than throwing so the action lifecycle
+  // event can record `evidence_capture_error` instead of silently
+  // claiming evidence that does not exist.
+  const finalizeResults = await Promise.allSettled([stdoutSink.end(), stderrSink.end()]);
+  const stdoutCaptureError = finalizeResults[0].status === 'rejected'
+    ? (finalizeResults[0].reason instanceof Error
+        ? finalizeResults[0].reason.message
+        : String(finalizeResults[0].reason))
+    : (stdoutSink.error()?.message);
+  const stderrCaptureError = finalizeResults[1].status === 'rejected'
+    ? (finalizeResults[1].reason instanceof Error
+        ? finalizeResults[1].reason.message
+        : String(finalizeResults[1].reason))
+    : (stderrSink.error()?.message);
+  // If a write failed, do not claim a usable evidence_id on the event —
+  // the manifest record is preserved but downstream consumers should
+  // know not to trust the blob.
+  const stdout_evidence_id = stdoutInfo.total > 0 && !stdoutCaptureError ? stdoutSink.evidence_id : undefined;
+  const stderr_evidence_id = stderrInfo.total > 0 && !stderrCaptureError ? stderrSink.evidence_id : undefined;
 
   // ---- 5. Terminal lifecycle event ----
   const succeeded = !result.spawn_error && !result.timed_out && result.exit_code === 0;
@@ -603,6 +629,9 @@ export async function runInstrumentedProcess(
       stderr_total_bytes: stderrInfo.total,
       stdout_dropped_bytes: result.stdout.dropped_bytes || undefined,
       stderr_dropped_bytes: result.stderr.dropped_bytes || undefined,
+      evidence_capture_error: stdoutCaptureError || stderrCaptureError
+        ? { stdout: stdoutCaptureError, stderr: stderrCaptureError }
+        : undefined,
       spawn_error: result.spawn_error,
       reason: failureReason,
       command: command_repr,
@@ -635,8 +664,64 @@ export async function runInstrumentedProcess(
         if (Object.keys(aliases).length > 0) ctx.domain_aliases = aliases;
       }
 
-      const fullStdout = result.stdout.toFullString();
-      const finding = parseOutput(parse_with, fullStdout, agent_id, ctx);
+      const fullStdoutInline = result.stdout.toFullString();
+      const fullStderrInline = result.stderr.toFullString();
+
+      // Phase D3: when stdout was truncated by the bounded buffer but the
+      // streamed evidence captured the whole thing, parse from the evidence
+      // file so large outputs (nuclei/nmap/azurehound) are not silently
+      // mis-parsed. If the evidence read fails for any reason, fall back to
+      // the bounded inline buffer and flag the parse as partial.
+      let parseFromEvidence = false;
+      let parseFromEvidenceError: string | undefined;
+      let fullStdout = fullStdoutInline;
+      let fullStderr = fullStderrInline;
+      if (stdoutInfo.truncated && stdout_evidence_id) {
+        try {
+          const onDisk = engine.getEvidenceStore().getRawOutput(stdout_evidence_id);
+          if (onDisk !== null) {
+            fullStdout = onDisk;
+            parseFromEvidence = true;
+          } else {
+            parseFromEvidenceError = 'evidence_blob_missing';
+          }
+        } catch (err) {
+          parseFromEvidenceError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      if (stderrInfo.truncated && stderr_evidence_id) {
+        try {
+          const onDisk = engine.getEvidenceStore().getRawOutput(stderr_evidence_id);
+          if (onDisk !== null) fullStderr = onDisk;
+        } catch {
+          // best-effort — stderr fallback is not common
+        }
+      }
+
+      // Phase D4: choose which stream feeds the parser.
+      const stream = parse_stream ?? 'stdout';
+      let parserInput: string;
+      switch (stream) {
+        case 'stderr':
+          parserInput = fullStderr;
+          break;
+        case 'combined':
+          parserInput = fullStdout + (fullStderr ? `\n${fullStderr}` : '');
+          break;
+        case 'auto':
+          parserInput = fullStdout.trim().length > 0 ? fullStdout : fullStderr;
+          break;
+        case 'stdout':
+        default:
+          parserInput = fullStdout;
+          break;
+      }
+      const usedStream: 'stdout' | 'stderr' | 'combined' | 'auto' =
+        stream === 'auto'
+          ? (fullStdout.trim().length > 0 ? 'stdout' : 'stderr')
+          : stream;
+
+      const finding = parseOutput(parse_with, parserInput, agent_id, ctx);
       if (!finding) {
         parse_summary = { error: `Parser '${parse_with}' returned no finding` };
         engine.logActionEvent({
@@ -655,9 +740,13 @@ export async function runInstrumentedProcess(
         finding.tool_name = parse_with;
         finding.frontier_item_id = frontier_item_id;
         // Phase I: when the run finished with an unexpected non-zero exit,
-        // mark every parsed node so downstream consumers (UI, retrospectives,
-        // inference) can recognize that the data may be incomplete.
-        if (partialParse) {
+        // OR when we parsed from the bounded inline buffer because the
+        // streamed evidence was unavailable, mark every parsed node so
+        // downstream consumers (UI, retrospectives, inference) can
+        // recognize that the data may be incomplete.
+        const boundedFallback = stdoutInfo.truncated && !parseFromEvidence;
+        const partialAny = partialParse || boundedFallback;
+        if (partialAny) {
           for (const node of finding.nodes) {
             (node as Record<string, unknown>).partial = true;
           }
@@ -687,7 +776,17 @@ export async function runInstrumentedProcess(
             finding_id: finding.id,
             nodes_parsed: finding.nodes.length,
             edges_parsed: finding.edges.length,
-            partial: partialParse || undefined,
+            partial: partialAny || undefined,
+            partial_reason: partialAny
+              ? (partialParse && boundedFallback
+                  ? 'nonzero_exit_and_bounded_buffer_only'
+                  : partialParse
+                    ? 'nonzero_exit'
+                    : 'bounded_buffer_only')
+              : undefined,
+            parse_stream: usedStream,
+            parsed_from_evidence: parseFromEvidence || undefined,
+            evidence_read_error: parseFromEvidenceError,
             exit_code: result.exit_code,
             ingested: {
               new_nodes: ingestResult.new_nodes.length,

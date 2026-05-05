@@ -262,7 +262,12 @@ export class FrontierComputer {
       const maskStr = cidr.split('/')[1];
       const mask = maskStr ? parseInt(maskStr) : 32;
       const hostBits = 32 - mask;
-      const totalEstimate = mask >= 31 ? 1 : Math.max(2 ** hostBits - 2, 1);
+      // /32 is a single host, /31 is point-to-point (2 usable per RFC 3021),
+      // anything larger reserves network + broadcast.
+      const totalEstimate =
+        mask >= 32 ? 1
+        : mask === 31 ? 2
+        : Math.max(2 ** hostBits - 2, 1);
       const cappedEstimate = Math.min(totalEstimate, 254);
 
       const discoveredInCidr = discoveredIps.filter(ip => isIpInCidr(ip, cidr)).length;

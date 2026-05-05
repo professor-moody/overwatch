@@ -69,6 +69,7 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
           domain: z.string().optional(),
           source_host: z.string().optional(),
         }).optional().describe('Optional context passed to the parser'),
+        parse_stream: z.enum(['stdout', 'stderr', 'combined', 'auto']).optional().describe("Which captured stream feeds the parser. 'stdout' (default), 'stderr' for tools that emit on stderr, 'combined' to concat, 'auto' to pick stdout if non-empty else stderr."),
         noise_estimate: z.number().min(0).max(1).optional().describe('Predicted noise level (overrides validation estimate when present)'),
       },
       annotations: {
@@ -108,6 +109,7 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         allow_unverified_scope: params.allow_unverified_scope,
         parse_with: params.parse_with,
         parser_context: params.parser_context,
+        parse_stream: params.parse_stream,
         noise_estimate: params.noise_estimate,
         invoking_tool: 'run_tool',
       });

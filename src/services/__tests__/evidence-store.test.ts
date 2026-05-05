@@ -153,4 +153,19 @@ describe('EvidenceStore', () => {
     const record = store.getRecord(sink.evidence_id);
     expect(record!.raw_output_length).toBe(32 * 1024 * 1024);
   });
+
+  it('createBlobStream records capture_error and only counts confirmed durable bytes when the underlying file write fails', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      evidence_type: 'command_output',
+      kind: 'raw_output',
+    });
+    sink.write(Buffer.from('one '));
+    sink.write(Buffer.from('two'));
+    await sink.end();
+    // Sanity: success path leaves capture_error unset.
+    expect(store.getRecord(sink.evidence_id)!.capture_error).toBeUndefined();
+    expect(sink.error()).toBeNull();
+    expect(sink.bytesWritten()).toBe(7);
+  });
 });

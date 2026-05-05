@@ -250,24 +250,36 @@ export class GraphEngine {
   addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean } {
     // Check for duplicate edge of same type
     const existingEdges = this.ctx.graph.edges(source, target);
+    // For scope-bearing Azure RBAC edges, dedupe must include `scope` so
+    // distinct role assignments at different scopes do not collapse and
+    // silently overwrite each other's scope properties.
+    const scopeAware = props.type === 'HAS_POLICY' || props.type === 'POLICY_ALLOWS';
+    const incomingScope = scopeAware ? (props as unknown as { scope?: string }).scope : undefined;
     for (const edgeId of existingEdges) {
       const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
-      if (attrs.type === props.type) {
-        // Detect confirmation of inferred edge
-        if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
-          props = { ...props, confirmed_at: new Date().toISOString() };
-          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
-        }
-        // Update existing edge — property-only change, no topology change
-        this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
-        this.invalidateHealthReport();
-        return { id: edgeId, isNew: false };
+      if (attrs.type !== props.type) continue;
+      if (scopeAware) {
+        const existingScope = (attrs as { scope?: string }).scope;
+        if ((existingScope || undefined) !== (incomingScope || undefined)) continue;
       }
+      // Detect confirmation of inferred edge
+      if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
+        props = { ...props, confirmed_at: new Date().toISOString() };
+        this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+      }
+      // Update existing edge — property-only change, no topology change
+      this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
+      this.invalidateHealthReport();
+      return { id: edgeId, isNew: false };
     }
     // New edge — topology change
     this.invalidatePathGraph();
     this.invalidateAllCaches();
-    const edgeId = `${source}--${props.type}--${target}`;
+    // Scope-aware edge keys keep distinct role assignments separate.
+    const baseKey = `${source}--${props.type}--${target}`;
+    const edgeId = scopeAware && incomingScope
+      ? `${baseKey}--${createHash('sha1').update(incomingScope).digest('hex').slice(0, 10)}`
+      : baseKey;
     try {
       return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
     } catch (err: unknown) {

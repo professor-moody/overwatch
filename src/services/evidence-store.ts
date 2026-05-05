@@ -26,6 +26,10 @@ export interface EvidenceRecord {
   filename?: string;
   content_length: number;
   raw_output_length: number;
+  /** Set when the streaming sink encountered a write error. The blob may
+   * still exist on disk but the byte counts represent only what was
+   * confirmed durable. */
+  capture_error?: string;
 }
 
 export class EvidenceStore {
@@ -124,6 +128,10 @@ export class EvidenceStore {
     evidence_id: string;
     write: (chunk: Buffer | string) => void;
     end: () => Promise<void>;
+    /** Final byte count (durable). Available after end() resolves. */
+    bytesWritten: () => number;
+    /** First write/finalize error if any. */
+    error: () => Error | null;
   } {
     const evidenceId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -131,43 +139,84 @@ export class EvidenceStore {
     const ext = kind === 'raw_output' ? 'raw' : 'content';
     const path = join(this.dir, `${evidenceId}.${ext}`);
     let stream: WriteStream | null = null;
-    let bytes = 0;
+    // Writes that have been issued vs. confirmed durable. We update the
+    // public `bytes` count only on the write callback so a manifest record
+    // never claims more bytes than actually landed on disk.
+    let bytesDurable = 0;
     let finalized = false;
+    let writeError: Error | null = null;
+    // Backpressure: when stream.write() returns false we must wait for
+    // 'drain' before issuing the next write. We serialize behind a tail
+    // promise so callers can stay synchronous (`sink.write(chunk)`) while
+    // still respecting backpressure semantics under load.
+    let writeChain: Promise<void> = Promise.resolve();
 
     const ensureStream = (): WriteStream => {
-      if (!stream) stream = createWriteStream(path, { flags: 'w' });
+      if (!stream) {
+        stream = createWriteStream(path, { flags: 'w' });
+        stream.on('error', (err: Error) => {
+          if (!writeError) writeError = err;
+        });
+      }
       return stream;
+    };
+
+    const writeChunk = (buf: Buffer): Promise<void> => {
+      return new Promise<void>((resolve) => {
+        if (writeError) { resolve(); return; }
+        const s = ensureStream();
+        const ok = s.write(buf, (err?: Error | null) => {
+          if (err && !writeError) writeError = err;
+          else if (!err) bytesDurable += buf.length;
+          // resolve regardless — backpressure handled below
+          if (ok) resolve();
+        });
+        if (!ok) {
+          // Wait for drain before resolving so the next write waits too.
+          s.once('drain', () => resolve());
+        }
+      });
     };
 
     return {
       evidence_id: evidenceId,
       write: (chunk: Buffer | string) => {
-        if (finalized) return;
+        if (finalized || writeError) return;
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        bytes += buf.length;
-        ensureStream().write(buf);
+        writeChain = writeChain.then(() => writeChunk(buf));
       },
       end: async () => {
         if (finalized) return;
         finalized = true;
+        // Drain queued writes before closing.
+        await writeChain;
         if (stream) {
-          await new Promise<void>((resolve, reject) => {
-            stream!.end((err?: Error | null) => err ? reject(err) : resolve());
+          await new Promise<void>((resolve) => {
+            stream!.end((err?: Error | null) => {
+              if (err && !writeError) writeError = err;
+              resolve();
+            });
           });
         }
-        const record: EvidenceRecord = {
+        // Always record the manifest entry, but if writes failed mark the
+        // record so consumers can detect partial / corrupt evidence.
+        const record: EvidenceRecord & { capture_error?: string } = {
           evidence_id: evidenceId,
           action_id: opts.action_id,
           finding_id: opts.finding_id,
           timestamp,
           evidence_type: opts.evidence_type,
           filename: opts.filename,
-          content_length: kind === 'content' ? bytes : 0,
-          raw_output_length: kind === 'raw_output' ? bytes : 0,
+          content_length: kind === 'content' ? bytesDurable : 0,
+          raw_output_length: kind === 'raw_output' ? bytesDurable : 0,
         };
+        if (writeError) record.capture_error = writeError.message;
         this.manifest.push(record);
         this.saveManifest();
+        if (writeError) throw writeError;
       },
+      bytesWritten: () => bytesDurable,
+      error: () => writeError,
     };
   }
 
