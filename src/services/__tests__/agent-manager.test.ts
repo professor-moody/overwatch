@@ -162,9 +162,11 @@ describe('AgentManager', () => {
 
     it('returns all registered tasks', () => {
       const { mgr } = setup();
-      mgr.register(makeTask({ id: 't1' }));
-      mgr.register(makeTask({ id: 't2' }));
-      mgr.register(makeTask({ id: 't3' }));
+      // Distinct frontier_item_ids — P1.4 leases would otherwise refuse
+      // duplicate registrations on the same frontier item.
+      mgr.register(makeTask({ id: 't1', frontier_item_id: 'fi-A' }));
+      mgr.register(makeTask({ id: 't2', frontier_item_id: 'fi-B' }));
+      mgr.register(makeTask({ id: 't3', frontier_item_id: 'fi-C' }));
       expect(mgr.getAll()).toHaveLength(3);
     });
   });

@@ -200,3 +200,88 @@ describe('activity-chain (Phase 6)', () => {
     expect(h3).not.toBe(h1);
   });
 });
+
+// ============================================================
+// P0.2: signed checkpoints
+// ============================================================
+
+import { shouldEmitCheckpoint, buildCheckpoint, verifyCheckpoints } from '../activity-chain.js';
+
+describe('activity-chain P0.2 (checkpoints)', () => {
+  it('shouldEmitCheckpoint emits the first checkpoint as soon as any chained event exists', () => {
+    expect(shouldEmitCheckpoint({
+      chained_events_since_previous: 1,
+      seconds_since_previous_checkpoint: 0,
+      has_previous_checkpoint: false,
+    })).toBe(true);
+  });
+
+  it('shouldEmitCheckpoint waits for the events threshold by default', () => {
+    expect(shouldEmitCheckpoint({
+      chained_events_since_previous: 100,
+      seconds_since_previous_checkpoint: 60,
+      has_previous_checkpoint: true,
+    })).toBe(false);
+    expect(shouldEmitCheckpoint({
+      chained_events_since_previous: 500,
+      seconds_since_previous_checkpoint: 60,
+      has_previous_checkpoint: true,
+    })).toBe(true);
+  });
+
+  it('shouldEmitCheckpoint also fires on the time-based ceiling', () => {
+    expect(shouldEmitCheckpoint({
+      chained_events_since_previous: 5,
+      seconds_since_previous_checkpoint: 30 * 60,
+      has_previous_checkpoint: true,
+    })).toBe(true);
+  });
+
+  it('engine emits a checkpoint after first chained event when chain is enabled', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    // The engine may already have emitted the first checkpoint from init-time
+    // chained events (engagement creation logs a system event). What we
+    // assert is that AT LEAST ONE checkpoint exists once the chain is non-empty.
+    eng.logActionEvent({ description: 'first', event_type: 'action_started', provenance: 'agent' });
+    const checkpoints = (eng as any).ctx.chainCheckpoints as ReturnType<typeof buildCheckpoint>[];
+    expect(checkpoints.length).toBeGreaterThanOrEqual(1);
+    expect(checkpoints[0].event_hash).toBeTruthy();
+    // The checkpoint references an event that exists in the log with the
+    // matching hash.
+    const log = eng.getFullHistory();
+    const referenced = log[checkpoints[0].event_index];
+    expect(referenced).toBeDefined();
+    expect(referenced.event_hash).toBe(checkpoints[0].event_hash);
+  });
+
+  it('verifyCheckpoints flags mismatches against tampered events', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    eng.logActionEvent({ description: 'first', event_type: 'action_started', provenance: 'agent' });
+    const log = eng.getFullHistory();
+    const checkpoints = (eng as any).ctx.chainCheckpoints as ReturnType<typeof buildCheckpoint>[];
+    // Tamper with the event the checkpoint references.
+    log[checkpoints[0].event_index].event_hash = 'bad';
+    const result = verifyCheckpoints(log, checkpoints);
+    expect(result.valid).toBe(false);
+    expect(result.mismatches.length).toBe(1);
+  });
+
+  it('verifyChain accepts a starting point so it does not have to walk from genesis', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig(true), TEST_STATE_FILE);
+    for (let i = 0; i < 5; i++) {
+      eng.logActionEvent({
+        description: `e${i}`,
+        event_type: i % 2 === 0 ? 'action_started' : 'action_completed',
+        provenance: 'agent',
+      });
+    }
+    const log = eng.getFullHistory();
+    const checkpoints = (eng as any).ctx.chainCheckpoints as ReturnType<typeof buildCheckpoint>[];
+    const cp = checkpoints[checkpoints.length - 1];
+    const result = verifyChain(log, { event_index: cp.event_index, event_hash: cp.event_hash });
+    expect(result.valid).toBe(true);
+  });
+});

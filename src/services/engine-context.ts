@@ -17,7 +17,9 @@ import { ColdStore } from './cold-store.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
-import { computeEventHash, shouldChainEntry, GENESIS_HASH } from './activity-chain.js';
+import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
+import { eventIdOrUuid } from './deterministic-id.js';
+import { FrontierLeases } from './frontier-leases.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -53,7 +55,10 @@ export type ActivityEventType =
   | 'tape_session_started'
   | 'tape_session_stopped'
   | 'mock_service_registered'
-  | 'mock_service_refreshed';
+  | 'mock_service_refreshed'
+  | 'heartbeat'
+  | 'phase_entered'
+  | 'phase_exited';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }
@@ -132,6 +137,25 @@ export class EngineContext {
   dedupCount: number;                        // total deduplicated findings for retrospective
   frontierLinkage: FrontierLinkageTracker;   // status of every frontier item we've surfaced
   lastChainHash: string;                     // running tail of the activity hash-chain (Phase 6)
+  // P0.2: chain checkpoints. Emitted periodically so verifiers can resume
+  // from a known-good tail instead of replaying from genesis. Persisted as
+  // part of state so they survive restarts.
+  chainCheckpoints: ChainCheckpoint[];
+  chainEventsSinceCheckpoint: number;        // chained-event count since the last checkpoint
+  checkpointOptions: CheckpointEmitOptions;  // per-engagement override (env or config)
+  // P1.2: monotonic sequence counter used to derive deterministic IDs
+  // (one per call, always increases). Persisted with state. Only consulted
+  // when `config.engagement_nonce` is set; legacy engagements ignore it.
+  deterministicSeq: number;
+  // P1.3: caller-provided clock. When set, mutation paths that record
+  // timestamps (`logEvent`, `addNode`, `addEdge`, …) read from here
+  // instead of calling `new Date()`. `withClock(now, fn)` is the public
+  // entry point — see method below.
+  injectedNow?: string;
+  // P1.4: frontier item leases. When an agent claims a frontier item it
+  // takes a lease so other agents see "in progress" and skip it. Reaped
+  // by the same watchdog that handles heartbeat timeouts.
+  frontierLeases: FrontierLeases;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -154,6 +178,45 @@ export class EngineContext {
     this.dedupCount = 0;
     this.frontierLinkage = new FrontierLinkageTracker();
     this.lastChainHash = GENESIS_HASH;
+    this.chainCheckpoints = [];
+    this.chainEventsSinceCheckpoint = 0;
+    this.checkpointOptions = {};
+    this.deterministicSeq = 0;
+    this.frontierLeases = new FrontierLeases();
+  }
+
+  /**
+   * P1.3: scoped clock injection. Inside `fn`, any code that reads `nowIso()`
+   * gets the pinned timestamp. Used by integration tests (and the golden-
+   * master replay harness) to make the recorded ISO timestamps deterministic.
+   *
+   * Restores the previous value on exit, so nested calls behave correctly.
+   */
+  withClock<T>(now: string, fn: () => T): T {
+    const prev = this.injectedNow;
+    this.injectedNow = now;
+    try {
+      return fn();
+    } finally {
+      this.injectedNow = prev;
+    }
+  }
+
+  /**
+   * P1.3: read the current timestamp. Honors `withClock` injection when set;
+   * otherwise falls through to `new Date().toISOString()`.
+   */
+  nowIso(): string {
+    return this.injectedNow ?? new Date().toISOString();
+  }
+
+  /**
+   * P1.2: bump and return the monotonic sequence counter used for
+   * deterministic ID derivation. Caller should bump once per ID generation.
+   */
+  nextDeterministicSeq(): number {
+    this.deterministicSeq += 1;
+    return this.deterministicSeq;
   }
 
   log(message: string, agentId?: string, extra?: Partial<Pick<ActivityLogEntry, 'category' | 'frontier_type' | 'outcome'>>): void {
@@ -202,17 +265,58 @@ export class EngineContext {
         }
       }
     }
+    // P1.3: prefer the injected clock so replay/test harnesses can pin time.
+    const timestamp = this.nowIso();
+    // P1.2: when the engagement carries a nonce, derive event_id
+    // deterministically; otherwise fall through to uuidv4 (default
+    // generated inside normalizeActivityLogEntry).
+    const derivedEventId = eventIdOrUuid(
+      this.config.engagement_nonce
+        ? {
+          engagement_nonce: this.config.engagement_nonce,
+          agent_id: enriched.agent_id,
+          timestamp,
+          command_signature: `${enriched.event_type ?? 'event'}|${enriched.action_id ?? ''}|${enriched.description}`,
+          sequence: this.nextDeterministicSeq(),
+        }
+        : null,
+    );
     const entry = normalizeActivityLogEntry({
       ...enriched,
-      timestamp: new Date().toISOString(),
-    });
-    // Hash-chain (Phase 6): only when explicitly enabled. Computed before push
-    // so the stored entry carries the chain fields.
+      event_id: derivedEventId,
+      timestamp,
+    } as Partial<ActivityLogEntry> & { description: string; timestamp?: string });
+    // Hash-chain: only when explicitly enabled. P0.2 flipped the schema
+    // default to true so new engagements opt in by default. Computed before
+    // push so the stored entry carries the chain fields.
     if (this.config.hash_chain_enabled) {
       if (shouldChainEntry(entry)) {
         entry.prev_hash = this.lastChainHash;
         entry.event_hash = computeEventHash(entry, this.lastChainHash);
         this.lastChainHash = entry.event_hash;
+        this.chainEventsSinceCheckpoint += 1;
+        // P0.2: emit a checkpoint when the policy says so. The activityLog
+        // index for `entry` is its position once pushed below.
+        const previous = this.chainCheckpoints[this.chainCheckpoints.length - 1];
+        const secondsSince = previous
+          ? (Date.parse(entry.timestamp) - Date.parse(previous.emitted_at)) / 1000
+          : 0;
+        const shouldEmit = shouldEmitCheckpoint({
+          chained_events_since_previous: this.chainEventsSinceCheckpoint,
+          seconds_since_previous_checkpoint: secondsSince,
+          has_previous_checkpoint: !!previous,
+        }, this.checkpointOptions);
+        if (shouldEmit) {
+          this.chainCheckpoints.push(buildCheckpoint({
+            event_index: this.activityLog.length, // index after push (current length BEFORE push = new index)
+            event_id: entry.event_id,
+            event_hash: entry.event_hash,
+            events_since_previous: this.chainEventsSinceCheckpoint,
+            emitted_at: entry.timestamp,
+            signing_key_id: this.config.engagement_signing_key_id,
+          }));
+          this.chainEventsSinceCheckpoint = 0;
+        }
       } else {
         entry.chain_excluded = true;
       }

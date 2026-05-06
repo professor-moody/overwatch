@@ -168,4 +168,77 @@ describe('EvidenceStore', () => {
     expect(sink.error()).toBeNull();
     expect(sink.bytesWritten()).toBe(7);
   });
+
+  // ============================================================
+  // P1.1: content-addressed evidence
+  // ============================================================
+
+  describe('P1.1 content addressing', () => {
+    it('store stamps content_hash on the manifest record', () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const id = store.store({
+        evidence_type: 'command_output',
+        content: 'hello world',
+        action_id: 'act-1',
+      });
+      const record = store.getRecord(id)!;
+      expect(record.content_hash).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('two stores of identical content dedup to the same evidence_id', () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const id1 = store.store({
+        evidence_type: 'command_output',
+        content: 'identical bytes',
+        action_id: 'act-A',
+      });
+      const id2 = store.store({
+        evidence_type: 'command_output',
+        content: 'identical bytes',
+        action_id: 'act-B',
+      });
+      expect(id2).toBe(id1);
+      const all = store.list();
+      const matching = all.filter(r => r.evidence_id === id1);
+      expect(matching.length).toBe(2);
+      expect(matching.map(r => r.action_id).sort()).toEqual(['act-A', 'act-B']);
+    });
+
+    it('different content produces different content_hash and different evidence_id', () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const id1 = store.store({ evidence_type: 'command_output', content: 'a' });
+      const id2 = store.store({ evidence_type: 'command_output', content: 'b' });
+      expect(id1).not.toBe(id2);
+      expect(store.getRecord(id1)!.content_hash).not.toBe(store.getRecord(id2)!.content_hash);
+    });
+
+    it('lookups accept either evidence_id (UUID) or content_hash', () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const id = store.store({ evidence_type: 'command_output', content: 'lookup me' });
+      const hash = store.getRecord(id)!.content_hash!;
+      expect(store.getContent(id)).toBe('lookup me');
+      expect(store.getContent(hash)).toBe('lookup me');
+      expect(store.getRecord(hash)?.evidence_id).toBe(id);
+      expect(store.resolveKey(hash)).toBe(id);
+      expect(store.resolveKey(id)).toBe(id);
+      expect(store.resolveKey('not-a-key-or-hash')).toBeNull();
+    });
+
+    it('streamed evidence carries a content_hash equal to the streamed bytes', async () => {
+      const store = new EvidenceStore(TEST_STATE);
+      const sink = store.createBlobStream({
+        action_id: 'act-stream',
+        evidence_type: 'command_output',
+        kind: 'content',
+      });
+      sink.write(Buffer.from('stream '));
+      sink.write(Buffer.from('me'));
+      await sink.end();
+      const record = store.getRecord(sink.evidence_id)!;
+      expect(record.content_hash).toMatch(/^[0-9a-f]{64}$/);
+      const { createHash } = await import('crypto');
+      const expected = createHash('sha256').update('stream me').digest('hex');
+      expect(record.content_hash).toBe(expected);
+    });
+  });
 });

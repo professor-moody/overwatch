@@ -12,10 +12,10 @@
 // ============================================================
 
 import { spawn } from 'child_process';
-import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { parseOutput, getSupportedParsers, isAcceptableParserExit } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
+import { actionIdOrUuid } from '../services/deterministic-id.js';
 import type { ParseContext } from '../types.js';
 
 // F3: argv/command target extraction.
@@ -493,7 +493,23 @@ export async function runInstrumentedProcess(
     allow_unverified_scope,
   } = opts;
 
-  const normalizedActionId = action_id || uuidv4();
+  // P1.2: when the engagement carries a nonce, derive action_id
+  // deterministically from (nonce | agent_id | now | command | seq).
+  // Otherwise fall through to uuidv4 — strict migration: legacy
+  // engagements (pre-nonce) keep their UUID-based action IDs forever.
+  const ctxConfig = engine.getConfig();
+  const nowForId = engine.now();
+  const normalizedActionId = action_id || actionIdOrUuid(
+    ctxConfig.engagement_nonce
+      ? {
+        engagement_nonce: ctxConfig.engagement_nonce,
+        agent_id,
+        timestamp: nowForId,
+        command_signature: command_repr,
+        sequence: engine.nextDeterministicSeq(),
+      }
+      : null,
+  );
   const tool_name = rawToolName || command_repr.trim().split(/\s+/)[0] || binary;
   const resolvedDescription = description || command_repr;
   const effectiveTimeout = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;

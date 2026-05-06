@@ -14,7 +14,41 @@ export class AgentManager {
     this.ctx = ctx;
   }
 
-  register(task: AgentTask): void {
+  register(task: AgentTask): { ok: boolean; lease_conflict?: { existing_task_id: string; existing_agent_id: string } } {
+    // P1.4: take a frontier lease before claiming the task. If another
+    // agent already holds the lease, refuse the registration. This makes
+    // race-resolution explicit instead of relying on
+    // `getRunningTaskForFrontierItem`'s implicit ordering.
+    if (task.frontier_item_id) {
+      const result = this.ctx.frontierLeases.acquire({
+        frontier_item_id: task.frontier_item_id,
+        agent_id: task.agent_id,
+        task_id: task.id,
+        now: this.ctx.nowIso(),
+      });
+      if (!result.ok && result.existing) {
+        this.ctx.logEvent({
+          description: `Agent registration refused: ${task.agent_id} cannot claim ${task.frontier_item_id} (held by task ${result.existing.task_id})`,
+          agent_id: task.agent_id,
+          category: 'agent',
+          event_type: 'instrumentation_warning',
+          frontier_item_id: task.frontier_item_id,
+          result_classification: 'failure',
+          details: {
+            reason: 'frontier_lease_conflict',
+            existing_task_id: result.existing.task_id,
+            existing_agent_id: result.existing.agent_id,
+          },
+        });
+        return {
+          ok: false,
+          lease_conflict: {
+            existing_task_id: result.existing.task_id,
+            existing_agent_id: result.existing.agent_id,
+          },
+        };
+      }
+    }
     this.ctx.agents.set(task.id, task);
     this.ctx.logEvent({
       description: `Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`,
@@ -29,6 +63,7 @@ export class AgentManager {
         subgraph_node_ids: task.subgraph_node_ids,
       },
     });
+    return { ok: true };
   }
 
   getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
@@ -63,6 +98,10 @@ export class AgentManager {
     if (status === 'completed' || status === 'failed') {
       task.completed_at = new Date().toISOString();
     }
+    // P1.4: release any frontier lease this task held.
+    if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+      this.ctx.frontierLeases.releaseByTask(taskId);
+    }
     this.ctx.logEvent({
       description: `Agent ${task.agent_id} ${status}${summary ? `: ${summary}` : ''}`,
       agent_id: task.agent_id,
@@ -81,6 +120,73 @@ export class AgentManager {
 
   getAll(): AgentTask[] {
     return Array.from(this.ctx.agents.values());
+  }
+
+  /**
+   * P0.3: heartbeat from a long-running sub-agent. Updates `heartbeat_at`
+   * and emits a low-volume `heartbeat` activity event (excluded from the
+   * hash chain — same class as `thought`). Returns false if the task is
+   * unknown or already terminal; true on success.
+   */
+  heartbeat(taskId: string, now?: string): boolean {
+    const task = this.ctx.agents.get(taskId);
+    if (!task) return false;
+    const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
+    if (TERMINAL.includes(task.status)) return false;
+    task.heartbeat_at = now ?? new Date().toISOString();
+    // P1.4: heartbeat extends any lease this task holds.
+    this.ctx.frontierLeases.renew(task.id, task.heartbeat_at);
+    this.ctx.logEvent({
+      description: `Agent heartbeat: ${task.agent_id}`,
+      agent_id: task.agent_id,
+      category: 'agent',
+      event_type: 'heartbeat',
+      linked_agent_task_id: task.id,
+      frontier_item_id: task.frontier_item_id,
+      result_classification: 'neutral',
+      details: { heartbeat_at: task.heartbeat_at },
+    });
+    return true;
+  }
+
+  /**
+   * P0.3: walk running tasks and interrupt any whose heartbeat is older
+   * than their TTL. Tasks without a heartbeat field are exempt
+   * (preserves backward-compat for tools that don't yet heartbeat).
+   * Returns the number of tasks interrupted.
+   */
+  reapStaleHeartbeats(now?: string): number {
+    const cutoffNow = now ? Date.parse(now) : Date.now();
+    let reaped = 0;
+    for (const task of this.ctx.agents.values()) {
+      if (task.status !== 'running') continue;
+      if (!task.heartbeat_at) continue; // never heartbeated → exempt
+      const ttl = (task.heartbeat_ttl_seconds ?? 120) * 1000;
+      const last = Date.parse(task.heartbeat_at);
+      if (Number.isNaN(last)) continue;
+      if (cutoffNow - last <= ttl) continue;
+      task.status = 'interrupted';
+      task.completed_at = new Date(cutoffNow).toISOString();
+      task.result_summary = task.result_summary ?? `heartbeat_timeout: last beat ${task.heartbeat_at}, ttl ${ttl / 1000}s`;
+      // P1.4: release lease the moment the task is declared dead.
+      this.ctx.frontierLeases.releaseByTask(task.id);
+      this.ctx.logEvent({
+        description: `Agent ${task.agent_id} interrupted: heartbeat timeout`,
+        agent_id: task.agent_id,
+        category: 'agent',
+        event_type: 'instrumentation_warning',
+        linked_agent_task_id: task.id,
+        frontier_item_id: task.frontier_item_id,
+        result_classification: 'failure',
+        details: {
+          reason: 'heartbeat_timeout',
+          heartbeat_at: task.heartbeat_at,
+          heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
+        },
+      });
+      reaped++;
+    }
+    return reaped;
   }
 
   /**

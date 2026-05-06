@@ -64,7 +64,26 @@ The agent can then call get_agent_context with its task ID to receive its scoped
       }
 
       const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill);
-      engine.registerAgent(task);
+      const reg = engine.registerAgent(task);
+      if (!reg.ok) {
+        // P1.4: another task already holds the lease on this frontier item.
+        // Surface the conflict to the caller so they can take a different
+        // item rather than racing.
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: 'frontier_lease_conflict',
+              frontier_item_id,
+              existing_task_id: reg.lease_conflict?.existing_task_id,
+              existing_agent_id: reg.lease_conflict?.existing_agent_id,
+              message: `Frontier item ${frontier_item_id} is already leased by task ${reg.lease_conflict?.existing_task_id}. Pick a different item.`,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
 
       const response: Record<string, unknown> = {
         task_id: task.id,
@@ -645,6 +664,62 @@ Skips items that already have a running agent.`,
         }]
       };
     })
+  );
+
+  // ============================================================
+  // Tool: agent_heartbeat (P0.3)
+  // Sub-agents call this periodically so the watchdog can distinguish
+  // "still working" from "silently dead." Tasks that never heartbeat
+  // are exempt from the watchdog (preserves backward-compat for
+  // legacy in-process sub-agents that complete in one MCP turn).
+  // ============================================================
+  server.registerTool(
+    'agent_heartbeat',
+    {
+      title: 'Agent Heartbeat',
+      description: `Sub-agents call this periodically (recommended every 30–60 seconds) to signal liveness.
+
+The runtime watchdog will mark agents as "interrupted" if their last heartbeat is older than \`heartbeat_ttl_seconds\` (default 120s). Agents that never heartbeat are exempt — tools that complete in a single MCP turn don't need to call this.
+
+Returns the new heartbeat timestamp on success, or an error if the task is unknown / already in a terminal state.`,
+      inputSchema: {
+        task_id: z.string().describe('Task ID returned from register_agent'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('agent_heartbeat', async ({ task_id }) => {
+      const ok = engine.agentHeartbeat(task_id);
+      if (!ok) {
+        const task = engine.getTask(task_id);
+        const reason = !task
+          ? `task not found: ${task_id}`
+          : `task is already in terminal state: ${task.status}`;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ ok: false, error: reason }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const task = engine.getTask(task_id)!;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            task_id,
+            heartbeat_at: task.heartbeat_at,
+            heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
+          }, null, 2),
+        }],
+      };
+    }),
   );
 }
 

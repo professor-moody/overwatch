@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, createWriteStream, type WriteStream } from 'fs';
 import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash, type Hash } from 'crypto';
 
 // Defense-in-depth: reject evidence IDs with path traversal components
 function sanitizeEvidenceId(id: string): string {
@@ -19,6 +20,14 @@ function sanitizeEvidenceId(id: string): string {
 
 export interface EvidenceRecord {
   evidence_id: string;
+  /**
+   * P1.1: sha256(content + '\\0' + raw_output) hex digest. Stable across
+   * runs of the same input. Two writes producing identical bytes share
+   * the same content_hash, which lets the store deduplicate (and lets
+   * auditors detect tampering — modified content produces a different
+   * hash). Optional for backward-compat with manifests written before P1.1.
+   */
+  content_hash?: string;
   action_id?: string;
   finding_id?: string;
   timestamp: string;
@@ -30,6 +39,16 @@ export interface EvidenceRecord {
    * still exist on disk but the byte counts represent only what was
    * confirmed durable. */
   capture_error?: string;
+}
+
+function computeContentHash(content?: string, raw_output?: string): string {
+  // Combine content + raw_output with a NUL separator so a write where
+  // (content='ab', raw_output='c') is distinct from (content='a', raw_output='bc').
+  const h = createHash('sha256');
+  if (content !== undefined) h.update(content);
+  h.update('\0');
+  if (raw_output !== undefined) h.update(raw_output);
+  return h.digest('hex');
 }
 
 export class EvidenceStore {
@@ -68,6 +87,11 @@ export class EvidenceStore {
   /**
    * Store evidence and/or raw_output, returning a stable evidence_id.
    * Content is written to individual files to avoid bloating state.
+   *
+   * P1.1: if a prior record exists with the same `content_hash`, return
+   * its evidence_id instead of writing duplicate bytes. Files on disk stay
+   * UUID-keyed (path stability for any old reference); the manifest carries
+   * the content_hash so lookups by either key resolve correctly.
    */
   store(opts: {
     action_id?: string;
@@ -77,6 +101,35 @@ export class EvidenceStore {
     content?: string;
     raw_output?: string;
   }): string {
+    const contentHash = computeContentHash(opts.content, opts.raw_output);
+    // Dedup: if we've already stored this content (regardless of which
+    // action/finding referenced it), reuse the existing evidence_id and
+    // append a thin attribution-only record so list() still surfaces the
+    // new (action_id, finding_id) pair without re-writing the bytes.
+    const existing = this.manifest.find(r => r.content_hash === contentHash);
+    if (existing) {
+      // Reuse the existing evidence_id; record an attribution if this is
+      // a different (action_id, finding_id) tuple from the original.
+      const sameAttribution =
+        existing.action_id === opts.action_id && existing.finding_id === opts.finding_id;
+      if (!sameAttribution) {
+        const aliasRecord: EvidenceRecord = {
+          evidence_id: existing.evidence_id, // shared key — file is the same
+          content_hash: contentHash,
+          action_id: opts.action_id,
+          finding_id: opts.finding_id,
+          timestamp: new Date().toISOString(),
+          evidence_type: opts.evidence_type,
+          filename: opts.filename,
+          content_length: existing.content_length,
+          raw_output_length: existing.raw_output_length,
+        };
+        this.manifest.push(aliasRecord);
+        this.saveManifest();
+      }
+      return existing.evidence_id;
+    }
+
     const evidenceId = uuidv4();
     const timestamp = new Date().toISOString();
 
@@ -91,6 +144,7 @@ export class EvidenceStore {
 
     const record: EvidenceRecord = {
       evidence_id: evidenceId,
+      content_hash: contentHash,
       action_id: opts.action_id,
       finding_id: opts.finding_id,
       timestamp,
@@ -145,6 +199,10 @@ export class EvidenceStore {
     let bytesDurable = 0;
     let finalized = false;
     let writeError: Error | null = null;
+    // P1.1: streaming sha256 over the content, finalized when the sink is
+    // closed. The companion stream (if any) is written separately and
+    // gets its own evidence_id; the hash here covers only this stream.
+    const hasher: Hash = createHash('sha256');
     // Backpressure: when stream.write() returns false we must wait for
     // 'drain' before issuing the next write. We serialize behind a tail
     // promise so callers can stay synchronous (`sink.write(chunk)`) while
@@ -167,7 +225,10 @@ export class EvidenceStore {
         const s = ensureStream();
         const ok = s.write(buf, (err?: Error | null) => {
           if (err && !writeError) writeError = err;
-          else if (!err) bytesDurable += buf.length;
+          else if (!err) {
+            bytesDurable += buf.length;
+            hasher.update(buf);
+          }
           // resolve regardless — backpressure handled below
           if (ok) resolve();
         });
@@ -200,8 +261,13 @@ export class EvidenceStore {
         }
         // Always record the manifest entry, but if writes failed mark the
         // record so consumers can detect partial / corrupt evidence.
+        // P1.1: stamp the streamed content_hash. For partial/erroring
+        // streams the hash represents only the bytes that landed durably,
+        // so it agrees with the recorded length.
+        const contentHash = hasher.digest('hex');
         const record: EvidenceRecord & { capture_error?: string } = {
           evidence_id: evidenceId,
+          content_hash: contentHash,
           action_id: opts.action_id,
           finding_id: opts.finding_id,
           timestamp,
@@ -220,25 +286,44 @@ export class EvidenceStore {
     };
   }
 
-  /** Retrieve full evidence content by ID. */
-  getContent(evidenceId: string): string | null {
-    const safe = sanitizeEvidenceId(evidenceId);
+  /**
+   * P1.1: resolve either an evidence_id (UUID) OR a content_hash (sha256
+   * hex) to the canonical evidence_id used as the on-disk filename. Returns
+   * null if neither matches.
+   */
+  resolveKey(idOrHash: string): string | null {
+    // First try direct evidence_id match (cheap walk).
+    if (this.manifest.some(r => r.evidence_id === idOrHash)) return idOrHash;
+    // Fallback: content_hash → evidence_id. Multiple manifest rows may
+    // alias the same evidence_id; the file lives once on disk so any
+    // matching row tells us the right key.
+    const byHash = this.manifest.find(r => r.content_hash === idOrHash);
+    return byHash ? byHash.evidence_id : null;
+  }
+
+  /** Retrieve full evidence content by ID or content_hash. */
+  getContent(idOrHash: string): string | null {
+    const resolved = this.resolveKey(idOrHash);
+    if (!resolved) return null;
+    const safe = sanitizeEvidenceId(resolved);
     const path = join(this.dir, `${safe}.content`);
     if (!existsSync(path)) return null;
     return readFileSync(path, 'utf-8');
   }
 
-  /** Retrieve full raw output by ID. */
-  getRawOutput(evidenceId: string): string | null {
-    const safe = sanitizeEvidenceId(evidenceId);
+  /** Retrieve full raw output by ID or content_hash. */
+  getRawOutput(idOrHash: string): string | null {
+    const resolved = this.resolveKey(idOrHash);
+    if (!resolved) return null;
+    const safe = sanitizeEvidenceId(resolved);
     const path = join(this.dir, `${safe}.raw`);
     if (!existsSync(path)) return null;
     return readFileSync(path, 'utf-8');
   }
 
-  /** Get the manifest record for a specific evidence ID. */
-  getRecord(evidenceId: string): EvidenceRecord | undefined {
-    return this.manifest.find(r => r.evidence_id === evidenceId);
+  /** Get the manifest record for a specific evidence ID or content_hash. */
+  getRecord(idOrHash: string): EvidenceRecord | undefined {
+    return this.manifest.find(r => r.evidence_id === idOrHash || r.content_hash === idOrHash);
   }
 
   /** List all evidence records, optionally filtered by action_id or finding_id. */

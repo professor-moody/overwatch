@@ -1498,9 +1498,10 @@ export class GraphEngine {
   // Agent Management (delegated to AgentManager)
   // =============================================
 
-  registerAgent(task: AgentTask): void {
-    this.agentMgr.register(task);
+  registerAgent(task: AgentTask): { ok: boolean; lease_conflict?: { existing_task_id: string; existing_agent_id: string } } {
+    const result = this.agentMgr.register(task);
     this.persist();
+    return result;
   }
 
   getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
@@ -1514,6 +1515,69 @@ export class GraphEngine {
   /** All known agent tasks (running, completed, failed, interrupted). */
   getAgentTasks(): AgentTask[] {
     return this.agentMgr.getAll();
+  }
+
+  /**
+   * P1.3: read the current ISO timestamp through the engine. Honors
+   * `withClock(...)` injection if active; otherwise wall-clock.
+   */
+  now(): string {
+    return this.ctx.nowIso();
+  }
+
+  /**
+   * P1.3: scoped clock injection passthrough. Used by integration tests
+   * and the golden-master replay harness to pin time across a sequence
+   * of MCP calls so timestamps in the recorded graph stay deterministic.
+   */
+  withClock<T>(now: string, fn: () => T): T {
+    return this.ctx.withClock(now, fn);
+  }
+
+  /**
+   * P1.2: bump and return the per-engagement deterministic-ID sequence
+   * counter. Caller passes the value into `deterministicActionId(...)`.
+   */
+  nextDeterministicSeq(): number {
+    return this.ctx.nextDeterministicSeq();
+  }
+
+  /** P0.3: heartbeat + watchdog passthrough. */
+  agentHeartbeat(taskId: string, now?: string): boolean {
+    const ok = this.agentMgr.heartbeat(taskId, now);
+    if (ok) this.persist();
+    return ok;
+  }
+
+  reapStaleAgents(now?: string): number {
+    const reaped = this.agentMgr.reapStaleHeartbeats(now);
+    if (reaped > 0) this.persist();
+    return reaped;
+  }
+
+  /**
+   * P1.4: list active frontier leases (used by `next_task` filtering and
+   * by the dashboard to surface "in progress" indicators).
+   */
+  getActiveFrontierLeases(now?: string): import('./frontier-leases.js').FrontierLease[] {
+    return this.ctx.frontierLeases.list(now ?? this.ctx.nowIso());
+  }
+
+  /** True iff `frontier_item_id` is leased by a different task than `requesterTaskId`. */
+  isFrontierItemHeldByOther(frontier_item_id: string, requesterTaskId?: string, now?: string): boolean {
+    return this.ctx.frontierLeases.isHeldByOther(
+      frontier_item_id,
+      requesterTaskId,
+      now ?? this.ctx.nowIso(),
+    );
+  }
+
+  /**
+   * P1.4: drop frontier leases whose TTL has elapsed. Called by the
+   * watchdog. Returns the dropped frontier_item_ids.
+   */
+  reapExpiredFrontierLeases(now?: string): string[] {
+    return this.ctx.frontierLeases.reapExpired(now ?? this.ctx.nowIso());
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {

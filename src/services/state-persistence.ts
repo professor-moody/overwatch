@@ -16,6 +16,7 @@ import { dirname, basename, join } from 'path';
 import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
 import { normalizeActivityLogEntry } from './engine-context.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
+import { FrontierLeases } from './frontier-leases.js';
 import type { InferenceRule, NodeProperties } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
@@ -279,6 +280,16 @@ export class StatePersistence {
       coldStore: this.ctx.coldStore.export(),
       opsecTracker: this.ctx.opsecTracker.serialize(),
       frontierLinkage: this.ctx.frontierLinkage.serialize(),
+      // P0.2: chain checkpoints persist with state so verifiers can resume
+      // from a known-good point after restart instead of replaying genesis.
+      chainCheckpoints: this.ctx.chainCheckpoints,
+      // P1.2: deterministic sequence counter. Must survive restart; otherwise
+      // post-restart actions would collide with pre-restart ones because the
+      // counter would reset to 1.
+      deterministicSeq: this.ctx.deterministicSeq,
+      // P1.4: frontier leases. Survive restart so a still-running agent
+      // doesn't lose its claim across an engine restart.
+      frontierLeases: this.ctx.frontierLeases.serialize(),
     };
     const json = JSON.stringify(data);
     const serializeEnd = Date.now();
@@ -402,6 +413,15 @@ export class StatePersistence {
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.rebuildChainTail();
+    // P0.2: restore chain checkpoints. If the field is missing (legacy
+    // snapshots, or hash chain disabled), keep the empty array.
+    this.ctx.chainCheckpoints = Array.isArray(data.chainCheckpoints) ? data.chainCheckpoints : [];
+    this.ctx.chainEventsSinceCheckpoint = 0;
+    // P1.2: restore deterministic sequence counter so post-restart IDs
+    // don't collide with pre-restart ones.
+    this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
+    // P1.4: restore frontier leases.
+    this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persistImmediate();
     return true;
@@ -433,6 +453,15 @@ export class StatePersistence {
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.rebuildChainTail();
+    // P0.2: restore chain checkpoints. If the field is missing (legacy
+    // snapshots, or hash chain disabled), keep the empty array.
+    this.ctx.chainCheckpoints = Array.isArray(data.chainCheckpoints) ? data.chainCheckpoints : [];
+    this.ctx.chainEventsSinceCheckpoint = 0;
+    // P1.2: restore deterministic sequence counter so post-restart IDs
+    // don't collide with pre-restart ones.
+    this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
+    // P1.4: restore frontier leases.
+    this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[]): boolean {

@@ -194,6 +194,16 @@ export class EngagementManager {
       };
     }
 
+    // P1.2: every NEW engagement gets a deterministic-id nonce. Templates
+    // that already shipped a nonce keep it; otherwise we mint a fresh one.
+    // Legacy engagements loaded from disk that lack the nonce stay on UUIDs.
+    if (typeof (config as { engagement_nonce?: string }).engagement_nonce !== 'string') {
+      // 32 random bytes hex-encoded; 64 chars; matches schema regex.
+      // Imported here lazily to avoid widening the module's static surface.
+      const { randomBytes } = require('crypto');
+      (config as { engagement_nonce?: string }).engagement_nonce = (randomBytes(32) as Buffer).toString('hex');
+    }
+
     const filePath = join(this.engagementsDir, `${id}.json`);
     writeFileSync(filePath, JSON.stringify(config, null, 2));
     return this.toSummary(config, filePath, false);

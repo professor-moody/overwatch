@@ -356,7 +356,18 @@ export interface EngagementConfig {
   failure_patterns?: { technique: string; target_pattern?: string; warning: string }[];  // Retrospective feedback for validation
   phases?: EngagementPhase[];     // ordered engagement phases with entry/exit criteria
   max_prompt_tokens?: number;     // Token budget for system prompt generation (default 8000)
-  hash_chain_enabled?: boolean;   // Enable tamper-evident hash chain over agent/system events (default false)
+  hash_chain_enabled?: boolean;   // Enable tamper-evident hash chain over agent/system events (default TRUE for new engagements; legacy engagements without the flag set keep their original behavior)
+  /** Optional signing key identifier used to sign chain checkpoints. Implementation stub today. */
+  engagement_signing_key_id?: string;
+  /**
+   * P1.2: per-engagement nonce (32 random bytes hex-encoded). Generated
+   * once at engagement creation; persisted; never rotated. Presence of
+   * this field flips action_id generation from uuidv4 to a deterministic
+   * sha256-derived form, which is what makes byte-reproducible replay
+   * possible. Legacy engagements that pre-date P1.2 leave this undefined
+   * and continue to use uuidv4 forever (strict migration).
+   */
+  engagement_nonce?: string;
   /** In-process JSON-RPC tape recorder. Off by default. */
   tape?: {
     enabled?: boolean;
@@ -449,7 +460,18 @@ export const engagementConfigSchema = z.object({
   opsec: opsecProfileSchema,
   phases: z.array(engagementPhaseSchema).optional(),
   max_prompt_tokens: z.number().int().min(1000).max(100000).optional(),
-  hash_chain_enabled: z.boolean().optional(),
+  // P0.2: hash chain default-on for newly-parsed engagement configs. Legacy
+  // engagements that were already serialized with the field omitted keep
+  // their old behavior; the runtime distinguishes "explicit false" from
+  // "explicit true" both intentional, while undefined-after-parse defaults
+  // to true. Tests that bypass schema parsing (cast `as any`) keep undefined
+  // and therefore the legacy off-by-default behavior.
+  hash_chain_enabled: z.boolean().default(true),
+  engagement_signing_key_id: z.string().optional(),
+  // P1.2: engagement nonce. Optional in the schema so legacy parses don't
+  // throw, but engagement creation will populate it for new engagements.
+  // 64-char hex (32 bytes). The runtime treats absence as "stay on UUIDs."
+  engagement_nonce: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   /**
    * In-process JSON-RPC tape recorder. When `enabled: true` the MCP server
    * captures every wire frame (both directions) into a JSONL tape and
@@ -571,6 +593,14 @@ export interface AgentTask {
   skill?: string;
   completed_at?: string;
   result_summary?: string;
+  // P0.3: heartbeat-based liveness for long-running sub-agents. The agent
+  // calls `agent_heartbeat({task_id})` periodically; the watchdog walks
+  // running tasks and marks any whose `heartbeat_at` is older than
+  // `heartbeat_ttl_seconds` as 'interrupted'. Tasks without a heartbeat
+  // field never time out — preserves the legacy behavior for tools that
+  // don't yet heartbeat.
+  heartbeat_at?: string;
+  heartbeat_ttl_seconds?: number;
 }
 
 // --- Finding (reported by agents) ---
