@@ -94,10 +94,15 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
     );
     if (seenNodes.has(resolvedCredId)) continue;
 
+    // 1.4: never put cracked plaintext into the credential `label`. Labels
+    // surface in dashboard UI, exported reports, retrospective summaries,
+    // and OPSEC logs — none of those should leak secret material by default.
+    // The plaintext lives only in `cred_value`, which the report renderer
+    // redacts unless an explicit secrets-mode flag is set.
     nodes.push({
       id: resolvedCredId,
       type: 'credential',
-      label: username ? `${username}:${plaintext}` : `cracked:${plaintext}`,
+      label: username ? `cracked:${username}` : 'cracked:credential',
       cred_type: 'plaintext',
       cred_material_kind: 'plaintext_password',
       cred_usable_for_auth: true,

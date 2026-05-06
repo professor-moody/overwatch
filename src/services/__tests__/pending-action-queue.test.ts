@@ -199,7 +199,7 @@ describe('PendingActionQueue', () => {
   // ==== timeout ====
 
   describe('timeout auto-approve', () => {
-    it('auto-approves after timeout', async () => {
+    it('auto-approves after timeout, tagged unattended_execute (loud)', async () => {
       vi.useFakeTimers();
       const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 5000 });
       const promise = queue.submit(makeSubmitPayload({ action_id: 'act-t' }));
@@ -210,8 +210,13 @@ describe('PendingActionQueue', () => {
 
       const resolution = await promise;
       expect(resolution.status).toBe('timeout');
-      expect(resolution.reason).toContain('Auto-approved');
+      // Loud reason: surfaces "unattended-execute" rather than the old quiet
+      // "Auto-approved after Ns timeout" wording. Operators / retros / OPSEC
+      // logs filter on this.
+      expect(resolution.reason).toContain('unattended-execute');
       expect(resolution.reason).toContain('5s');
+      expect(resolution.auto_approved).toBe(true);
+      expect(resolution.unattended_execute).toBe(true);
       expect(queue.getPendingCount()).toBe(0);
     });
 

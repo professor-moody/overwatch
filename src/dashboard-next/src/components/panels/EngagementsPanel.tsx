@@ -624,9 +624,9 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
     setGcpProjects(d.scope?.gcp_projects || []);
     setMaxNoise(d.opsec?.max_noise ?? 0.7);
     setApprovalMode(d.opsec?.approval_mode || 'approve-critical');
-    setApprovalTimeout(d.opsec?.approval_timeout_seconds ?? 300);
-    setTwStart(d.opsec?.time_window?.start?.toString() ?? '');
-    setTwEnd(d.opsec?.time_window?.end?.toString() ?? '');
+    setApprovalTimeout(d.opsec?.approval_timeout_ms != null ? Math.round(d.opsec.approval_timeout_ms / 1000) : 300);
+    setTwStart(d.opsec?.time_window?.start_hour?.toString() ?? '');
+    setTwEnd(d.opsec?.time_window?.end_hour?.toString() ?? '');
     setBlacklist((d.opsec?.blacklisted_techniques || []).join('\n'));
     setObjectives((d.objectives || []).map(o => o.description));
     setFailurePatterns(d.failure_patterns || []);
@@ -641,7 +641,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
     setSaving(true);
     setSaveMsg('');
     try {
-      const tw = twStart && twEnd ? { start: parseInt(twStart), end: parseInt(twEnd) } : undefined;
+      const tw = twStart && twEnd ? { start_hour: parseInt(twStart), end_hour: parseInt(twEnd) } : undefined;
       const bl = blacklist.split('\n').map(s => s.trim()).filter(Boolean);
       const objs = objectives.filter(d => d.trim()).map((d, i) => ({
         id: `obj-${i + 1}`,
@@ -663,7 +663,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
         opsec: {
           max_noise: maxNoise,
           approval_mode: approvalMode,
-          approval_timeout_seconds: approvalTimeout,
+          approval_timeout_ms: approvalTimeout * 1000,
           time_window: tw,
           blacklisted_techniques: bl.length ? bl : [],
         },
@@ -915,8 +915,8 @@ function OpsecReadView({ detail }: { detail: EngagementDetail }) {
     <div className="space-y-1 text-xs">
       <div><span className="text-muted-foreground">Max Noise:</span> {o.max_noise?.toFixed(2) ?? '\u2014'}</div>
       <div><span className="text-muted-foreground">Approval:</span> {o.approval_mode || '\u2014'}</div>
-      {o.approval_timeout_seconds && <div><span className="text-muted-foreground">Timeout:</span> {o.approval_timeout_seconds}s</div>}
-      {o.time_window && <div><span className="text-muted-foreground">Time Window:</span> {o.time_window.start}:00\u2013{o.time_window.end}:00</div>}
+      {o.approval_timeout_ms != null && <div><span className="text-muted-foreground">Timeout:</span> {Math.round(o.approval_timeout_ms / 1000)}s</div>}
+      {o.time_window && <div><span className="text-muted-foreground">Time Window:</span> {o.time_window.start_hour}:00\u2013{o.time_window.end_hour}:00</div>}
       {o.blacklisted_techniques && o.blacklisted_techniques.length > 0 && (
         <div><span className="text-muted-foreground">Blacklisted:</span> <span className="font-mono">{o.blacklisted_techniques.join(', ')}</span></div>
       )}

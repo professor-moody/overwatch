@@ -44,12 +44,18 @@ export function parseGetNPUsers(output: string, agentId: string = 'getnpusers-pa
     // captured TGS tickets.
     const credNodeId = credentialId('kerberos_asrep', hashValue.substring(0, 32), username, domain);
     if (!seenNodes.has(credNodeId)) {
+      // 1.1: persist the full AS-REP hash on the credential node so it can
+      // be exported to a hashcat input (mode 18200) without re-running the
+      // tool. Previously only a 32-char ID slice was stored.
+      const fullHash = `$krb5asrep$23$${username}@${rawDomain}:${hashValue}`;
       nodes.push({
         id: credNodeId,
         type: 'credential',
         label: `AS-REP:${username}`,
         cred_type: 'kerberos_asrep',
         cred_material_kind: 'kerberos_asrep',
+        cred_value: fullHash,
+        cred_hash: fullHash,
         cred_usable_for_auth: false,
         cred_evidence_kind: 'capture',
         cred_user: username,
@@ -116,12 +122,17 @@ export function parseGetUserSPNs(output: string, agentId: string = 'getuserspns-
 
       const credNodeId = credentialId('kerberos_tgs', hashValue.substring(0, 32), username, domain);
       if (!seenNodes.has(credNodeId)) {
+        // 1.1: persist the full Kerberoast hash so it can be cracked
+        // (hashcat mode 13100) without re-running GetUserSPNs.
+        const fullHash = `$krb5tgs$23$*${username}$${rawDomain}$${_spn}*$${hashValue}`;
         nodes.push({
           id: credNodeId,
           type: 'credential',
           label: `TGS:${username}`,
           cred_type: 'kerberos_tgs',
           cred_material_kind: 'kerberos_tgs',
+          cred_value: fullHash,
+          cred_hash: fullHash,
           cred_usable_for_auth: false,
           cred_evidence_kind: 'capture',
           cred_user: username,
@@ -206,13 +217,19 @@ export function parseGetTGT(output: string, agentId: string = 'gettgt-parser', c
   const credNodeId = credentialId('kerberos_tgt', ccacheName || 'tgt', username || 'unknown', domain);
 
   if (!seenNodes.has(credNodeId)) {
+    // 1.3: store the ccache filename as the credential's `cred_value`. With
+    // the path on the node, downstream tooling (and operators) can re-use
+    // the TGT directly via `KRB5CCNAME=<path>` without re-running getTGT.
+    // Previously the node was marked usable_for_auth:true but carried no
+    // material — a misleading combination.
     nodes.push({
       id: credNodeId,
       type: 'credential',
       label: username ? `TGT:${username}` : 'TGT:unknown-principal',
       cred_type: 'kerberos_tgt',
       cred_material_kind: 'kerberos_tgt',
-      cred_usable_for_auth: true,
+      cred_value: ccacheName || undefined,
+      cred_usable_for_auth: !!ccacheName,
       cred_evidence_kind: 'capture',
       cred_user: username,
       cred_domain: domain,
@@ -343,13 +360,17 @@ export function parseGetST(output: string, agentId: string = 'getst-parser', con
 
   const credNodeId = credentialId('kerberos_tgs', ccacheName, ticketUser || 'service-ticket', domain);
   if (!seenNodes.has(credNodeId)) {
+    // 1.3: store ccache filename on the ST node so it's reusable. Mirror of
+    // the parseGetTGT change above.
+    const haveTicketPath = !!ccacheName && ccacheName !== 'st';
     nodes.push({
       id: credNodeId,
       type: 'credential',
       label: ticketUser ? `ST:${ticketUser}` : `ST:${ccacheName}`,
       cred_type: 'kerberos_tgs',
       cred_material_kind: 'kerberos_tgs',
-      cred_usable_for_auth: true,
+      cred_value: haveTicketPath ? ccacheName : undefined,
+      cred_usable_for_auth: haveTicketPath,
       cred_evidence_kind: 'capture',
       cred_user: ticketUser,
       cred_domain: domain,
@@ -528,7 +549,7 @@ function parseExecOutput(output: string, agentId: string, context: ParseContext 
           username,
           domain_name: domain,
         });
-        seenNodes.has(resolvedUserId);
+        seenNodes.add(resolvedUserId);
       }
 
       edges.push({

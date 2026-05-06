@@ -15,6 +15,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
+import { opsecPartialUpdateSchema } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
@@ -774,10 +775,28 @@ export class DashboardServer {
         return;
       }
       // Prevent overwriting immutable fields
-      delete (body as Record<string, unknown>).id;
-      delete (body as Record<string, unknown>).created_at;
+      const b = body as Record<string, unknown>;
+      delete b.id;
+      delete b.created_at;
+      // 0.5: strict zod parse on the OPSEC subtree. Unknown keys (e.g. the
+      // historical client drift where SettingsPanel sent
+      // `approval_timeout_seconds` and `time_window: {start, end}`) now
+      // surface as a 400 instead of being silently dropped.
+      if (b.opsec !== undefined && b.opsec !== null) {
+        const opsecParse = opsecPartialUpdateSchema.safeParse(b.opsec);
+        if (!opsecParse.success) {
+          const issues = opsecParse.error.issues.map(i =>
+            i.code === 'unrecognized_keys'
+              ? `unknown opsec key(s): ${(i as unknown as { keys?: string[] }).keys?.join(', ') ?? ''}`
+              : `${i.path.join('.')}: ${i.message}`,
+          );
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `OPSEC validation failed: ${issues.join('; ')}`, issues }));
+          return;
+        }
+      }
       try {
-        const updated = this.engine.updateConfig(body as Record<string, unknown>);
+        const updated = this.engine.updateConfig(b);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ updated: true, config: updated }));
       } catch (err) {
@@ -799,9 +818,76 @@ export class DashboardServer {
         return;
       }
       try {
-        const updated = this.engine.updateConfig({ scope: body });
+        // 0.4: route cidrs/domains/exclusions through engine.updateScope so
+        // the safety pipeline (CIDR/IPv6 validation, cold→hot promotion,
+        // inference re-runs, scope_updated audit event) actually fires.
+        // The dashboard sends a Partial<ScopeConfig> "replace" payload; we
+        // diff it against the current scope to derive the add/remove deltas
+        // updateScope expects.
+        const incoming = body as Record<string, unknown>;
+        const current = this.engine.getConfig().scope;
+        const arr = (v: unknown): string[] | undefined =>
+          Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+        const incomingCidrs = arr(incoming.cidrs);
+        const incomingDomains = arr(incoming.domains);
+        const incomingExclusions = arr(incoming.exclusions);
+
+        const diff = (next: string[] | undefined, prev: string[]): { add: string[]; remove: string[] } => {
+          if (!next) return { add: [], remove: [] };
+          const nextSet = new Set(next);
+          const prevSet = new Set(prev);
+          return {
+            add: next.filter(x => !prevSet.has(x)),
+            remove: prev.filter(x => !nextSet.has(x)),
+          };
+        };
+        const cidrsDiff = diff(incomingCidrs, current.cidrs);
+        const domainsDiff = diff(incomingDomains, current.domains);
+        const exclusionsDiff = diff(incomingExclusions, current.exclusions);
+
+        const hasNetworkChanges =
+          cidrsDiff.add.length + cidrsDiff.remove.length +
+          domainsDiff.add.length + domainsDiff.remove.length +
+          exclusionsDiff.add.length + exclusionsDiff.remove.length > 0;
+
+        let scopeResult: ReturnType<typeof this.engine.updateScope> | undefined;
+        if (hasNetworkChanges) {
+          scopeResult = this.engine.updateScope({
+            add_cidrs: cidrsDiff.add,
+            remove_cidrs: cidrsDiff.remove,
+            add_domains: domainsDiff.add,
+            remove_domains: domainsDiff.remove,
+            add_exclusions: exclusionsDiff.add,
+            remove_exclusions: exclusionsDiff.remove,
+            reason: 'dashboard scope update',
+          });
+          if (!scopeResult.applied) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: scopeResult.errors.join('; '), errors: scopeResult.errors }));
+            return;
+          }
+        }
+
+        // Non-network scope fields (hosts, url_patterns, aws_accounts, etc.)
+        // are not handled by updateScope; route them through updateConfig's
+        // partial-merge path. Only forward the keys the caller actually sent.
+        const passthrough: Record<string, unknown> = {};
+        for (const k of ['hosts', 'url_patterns', 'aws_accounts', 'azure_subscriptions', 'gcp_projects'] as const) {
+          if (Array.isArray(incoming[k])) passthrough[k] = incoming[k];
+        }
+        if (Object.keys(passthrough).length > 0) {
+          this.engine.updateConfig({ scope: passthrough });
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ updated: true, scope: updated.scope }));
+        res.end(JSON.stringify({
+          updated: true,
+          scope: this.engine.getConfig().scope,
+          ...(scopeResult ? {
+            applied: scopeResult.applied,
+            affected_node_count: scopeResult.affected_node_count,
+          } : {}),
+        }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));

@@ -298,13 +298,18 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
   const pct = Math.min(100, (spent / max) * 100);
 
   const save = () => {
+    // 0.5: send the keys the server actually consumes. Previously this
+    // posted approval_timeout_seconds and {start, end}, which the server
+    // silently dropped (config-manager expected approval_timeout_ms and
+    // {start_hour, end_hour}). The strict zod parser on the server-side
+    // route now rejects unknown keys, so the client must match exactly.
     const tw = twStart && twEnd ? { start_hour: parseInt(twStart), end_hour: parseInt(twEnd) } : null;
     onSave({
       opsec: {
         max_noise: maxNoise,
         approval_mode: approvalMode as 'auto-approve' | 'approve-critical' | 'approve-all',
-        approval_timeout_seconds: timeout,
-        time_window: tw ? { start: tw.start_hour, end: tw.end_hour } : undefined,
+        approval_timeout_ms: timeout * 1000,
+        time_window: tw ?? undefined,
         blacklisted_techniques: blacklist.split('\n').map(s => s.trim()).filter(Boolean),
       },
     });

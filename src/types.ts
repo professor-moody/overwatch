@@ -389,6 +389,15 @@ export const opsecProfileSchema = z.object({
   approval_timeout_ms: z.number().int().min(1000).optional(),
 });
 
+/**
+ * Strict, partial variant of opsecProfileSchema used by routes that accept
+ * partial updates from clients (e.g. the dashboard SettingsPanel). Strict
+ * mode rejects unknown keys with a 400 — this caught the long-standing
+ * dashboard drift where the client sent `approval_timeout_seconds` and
+ * `time_window: {start, end}` and the server silently dropped them.
+ */
+export const opsecPartialUpdateSchema = opsecProfileSchema.partial().strict();
+
 const campaignStrategySchema = z.enum(['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom']);
 
 const phaseCriterionSchema = z.discriminatedUnion('type', [

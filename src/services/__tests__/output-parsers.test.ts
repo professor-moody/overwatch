@@ -221,8 +221,41 @@ describe('Output Parsers', () => {
       const finding = parseNxc(output);
 
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
-      expect(validOnEdges.length).toBe(1);
+      // 1.2: now also emits a redacted credential node + VALID_ON edge from
+      // the credential to the host. So the count rises from 1 to 2.
+      expect(validOnEdges.length).toBe(2);
       expect(finding.nodes.some(n => n.type === 'service' && n.service_name === 'smb')).toBe(true);
+      // Redacted credential placeholder — preserves the access claim without
+      // pretending we have usable material.
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_usable_for_auth).toBe(false);
+      expect(creds[0].cred_value).toBeUndefined();
+    });
+
+    it('captures plaintext password from + status (regression: P1 1.2 NXC creds)', () => {
+      const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\scanner:hunter2`;
+      const finding = parseNxc(output);
+
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_value).toBe('hunter2');
+      expect(creds[0].cred_material_kind).toBe('plaintext_password');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+      // OWNS_CRED user→cred and VALID_ON cred→host
+      expect(finding.edges.some(e => e.properties.type === 'OWNS_CRED')).toBe(true);
+      expect(finding.edges.filter(e => e.properties.type === 'VALID_ON').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('captures NTLM hash from + status', () => {
+      const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\admin:aad3b435b51404eeaad3b435b51404ee (Pwn3d!)`;
+      const finding = parseNxc(output);
+
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_material_kind).toBe('ntlm_hash');
+      expect(creds[0].cred_value).toBe('aad3b435b51404eeaad3b435b51404ee');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
     });
 
     it('handles multi-line output', () => {
@@ -240,7 +273,8 @@ describe('Output Parsers', () => {
       const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO');
       expect(adminEdges.length).toBe(1); // Only Pwn3d! line
       const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON');
-      expect(validOnEdges.length).toBe(2); // Both [+] lines produce VALID_ON edges
+      // 1.2: each [+] line now produces 2 VALID_ON edges (user→host + credential→host).
+      expect(validOnEdges.length).toBe(4);
 
       // F03: Failed auth produces TESTED_CRED edge
       const testedEdges = finding.edges.filter(e => e.properties.type === 'TESTED_CRED');
@@ -301,7 +335,11 @@ describe('Output Parsers', () => {
       expect(finding.nodes.filter(n => n.type === 'service')).toHaveLength(1);
       expect(finding.nodes.filter(n => n.type === 'share')).toHaveLength(1);
       expect(finding.edges.filter(e => e.properties.type === 'RUNS')).toHaveLength(1);
-      expect(finding.edges.filter(e => e.properties.type === 'VALID_ON')).toHaveLength(1);
+      // 1.2: VALID_ON now has two distinct edges per [+] line (user→host
+      // and credential→host). Dedup still collapses repeats, so two identical
+      // banners produce one user→host VALID_ON and one credential→host VALID_ON.
+      expect(finding.edges.filter(e => e.properties.type === 'VALID_ON')).toHaveLength(2);
+      expect(finding.nodes.filter(n => n.type === 'credential')).toHaveLength(1);
       expect(finding.edges.filter(e => e.properties.type === 'RELATED')).toHaveLength(1);
     });
 
@@ -1196,6 +1234,19 @@ describe('Output Parsers', () => {
       expect(creds[0].cred_material_kind).toBe('plaintext_password');
       expect(creds[0].cred_usable_for_auth).toBe(true);
       expect(creds[0].cred_evidence_kind).toBe('crack');
+      // 1.4: plaintext must NOT appear in the human-readable label.
+      expect(creds[0].label).not.toContain('Password123');
+      expect(creds[0].label).not.toContain('Welcome1!');
+    });
+
+    it('does not leak cracked plaintext into label (regression: P3 1.4)', () => {
+      const finding = parseHashcat(sampleKerberoast);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      // Label should identify which credential was cracked, not what the secret is.
+      expect(creds[0].label).not.toContain('SqlPass123');
+      expect(creds[0].label).toContain('cracked');
+      expect(creds[0].cred_value).toBe('SqlPass123');
     });
 
     it('extracts username from Kerberoast hash', () => {

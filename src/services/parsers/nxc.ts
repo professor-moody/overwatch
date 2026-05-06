@@ -199,15 +199,54 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
         }
       }
 
-      // Valid auth (+ status) with domain\user pattern
+      // Valid auth (+ status) with domain\user pattern.
+      // 1.2: also capture the credential material when it's printed alongside.
+      // NXC commonly emits `DOMAIN\user:password` or `DOMAIN\user:NTHASH` on
+      // a successful login; previously we extracted only the user and dropped
+      // the secret on the floor, leaving the operator unable to reuse the
+      // credential without re-running the tool. We now create a credential
+      // node and an OWNS_CRED edge whenever the secret is captured, and
+      // emit a redacted (cred_usable_for_auth=false) placeholder node when
+      // only the success banner is visible — preserving the access claim
+      // without lying about reusability.
       if (status === '+') {
-        const credMatch = message.match(/([^\\]+)\\([^\s:]+)/);
+        // Capture optional secret after the user (`user:secret`). The secret
+        // may contain shell-unfriendly chars; we stop at the first whitespace
+        // or trailing parenthetical (e.g. " (Pwn3d!)").
+        const credMatch = message.match(/([^\\]+)\\([^\s:]+)(?::([^\s)]+))?/);
         if (credMatch) {
-          const [, rawCredDomain, username] = credMatch;
+          const [, rawCredDomain, username, secret] = credMatch;
           const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
           if (username && username !== '') {
             addUserNode(username, credDomain);
-            addEdgeOnce(userId(username, credDomain), resolvedHostId, 'VALID_ON', 0.9);
+            const resolvedUserId = userId(username, credDomain);
+            addEdgeOnce(resolvedUserId, resolvedHostId, 'VALID_ON', 0.9);
+
+            // Determine credential material. NTLM hashes are exactly 32 hex
+            // chars; anything else captured here is treated as plaintext.
+            const isNtlm = !!secret && /^[a-fA-F0-9]{32}$/.test(secret);
+            const credKind: 'ntlm_hash' | 'plaintext_password' | undefined = secret
+              ? (isNtlm ? 'ntlm_hash' : 'plaintext_password')
+              : undefined;
+            const credIdKey = secret ?? 'redacted';
+            const credNodeId = credentialId(credKind ?? 'plaintext_password', credIdKey, username, credDomain);
+            if (!seenNodes.has(credNodeId)) {
+              nodes.push({
+                id: credNodeId,
+                type: 'credential',
+                label: isNtlm ? `NTLM:${username}` : `pw:${username}`,
+                cred_type: isNtlm ? 'ntlm' : 'plaintext',
+                cred_material_kind: credKind,
+                cred_usable_for_auth: !!secret,
+                cred_evidence_kind: 'spray_success',
+                cred_value: secret,
+                cred_user: username,
+                cred_domain: credDomain,
+              });
+              seenNodes.add(credNodeId);
+            }
+            addEdgeOnce(resolvedUserId, credNodeId, 'OWNS_CRED', secret ? 1.0 : 0.6);
+            addEdgeOnce(credNodeId, resolvedHostId, 'VALID_ON', secret ? 1.0 : 0.7);
           }
         }
       }

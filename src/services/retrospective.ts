@@ -676,6 +676,24 @@ export function analyzeContextImprovements(input: RetrospectiveInput): ContextIm
     }
   }
 
+  // Count actions that ran via auto-approval-on-timeout (unattended_execute).
+  // The runner stamps `details.unattended_execute === true` and
+  // `details.auto_approved === true` on the action_validated event whenever
+  // the approval queue resolved by timeout. Surface them so the operator can
+  // see post-hoc what proceeded without explicit human review.
+  const unattendedRuns = input.history.filter(entry => {
+    const d = entry.details as { unattended_execute?: boolean; auto_approved?: boolean } | undefined;
+    return entry.event_type === 'action_validated' && d?.unattended_execute === true;
+  });
+  if (unattendedRuns.length > 0) {
+    opsecObservations.push({
+      observation: `${unattendedRuns.length} action(s) auto-approved on timeout without explicit operator review.`,
+      recommendation: 'Review these unattended-execute actions; consider tightening approval timeouts or staffing review during high-OPSEC phases.',
+      confidence: 'high',
+    });
+    recommendations.add('Audit unattended-execute auto-approvals from the approval queue.');
+  }
+
   const blacklistedHits = (input.config.opsec.blacklisted_techniques || []).filter(technique =>
     input.history.some(entry => entry.description.toLowerCase().includes(technique.toLowerCase()))
   );

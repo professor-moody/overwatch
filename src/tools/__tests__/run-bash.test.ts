@@ -155,6 +155,131 @@ describe('run_bash tool', () => {
     expect(payload.errors.join(' ')).toContain('8.8.8.8');
   });
 
+  it('extracts implicit targets from a known target-facing binary even without technique (regression: scope-bypass P0)', async () => {
+    // Caller omits both target_ip(s) and technique. Previously this slipped
+    // through scope because implicit-target extraction was gated on
+    // TARGET_FACING_TECHNIQUES. Now extraction also fires when the binary is
+    // a known scanner (nmap), so the out-of-scope IP is rejected.
+    const result = await handlers.run_bash({
+      command: 'nmap 8.8.8.8',
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.executed).toBe(false);
+    expect(payload.validation_result).toBe('invalid');
+    expect(payload.errors.join(' ')).toContain('8.8.8.8');
+    expect(payload.errors.join(' ')).toContain('out of scope');
+  });
+
+  it('does not over-extract on non-target-facing commands that mention out-of-scope hosts', async () => {
+    // A non-scanner command that happens to mention an out-of-scope IP/URL
+    // must still run — neither the binary (echo) nor the technique are
+    // target-facing, so we deliberately don't sniff argv. This guards against
+    // the fix for the P0 scope-bypass over-rejecting innocuous commands.
+    const result = await handlers.run_bash({
+      command: 'echo connecting-to-https://example.com/and/8.8.8.8-mention',
+    });
+    const payload = parseTextResult(result);
+    expect(payload.executed).toBe(true);
+  });
+
+  it('rejects direct actions whose noise_estimate exceeds the OPSEC ceiling (P1 max_noise)', async () => {
+    // Build a fresh engine with OPSEC enforcement enabled and a tight ceiling.
+    cleanup();
+    const tightEngine = new GraphEngine({
+      ...makeConfig(),
+      opsec: { name: 'tight', max_noise: 0.2, enabled: true } as any,
+    }, TEST_STATE_FILE);
+    const tightHandlers: Record<string, (a: any) => Promise<any>> = {};
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, handler: (a: any) => Promise<any>) {
+        tightHandlers[name] = handler;
+      },
+    } as unknown as McpServer;
+    registerRunBashTool(fakeServer, tightEngine);
+
+    const result = await tightHandlers.run_bash({
+      command: 'echo would-be-noisy',
+      target_ip: '10.10.10.1',
+      technique: 'portscan',
+      noise_estimate: 0.9, // way over headroom
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.executed).toBe(false);
+    expect(payload.validation_result).toBe('invalid');
+    expect(payload.errors.join(' ')).toContain('OPSEC noise ceiling');
+  });
+
+  it('OPSEC stays inert with opsec.enabled=false — no noise recorded, no defaults substituted', async () => {
+    // OPSEC is opt-in. With enforcement disabled, missing noise_estimate must
+    // NOT be silently filled in by the runner (neither the old buggy
+    // cumulative-spend substitution nor the new per-technique defaults), and
+    // no noise should be recorded against the OpsecTracker. The whole
+    // pipeline stays out of the way unless the operator turns it on.
+    const r1 = await handlers.run_bash({
+      command: 'echo first',
+      target_ip: '10.10.10.1',
+      technique: 'enum_smb',
+    });
+    const payload = parseTextResult(r1);
+    expect(payload.executed).toBe(true);
+    const events = engine.getFullHistory().filter(e => e.action_id === payload.action_id);
+    const started = events.find(e => e.event_type === 'action_started');
+    expect(started?.noise_estimate).toBeUndefined();
+    // OpsecTracker should still report zero global noise.
+    expect(engine.getOpsecContext().global_noise_spent).toBe(0);
+  });
+
+  it('respects an explicit noise_estimate even when OPSEC is disabled (records, does not enforce)', async () => {
+    // If the caller explicitly passes noise_estimate, we honor it (record it
+    // on the event and the tracker) but do NOT enforce a ceiling — that
+    // requires opsec.enabled.
+    const r1 = await handlers.run_bash({
+      command: 'echo explicit',
+      target_ip: '10.10.10.1',
+      technique: 'enum_smb',
+      noise_estimate: 0.5,
+    });
+    const payload = parseTextResult(r1);
+    expect(payload.executed).toBe(true);
+    const events = engine.getFullHistory().filter(e => e.action_id === payload.action_id);
+    const started = events.find(e => e.event_type === 'action_started');
+    expect(started?.noise_estimate).toBe(0.5);
+    expect(engine.getOpsecContext().global_noise_spent).toBe(0.5);
+  });
+
+  it('substitutes per-technique noise default only when OPSEC is enabled (no double-count)', async () => {
+    // Regression: previously, when noise_estimate was undefined, the runner
+    // substituted v.opsec_context.global_noise_spent, recording cumulative
+    // spend back onto each subsequent action. With OPSEC enabled, the runner
+    // now uses a per-technique default (enum_smb → 0.15), not the accumulated
+    // total. With OPSEC disabled this whole branch is skipped (covered above).
+    cleanup();
+    const opsecEngine = new GraphEngine({
+      ...makeConfig(),
+      opsec: { name: 'pentest', max_noise: 1.0, enabled: true } as any,
+    }, TEST_STATE_FILE);
+    const opsecHandlers: Record<string, (a: any) => Promise<any>> = {};
+    const fakeServer = {
+      registerTool(name: string, _config: unknown, handler: (a: any) => Promise<any>) {
+        opsecHandlers[name] = handler;
+      },
+    } as unknown as McpServer;
+    registerRunBashTool(fakeServer, opsecEngine);
+
+    await opsecHandlers.run_bash({ command: 'echo first', target_ip: '10.10.10.1', technique: 'enum_smb' });
+    const r2 = await opsecHandlers.run_bash({ command: 'echo second', target_ip: '10.10.10.1', technique: 'enum_smb' });
+    const payload2 = parseTextResult(r2);
+    expect(payload2.executed).toBe(true);
+    const events = opsecEngine.getFullHistory().filter(e => e.action_id === payload2.action_id);
+    const started = events.find(e => e.event_type === 'action_started');
+    // Per-action default for enum_smb is 0.15, not the cumulative sum (~0.3).
+    expect(started?.noise_estimate).toBe(0.15);
+  });
+
   it('approval gate sees the worst per-target OPSEC context, not the last (regression)', async () => {
     // Two in-scope targets; only the first carries a defensive signal. The
     // logged opsec_context for the action must reflect that signal — earlier

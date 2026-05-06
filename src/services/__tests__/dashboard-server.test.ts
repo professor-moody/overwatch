@@ -1628,7 +1628,7 @@ describe('DashboardServer', () => {
         method: 'PATCH',
         headers: { host: 'localhost', 'content-type': 'application/json' },
         on(event: string, cb: (chunk?: Buffer) => void) {
-          if (event === 'data') cb(Buffer.from(JSON.stringify({ cidrs: ['not-a-cidr'] })));
+          if (event === 'data') cb(Buffer.from(JSON.stringify({ cidrs: ['not-a-cidr', '10.10.10.0/30'] })));
           if (event === 'end') cb();
         },
       };
@@ -1642,8 +1642,106 @@ describe('DashboardServer', () => {
       await new Promise(r => setTimeout(r, 10));
       expect(res.statusCode).toBe(400);
       const payload = JSON.parse(res.body);
-      expect(payload.error).toMatch(/CIDR|Scope/i);
+      expect(payload.error).toMatch(/CIDR|Scope|Invalid/i);
       expect(payload.error).not.toBe('Invalid JSON body');
+    });
+  });
+
+  describe('OPSEC payload strict validation (P2 0.5)', () => {
+    function patchConfig(body: Record<string, unknown>): Promise<{ status: number; payload: any }> {
+      return new Promise(async (resolve) => {
+        const req: any = {
+          url: '/api/config',
+          method: 'PATCH',
+          headers: { host: 'localhost', 'content-type': 'application/json' },
+          on(event: string, cb: (chunk?: Buffer) => void) {
+            if (event === 'data') cb(Buffer.from(JSON.stringify(body)));
+            if (event === 'end') cb();
+          },
+        };
+        const res: any = {
+          statusCode: 0, headers: {}, body: '',
+          writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+          end(b?: string) { this.body = b || ''; }, setHeader() {},
+        };
+        await (dashboard as any).handleUpdateConfig(req, res);
+        await new Promise(r => setTimeout(r, 10));
+        resolve({ status: res.statusCode, payload: JSON.parse(res.body) });
+      });
+    }
+
+    it('rejects OPSEC payload with the legacy approval_timeout_seconds key (400 + zod error)', async () => {
+      const { status, payload } = await patchConfig({ opsec: { approval_timeout_seconds: 60 } });
+      expect(status).toBe(400);
+      expect(String(payload.error)).toContain('OPSEC validation failed');
+      expect(String(payload.error)).toContain('approval_timeout_seconds');
+    });
+
+    it('rejects OPSEC payload with legacy time_window {start, end}', async () => {
+      const { status, payload } = await patchConfig({ opsec: { time_window: { start: 9, end: 17 } } });
+      expect(status).toBe(400);
+      expect(String(payload.error)).toContain('OPSEC validation failed');
+    });
+
+    it('accepts the canonical keys (approval_timeout_ms + start_hour/end_hour)', async () => {
+      const { status, payload } = await patchConfig({
+        opsec: {
+          approval_timeout_ms: 60_000,
+          time_window: { start_hour: 9, end_hour: 17 },
+        },
+      });
+      expect(status).toBe(200);
+      expect(payload.updated).toBe(true);
+      const cfg = engine.getConfig();
+      expect(cfg.opsec.approval_timeout_ms).toBe(60_000);
+      expect(cfg.opsec.time_window).toEqual({ start_hour: 9, end_hour: 17 });
+    });
+  });
+
+  describe('scope updates route through engine.updateScope (P2 0.4)', () => {
+    it('emits scope_updated audit event and promotes cold hosts when adding a CIDR', async () => {
+      // Seed a cold host outside the current scope (10.20.0.5).
+      (engine as any).ctx.coldStore.add({
+        id: 'cold:10.20.0.5',
+        type: 'host',
+        label: '10.20.0.5',
+        ip: '10.20.0.5',
+        discovered_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        provenance: 'test-seed',
+        confidence: 1.0,
+      });
+
+      const req: any = {
+        url: '/api/config/scope',
+        method: 'PATCH',
+        headers: { host: 'localhost', 'content-type': 'application/json' },
+        on(event: string, cb: (chunk?: Buffer) => void) {
+          if (event === 'data') cb(Buffer.from(JSON.stringify({
+            cidrs: ['10.10.10.0/30', '10.20.0.0/24'],
+            domains: ['test.local'],
+            exclusions: [],
+          })));
+          if (event === 'end') cb();
+        },
+      };
+      const res: any = {
+        statusCode: 0, headers: {}, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      await (dashboard as any).handleUpdateScope(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      expect(res.statusCode).toBe(200);
+      const payload = JSON.parse(res.body);
+      expect(payload.applied).toBe(true);
+      // Cold host got promoted into the live graph by the updateScope path.
+      expect(payload.affected_node_count).toBeGreaterThanOrEqual(1);
+      // scope_updated audit event was emitted.
+      const events = engine.getFullHistory().filter(e => e.event_type === 'scope_updated');
+      expect(events.length).toBeGreaterThan(0);
+      expect((events[events.length - 1].details as any).reason).toContain('dashboard');
     });
   });
 

@@ -1827,6 +1827,16 @@ export class GraphEngine {
     return this.ctx.opsecTracker;
   }
 
+  /** True when OPSEC enforcement is enabled (drives the hard noise ceiling). */
+  isOpsecEnforcementEnabled(): boolean {
+    return this.ctx.config.opsec.enabled === true;
+  }
+
+  /** Configured max_noise (0–1 ratio). Reused by the runner to format ceiling rejections. */
+  getMaxNoise(): number {
+    return this.ctx.config.opsec.max_noise;
+  }
+
   // =============================================
   // Pending Action Queue (Approval Gates)
   // =============================================

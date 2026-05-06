@@ -35,6 +35,45 @@ const TARGET_FACING_TECHNIQUES = new Set([
   'cred_brute', 'auth_brute', 'spray', 'password_spray',
 ]);
 
+// F3.1: target-facing detection by binary name. If a caller invokes a known
+// scanner / brute-forcer / web fuzzer without supplying technique, we still
+// want to sniff implicit targets out of argv so scope cannot be silently
+// bypassed by omitting metadata. This must be a tight allowlist of tools
+// that are unambiguously target-facing — adding generic binaries (curl, git,
+// ssh) here would create false positives on URLs/hosts used for non-attack
+// purposes.
+const TARGET_FACING_BINARIES = new Set([
+  'nmap', 'masscan', 'rustscan', 'naabu',
+  'nxc', 'netexec', 'crackmapexec', 'cme',
+  'enum4linux', 'enum4linux-ng', 'smbclient', 'smbmap', 'rpcclient',
+  'kerbrute', 'impacket-GetNPUsers', 'impacket-GetUserSPNs',
+  'GetNPUsers.py', 'GetUserSPNs.py', 'GetTGT.py', 'getST.py',
+  'ldapsearch', 'windapsearch', 'bloodhound-python',
+  'responder', 'inveigh',
+  'ffuf', 'gobuster', 'feroxbuster', 'wfuzz', 'dirb', 'dirbuster',
+  'wpscan', 'nikto', 'whatweb',
+  'nuclei', 'sqlmap', 'sslscan', 'testssl.sh', 'testssl',
+  'hydra', 'medusa', 'patator',
+  'certipy', 'certipy-ad',
+  'wmiexec.py', 'psexec.py', 'smbexec.py', 'atexec.py',
+]);
+
+function basename(s: string): string {
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+function isTargetFacing(technique: string | undefined, toolName: string, binary: string): boolean {
+  if (technique && TARGET_FACING_TECHNIQUES.has(technique)) return true;
+  const tn = basename(toolName).toLowerCase();
+  const bn = basename(binary).toLowerCase();
+  for (const b of TARGET_FACING_BINARIES) {
+    const lb = b.toLowerCase();
+    if (tn === lb || bn === lb) return true;
+  }
+  return false;
+}
+
 const IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\/\d{1,2})?\b/g;
 // Bracketed IPv6 (with optional :port) or bare IPv6 with at least two colons.
 const IPV6 = /\[([0-9a-fA-F:]+)\](?::\d+)?|\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]*\b/g;
@@ -96,6 +135,48 @@ export const STREAM_HEAD_KEEP = 4 * 1024 * 1024;       // 4 MiB head
 export const STREAM_TAIL_KEEP = 4 * 1024 * 1024;       // 4 MiB tail
 const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
 const HARD_CAP_DROPPED_MARKER = '\n…[output exceeded in-memory cap; middle bytes dropped]…\n';
+
+// Per-technique noise defaults (0–1 ratio, same scale as opsec.max_noise).
+// Used only when the caller does not provide an explicit noise_estimate;
+// previously the runner substituted `global_noise_spent`, which double-
+// counted cumulative spend back onto the action and inflated the tracker.
+//
+// These values are conservative starting points — they're meant to be
+// "rough technique floor" rather than precise. When a technique isn't
+// listed we fall back to UNKNOWN_TECHNIQUE_DEFAULT so unknown actions
+// don't get a free 0 ride past the ceiling.
+const TECHNIQUE_NOISE_DEFAULTS: Record<string, number> = {
+  // Recon / discovery
+  recon: 0.1,
+  port_scan: 0.3,
+  service_scan: 0.3,
+  host_discovery: 0.2,
+  scan: 0.3,
+  // Enumeration
+  enum: 0.1,
+  enum_smb: 0.15,
+  enum_dns: 0.05,
+  enum_ldap: 0.1,
+  enum_kerberos: 0.1,
+  smb_enum: 0.15,
+  rpc_enum: 0.15,
+  snmp_enum: 0.15,
+  // Web
+  web_scan: 0.3,
+  web_fuzz: 0.4,
+  web_brute: 0.5,
+  dir_brute: 0.4,
+  vuln_scan: 0.4,
+  // Auth-pressure
+  cred_brute: 0.6,
+  auth_brute: 0.6,
+  spray: 0.4,
+  password_spray: 0.4,
+  // Common AD-style techniques
+  kerberoast: 0.2,
+  asreproast: 0.2,
+};
+const UNKNOWN_TECHNIQUE_DEFAULT_NOISE = 0.1;
 
 // Env keys the agent should never be able to leak into a child process.
 const ENV_DENYLIST = new Set<string>([
@@ -442,11 +523,12 @@ export async function runInstrumentedProcess(
     if (cloud_resource) validationTargets.push({ cloud_resource, technique, allow_unverified_scope });
 
     // F3: if the caller declared no targets but the action is target-facing
-    // (recon/scan/web/etc.), fall back to extracting implicit targets from
-    // argv + command. Without this a `nmap 8.8.8.8` invocation that never
-    // populated target_ip would slip through scope. We fail closed when
-    // implicit targets are found and `allow_unverified_scope` is not set.
-    if (validationTargets.length === 0 && technique && TARGET_FACING_TECHNIQUES.has(technique)) {
+    // (recon/scan/web/etc., recognized by either technique or binary name),
+    // fall back to extracting implicit targets from argv + command. Without
+    // this a `nmap 8.8.8.8` invocation that never populated target_ip — and
+    // omitted technique entirely — would slip through scope. We fail closed
+    // when implicit targets are found and `allow_unverified_scope` is not set.
+    if (validationTargets.length === 0 && isTargetFacing(technique, tool_name, binary)) {
       const implicit = extractImplicitTargets(tool_name, args, command_repr);
       for (const ip of implicit.ips) {
         validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
@@ -500,8 +582,38 @@ export async function runInstrumentedProcess(
       warnings: aggregatedWarnings,
       opsec_context: worstOpsecContext!,
     };
+
+    // 0.3: noise estimation + ceiling enforcement. OPSEC is opt-in: when
+    // `opsec.enabled !== true`, the entire noise-budget pipeline stays inert
+    // — no per-technique default substitution, no recording, no ceiling
+    // rejection. The caller can still opt in for a single action by passing
+    // an explicit `noise_estimate`, in which case we honor and record it
+    // (without enforcing a ceiling). Only when OPSEC is enabled do we both
+    // substitute defaults for missing estimates AND reject actions that
+    // would exceed `max_noise`.
+    //
+    // This replaces the prior buggy fallback (`noiseEstimate = global_noise_spent`),
+    // which was always-on and double-counted cumulative spend back onto each
+    // action.
+    const opsecEnabled = engine.isOpsecEnforcementEnabled();
+    if (noiseEstimate === undefined && opsecEnabled) {
+      noiseEstimate = technique
+        ? (TECHNIQUE_NOISE_DEFAULTS[technique] ?? UNKNOWN_TECHNIQUE_DEFAULT_NOISE)
+        : UNKNOWN_TECHNIQUE_DEFAULT_NOISE;
+    }
+    if (opsecEnabled && typeof noiseEstimate === 'number' && noiseEstimate > 0) {
+      const maxNoise = engine.getMaxNoise();
+      const headroom = v.opsec_context.noise_budget_remaining;
+      if (noiseEstimate > headroom) {
+        const ceilingMsg =
+          `Action exceeds OPSEC noise ceiling: estimate ${noiseEstimate.toFixed(3)} ` +
+          `> remaining budget ${headroom.toFixed(3)} (max_noise=${maxNoise}, ` +
+          `spent=${v.opsec_context.global_noise_spent.toFixed(3)}).`;
+        v.errors.push(ceilingMsg);
+        v.valid = false;
+      }
+    }
     const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
-    if (noiseEstimate === undefined) noiseEstimate = v.opsec_context.global_noise_spent;
 
     engine.logActionEvent({
       description: resolvedDescription,
@@ -568,14 +680,22 @@ export async function runInstrumentedProcess(
       });
 
       engine.logActionEvent({
-        description: `Action ${approval.status}: ${resolvedDescription}`,
+        description: approval.unattended_execute
+          ? `Action auto-approved on timeout (unattended): ${resolvedDescription}`
+          : `Action ${approval.status}: ${resolvedDescription}`,
         agent_id,
         action_id: normalizedActionId,
         event_type: 'action_validated',
         category: 'frontier',
         frontier_item_id,
         result_classification: approval.status === 'denied' ? 'failure' : 'success',
-        details: { approval_status: approval.status, operator_notes: approval.operator_notes, reason: approval.reason },
+        details: {
+          approval_status: approval.status,
+          operator_notes: approval.operator_notes,
+          reason: approval.reason,
+          auto_approved: approval.auto_approved,
+          unattended_execute: approval.unattended_execute,
+        },
       });
 
       if (approval.status === 'denied') {

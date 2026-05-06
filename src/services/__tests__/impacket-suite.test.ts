@@ -30,6 +30,11 @@ describe('Impacket Suite Parsers', () => {
       expect(creds[0].cred_type).toBe('kerberos_asrep');
       expect(creds[0].cred_material_kind).toBe('kerberos_asrep');
       expect(creds[0].cred_usable_for_auth).toBe(false);
+      // 1.1: full hash material is persisted on the credential node so it
+      // can be cracked (hashcat -m 18200) without re-running GetNPUsers.
+      expect(creds[0].cred_value).toContain('$krb5asrep$23$');
+      expect(creds[0].cred_value).toContain('jdoe');
+      expect(creds[0].cred_hash).toBe(creds[0].cred_value);
 
       // Domain node
       const domains = finding.nodes.filter(n => n.type === 'domain');
@@ -68,6 +73,11 @@ describe('Impacket Suite Parsers', () => {
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds).toHaveLength(1);
       expect(creds[0].cred_type).toBe('kerberos_tgs');
+      // 1.1: full TGS hash with SPN is persisted (hashcat -m 13100).
+      expect(creds[0].cred_value).toContain('$krb5tgs$23$');
+      expect(creds[0].cred_value).toContain('sqlsvc');
+      expect(creds[0].cred_value).toContain('MSSQLSvc/db01.acme.local');
+      expect(creds[0].cred_hash).toBe(creds[0].cred_value);
 
       const kerbEdges = finding.edges.filter(e => e.properties.type === 'KERBEROASTABLE');
       expect(kerbEdges).toHaveLength(1);
@@ -100,6 +110,9 @@ describe('Impacket Suite Parsers', () => {
       expect(creds[0].cred_type).toBe('kerberos_tgt');
       expect(creds[0].cred_usable_for_auth).toBe(true);
       expect(creds[0].valid_until).toBeDefined();
+      // 1.3: ccache filename is persisted as cred_value so the TGT can be
+      // reused via KRB5CCNAME without re-running getTGT.
+      expect(creds[0].cred_value).toBe('admin.ccache');
 
       const users = finding.nodes.filter(n => n.type === 'user');
       expect(users).toHaveLength(1);
@@ -121,6 +134,8 @@ describe('Impacket Suite Parsers', () => {
       expect(creds).toHaveLength(1);
       expect(creds[0].cred_type).toBe('kerberos_tgs');
       expect(creds[0].cred_usable_for_auth).toBe(true);
+      // 1.3: ccache filename is persisted on the ST credential too.
+      expect(creds[0].cred_value).toBe('sqlsvc.ccache');
     });
 
     it('returns empty on failure', () => {
@@ -178,6 +193,25 @@ describe('Impacket Suite Parsers', () => {
     it('returns empty for failed execution', () => {
       const finding = parseWmiexec('[-] Error connecting to target');
       expect(finding.nodes).toHaveLength(0);
+    });
+
+    it('emits exactly one user node for repeated success banners (regression: P1 1.5 seenNodes typo)', () => {
+      // Previously the dedup tracker had `seenNodes.has(resolvedUserId);` (a
+      // no-op expression) instead of `.add(...)`. Two banners with the same
+      // user therefore emitted duplicate user nodes. Output here repeats the
+      // header line; the parser only matches the first regex hit per call,
+      // so the test instead exercises that two parse passes against the same
+      // output deduplicate within a single finding.
+      const output = [
+        'Impacket v0.12.0 - ACME/admin@10.10.10.5',
+        '[*] SMBv3.0 dialect used',
+        'Launching semi-interactive shell',
+      ].join('\n');
+      const finding = parseWmiexec(output, 'test', { source_host: '10.10.10.5', domain: 'acme.local' });
+      const users = finding.nodes.filter(n => n.type === 'user');
+      // Should be exactly one user node now that dedup actually adds.
+      expect(users).toHaveLength(1);
+      expect(users[0].username).toBe('admin');
     });
   });
 

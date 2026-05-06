@@ -32,6 +32,14 @@ export interface ActionResolution {
   resolved_at: string;
   operator_notes?: string;
   reason?: string;
+  /**
+   * True when the runner proceeded without explicit operator input — currently
+   * only set on `status: 'timeout'`. Surfaced into OPSEC logs and the
+   * retrospective so unattended executions are visible after the fact.
+   */
+  auto_approved?: boolean;
+  /** Convenience flag mirroring auto_approved + status==='timeout' for downstream filters. */
+  unattended_execute?: boolean;
 }
 
 export type ActionEventCallback = (event: 'action_pending' | 'action_resolved', data: PendingAction | ActionResolution) => void;
@@ -93,14 +101,18 @@ export class PendingActionQueue {
     return new Promise<ActionResolution>((resolve) => {
       this.resolveCallbacks.set(action.action_id, resolve);
 
-      // Auto-approve on timeout
+      // Auto-approve on timeout (loud: tagged unattended_execute so OPSEC
+      // logs and the retrospective surface it, instead of silently looking
+      // like a normal approval).
       const timer = setTimeout(() => {
         if (this.pending.has(action.action_id)) {
           this.resolveAction(action.action_id, {
             action_id: action.action_id,
             status: 'timeout',
             resolved_at: new Date().toISOString(),
-            reason: `Auto-approved after ${timeoutMs / 1000}s timeout — no operator response.`,
+            reason: `unattended-execute: no operator response within ${timeoutMs / 1000}s`,
+            auto_approved: true,
+            unattended_execute: true,
           });
         }
       }, timeoutMs);

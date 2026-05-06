@@ -246,8 +246,8 @@ export interface ScopeConfig {
 export interface OpsecConfig {
   max_noise?: number;
   approval_mode?: 'auto-approve' | 'approve-critical' | 'approve-all';
-  approval_timeout_seconds?: number;
-  time_window?: { start: number; end: number };
+  approval_timeout_ms?: number;
+  time_window?: { start_hour: number; end_hour: number };
   blacklisted_techniques?: string[];
 }
 

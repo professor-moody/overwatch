@@ -300,6 +300,8 @@ export function normalizeActivityLogEntry(
     result_classification: entry.result_classification,
     linked_finding_ids: entry.linked_finding_ids,
     linked_agent_task_id: entry.linked_agent_task_id,
+    noise_estimate: entry.noise_estimate,
+    noise_actual: entry.noise_actual,
     details: entry.details,
     prev_hash: entry.prev_hash,
     event_hash: entry.event_hash,
