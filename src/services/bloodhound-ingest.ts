@@ -458,8 +458,16 @@ export function parseBloodHoundFile(
       }
     }
 
-    // Sessions → HAS_SESSION edges
+    // Sessions → HAS_SESSION edges.
+    // P2.2: BloodHound sessions are SNAPSHOT data, not live observations.
+    // Mark them session_live:false and stamp `session_imported_at` so
+    // downstream consumers (report-generator, objective-manager) can tell
+    // them apart from confirmed-live sessions captured by our own tooling.
+    // Previously these imported edges had no session_live flag at all,
+    // and the report-generator's `!== false` check treated missing-flag
+    // edges as live — letting historical sessions count as current access.
     if (obj.Sessions) {
+      const importedAt = new Date().toISOString();
       for (const session of obj.Sessions) {
         const sessUserId = resolveSid(session.UserSID, 'user');
         const computerId = resolveSid(session.ComputerSID, 'host');
@@ -469,8 +477,10 @@ export function parseBloodHoundFile(
           properties: {
             type: 'HAS_SESSION',
             confidence: 0.9,
-            discovered_at: new Date().toISOString(),
+            discovered_at: importedAt,
             discovered_by: 'bloodhound-ingest',
+            session_live: false,
+            session_imported_at: importedAt,
           },
         });
       }

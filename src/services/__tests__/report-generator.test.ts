@@ -64,7 +64,7 @@ function makeGraph(overrides?: Partial<ExportedGraph>): ExportedGraph {
     edges: [
       // Host-1 has admin access
       { source: 'user-admin', target: 'host-1', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
-      { source: 'user-admin', target: 'host-1', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
+      { source: 'user-admin', target: 'host-1', properties: { type: 'HAS_SESSION', confidence: 1.0, session_live: true, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
       // Service on host-1
       { source: 'host-1', target: 'svc-smb-1', properties: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T01:00:00Z' } as EdgeProperties },
       // Credential valid on service
@@ -1264,19 +1264,24 @@ describe('buildFindings — session_live awareness', () => {
     expect(hostFindings.find(f => f.title.includes('10.10.10.99'))).toBeUndefined();
   });
 
-  it('includes hosts with HAS_SESSION where session_live is not false (backward compat)', () => {
+  it('excludes hosts with HAS_SESSION lacking explicit session_live=true (P2.2 strict)', () => {
+    // P2.2: "no session_live flag" no longer counts as live access. Imported
+    // BloodHound sessions and pre-flag historical edges are explicitly stale
+    // until something confirms they're live. The compromise count refuses
+    // to over-claim. This replaces the prior backward-compat behavior which
+    // treated missing-flag as live.
     const graph = makeGraph({
       nodes: [
         { id: 'host-live', properties: { id: 'host-live', type: 'host', label: '10.10.10.88', ip: '10.10.10.88', alive: true, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
       ],
       edges: [
-        // session_live is not set — should still count as compromise for backward compat
+        // session_live is not set — under strict semantics this no longer counts.
         { source: 'user-admin', target: 'host-live', properties: { type: 'HAS_SESSION', confidence: 1.0, discovered_at: '2026-01-01T10:00:00Z' } as EdgeProperties },
       ],
     });
     const findings = buildFindings(graph, makeHistory(), makeConfig());
     const hostFindings = findings.filter(f => f.category === 'compromised_host');
-    expect(hostFindings.find(f => f.title.includes('10.10.10.88'))).toBeDefined();
+    expect(hostFindings.find(f => f.title.includes('10.10.10.88'))).toBeUndefined();
   });
 
   it('includes hosts with HAS_SESSION where session_live is true', () => {

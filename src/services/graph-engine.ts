@@ -51,6 +51,7 @@ import {
 import type { ScopeManagerHost } from './scope-manager.js';
 import { ingestFindingImpl } from './finding-ingestion.js';
 import type { FindingIngestionHost } from './finding-ingestion.js';
+import { resolveNodeIdentity } from './identity-resolution.js';
 import {
   ingestSessionResult as _ingestSessionResult,
   onSessionClosed as _onSessionClosed,
@@ -236,8 +237,35 @@ export class GraphEngine {
 
   addNode(props: NodeProperties): string {
     if (this.ctx.graph.hasNode(props.id)) {
-      // Merge properties — property-only change, no topology change
-      this.ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
+      // P2.1: type-guard on merge. Previously, a second writer (e.g. an
+      // AzureHound role assignment) could overwrite an existing node's
+      // `type` simply by passing the same ID with a different type — a
+      // group could silently flip into a cloud_identity, polluting any
+      // attack-path that walks through that node. We now refuse to merge
+      // a type change. The incoming `type` is dropped, the original
+      // identity is preserved, and we log an instrumentation warning so
+      // operators can see when canonical IDs collide across providers.
+      const existing = this.ctx.graph.getNodeAttributes(props.id) as NodeProperties;
+      const merged: Partial<NodeProperties> = { ...props };
+      if (existing.type && props.type && existing.type !== props.type) {
+        delete (merged as { type?: NodeProperties['type'] }).type;
+        try {
+          this.logActionEvent({
+            description: `Refused type change on merge: node ${props.id} kept type "${existing.type}", incoming "${props.type}" dropped`,
+            event_type: 'instrumentation_warning',
+            category: 'system',
+            details: {
+              node_id: props.id,
+              existing_type: existing.type,
+              incoming_type: props.type,
+              incoming_discovered_by: props.discovered_by,
+            },
+          });
+        } catch {
+          // Don't let logging failure block ingestion.
+        }
+      }
+      this.ctx.graph.mergeNodeAttributes(props.id, merged);
       this.invalidateHealthReport();
     } else {
       this.ctx.graph.addNode(props.id, props);
@@ -413,7 +441,40 @@ export class GraphEngine {
 
     if (this.ctx.recentFindingHashes.has(contentHash)) {
       this.ctx.dedupCount++;
-      return { new_nodes: [], new_edges: [], updated_nodes: [], updated_edges: [], inferred_edges: [], deduplicated: true };
+      // P3.4: when dedup hits, the graph topology stays unchanged (same
+      // evidence) but we still merge new attribution onto affected nodes
+      // so we don't lose the fact that a second agent / action observed
+      // the same thing. Without this, re-runs of the same tool by
+      // different agents within the 5-minute window vanished from the
+      // cross-attribution audit trail. Resolve each finding node through
+      // identity-resolution first so we land on the canonical graph node
+      // ID (e.g. an IP-keyed host, not the raw label the finding used).
+      const updatedNodes: string[] = [];
+      if (finding.agent_id) {
+        for (const n of finding.nodes) {
+          const resolution = resolveNodeIdentity({
+            id: n.id,
+            type: n.type as NodeType,
+            ip: n.ip,
+            hostname: n.hostname,
+            label: n.label,
+            domain_name: n.domain_name,
+            username: n.username,
+          });
+          const canonicalId = resolution.id;
+          if (!this.ctx.graph.hasNode(canonicalId)) continue;
+          const existing = this.ctx.graph.getNodeAttributes(canonicalId) as NodeProperties;
+          const existingSources = Array.isArray(existing.sources) ? existing.sources : [];
+          if (!existingSources.includes(finding.agent_id)) {
+            this.ctx.graph.mergeNodeAttributes(canonicalId, {
+              sources: [...existingSources, finding.agent_id],
+              last_seen_at: finding.timestamp,
+            });
+            updatedNodes.push(canonicalId);
+          }
+        }
+      }
+      return { new_nodes: [], new_edges: [], updated_nodes: updatedNodes, updated_edges: [], inferred_edges: [], deduplicated: true };
     }
 
     this.ctx.recentFindingHashes.set(contentHash, now);
@@ -1596,8 +1657,17 @@ export class GraphEngine {
       const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
       if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       edgesByType[attrs.type] = (edgesByType[attrs.type] || 0) + 1;
-      if (attrs.confidence >= 1.0) confirmedEdges++;
-      else inferredEdges++;
+      // P3.3: distinguish confirmed vs inferred by provenance, not raw
+      // confidence. An inference rule that ships at confidence 1.0 is still
+      // inferred; a parser-discovered edge that came in at 0.9 due to noise
+      // is still confirmed (observed). The previous `confidence >= 1.0`
+      // bucketing mislabeled both classes. Rule:
+      //   inferred  = has `inferred_by_rule` AND no `confirmed_at`
+      //   confirmed = everything else (parser-observed, or inference whose
+      //               edge has since been confirmed by direct evidence)
+      const isInferred = !!attrs.inferred_by_rule && !attrs.confirmed_at;
+      if (isInferred) inferredEdges++;
+      else confirmedEdges++;
     });
 
     // Compute access summary
@@ -1974,8 +2044,9 @@ export class GraphEngine {
     this.ctx.trackedProcesses = processes;
   }
 
-  exportGraph(options?: { includeSuperseded?: boolean }): ExportedGraph {
+  exportGraph(options?: { includeSuperseded?: boolean; includeCold?: boolean }): ExportedGraph {
     const includeSuperseded = options?.includeSuperseded ?? false;
+    const includeCold = options?.includeCold ?? true;
     const nodes: ExportedGraph['nodes'] = [];
     const edges: ExportedGraph['edges'] = [];
 
@@ -1993,7 +2064,20 @@ export class GraphEngine {
       edges.push({ id: edgeId, source, target, properties: attrs });
     });
 
-    return { nodes, edges };
+    // P3.2: include cold-store hosts in exports so reports and downstream
+    // tooling don't lose them. Cold = alive ping-sweep responders with no
+    // services and no interesting edges. They are not part of the live
+    // graphology graph but ARE part of the engagement inventory.
+    let cold_nodes: ExportedGraph['cold_nodes'];
+    if (includeCold) {
+      const records: NonNullable<ExportedGraph['cold_nodes']> = [];
+      this.ctx.coldStore.forEach((record) => {
+        records.push({ ...record });
+      });
+      if (records.length > 0) cold_nodes = records;
+    }
+
+    return cold_nodes ? { nodes, edges, cold_nodes } : { nodes, edges };
   }
 
   private runHealthChecks(): HealthReport {

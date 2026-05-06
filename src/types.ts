@@ -480,6 +480,28 @@ export interface ExportedGraphEdge {
 export interface ExportedGraph {
   nodes: ExportedGraphNode[];
   edges: ExportedGraphEdge[];
+  // P3.2: hosts that landed in the cold-store during ingest are not part
+  // of the live graphology graph but are still part of the engagement's
+  // discovered inventory. Surface them in exports so reports, exports,
+  // and downstream tooling don't lose them. Each record is the minimal
+  // ColdNodeRecord shape.
+  cold_nodes?: ColdNodeRecord[];
+}
+
+export interface ColdNodeRecord {
+  id: string;
+  type: string;
+  label: string;
+  ip?: string;
+  hostname?: string;
+  discovered_at: string;
+  last_seen_at: string;
+  subnet_cidr?: string;
+  provenance?: string;
+  alive?: boolean;
+  confidence?: number;
+  finding_id?: string;
+  action_id?: string;
 }
 
 // --- Frontier + Scoring ---
@@ -517,6 +539,14 @@ export interface FrontierItem {
   chain_score?: number;              // composite chain value score
   chain_target_objective?: boolean;  // chain terminates at an objective-adjacent node
   chain_template?: string;           // matched attack path template name (e.g., 'acl-takeover')
+  // P3.1: CIDR truncation tracking on network_discovery items. When the
+  // CIDR is larger than the per-scan host cap, `truncated: true` signals
+  // that the frontier item represents a chunk of an incomplete discovery,
+  // not the entire range. `total_hosts` is the full estimate, `expanded_count`
+  // is how many have been discovered so far.
+  truncated?: boolean;
+  total_hosts?: number;
+  expanded_count?: number;
 }
 
 export interface ScoredTask {

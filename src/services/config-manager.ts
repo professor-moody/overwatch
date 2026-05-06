@@ -6,6 +6,7 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, EngagementConfig } from '../types.js';
+import { engagementConfigSchema } from '../types.js';
 import { isValidCidr } from './cidr.js';
 import { isValidDomain } from './scope-manager.js';
 
@@ -160,6 +161,23 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   // Merge objectives (full replace if provided)
   if (Array.isArray(partial.objectives)) {
     current.objectives = partial.objectives as EngagementConfig['objectives'];
+  }
+
+  // P3.5: zod-validate the merged config before persisting. Previously
+  // updateConfig hand-validated CIDRs/domains but bypassed the rest of
+  // the schema (range-bounded numbers, enum fields, etc.), so an invalid
+  // value (e.g. max_noise=2.0, an unknown approval_mode, or a malformed
+  // OPSEC time_window) could land on disk and fail validation later when
+  // the engagement reloaded. We now run engagementConfigSchema.parse on
+  // the merged result and throw on failure, matching how the config
+  // is validated at every other entry point (template merge, engagement
+  // create/update). The thrown error is surfaced by callers as a 400.
+  const parsed = engagementConfigSchema.safeParse(current);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(i =>
+      `${i.path.join('.') || '<root>'}: ${i.message}`,
+    );
+    throw new Error(`Config validation failed: ${issues.join('; ')}`);
   }
 
   host.persist();

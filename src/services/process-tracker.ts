@@ -65,13 +65,20 @@ export class ProcessTracker {
 
   /**
    * Check if tracked PIDs are still alive and update status accordingly.
+   *
+   * P4.1: a missing PID is reported as `unknown`, not `completed`. From
+   * outside the process we can't distinguish a clean exit from a crash —
+   * `kill(pid, 0)` only tells us "no longer alive." Marking these as
+   * `completed` was wrong and made retrospective truth weaker. Callers
+   * with actual lifecycle visibility (e.g. spawn() exit handlers) should
+   * call `update(id, 'completed' | 'failed')` explicitly.
    */
   refreshStatuses(): boolean {
     let anyTransitioned = false;
     for (const proc of this.processes.values()) {
       if (proc.status !== 'running') continue;
       if (!this.isPidAlive(proc.pid)) {
-        proc.status = 'completed';
+        proc.status = 'unknown';
         proc.completed_at = new Date().toISOString();
         anyTransitioned = true;
       }

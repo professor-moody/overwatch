@@ -1,6 +1,6 @@
 import type { Finding, EdgeType, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { credentialId, domainId, hostId, resolveDomainName, userId } from '../parser-utils.js';
+import { credentialId, domainId, hostId, resolveDomainName, serviceId, userId } from '../parser-utils.js';
 
 // --- NetExec (NXC) Parser ---
 
@@ -30,7 +30,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
 
   function ensureSmbContext(ip: string): { hostNodeId: string; serviceNodeId: string } {
     const resolvedHostId = hostId(ip);
-    const serviceNodeId = `svc-${ip.replace(/\./g, '-')}-445`;
+    const serviceNodeId = serviceId(ip, 445);
 
     if (!seenNodes.has(resolvedHostId)) {
       const meta = hostMeta.get(ip);
@@ -463,7 +463,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       });
       seenNodes.add(mssqlHostId);
     }
-    const mssqlSvcId = `svc-${mssqlIp.replace(/\./g, '-')}-${mssqlPort}`;
+    const mssqlSvcId = serviceId(mssqlIp, mssqlPort);
     if (!seenNodes.has(mssqlSvcId)) {
       nodes.push({
         id: mssqlSvcId,
@@ -507,7 +507,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
   for (const [ip, meta] of hostMeta) {
     if (!meta.nullAuth) continue;
     const resolvedHostId = hostId(ip);
-    const serviceNodeId = `svc-${ip.replace(/\./g, '-')}-445`;
+    const serviceNodeId = serviceId(ip, 445);
     addEdgeOnce(resolvedHostId, serviceNodeId, 'NULL_SESSION', 1.0);
   }
 

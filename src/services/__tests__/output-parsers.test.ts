@@ -864,6 +864,72 @@ describe('Output Parsers', () => {
       expect((tmpl as Record<string, unknown>).ct_flag_no_security_extension).toBe(true);
     });
 
+    it('emits principal→ca ESC6 edge when SAN flag is enabled (P2.3 CA-level)', () => {
+      // Regression: previously only template-level [!] Vulnerabilities
+      // produced ESC edges. ESC6 is a CA flag (User Specified SAN), not a
+      // template flag, so any principal with enrollment rights on any
+      // template the CA offers should get an ESC6 edge to the CA itself.
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'EDITF_ATTRIBUTESUBJECTALTNAME2': true,
+            'Certificate Templates': ['User'],
+          },
+        },
+        'Certificate Templates': {
+          'User': {
+            'Enrollee Supplies Subject': false,
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const escEdges = finding.edges.filter(e => e.properties.type === 'ESC6');
+      expect(escEdges.length).toBeGreaterThan(0);
+      // ESC6 must target the CA, not the template.
+      const ca = finding.nodes.find(n => n.type === 'ca');
+      expect(escEdges.every(e => e.target === ca!.id)).toBe(true);
+    });
+
+    it('emits ESC8 when HTTP enrollment is on without enforce_encrypt (P2.3 CA-level)', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'Web Enrollment': true,
+            'IF_ENFORCEENCRYPTICERTREQUEST': false,
+            'Certificate Templates': ['User'],
+          },
+        },
+        'Certificate Templates': {
+          'User': {
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const escEdges = finding.edges.filter(e => e.properties.type === 'ESC8');
+      expect(escEdges.length).toBeGreaterThan(0);
+    });
+
+    it('honors Certipy CA-level [!] Vulnerabilities block (P2.3)', () => {
+      const data = {
+        'Certificate Authorities': {
+          'ACME-CA': {
+            'Certificate Templates': ['User'],
+            '[!] Vulnerabilities': { 'ESC11': { 'Description': 'IF_ENFORCEENCRYPTICERTREQUEST not enforced' } },
+          },
+        },
+        'Certificate Templates': {
+          'User': {
+            'Enrollment Permissions': { 'Enrollment Rights': ['ACME\\Domain Users'] },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const esc11 = finding.edges.filter(e => e.properties.type === 'ESC11');
+      expect(esc11.length).toBeGreaterThan(0);
+    });
+
     it('extracts issuance_policy_oid and group_link from ESC13 template', () => {
       const data = {
         'Certificate Templates': {

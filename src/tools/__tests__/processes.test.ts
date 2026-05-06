@@ -86,7 +86,9 @@ describe('registerProcessTools', () => {
 
     const reloaded = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     expect(reloaded.getTrackedProcesses()).toHaveLength(1);
-    expect(reloaded.getTrackedProcesses()[0].status).toBe('completed');
+    // P4.1: dead PID with no lifecycle visibility resolves to "unknown,"
+    // not "completed."
+    expect(reloaded.getTrackedProcesses()[0].status).toBe('unknown');
     expect(reloaded.getTrackedProcesses()[0].completed_at).toBeDefined();
   });
 });

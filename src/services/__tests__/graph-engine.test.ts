@@ -143,6 +143,29 @@ describe('GraphEngine', () => {
       expect(state.graph_summary.nodes_by_type['host']).toBe(1);
     });
 
+    it('refuses to flip node type on merge (P2.1 type-guard)', () => {
+      // Regression: an AzureHound role assignment that referenced the same
+      // canonical ID as an existing `group` node could silently flip the
+      // type to `cloud_identity`, poisoning any attack-path that walked
+      // through that node. addNode now drops the incoming type when it
+      // differs from the existing one and emits an instrumentation_warning.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const sharedId = 'principal-collide-1';
+      engine.addNode({ id: sharedId, type: 'group', label: 'Original Group', discovered_at: new Date().toISOString(), confidence: 1.0 });
+      engine.addNode({ id: sharedId, type: 'cloud_identity', label: 'Conflicting AzureHound Identity', provider: 'azure', discovered_at: new Date().toISOString(), confidence: 1.0 });
+      const node = engine.getNode(sharedId);
+      expect(node?.type).toBe('group');
+      // Other (non-type) properties from the second writer still merge in.
+      expect(node?.provider).toBe('azure');
+      // An instrumentation_warning was logged.
+      const warnings = engine.getFullHistory().filter(e =>
+        e.event_type === 'instrumentation_warning'
+        && typeof e.description === 'string'
+        && e.description.includes('Refused type change'),
+      );
+      expect(warnings.length).toBeGreaterThan(0);
+    });
+
     it('skips edges with missing source/target nodes', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.ingestFinding(makeFinding({
@@ -3287,6 +3310,28 @@ describe('GraphEngine', () => {
       expect(r2.deduplicated).toBe(true);
       expect(r2.new_nodes).toEqual([]);
       expect(r2.new_edges).toEqual([]);
+    });
+
+    it('on dedup, still appends new agent attribution to existing node sources (P3.4)', () => {
+      // Regression: when the SAME finding is ingested by a DIFFERENT agent
+      // within the dedup window, the early-return previously dropped the
+      // second agent's observation. The graph topology stays the same, but
+      // we now record that both agents observed it.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const baseFinding = makeFinding({
+        tool_name: 'nmap',
+        nodes: [{ id: 'host-attrib', type: 'host', label: 'attrib-host', ip: '10.0.0.99' }],
+        edges: [],
+      });
+      const r1 = engine.ingestFinding({ ...baseFinding, agent_id: 'agent-A' });
+      const resolvedId = r1.new_nodes[0];
+      expect(resolvedId).toBeDefined();
+      const r2 = engine.ingestFinding({ ...baseFinding, agent_id: 'agent-B' });
+      expect(r2.deduplicated).toBe(true);
+      expect(r2.updated_nodes).toContain(resolvedId);
+      const node = engine.getNode(resolvedId);
+      expect(node?.sources).toContain('agent-A');
+      expect(node?.sources).toContain('agent-B');
     });
 
     it('allows re-ingestion with different properties (partial overlap)', () => {

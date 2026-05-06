@@ -125,10 +125,13 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     if (n.properties.type !== 'host') continue;
     const sessionEdges = graph.edges.filter(e =>
       e.target === n.id && e.properties.type === 'HAS_SESSION' && e.properties.confidence >= 0.9
-      // HAS_SESSION edges with session_live:false are historical — exclude from
-      // compromise determination.  Edges without session_live (pre-existing data)
-      // still pass (backward compat: !== false, not === true).
-      && e.properties.session_live !== false
+      // P2.2: require explicit session_live === true for live-compromise
+      // counting. Imported BloodHound sessions and historical edges without
+      // an affirmative live flag no longer satisfy "compromised host" — they
+      // remain in the graph (and other surfaces can render them) but the
+      // compromise count refuses to over-claim. Aligns with
+      // objective-manager.ts which already required === true.
+      && e.properties.session_live === true
     );
     const exploitEdges = graph.edges.filter(e =>
       e.target === n.id && e.properties.type === 'EXPLOITS' && e.properties.confidence >= 0.9 &&
@@ -803,8 +806,12 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   let inferredEdges = 0;
   for (const e of graph.edges) {
     edgesByType[e.properties.type] = (edgesByType[e.properties.type] || 0) + 1;
-    if (e.properties.confidence >= 1.0) confirmedEdges++;
-    else inferredEdges++;
+    // P3.3: provenance-based bucketing matching graph-engine.getState().
+    // confidence >= 1.0 alone mislabels high-confidence inference rules
+    // as "confirmed" and parser observations at 0.9 as "inferred".
+    const isInferred = !!e.properties.inferred_by_rule && !e.properties.confirmed_at;
+    if (isInferred) inferredEdges++;
+    else confirmedEdges++;
   }
 
   const objectivesAchieved = config.objectives.filter(o => o.achieved);
@@ -1416,7 +1423,10 @@ function generateHostRemediation(host: NodeProperties, accessEdges: ExportedGrap
     e.properties.type === 'HAS_SESSION' && (e.properties.confidence ?? 0) >= 0.7
   );
   const hasSession = confirmedSessions.length > 0;
-  const hasLiveSession = confirmedSessions.some(e => e.properties.session_live !== false);
+  // P2.2: live-session check requires explicit session_live === true.
+  // Imported (BloodHound) and historical edges without an affirmative flag
+  // do not count as live access for remediation framing.
+  const hasLiveSession = confirmedSessions.some(e => e.properties.session_live === true);
 
   if (hasLiveSession) {
     lines.push(`1. **Revoke all active sessions** on ${host.label || host.ip || host.id} and force re-authentication.`);

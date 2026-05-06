@@ -60,6 +60,22 @@ export function hostId(ip: string): string {
   return `host-${ip.replace(/\./g, '-')}`;
 }
 
+/**
+ * P4-IPv6: canonical service node ID for `(ip, port)`. Centralizes IPv4
+ * vs IPv6 normalization so two parsers don't disagree on the ID for the
+ * same target — previously each parser inlined `ip.replace(/\./g, '-')`,
+ * which silently dropped colons in IPv6 addresses and produced
+ * ambiguous/colliding IDs across hosts.
+ */
+export function serviceId(ip: string, port: number | string): string {
+  const portStr = String(port);
+  if (ip.includes(':')) {
+    const stripped = ip.replace(/^\[|\]$/g, '');
+    return `svc-${stripped.replace(/:/g, '-')}-${portStr}`;
+  }
+  return `svc-${ip.replace(/\./g, '-')}-${portStr}`;
+}
+
 export function caId(name: string): string {
   return `ca-${normalizeKeyPart(name)}`;
 }

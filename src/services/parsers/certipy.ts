@@ -59,6 +59,18 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
     });
   }
 
+  // P2.3: collect CA-level findings (ESC6/ESC8/ESC11/etc.) so they can be
+  // expanded into principal→ca vulnerability edges after enrollment perms
+  // are known. Previously the parser only inspected template-level
+  // vulnerabilities and missed every ESC path tied to a CA flag (SAN abuse,
+  // unauthenticated HTTP enrollment, missing ICPR encryption).
+  const caEscFindings = new Map<string, Set<string>>(); // caNodeId -> set of ESC ids ('ESC6', 'ESC8', ...)
+  const caEscFromCondition = (caId: string, esc: string) => {
+    const existing = caEscFindings.get(caId) || new Set<string>();
+    existing.add(esc);
+    caEscFindings.set(caId, existing);
+  };
+
   // Parse certipy find output (JSON format)
   try {
     const data = JSON.parse(output);
@@ -111,6 +123,51 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
             ...(mappingMethods ? { certificate_mapping_methods: mappingMethods } : {}),
           });
           seenNodes.add(caNodeId);
+        }
+
+        // P2.3: derive CA-level ESC findings from CA flags. These become
+        // principal→ca edges below once enrollment rights are known.
+        const enforceEncryptVal = parseBool(readFirst(ca, [
+          'IF_ENFORCEENCRYPTICERTREQUEST',
+          'Enforce Encryption for Requests',
+          'Enforce Encryption for Requests?',
+        ]));
+        const sanFlagVal = parseBool(readFirst(ca, [
+          'EDITF_ATTRIBUTESUBJECTALTNAME2',
+          'User Specified SAN',
+          'User Specified SAN?',
+          'Request Disposition - User Specified SAN',
+        ]));
+        const httpEnrollmentVal = parseBool(readFirst(ca, [
+          'Web Enrollment',
+          'Web Enrollment Enabled',
+          'HTTP Enrollment',
+          'HTTP Enrollment Enabled',
+          'Enrollment Web Service',
+        ]));
+        // ESC6 — `EDITF_ATTRIBUTESUBJECTALTNAME2` (User Specified SAN) lets
+        // any enrollee request a cert for an arbitrary UPN/SAN, regardless
+        // of the template. Affects every principal who can enroll any
+        // template offered by this CA.
+        if (sanFlagVal === true) caEscFromCondition(caNodeId, 'ESC6');
+        // ESC8 — HTTP/web enrollment endpoint enabled and enrollment
+        // requests aren't encrypted (so NTLM relay against the endpoint
+        // works). Conservative trigger: HTTP enrollment on + enforce_encrypt
+        // not affirmatively true.
+        if (httpEnrollmentVal === true && enforceEncryptVal !== true) {
+          caEscFromCondition(caNodeId, 'ESC8');
+        }
+        // CA-level vulnerability block (Certipy may report ESCs under the
+        // CA itself for things like ESC6/ESC8/ESC11). Keep this on top of
+        // flag-derived findings so explicit Certipy assertions survive.
+        const caVulns = ca['[!] Vulnerabilities'] as Record<string, unknown> | undefined;
+        if (caVulns) {
+          for (const escName of Object.keys(caVulns)) {
+            const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (['ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC11', 'ESC12'].includes(escType)) {
+              caEscFromCondition(caNodeId, escType);
+            }
+          }
         }
 
         // Extract domain from DNS Name (e.g., "dc01.acme.corp" → "acme.corp")
@@ -230,6 +287,22 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
                 const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
                 if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13'].includes(escType)) {
                   addEdge(resolvedPrincipalId, tmplId, escType, 0.9);
+                }
+              }
+            }
+
+            // P2.3: CA-level ESC findings expand to principal→ca edges for
+            // every principal who can enroll any template offered by this
+            // CA. Schema constrains ESC6/ESC7/ESC8/ESC11/ESC12 to target a
+            // CA node, so this is the right destination.
+            for (const [caNodeId, caTemplates] of caTemplateMap) {
+              const offersThisTemplate = caTemplates.some(t => t.toLowerCase() === templateName.toLowerCase());
+              if (!offersThisTemplate) continue;
+              const caEscs = caEscFindings.get(caNodeId);
+              if (!caEscs) continue;
+              for (const esc of caEscs) {
+                if (['ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC11', 'ESC12'].includes(esc)) {
+                  addEdge(resolvedPrincipalId, caNodeId, esc as EdgeType, 0.9);
                 }
               }
             }

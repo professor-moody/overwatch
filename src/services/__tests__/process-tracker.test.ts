@@ -57,12 +57,16 @@ describe('ProcessTracker', () => {
   });
 
   describe('refreshStatuses', () => {
-    it('transitions running process to completed when PID is dead', () => {
-      // Use a PID that definitely does not exist
+    it('transitions running process to unknown when PID is dead (P4.1)', () => {
+      // Use a PID that definitely does not exist. P4.1: this used to mark
+      // the process as "completed" (implying clean exit), but from outside
+      // we can't tell a clean exit from a crash — the honest status is
+      // "unknown." Callers with actual lifecycle visibility should use
+      // update(id, 'completed' | 'failed').
       tracker.register({ id: 'p-dead', pid: 999999999, command: 'nmap', description: 'dead scan' });
       tracker.refreshStatuses();
       const proc = tracker.get('p-dead');
-      expect(proc!.status).toBe('completed');
+      expect(proc!.status).toBe('unknown');
       expect(proc!.completed_at).toBeDefined();
     });
 
@@ -134,8 +138,11 @@ describe('ProcessTracker', () => {
       expect(restored.listAll().length).toBe(0);
     });
 
-    it('refreshStatuses after deserialize marks dead PIDs as completed (startup reconciliation)', () => {
-      // Simulate persisted state with a "running" process whose PID is dead
+    it('refreshStatuses after deserialize marks dead PIDs as unknown (startup reconciliation, P4.1)', () => {
+      // Simulate persisted state with a "running" process whose PID is dead.
+      // P4.1: a missing PID is reported as "unknown," not "completed" — we
+      // can't tell from outside whether the process exited cleanly or
+      // crashed. Status flips to "unknown" so retros stay honest.
       const serialized = [
         { id: 'p-stale', pid: 999999999, command: 'nmap -sV 10.0.0.0/24', description: 'Long scan', started_at: '2025-01-01T00:00:00Z', status: 'running' as const },
         { id: 'p-done', pid: 888888888, command: 'nikto -h 10.0.0.1', description: 'Web scan', started_at: '2025-01-01T00:00:00Z', completed_at: '2025-01-01T01:00:00Z', status: 'completed' as const },
@@ -146,10 +153,10 @@ describe('ProcessTracker', () => {
       expect(restored.listActive()).toHaveLength(1);
       expect(restored.get('p-stale')!.status).toBe('running');
 
-      // Refresh marks the dead PID as completed
+      // Refresh marks the dead PID as unknown
       restored.refreshStatuses();
       expect(restored.listActive()).toHaveLength(0);
-      expect(restored.get('p-stale')!.status).toBe('completed');
+      expect(restored.get('p-stale')!.status).toBe('unknown');
       expect(restored.get('p-stale')!.completed_at).toBeDefined();
 
       // Already-completed processes are untouched

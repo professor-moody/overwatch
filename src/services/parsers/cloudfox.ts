@@ -62,7 +62,28 @@ export function parseCloudFox(output: string, agentId: string = 'cloudfox-parser
         cloud_account: (roleArn.match(/:(\d{12}):/)?.[1]) || recAccountId,
       } as Finding['nodes'][0]);
 
-      if (trustedPrincipal !== '*') {
+      // P2.4: capture trust policy fidelity. Previously a wildcard trust
+      // (`Principal: "*"`) was silently dropped, hiding any role with
+      // wildcard-but-condition-gated trust from analysis. We now stamp
+      // `wildcard_trust: true` on the role node itself (no self-loop edge,
+      // no synthetic principal — there's no concrete source to put on the
+      // edge), and preserve any condition block as JSON for downstream
+      // simulation. For non-wildcard trust we still emit the ASSUMES_ROLE
+      // edge as before, also annotated with the conditions.
+      const conditionsRaw = rec.Conditions ?? rec.Condition ?? rec.conditions;
+      const hasConditions = !!conditionsRaw && typeof conditionsRaw === 'object';
+      if (trustedPrincipal === '*') {
+        const roleNode = nodes.find(n => n.id === roleNodeId);
+        if (roleNode) {
+          roleNode.wildcard_trust = true;
+          if (hasConditions) {
+            roleNode.trust_conditions_json = JSON.stringify(conditionsRaw);
+            roleNode.trust_condition_present = true;
+          } else {
+            roleNode.trust_condition_present = false;
+          }
+        }
+      } else {
         const trustedId = cloudIdentityId(trustedPrincipal);
         addNode({
           id: trustedId, type: 'cloud_identity',
@@ -81,6 +102,8 @@ export function parseCloudFox(output: string, agentId: string = 'cloudfox-parser
             discovered_by: agentId,
             assumption_confirmed: false,
             assumption_basis: 'trust_policy',
+            condition_present: hasConditions,
+            ...(hasConditions ? { trust_conditions_json: JSON.stringify(conditionsRaw) } : {}),
           },
         });
       }

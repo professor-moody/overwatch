@@ -257,6 +257,7 @@ export class FrontierComputer {
     // 3. Network discovery items from scope CIDRs
     //    Suppress fully-explored CIDRs; reduce fan_out for partially-explored ones.
     const discoveredIps = this.collectDiscoveredIps();
+    const CIDR_HOST_CAP = 254;
     for (const cidr of this.ctx.config.scope.cidrs) {
       const slug = cidr.replace(/[./]/g, '-');
       const maskStr = cidr.split('/')[1];
@@ -268,30 +269,50 @@ export class FrontierComputer {
         mask >= 32 ? 1
         : mask === 31 ? 2
         : Math.max(2 ** hostBits - 2, 1);
-      const cappedEstimate = Math.min(totalEstimate, 254);
+      const cappedEstimate = Math.min(totalEstimate, CIDR_HOST_CAP);
+      // P3.1: detect when the CIDR is too large to enumerate fully in a
+      // single frontier item. Previously a /16 (~65k hosts) was capped to
+      // 254 and `remaining = capped - discovered`, so once 254 hosts were
+      // discovered the item disappeared and the rest of the range was
+      // silently skipped. Now we surface `truncated: true` and use the
+      // full host count for `total_hosts`, so the operator (and the
+      // recommender) can see that this is a chunked discovery, not a
+      // completed one.
+      const truncated = totalEstimate > CIDR_HOST_CAP;
 
       const discoveredInCidr = discoveredIps.filter(ip => isIpInCidr(ip, cidr)).length;
       const remaining = cappedEstimate - discoveredInCidr;
 
-      // Suppress when all estimated hosts have been discovered
-      if (remaining <= 0) continue;
+      // Suppress only when fully covered AND the CIDR is small enough that
+      // we trust the count. Truncated CIDRs are never auto-suppressed —
+      // there are still unscanned hosts beyond the chunk cap.
+      if (remaining <= 0 && !truncated) continue;
+      // For a truncated CIDR with `discovered >= cap`, we still want to
+      // emit a follow-up item so the operator knows there's more to do.
+      const effectiveRemaining = truncated ? Math.max(remaining, totalEstimate - discoveredInCidr) : remaining;
+      if (effectiveRemaining <= 0) continue;
 
       frontier.push({
         id: `frontier-discovery-${slug}`,
         type: 'network_discovery',
         target_cidr: cidr,
-        description: discoveredInCidr === 0
-          ? `Discover hosts in ${cidr}`
-          : `Continue discovery in ${cidr} (${discoveredInCidr} found, ~${remaining} remaining)`,
+        description: truncated
+          ? `Continue discovery in ${cidr} (${discoveredInCidr} found of ~${totalEstimate}; chunked at ${CIDR_HOST_CAP}/scan)`
+          : discoveredInCidr === 0
+            ? `Discover hosts in ${cidr}`
+            : `Continue discovery in ${cidr} (${discoveredInCidr} found, ~${remaining} remaining)`,
         graph_metrics: {
           hops_to_objective: null,
-          fan_out_estimate: remaining,
+          fan_out_estimate: Math.min(effectiveRemaining, CIDR_HOST_CAP),
           node_degree: 0,
           confidence: 1.0,
         },
         opsec_noise: 0.2,
         staleness_seconds: 0,
-      });
+        truncated,
+        total_hosts: totalEstimate,
+        expanded_count: discoveredInCidr,
+      } as typeof frontier[number]);
     }
 
     // 4. Network pivot items: hosts reachable via pivot in same subnet

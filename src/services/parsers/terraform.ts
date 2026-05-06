@@ -279,11 +279,17 @@ export function parseTerraformState(output: string, agentId: string = 'terraform
         discovered_at: now, discovered_by: agentId, confidence: 0.9,
         provider, arn: fullTargetArn, cloud_account: accountId,
       } as Finding['nodes'][0]);
+      // P2.4: a policy attachment without a resolved policy document has
+      // no actions/resources to evaluate. Mark it `unevaluable` rather
+      // than letting the simulator silently return `allowed: false` (which
+      // would under-report cloud paths). Matches the AzureHound convention
+      // used elsewhere for "enumerated_only".
       addNode({
         id: polId, type: 'cloud_policy',
         label: policyArn.split('/').pop() || policyArn,
         discovered_at: now, discovered_by: agentId, confidence: 1.0,
         provider, arn: policyArn, policy_name: policyArn.split('/').pop() || policyArn,
+        permission_expansion: 'unevaluable',
       } as Finding['nodes'][0]);
       edges.push({
         source: identityId, target: polId,

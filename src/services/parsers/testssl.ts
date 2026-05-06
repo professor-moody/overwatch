@@ -1,6 +1,7 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { XMLParser } from 'fast-xml-parser';
+import { serviceId } from '../parser-utils.js';
 import { hostId, vulnerabilityId } from '../parser-utils.js';
 
 const TLS_KNOWN_VULNS: Record<string, { cve?: string; severity: string }> = {
@@ -101,7 +102,7 @@ export function parseTestssl(output: string, agentId: string = 'testssl-parser',
       }
 
       const proto = 'https';
-      const svcId = `svc-${ip.replace(/\./g, '-')}-${port}`;
+      const svcId = serviceId(ip, port);
       const svcProps: Record<string, unknown> = {
         id: svcId,
         type: 'service',
@@ -316,7 +317,7 @@ function processTestsslFindings(
   }
 
   const proto = 'https';
-  const svcId = `svc-${ip.replace(/\./g, '-')}-${port}`;
+  const svcId = serviceId(ip, port);
   const svcProps: Record<string, unknown> = {
     id: svcId,
     type: 'service',
