@@ -7,6 +7,35 @@
 import type { ReportFinding } from './report-generator.js';
 import type { NodeProperties, ExportedGraph } from '../types.js';
 
+/**
+ * Phase 3 (enterprise): classify which engagement tier a finding lives
+ * in based on its affected node types. A finding spanning multiple tiers
+ * is `cross_tier` — that's the signal for the report's "Cross-Tier
+ * Attack Chains" section.
+ */
+export function inferFindingTier(
+  finding: ReportFinding,
+  graph: ExportedGraph,
+): NonNullable<ReportFinding['tier']> {
+  const seen = new Set<NonNullable<ReportFinding['tier']>>();
+  for (const assetId of finding.affected_assets) {
+    const node = graph.nodes.find(n => n.id === assetId);
+    const t = node?.properties.type;
+    if (!t) continue;
+    if (t === 'host' || t === 'service' || t === 'subnet' || t === 'domain') seen.add('network');
+    else if (t === 'webapp' || t === 'api_endpoint') seen.add('app');
+    else if (t === 'cloud_resource' || t === 'cloud_identity' || t === 'cloud_policy' || t === 'cloud_network') seen.add('cloud');
+    else if (t === 'idp' || t === 'idp_application' || t === 'idp_principal') seen.add('identity');
+  }
+  if (seen.size > 1) return 'cross_tier';
+  if (seen.size === 1) return [...seen][0];
+  // Fallback: classify by category when affected_assets are sparse.
+  if (finding.category === 'compromised_host' || finding.category === 'access_path') return 'network';
+  if (finding.category === 'webapp') return 'app';
+  if (finding.category === 'cloud_exposure') return 'cloud';
+  return 'network';
+}
+
 // ============================================================
 // Types
 // ============================================================

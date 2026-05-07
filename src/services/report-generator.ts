@@ -28,6 +28,16 @@ export interface ReportFinding {
   title: string;
   severity: FindingSeverity;
   category: 'compromised_host' | 'credential' | 'vulnerability' | 'access_path' | 'cloud_exposure' | 'webapp';
+  /**
+   * Phase 3 (enterprise): which engagement tier this finding lives in.
+   *  - `network`     — on-prem hosts, services, AD attack paths.
+   *  - `app`         — webapp / api_endpoint findings.
+   *  - `cloud`       — cloud_resource / cloud_identity / cloud_policy.
+   *  - `identity`    — idp / idp_application / idp_principal.
+   *  - `cross_tier`  — finding spans ≥2 of the above (e.g. SSRF→IMDS).
+   * Inferred from the affected node types when not set explicitly.
+   */
+  tier?: 'network' | 'app' | 'cloud' | 'identity' | 'cross_tier';
   description: string;
   affected_assets: string[];
   evidence: EvidenceChain[];

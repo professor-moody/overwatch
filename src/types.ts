@@ -458,6 +458,23 @@ export interface EngagementConfig {
     azure_subscriptions?: string[];
     gcp_projects?: string[];
     url_patterns?: string[];   // glob-like: "*.example.com", "app.corp.io/api/*"
+    /**
+     * Phase 3 (enterprise): explicit cross-tier linkage. When the operator
+     * knows which cloud account / IdP backs a given app, declaring the
+     * link here lets CrossTierCorrelator emit BACKED_BY / AUTHENTICATES_VIA
+     * edges automatically. Without it, the correlator stays silent — we
+     * never invent linkage that wasn't explicitly declared.
+     */
+    cross_tier_links?: Array<{
+      url_pattern?: string;             // glob over webapp URL
+      aws_account?: string;             // AWS account id
+      azure_subscription?: string;      // Azure subscription id
+      gcp_project?: string;             // GCP project id
+      cloud_resource_prefix?: string;   // e.g. "arn:aws:lambda:us-east-1:123:function:client-api-*"
+      idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml';
+      tenant_id?: string;
+      notes?: string;
+    }>;
   };
   objectives: EngagementObjective[];
   opsec: OpsecProfile;
@@ -584,6 +601,16 @@ export const engagementConfigSchema = z.object({
     azure_subscriptions: z.array(z.string()).optional(),
     gcp_projects: z.array(z.string()).optional(),
     url_patterns: z.array(z.string()).optional(),
+    cross_tier_links: z.array(z.object({
+      url_pattern: z.string().optional(),
+      aws_account: z.string().optional(),
+      azure_subscription: z.string().optional(),
+      gcp_project: z.string().optional(),
+      cloud_resource_prefix: z.string().optional(),
+      idp_kind: z.enum(['okta', 'entra', 'auth0', 'ping', 'generic_oidc', 'generic_saml']).optional(),
+      tenant_id: z.string().optional(),
+      notes: z.string().optional(),
+    })).optional(),
   }),
   objectives: z.array(engagementObjectiveSchema),
   opsec: opsecProfileSchema,

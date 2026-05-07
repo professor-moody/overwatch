@@ -43,6 +43,8 @@ import {
   degradeExpiredCredentialEdges as _degradeExpiredCredentialEdges,
 } from './imperative-inference.js';
 import type { ImperativeInferenceHost, PivotReachabilityResult } from './imperative-inference.js';
+import { runCrossTierCorrelator as _runCrossTierCorrelator } from './cross-tier-correlator.js';
+import { runCrossTierInference as _runCrossTierInference } from './cross-tier-inference.js';
 import {
   updateScope as _updateScope,
   collectScopeSuggestions as _collectScopeSuggestions,
@@ -516,6 +518,25 @@ export class GraphEngine {
 
     this.ctx.recentFindingHashes.set(contentHash, now);
     const result = ingestFindingImpl(this.findingIngestionHost, finding);
+
+    // Phase 3 (enterprise): cross-tier correlation + inference. Run after
+    // each ingest so newly-ingested webapps / cloud_resources / idp_apps /
+    // credentials get linked to their cross-tier counterparts.
+    try {
+      _runCrossTierCorrelator({
+        ctx: this.ctx,
+        addEdge: this.addEdge.bind(this),
+        log: this.log.bind(this),
+      });
+      _runCrossTierInference({
+        ctx: this.ctx,
+        addEdge: this.addEdge.bind(this),
+        log: this.log.bind(this),
+      });
+    } catch (err) {
+      // Cross-tier inference must never fail the ingest. Log and continue.
+      this.log(`Cross-tier inference error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
+    }
 
     // 7.7: Auto health check after large ingests
     if (result.new_nodes.length >= GraphEngine.HEALTH_AUTO_CHECK_THRESHOLD) {
