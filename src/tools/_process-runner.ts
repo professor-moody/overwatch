@@ -683,7 +683,9 @@ export async function runInstrumentedProcess(
 
     // Approval gate
     const queue = engine.getPendingActionQueue();
-    if (queue.needsApproval(v.opsec_context, technique)) {
+    // P4.1: pass the phase-effective approval config so per-phase
+    // overrides (e.g., approve-all during exploitation) are honored.
+    if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig())) {
       const approval = await queue.submit({
         action_id: normalizedActionId,
         technique,

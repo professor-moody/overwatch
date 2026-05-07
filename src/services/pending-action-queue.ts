@@ -67,16 +67,30 @@ export class PendingActionQueue {
 
   // ---- Approval mode logic ----
 
-  needsApproval(opsecContext: OpsecContext, technique?: string): boolean {
-    const mode = this.getApprovalMode();
+  /**
+   * P4.1: optional `phaseEffective` carries the resolved phase-aware
+   * approval mode + blacklist. When provided, it overrides the
+   * engagement-level config. Engine.runProcess passes this from
+   * `getEffectiveApprovalConfig()`. Legacy callers still get the
+   * engagement-level behavior because the parameter is optional.
+   */
+  needsApproval(
+    opsecContext: OpsecContext,
+    technique?: string,
+    phaseEffective?: { mode: ApprovalMode; blacklisted_techniques: string[] },
+  ): boolean {
+    const mode = phaseEffective?.mode ?? this.getApprovalMode();
     if (mode === 'auto-approve') return false;
     if (mode === 'approve-all') return true;
 
     // approve-critical: require approval for high-noise or blacklisted actions
     const maxNoise = this.ctx.config.opsec.max_noise;
     const noiseThreshold = maxNoise * 0.5;
+    const blacklist = phaseEffective?.blacklisted_techniques
+      ?? this.ctx.config.opsec.blacklisted_techniques
+      ?? [];
     if (opsecContext.global_noise_spent + noiseThreshold >= maxNoise) return true;
-    if (technique && this.ctx.config.opsec.blacklisted_techniques?.includes(technique)) return true;
+    if (technique && blacklist.includes(technique)) return true;
     if (opsecContext.defensive_signals.length > 0) return true;
     if (opsecContext.noise_budget_remaining <= 0) return true;
 

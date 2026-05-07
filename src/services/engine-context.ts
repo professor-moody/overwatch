@@ -157,6 +157,11 @@ export class EngineContext {
   // takes a lease so other agents see "in progress" and skip it. Reaped
   // by the same watchdog that handles heartbeat timeouts.
   frontierLeases: FrontierLeases;
+  // P4.1: most recently observed active-phase id, used to detect phase
+  // transitions and emit `phase_entered` / `phase_exited` events.
+  // Persisted with the snapshot so transitions aren't re-emitted across
+  // restarts when the phase hasn't actually changed.
+  lastKnownPhaseId?: string;
   // P2.1: write-ahead log. Only constructed for engagements with
   // `engagement_nonce` (deterministic-ID engagements). Legacy engagements
   // continue to rely on debounced snapshots only.

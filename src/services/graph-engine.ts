@@ -49,6 +49,9 @@ import {
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
 import type { ScopeManagerHost } from './scope-manager.js';
+import { buildDecisionLog, queryDecisionLog, type DecisionEntry, type DecisionLogQuery } from './decision-log.js';
+import { explainAction, type ExplainActionResult } from './introspection.js';
+import { buildTimeline, queryTimeline, type TimelineEntry, type TimelineQuery } from './timeline.js';
 import { ingestFindingImpl } from './finding-ingestion.js';
 import type { FindingIngestionHost } from './finding-ingestion.js';
 import { resolveNodeIdentity } from './identity-resolution.js';
@@ -72,6 +75,7 @@ import {
   syncObjectiveNodes as _syncObjectiveNodes,
   getPhaseStatuses as _getPhaseStatuses,
   getCurrentPhaseId as _getCurrentPhaseId,
+  getCurrentPhase as _getCurrentPhase,
   computeAccessLevel as _computeAccessLevel,
 } from './objective-manager.js';
 import type { ObjectiveManagerHost } from './objective-manager.js';
@@ -1098,16 +1102,19 @@ export class GraphEngine {
       }
     }
 
-    // OPSEC enforcement (only when enabled)
-    if (this.ctx.config.opsec.enabled) {
-      // Check OPSEC blacklist
-      if (action.technique && this.ctx.config.opsec.blacklisted_techniques?.includes(action.technique)) {
+    // OPSEC enforcement (only when enabled). P4.1: read the effective
+    // profile, which folds in the active phase's `opsec_overrides`.
+    const effectiveOpsec = this.getEffectiveOpsec();
+    if (effectiveOpsec.enabled) {
+      // Check OPSEC blacklist (engagement-level + phase-extended).
+      const effectiveBlacklist = this.getEffectiveApprovalConfig().blacklisted_techniques;
+      if (action.technique && effectiveBlacklist.includes(action.technique)) {
         errors.push(`Technique blacklisted by OPSEC profile: ${action.technique}`);
       }
 
       // Time window check (handles wrap-around, e.g. 22:00–06:00)
-      if (this.ctx.config.opsec.time_window) {
-        const { start_hour, end_hour } = this.ctx.config.opsec.time_window;
+      if (effectiveOpsec.time_window) {
+        const { start_hour, end_hour } = effectiveOpsec.time_window;
         const now = new Date();
         if (!isInTimeWindow(start_hour, end_hour, now)) {
           const hour = now.getHours();
@@ -1138,12 +1145,13 @@ export class GraphEngine {
     const domain = host_id ? this.resolveHostDomain(host_id) : undefined;
     const opsec_context = this.ctx.opsecTracker.getNoiseContext({ host_id: host_id || undefined, domain });
 
-    // Noise budget warning (only when OPSEC enforcement is enabled)
-    if (this.ctx.config.opsec.enabled) {
+    // Noise budget warning (only when OPSEC enforcement is enabled).
+    // P4.1: report against the effective max_noise (phase override if any).
+    if (effectiveOpsec.enabled) {
       if (opsec_context.noise_budget_remaining <= 0) {
         warnings.push('Noise budget exhausted — only passive/zero-noise actions recommended.');
       } else if (this.ctx.opsecTracker.isApproachingCeiling(host_id || undefined, domain)) {
-        warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${this.ctx.config.opsec.max_noise}).`);
+        warnings.push(`Noise budget approaching ceiling (${opsec_context.noise_budget_remaining} remaining of ${effectiveOpsec.max_noise}).`);
       }
     }
 
@@ -1383,6 +1391,41 @@ export class GraphEngine {
 
   private evaluateObjectives(): void {
     _evaluateObjectives(this.objectiveHost);
+    // P4.1: detect phase transitions whenever objectives change. The
+    // `phase_entered` / `phase_exited` events get hash-chained and feed
+    // the dashboard timeline + decision log.
+    this.recordPhaseTransitionsIfAny();
+  }
+
+  /**
+   * P4.1: compare the live active-phase id to the last-observed one and
+   * emit `phase_entered` / `phase_exited` events on change. Called from
+   * `evaluateObjectives` after every ingest. Idempotent — no events are
+   * emitted when the phase hasn't moved.
+   */
+  private recordPhaseTransitionsIfAny(): void {
+    const currentId = this.getCurrentPhaseId();
+    const previousId = this.ctx.lastKnownPhaseId;
+    if (currentId === previousId) return;
+    if (previousId) {
+      this.logActionEvent({
+        description: `Phase exited: ${previousId}`,
+        event_type: 'phase_exited',
+        category: 'system',
+        result_classification: 'neutral',
+        details: { phase_id: previousId, next_phase_id: currentId ?? null },
+      });
+    }
+    if (currentId) {
+      this.logActionEvent({
+        description: `Phase entered: ${currentId}`,
+        event_type: 'phase_entered',
+        category: 'system',
+        result_classification: 'neutral',
+        details: { phase_id: currentId, previous_phase_id: previousId ?? null },
+      });
+    }
+    this.ctx.lastKnownPhaseId = currentId;
   }
 
   recomputeObjectives(): { before: Array<{ id: string; achieved: boolean; achieved_at?: string }>; after: Array<{ id: string; achieved: boolean; achieved_at?: string }> } {
@@ -1604,6 +1647,73 @@ export class GraphEngine {
    */
   reapExpiredFrontierLeases(now?: string): string[] {
     return this.ctx.frontierLeases.reapExpired(now ?? this.ctx.nowIso());
+  }
+
+  /**
+   * P3.1: derive the decision log from the activity log + frontier
+   * linkage. Pure function; no caching beyond what the underlying
+   * sources provide. Pass `query` to filter by action/frontier/agent/outcome.
+   */
+  getDecisionLog(query?: DecisionLogQuery): DecisionEntry[] {
+    const all = buildDecisionLog(this.ctx.activityLog, this.ctx.frontierLinkage.getAll());
+    return query ? queryDecisionLog(all, query) : all;
+  }
+
+  /**
+   * P3.2: produce a single "why did the agent do X?" answer for an
+   * action_id. Aggregates frontier item, log_thought chain, considered
+   * alternatives, prior action references, validation/approval/outcome.
+   * Read-only; no caching beyond the underlying activity log.
+   */
+  explainAction(actionId: string): ExplainActionResult {
+    return explainAction(
+      this.ctx.activityLog,
+      actionId,
+      (id) => this.getFrontierItem(id) ?? undefined,
+    );
+  }
+
+  /**
+   * P3.3: derive the engagement timeline (per-node and per-edge "when
+   * was X true?") from the current graph + activity log. Pass `query`
+   * to filter / scope / time-slice. Pure read; no caching.
+   */
+  getTimeline(query?: TimelineQuery): TimelineEntry[] {
+    const all = buildTimeline(this.exportGraph(), this.ctx.activityLog);
+    return query ? queryTimeline(all, query) : all;
+  }
+
+  /**
+   * P4.1: effective OPSEC profile for the current phase. Returns the
+   * engagement-level OPSEC merged with any `opsec_overrides` on the
+   * currently-active phase. Validation paths read this instead of
+   * `config.opsec` directly so phase-specific tightening (e.g., lower
+   * max_noise during exploitation) actually bites.
+   */
+  getEffectiveOpsec(): typeof this.ctx.config.opsec {
+    const phase = _getCurrentPhase(this.objectiveHost);
+    const overrides = phase?.opsec_overrides;
+    if (!overrides) return this.ctx.config.opsec;
+    return { ...this.ctx.config.opsec, ...overrides } as typeof this.ctx.config.opsec;
+  }
+
+  /**
+   * P4.1: effective approval mode + blacklist for the current phase.
+   * Used by `pending-action-queue.needsApproval`.
+   */
+  getEffectiveApprovalConfig(): { mode: import('../types.js').ApprovalMode; blacklisted_techniques: string[] } {
+    const phase = _getCurrentPhase(this.objectiveHost);
+    const baseMode = this.ctx.config.opsec.approval_mode ?? 'auto-approve';
+    const baseBlacklist = this.ctx.config.opsec.blacklisted_techniques ?? [];
+    const overrides = phase?.approval_overrides;
+    return {
+      mode: overrides?.mode ?? baseMode,
+      // Phase blacklist EXTENDS the engagement-level one (not replaces) so
+      // operator-level safety rules can't be silently weakened by a phase.
+      blacklisted_techniques: overrides?.blacklisted_techniques
+        ? [...new Set([...baseBlacklist, ...overrides.blacklisted_techniques])]
+        : baseBlacklist,
+    };
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
@@ -1987,14 +2097,16 @@ export class GraphEngine {
     return this.ctx.opsecTracker;
   }
 
-  /** True when OPSEC enforcement is enabled (drives the hard noise ceiling). */
+  /** True when OPSEC enforcement is enabled (drives the hard noise ceiling).
+   * P4.1: honors the active phase's `opsec_overrides.enabled` if set. */
   isOpsecEnforcementEnabled(): boolean {
-    return this.ctx.config.opsec.enabled === true;
+    return this.getEffectiveOpsec().enabled === true;
   }
 
-  /** Configured max_noise (0–1 ratio). Reused by the runner to format ceiling rejections. */
+  /** Effective max_noise (phase override if any; engagement-level otherwise).
+   * Reused by the runner to format ceiling rejections. */
   getMaxNoise(): number {
-    return this.ctx.config.opsec.max_noise;
+    return this.getEffectiveOpsec().max_noise;
   }
 
   // =============================================

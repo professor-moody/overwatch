@@ -154,6 +154,11 @@ export class FrontierLinkageTracker {
     return this.records.get(id);
   }
 
+  /** All records as an array. Used by P3.1 decision-log derivation. */
+  getAll(): FrontierLinkageRecord[] {
+    return Array.from(this.records.values());
+  }
+
   size(): number {
     return this.records.size;
   }

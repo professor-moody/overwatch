@@ -208,6 +208,17 @@ export function getCurrentPhaseId(host: ObjectiveManagerHost): string | undefine
   return active?.id;
 }
 
+/**
+ * P4.1: return the full EngagementPhase record for the currently-active
+ * phase, or undefined when no phase is active. Used by validateAction
+ * and the approval queue to pick up per-phase OPSEC/approval overrides.
+ */
+export function getCurrentPhase(host: ObjectiveManagerHost): import('../types.js').EngagementPhase | undefined {
+  const id = getCurrentPhaseId(host);
+  if (!id) return undefined;
+  return host.ctx.config.phases?.find(p => p.id === id);
+}
+
 // =============================================
 // Phase Criteria Evaluation
 // =============================================

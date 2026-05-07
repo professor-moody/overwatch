@@ -368,6 +368,17 @@ export interface EngagementConfig {
    * and continue to use uuidv4 forever (strict migration).
    */
   engagement_nonce?: string;
+  /**
+   * P4.2: where sub-agents run.
+   *  - 'in_process' (default) — current behavior: sub-agents share memory
+   *    with the engine and call MCP tools directly.
+   *  - 'process' — sub-agents run in a child Node process and communicate
+   *    over JSON-over-stdio per `subagent-ipc.ts`. Per the scoping
+   *    decision, this is scaffolded and proven on the recon-scoping
+   *    role; other roles fall back to in_process even when the flag
+   *    is set, until follow-up work fills out coverage.
+   */
+  subagent_isolation?: 'in_process' | 'process';
   /** In-process JSON-RPC tape recorder. Off by default. */
   tape?: {
     enabled?: boolean;
@@ -426,6 +437,15 @@ const engagementPhaseSchema = z.object({
   strategies: z.array(campaignStrategySchema).default([]),
   entry_criteria: z.array(phaseCriterionSchema).default([]),
   exit_criteria: z.array(phaseCriterionSchema).default([]),
+  // P4.1: per-phase policy overrides. When the engagement is in a phase
+  // that supplies an override, validateAction and the approval queue
+  // prefer the override over the engagement-level config. Use sparingly:
+  // tighter ceilings during exploitation, looser auto-approve during recon.
+  opsec_overrides: opsecProfileSchema.partial().optional(),
+  approval_overrides: z.object({
+    mode: z.enum(['auto-approve', 'approve-critical', 'approve-all']).optional(),
+    blacklisted_techniques: z.array(z.string()).optional(),
+  }).optional(),
 });
 
 export const engagementConfigSchema = z.object({
@@ -472,6 +492,9 @@ export const engagementConfigSchema = z.object({
   // throw, but engagement creation will populate it for new engagements.
   // 64-char hex (32 bytes). The runtime treats absence as "stay on UUIDs."
   engagement_nonce: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  // P4.2: sub-agent isolation mode. Default keeps the in-process path
+  // every existing engagement uses today.
+  subagent_isolation: z.enum(['in_process', 'process']).default('in_process'),
   /**
    * In-process JSON-RPC tape recorder. When `enabled: true` the MCP server
    * captures every wire frame (both directions) into a JSONL tape and
@@ -645,6 +668,14 @@ export interface EngagementPhase {
   strategies: CampaignStrategy[];
   entry_criteria: PhaseCriterion[];
   exit_criteria: PhaseCriterion[];
+  /** P4.1: per-phase OPSEC override. Validation prefers this over the
+   *  engagement-level config when set. */
+  opsec_overrides?: Partial<OpsecProfile>;
+  /** P4.1: per-phase approval override (mode + extra blacklisted techniques). */
+  approval_overrides?: {
+    mode?: ApprovalMode;
+    blacklisted_techniques?: string[];
+  };
 }
 
 // --- Campaign Types ---

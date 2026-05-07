@@ -290,6 +290,9 @@ export class StatePersistence {
       // P1.4: frontier leases. Survive restart so a still-running agent
       // doesn't lose its claim across an engine restart.
       frontierLeases: this.ctx.frontierLeases.serialize(),
+      // P4.1: last-known active phase, so we don't re-emit phase_entered
+      // on every restart when the phase hasn't actually changed.
+      lastKnownPhaseId: this.ctx.lastKnownPhaseId,
       // P2.1: journal sequence checkpoint. The snapshot is durable AS OF
       // the journal entry numbered `journalSnapshotSeq`; on next load,
       // replay journal entries with `seq > journalSnapshotSeq` to catch
@@ -437,6 +440,8 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     // P1.4: restore frontier leases.
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
+    // P4.1: restore last-known phase id (undefined for legacy snapshots).
+    this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
     // P2.1: rollback discards any journal entries since the snapshot —
     // they describe mutations that don't apply to this older state.
     if (this.ctx.mutationJournal) {
@@ -483,6 +488,8 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     // P1.4: restore frontier leases.
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
+    // P4.1: restore last-known phase id (undefined for legacy snapshots).
+    this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
 
     // P2.1: WAL replay. For deterministic-ID engagements, the snapshot
     // captures state AS OF `journalSnapshotSeq`. If the engine crashed
