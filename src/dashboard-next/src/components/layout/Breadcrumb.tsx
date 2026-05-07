@@ -13,6 +13,7 @@ const PANEL_LABELS: Record<PanelId, string> = {
   frontier: 'Frontier',
   activity: 'Activity',
   evidence: 'Evidence',
+  identity: 'Identity',
   engagements: 'Engagements',
   settings: 'Settings',
 };

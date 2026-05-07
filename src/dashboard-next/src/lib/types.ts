@@ -260,7 +260,13 @@ export type WsMessageType =
   | 'objective_update'
   | 'action_pending'
   | 'action_resolved'
-  | 'campaign_update';
+  | 'campaign_update'
+  // Phase 4 (enterprise): identity-tier graph updates carry their own
+  // message type so the dashboard can refresh just the IdentityPanel
+  // without forcing a full graph re-render. The payload mirrors
+  // `graph_update` shape but is filtered to idp_* node types and the
+  // identity-tier edges.
+  | 'identity_update';
 
 export interface WsMessage {
   type: WsMessageType;
