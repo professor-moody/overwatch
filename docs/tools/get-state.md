@@ -41,6 +41,8 @@ An `EngagementState` object containing:
 | `lab_readiness` | `LabReadinessSummary` | Inline lab readiness summary (graph health severity, domain hints, stage). For full per-tool readiness, use [`run_lab_preflight`](run-lab-preflight.md). |
 | `scope_suggestions` | `string[]` | Suggested scope expansions discovered during the engagement |
 | `credential_coverage` | `CredentialCoverage` | Credential spray progress: tested/total pairs, coverage %, top untested combinations |
+| `phases` | `array?` | Phase status when phases are declared (id, status, entry/exit met, strategies). Active phase contributes effective OPSEC + approval policy via [`opsec_overrides` / `approval_overrides`](../configuration.md#phase-aware-policy). |
+| `current_phase` | `string?` | The currently-active phase id, if any |
 
 ### graph_summary community fields
 

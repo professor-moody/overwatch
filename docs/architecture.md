@@ -104,7 +104,17 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Graph Schema** | `src/services/graph-schema.ts` | Node/edge type validation |
 | **Graph Health** | `src/services/graph-health.ts` | Integrity checks and diagnostics |
 | **Finding Validation** | `src/services/finding-validation.ts` | Input validation and normalization |
-| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation |
+| **State Persistence** | `src/services/state-persistence.ts` | Atomic write-rename with snapshot rotation; replays the [Mutation Journal](#mutation-journal-write-ahead-log) on load for engagements with a nonce |
+| **Activity Chain** | `src/services/activity-chain.ts` | Tamper-evident SHA-256 chain over agent/system events; signed checkpoints for O(events_since_checkpoint) verification (default-on for new engagements) |
+| **Mutation Journal** | `src/services/mutation-journal.ts` | Write-ahead log of graph mutations; replay on load + compaction after snapshot. Gated on `engagement_nonce` |
+| **Deterministic ID** | `src/services/deterministic-id.ts` | sha256-derived action and event IDs for engagements with `engagement_nonce`; `uuidv4` fallback for legacy |
+| **Frontier Leases** | `src/services/frontier-leases.ts` | TTL leases on frontier items so two agents can't race on the same target |
+| **Agent Watchdog** | `src/services/agent-watchdog.ts` | Periodic reaper for stale heartbeats and expired frontier leases |
+| **Decision Log** | `src/services/decision-log.ts` | Derived view: per-action timeline (frontier_emitted → ... → completed) over the activity log |
+| **Introspection** | `src/services/introspection.ts` | "Why did the agent do X?" — frontier item, log_thought chain, alternatives, validation, outcome for an action_id |
+| **Timeline** | `src/services/timeline.ts` | Per-node and per-edge "what was true at time T" derivation over graph + activity log |
+| **Golden Replay** | `src/services/golden-replay.ts` | Tape-driven byte-identical replay harness; canonical graph hash for regression detection |
+| **Sub-agent IPC** | `src/services/subagent-ipc.ts`, `src/services/subagent-process-runner.ts` | Typed JSON-over-stdio contract + parent-side runner for the optional `subagent_isolation: 'process'` mode (default `'in_process'`) |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
 | **Output Parsers** | `src/services/parsers/` | 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan |
 | **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
@@ -131,7 +141,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Chain Scorer** | `src/services/chain-scorer.ts` | Multi-hop credential chain scoring |
 | **OPSEC Tracker** | `src/services/opsec-tracker.ts` | Dynamic noise budget tracking per host/domain/global |
 | **Pending Action Queue** | `src/services/pending-action-queue.ts` | Operator approval gates for actions |
-| **Evidence Store** | `src/services/evidence-store.ts` | Durable evidence blob storage with action/finding linkage |
+| **Evidence Store** | `src/services/evidence-store.ts` | Durable evidence blob storage with action/finding linkage. Records carry a `content_hash` (sha256) so identical content from two runs deduplicates and lookups accept either evidence_id (UUID) or content_hash. Streaming sinks finalize the hash on close. |
 | **Finding Ingestion** | `src/services/finding-ingestion.ts` | Finding validation pipeline and graph mutation |
 | **Imperative Inference** | `src/services/imperative-inference.ts` | Imperative (code-driven) inference rule execution |
 | **Scope Manager** | `src/services/scope-manager.ts` | Engagement scope governance and validation |
@@ -150,7 +160,10 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Scoring** | `src/tools/scoring.ts` | `next_task`, `validate_action` |
 | **Findings** | `src/tools/findings.ts` | `report_finding`, `get_evidence` |
 | **Exploration** | `src/tools/exploration.ts` | `query_graph`, `find_paths` |
-| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents`, `dispatch_campaign_agents`, `manage_campaign` |
+| **Agents** | `src/tools/agents.ts` | `register_agent`, `dispatch_agents`, `get_agent_context`, `update_agent`, `dispatch_subnet_agents`, `dispatch_campaign_agents`, `manage_campaign`, `agent_heartbeat` |
+| **Decision Log** | `src/tools/decision-log.ts` | `get_decision_log` |
+| **Introspection** | `src/tools/introspection.ts` | `explain_action` |
+| **Timeline** | `src/tools/timeline.ts` | `get_timeline` |
 | **Skills** | `src/tools/skills.ts` | `get_skill` |
 | **Logging** | `src/tools/logging.ts` | `log_action_event` |
 | **Parse Output** | `src/tools/parse-output.ts` | `parse_output` |
@@ -202,6 +215,63 @@ Features:
 - **Crash recovery** — incomplete writes never corrupt state (temp file is discarded)
 - **Resume anywhere** — restart Claude Code, restart the server, come back days later
 - **Post-engagement analysis** — persisted state feeds retrospective analysis
+
+### Mutation Journal (Write-Ahead Log)
+
+Engagements created with an `engagement_nonce` (the deterministic-ID family, see [Foundations](#foundations-trust-audit-replay)) layer a write-ahead log on top of the snapshot:
+
+- Every graph-affecting mutation (`add_node`, `add_edge`, `merge_node_attrs`, `drop_edge`) appends a `MutationEntry { seq, ts, type, payload }` to `<state-file>.journal.jsonl` and `fsync`s **before** the in-memory mutation is applied.
+- On load, the engine reads the snapshot, then replays journal entries with `seq > journalSnapshotSeq`. A crash between journal append and the next snapshot rotation is recoverable.
+- Snapshot rotation truncates the journal up to the snapshot's seq. Crash mid-write leaves a partial line; the reader stops at it without poisoning subsequent replays.
+
+Legacy engagements (no nonce) keep the debounced-snapshot-only path with no behavior change.
+
+## Foundations: Trust, Audit, Replay
+
+Engagements created after the foundations work shipped get a coordinated set of guarantees. **All gated on `engagement_nonce` populated** (the strict-migration boundary for new engagements; legacy engagements keep their original UUID-based identity model).
+
+| Guarantee | What it gives you | Where it lives |
+|---|---|---|
+| **Hash-chained activity log** | Tamper-evident SHA-256 chain over agent/system events. Default-on for new engagements. Signed checkpoints emitted every 500 events / 30 minutes so verifiers don't have to re-walk genesis. | `src/services/activity-chain.ts` |
+| **Content-addressed evidence** | Every evidence row carries `content_hash = sha256(content)`. Two runs with identical output deduplicate; tampering changes the address. Lookups accept either UUID or hash. | `src/services/evidence-store.ts` |
+| **Deterministic action / event IDs** | `act_<16hex>` / `evt_<16hex>` derived from `sha256(nonce \| agent_id \| timestamp \| command_signature \| sequence)`. Same inputs → same IDs. | `src/services/deterministic-id.ts` |
+| **Caller-provided clocks** | `engine.withClock(now, fn)` pins time across a sequence of mutations so timestamps don't leak wall-clock noise into golden-master fixtures. | `src/services/engine-context.ts` (`withClock`, `nowIso`) |
+| **Write-ahead log** | Crash-safe state recovery; mutation lost only when the journal append itself fails. | `src/services/mutation-journal.ts` |
+| **Golden-master replay** | Replaying a tape against a fresh engine produces a byte-identical state hash. Real-behavior change requires explicit re-recording. | `src/services/golden-replay.ts`, fixtures in `src/__tests__/golden-master/` |
+| **Frontier leases + heartbeat** | Two agents can't claim the same frontier item; silent sub-agents get reaped. | `src/services/frontier-leases.ts`, `src/services/agent-watchdog.ts` |
+
+For the threat model context — what these mitigate, what's still residual — see [Threat Model](threat-model.md).
+
+```mermaid
+flowchart LR
+    subgraph New["new engagement (engagement_nonce populated)"]
+        ID[deterministic-id<br/>act_/evt_ from sha256]
+        WAL[mutation-journal<br/>journal.jsonl]
+        CHAIN[activity-chain<br/>+ signed checkpoints]
+        EV[evidence-store<br/>content_hash sha256]
+        LEASE[frontier-leases<br/>TTL on items]
+        WATCH[agent-watchdog<br/>heartbeat reaper]
+        REPLAY[golden-replay<br/>tape harness]
+    end
+
+    Action[action] --> ID
+    ID --> WAL
+    WAL --> Persist[snapshot.json]
+    Action --> CHAIN
+    Action --> EV
+    Register[register_agent] --> LEASE
+    Heartbeat[agent_heartbeat] --> WATCH
+    WATCH -. interrupts stale .-> LEASE
+
+    Replay[replayTape] --> ID
+    Replay --> Persist
+    Replay --> Hash[graph hash]
+
+    classDef new fill:#10b981,stroke:#047857,color:#fff
+    class ID,WAL,CHAIN,EV,LEASE,WATCH,REPLAY new
+```
+
+The whole substrate snaps together when the engagement carries a nonce: deterministic IDs become the keys for the journal, the journal feeds replay, replay validates the hash chain, the chain references content-addressed evidence. Each layer is independent at the implementation level but compose into a single audit story.
 
 ## Session + Transport Architecture
 

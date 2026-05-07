@@ -87,6 +87,8 @@ Stale or expired credentials have their outbound `POTENTIAL_AUTH` edges degraded
 
 Identity resolution runs automatically on ingest. Alias nodes sharing identity markers are merged into canonicals — edges are retargeted and properties merged.
 
+For engagements with `engagement_nonce` populated, action and event IDs are deterministically derived (`act_<16hex>` / `evt_<16hex>` from `sha256(nonce | agent | ts | cmd | seq)`); see [Configuration → Deterministic ID and Replay](configuration.md#deterministic-id-and-replay). Node and edge canonical IDs (e.g. `host-10-10-10-5`, `cred-…`) remain content-derived from the node's properties as before.
+
 ### Host Enrichment Properties (Linux)
 
 | Property | Type | Description |

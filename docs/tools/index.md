@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 51 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 55+ MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -20,11 +20,17 @@ Overwatch exposes 51 MCP tools organized by function. Each tool uses Zod schemas
 | [`parse_output`](parse-output.md) | Parse supported tool output into findings | No |
 | [`query_graph`](query-graph.md) | Open-ended graph exploration | Yes |
 | [`find_paths`](find-paths.md) | Shortest paths to objectives | Yes |
-| [`register_agent`](register-agent.md) | Dispatch a sub-agent task | No |
-| [`dispatch_agents`](#) | Batch-dispatch agents from frontier | No |
+| [`register_agent`](register-agent.md) | Dispatch a sub-agent task (TTL-leased) | No |
+| [`dispatch_agents`](dispatch-agents.md) | Batch-dispatch agents from frontier | No |
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | Yes |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | No |
-| [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | No |\n| [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch agents for a campaign's grouped frontier items | No |\n| [`manage_campaign`](manage-campaign.md) | Create, monitor, pause, resume, or abort campaigns | No |
+| [`agent_heartbeat`](agent-heartbeat.md) | Sub-agent liveness ping (extends lease) | No |
+| [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | No |
+| [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch agents for a campaign's grouped frontier items | No |
+| [`manage_campaign`](manage-campaign.md) | Create, monitor, pause, resume, or abort campaigns | No |
+| [`get_decision_log`](get-decision-log.md) | Per-decision timeline (frontier → completed) over the activity log | Yes |
+| [`explain_action`](explain-action.md) | "Why did the agent do X?" — full chain for an action_id | Yes |
+| [`get_timeline`](get-timeline.md) | Per-node/edge "what was true at time T" view | Yes |
 | [`get_skill`](get-skill.md) | RAG search over skill library | Yes |
 | [`suggest_inference_rule`](suggest-inference-rule.md) | Add a custom inference rule | No |
 | [`ingest_bloodhound`](ingest-bloodhound.md) | Import BloodHound JSON collections | No |
@@ -63,7 +69,10 @@ How new information enters the graph — manual findings or deterministic parsin
 Direct graph access for creative analysis beyond the scored frontier.
 
 ### Agents
-Sub-agent lifecycle — register, scope, and track parallel work.
+Sub-agent lifecycle — register, scope, heartbeat, and track parallel work. Frontier leases (`register_agent`) prevent agent races; the watchdog reaps silent agents past their `heartbeat_ttl_seconds`.
+
+### Visibility & Introspection
+"What did the agent do, and why?" — the [decision log](get-decision-log.md), [`explain_action`](explain-action.md) for a single action's full chain, and [`get_timeline`](get-timeline.md) for per-node/edge "what was true at time T" queries. All read-only and derived from the activity log.
 
 ### Skills & Inference
 Methodology guidance and dynamic rule creation.

@@ -99,12 +99,27 @@ The sub-agent then calls [`get_agent_context`](tools/get-agent-context.md) with 
 
 Agents write to the same graph concurrently. The engine handles this safely:
 
-- Node IDs are deterministic, so duplicate discoveries merge automatically
-- Edge properties are merged (higher confidence wins)
-- Inference rules fire on each new finding independently
-- The activity log preserves the full timeline from all agents
+- Node IDs are deterministic, so duplicate discoveries merge automatically.
+- Edge properties are merged (higher confidence wins).
+- Inference rules fire on each new finding independently.
+- The activity log preserves the full timeline from all agents.
 
-There's no locking or conflict resolution needed because the graph is append-mostly and node/edge IDs are globally unique.
+For **frontier item** races (two agents trying to claim the same item), the engine takes a TTL lease at `register_agent` time. The losing agent gets `lease_conflict` and picks a different item. See [Concepts → Agent Heartbeat and Watchdog](concepts.md#agent-heartbeat-and-watchdog) and [`register_agent`](tools/register-agent.md).
+
+### What's `engagement_nonce`? Why do new engagements have it but old ones don't?
+
+The `engagement_nonce` is 32 random bytes minted at engagement creation. When present, the engine uses it to derive **deterministic** action and event IDs (`act_<16hex>` / `evt_<16hex>` from `sha256(nonce | agent | ts | cmd | seq)`) instead of `uuidv4`. Same inputs → same IDs across runs. This is what makes byte-identical replay possible.
+
+**Strict migration**: legacy engagements (no nonce) keep `uuidv4` IDs forever. We do not retroactively recompute. If you need replay/audit guarantees on an existing engagement, create a fresh one and re-run the work.
+
+### What's the difference between hash chain and content-addressed evidence?
+
+They cover different attack surfaces:
+
+- **Hash chain** (`hash_chain_enabled`, default true) protects the **activity log**. Each event carries `prev_hash` + `event_hash`. Modifying any old entry breaks the chain and is detectable via [`verify_activity_chain`](tools/sessions.md). Signed checkpoints let verifiers resume without re-walking from genesis.
+- **Content-addressed evidence** protects the **evidence files on disk**. Each evidence row's `content_hash = sha256(content)`. Tampering with content changes the address; the manifest no longer resolves. `get_evidence` lookups accept either UUID or hash.
+
+You want both: the chain proves the log is intact, the addresses prove the evidence is intact.
 
 ## Dashboard
 

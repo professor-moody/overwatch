@@ -157,6 +157,20 @@ The `action_id` links all steps together. This enables:
 - **RLVR training traces** — state→action→outcome triplets
 - **Audit trail** — every graph change is attributable to a specific action
 
+**Action ID determinism.** Engagements created with an `engagement_nonce` (the strict-migration boundary; see [Configuration](configuration.md#deterministic-id-and-replay)) get **deterministic** `action_id`s of the form `act_<16hex>` derived from `sha256(nonce | agent_id | timestamp | command_signature | sequence)`. Same inputs always produce the same `action_id`. Legacy engagements (no nonce) keep `uuidv4` IDs.
+
+**Frontier leases.** When an agent claims a frontier item via `register_agent`, the engine takes a TTL lease (default 600s). A second agent attempting to claim the same item gets `lease_conflict` rather than racing. Heartbeats extend the lease; terminal status releases it; the [agent watchdog](#agent-heartbeat-and-watchdog) reaps expired leases.
+
+**"Why did the agent do X?"** — the [`explain_action`](tools/explain-action.md) tool projects an action_id's full chain (frontier item, log_thought, alternatives, validation, approval, outcome) into a single answer. The [`get_decision_log`](tools/get-decision-log.md) tool gives the same view across many decisions at once.
+
+## Agent Heartbeat and Watchdog
+
+Long-running sub-agents call `agent_heartbeat({task_id})` periodically (recommended every 30–60s) to signal liveness. The runtime watchdog walks running tasks on an interval and marks any whose `heartbeat_at` is older than `heartbeat_ttl_seconds` (default 120s) as `interrupted`, releasing their frontier leases at the same moment.
+
+Tasks that **never** heartbeat are exempt from the watchdog — preserves backward-compat for tools that complete in a single MCP turn.
+
+Heartbeat events are excluded from the hash chain (high-volume, low-stakes) but persist in the activity log so dashboards can show liveness.
+
 ## Operator Infrastructure
 
 Anything the operator stands up to **receive** incoming connections — Responder, ntlmrelayx, fake LDAP, socat redirector, reverse-shell catcher, HTTP/SMB capture endpoint — is a first-class graph object: a `mock_service` node.
@@ -203,15 +217,29 @@ See [`register_mock_service`](tools/register-mock-service.md) and [Playbook — 
 
 ## Audit Trail
 
-Three independent layers make engagement evidence defensible. Each one is opt-in and orthogonal — you can run with all three, none, or any combination.
+Five independent layers make engagement evidence defensible. The first three are **default-on for new engagements** (i.e. those created with an `engagement_nonce`); the latter two are explicit opt-ins.
 
 ### 1. Activity Log with Causal Linkage
 
 Every action emits structured events (`action_planned`, `action_validated`, `action_started`, `action_completed`/`action_failed`, plus parse and finding events). Each event carries `action_id`, `frontier_item_id`, and `agent_id`, so the entire decision chain is reconstructable as a directed graph — not as a stream of timestamps you have to correlate.
 
-The activity log also captures **`mock_service_registered`** / **`mock_service_refreshed`** events with `provenance: 'operator'`, so the operator-infrastructure timeline interleaves cleanly with discovery and exploitation events.
+The activity log also captures **`mock_service_registered`** / **`mock_service_refreshed`** events with `provenance: 'operator'`, plus `phase_entered` / `phase_exited` events when phase-aware policy transitions fire. The operator-infrastructure timeline interleaves cleanly with discovery and exploitation events.
 
-### 2. Evidence Stream Integrity
+### 2. Hash Chain with Signed Checkpoints (`hash_chain_enabled`, default true)
+
+Every qualifying activity event (provenance ∈ `{agent, system}`, excluding `thought` and `heartbeat`) gets a `prev_hash` and `event_hash`, forming a tamper-evident chain. `verify_activity_chain` walks the chain and confirms it's intact.
+
+**Signed checkpoints** are emitted every 500 events / 30 minutes (configurable). Verifiers can resume from the latest checkpoint instead of replaying from genesis — O(events_since_checkpoint) instead of O(n). Checkpoints carry an optional `signing_key_id` slot for Ed25519-signed audit deliverables (signing implementation is staged for follow-up).
+
+If anyone — the AI itself, a bug, a malicious operator — modifies an old entry, the chain breaks and the system can prove it. Ingested events (from external transcripts) get `chain_excluded: true` so they don't pollute the live chain.
+
+### 3. Content-Addressed Evidence
+
+Every evidence row carries `content_hash = sha256(content)`. Two runs that produce identical output deduplicate to a single row; tampering with content on disk changes the address (the manifest's `content_hash` no longer resolves). Lookups via `get_evidence` accept either the legacy UUID `evidence_id` or the new `content_hash`.
+
+Streaming sinks (`createBlobStream` for live `run_bash`/`run_tool` output) accumulate the hash incrementally and finalize it when the stream closes, so the evidence record's hash always matches the bytes actually durable on disk.
+
+### 4. Evidence Stream Integrity
 
 `run_bash` and `run_tool` stream stdout/stderr **directly** into the evidence store rather than buffering, with backpressure-aware writes. Every action's evidence file has a manifest record that says either:
 
@@ -220,13 +248,7 @@ The activity log also captures **`mock_service_registered`** / **`mock_service_r
 
 Evidence can never be silently truncated. If your report cites an nmap scan, the manifest tells you whether you have the whole thing.
 
-### 3. Hash Chain (`hash_chain_enabled`)
-
-When enabled, every qualifying activity event (provenance ∈ `{agent, system}`, excluding `thought` events) is given a `prev_hash` and `event_hash`, forming a tamper-evident chain. The `verify_activity_chain` tool walks the chain and confirms it's intact.
-
-If anyone — including the AI itself, a bug, or a malicious operator — modifies an old entry, the chain breaks and the system can prove it. Ingested events (from external transcripts) get `chain_excluded: true` so they don't pollute the live chain.
-
-### 4. JSON-RPC Tape Proxy
+### 5. JSON-RPC Tape Proxy
 
 `overwatch-mcp-tape` sits between the AI client and the Overwatch MCP server, recording every wire-level frame in both directions to a JSONL tape. The tape captures things the server might never log itself (malformed requests, requests that errored before reaching a handler, batched calls).
 

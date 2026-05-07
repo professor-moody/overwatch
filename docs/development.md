@@ -27,7 +27,10 @@ overwatch/
 │   │   ├── scoring.ts        # next_task, validate_action
 │   │   ├── findings.ts       # report_finding
 │   │   ├── exploration.ts    # query_graph, find_paths
-│   │   ├── agents.ts         # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent
+│   │   ├── agents.ts         # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent, agent_heartbeat
+│   │   ├── decision-log.ts   # get_decision_log (P3.1)
+│   │   ├── introspection.ts  # explain_action (P3.2)
+│   │   ├── timeline.ts       # get_timeline (P3.3)
 │   │   ├── skills.ts         # get_skill
 │   │   ├── bloodhound.ts     # ingest_bloodhound
 │   │   ├── toolcheck.ts      # check_tools
@@ -43,18 +46,29 @@ overwatch/
 │   │   ├── reporting.ts      # generate_report
 │   │   ├── azurehound.ts     # ingest_azurehound
 │   │   └── error-boundary.ts # Shared error handling wrapper
-│   ├── services/             # Core business logic (33 modules)
+│   ├── services/             # Core business logic (45+ modules)
 │   │   ├── graph-engine.ts   # Graph operations, state coordination
-│   │   ├── engine-context.ts # Mutable state container, update callbacks
+│   │   ├── engine-context.ts # Mutable state container, update callbacks, withClock + nowIso
 │   │   ├── frontier.ts       # Frontier item generation and filtering
+│   │   ├── frontier-leases.ts # P1.4 — TTL leases preventing agent races on frontier items
 │   │   ├── inference-engine.ts # Rule matching and edge generation
 │   │   ├── path-analyzer.ts  # Shortest-path and objective reachability
 │   │   ├── identity-resolution.ts  # Canonical ID generation, marker matching
 │   │   ├── identity-reconciliation.ts # Alias node merging, edge retargeting
+│   │   ├── deterministic-id.ts # P1.2 — sha256-derived action/event IDs from engagement nonce
 │   │   ├── graph-schema.ts   # Node/edge type validation
 │   │   ├── graph-health.ts   # Integrity checks and diagnostics
 │   │   ├── finding-validation.ts # Input validation for findings
-│   │   ├── state-persistence.ts  # Atomic write-rename + snapshots
+│   │   ├── state-persistence.ts  # Atomic write-rename + snapshots + journal replay
+│   │   ├── mutation-journal.ts # P2.1 — write-ahead log, append/replay/compact
+│   │   ├── golden-replay.ts  # P2.2 — tape-driven byte-identical replay harness
+│   │   ├── activity-chain.ts # P0.2 — hash chain + signed checkpoints
+│   │   ├── decision-log.ts   # P3.1 — derived decision log (per-action timeline)
+│   │   ├── introspection.ts  # P3.2 — explainAction() for "why did the agent do X?"
+│   │   ├── timeline.ts       # P3.3 — per-node/edge "what was true at time T"
+│   │   ├── agent-watchdog.ts # P0.3 — heartbeat-timeout reaping + lease reaping
+│   │   ├── subagent-ipc.ts   # P4.2 — typed JSON-over-stdio sub-agent contract
+│   │   ├── subagent-process-runner.ts # P4.2 — parent-side runner (in-memory or spawn)
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
 │   │   ├── parsers/          # 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan
 │   │   ├── parser-utils.ts   # Shared parsing helpers
@@ -66,7 +80,8 @@ overwatch/
 │   │   ├── community-detection.ts # Louvain modularity for graph clustering
 │   │   ├── dashboard-server.ts  # HTTP + WebSocket server (static file serving)
 │   │   ├── delta-accumulator.ts # Debounced graph change tracking
-│   │   ├── agent-manager.ts  # Agent task lifecycle
+│   │   ├── agent-manager.ts  # Agent task lifecycle, heartbeat, lease release
+│   │   ├── evidence-store.ts # Content-addressed evidence (sha256 keys, dedup, streaming hasher)
 │   │   ├── retrospective.ts  # Post-engagement analysis + RLVR traces
 │   │   ├── cidr.ts           # CIDR parsing, expansion, scope matching
 │   │   ├── tool-check.ts     # Offensive tool detection
@@ -76,7 +91,10 @@ overwatch/
 │   │   ├── session-adapters.ts # LocalPty (node-pty), SSH, Socket adapters
 │   │   ├── prompt-generator.ts # Dynamic system prompt generation
 │   │   ├── report-generator.ts # Per-finding sections, evidence chains, narrative, remediation
-│   │   └── report-html.ts    # Self-contained HTML report renderer
+│   │   ├── report-html.ts    # Self-contained HTML report renderer
+│   │   ├── opsec-tracker.ts  # Dynamic noise budget tracking
+│   │   ├── pending-action-queue.ts # Approval-gate queue, phase-aware approval mode
+│   │   └── objective-manager.ts # Objectives, phase status, getCurrentPhase
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke

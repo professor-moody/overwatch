@@ -63,3 +63,11 @@ Full walk-through with template list, dashboard tour, and "what to say to the AI
 ![System Architecture](assets/system-architecture-dark.svg#only-dark)
 
 Learn more in [Architecture](architecture.md), explore [Key Concepts](concepts.md), or jump to the [Tool Reference](tools/index.md).
+
+## Where to Go Next
+
+- **First time here?** → [Getting Started](getting-started.md) for the 5-minute install + first engagement.
+- **Want to understand the design?** → [Architecture](architecture.md) covers the system diagram, components, and design decisions. Then [Key Concepts](concepts.md) for the engagement-graph vocabulary (frontier, inference, OPSEC, audit trail).
+- **Auditing or threat-modeling?** → [Threat Model](threat-model.md) states explicitly what the system trusts, what it defends against, and what residual risks remain.
+- **Building or extending?** → [Tool Reference](tools/index.md) for every MCP tool. [Development](development.md) for project structure and testing.
+- **Running an actual engagement?** → [Operator Playbook](playbook/index.md) walks through GOAD AD labs, HTB single-host, network engagements.

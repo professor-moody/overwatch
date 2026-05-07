@@ -116,3 +116,11 @@ run_retrospective({ since: "2026-03-20T00:00:00Z" });
 ```
 
 If the active tape was registered (automatic for in-process), the retrospective links each action and finding back to the JSON-RPC frames that produced them.
+
+## Replay Semantics
+
+Tapes are **audit artifacts, not re-execution scripts**. Replaying a recorded tape against a live target would re-run every action — including destructive ones — because the JSON-RPC frames carry the original commands. For that reason:
+
+- Tapes are read-only by design when consumed by retrospective and audit tooling.
+- Golden-master regression tests use **synthetic fixtures**, not recorded tapes against live targets. See `src/__tests__/golden-master/fixtures/` for the canonical shape: a typed list of operations + pinned timestamps. The replay harness asserts byte-identical state hashes across runs (depends on [`engagement_nonce`](configuration.md#deterministic-id-and-replay) for deterministic IDs and `withClock` for pinned timestamps).
+- For engagements with `engagement_nonce`, the JSON-RPC tape combined with the engagement's config and the activity log is sufficient to reconstruct an audit trail bit-for-bit. Without the nonce (legacy engagements), tapes are still useful for retrospective narration but not for byte-equality checks.

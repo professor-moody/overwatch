@@ -68,6 +68,8 @@ nav:
     - Overview: architecture.md
     - Key Concepts: concepts.md
     - Graph Model: graph-model.md
+    - Threat Model: threat-model.md
+    - Tape Recording: tape-recording.md
   - Tool Reference:
     - tools/index.md
     - State & Health:
@@ -83,16 +85,23 @@ nav:
     - Findings & Parsing:
       - report_finding: tools/report-finding.md
       - parse_output: tools/parse-output.md
+      - get_evidence: tools/get-evidence.md
     - Graph Exploration:
       - query_graph: tools/query-graph.md
       - find_paths: tools/find-paths.md
     - Agents:
       - register_agent: tools/register-agent.md
+      - dispatch_agents: tools/dispatch-agents.md
       - get_agent_context: tools/get-agent-context.md
       - update_agent: tools/update-agent.md
+      - agent_heartbeat: tools/agent-heartbeat.md
       - dispatch_subnet_agents: tools/dispatch-subnet-agents.md
       - dispatch_campaign_agents: tools/dispatch-campaign-agents.md
       - manage_campaign: tools/manage-campaign.md
+    - Visibility & Introspection:
+      - get_decision_log: tools/get-decision-log.md
+      - explain_action: tools/explain-action.md
+      - get_timeline: tools/get-timeline.md
     - Skills & Inference:
       - get_skill: tools/get-skill.md
       - suggest_inference_rule: tools/suggest-inference-rule.md
@@ -105,6 +114,8 @@ nav:
       - check_tools: tools/check-tools.md
       - track_process: tools/track-process.md
       - check_processes: tools/check-processes.md
+      - update_scope: tools/update-scope.md
+      - get_system_prompt: tools/get-system-prompt.md
     - Sessions:
       - Session Management: tools/sessions.md
     - Operator Infrastructure:
@@ -127,8 +138,8 @@ nav:
     - Operator Infrastructure: playbook/operator-infra.md
     - parse_output vs report_finding: playbook/parse-vs-report.md
     - Retrospectives: playbook/retrospective.md
-    - Tape Recording: tape-recording.md
   - FAQ: faq.md
   - Development:
     - development.md
     - Contributing: contributing.md
+    - Architecture Review: architecture-review.md
