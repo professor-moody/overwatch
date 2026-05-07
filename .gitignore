@@ -25,3 +25,8 @@ src/dashboard-next/**/*.js
 src/dashboard-next/tsconfig.tsbuildinfo
 # but keep config files that legitimately ship as .js (postcss)
 !src/dashboard-next/postcss.config.js
+
+# Local MCP client config — absolute paths are machine-specific.
+.mcp.json
+.claude/settings.json
+.claude/scheduled_tasks.lock
