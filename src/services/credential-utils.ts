@@ -35,9 +35,55 @@ export function getCredentialMaterialKind(node: NodeProperties): string | undefi
       return 'token';
     case 'ssh_key':
       return 'ssh_key';
+    // Phase 1 (enterprise): SSO/OIDC/SAML/OAuth tokens.
+    case 'oidc_token':
+      return 'oidc_access_token';
+    case 'saml':
+      return 'saml_assertion';
+    case 'oauth_secret':
+      return 'oauth_client_secret';
+    case 'pat':
+      return 'pat';
+    case 'app_password':
+      return 'app_password';
+    case 'session_cookie':
+      return 'session_cookie';
     default:
       return undefined;
   }
+}
+
+/**
+ * True when this credential's material is a token (OIDC/SAML/OAuth/PAT/
+ * session cookie / app password). Tokens have audience/scope/expiry
+ * semantics distinct from passwords or hashes — coverage and frontier
+ * scoring use this to apply token-aware rules.
+ */
+export function isTokenCredential(node: NodeProperties): boolean {
+  const kind = getCredentialMaterialKind(node);
+  if (!kind) return false;
+  return (
+    kind === 'oidc_id_token' ||
+    kind === 'oidc_access_token' ||
+    kind === 'oidc_refresh_token' ||
+    kind === 'saml_assertion' ||
+    kind === 'oauth_client_secret' ||
+    kind === 'pat' ||
+    kind === 'app_password' ||
+    kind === 'session_cookie' ||
+    kind === 'token'
+  );
+}
+
+/**
+ * MFA-gating predicate. When `cred_mfa_required` is true and
+ * `cred_mfa_satisfied` is not, the credential is gated by step-up auth and
+ * NOT directly usable. Callers that want to surface MFA-bypass candidates
+ * should consult `cred_mfa_required` directly; this is the strict
+ * "can I authenticate right now with this?" check.
+ */
+export function isCredentialMfaBlocked(node: NodeProperties): boolean {
+  return node.cred_mfa_required === true && node.cred_mfa_satisfied !== true;
 }
 
 export function isCredentialUsableForAuth(node: NodeProperties): boolean {
@@ -50,6 +96,22 @@ export function isCredentialUsableForAuth(node: NodeProperties): boolean {
     if (Number.isFinite(expiry) && expiry < Date.now()) {
       return false;
     }
+  }
+  // Phase 1: token-specific expiry. cred_token_expires_at carries the
+  // token `exp` claim semantics distinct from valid_until so legacy
+  // creds aren't mis-classified.
+  if (typeof node.cred_token_expires_at === 'string') {
+    const expiry = new Date(node.cred_token_expires_at).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      return false;
+    }
+  }
+  // Phase 1: MFA gating. A credential blocked by step-up auth is not
+  // directly usable even if every other field says it should be. Frontier
+  // surfacing of MFA-bypass candidates uses cred_mfa_required directly,
+  // not this predicate, so we don't lose visibility into the credential.
+  if (isCredentialMfaBlocked(node)) {
+    return false;
   }
 
   if (typeof node.cred_usable_for_auth === 'boolean') {
@@ -64,7 +126,24 @@ export function isCredentialUsableForAuth(node: NodeProperties): boolean {
     case 'certificate':
     case 'token':
     case 'ssh_key':
+    // Phase 1 (enterprise): token credentials are usable when their
+    // audience matches the target and they haven't expired. Coverage
+    // applies the audience check separately; here we just signal that
+    // a non-expired token is in principle authenticable.
+    case 'oidc_id_token':
+    case 'oidc_access_token':
+    case 'saml_assertion':
+    case 'oauth_client_secret':
+    case 'pat':
+    case 'app_password':
+    case 'session_cookie':
       return true;
+    case 'oidc_refresh_token':
+      // Refresh tokens grant the ability to mint access tokens, but
+      // aren't directly usable for auth themselves. Mark as not-usable;
+      // operators / inference rules can promote them by minting and
+      // emitting a fresh access_token credential.
+      return false;
     default:
       return false;
   }
@@ -76,6 +155,14 @@ export function isCredentialStaleOrExpired(node: NodeProperties): boolean {
   }
   if (typeof node.valid_until === 'string') {
     const expiry = new Date(node.valid_until).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      return true;
+    }
+  }
+  // Phase 1: token-specific expiry. Treat an expired access token as
+  // stale even when no separate `valid_until` was set.
+  if (typeof node.cred_token_expires_at === 'string') {
+    const expiry = new Date(node.cred_token_expires_at).getTime();
     if (Number.isFinite(expiry) && expiry < Date.now()) {
       return true;
     }

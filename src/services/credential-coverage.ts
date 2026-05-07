@@ -6,7 +6,7 @@
 
 import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, CredentialCoverage, FrontierItem } from '../types.js';
-import { isCredentialUsableForAuth, isCredentialStaleOrExpired, getCredentialDisplayKind, getCredentialMaterialKind } from './credential-utils.js';
+import { isCredentialUsableForAuth, isCredentialStaleOrExpired, getCredentialDisplayKind, getCredentialMaterialKind, isCredentialMfaBlocked } from './credential-utils.js';
 
 // Services that accept credential authentication
 const AUTH_SERVICES = new Set([
@@ -131,6 +131,9 @@ export class CredentialCoverageTracker {
 
   /**
    * Generate frontier items for the top-N untested credential/target pairs.
+   * Also surfaces MFA-blocked credentials as `mfa_bypass_candidate` items so
+   * they remain visible to the planner even though they fail the
+   * usable-for-auth gate.
    */
   computeFrontierItems(maxItems: number = 20, hopsToObjective?: (nodeId: string) => number | null): FrontierItem[] {
     const result = this.compute(hopsToObjective);
@@ -153,6 +156,35 @@ export class CredentialCoverageTracker {
         staleness_seconds: 0,
       });
     }
+
+    // Phase 1 (enterprise): MFA-bypass candidates. A credential with
+    // `cred_mfa_required && !cred_mfa_satisfied` fails isCredentialUsableForAuth,
+    // so it never lands in `untested_pairs` above. Without surfacing it here
+    // the planner has no signal that an AiTM / token-theft / consent-phishing
+    // attempt could re-enable it. We emit one frontier item per MFA-blocked
+    // credential pointing at the credential node itself — operators / the LLM
+    // pick the bypass strategy from there.
+    this.ctx.graph.forEachNode((credId: string, credAttrs) => {
+      if (credAttrs.type !== 'credential') return;
+      if (credAttrs.identity_status === 'superseded') return;
+      if (!isCredentialMfaBlocked(credAttrs)) return;
+      const label = `${credAttrs.cred_user || credAttrs.label || credId}:${getCredentialDisplayKind(credAttrs)}`;
+      items.push({
+        id: `frontier-mfa-bypass-${credId}`,
+        type: 'mfa_bypass_candidate',
+        node_id: credId,
+        credential_id: credId,
+        description: `MFA-blocked credential "${label}" — consider AiTM, token theft, or conditional-access policy gaps`,
+        graph_metrics: {
+          hops_to_objective: hopsToObjective ? (hopsToObjective(credId) ?? null) : null,
+          fan_out_estimate: 1,
+          node_degree: this.ctx.graph.hasNode(credId) ? this.ctx.graph.degree(credId) : 0,
+          confidence: 0.4,
+        },
+        opsec_noise: 0.5,
+        staleness_seconds: 0,
+      });
+    });
 
     return items;
   }

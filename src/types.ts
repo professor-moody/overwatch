@@ -12,6 +12,10 @@ export const NODE_TYPES = [
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
   'webapp', 'vulnerability', 'api_endpoint',
   'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network',
+  // Identity tier (Phase 1 of enterprise readiness — SSO / IdP modeling).
+  // These are first-class so SSO-fed engagements can model the auth surface
+  // distinctly from cloud_identity (which models AWS IAM / Azure RBAC).
+  'idp', 'idp_application', 'idp_principal',
   'mock_service'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
@@ -82,14 +86,23 @@ export interface NodeProperties {
   pwd_last_set?: string;        // ISO timestamp — last password change (from LDAP pwdLastSet)
 
   // Credential
-  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep' | 'certificate' | 'token' | 'ssh_key';
+  cred_type?: 'plaintext' | 'cleartext' | 'ntlm' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep' | 'certificate' | 'token' | 'ssh_key' | 'oidc_token' | 'saml' | 'oauth_secret' | 'pat' | 'app_password' | 'session_cookie';
   cred_value?: string;          // hash or redacted reference
   cred_hash?: string;           // normalized hash material for cracked/captured creds
   cred_user?: string;           // associated user node id
   cred_domain?: string;
   cred_domain_inferred?: boolean;
   cred_domain_source?: 'explicit' | 'graph_inference' | 'parser_context';
-  cred_material_kind?: 'plaintext_password' | 'ntlm_hash' | 'ntlmv1_challenge' | 'ntlmv2_challenge' | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep' | 'certificate' | 'token' | 'ssh_key';
+  cred_material_kind?:
+    | 'plaintext_password' | 'ntlm_hash' | 'ntlmv1_challenge' | 'ntlmv2_challenge'
+    | 'aes256_key' | 'kerberos_tgt' | 'kerberos_tgs' | 'kerberos_asrep'
+    | 'certificate' | 'token' | 'ssh_key'
+    // Phase 1 (enterprise): SSO / OIDC / SAML / OAuth / session-cookie tokens.
+    // Each carries different semantics from a password (audience-bound,
+    // scope-bound, sometimes refreshable). Treat them distinctly so coverage,
+    // expiry, and MFA reasoning are honest.
+    | 'oidc_id_token' | 'oidc_access_token' | 'oidc_refresh_token'
+    | 'saml_assertion' | 'oauth_client_secret' | 'pat' | 'app_password' | 'session_cookie';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
   cred_is_default_guess?: boolean;
@@ -99,6 +112,28 @@ export interface NodeProperties {
   stale_at?: string;            // ISO timestamp — when credential became stale
   credential_status?: 'active' | 'stale' | 'expired' | 'rotated';
   dump_source_host?: string;
+  // Token-specific (Phase 1 enterprise readiness): bearer / OIDC / SAML
+  // tokens are audience-bound and scope-bound — a token valid for the
+  // Microsoft Graph API isn't valid for AWS STS even if both sit behind
+  // the same IdP. Track these so coverage, frontier, and inference rules
+  // can reason about token boundaries instead of treating every token
+  // like a password.
+  /** Token `aud` claim or comparable: which API/app the token authenticates against. */
+  cred_audience?: string;
+  /** OAuth scopes / SAML attributes the token grants. */
+  cred_scopes?: string[];
+  /** Token `iss` claim or back-reference to an `idp` node id. */
+  cred_issuer?: string;
+  /** Token-specific expiry (`exp` claim) — distinct from `valid_until` so
+   *  legacy creds don't lose their existing semantics. */
+  cred_token_expires_at?: string;
+  /** True when the IdP / app requires MFA to use this credential. */
+  cred_mfa_required?: boolean;
+  /** True when MFA pass-through has been observed (AiTM-captured cookie,
+   *  step-up auth completed, …). When `cred_mfa_required` is true and this
+   *  is false, the credential is NOT usable_for_auth even if all other
+   *  fields say it should be. */
+  cred_mfa_satisfied?: boolean;
 
   // Share
   share_name?: string;
@@ -205,6 +240,62 @@ export interface NodeProperties {
   hvt?: boolean;
   hvt_reason?: string;
 
+  // ============================================================
+  // Identity tier (Phase 1 of enterprise readiness)
+  // ============================================================
+  //
+  // `idp` — top-level identity provider (Okta org, Entra tenant, …).
+  // `idp_application` — registered application within an IdP.
+  // `idp_principal` — federated user/group/service identity at the IdP.
+  //
+  // These are deliberately distinct from `cloud_identity`. cloud_identity
+  // models AWS IAM, Azure RBAC, GCP IAM principals — entities that hold
+  // policies and ASSUMES_ROLE edges. idp_* models the SSO surface that
+  // ISSUES_TOKENS_FOR cloud_identity (and federates with on-prem `domain`).
+
+  /** IdP node: which kind of provider this is. */
+  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml';
+  /** IdP node: tenant / org identifier (e.g. Okta org subdomain, Entra tenant GUID). */
+  tenant_id?: string;
+  /** IdP node: OIDC issuer URL (https://login.microsoftonline.com/<tenant>/v2.0). */
+  issuer_url?: string;
+  /** IdP node: how the IdP was discovered (parser name, manual report, …). */
+  discovered_via?: string;
+  /** IdP node: federation summary (PHS / PTA / federated, on-prem sync state). */
+  federation_mode?: 'cloud_only' | 'password_hash_sync' | 'pass_through_auth' | 'federated';
+
+  /** idp_application: OIDC client_id. */
+  client_id?: string;
+  /** idp_application: human-readable app name. */
+  app_name?: string;
+  /** idp_application: count of assigned principals (sized by enumeration). */
+  assigned_user_count?: number;
+  /** idp_application: OAuth grant types the app supports. */
+  grant_types?: string[];
+  /** idp_application: token `aud` claim / allowed audiences. */
+  audience?: string;
+  /** idp_application: redirect URIs registered with the IdP. */
+  redirect_uris?: string[];
+  /** idp_application: parent IdP node id (back-reference). */
+  idp_id?: string;
+  /** idp_application: scopes the app is allowed to request. */
+  app_scopes?: string[];
+  /** idp_application: requires MFA for sign-in (from conditional access / sign-on policy). */
+  app_mfa_required?: boolean;
+
+  /** idp_principal: IdP-internal user/group identifier. */
+  idp_user_id?: string;
+  /** idp_principal: principal kind at the IdP. */
+  idp_principal_kind?: 'user' | 'group' | 'service_principal' | 'app_role';
+  /** idp_principal: configured MFA factors (totp, webauthn, sms, push, …). */
+  mfa_methods?: string[];
+  /** idp_principal: MFA enforced on this principal by IdP policy. */
+  mfa_required?: boolean;
+  /** idp_principal: app ids this principal is assigned to / can sign into. */
+  assigned_apps?: string[];
+  /** idp_principal: UPN / email claim used to correlate with on-prem AD. */
+  upn?: string;
+
   // Mock service (operator-controlled decoy / listener / relay)
   mock_purpose?: 'fake_ldap' | 'responder' | 'ntlmrelayx' | 'redirector' | 'reverse_shell_catcher' | 'http_capture' | 'smb_capture' | 'other';
   bind_host?: string;
@@ -260,6 +351,24 @@ export const EDGE_TYPES = [
   // what ASSUMES_ROLE implies). Modeling it separately keeps attack-path
   // scoring honest about what a service principal can actually do.
   'SERVICE_PRINCIPAL_FOR',
+  // Identity tier (Phase 1 enterprise readiness). Distinct from cloud
+  // identity: these model SSO / IdP topology rather than IAM/RBAC.
+  // FEDERATES_WITH:        idp ↔ domain  (Okta org federates with on-prem AD)
+  // AUTHENTICATES_VIA:     webapp / cloud_resource → idp_application
+  // ASSIGNED_TO_APP:       idp_principal → idp_application
+  // MFA_REQUIRED_FOR:      idp_principal → idp_application (CA / sign-on policy)
+  // ISSUES_TOKENS_FOR:     idp_application → cloud_identity (OIDC federation)
+  // BACKED_BY:             webapp → cloud_resource (cross-tier app/backend link)
+  // CAN_REACH:             webapp → cloud_resource (inferred reachability,
+  //                        e.g. SSRF reaching IMDS); intentionally weaker than
+  //                        BACKED_BY which is a declared linkage.
+  // VALID_FOR_APP:         credential → idp_application (token works for app)
+  // VALID_FOR_IDP_PRINCIPAL: credential → idp_principal (cred grants access
+  //                        to a federated principal — hybrid identity pivot).
+  'FEDERATES_WITH', 'AUTHENTICATES_VIA', 'ASSIGNED_TO_APP',
+  'MFA_REQUIRED_FOR', 'ISSUES_TOKENS_FOR',
+  'BACKED_BY', 'CAN_REACH',
+  'VALID_FOR_APP', 'VALID_FOR_IDP_PRINCIPAL',
   // Operator-controlled infrastructure (mock_service / decoy listeners)
   'OPERATED_BY', 'BAITED', 'RELAYED_VIA',
   // Objective
@@ -553,7 +662,18 @@ export interface ColdNodeRecord {
 
 export interface FrontierItem {
   id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'network_pivot' | 'credential_test';
+  type:
+    | 'incomplete_node' | 'untested_edge' | 'inferred_edge'
+    | 'network_discovery' | 'network_pivot' | 'credential_test'
+    // Phase 1 (enterprise): SSO-aware frontier surfaces.
+    // - `idp_enumeration`: an `idp` node is in scope but no principals
+    //   have been enumerated yet (Okta/Entra org dump candidate).
+    // - `mfa_bypass_candidate`: a credential exists for a principal but
+    //   `cred_mfa_required && !cred_mfa_satisfied` — surface AiTM /
+    //   token-theft / consent-phishing attempts.
+    // - `cross_tier_pivot`: a cross-tier edge has been inferred but
+    //   not yet acted on (e.g. webapp BACKED_BY cloud_resource).
+    | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;

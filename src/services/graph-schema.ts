@@ -112,6 +112,22 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   OPERATED_BY: { source: ['mock_service'], target: ['user'] },
   BAITED: { source: ['mock_service'], target: ['credential'] },
   RELAYED_VIA: { source: ['credential'], target: ['mock_service'] },
+  // Identity tier (Phase 1 enterprise readiness)
+  // FEDERATES_WITH is bidirectional in spirit; we model the canonical
+  // direction as idp → on-prem domain, with the reverse handled at query
+  // time via the bidirectional edge-type set in path-analyzer.
+  FEDERATES_WITH: { source: ['idp', 'domain'], target: ['idp', 'domain'] },
+  AUTHENTICATES_VIA: { source: ['webapp', 'cloud_resource', 'api_endpoint'], target: ['idp_application'] },
+  ASSIGNED_TO_APP: { source: ['idp_principal', 'user', 'group'], target: ['idp_application'] },
+  MFA_REQUIRED_FOR: { source: ['idp_principal', 'user', 'group', 'idp_application'], target: ['idp_application'] },
+  ISSUES_TOKENS_FOR: { source: ['idp_application'], target: ['cloud_identity', 'cloud_resource'] },
+  // Cross-tier app/backend correlation
+  BACKED_BY: { source: ['webapp', 'api_endpoint'], target: ['cloud_resource', 'host'] },
+  // Inferred reachability (e.g. SSRF reaching IMDS) — intentionally weaker than BACKED_BY.
+  CAN_REACH: { source: ['webapp', 'api_endpoint', 'host'], target: ['cloud_resource', 'host'] },
+  // Token / hybrid identity validity
+  VALID_FOR_APP: { source: ['credential'], target: ['idp_application'] },
+  VALID_FOR_IDP_PRINCIPAL: { source: ['credential'], target: ['idp_principal'] },
   // Objective
   PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource'], target: ['objective'] },
   // RELATED is intentionally unconstrained

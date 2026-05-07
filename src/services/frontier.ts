@@ -93,6 +93,36 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
     if (node.encrypted === undefined) m.push('encryption_checked');
     return m;
   },
+  // Phase 1 (enterprise): an `idp` in scope without enumerated principals
+  // is the SSO equivalent of a `host` in scope without service enumeration.
+  // Surface it so an Okta/Entra org-dump candidate lands on the frontier.
+  idp: (node, ctx) => {
+    const m: string[] = [];
+    if (!node.tenant_id) m.push('tenant_id');
+    if (!node.federation_mode) m.push('federation_mode');
+    const hasPrincipals = ctx.graph.outEdges(node.id).some((e: string) => {
+      const eAttrs = ctx.graph.getEdgeAttributes(e);
+      return eAttrs.type === 'ASSIGNED_TO_APP' || eAttrs.type === 'FEDERATES_WITH';
+    }) || ctx.graph.inEdges(node.id).some((e: string) => {
+      const eAttrs = ctx.graph.getEdgeAttributes(e);
+      return eAttrs.type === 'TRUSTS' || eAttrs.type === 'AUTHENTICATES_VIA';
+    });
+    if (!hasPrincipals) m.push('idp_principals_enumerated');
+    return m;
+  },
+  // Identify apps that haven't had their assigned-user list enumerated.
+  idp_application: (node) => {
+    const m: string[] = [];
+    if (node.assigned_user_count === undefined) m.push('assigned_users_enumerated');
+    if (node.app_mfa_required === undefined) m.push('app_mfa_required');
+    return m;
+  },
+  // Identify principals whose MFA factor configuration is unknown.
+  idp_principal: (node) => {
+    const m: string[] = [];
+    if (node.mfa_required === undefined) m.push('mfa_status');
+    return m;
+  },
 };
 
 // --- Noise estimates by missing property ---
@@ -109,6 +139,14 @@ export const NOISE_ESTIMATE_DEFAULTS: Record<string, number> = {
   mfa_enabled: 0.2,
   public_access_checked: 0.3,
   encryption_checked: 0.2,
+  // Phase 1 (enterprise): IdP enumeration noise. Org-wide user dumps
+  // are loud — most IdPs log them and many trigger CA alerts.
+  idp_principals_enumerated: 0.7,
+  assigned_users_enumerated: 0.4,
+  tenant_id: 0.1,
+  federation_mode: 0.1,
+  mfa_status: 0.2,
+  app_mfa_required: 0.2,
   default: 0.3,
 };
 
