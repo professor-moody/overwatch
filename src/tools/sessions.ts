@@ -439,24 +439,14 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         };
       }
 
-      // Merge per-call override > session default. If neither yields a
-      // technique we cannot run an instrumented send — return a structured
-      // error rather than silently bypassing the lifecycle.
+      // Merge per-call override > session default. When neither yields a
+      // technique, fall back to a generic `session_command` label so the
+      // lifecycle still runs (the action gets logged + evidence persisted).
+      // Operators with scope concerns should pass default_validation at
+      // open_session — otherwise local_pty sessions and similar
+      // no-scope-concern uses don't need any per-call ceremony.
       const sessionDefault = session.default_validation;
-      const technique = callTechnique ?? sessionDefault?.technique;
-      if (!technique) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: 'send_to_session requires a technique (set default_validation at open_session or pass technique on this call).',
-              session_id,
-              hint: 'For uninstrumented partial I/O (password prompts, REPL navigation), use write_session.',
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
+      const technique = callTechnique ?? sessionDefault?.technique ?? 'session_command';
       const effective: SessionDefaultValidation = {
         technique,
         target_ip: callTargetIp ?? sessionDefault?.target_ip,

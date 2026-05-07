@@ -156,17 +156,19 @@ describe('send_to_session instrumentation', () => {
     expect(state.evidenceWrites[0].evidence_type).toBe('command_output');
   });
 
-  it('refuses sends when neither session default nor per-call technique is set', async () => {
+  it('falls back to a generic technique when no default or override is set (uninstrumented-scope path)', async () => {
+    // local_pty / scope-less sessions: no operator ceremony required, but
+    // the lifecycle still runs with a generic `session_command` technique
+    // so the activity log, evidence, and OPSEC noise tracking all work.
     const session = makeSessionMetadata({ default_validation: undefined });
     const { handlers, sendCommand, state } = buildHarness({ session });
 
     const result = await handlers.send_to_session({ session_id: 'session-1', command: 'whoami' });
 
-    expect(result.isError).toBe(true);
-    expect(sendCommand).not.toHaveBeenCalled();
-    const payload = JSON.parse(result.content[0].text);
-    expect(payload.error).toMatch(/requires a technique/);
-    expect(state.events).toHaveLength(0);
+    expect(result.isError).toBeUndefined();
+    expect(sendCommand).toHaveBeenCalledOnce();
+    const started = state.events.find(e => e.event_type === 'action_started')!;
+    expect(started.technique).toBe('session_command');
   });
 
   it('blocks the PTY write when validateAction denies (per-call out-of-scope override)', async () => {
