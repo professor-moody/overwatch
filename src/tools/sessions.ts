@@ -439,17 +439,34 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         };
       }
 
-      // Merge per-call override > session default. When neither yields a
-      // technique, fall back to a generic `session_command` label so the
-      // lifecycle still runs (the action gets logged + evidence persisted).
-      // Operators with scope concerns should pass default_validation at
-      // open_session — otherwise local_pty sessions and similar
-      // no-scope-concern uses don't need any per-call ceremony.
+      // Merge per-call override > session default > session host fallback.
+      // When neither yields a technique, fall back to a generic
+      // `session_command` label so the lifecycle still runs (the action
+      // gets logged + evidence persisted). Operators with scope concerns
+      // should pass default_validation at open_session — otherwise
+      // local_pty sessions and similar no-scope-concern uses don't need
+      // any per-call ceremony.
+      //
+      // F8: previously a remote session opened with `host` but no
+      // explicit default_validation.target_ip would validate against an
+      // empty target — every send logged as a generic session_command
+      // with no scope attribution. Now we fall back to `session.host`
+      // for target_ip, which validateAction accepts as either an IPv4
+      // or hostname (isHostInScope handles both).
       const sessionDefault = session.default_validation;
       const technique = callTechnique ?? sessionDefault?.technique ?? 'session_command';
+      const fallbackTargetIp =
+        callTargetIp
+        ?? sessionDefault?.target_ip
+        // Only fall back to session.host for kinds that actually point at
+        // a remote target — local_pty's host field is irrelevant for
+        // scope, and a socket-listener's "host" is the bind address.
+        ?? (session.kind === 'ssh' || (session.kind === 'socket' && session.host && (!('mode' in session) || (session as { mode?: string }).mode !== 'listen'))
+            ? session.host
+            : undefined);
       const effective: SessionDefaultValidation = {
         technique,
-        target_ip: callTargetIp ?? sessionDefault?.target_ip,
+        target_ip: fallbackTargetIp,
         target_url: callTargetUrl ?? sessionDefault?.target_url,
         target_node: callTargetNode ?? sessionDefault?.target_node,
         allow_unverified_scope: callAllowUnverified ?? sessionDefault?.allow_unverified_scope,

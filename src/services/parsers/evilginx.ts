@@ -24,6 +24,49 @@ import type { EdgeType, Finding, NodeProperties, ParseContext } from '../../type
 import { v4 as uuidv4 } from 'uuid';
 import { credentialId, idpId, idpPrincipalId, userId } from '../parser-utils.js';
 
+/**
+ * F4: decode a captured JWT-shaped token so the resulting credential
+ * carries cred_audience / cred_issuer / cred_token_expires_at /
+ * cred_scopes. Without this, OIDC_FEDERATION_PIVOT can't fire on
+ * AiTM-captured tokens because cred_audience stays undefined.
+ *
+ * Returns null when the input doesn't look like a JWT (3 base64url
+ * segments) so the caller can fall back to opaque-string handling.
+ */
+function decodeJwtClaims(value: string): {
+  audience?: string;
+  scopes?: string[];
+  issuer?: string;
+  expires_at?: string;
+  is_id_token: boolean;
+} | null {
+  const parts = value.replace(/^Bearer\s+/i, '').split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const pad = (s: string) => s + '='.repeat((4 - (s.length % 4)) % 4);
+    const b64 = pad(parts[1]).replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8')) as Record<string, unknown>;
+    const audRaw = payload.aud;
+    const audience = typeof audRaw === 'string'
+      ? audRaw
+      : Array.isArray(audRaw) && typeof audRaw[0] === 'string' ? (audRaw[0] as string) : undefined;
+    const scopeRaw = payload.scope ?? payload.scp ?? payload.scopes;
+    const scopes = Array.isArray(scopeRaw)
+      ? scopeRaw.map(String).filter(Boolean)
+      : typeof scopeRaw === 'string' && scopeRaw.trim()
+        ? scopeRaw.split(/\s+/).filter(Boolean)
+        : undefined;
+    const issuer = typeof payload.iss === 'string' ? payload.iss : undefined;
+    const expires_at = typeof payload.exp === 'number'
+      ? new Date(payload.exp * 1000).toISOString()
+      : undefined;
+    const is_id_token = typeof payload.nonce === 'string' || typeof payload.at_hash === 'string';
+    return { audience, scopes, issuer, expires_at, is_id_token };
+  } catch {
+    return null;
+  }
+}
+
 interface EvilginxSession {
   id?: string | number;
   phishlet?: string;
@@ -192,9 +235,21 @@ export function parseEvilginx(output: string, agentId: string = 'evilginx-parser
     const tokens = (session.tokens ?? session.body_tokens ?? {}) as Record<string, unknown>;
     for (const [tokenName, tokenVal] of Object.entries(tokens)) {
       if (typeof tokenVal !== 'string' || tokenVal.length === 0) continue;
-      const isAccess = /access_token|access\b/i.test(tokenName);
-      const isId = /id_token|id\b/i.test(tokenName);
-      const kind: NodeProperties['cred_material_kind'] = isAccess ? 'oidc_access_token' : isId ? 'oidc_id_token' : 'oidc_access_token';
+      // F4: decode JWT claims so cred_audience / cred_issuer /
+      // cred_token_expires_at / cred_scopes are populated. Without
+      // these, OIDC_FEDERATION_PIVOT silently skips AiTM-captured
+      // tokens (the most operationally valuable identity loot).
+      const claims = decodeJwtClaims(tokenVal);
+      // Prefer the token-name hint, but the decoded `nonce` / `at_hash`
+      // claim is authoritative — a token named "id_token" without a
+      // nonce is an outlier we shouldn't classify as an ID token.
+      const nameHintAccess = /access_token|access\b/i.test(tokenName);
+      const nameHintId = /id_token|id\b/i.test(tokenName);
+      const looksLikeId = claims?.is_id_token === true || (nameHintId && claims?.is_id_token !== false);
+      const kind: NodeProperties['cred_material_kind'] =
+        looksLikeId ? 'oidc_id_token'
+        : nameHintAccess ? 'oidc_access_token'
+        : 'oidc_access_token';
       const credId = credentialId(kind, tokenVal, String(username || 'aitm'), undefined);
       if (seenNodes.has(credId)) continue;
       nodes.push({
@@ -205,6 +260,10 @@ export function parseEvilginx(output: string, agentId: string = 'evilginx-parser
         cred_material_kind: kind,
         cred_value: tokenVal,
         cred_user: username ? String(username) : undefined,
+        cred_audience: claims?.audience,
+        cred_scopes: claims?.scopes,
+        cred_issuer: claims?.issuer,
+        cred_token_expires_at: claims?.expires_at,
         cred_evidence_kind: 'capture',
         cred_usable_for_auth: true,
         cred_mfa_required: true,

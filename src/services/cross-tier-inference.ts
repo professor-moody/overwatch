@@ -36,6 +36,7 @@
 
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import type { EdgeProperties, EdgeType, NodeProperties } from '../types.js';
+import { isCredentialMfaBlocked, isCredentialStaleOrExpired, isCredentialUsableForAuth, isTokenCredential } from './credential-utils.js';
 
 export interface CrossTierInferenceHost {
   ctx: EngineContext;
@@ -134,6 +135,21 @@ function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): num
       const credAud = cred.attrs.cred_audience as string | undefined;
       if (!credAud) continue;
       if (credAud !== aud && credAud !== clientId) continue;
+      // F3: gate the pivot on the credential actually being usable. An
+      // ID token, an expired access token, an MFA-blocked token, or a
+      // non-token credential all fail to authenticate against the
+      // federated cloud identity, so emitting ASSUMES_ROLE for them
+      // points the operator at a dead pivot.
+      if (!isTokenCredential(cred.attrs)) continue;
+      const kind = cred.attrs.cred_material_kind as string | undefined;
+      // Only access tokens / refresh-exchanged tokens / SAML / session
+      // cookies can authenticate to a cloud identity. ID tokens are
+      // identity assertions, not bearer credentials, and refresh tokens
+      // must be exchanged before use.
+      if (kind === 'oidc_id_token' || kind === 'oidc_refresh_token') continue;
+      if (isCredentialStaleOrExpired(cred.attrs)) continue;
+      if (isCredentialMfaBlocked(cred.attrs)) continue;
+      if (!isCredentialUsableForAuth(cred.attrs)) continue;
       // Emit credential → ASSUMES_ROLE → cloud_identity for each token target.
       for (const t of tokenTargets) {
         const result = host.addEdge(cred.id, t.id, {

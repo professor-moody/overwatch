@@ -27,6 +27,52 @@ interface SecretRow {
   value: string;
   source?: string;
   notes?: string;
+  /** F5: set when the row was extracted via the column-truncation path
+   *  (Format-Table) or any other lossy parse — operators should treat
+   *  the credential as suspect rather than directly usable. */
+  partial?: boolean;
+}
+
+/**
+ * F5: minimal but correct CSV row parser. Handles quoted values that
+ * contain commas (very common for connection strings) and the
+ * `""`-as-escaped-quote convention. Returns null when the line is
+ * structurally invalid.
+ */
+function parseCsvRow(line: string): string[] | null {
+  const out: string[] = [];
+  let i = 0;
+  const n = line.length;
+  while (i < n) {
+    let cell = '';
+    if (line[i] === '"') {
+      i++;
+      while (i < n) {
+        if (line[i] === '"') {
+          if (i + 1 < n && line[i + 1] === '"') {
+            cell += '"';
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        cell += line[i];
+        i++;
+      }
+      // Skip comma after closing quote.
+      if (i < n && line[i] === ',') i++;
+      else if (i < n) return null; // malformed (quoted field not followed by , or EOL)
+    } else {
+      while (i < n && line[i] !== ',') {
+        cell += line[i];
+        i++;
+      }
+      if (i < n && line[i] === ',') i++;
+    }
+    out.push(cell);
+  }
+  return out;
 }
 
 function classifyMaterialKind(typeRaw: string): NodeProperties['cred_material_kind'] {
@@ -59,21 +105,45 @@ function tryJson(output: string): SecretRow[] | null {
 }
 
 function tryCsv(output: string): SecretRow[] | null {
+  // F5: use a real CSV row parser instead of split(','). Splitting on
+  // commas corrupts connection strings, JWTs, and any other value that
+  // legitimately contains commas — and the result was being marked as
+  // a usable credential, so operators tried dead secrets.
   const lines = output.split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length < 2) return null;
-  const header = lines[0].toLowerCase();
-  if (!header.includes('"type"') && !header.includes('type,')) return null;
+  const headerLower = lines[0].toLowerCase();
+  if (!headerLower.includes('"type"') && !headerLower.includes('type,')) return null;
+  const headerCells = parseCsvRow(lines[0]);
+  if (!headerCells) return null;
+  const idx = (name: string) => headerCells.findIndex(h => h.toLowerCase().trim() === name);
+  const typeIdx = idx('type');
+  const nameIdx = idx('name');
+  const valueIdx = idx('value');
+  const sourceIdx = idx('source');
+  if (typeIdx < 0 || nameIdx < 0 || valueIdx < 0) return null;
+
   const rows: SecretRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(',').map(p => p.replace(/^"|"$/g, ''));
-    if (parts.length < 3) continue;
-    rows.push({ type: parts[0], name: parts[1], value: parts[2], source: parts[3] });
+    const cells = parseCsvRow(lines[i]);
+    if (!cells) continue;
+    if (cells.length <= Math.max(typeIdx, nameIdx, valueIdx)) continue;
+    rows.push({
+      type: cells[typeIdx] ?? '',
+      name: cells[nameIdx] ?? '',
+      value: cells[valueIdx] ?? '',
+      source: sourceIdx >= 0 ? cells[sourceIdx] : undefined,
+    });
   }
   return rows.length > 0 ? rows : null;
 }
 
 function tryTable(output: string): SecretRow[] | null {
   // Format-Table output: header line followed by hyphen separator.
+  // F5: column boundaries truncate any value longer than the rendered
+  // column width — that's a property of PowerShell formatting, not
+  // something we can recover. We DO continue to parse table output
+  // (it's a common operator paste), but we mark every row partial so
+  // downstream consumers know not to treat the value as authoritative.
   const lines = output.split('\n');
   const headerIdx = lines.findIndex(l => /\bType\b/i.test(l) && /\bName\b/i.test(l) && /\bValue\b/i.test(l));
   if (headerIdx < 0 || headerIdx + 1 >= lines.length) return null;
@@ -86,6 +156,7 @@ function tryTable(output: string): SecretRow[] | null {
     return idx >= 0 ? idx : -1;
   });
   if (positions[0] < 0 || positions[1] < 0 || positions[2] < 0) return null;
+  const valueColumnWidth = positions[3] >= 0 ? positions[3] - positions[2] : Infinity;
   const rows: SecretRow[] = [];
   for (let i = headerIdx + 2; i < lines.length; i++) {
     const line = lines[i];
@@ -96,7 +167,11 @@ function tryTable(output: string): SecretRow[] | null {
     const value = slice(positions[2], positions[3]);
     const source = positions[3] >= 0 ? slice(positions[3], -1) : undefined;
     if (!type || !value) continue;
-    rows.push({ type, name, value, source });
+    // Heuristic: if the value field uses every available column byte and
+    // ends at or after the next column boundary, PowerShell almost
+    // certainly truncated it.
+    const truncated = value.length >= valueColumnWidth - 1;
+    rows.push({ type, name, value, source, partial: true, notes: truncated ? 'value may be truncated by Format-Table column width' : 'parsed from Format-Table; structured CSV/JSON preferred' });
   }
   return rows.length > 0 ? rows : null;
 }
@@ -126,10 +201,17 @@ export function parseMicroBurst(output: string, agentId: string = 'microburst-pa
       cred_value: row.value,
       cred_user: row.name,
       cred_evidence_kind: 'dump',
-      cred_usable_for_auth: true,
+      // F5: row.partial is true for any value that came through the
+      // Format-Table parser (PowerShell column boundaries can silently
+      // truncate). Propagate that to the credential node and mark it
+      // not-directly-usable so coverage / spray tools don't try a dead
+      // secret. Operators should re-export to JSON/CSV for full fidelity.
+      cred_usable_for_auth: row.partial ? false : true,
+      partial: row.partial || undefined,
+      notes: row.notes,
       cred_domain_source: 'parser_context',
       discovered_at: now,
-      confidence: 1.0,
+      confidence: row.partial ? 0.5 : 1.0,
       ...(row.source ? { dump_source_host: row.source } : {}),
     });
     seenNodes.add(credId);

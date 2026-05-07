@@ -176,6 +176,41 @@ describe('Sub-agent IPC + process runner (P4.2)', () => {
 
     const result = await runSubAgent(engine, { task, runner });
     expect(result.status).toBe('interrupted');
+
+    // F1: the engine must reflect the interrupted status (was previously
+    // left as 'running' because runSubAgent never called updateAgentStatus
+    // on the early-exit path). The frontier lease must also be released
+    // so a follow-up dispatch on the same item can succeed.
+    const persisted = engine.getTask('task-2');
+    expect(persisted?.status).toBe('interrupted');
+    const t2 = { ...makeTask(), id: 'task-2-followup', agent_id: 'sub-2', frontier_item_id: 'fi-2' };
+    const reg = engine.registerAgent(t2);
+    expect(reg.ok).toBe(true);
+  });
+
+  // F2 — process runner timeout: a wedged child that stays alive without
+  // sending a transcript used to block the parent forever. We now kill it
+  // after the configured timeout and mark the task interrupted.
+  it('kills the child and marks the task interrupted when the timeout elapses (F2)', async () => {
+    cleanup();
+    const engine = new GraphEngine(makeConfig(), TEST_STATE);
+    const task = { ...makeTask(), id: 'task-wedge', frontier_item_id: 'fi-wedge' };
+    engine.registerAgent(task);
+
+    // Wedged child: never sends submit_transcript, never exits on its own.
+    let killCount = 0;
+    const runner: SubAgentRunner = {
+      send: () => { /* swallow */ },
+      onMessage: () => { /* never emits */ },
+      exited: new Promise(() => { /* never resolves on its own */ }),
+      kill: () => { killCount++; },
+    };
+
+    const result = await runSubAgent(engine, { task, runner, timeout_seconds: 0.05 });
+    expect(result.status).toBe('interrupted');
+    expect(result.timed_out).toBe(true);
+    expect(killCount).toBeGreaterThanOrEqual(1);
+    expect(engine.getTask('task-wedge')?.status).toBe('interrupted');
   });
 
   it('encodeMessage/decodeMessages round-trip is identity', () => {

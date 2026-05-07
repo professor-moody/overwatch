@@ -163,6 +163,13 @@ export function parseRoadrecon(output: string, agentId: string = 'roadrecon-pars
   }
 
   // --- Conditional access → MFA_REQUIRED_FOR edges (best-effort) ---
+  // F7: handle `includeApplications: ['All']` as tenant-wide MFA. Previously
+  // the loop skipped 'All' as a sentinel, leaving every app appearing
+  // MFA-free even though the tenant policy required MFA for every app.
+  // We expand 'All' to the set of idp_applications we know about in this
+  // bundle and emit a self-loop MFA_REQUIRED_FOR per app, plus stamp
+  // app_mfa_required: true on each app node so dashboards / inference
+  // see the gate.
   for (const ca of bundle.conditionalaccess ?? []) {
     const grantControls = ca.grantControls as { builtInControls?: unknown[] } | undefined;
     const requiresMfa =
@@ -170,17 +177,39 @@ export function parseRoadrecon(output: string, agentId: string = 'roadrecon-pars
       grantControls!.builtInControls.some(v => String(v).toLowerCase() === 'mfa');
     if (!requiresMfa) continue;
     const conditions = ca.conditions as { applications?: { includeApplications?: unknown[] } } | undefined;
-    const appIds = (conditions?.applications?.includeApplications ?? []) as unknown[];
-    for (const aid of appIds) {
-      if (typeof aid !== 'string' || aid === 'All' || aid === 'None') continue;
-      const appNodeId = idpApplicationId('entra', tenantId || 'unknown', aid);
-      if (!seenNodes.has(appNodeId)) continue;
+    const rawAppIds = (conditions?.applications?.includeApplications ?? []) as unknown[];
+    const appIds = rawAppIds.map(v => String(v));
+    const policyLabel = String(ca.displayName ?? ca.id ?? '');
+    const isOrgWide = appIds.some(aid => aid === 'All');
+
+    // Resolve the target set:
+    //  - `All` → every idp_application emitted earlier in this bundle
+    //  - otherwise → each named app id, looked up in seenNodes.
+    const targetAppNodeIds: string[] = isOrgWide
+      ? nodes.filter(n => n.type === 'idp_application').map(n => n.id)
+      : appIds
+          .filter(aid => aid !== 'All' && aid !== 'None')
+          .map(aid => idpApplicationId('entra', tenantId || 'unknown', aid))
+          .filter(id => seenNodes.has(id));
+
+    for (const appNodeId of targetAppNodeIds) {
+      // Stamp the gate on the application node itself so OIDC pivot
+      // and frontier scoring can short-circuit without scanning edges.
+      const appNode = nodes.find(n => n.id === appNodeId);
+      if (appNode) appNode.app_mfa_required = true;
       // Self-loop: app → app with type MFA_REQUIRED_FOR. Schema permits
       // idp_application as a source for org-wide CA policies.
       edges.push({
         source: appNodeId,
         target: appNodeId,
-        properties: { type: 'MFA_REQUIRED_FOR' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId, ca_policy: String(ca.displayName ?? ca.id ?? '') },
+        properties: {
+          type: 'MFA_REQUIRED_FOR' as EdgeType,
+          confidence: 1.0,
+          discovered_at: now,
+          discovered_by: agentId,
+          ca_policy: policyLabel,
+          ca_scope: isOrgWide ? 'all_applications' : 'named_applications',
+        },
       });
     }
   }

@@ -41,6 +41,9 @@ export interface SubAgentSpawnOptions {
   runner?: SubAgentRunner;
   /** Optional logger for debugging the IPC channel. */
   log?: (msg: string) => void;
+  /** F2: hard timeout (seconds) past which we kill the child and mark
+   *  the task interrupted. Defaults to 30 minutes. */
+  timeout_seconds?: number;
 }
 
 /**
@@ -65,14 +68,26 @@ export interface SubAgentRunResult {
   status: 'completed' | 'failed' | 'interrupted';
   result_summary?: string;
   findings_received: number;
+  /** F2: set when the runner forced termination via the timeout path. */
+  timed_out?: boolean;
 }
+
+/** F2: max wall-clock seconds to wait for transcript-or-exit. Past this we
+ *  kill the child and mark the task interrupted. Configurable per-spawn via
+ *  SubAgentSpawnOptions.timeout_seconds (defaults to 30 minutes). */
+const DEFAULT_SUBAGENT_TIMEOUT_SECONDS = 30 * 60;
 
 // ---- Public API ----
 
 /**
  * Run one sub-agent task in process-isolated mode (or via a test runner).
- * Returns a promise that resolves when the child exits or we time out
- * waiting for a `submit_transcript`.
+ * Returns a promise that resolves when the child sends `submit_transcript`,
+ * the child exits, OR the timeout elapses (F2: previously the timeout
+ * branch was documented but never wired — a wedged child blocked forever).
+ *
+ * On timeout or early exit without transcript, we always update the
+ * engine task status to `interrupted` so the graph doesn't leave the
+ * task as `running` and the frontier lease gets released (F1).
  */
 export async function runSubAgent(
   engine: GraphEngine,
@@ -80,6 +95,8 @@ export async function runSubAgent(
 ): Promise<SubAgentRunResult> {
   const { task, runner, log } = options;
   const channel: SubAgentRunner = runner ?? defaultSpawnRunner(options);
+  const timeoutMs =
+    Math.max(1, options.timeout_seconds ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS) * 1000;
 
   let findingsReceived = 0;
   let finalStatus: SubAgentRunResult['status'] = 'interrupted';
@@ -184,17 +201,48 @@ export async function runSubAgent(
   };
   channel.send(assign);
 
-  // Race the transcript-submission promise against child exit. Whichever
-  // resolves first wins — the child may exit cleanly without sending a
-  // transcript (treated as 'interrupted'), and a transcript followed by
-  // a clean exit lets `done` fire first.
-  await Promise.race([done, channel.exited.then(() => {})]);
+  // F2: race transcript-submission against child exit AND a hard timeout.
+  // Without the timeout branch a wedged child (alive but silent) used to
+  // block the parent `await` indefinitely.
+  let timedOut = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      log?.(`[parent] task ${task.id} timed out after ${timeoutMs / 1000}s — killing child`);
+      try { channel.kill(); } catch { /* best effort */ }
+      resolve();
+    }, timeoutMs);
+    // Don't keep the event loop alive solely for this timer.
+    if (typeof (timeoutHandle as { unref?: () => void }).unref === 'function') {
+      (timeoutHandle as { unref?: () => void }).unref!();
+    }
+  });
+
+  await Promise.race([done, channel.exited.then(() => {}), timeoutPromise]);
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+
+  // F1 + F2: if we exit this race without a transcript-driven status
+  // update, the task is still `running` in the engine. Update it now so
+  // the frontier lease is released and the dashboard reflects reality.
+  if (finalStatus === 'interrupted') {
+    const reason = timedOut
+      ? `subagent_timeout: no transcript within ${timeoutMs / 1000}s`
+      : 'subagent_exited_without_transcript';
+    resultSummary = resultSummary ?? reason;
+    try {
+      engine.updateAgentStatus(task.id, 'interrupted', resultSummary);
+    } catch (err) {
+      log?.(`[parent] updateAgentStatus error: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   return {
     task_id: task.id,
     status: finalStatus,
     result_summary: resultSummary,
     findings_received: findingsReceived,
+    timed_out: timedOut || undefined,
   };
 }
 

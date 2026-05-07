@@ -75,7 +75,15 @@ function findCloudResourcesUnderAccount(ctx: EngineContext, link: CrossTierLink)
     if (link.azure_subscription && account === link.azure_subscription) matchesAccount = true;
     if (link.gcp_project && account === link.gcp_project) matchesAccount = true;
     if (!matchesAccount && !link.cloud_resource_prefix) return;
-    if (link.cloud_resource_prefix && arn && !arnMatchesPrefix(link.cloud_resource_prefix, arn)) return;
+    // F6: when the operator declared a `cloud_resource_prefix` filter,
+    // refuse to match resources that don't even carry the comparable
+    // identifier. Previously a cloud_resource without an ARN would
+    // match anyway (the prefix check silently passed), creating false
+    // BACKED_BY edges for resources that couldn't be the backend.
+    if (link.cloud_resource_prefix) {
+      if (!arn) return;
+      if (!arnMatchesPrefix(link.cloud_resource_prefix, arn)) return;
+    }
     out.push({ id, attrs });
   });
   return out;
