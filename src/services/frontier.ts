@@ -12,6 +12,7 @@ import { isIpInCidr } from './cidr.js';
 import type { KnowledgeBase } from './knowledge-base.js';
 import { EDGE_TO_ATTACK } from './finding-classifier.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
+import { isLiveSessionEdge } from './session-edge-utils.js';
 
 // --- Fan-out estimates by service type ---
 export const FAN_OUT_DEFAULTS: Record<string, number> = {
@@ -49,9 +50,12 @@ const REQUIRED_PROPERTIES: Partial<Record<NodeType, MissingPropertyChecker>> = {
       // an explicit `compromised` flag so we don't fire enrichment requests
       // against every alive Linux host on the network.
       if (node.os && node.os.toLowerCase().includes('linux')) {
+        // F1: only LIVE sessions count for post-exploit enrichment. A dead
+        // shell from a closed session is reporting-relevant but cannot run
+        // suid/cron/capabilities checks.
         const compromised = node.compromised === true || ctx.graph.inEdges(node.id).some((e: string) => {
           const ea = ctx.graph.getEdgeAttributes(e);
-          return ea.type === 'HAS_SESSION' && (ea.confidence ?? 1) >= 0.7;
+          return isLiveSessionEdge(ea) && (ea.confidence ?? 1) >= 0.7;
         });
         if (compromised) {
           if (node.suid_checked === undefined) m.push('suid_checked');
@@ -341,7 +345,8 @@ export class FrontierComputer {
         let pivotPrincipal: string | undefined;
         for (const edge of this.ctx.graph.inEdges(host.id) as string[]) {
           const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
-          if (eAttrs.type === 'HAS_SESSION' && eAttrs.confidence >= 0.7) {
+          // F1: pivot can only originate from a LIVE session.
+          if (isLiveSessionEdge(eAttrs) && eAttrs.confidence >= 0.7) {
             pivotPrincipal = this.ctx.graph.source(edge);
             break;
           }
@@ -350,9 +355,12 @@ export class FrontierComputer {
 
         for (const peer of hostsInSubnet) {
           if (peer.id === host.id) continue;
+          // F1: a peer is "already accessed" only if it currently has a
+          // live session — a closed session shouldn't suppress a fresh
+          // pivot suggestion.
           const peerHasSession = this.ctx.graph.inEdges(peer.id).some((e: string) => {
             const ea = this.ctx.graph.getEdgeAttributes(e);
-            return ea.type === 'HAS_SESSION' && ea.confidence >= 0.7;
+            return isLiveSessionEdge(ea) && ea.confidence >= 0.7;
           });
           if (peerHasSession) continue;
 

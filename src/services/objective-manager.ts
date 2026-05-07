@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import { isCredentialUsableForAuth } from './credential-utils.js';
+import { isLiveSessionEdge } from './session-edge-utils.js';
 import type {
   NodeProperties, NodeType, EdgeType,
   EngagementConfig, EngagementState,
@@ -105,6 +106,10 @@ export function evaluateObjectives(host: ObjectiveManagerHost): void {
         }
         return host.ctx.graph.inEdges(n.id).some((e: string) => {
           const ep = host.ctx.graph.getEdgeAttributes(e);
+          // F1: a HAS_SESSION edge that's been marked dead does NOT count
+          // as obtaining the objective. Other access edges (ADMIN_TO,
+          // OWNS_CRED, custom achievement_edge_types) are unaffected.
+          if (ep.type === 'HAS_SESSION' && !isLiveSessionEdge(ep)) return false;
           if (ep.type !== 'OWNS_CRED') {
             return accessEdgeTypes.has(ep.type) && ep.confidence >= 0.9;
           }

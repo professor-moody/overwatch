@@ -8,6 +8,7 @@ import { dijkstra } from 'graphology-shortest-path';
 import { createDirectedSimpleGraph } from './graphology-types.js';
 import type { EngineContext, OverwatchGraph } from './engine-context.js';
 import type { EdgeProperties, EdgeType, GraphQuery, GraphQueryResult } from '../types.js';
+import { isLiveSessionEdge } from './session-edge-utils.js';
 
 type PathEdgeAttrs = { weight: number };
 
@@ -46,6 +47,13 @@ export class PathAnalyzer {
 
     // Copy edges with directionality semantics
     this.ctx.graph.forEachEdge((_edgeId: string, attrs, source: string, target: string) => {
+      // F1: HAS_SESSION edges marked dead by session-tracker (closed shell,
+      // restart, watchdog timeout) MUST NOT contribute to path
+      // reachability — the shell isn't there anymore. Dead edges remain
+      // in the graph for reporting/retrospectives but the path graph is
+      // a "live reachability" view.
+      if (attrs.type === 'HAS_SESSION' && !isLiveSessionEdge(attrs)) return;
+
       const weight = this.computeEdgeWeight(attrs, optimize);
 
       const fwdKey = `${source}--${attrs.type}--${target}`;
@@ -123,9 +131,12 @@ export class PathAnalyzer {
     const startNodes: string[] = [];
     this.ctx.graph.forEachNode((id: string, attrs) => {
       if (attrs.type === 'host') {
+        // F1: only LIVE sessions (or ADMIN_TO) qualify a host as a path
+        // start. A closed shell isn't a current beachhead.
         const hasAccess = this.ctx.graph.edges(id).some((e: string) => {
           const ep = this.ctx.graph.getEdgeAttributes(e);
-          return (ep.type === 'HAS_SESSION' || ep.type === 'ADMIN_TO') && ep.confidence >= 0.9;
+          if (ep.type === 'HAS_SESSION') return isLiveSessionEdge(ep) && ep.confidence >= 0.9;
+          return ep.type === 'ADMIN_TO' && ep.confidence >= 0.9;
         });
         if (hasAccess) startNodes.push(id);
       }

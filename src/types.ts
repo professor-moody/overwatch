@@ -568,6 +568,14 @@ export interface FrontierItem {
     hops_to_objective: number | null;
     fan_out_estimate: number;
     node_degree: number;
+    /**
+     * Per-item priority/score. Despite the historical name, this is NOT a
+     * probability bounded to [0,1] — it's a multiplier composed of edge
+     * confidence × credential weight × KB success-rate boost × chain
+     * boost, so values can legitimately exceed 1.0 when knowledge-base
+     * hit-rates or attack-chain heuristics promote an item. Treat it as
+     * a relative ordering signal, not a calibrated probability.
+     */
     confidence: number;
   };
   opsec_noise: number;

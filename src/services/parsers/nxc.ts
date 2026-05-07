@@ -17,13 +17,13 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
   // Track whether we're inside a user enumeration table for a given IP
   let userTableIp: string | undefined;
 
-  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number, extra?: Record<string, unknown>): void {
     const edgeKey = `${source}--${type}--${target}`;
     if (seenEdges.has(edgeKey)) return;
     edges.push({
       source,
       target,
-      properties: { type, confidence, discovered_at: now, discovered_by: agentId },
+      properties: { type, confidence, discovered_at: now, discovered_by: agentId, ...(extra ?? {}) },
     });
     seenEdges.add(edgeKey);
   }
@@ -220,7 +220,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
           if (username && username !== '') {
             addUserNode(username, credDomain);
             const resolvedUserId = userId(username, credDomain);
-            addEdgeOnce(resolvedUserId, resolvedHostId, 'VALID_ON', 0.9);
+            addEdgeOnce(resolvedUserId, resolvedHostId, 'VALID_ON', 0.9, { tested_service: 'smb' });
 
             // Determine credential material. NTLM hashes are exactly 32 hex
             // chars; anything else captured here is treated as plaintext.
@@ -246,12 +246,15 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
               seenNodes.add(credNodeId);
             }
             addEdgeOnce(resolvedUserId, credNodeId, 'OWNS_CRED', secret ? 1.0 : 0.6);
-            addEdgeOnce(credNodeId, resolvedHostId, 'VALID_ON', secret ? 1.0 : 0.7);
+            addEdgeOnce(credNodeId, resolvedHostId, 'VALID_ON', secret ? 1.0 : 0.7, { tested_service: 'smb' });
           }
         }
       }
 
-      // Failed auth (- status) — record for spray coverage and lockout tracking
+      // Failed auth (- status) — record for spray coverage and lockout
+      // tracking. F2: stamp `tested_service` on the edge so credential
+      // coverage can attribute the test to the SMB service rather than
+      // marking the entire host covered for SSH/RDP/WinRM/etc.
       if (status === '-') {
         const credMatch = message.match(/([^\\]+)\\([^\s:]+)/);
         if (credMatch) {
@@ -259,7 +262,7 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
           const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
           if (username && username !== '') {
             addUserNode(username, credDomain);
-            addEdgeOnce(userId(username, credDomain), resolvedHostId, 'TESTED_CRED', 0.0);
+            addEdgeOnce(userId(username, credDomain), resolvedHostId, 'TESTED_CRED', 0.0, { tested_service: 'smb' });
           }
         }
       }

@@ -352,17 +352,38 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
   const lines = [
     '## Key Principles',
     '',
-    '- **The graph is your memory.** After compaction, `get_state()` reconstructs everything.',
+    '- **The graph is your memory.** After compaction, `get_state()` reconstructs everything. The default invocation is now genuinely read-only — pass `{ snapshot: true }` at session bootstrap or when you want the call to also persist a state snapshot for retrospective fidelity.',
     '- **Report early, report often.** Every `report_finding()` call triggers inference rules.',
     '- **Use structured action logging.** `validate_action()` → `log_action_event()` for causal linkage.',
-    '- **Thread `frontier_item_id` through every call.** Pass it to `validate_action`, `log_action_event`, `parse_output`, and `report_finding`. Without it, retrospective attribution falls back to text heuristics. The `validate_action` response now returns `frontier_item_id` and `frontier_type` for easy reference.',
-    '- **The deterministic layer is a guardrail, not a brain.** You do the offensive thinking.',
-    '- **Validate before you execute.** Every significant action goes through `validate_action()` first.',
+    '- **Thread `frontier_item_id` through every call.** Pass it to `validate_action`, `log_action_event`, `parse_output`, and `report_finding`. Without it, retrospective attribution falls back to text heuristics. The `validate_action` response returns `frontier_item_id` and `frontier_type` for easy reference.',
+    '- **The deterministic layer is a guardrail, not a brain.** You do the offensive thinking. The `graph_metrics.confidence` field on a frontier item is a **score multiplier**, not a probability — KB and chain boosts can push it >1.0 to signal items the planner promotes. Treat it as relative ordering, not calibrated confidence.',
+    '- **Validate before you execute.** Every significant action goes through `validate_action()` first. If `opsec_skipped: true` is returned, OPSEC enforcement is disabled for this engagement — your scope checks ran but blacklist/noise/time-window did not.',
     '- **Use `query_graph()` liberally.** The graph may contain patterns the frontier doesn\'t surface.',
+    '',
+    '### Sessions (interactive shells / sockets)',
+    '',
+    '- **Always pass `default_validation` to `open_session`** for SSH/socket-connect sessions: `{ technique, target_ip?, target_url?, allow_unverified_scope? }`. Every subsequent `send_to_session` inherits it and runs the full action lifecycle (validate → action_started → evidence → action_completed). Without it, sends require a per-call `technique`.',
+    '- **`send_to_session` is the instrumented send.** It validates scope, persists captured output as evidence, and emits action_started/completed. Use `write_session` only for partial I/O (password prompts, REPL navigation) where lifecycle overhead is wrong.',
+    '- **A closed session is dead.** Once a shell exits or the watchdog reaps the session, that `HAS_SESSION` edge is marked `session_live: false`. Frontier, path reachability, and objective achievement now ignore dead sessions. If you want to reach a host through a previous compromise, confirm the session is still live (or open a new one).',
+    '- **Long-running sub-agents must call `agent_heartbeat({ task_id })` periodically.** Otherwise the watchdog interrupts the task and releases its frontier lease.',
+    '',
+    '### Visibility & audit',
+    '',
+    '- **`get_decision_log` / `get_timeline` / `explain_action`** are read-only views derived from the activity log. Use them when you need to answer "why did I take action X?", "what was true at time T?", or "what did the planner suggest before I overrode it?" — they\'re the human-facing audit surface.',
+    '- **Engagements with `engagement_nonce` are deterministic and replayable.** Action IDs (`act_<sha256>…`) and event IDs are derived from the nonce + agent + sequence + command, not random. Evidence blobs are content-addressed by sha256 — identical scanner output dedups automatically. State is journaled (WAL) and survives mid-mutation crashes.',
+    '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`.',
+    '',
+    '### Scope guardrails',
+    '',
+    '- If you invoke a network-capable binary (`curl`, `ssh`, `nc`, `openssl`, …) without `target_url`/`target_ip` AND a non-target-facing technique label (`note`, `research`), the runner now fails closed when argv contains a URL/IP/hostname. Pass scope explicitly or set `allow_unverified_scope: true` if the tokens are intentional non-target references.',
   ];
 
   if (config.opsec && config.opsec.enabled) {
     lines.push(`- **Respect OPSEC.** Profile: ${config.opsec.name}. Max noise: ${config.opsec.max_noise}. Factor noise levels into your decisions.`);
+  } else if (config.opsec && (config.opsec.max_noise !== undefined || (config.opsec.blacklisted_techniques?.length ?? 0) > 0)) {
+    // Phase B: tell the model OPSEC is configured but inert so it doesn't
+    // assume the configured ceiling is being enforced.
+    lines.push('- **OPSEC enforcement is DISABLED for this engagement.** The configured noise ceiling, blacklist, and time window are visible in the config but inert — `validate_action` returns `opsec_skipped: true`. Set `opsec.enabled: true` on the engagement config to enforce.');
   }
 
   return lines.join('\n');

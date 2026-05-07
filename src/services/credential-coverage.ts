@@ -174,17 +174,27 @@ export class CredentialCoverageTracker {
       if (!isCredentialUsableForAuth(attrs)) return;
       if (isCredentialStaleOrExpired(attrs)) return;
 
-      // Find the owning user to get domain info
+      // Find the owning user to get domain info. F3: parsers populate
+      // `domain_name` on user nodes (sometimes legacy `domain`); credentials
+      // separately carry `cred_domain`. Read all three so the same-domain
+      // boost actually fires on real ingests instead of always falling
+      // through to the cross-domain skip.
       let domain: string | undefined;
       let ownerId: string | undefined;
       for (const edge of this.ctx.graph.inEdges(id) as string[]) {
         const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
         if (eAttrs.type === 'OWNS_CRED') {
           const owner = this.ctx.graph.getNodeAttributes(this.ctx.graph.source(edge));
-          domain = owner.domain as string | undefined;
+          domain = (owner.domain_name as string | undefined) ?? (owner.domain as string | undefined);
           ownerId = this.ctx.graph.source(edge);
           break;
         }
+      }
+      // F3: when no owner edge exists, fall back to the credential's own
+      // `cred_domain` (set by every Kerberos/NTLM parser) so domain
+      // filtering still works for orphaned credentials.
+      if (!domain) {
+        domain = (attrs.cred_domain as string | undefined);
       }
 
       creds.push({
@@ -202,41 +212,51 @@ export class CredentialCoverageTracker {
   private collectAuthTargets(): Array<{
     id: string;
     label: string;
+    host_id: string;
     service_name?: string;
     domain?: string;
   }> {
-    const targets: Array<{ id: string; label: string; service_name?: string; domain?: string }> = [];
+    // F2: coverage is now per-(host, service), not per-host. Previously
+    // collectAuthTargets picked one bestService per host and deduped on
+    // host id, so testing one credential against SMB silently marked the
+    // host fully covered for SSH/RDP/WinRM. Each AUTH_SERVICES entry on a
+    // host is now its own target; the outer iteration in `compute` then
+    // produces (cred, service) pairs.
+    const targets: Array<{ id: string; label: string; host_id: string; service_name?: string; domain?: string }> = [];
     const seen = new Set<string>();
 
     this.ctx.graph.forEachNode((id: string, attrs) => {
       if (attrs.identity_status === 'superseded') return;
 
       if (attrs.type === 'host' && attrs.alive !== false) {
-        // Check if host runs any auth-accepting service
-        let bestService: string | undefined;
-        let bestWeight = -1;
+        // F3: parsers populate `domain_name`; legacy ingests may still
+        // carry `domain`. Read both so the same-domain boost fires.
+        const hostDomain = (attrs.domain_name as string | undefined) ?? (attrs.domain as string | undefined);
+        const hostLabel = attrs.label || attrs.hostname || id;
+
+        // Walk every RUNS edge and create one target per auth-accepting
+        // service. The target id is the service node id, so the
+        // `(cred, target)` keying in buildTestedSet preserves service
+        // granularity. Hosts with no auth-accepting services are not
+        // coverage targets — there's nothing to test against.
         for (const edge of this.ctx.graph.outEdges(id) as string[]) {
           const eAttrs = this.ctx.graph.getEdgeAttributes(edge);
           if (eAttrs.type !== 'RUNS') continue;
-          const svcNode = this.ctx.graph.getNodeAttributes(this.ctx.graph.target(edge));
+          const svcId = this.ctx.graph.target(edge);
+          const svcNode = this.ctx.graph.getNodeAttributes(svcId);
           const svcName = svcNode.service_name as string | undefined;
           if (svcName && AUTH_SERVICES.has(svcName)) {
-            const w = SERVICE_WEIGHT[svcName] ?? 0.5;
-            if (w > bestWeight) {
-              bestWeight = w;
-              bestService = svcName;
-            }
+            const targetId = svcId;
+            if (seen.has(targetId)) continue;
+            seen.add(targetId);
+            targets.push({
+              id: targetId,
+              label: hostLabel,
+              host_id: id,
+              service_name: svcName,
+              domain: hostDomain,
+            });
           }
-        }
-
-        if (bestService && !seen.has(id)) {
-          seen.add(id);
-          targets.push({
-            id,
-            label: attrs.label || attrs.hostname || id,
-            service_name: bestService,
-            domain: attrs.domain as string | undefined,
-          });
         }
       }
     });
@@ -250,23 +270,58 @@ export class CredentialCoverageTracker {
     // Edge types that indicate a credential was tested against a target
     const TESTED_EDGE_TYPES = new Set(['TESTED_CRED', 'VALID_ON', 'HAS_SESSION', 'ADMIN_TO']);
 
+    // F2: record `(cred, edge_target)` directly so per-service granularity
+    // is preserved. When the edge points at a service, ALSO record a
+    // host-level fallback so per-host targets (used when a host has no
+    // RUNS edges in the graph) still register as tested. This avoids the
+    // bug where one cred-vs-SMB test silently marked the entire host
+    // covered for SSH/RDP/WinRM.
     this.ctx.graph.forEachEdge((_edgeId: string, attrs, source: string, target: string) => {
       if (!TESTED_EDGE_TYPES.has(attrs.type)) return;
 
       const srcNode = this.ctx.graph.getNodeAttributes(source);
       const tgtNode = this.ctx.graph.getNodeAttributes(target);
 
-      if (srcNode.type === 'credential' && (tgtNode.type === 'host' || tgtNode.type === 'service')) {
-        // Direct: credential → host/service
-        const hostId = tgtNode.type === 'service' ? this.findHostForService(target) : target;
-        if (hostId) tested.add(`${source}::${hostId}`);
-      } else if (srcNode.type === 'user' && (tgtNode.type === 'host' || tgtNode.type === 'service')) {
-        // Indirect: user → host, resolve user's credentials
-        const credIds = this.getCredentialsForUser(source);
-        const hostId = tgtNode.type === 'service' ? this.findHostForService(target) : target;
-        if (hostId) {
+      const credIds: string[] =
+        srcNode.type === 'credential'
+          ? [source]
+          : srcNode.type === 'user'
+            ? this.getCredentialsForUser(source)
+            : [];
+      if (credIds.length === 0) return;
+
+      if (tgtNode.type === 'service') {
+        // Service-targeted edge: record (cred, service) only. Other
+        // services on the same host stay untested — that's the F2
+        // intent. Also record (cred, host) so host-level frontier
+        // suggestions still see the test.
+        const hostId = this.findHostForService(target);
+        for (const credId of credIds) {
+          tested.add(`${credId}::${target}`);
+          if (hostId) tested.add(`${credId}::${hostId}`);
+        }
+      } else if (tgtNode.type === 'host') {
+        // Host-targeted edge: parsers like nxc emit cred→host edges with
+        // a `tested_service` hint that names which protocol the test ran
+        // against. When the hint is present, mark only that service's
+        // pair tested. Without the hint, the parser doesn't tell us
+        // which service was tested — fall back to host-rollup (mark all
+        // services on the host) so legacy emissions don't flood the
+        // frontier with retests. Real F2 granularity activates once the
+        // parser populates the hint.
+        const hint = (attrs as { tested_service?: string }).tested_service;
+        for (const credId of credIds) {
+          tested.add(`${credId}::${target}`);
+        }
+        for (const e of this.ctx.graph.outEdges(target) as string[]) {
+          const ea = this.ctx.graph.getEdgeAttributes(e);
+          if (ea.type !== 'RUNS') continue;
+          const svcId = this.ctx.graph.target(e);
+          const svcAttrs = this.ctx.graph.getNodeAttributes(svcId);
+          const svcName = svcAttrs.service_name as string | undefined;
+          if (hint && svcName !== hint) continue;
           for (const credId of credIds) {
-            tested.add(`${credId}::${hostId}`);
+            tested.add(`${credId}::${svcId}`);
           }
         }
       }

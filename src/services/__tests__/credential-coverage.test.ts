@@ -256,10 +256,13 @@ describe('CredentialCoverageTracker', () => {
       const { tracker } = buildTracker(graph);
       const items = tracker.computeFrontierItems();
 
+      // F2: credential_test frontier items now point at the SERVICE node,
+      // not the host. A host running SMB+SSH yields two coverage targets
+      // and two frontier items, one per service.
       expect(items.length).toBe(1);
       expect(items[0].type).toBe('credential_test');
       expect(items[0].credential_id).toBe('cred-1');
-      expect(items[0].node_id).toBe('host-1');
+      expect(items[0].node_id).toBe('svc-1');
       expect(items[0].description).toContain('jdoe');
       expect(items[0].description).toContain('smb');
     });
@@ -302,7 +305,83 @@ describe('CredentialCoverageTracker', () => {
       const credTests = items.filter(i => i.type === 'credential_test');
       expect(credTests.length).toBeGreaterThanOrEqual(1);
       expect(credTests[0].credential_id).toBe('cred-1');
-      expect(credTests[0].node_id).toBe('host-1');
+      // F2: target is the service node, not the host.
+      expect(credTests[0].node_id).toBe('svc-1');
+    });
+
+    // F2: testing one credential against SMB on a host that also runs
+    // SSH must NOT mark the SSH pair tested. Each service is its own
+    // coverage target.
+    it('keeps SSH pair untested when only SMB was tested (F2 per-service granularity)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true });
+      addNode(graph, 'host-1', { type: 'host', alive: true, ip: '10.10.10.5' });
+      addNode(graph, 'svc-smb', { type: 'service', service_name: 'smb', port: 445 });
+      addNode(graph, 'svc-ssh', { type: 'service', service_name: 'ssh', port: 22 });
+      addEdge(graph, 'host-1', 'svc-smb', 'RUNS');
+      addEdge(graph, 'host-1', 'svc-ssh', 'RUNS');
+      // Test against SMB only.
+      addEdge(graph, 'cred-1', 'svc-smb', 'TESTED_CRED');
+
+      const { tracker } = buildTracker(graph);
+      const result = tracker.compute();
+
+      expect(result.total_targets).toBe(2);
+      expect(result.tested_pairs).toBe(1);
+      const untestedTargets = result.top_untested.map(p => p.service);
+      expect(untestedTargets).toContain('ssh');
+      expect(untestedTargets).not.toContain('smb');
+    });
+
+    // F2: when a host-targeted edge carries `tested_service: 'smb'` (the
+    // hint nxc now stamps), only the SMB pair is tested — SSH/RDP/etc.
+    // remain in the untested list. Without the hint we fall back to
+    // host-rollup for backwards compatibility.
+    it('honors tested_service hint on host-level TESTED_CRED edges (F2)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', username: 'jdoe' });
+      addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true });
+      addEdge(graph, 'user-1', 'cred-1', 'OWNS_CRED');
+      addNode(graph, 'host-1', { type: 'host', alive: true, ip: '10.10.10.5' });
+      addNode(graph, 'svc-smb', { type: 'service', service_name: 'smb', port: 445 });
+      addNode(graph, 'svc-ssh', { type: 'service', service_name: 'ssh', port: 22 });
+      addEdge(graph, 'host-1', 'svc-smb', 'RUNS');
+      addEdge(graph, 'host-1', 'svc-ssh', 'RUNS');
+      // Host-level TESTED_CRED with hint — should mark only SMB tested.
+      addEdge(graph, 'user-1', 'host-1', 'TESTED_CRED', { tested_service: 'smb' });
+
+      const { tracker } = buildTracker(graph);
+      const result = tracker.compute();
+
+      expect(result.tested_pairs).toBe(1);
+      const untestedServices = result.top_untested.map(p => p.service);
+      expect(untestedServices).toEqual(['ssh']);
+    });
+
+    // F3: parsers populate `domain_name` (not `domain`). Coverage now
+    // reads both, so the same-domain boost actually applies on real
+    // ingests, and cross-domain pairs are correctly skipped.
+    it('honors domain_name on hosts and cred_domain on credentials (F3)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-a', { type: 'user', username: 'jdoe', domain_name: 'acme.local' });
+      addNode(graph, 'cred-a', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true, cred_domain: 'acme.local' });
+      addEdge(graph, 'user-a', 'cred-a', 'OWNS_CRED');
+      addNode(graph, 'host-acme', { type: 'host', alive: true, ip: '10.10.10.5', domain_name: 'acme.local' });
+      addNode(graph, 'svc-smb-a', { type: 'service', service_name: 'smb', port: 445 });
+      addEdge(graph, 'host-acme', 'svc-smb-a', 'RUNS');
+      // Different-domain host: cred should be filtered out (cross-domain noise).
+      addNode(graph, 'host-other', { type: 'host', alive: true, ip: '10.20.20.5', domain_name: 'other.local' });
+      addNode(graph, 'svc-smb-o', { type: 'service', service_name: 'smb', port: 445 });
+      addEdge(graph, 'host-other', 'svc-smb-o', 'RUNS');
+
+      const { tracker } = buildTracker(graph);
+      const result = tracker.compute();
+
+      // Only the same-domain pair should be in the untested list.
+      expect(result.total_targets).toBe(2);
+      const untestedTargetIds = result.untested_pairs.map(p => p.target_id);
+      expect(untestedTargetIds).toContain('svc-smb-a');
+      expect(untestedTargetIds).not.toContain('svc-smb-o');
     });
 
     it('does not duplicate credential_test when inferred_edge already exists for same pair', () => {

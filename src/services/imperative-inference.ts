@@ -8,6 +8,7 @@ import type { EngineContext, ActivityLogEntry } from './engine-context.js';
 import type { NodeProperties, EdgeProperties, NodeType } from '../types.js';
 import { isIpInCidr } from './cidr.js';
 import { isCredentialStaleOrExpired } from './credential-utils.js';
+import { isLiveSessionEdge } from './session-edge-utils.js';
 
 export interface ImperativeInferenceHost {
   ctx: EngineContext;
@@ -37,10 +38,12 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
   const hostNode = host.getNode(triggerHostId);
   if (!hostNode || hostNode.type !== 'host' || !hostNode.ip) return { edges: inferred, promotedNodeIds };
 
+  // F1: pivot reachability requires a LIVE session — a closed shell on
+  // the trigger host can't reach the peer subnet anymore.
   const sessionHolders: string[] = [];
   for (const edge of host.ctx.graph.inEdges(triggerHostId) as string[]) {
     const attrs = host.ctx.graph.getEdgeAttributes(edge);
-    if (attrs.type === 'HAS_SESSION' && attrs.confidence >= 0.7) {
+    if (isLiveSessionEdge(attrs) && attrs.confidence >= 0.7) {
       sessionHolders.push(host.ctx.graph.source(edge));
     }
   }

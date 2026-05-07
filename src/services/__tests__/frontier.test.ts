@@ -424,7 +424,11 @@ describe('FrontierComputer', () => {
   // KB-informed scoring
   // =============================================
   describe('KB-informed scoring', () => {
-    it('adjusts inferred edge confidence using KB success rate', () => {
+    it('boosts the frontier score for inferred edges with high KB success rate', () => {
+      // Note on naming: graph_metrics.confidence is a relative *score*
+      // composed of edge confidence × KB boost × chain boost, NOT a
+      // probability. Values > 1.0 are expected and intentional — they
+      // mark items the planner should weight above the baseline.
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user' });
       addNode(graph, 'host-dc', { type: 'host', ip: '10.10.10.1', alive: true, os: 'Windows Server 2019' });
@@ -442,7 +446,9 @@ describe('FrontierComputer', () => {
 
       const dcSync = items.find(i => i.type === 'inferred_edge' && i.edge_type === 'CAN_DCSYNC');
       expect(dcSync).toBeDefined();
-      // KB success 67% → boost = 1 + (0.67-0.5)*0.4 ≈ 1.068
+      // KB success 67% → boost = 1 + (0.67-0.5)*0.4 ≈ 1.068. The score is a
+      // multiplier, not a probability, so >1.0 is the right signal that
+      // the KB promoted this item above its raw edge confidence.
       expect(dcSync!.graph_metrics.confidence).toBeGreaterThan(1.0);
       // Noise should come from KB avg_noise
       expect(dcSync!.opsec_noise).toBeCloseTo(0.8, 1);
