@@ -38,23 +38,36 @@ export function parseHashcat(output: string, agentId: string = 'hashcat-parser',
     let plaintext: string | undefined;
     let hashValue: string | undefined;
 
-    // Kerberoast: $krb5tgs$23$*user$REALM$spn*$...:plaintext
-    const krbMatch = line.match(/^(\$krb5tgs\$\d+\$\*([^$*]+)\$([^$*]+)\$[^:]+):(.+)$/);
-    if (krbMatch) {
-      hashValue = krbMatch[1];
-      username = krbMatch[2];
-      domain = krbMatch[3];
-      plaintext = krbMatch[4];
-    }
-
-    // AS-REP: $krb5asrep$23$user@REALM:...:plaintext
-    if (!plaintext) {
-      const asrepMatch = line.match(/^(\$krb5asrep\$\d+\$([^@:]+)@([^:]+)[^:]*):(.+)$/);
-      if (asrepMatch) {
-        hashValue = asrepMatch[1];
-        username = asrepMatch[2];
-        domain = asrepMatch[3];
-        plaintext = asrepMatch[4];
+    // Kerberoast & AS-REP both follow the hashcat potfile shape
+    //   <full hash string>:<plaintext>
+    // where the hash itself can carry internal colons (AS-REP separates
+    // user@REALM from CHECKSUM$ENCRYPTED with a `:`). Splitting on the
+    // FIRST colon after the realm therefore swallows part of the hash
+    // material into `plaintext`. Anchor on the LAST colon so the
+    // plaintext is exactly the cracked value.
+    if (line.startsWith('$krb5tgs$') || line.startsWith('$krb5asrep$')) {
+      const lastColon = line.lastIndexOf(':');
+      if (lastColon > 0) {
+        const hashStr = line.slice(0, lastColon);
+        const candidatePlain = line.slice(lastColon + 1);
+        // Kerberoast: $krb5tgs$<etype>$*user$REALM$spn*$<encrypted>
+        const krbMatch = hashStr.match(/^\$krb5tgs\$\d+\$\*([^$*]+)\$([^$*]+)\$[^*]+\*\$.+$/);
+        if (krbMatch) {
+          hashValue = hashStr;
+          username = krbMatch[1];
+          domain = krbMatch[2];
+          plaintext = candidatePlain;
+        }
+        // AS-REP: $krb5asrep$<etype>$user@REALM:CHECKSUM$ENCRYPTED
+        if (!plaintext) {
+          const asrepMatch = hashStr.match(/^\$krb5asrep\$\d+\$([^@:]+)@([^:]+):.+$/);
+          if (asrepMatch) {
+            hashValue = hashStr;
+            username = asrepMatch[1];
+            domain = asrepMatch[2];
+            plaintext = candidatePlain;
+          }
+        }
       }
     }
 

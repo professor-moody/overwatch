@@ -185,9 +185,13 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
           }
         }
 
-        // Track which templates this CA offers
-        const caTemplates = ca['Certificate Templates'] as string[] | undefined;
-        if (Array.isArray(caTemplates)) {
+        // Track which templates this CA offers. parseStringArray accepts
+        // both array and single-string shapes; a comma/semicolon-separated
+        // string is split. Without this, a stringified template list would
+        // silently leave the CA→template map empty and ISSUED_BY edges
+        // would never be created.
+        const caTemplates = parseStringArray(ca['Certificate Templates']);
+        if (caTemplates && caTemplates.length > 0) {
           caTemplateMap.set(caNodeId, caTemplates);
         }
       }
@@ -247,9 +251,17 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
           }
         }
 
-        // CAN_ENROLL: create for all enrollment rights (not gated by vulnerabilities)
+        // CAN_ENROLL: create for all enrollment rights (not gated by vulnerabilities).
+        //
+        // `Enrollment Rights` can arrive as either an array (typical Certipy
+        // JSON) or a single string (when a JSON post-processor flattens a
+        // 1-element list, or when a downstream tool emits comma-separated
+        // text). Casting to `string[]` blindly turned the latter into a
+        // for-of over individual characters, fabricating one bogus principal
+        // node per letter. parseStringArray handles both shapes the same
+        // way it does for `Extended Key Usage` above.
         const enrollPerms = tmpl['Enrollment Permissions'] as Record<string, unknown> | undefined;
-        const enrollRights = enrollPerms?.['Enrollment Rights'] as string[] | undefined;
+        const enrollRights = parseStringArray(enrollPerms?.['Enrollment Rights']);
         if (enrollRights) {
           for (const principal of enrollRights) {
             const principalIdentity = classifyPrincipalIdentity(principal);

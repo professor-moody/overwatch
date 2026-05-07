@@ -665,6 +665,51 @@ describe('Output Parsers', () => {
       expect(templates.some(t => t.id === 'cert-template-vulntemplate')).toBe(true);
     });
 
+    // F5: `Enrollment Rights` can arrive as a string (JSON post-processor
+    // collapsing a single-element list, or downstream tool emitting a
+    // comma-separated list). The previous code cast directly to string[],
+    // so iterating yielded characters: `for (const x of "ACME\\Domain Users")`
+    // produced bogus principal nodes for `A`, `C`, `M`, etc.
+    it('treats string-shaped Enrollment Rights as a single principal (F5)', () => {
+      const data = {
+        'Certificate Templates': {
+          'UserTemplate': {
+            'Enrollee Supplies Subject': true,
+            'Client Authentication': true,
+            'Extended Key Usage': ['Client Authentication'],
+            'Enrollment Permissions': {
+              'Enrollment Rights': 'ACME\\Domain Users',  // <-- string, not array
+            },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      // Exactly one principal — not 16 single-character bogus principals.
+      expect(groups.length).toBe(1);
+      expect(groups[0].id).toBe('group-acme-domain-users');
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBe(1);
+    });
+
+    it('treats comma-separated string Enrollment Rights as multiple principals (F5)', () => {
+      const data = {
+        'Certificate Templates': {
+          'UserTemplate': {
+            'Enrollee Supplies Subject': true,
+            'Client Authentication': true,
+            'Extended Key Usage': ['Client Authentication'],
+            'Enrollment Permissions': {
+              'Enrollment Rights': 'ACME\\Domain Users, ACME\\Authenticated Users',
+            },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const groups = finding.nodes.filter(n => n.type === 'group');
+      expect(groups.length).toBe(2);
+    });
+
     it('handles empty JSON', () => {
       const finding = parseCertipy('{}');
       expect(finding.nodes.length).toBe(0);
@@ -1337,6 +1382,25 @@ describe('Output Parsers', () => {
       const finding = parseHashcat('');
       expect(finding.nodes.length).toBe(0);
       expect(finding.edges.length).toBe(0);
+    });
+
+    // F1: hashcat potfile entries for AS-REP have the shape
+    //   $krb5asrep$23$user@REALM:CHECKSUM$ENCRYPTED:plaintext
+    // The hash itself contains ONE colon (between REALM and the
+    // CHECKSUM/ENCRYPTED segment), so splitting on the FIRST colon after
+    // the realm leaks part of the hash into cred_value. The fix is to
+    // anchor on the LAST colon instead.
+    it('extracts AS-REP cracked plaintext correctly (F1: split on LAST colon)', () => {
+      const sample = '$krb5asrep$23$jdoe@ACME.LOCAL:a1b2c3d4e5f6$0011223344556677:Winter2026!';
+      const finding = parseHashcat(sample);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect(creds[0].cred_value).toBe('Winter2026!');
+      expect(creds[0].cred_user).toBe('jdoe');
+      expect(creds[0].cred_domain).toBe('ACME.LOCAL');
+      // The original hash material is preserved on the credential.
+      expect(creds[0].cred_hash).toContain('$krb5asrep$23$');
+      expect(creds[0].cred_hash).toContain('a1b2c3d4e5f6$0011223344556677');
     });
 
     it('uses context.domain for plain NTLM hashes without domain', () => {

@@ -231,5 +231,86 @@ describe('Impacket Suite Parsers', () => {
       const hosts = finding.nodes.filter(n => n.type === 'host');
       expect(hosts).toHaveLength(1);
     });
+
+    // F2: Opening SVCManager is a pre-execution step. If service creation
+    // then fails with STATUS_ACCESS_DENIED, the parser must NOT emit a
+    // HAS_SESSION edge. Previously EXEC_SUCCESS matched on `Opening
+    // SVCManager` alone, so the failure was swallowed and a bogus session
+    // appeared in the graph.
+    it('does NOT emit HAS_SESSION when SVCManager opens but service creation fails (F2)', () => {
+      const output = [
+        'Impacket v0.12.0 - ACME/lowpriv@10.10.10.5',
+        '[*] Requesting shares on 10.10.10.5.....',
+        '[*] Found writable share ADMIN$',
+        '[*] Opening SVCManager on 10.10.10.5.....',
+        '[-] SMB SessionError: code: 0xc0000022 - STATUS_ACCESS_DENIED',
+      ].join('\n');
+      const finding = parsePsexec(output, 'test', { source_host: '10.10.10.5', domain: 'acme.local' });
+      expect(finding.nodes).toHaveLength(0);
+      expect(finding.edges).toHaveLength(0);
+    });
+
+    it('does NOT emit HAS_SESSION on STATUS_LOGON_FAILURE (F2)', () => {
+      const output = [
+        'Impacket v0.12.0 - ACME/typo@10.10.10.5',
+        '[*] Requesting shares on 10.10.10.5.....',
+        '[-] STATUS_LOGON_FAILURE',
+      ].join('\n');
+      const finding = parsePsexec(output, 'test', { source_host: '10.10.10.5', domain: 'acme.local' });
+      expect(finding.nodes).toHaveLength(0);
+      expect(finding.edges).toHaveLength(0);
+    });
+  });
+
+  // F3: ccache filenames with dotted usernames (john.smith.ccache) used
+  // to be parsed via `([^.]+)\.ccache$` which captures only the last
+  // dot-delimited segment, attributing the TGT to `smith` instead of
+  // `john.smith`. The fix anchors on `(.+?)\.ccache$`.
+  describe('parseGetTGT — ccache filename parsing (F3)', () => {
+    it('captures dotted usernames in full', () => {
+      const output = [
+        'Impacket v0.12.0 - ACME/john.smith@dc01.acme.local',
+        '[*] Saving ticket in john.smith.ccache',
+      ].join('\n');
+      const finding = parseGetTGT(output, 'test', { domain: 'acme.local' });
+      const cred = finding.nodes.find(n => n.type === 'credential');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_user).toBe('john.smith');
+      expect(cred!.label).toBe('TGT:john.smith');
+    });
+
+    it('still handles domain/user.ccache layout', () => {
+      const output = [
+        '[*] Saving ticket in acme.local/admin.user.ccache',
+      ].join('\n');
+      const finding = parseGetTGT(output, 'test');
+      const cred = finding.nodes.find(n => n.type === 'credential');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_user).toBe('admin.user');
+      expect(cred!.cred_domain).toBe('acme.local');
+    });
+  });
+
+  // F4: Kerberos AS-REP / Kerberoast hashes used to capture etype as
+  // `\d+` (no group) and reconstruct as `$23$`, silently rewriting
+  // etype 17/18 hashes. The fix captures the etype and reuses it.
+  describe('Kerberos etype preservation (F4)', () => {
+    it('preserves etype 18 in AS-REP reconstruction', () => {
+      const output = '$krb5asrep$18$svc-1@ACME.LOCAL:abc123$ffeeddccbbaa00112233';
+      const finding = parseGetNPUsers(output, 'test', { domain: 'acme.local' });
+      const cred = finding.nodes.find(n => n.type === 'credential');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_value).toContain('$krb5asrep$18$');
+      expect(cred!.cred_value).not.toContain('$krb5asrep$23$');
+    });
+
+    it('preserves etype 17 in Kerberoast reconstruction', () => {
+      const output = '$krb5tgs$17$*svc-sql$ACME.LOCAL$MSSQLSvc/sql.acme.local:1433*$abc$ffeedd';
+      const finding = parseGetUserSPNs(output, 'test', { domain: 'acme.local' });
+      const cred = finding.nodes.find(n => n.type === 'credential');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_value).toContain('$krb5tgs$17$');
+      expect(cred!.cred_value).not.toContain('$krb5tgs$23$');
+    });
   });
 });
