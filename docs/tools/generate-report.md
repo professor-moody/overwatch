@@ -13,6 +13,7 @@ Generate a comprehensive penetration test report from the engagement graph and a
 | `write_to_disk` | boolean | `false` | Save report file(s) to `output_dir` |
 | `output_dir` | string | `"./reports/"` | Directory for output files |
 | `theme` | `"light"` \| `"dark"` | `"light"` | Theme for HTML output |
+| `client_safe` | boolean | `false` | **Phase I**: produce a client-deliverable variant. Strips `cred_value`, `raw_output`, stdout/stderr previews, and operator-machine paths. Disk artifacts get a `.client-safe.<ext>` suffix. See [Client-safe exports](#client-safe-exports). |
 
 ## Output
 
@@ -104,8 +105,34 @@ When operators supply `evidence` or `raw_output` via `report_finding`, the conte
 - **evidence_filename** — shown as attachment metadata
 - **raw_output** — rendered in a collapsible `<details>` block (truncated to 2 KB / 30 lines)
 
+## Client-safe exports
+
+The default report is operator-internal: it includes captured stdout, credential values, NTLM/LM hashes, and absolute filesystem paths so the operator can reason about the engagement and debug findings. None of those are appropriate in a client-deliverable.
+
+`client_safe: true` produces a redacted variant in the same call. The redaction pipeline:
+
+| Field | Operator default | Client-safe |
+|-------|------------------|-------------|
+| `cred_value` (passwords, tokens, hashes) | full plaintext | `<redacted: <type>, sha256:<12hex>…>` so duplicate references can still be cross-correlated without leaking the secret |
+| `raw_output` / `evidence_content` / `stdout_preview` / `stderr_preview` | full body | size-only summary plus `sha256:<16hex>…` for verifiability |
+| operator paths (`/Users/...`, `/home/...`, `C:\Users\...`) | rendered verbatim | replaced with `<operator-path>` |
+| markdown evidence fences (`Output:` / `Raw Output:` / `Evidence Content:`) | full content | replaced with `<redacted for client delivery — full evidence available in operator report>` |
+| every other field | unchanged | unchanged |
+
+Disk artifacts get a `.client-safe.<ext>` suffix so the two variants are visually distinct on disk:
+
+```
+./reports/<engagement-id>/report.md             ← operator default
+./reports/<engagement-id>/report.client-safe.md ← client deliverable
+```
+
+The default operator path is byte-identical to the previous behavior. Operators opt in per call; there is no engagement-level setting.
+
 ## Example
 
 ```
 generate_report({ format: "html", include_narrative: true, write_to_disk: true })
+
+// Same engagement, client-safe markdown:
+generate_report({ format: "markdown", write_to_disk: true, client_safe: true })
 ```

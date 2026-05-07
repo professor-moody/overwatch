@@ -7,9 +7,35 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SessionManager } from '../services/session-manager.js';
 import type { GraphEngine } from '../services/graph-engine.js';
+import type { SessionDefaultValidation } from '../types.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { isHostInScope as isScopedHostInScope, isIPv6 } from '../services/cidr.js';
+import { isHostInScope as isScopedHostInScope, isIPv6, isIPv4 } from '../services/cidr.js';
 import { registerMockServiceCore } from './operator-infra.js';
+import { actionIdOrUuid } from '../services/deterministic-id.js';
+
+const defaultValidationSchema = z.object({
+  technique: z.string().describe('Technique label applied to every send_to_session call (e.g. "lateral_movement", "post_exploit").'),
+  target_ip: z.string().optional().describe('Target IP or hostname for scope checks (defaults to session host when omitted).'),
+  target_url: z.string().optional().describe('Target URL for scope checks (web sessions).'),
+  target_node: z.string().optional().describe('Graph node ID this session targets.'),
+  allow_unverified_scope: z.boolean().optional().describe('Skip the fail-closed check for unverified host/service/share targets.'),
+  agent_id: z.string().optional().describe('Agent attributed to instrumented sends from this session.'),
+});
+
+/**
+ * Resolve the default target_ip for a session: use the explicit value if
+ * given, otherwise fall back to the session host (which may be an IPv4 or
+ * a hostname — `validateAction` accepts both).
+ */
+function deriveDefaultTarget(host: string | undefined, dv: SessionDefaultValidation): SessionDefaultValidation {
+  if (dv.target_ip || dv.target_url || dv.target_node) return dv;
+  if (!host) return dv;
+  // Hostnames and IPv4 both go through target_ip; isHostInScope handles both.
+  if (isIPv4(host) || !isIPv6(host)) {
+    return { ...dv, target_ip: host };
+  }
+  return dv;
+}
 
 function isRemoteScopedSession(kind: 'ssh' | 'local_pty' | 'socket', mode?: 'connect' | 'listen'): boolean {
   return kind === 'ssh' || (kind === 'socket' && mode !== 'listen');
@@ -65,6 +91,9 @@ The session is claimed by the opening agent — other agents can read but not wr
         ]).optional().describe('When opening a socket listener, auto-register this session as an operator-controlled mock_service of the given purpose. Adds a mock_service node + RUNS_ON/OPERATED_BY edges and stamps serves_mock_service_id back onto the session capabilities.'),
         mock_service_protocol: z.string().optional().describe('Wire protocol of the mock service (defaults to the socket protocol).'),
         mock_service_notes: z.string().optional(),
+        default_validation: defaultValidationSchema.optional().describe(
+          'Baseline scope/technique for the session. When set, every send_to_session inherits this and runs validateAction (per-call overrides apply). Highly recommended for SSH and remote sessions.',
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -152,6 +181,54 @@ The session is claimed by the opening agent — other agents can read but not wr
         }
       }
 
+      // Resolve effective default_validation. If an explicit one was passed,
+      // fill in target_ip from session host when omitted; otherwise synthesize
+      // a sensible default for remote-scoped sessions so every send is still
+      // instrumented (technique falls back to "session_command").
+      let defaultValidation: SessionDefaultValidation | undefined = params.default_validation
+        ? deriveDefaultTarget(params.host, { ...params.default_validation, agent_id: params.default_validation.agent_id ?? params.agent_id })
+        : undefined;
+      if (!defaultValidation && params.host && isRemoteScopedSession(params.kind, params.mode)) {
+        defaultValidation = deriveDefaultTarget(params.host, {
+          technique: 'session_command',
+          target_node: params.target_node,
+          agent_id: params.agent_id,
+        });
+      }
+
+      // If the operator declared a default_validation (or one was synthesized
+      // for a remote session), run validateAction once so technique-level
+      // OPSEC checks gate the open. The per-host scope check above already
+      // catches out-of-scope hosts; this picks up blacklisted techniques and
+      // similar policy denials when OPSEC is enabled.
+      if (defaultValidation) {
+        const v = engine.validateAction({
+          technique: defaultValidation.technique,
+          target_ip: defaultValidation.target_ip,
+          target_url: defaultValidation.target_url,
+          target_node: defaultValidation.target_node,
+          allow_unverified_scope: defaultValidation.allow_unverified_scope,
+        });
+        if (!v.valid) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Refusing to open session: validateAction denied (${v.errors.join('; ')})`,
+                host: params.host,
+                kind: params.kind,
+                technique: defaultValidation.technique,
+                validation_errors: v.errors,
+                validation_warnings: v.warnings,
+                scope_reason: 'default_validation_denied',
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+        if (v.warnings.length > 0) warnings.push(...v.warnings);
+      }
+
       const result = await sessionManager.create({
         kind: params.kind,
         title: params.title,
@@ -172,6 +249,7 @@ The session is claimed by the opening agent — other agents can read but not wr
         credential_node: params.credential_node,
         action_id: params.action_id,
         frontier_item_id: params.frontier_item_id,
+        default_validation: defaultValidation,
       });
 
       // Operator-infra integration: when a socket listener is opened with
@@ -297,22 +375,27 @@ truncated=true means the buffer wrapped past your requested from_pos.`,
   );
 
   // ============================================================
-  // Tool: send_to_session (experimental convenience)
+  // Tool: send_to_session (instrumented command execution)
   // ============================================================
   server.registerTool(
     'send_to_session',
     {
       title: 'Send Command to Session',
-      description: `[Experimental] Convenience wrapper: write command + wait for output to settle + return captured output.
+      description: `Run a command in a persistent session with full action-lifecycle instrumentation.
 
-Implemented on top of write_session + read_session. Uses idle timeout to detect when output has stopped.
-For password prompts, REPLs, partial input, or streaming tools (tail -f, tcpdump), use write_session + read_session directly.
+Each call:
+- runs validateAction against the merged metadata (per-call override > session default_validation),
+- emits action_started / action_completed (or action_failed) on the activity log,
+- persists the captured output window as evidence,
+- records OPSEC noise when an estimate is supplied or OPSEC enforcement is on.
+
+Sessions opened with default_validation inherit it on every send, so most calls only need (session_id, command). For partial input, password prompts, REPLs, or streaming tools (tail -f, tcpdump), use write_session + read_session — those are the lower-level primitives and intentionally bypass the lifecycle.
 
 idle_ms: return after this much silence (default 500ms)
 timeout_ms: max wait time (default 10s)
 wait_for: regex — return immediately when matched in output
 
-Result includes a completion_reason field:
+Result fields include action_id, evidence_id, validation_result, plus completion_reason:
 - 'wait_for'       — wait_for regex matched
 - 'idle'           — output went quiet for idle_ms
 - 'timeout'        — hit timeout_ms before settling (timed_out: true)
@@ -325,6 +408,13 @@ Result includes a completion_reason field:
         wait_for: z.string().optional().describe('Regex pattern — return immediately when matched'),
         agent_id: z.string().optional().describe('Agent performing the send'),
         force: z.boolean().default(false).describe('Override ownership check'),
+        // Per-call validation override (merged over session default_validation)
+        technique: z.string().optional().describe('Override technique for this command (defaults to session default_validation.technique).'),
+        target_ip: z.string().optional().describe('Override target IP/hostname for this command (defaults to session default_validation.target_ip or session host).'),
+        target_url: z.string().optional().describe('Override target URL for this command.'),
+        target_node: z.string().optional().describe('Override target node for this command.'),
+        allow_unverified_scope: z.boolean().optional().describe('Override allow_unverified_scope for this command.'),
+        noise_estimate: z.number().optional().describe('Per-command noise estimate (records OPSEC noise; enforced only when OPSEC is enabled).'),
       },
       annotations: {
         readOnlyHint: false,
@@ -333,19 +423,240 @@ Result includes a completion_reason field:
         openWorldHint: true,
       },
     },
-    withErrorBoundary('send_to_session', async ({ session_id, command, timeout_ms, idle_ms, wait_for, agent_id, force }) => {
-      const result = await sessionManager.sendCommand(session_id, command, {
-        timeout_ms,
-        idle_ms,
-        wait_for,
-        claimedBy: agent_id,
-        force,
+    withErrorBoundary('send_to_session', async (params) => {
+      const {
+        session_id, command, timeout_ms, idle_ms, wait_for, agent_id, force,
+        technique: callTechnique, target_ip: callTargetIp, target_url: callTargetUrl,
+        target_node: callTargetNode, allow_unverified_scope: callAllowUnverified,
+        noise_estimate,
+      } = params;
+
+      const session = sessionManager.getSession(session_id);
+      if (!session) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: `Session not found: ${session_id}`, session_id }, null, 2) }],
+          isError: true,
+        };
+      }
+
+      // Merge per-call override > session default. If neither yields a
+      // technique we cannot run an instrumented send — return a structured
+      // error rather than silently bypassing the lifecycle.
+      const sessionDefault = session.default_validation;
+      const technique = callTechnique ?? sessionDefault?.technique;
+      if (!technique) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'send_to_session requires a technique (set default_validation at open_session or pass technique on this call).',
+              session_id,
+              hint: 'For uninstrumented partial I/O (password prompts, REPL navigation), use write_session.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      const effective: SessionDefaultValidation = {
+        technique,
+        target_ip: callTargetIp ?? sessionDefault?.target_ip,
+        target_url: callTargetUrl ?? sessionDefault?.target_url,
+        target_node: callTargetNode ?? sessionDefault?.target_node,
+        allow_unverified_scope: callAllowUnverified ?? sessionDefault?.allow_unverified_scope,
+        agent_id: agent_id ?? sessionDefault?.agent_id,
+      };
+
+      // Compute deterministic action_id when the engagement carries a nonce.
+      const cfg = engine.getConfig();
+      const normalizedActionId = actionIdOrUuid(
+        cfg.engagement_nonce
+          ? {
+            engagement_nonce: cfg.engagement_nonce,
+            agent_id: effective.agent_id,
+            timestamp: engine.now(),
+            command_signature: command,
+            sequence: engine.nextDeterministicSeq(),
+          }
+          : null,
+      );
+
+      // ---- 1. Validation ----
+      const v = engine.validateAction({
+        technique: effective.technique,
+        target_ip: effective.target_ip,
+        target_url: effective.target_url,
+        target_node: effective.target_node,
+        allow_unverified_scope: effective.allow_unverified_scope,
       });
+      const validationResult = !v.valid ? 'invalid' : v.warnings.length > 0 ? 'warning_only' : 'valid';
+      const targetIpsForEvent = effective.target_ip ? [effective.target_ip] : undefined;
+      const targetNodeIdsForEvent = effective.target_node ? [effective.target_node] : undefined;
+
+      engine.logActionEvent({
+        description: `send_to_session: ${command}`,
+        agent_id: effective.agent_id,
+        action_id: normalizedActionId,
+        event_type: 'action_validated',
+        category: 'frontier',
+        tool_name: 'send_to_session',
+        technique: effective.technique,
+        target_node_ids: targetNodeIdsForEvent,
+        target_ips: targetIpsForEvent,
+        validation_result: validationResult,
+        result_classification: !v.valid ? 'failure' : v.warnings.length > 0 ? 'partial' : 'success',
+        details: { session_id, errors: v.errors, warnings: v.warnings, opsec_context: v.opsec_context, opsec_skipped: v.opsec_skipped },
+      });
+
+      if (!v.valid) {
+        engine.logActionEvent({
+          description: `Refused to send to session: ${command}`,
+          agent_id: effective.agent_id,
+          action_id: normalizedActionId,
+          event_type: 'action_failed',
+          category: 'frontier',
+          tool_name: 'send_to_session',
+          technique: effective.technique,
+          target_node_ids: targetNodeIdsForEvent,
+          target_ips: targetIpsForEvent,
+          result_classification: 'failure',
+          details: { session_id, reason: 'validation_failed', validation_errors: v.errors },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id: normalizedActionId,
+              session_id,
+              executed: false,
+              validation_result: 'invalid',
+              errors: v.errors,
+              warnings: v.warnings,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
+      // ---- 2. action_started ----
+      engine.logActionEvent({
+        description: `send_to_session: ${command}`,
+        agent_id: effective.agent_id,
+        action_id: normalizedActionId,
+        event_type: 'action_started',
+        category: 'frontier',
+        tool_name: 'send_to_session',
+        technique: effective.technique,
+        target_node_ids: targetNodeIdsForEvent,
+        target_ips: targetIpsForEvent,
+        noise_estimate,
+        details: { session_id, command, timeout_ms, idle_ms, wait_for, invoking_tool: 'send_to_session' },
+      });
+      if (typeof noise_estimate === 'number') {
+        engine.recordOpsecNoise({
+          action_id: normalizedActionId,
+          host_id: effective.target_node,
+          noise_estimate,
+        });
+      }
+      engine.persist();
+
+      // ---- 3. Execute ----
+      let sendResult: Awaited<ReturnType<typeof sessionManager.sendCommand>>;
+      let spawnError: string | undefined;
+      try {
+        sendResult = await sessionManager.sendCommand(session_id, command, {
+          timeout_ms,
+          idle_ms,
+          wait_for,
+          claimedBy: agent_id,
+          force,
+        });
+      } catch (err) {
+        spawnError = err instanceof Error ? err.message : String(err);
+        engine.logActionEvent({
+          description: `send_to_session failed: ${command}`,
+          agent_id: effective.agent_id,
+          action_id: normalizedActionId,
+          event_type: 'action_failed',
+          category: 'frontier',
+          tool_name: 'send_to_session',
+          technique: effective.technique,
+          target_node_ids: targetNodeIdsForEvent,
+          target_ips: targetIpsForEvent,
+          result_classification: 'failure',
+          details: { session_id, reason: 'spawn_error', spawn_error: spawnError },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id: normalizedActionId,
+              session_id,
+              executed: false,
+              spawn_error: spawnError,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
+      // ---- 4. Persist evidence ----
+      let evidence_id: string | undefined;
+      if (sendResult.text && sendResult.text.length > 0) {
+        try {
+          evidence_id = engine.getEvidenceStore().store({
+            action_id: normalizedActionId,
+            evidence_type: 'command_output',
+            filename: 'session_output',
+            raw_output: sendResult.text,
+          });
+        } catch {
+          // Evidence persistence must not fail the command — record absence on the event.
+        }
+      }
+
+      // ---- 5. Terminal lifecycle event ----
+      const terminalReason = sendResult.completion_reason;
+      const succeeded = terminalReason !== 'timeout' && terminalReason !== 'session_closed';
+      const terminalEventType = succeeded ? 'action_completed' as const : 'action_failed' as const;
+      engine.logActionEvent({
+        description: `send_to_session: ${command}`,
+        agent_id: effective.agent_id,
+        action_id: normalizedActionId,
+        event_type: terminalEventType,
+        category: 'frontier',
+        tool_name: 'send_to_session',
+        technique: effective.technique,
+        target_node_ids: targetNodeIdsForEvent,
+        target_ips: targetIpsForEvent,
+        result_classification: succeeded ? 'success' : 'failure',
+        details: {
+          session_id,
+          completion_reason: terminalReason,
+          timed_out: sendResult.timed_out,
+          captured_bytes: sendResult.text?.length ?? 0,
+          evidence_id,
+          start_pos: sendResult.start_pos,
+          end_pos: sendResult.end_pos,
+          truncated: sendResult.truncated,
+          reason: !succeeded ? terminalReason : undefined,
+          invoking_tool: 'send_to_session',
+        },
+      });
+      engine.persist();
 
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify({
+            ...sendResult,
+            action_id: normalizedActionId,
+            evidence_id,
+            validation_result: validationResult,
+            warnings: v.warnings.length > 0 ? v.warnings : undefined,
+          }, null, 2),
         }],
       };
     }),

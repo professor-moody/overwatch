@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type {
   AdapterHandle,
   SessionCapabilities,
+  SessionDefaultValidation,
   SessionKind,
   SessionMetadata,
   SessionReadResult,
@@ -169,6 +170,8 @@ export interface SessionCreateOptions {
   env?: Record<string, string>;
   // socket-specific
   mode?: 'connect' | 'listen';
+  // instrumentation
+  default_validation?: SessionDefaultValidation;
   // internal
   initial_wait_ms?: number;
 }
@@ -233,6 +236,7 @@ export class SessionManager {
         tty_quality: 'none',
       },
       buffer_end_pos: 0,
+      default_validation: options.default_validation,
     };
 
     const session: Session = { metadata, handle: null, buffer };

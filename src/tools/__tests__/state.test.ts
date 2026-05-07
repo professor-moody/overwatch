@@ -191,6 +191,29 @@ describe('state tools', () => {
       expect(cats).not.toContain('system');
     });
 
+    it('Phase H: default invocation writes NO new evidence and NO new system event (truly read-only)', async () => {
+      const eventsBefore = engine.getFullHistory().filter(e => e.tool_name === 'get_state').length;
+      const evidenceBefore = engine.getEvidenceStore().list().filter(r => r.filename === 'get_state.json').length;
+      const r = await handlers.get_state({}); // no snapshot arg — defaults to false / undefined
+      expect(r.isError).toBeUndefined();
+      const eventsAfter = engine.getFullHistory().filter(e => e.tool_name === 'get_state').length;
+      const evidenceAfter = engine.getEvidenceStore().list().filter(r => r.filename === 'get_state.json').length;
+      expect(eventsAfter).toBe(eventsBefore);
+      expect(evidenceAfter).toBe(evidenceBefore);
+    });
+
+    it('Phase H: explicit snapshot=true still persists evidence and emits a system event', async () => {
+      const eventsBefore = engine.getFullHistory().filter(e => e.tool_name === 'get_state').length;
+      const evidenceBefore = engine.getEvidenceStore().list().filter(r => r.filename === 'get_state.json').length;
+      const r = await handlers.get_state({ snapshot: true });
+      expect(r.isError).toBeUndefined();
+      const eventsAfter = engine.getFullHistory().filter(e => e.tool_name === 'get_state').length;
+      const evidenceAfter = engine.getEvidenceStore().list().filter(r => r.filename === 'get_state.json').length;
+      expect(eventsAfter).toBeGreaterThan(eventsBefore);
+      // Dedup window may reuse the prior evidence_id; assert the event was emitted, not a strict count bump.
+      expect(evidenceAfter).toBeGreaterThanOrEqual(evidenceBefore);
+    });
+
     it('snapshot dedup reuses prior evidence_id within the window', async () => {
       const first = await handlers.get_state({
         include_full_frontier: false,

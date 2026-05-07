@@ -23,6 +23,9 @@ The frontier items are pre-filtered by the deterministic layer (scope, dedup, ha
 |-----------|------|---------|-------------|
 | `include_full_frontier` | `boolean` | `true` | Include all frontier items. Set `false` for summary only (first 10). |
 | `activity_count` | `integer` | `20` | Number of recent activity entries to include (1–100). |
+| `include_reasoning` | `boolean` | `false` | Include `event_type=thought` / `category=reasoning` entries in `recent_activity`. |
+| `include_system` | `boolean` | `true` | Include `category=system` entries in `recent_activity`. |
+| `snapshot` | `boolean` | `false` | **Phase H**: persist a copy of the returned state to the evidence store and emit a `system` event so the retrospective can reconstruct exactly what the agent saw. **Defaults to `false`** so the tool is genuinely read-only — pass `true` at session bootstrap or when you want the snapshot for retrospective fidelity. De-duplicated within a 5s window when the state body is unchanged. |
 
 ## Returns
 
@@ -72,6 +75,7 @@ See [Concepts — Graph Compaction](../concepts.md#graph-compaction-cold-store) 
 
 ## Usage Notes
 
-- Call this at the **start of every session** and after any context compaction
-- The frontier items have graph metrics attached but are not scored — the LLM should score and prioritize them
-- Use `activity_count` to control how much history is included in the briefing
+- Call this at the **start of every session** and after any context compaction.
+- Pass `snapshot: true` at session bootstrap when you want the call to also persist evidence — the default is now read-only (`snapshot: false`) so casual reads do not duplicate engagement state across the evidence store.
+- The frontier items have graph metrics attached but are not scored — the LLM should score and prioritize them.
+- Use `activity_count` to control how much history is included in the briefing.

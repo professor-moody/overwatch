@@ -212,6 +212,13 @@ export class GraphEngine {
 
     // 7.7: Auto health check on startup
     this.runAutoHealthCheck('startup');
+
+    // Phase B: surface "OPSEC inert" state at startup. OPSEC enforcement is
+    // intentionally opt-in; a config that sets max_noise/blacklist/time_window
+    // but omits enabled is an easy false-sense-of-security trap. We emit a
+    // single WARN log line so operators don't think 0.4 noise ceiling is
+    // active when it isn't.
+    this.warnIfOpsecInert();
   }
 
   /** Lazy-load the cross-engagement knowledge base (returns null if file not found). */
@@ -1015,6 +1022,14 @@ export class GraphEngine {
     errors: string[];
     warnings: string[];
     opsec_context: OpsecContext;
+    /**
+     * True when OPSEC enforcement is opt-in but disabled for this engagement
+     * (`opsec.enabled !== true`). Surfaced so tools can be honest with the
+     * caller that blacklist/time-window/noise-ceiling checks were not run.
+     * Phase 2 (B): part of the visibility pass that keeps OPSEC opt-in but
+     * makes the inert state impossible to miss.
+     */
+    opsec_skipped?: boolean;
     recent_outcomes?: RecentOutcome[];
     technique_success_rate?: { engagement: number; engagement_attempts: number; kb: number; kb_attempts: number };
     cooldown_suggestion?: string;
@@ -1250,6 +1265,7 @@ export class GraphEngine {
 
     return {
       valid: errors.length === 0, errors, warnings, opsec_context,
+      ...(effectiveOpsec.enabled ? {} : { opsec_skipped: true }),
       ...(recent_outcomes && recent_outcomes.length > 0 ? { recent_outcomes } : {}),
       ...(technique_success_rate ? { technique_success_rate } : {}),
       ...(cooldown_suggestion ? { cooldown_suggestion } : {}),
@@ -1695,6 +1711,61 @@ export class GraphEngine {
     const overrides = phase?.opsec_overrides;
     if (!overrides) return this.ctx.config.opsec;
     return { ...this.ctx.config.opsec, ...overrides } as typeof this.ctx.config.opsec;
+  }
+
+  /**
+   * Phase B: report whether the engagement has OPSEC enforcement gates
+   * configured non-trivially while `enabled !== true`. The dashboard reads
+   * this to render an "OPSEC INERT" badge so the configured-but-disabled
+   * state is visible to humans.
+   */
+  getOpsecStatus(): { enabled: boolean; configured_fields: string[]; inert: boolean } {
+    const o = this.getEffectiveOpsec();
+    const enabled = o.enabled === true;
+    const configured: string[] = [];
+    if (typeof o.max_noise === 'number' && o.max_noise < 1) configured.push('max_noise');
+    if (Array.isArray(o.blacklisted_techniques) && o.blacklisted_techniques.length > 0) configured.push('blacklisted_techniques');
+    if (o.time_window) configured.push('time_window');
+    return { enabled, configured_fields: configured, inert: !enabled && configured.length > 0 };
+  }
+
+  private warnIfOpsecInert(): void {
+    const status = this.getOpsecStatus();
+    if (!status.inert) return;
+    const o = this.getEffectiveOpsec();
+    const parts: string[] = [];
+    if (typeof o.max_noise === 'number') parts.push(`max_noise=${o.max_noise}`);
+    if (Array.isArray(o.blacklisted_techniques) && o.blacklisted_techniques.length > 0) {
+      parts.push(`blacklist=[${o.blacklisted_techniques.join(', ')}]`);
+    }
+    if (o.time_window) parts.push(`time_window=${o.time_window.start_hour}-${o.time_window.end_hour}`);
+    const detail = parts.join(', ');
+    console.warn(
+      `[OPSEC] inert: ${detail} configured but enforcement is disabled (opsec.enabled=false). ` +
+      'Set opsec.enabled=true to enforce.',
+    );
+    // Persist a system event so the dashboard activity panel and retrospective
+    // pipeline can show this without scraping stderr. Pin the timestamp to
+    // `config.created_at` when present so the event participates in golden
+    // master determinism — without this, every replay would log a new wall-
+    // clock timestamp and the activity digest would drift run-to-run.
+    try {
+      const seedAt = this.ctx.config.created_at;
+      const emit = () => this.logActionEvent({
+        description: 'OPSEC enforcement is configured but disabled',
+        event_type: 'instrumentation_warning',
+        category: 'system',
+        details: {
+          opsec_status: status,
+          inert_fields: status.configured_fields,
+          message: `OPSEC inert (${detail}); set opsec.enabled=true to enforce.`,
+        },
+      });
+      if (seedAt) this.ctx.withClock(seedAt, emit);
+      else emit();
+    } catch {
+      // best-effort — never fail engine startup over a warning event
+    }
   }
 
   /**

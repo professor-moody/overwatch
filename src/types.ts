@@ -1050,6 +1050,22 @@ export interface SessionCapabilities {
   serves_mock_service_id?: string;
 }
 
+/**
+ * Validation metadata carried by a session. When set at open time, every
+ * `send_to_session` call for that session inherits this as its default
+ * (per-call overrides still apply). Lets the session lifecycle run
+ * `validateAction` on each command without forcing the caller to repeat
+ * scope/technique on every send.
+ */
+export interface SessionDefaultValidation {
+  technique: string;
+  target_ip?: string;
+  target_url?: string;
+  target_node?: string;
+  allow_unverified_scope?: boolean;
+  agent_id?: string;
+}
+
 export interface SessionMetadata {
   id: string;
   kind: SessionKind;
@@ -1074,6 +1090,14 @@ export interface SessionMetadata {
   capabilities: SessionCapabilities;
   buffer_end_pos: number;
   notes?: string;
+  /**
+   * Baseline scope/technique for instrumented `send_to_session`. When
+   * present, every send runs `validateAction` against the merged
+   * (per-call > default) metadata, logs `action_started`/`action_completed`,
+   * and persists evidence for the captured output window. When absent,
+   * `send_to_session` requires per-call metadata.
+   */
+  default_validation?: SessionDefaultValidation;
 }
 
 export interface SessionReadResult {

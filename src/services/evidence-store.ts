@@ -5,7 +5,7 @@
 // this store holds the full-fidelity payloads.
 // ============================================================
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, createWriteStream, type WriteStream } from 'fs';
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync, type WriteStream } from 'fs';
 import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, type Hash } from 'crypto';
@@ -311,14 +311,62 @@ export class EvidenceStore {
     return readFileSync(path, 'utf-8');
   }
 
-  /** Retrieve full raw output by ID or content_hash. */
-  getRawOutput(idOrHash: string): string | null {
+  /**
+   * Retrieve full raw output by ID or content_hash.
+   *
+   * Phase E: when `max_bytes` is provided, return null instead of loading
+   * the file into memory if its size exceeds the cap. Callers that want
+   * the head bytes for partial parsing should use `getRawOutputHead`.
+   * Without `max_bytes` the read is unbounded — preserved for callers
+   * that explicitly want the full blob (e.g. report generation).
+   */
+  getRawOutput(idOrHash: string, opts?: { max_bytes?: number }): string | null {
     const resolved = this.resolveKey(idOrHash);
     if (!resolved) return null;
     const safe = sanitizeEvidenceId(resolved);
     const path = join(this.dir, `${safe}.raw`);
     if (!existsSync(path)) return null;
+    if (typeof opts?.max_bytes === 'number') {
+      try {
+        if (statSync(path).size > opts.max_bytes) return null;
+      } catch {
+        // If stat fails, fall through to readFileSync — reading itself
+        // will surface the error to the caller.
+      }
+    }
     return readFileSync(path, 'utf-8');
+  }
+
+  /**
+   * Phase E: streaming-friendly head read for partial parsing on oversized
+   * evidence blobs. Returns at most `max_bytes` decoded as UTF-8. When the
+   * file is missing or not resolvable, returns null.
+   */
+  getRawOutputHead(idOrHash: string, max_bytes: number): { text: string; total_bytes: number; truncated: boolean } | null {
+    const resolved = this.resolveKey(idOrHash);
+    if (!resolved) return null;
+    const safe = sanitizeEvidenceId(resolved);
+    const path = join(this.dir, `${safe}.raw`);
+    if (!existsSync(path)) return null;
+
+    const total = statSync(path).size;
+    const limit = Math.min(total, Math.max(0, max_bytes | 0));
+    if (limit === 0) return { text: '', total_bytes: total, truncated: total > 0 };
+
+    const buf = Buffer.alloc(limit);
+    const fd = openSync(path, 'r');
+    try {
+      let read = 0;
+      while (read < limit) {
+        const n = readSync(fd, buf, read, limit - read, read);
+        if (n <= 0) break;
+        read += n;
+      }
+      const text = buf.subarray(0, read).toString('utf-8');
+      return { text, total_bytes: total, truncated: total > limit };
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /** Get the manifest record for a specific evidence ID or content_hash. */

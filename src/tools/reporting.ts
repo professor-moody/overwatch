@@ -13,6 +13,33 @@ import { validateFilePath } from '../utils/path-validation.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary } from './error-boundary.js';
+import { redactReportText, redactSecretKeys } from '../services/report-redaction.js';
+
+/**
+ * Phase I: scrub a fully-rendered markdown report for client delivery.
+ * Strips operator-machine paths and replaces fenced evidence/raw-output
+ * blocks with redaction placeholders. The structured json/html paths use
+ * `redactSecretKeys` for deeper redaction; markdown gets this practical
+ * regex pass so the operator-default rendering remains untouched and the
+ * client variant still tells the story without leaking secrets.
+ */
+function scrubMarkdownForClient(md: string): string {
+  let out = redactReportText(md, { client_safe: true }) ?? md;
+  // Replace ``` ... ``` blocks that follow an "Output:" / "raw_output" /
+  // "stdout"-style header line with a placeholder. The original block
+  // content is dropped; the surrounding narrative stays.
+  out = out.replace(
+    /(\*\*?(?:Raw Output|Stdout(?: Preview)?|Evidence Content|Output)\*\*?:?\s*\n)```[\s\S]*?```/gi,
+    '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
+  );
+  // Inline credential disclosures: `cred_value: ...`, `password: ...`,
+  // common hash field names. We keep the key for readability.
+  out = out.replace(
+    /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
+    (_m, k) => `${k}: <redacted>`,
+  );
+  return out;
+}
 
 export function registerReportingTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
 
@@ -60,6 +87,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           .describe('Directory for output files (used when write_to_disk is true)'),
         theme: z.enum(['light', 'dark']).default('light')
           .describe('Theme for HTML output'),
+        client_safe: z.boolean().default(false)
+          .describe('Phase I: produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -71,9 +100,10 @@ Use this at the end of an engagement to produce the final deliverable report.`,
     withErrorBoundary('generate_report', async ({
       format: rawFormat, include_evidence, include_narrative,
       include_retrospective, include_compliance, include_attack_navigator,
-      include_gap_analysis, write_to_disk, output_dir, theme,
+      include_gap_analysis, write_to_disk, output_dir, theme, client_safe,
     }) => {
       const format = rawFormat === 'md' ? 'markdown' : rawFormat;
+      const redactionOpts = { client_safe: client_safe === true };
       const config = engine.getConfig();
       const graph = engine.exportGraph();
       const history = engine.getFullHistory();
@@ -118,27 +148,35 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         include_compliance, include_attack_navigator, include_gap_analysis,
         evidence_loader: evidenceLoader,
       };
-      const markdown = generateFullReport(reportInput, options);
+      const rawMarkdown = generateFullReport(reportInput, options);
+      // Phase I: redact operator paths post-generation. Evidence-blob redaction
+      // for client_safe=true happens via redactSecretKeys on the structured
+      // findings (json/html paths) and via a markdown-targeted regex pass.
+      const markdown = redactionOpts.client_safe
+        ? scrubMarkdownForClient(rawMarkdown)
+        : rawMarkdown;
 
       // Build JSON structured output for 'json' format
       let jsonOutput: string | undefined;
       if (format === 'json') {
-        const findings = buildFindings(graph, history, config, { evidenceLoader });
-        const classifications = classifyAllFindings(findings, graph);
+        const rawFindings = buildFindings(graph, history, config, { evidenceLoader });
+        const classifications = classifyAllFindings(rawFindings, graph);
         const navigatorLayer = include_attack_navigator
-          ? generateNavigatorLayer(findings, graph, config.name)
+          ? generateNavigatorLayer(rawFindings, graph, config.name)
           : undefined;
-        const remRanking = buildRemediationRanking(findings, graph);
+        const remRanking = buildRemediationRanking(rawFindings, graph);
 
-        jsonOutput = JSON.stringify({
+        const jsonPayload = {
           engagement: { id: config.id, name: config.name },
-          findings: findings.map(f => ({
+          findings: rawFindings.map(f => ({
             ...f,
             classification: classifications.get(f.id) ?? f.classification,
           })),
           remediation_ranking: remRanking,
           ...(navigatorLayer ? { attack_navigator_layer: navigatorLayer } : {}),
-        }, null, 2);
+        };
+        const finalJson = redactionOpts.client_safe ? redactSecretKeys(jsonPayload, redactionOpts) : jsonPayload;
+        jsonOutput = JSON.stringify(finalJson, null, 2);
       }
 
       let html: string | undefined;
@@ -315,7 +353,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             } : undefined,
           };
         }
-        html = renderReportHtml(htmlData, { theme, include_toc: true, include_compliance });
+        const renderData = redactionOpts.client_safe ? redactSecretKeys(htmlData, redactionOpts) : htmlData;
+        html = renderReportHtml(renderData, { theme, include_toc: true, include_compliance });
       }
 
       const output = format === 'html' ? html! : format === 'json' ? jsonOutput! : markdown;
@@ -333,12 +372,16 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         if (!existsSync(validatedDir)) {
           mkdirSync(validatedDir, { recursive: true });
         }
-        writeFileSync(join(validatedDir, 'report.md'), markdown);
+        // Phase I: client-safe variants get a `.client-safe.<ext>` suffix so
+        // the operator-internal and client-deliverable versions are visually
+        // distinct on disk.
+        const suffix = redactionOpts.client_safe ? '.client-safe' : '';
+        writeFileSync(join(validatedDir, `report${suffix}.md`), markdown);
         if (html) {
-          writeFileSync(join(validatedDir, 'report.html'), html);
+          writeFileSync(join(validatedDir, `report${suffix}.html`), html);
         }
         if (jsonOutput) {
-          writeFileSync(join(validatedDir, 'report.json'), jsonOutput);
+          writeFileSync(join(validatedDir, `report${suffix}.json`), jsonOutput);
         }
         if (include_attack_navigator) {
           const navFindings = buildFindings(graph, history, config);

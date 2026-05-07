@@ -683,6 +683,7 @@ export class DashboardServer {
   private serveSettings(res: ServerResponse): void {
     const config = this.engine.getConfig();
     const opsec = config.opsec;
+    const opsecStatus = this.engine.getOpsecStatus();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       opsec: {
@@ -693,6 +694,10 @@ export class DashboardServer {
         blacklisted_techniques: opsec.blacklisted_techniques || [],
         time_window: opsec.time_window || null,
       },
+      // Phase B: surface configured-but-disabled state so the dashboard can
+      // render an "OPSEC INERT" badge instead of letting operators assume
+      // the configured ceiling is enforced.
+      opsec_status: opsecStatus,
       noise_state: {
         global_noise_spent: this.engine.getOpsecTracker().getGlobalNoise(),
         noise_ceiling_ratio: 0.85,

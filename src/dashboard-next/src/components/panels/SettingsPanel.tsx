@@ -285,6 +285,7 @@ function FailurePatternsSection({ patterns, onSave }: { patterns: FailurePattern
 function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>; onSave: (b: Partial<EngagementConfig>) => Promise<void> }) {
   const opsec = (settings as { opsec?: Record<string, unknown> }).opsec || {};
   const noiseState = (settings as { noise_state?: Record<string, number> }).noise_state || {};
+  const opsecStatus = (settings as { opsec_status?: { enabled: boolean; configured_fields: string[]; inert: boolean } }).opsec_status;
 
   const [maxNoise, setMaxNoise] = useState<number>((opsec.max_noise as number) ?? 0.7);
   const [approvalMode, setApprovalMode] = useState<string>((opsec.approval_mode as string) || 'approve-critical');
@@ -318,6 +319,19 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
   return (
     <Section title="OPSEC">
       <div className="space-y-3">
+        {/* Phase B: inert badge — config has noise/blacklist/time_window set but enabled=false. */}
+        {opsecStatus?.inert && (
+          <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-warning px-1.5 py-0.5 font-mono text-[10px] uppercase text-warning-foreground">OPSEC INERT</span>
+              <span className="text-muted-foreground">Configured fields are not enforced (opsec.enabled=false).</span>
+            </div>
+            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+              configured: {opsecStatus.configured_fields.join(', ')}
+            </div>
+          </div>
+        )}
+
         {/* Noise gauge */}
         <div>
           <div className="flex justify-between text-xs mb-1">

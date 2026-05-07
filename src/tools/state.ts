@@ -57,8 +57,8 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
           .default(true)
           .describe('Include `category=system` entries in recent_activity (snapshots, ingested transcript turns, instrumentation warnings). Set false to focus on operational events only.'),
         snapshot: z.boolean()
-          .default(true)
-          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged.'),
+          .default(false)
+          .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged. **Phase H**: defaults to false so the tool is genuinely read-only; pass true at session bootstrap or when you want the snapshot for retrospective fidelity.'),
       },
       annotations: {
         readOnlyHint: true,
@@ -77,7 +77,11 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         state.frontier = state.frontier.slice(0, 10);
       }
       const stateText = JSON.stringify(state, null, 2);
-      if (snapshot !== false) {
+      // Phase H: snapshot is opt-in. Only the explicit true value triggers
+      // evidence persistence + the system event; anything else (including
+      // undefined when the test harness bypasses the zod default) keeps
+      // get_state truly read-only.
+      if (snapshot === true) {
         // Hash a stable view that excludes `recent_activity`. The snapshot itself
         // appends a system event to the activity log, which would otherwise force
         // every back-to-back call to look "different" and defeat dedup.

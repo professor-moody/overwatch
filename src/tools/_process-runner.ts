@@ -35,6 +35,32 @@ const TARGET_FACING_TECHNIQUES = new Set([
   'cred_brute', 'auth_brute', 'spray', 'password_spray',
 ]);
 
+// Phase D: network-capable binaries that aren't unambiguously target-facing
+// (so they're not in TARGET_FACING_BINARIES below) but DO reach out to the
+// network. When such a binary is invoked under a non-target-facing technique
+// AND argv contains a URL/IP/hostname AND no scope metadata is set, we fail
+// closed — this is the operator-misuse pattern from the assessment:
+//   run_bash({ command: 'curl https://target/admin', technique: 'note' })
+// Generic / shell-only binaries (echo, cat, grep, awk, sed, …) are NOT in
+// here, so an `echo connecting-to-https://example.com/...` log line still
+// runs untouched.
+const NETWORK_CAPABLE_BINARIES = new Set([
+  'curl', 'wget',
+  'ssh', 'scp', 'sftp', 'rsync',
+  'nc', 'ncat', 'netcat',
+  'openssl',
+  'mysql', 'psql', 'mongo', 'redis-cli',
+  'ftp',
+  'telnet',
+]);
+
+function isNetworkCapableBinary(toolName: string, binary: string): boolean {
+  const tn = basename(toolName).toLowerCase();
+  const bn = basename(binary).toLowerCase();
+  if (NETWORK_CAPABLE_BINARIES.has(tn) || NETWORK_CAPABLE_BINARIES.has(bn)) return true;
+  return false;
+}
+
 // F3.1: target-facing detection by binary name. If a caller invokes a known
 // scanner / brute-forcer / web fuzzer without supplying technique, we still
 // want to sniff implicit targets out of argv so scope cannot be silently
@@ -133,6 +159,15 @@ const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per str
 export const STREAM_HARD_CAP = 16 * 1024 * 1024;       // 16 MiB per stream
 export const STREAM_HEAD_KEEP = 4 * 1024 * 1024;       // 4 MiB head
 export const STREAM_TAIL_KEEP = 4 * 1024 * 1024;       // 4 MiB tail
+
+/**
+ * Phase E: maximum evidence bytes we'll load into memory when re-reading
+ * a streamed blob for parser ingestion. Bigger files fall back to a head
+ * window via `getRawOutputHead` and the parse is marked partial. Picked
+ * to comfortably accommodate large nuclei/azurehound outputs without
+ * risking the MCP server's heap on a runaway capture.
+ */
+export const EVIDENCE_PARSE_MAX_BYTES = 50 * 1024 * 1024; // 50 MiB
 const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
 const HARD_CAP_DROPPED_MARKER = '\n…[output exceeded in-memory cap; middle bytes dropped]…\n';
 
@@ -558,6 +593,63 @@ export async function runInstrumentedProcess(
       }
     }
 
+    // Phase D: argv-token guard. If we still have no validation targets and
+    // the binary is network-capable (curl/ssh/nc/...) AND argv (or the raw
+    // command) contains a URL/IP/hostname, the caller is running a target-
+    // touching command under a non-target-facing technique label. Fail
+    // closed unless `allow_unverified_scope` is set.
+    //
+    // We deliberately limit this to the NETWORK_CAPABLE_BINARIES allowlist:
+    // a benign `echo connecting-to-https://example.com/...` log line must
+    // still run, so the guard skips for shell-only / non-network binaries.
+    //
+    // The pattern this closes:
+    //   run_bash({ command: 'curl https://target/admin', technique: 'note' })
+    // where `note` is not in TARGET_FACING_TECHNIQUES so the F3 path above
+    // didn't run, but the argv clearly references an external target.
+    if (
+      validationTargets.length === 0
+      && !allow_unverified_scope
+      && isNetworkCapableBinary(tool_name, binary)
+    ) {
+      const sniff = extractImplicitTargets(tool_name, args, command_repr);
+      const found = [...sniff.ips, ...sniff.urls, ...sniff.hostnames];
+      if (found.length > 0) {
+        engine.logActionEvent({
+          description: `Refused: target tokens in argv with no scope metadata`,
+          agent_id,
+          action_id: normalizedActionId,
+          event_type: 'action_failed',
+          category: 'frontier',
+          tool_name,
+          technique,
+          frontier_item_id,
+          result_classification: 'failure',
+          details: {
+            reason: 'target_tokens_in_argv_without_scope',
+            argv_tokens_found: found.slice(0, 8),
+            hint: 'Pass target_url/target_ip explicitly, or set allow_unverified_scope=true if the tokens are intentional non-target references.',
+          },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id: normalizedActionId,
+              executed: false,
+              validation_result: 'invalid',
+              errors: [
+                'target_tokens_in_argv_without_scope: pass target_url/target_ip explicitly, or set allow_unverified_scope=true if intentional.',
+              ],
+              argv_tokens_found: found.slice(0, 8),
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+    }
+
     if (validationTargets.length === 0) validationTargets.push({ technique, allow_unverified_scope });
 
     const aggregatedErrors: string[] = [];
@@ -925,18 +1017,38 @@ export async function runInstrumentedProcess(
       // file so large outputs (nuclei/nmap/azurehound) are not silently
       // mis-parsed. If the evidence read fails for any reason, fall back to
       // the bounded inline buffer and flag the parse as partial.
+      //
+      // Phase E: bound the readback so a 100 MB+ scanner output can't OOM
+      // the MCP server during parser ingestion. When the evidence file is
+      // larger than EVIDENCE_PARSE_MAX_BYTES, fall back to a head window
+      // streamed via getRawOutputHead and mark the parse as partial.
       let parseFromEvidence = false;
       let parseFromEvidenceError: string | undefined;
+      let evidenceSizeExceeded = false;
       let fullStdout = fullStdoutInline;
       let fullStderr = fullStderrInline;
       if (stdoutInfo.truncated && stdout_evidence_id) {
         try {
-          const onDisk = engine.getEvidenceStore().getRawOutput(stdout_evidence_id);
+          const evstore = engine.getEvidenceStore();
+          const onDisk = evstore.getRawOutput(stdout_evidence_id, { max_bytes: EVIDENCE_PARSE_MAX_BYTES });
           if (onDisk !== null) {
             fullStdout = onDisk;
             parseFromEvidence = true;
           } else {
-            parseFromEvidenceError = 'evidence_blob_missing';
+            // Either the file is missing OR it exceeds the size cap. Try a
+            // head read to see which case we're in; null again means missing.
+            const head = evstore.getRawOutputHead(stdout_evidence_id, EVIDENCE_PARSE_MAX_BYTES);
+            if (head === null) {
+              parseFromEvidenceError = 'evidence_blob_missing';
+            } else if (head.truncated) {
+              fullStdout = head.text;
+              parseFromEvidence = true;
+              evidenceSizeExceeded = true;
+              parseFromEvidenceError = `evidence_too_large_for_full_parse: ${head.total_bytes} bytes (cap ${EVIDENCE_PARSE_MAX_BYTES})`;
+            } else {
+              fullStdout = head.text;
+              parseFromEvidence = true;
+            }
           }
         } catch (err) {
           parseFromEvidenceError = err instanceof Error ? err.message : String(err);
@@ -944,11 +1056,35 @@ export async function runInstrumentedProcess(
       }
       if (stderrInfo.truncated && stderr_evidence_id) {
         try {
-          const onDisk = engine.getEvidenceStore().getRawOutput(stderr_evidence_id);
-          if (onDisk !== null) fullStderr = onDisk;
+          const evstore = engine.getEvidenceStore();
+          const onDisk = evstore.getRawOutput(stderr_evidence_id, { max_bytes: EVIDENCE_PARSE_MAX_BYTES });
+          if (onDisk !== null) {
+            fullStderr = onDisk;
+          } else {
+            const head = evstore.getRawOutputHead(stderr_evidence_id, EVIDENCE_PARSE_MAX_BYTES);
+            if (head !== null) {
+              fullStderr = head.text;
+              if (head.truncated) evidenceSizeExceeded = true;
+            }
+          }
         } catch {
           // best-effort — stderr fallback is not common
         }
+      }
+      if (evidenceSizeExceeded) {
+        engine.logActionEvent({
+          description: 'Evidence too large for full parse — used head window',
+          agent_id,
+          action_id: normalizedActionId,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          details: {
+            stdout_evidence_id,
+            stderr_evidence_id,
+            max_bytes: EVIDENCE_PARSE_MAX_BYTES,
+            error: parseFromEvidenceError,
+          },
+        });
       }
 
       // Phase D4: choose which stream feeds the parser.
@@ -998,7 +1134,10 @@ export async function runInstrumentedProcess(
         // downstream consumers (UI, retrospectives, inference) can
         // recognize that the data may be incomplete.
         const boundedFallback = stdoutInfo.truncated && !parseFromEvidence;
-        const partialAny = partialParse || boundedFallback;
+        // Phase E: an evidence file larger than EVIDENCE_PARSE_MAX_BYTES is
+        // parsed against its head window only — every produced node carries
+        // partial=true so consumers can flag the gap.
+        const partialAny = partialParse || boundedFallback || evidenceSizeExceeded;
         if (partialAny) {
           for (const node of finding.nodes) {
             (node as Record<string, unknown>).partial = true;
@@ -1031,11 +1170,13 @@ export async function runInstrumentedProcess(
             edges_parsed: finding.edges.length,
             partial: partialAny || undefined,
             partial_reason: partialAny
-              ? (partialParse && boundedFallback
-                  ? 'nonzero_exit_and_bounded_buffer_only'
-                  : partialParse
-                    ? 'nonzero_exit'
-                    : 'bounded_buffer_only')
+              ? (evidenceSizeExceeded
+                  ? 'evidence_too_large_for_full_parse'
+                  : partialParse && boundedFallback
+                    ? 'nonzero_exit_and_bounded_buffer_only'
+                    : partialParse
+                      ? 'nonzero_exit'
+                      : 'bounded_buffer_only')
               : undefined,
             parse_stream: usedStream,
             parsed_from_evidence: parseFromEvidence || undefined,
