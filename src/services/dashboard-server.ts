@@ -996,7 +996,20 @@ export class DashboardServer {
         frontier_item_id: frontierItemId,
       };
 
-      this.engine.registerAgent(task);
+      // F2: registerAgent may refuse on frontier-lease conflict.
+      // Returning 201 with { dispatched: true } when the task was never
+      // inserted left the dashboard claiming work that didn't exist.
+      const reg = this.engine.registerAgent(task);
+      if (!reg.ok) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          dispatched: false,
+          reason: 'frontier_lease_conflict',
+          existing_task_id: reg.lease_conflict?.existing_task_id,
+          existing_agent_id: reg.lease_conflict?.existing_agent_id,
+        }));
+        return;
+      }
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ dispatched: true, task }));

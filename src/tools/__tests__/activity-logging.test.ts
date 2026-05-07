@@ -489,12 +489,18 @@ describe('structured activity logging tools', () => {
     });
     const secondPayload = JSON.parse(second.content[0].text);
 
-    expect(secondPayload.skipped_existing.length).toBeGreaterThan(0);
-    expect(secondPayload.dispatched.length).toBeLessThanOrEqual(2);
+    // F1: the lease filter in filterFrontier now removes items already
+    // claimed by a running task BEFORE they reach the dispatch handler's
+    // skipped_existing check. The behavioral invariant we care about is
+    // "no item from the first batch is re-dispatched" — whichever layer
+    // catches it (filter, skipped_existing, or skipped_lease_conflict)
+    // is fine.
     const firstFrontierIds = new Set(firstPayload.dispatched.map((task: { frontier_item_id: string }) => task.frontier_item_id));
     expect(
       secondPayload.dispatched.every((task: { frontier_item_id: string }) => !firstFrontierIds.has(task.frontier_item_id)),
     ).toBe(true);
+    // total_candidates drops because the leased items are filtered out.
+    expect(secondPayload.total_candidates).toBeLessThanOrEqual(firstPayload.total_candidates);
   });
 
   it('dispatch_agents includes total_candidates in response', async () => {

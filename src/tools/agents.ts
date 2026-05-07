@@ -158,6 +158,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
       const dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; frontier_type: string; skill?: string }> = [];
       const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_id: string }> = [];
       const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
+      const skipped_lease_conflict: Array<{ frontier_item_id: string; frontier_type: string; existing_task_id?: string; existing_agent_id?: string }> = [];
 
       for (const item of candidates) {
         if (dispatched.length >= count) break;
@@ -183,7 +184,19 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
 
         const agent_id = `agent-${item.type.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
         const task = buildTask(agent_id, item.id, scope, skill);
-        engine.registerAgent(task);
+        // F2: registerAgent may refuse the task if the frontier lease was
+        // grabbed by another caller in the same window. When that happens
+        // the task is NOT inserted, so we must NOT report it as dispatched.
+        const reg = engine.registerAgent(task);
+        if (!reg.ok) {
+          skipped_lease_conflict.push({
+            frontier_item_id: item.id,
+            frontier_type: item.type,
+            existing_task_id: reg.lease_conflict?.existing_task_id,
+            existing_agent_id: reg.lease_conflict?.existing_agent_id,
+          });
+          continue;
+        }
         dispatched.push({
           task_id: task.id,
           agent_id: task.agent_id,
@@ -201,6 +214,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         dispatched,
         skipped_existing,
         skipped_unscoped,
+        skipped_lease_conflict,
       };
       if (dispatched.length === 0) {
         result.warning = 'No agents dispatched — all candidates were skipped or filtered';
@@ -458,14 +472,27 @@ Fields:
       }
     },
     withErrorBoundary('update_agent', async ({ task_id, status, summary }) => {
+      // F6: validate task existence BEFORE running the transcript-missing
+      // check. A typoed task_id used to pollute the activity log with a
+      // missing-transcript warning for a task that never existed.
+      const task = engine.getTask(task_id);
+      if (!task) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: `Task not found: ${task_id}` }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
       // Visibility hook: warn (non-blocking) when an agent reaches a terminal
       // state without first calling submit_agent_transcript. The agent task may
       // be referenced either by its task.id or its agent.agent_id, so check both.
       let transcript_warning_emitted = false;
       if (status === 'completed' || status === 'failed') {
-        const task = engine.getTask(task_id);
         const candidateIds = new Set<string>([task_id]);
-        if (task?.agent_id) candidateIds.add(task.agent_id);
+        if (task.agent_id) candidateIds.add(task.agent_id);
         const history = engine.getFullHistory();
         const submitted = history.some(e =>
           e.event_type === 'agent_transcript_submitted'
@@ -487,12 +514,13 @@ Fields:
 
       const updated = engine.updateAgentStatus(task_id, status, summary);
       if (!updated) {
+        // updateAgentStatus can also reject (e.g. terminal-state idempotency).
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ error: `Task not found: ${task_id}` }, null, 2)
+            text: JSON.stringify({ error: `Task not updated: ${task_id}` }, null, 2),
           }],
-          isError: true
+          isError: true,
         };
       }
       const response: Record<string, unknown> = { task_id, status, summary, updated: true };
@@ -589,7 +617,15 @@ its CIDR as its scoped subgraph.`,
 
         const agent_id = `agent-subnet-${slug}-${uuidv4().slice(0, 8)}`;
         const task = buildTask(agent_id, frontierItemId, nodesInCidr, skill);
-        engine.registerAgent(task);
+        // F2: registerAgent may refuse on frontier-lease conflict.
+        const reg = engine.registerAgent(task);
+        if (!reg.ok) {
+          skipped.push({
+            cidr,
+            reason: `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
+          });
+          continue;
+        }
 
         dispatched.push({
           task_id: task.id,
@@ -757,10 +793,11 @@ export function dispatchCampaignAgents(
     return { campaign_id, strategy: campaign.strategy, requested: max_agents, total_items: campaign.items.length, dispatched: [], skipped: [], error: `Campaign is ${campaign.status} — cannot dispatch agents` };
   }
 
-  // Activate draft campaigns
-  if (campaign.status === 'draft') {
-    engine.activateCampaign(campaign_id);
-  }
+  // F5: defer draft activation until at least one agent has been
+  // successfully registered. Activating up front would mark the campaign
+  // 'active' even when every dispatch attempt is skipped or refused —
+  // operators then see a live campaign producing zero work.
+  const wasDraft = campaign.status === 'draft';
 
   const dispatched: DispatchResult['dispatched'] = [];
   const skipped: DispatchResult['skipped'] = [];
@@ -785,11 +822,32 @@ export function dispatchCampaignAgents(
     }
 
     const scope = computeCampaignScope(engine, campaign.strategy, itemId, hops);
+    // Note: campaign items are operator-curated; even zero-scope items
+    // can be useful (the agent enumerates from scratch). We don't skip
+    // them here, just record in details if scope is empty.
+
     const agent_id = `agent-campaign-${campaign.strategy.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
     const task = buildTask(agent_id, itemId, scope, skill, campaign_id);
-    engine.registerAgent(task);
+    // F2: respect lease conflicts and don't claim success when the
+    // task wasn't actually inserted.
+    const reg = engine.registerAgent(task);
+    if (!reg.ok) {
+      skipped.push({
+        frontier_item_id: itemId,
+        reason: `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
+      });
+      continue;
+    }
 
     dispatched.push({ task_id: task.id, agent_id, frontier_item_id: itemId, scope_nodes: scope.length, skill });
+  }
+
+  // F5: only activate the campaign once at least one agent is actually
+  // running. If the dispatch produced nothing usable the campaign stays
+  // 'draft' and the operator can investigate without a misleading
+  // status badge in the dashboard.
+  if (wasDraft && dispatched.length > 0) {
+    engine.activateCampaign(campaign_id);
   }
 
   const result: DispatchResult = {

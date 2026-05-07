@@ -942,7 +942,23 @@ export class GraphEngine {
         }
       }
 
-      // 4. Annotate items whose scope cannot be verified (no resolvable IP or hostname)
+      // 4. Active-lease skip — items currently held by a running sub-agent
+      // shouldn't be re-surfaced to the primary or another dispatch
+      // attempt. Without this, next_task can return work already
+      // claimed, causing duplicate validation / dispatch / execution.
+      // The lease is held by-task-id; if a re-request comes in from the
+      // same task we let it through (the FrontierLeases helper already
+      // models that distinction via isHeldByOther).
+      const lease = this.ctx.frontierLeases.get(item.id, this.now());
+      if (lease) {
+        filtered.push({
+          item,
+          reason: `frontier_item_leased: held by task ${lease.task_id} until ${lease.expires_at}`,
+        });
+        continue;
+      }
+
+      // 5. Annotate items whose scope cannot be verified (no resolvable IP or hostname)
       const nodeIds = [item.node_id, item.edge_source, item.edge_target].filter(Boolean) as string[];
       if (nodeIds.length > 0 && nodeIds.every(nid => !this.resolveHostIp(nid) && !this.resolveHostname(nid))) {
         item.scope_unverified = true;
@@ -1659,6 +1675,18 @@ export class GraphEngine {
     const reaped = this.agentMgr.reapStaleHeartbeats(now);
     if (reaped > 0) this.persist();
     return reaped;
+  }
+
+  /**
+   * F4 (regression visibility): re-trigger the same reconciliation that
+   * runs on engine startup. Used by tests and operators investigating a
+   * stuck-running task surface to flip persisted-running tasks to
+   * 'interrupted' and release the frontier leases they held.
+   */
+  reconcileAgentsOnStartup(): number {
+    const count = this.agentMgr.reconcileOnStartup();
+    if (count > 0) this.persist();
+    return count;
   }
 
   /**

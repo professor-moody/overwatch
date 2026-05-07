@@ -49,6 +49,16 @@ export class AgentManager {
         };
       }
     }
+    // F3: initialize heartbeat_at to the registration time so the
+    // watchdog has a baseline. Without this, a task that crashes before
+    // its first heartbeat is exempt from reaping forever — the frontier
+    // lease then blocks every dispatch attempt against the same item
+    // until manual intervention. With the baseline set, the task gets
+    // one TTL window (default 120s) to call agent_heartbeat; failing
+    // that, the watchdog reaps it and releases the lease.
+    if (task.status === 'running' && !task.heartbeat_at) {
+      task.heartbeat_at = this.ctx.nowIso();
+    }
     this.ctx.agents.set(task.id, task);
     this.ctx.logEvent({
       description: `Agent dispatched: ${task.agent_id} for ${task.frontier_item_id}`,
@@ -192,6 +202,13 @@ export class AgentManager {
   /**
    * On startup, mark any persisted 'running' agents as 'interrupted'
    * since the runtime that spawned them no longer exists.
+   *
+   * F4: also release the frontier lease each interrupted task held.
+   * The normal `updateStatus` terminal path releases via
+   * `frontierLeases.releaseByTask`, but this method mutates status
+   * directly and used to leave persisted leases sitting in the lease
+   * map until their TTL elapsed (default 600s) — blocking every
+   * dispatch attempt against the same item across that window.
    */
   reconcileOnStartup(): number {
     let count = 0;
@@ -199,6 +216,7 @@ export class AgentManager {
       if (task.status === 'running') {
         task.status = 'interrupted';
         task.completed_at = new Date().toISOString();
+        this.ctx.frontierLeases.releaseByTask(task.id);
         count++;
       }
     }
