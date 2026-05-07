@@ -3,6 +3,7 @@ dist/
 .env
 .env.*
 state-*.json
+state-*.journal.jsonl
 *.snap-*.json
 *.js.map
 .DS_Store

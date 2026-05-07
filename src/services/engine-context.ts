@@ -20,6 +20,7 @@ import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
 import { eventIdOrUuid } from './deterministic-id.js';
 import { FrontierLeases } from './frontier-leases.js';
+import { MutationJournal, type MutationType } from './mutation-journal.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -156,6 +157,11 @@ export class EngineContext {
   // takes a lease so other agents see "in progress" and skip it. Reaped
   // by the same watchdog that handles heartbeat timeouts.
   frontierLeases: FrontierLeases;
+  // P2.1: write-ahead log. Only constructed for engagements with
+  // `engagement_nonce` (deterministic-ID engagements). Legacy engagements
+  // continue to rely on debounced snapshots only.
+  mutationJournal: MutationJournal | null;
+  journalSnapshotSeq: number;        // last seq that's already in the persisted snapshot
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;
@@ -183,6 +189,30 @@ export class EngineContext {
     this.checkpointOptions = {};
     this.deterministicSeq = 0;
     this.frontierLeases = new FrontierLeases();
+    // P2.1: WAL is opt-in via engagement_nonce — same migration boundary
+    // as deterministic IDs. Legacy engagements (no nonce) skip journaling
+    // entirely so existing tests / state files continue to behave as before.
+    this.mutationJournal = config.engagement_nonce ? new MutationJournal(stateFilePath) : null;
+    this.journalSnapshotSeq = 0;
+  }
+
+  /**
+   * P2.1: append a mutation to the WAL when journaling is enabled.
+   * No-op for legacy engagements (no engagement_nonce). Caller must invoke
+   * this BEFORE applying the mutation in memory — the contract is "if it's
+   * in the journal it's durable, regardless of in-memory state."
+   *
+   * Throws on journal write failure; callers must abort the in-memory
+   * change in that case.
+   */
+  journalMutation(type: MutationType, payload: Record<string, unknown>, source_action_id?: string): void {
+    if (!this.mutationJournal) return;
+    this.mutationJournal.append({
+      type,
+      payload,
+      ...(source_action_id ? { source_action_id } : {}),
+      ts: this.nowIso(),
+    });
   }
 
   /**

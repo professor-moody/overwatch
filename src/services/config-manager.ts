@@ -18,9 +18,16 @@ export interface ConfigManagerHost {
 
 /**
  * Seed initial graph nodes from engagement config (called once on fresh init).
+ *
+ * P1.3 / P2.2: prefer the engagement's persisted `created_at` for seed
+ * timestamps over wall-clock. Engagement creation is when these nodes
+ * conceptually came into existence; using a stable, persisted timestamp
+ * makes graph state byte-reproducible across engine restarts and tape
+ * replays. Falls back to `ctx.nowIso()` (which honors `withClock`) when
+ * `created_at` is missing.
  */
 export function seedFromConfig(host: ConfigManagerHost): void {
-  const now = new Date().toISOString();
+  const now = host.ctx.config.created_at || host.ctx.nowIso();
 
   // CIDRs are used for scope validation only — hosts are created when tools discover them
 

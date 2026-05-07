@@ -290,6 +290,11 @@ export class StatePersistence {
       // P1.4: frontier leases. Survive restart so a still-running agent
       // doesn't lose its claim across an engine restart.
       frontierLeases: this.ctx.frontierLeases.serialize(),
+      // P2.1: journal sequence checkpoint. The snapshot is durable AS OF
+      // the journal entry numbered `journalSnapshotSeq`; on next load,
+      // replay journal entries with `seq > journalSnapshotSeq` to catch
+      // any post-snapshot mutations that hadn't been re-snapshotted yet.
+      journalSnapshotSeq: this.ctx.mutationJournal?.peekSeq() ?? 0,
     };
     const json = JSON.stringify(data);
     const serializeEnd = Date.now();
@@ -346,6 +351,16 @@ export class StatePersistence {
       while (snaps.length > MAX_SNAPSHOTS) {
         const oldest = snaps.shift()!;
         try { unlinkSync(join(snapDir, oldest)); } catch { /* best effort */ }
+      }
+      // P2.1: compact the WAL — entries up to the seq stored in the
+      // freshly-rotated snapshot are redundant. Read the seq back from
+      // the just-written snapshot file so it matches what's on disk.
+      if (this.ctx.mutationJournal) {
+        try {
+          const snapData = JSON.parse(readFileSync(snapPath, 'utf-8'));
+          const upTo = typeof snapData.journalSnapshotSeq === 'number' ? snapData.journalSnapshotSeq : 0;
+          if (upTo > 0) this.ctx.mutationJournal.compactUpTo(upTo);
+        } catch { /* journal compaction is best-effort */ }
       }
     } catch (err) {
       this.ctx.log(`Snapshot rotation error: ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
@@ -422,6 +437,12 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     // P1.4: restore frontier leases.
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
+    // P2.1: rollback discards any journal entries since the snapshot —
+    // they describe mutations that don't apply to this older state.
+    if (this.ctx.mutationJournal) {
+      this.ctx.mutationJournal.truncate();
+      this.ctx.mutationJournal.setNextSeq(typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0);
+    }
     this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
     this.persistImmediate();
     return true;
@@ -462,6 +483,96 @@ export class StatePersistence {
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
     // P1.4: restore frontier leases.
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
+
+    // P2.1: WAL replay. For deterministic-ID engagements, the snapshot
+    // captures state AS OF `journalSnapshotSeq`. If the engine crashed
+    // between a journal append and the next snapshot rotation, the journal
+    // file holds entries with `seq > journalSnapshotSeq` that aren't yet
+    // in this snapshot. Replay them here so the in-memory graph reflects
+    // the last durable mutation. After replay, truncate the journal — the
+    // re-issued snapshot covers everything we just replayed.
+    if (this.ctx.mutationJournal) {
+      const snapshotSeq = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
+      this.ctx.mutationJournal.setNextSeq(snapshotSeq);
+      const replayed = this.ctx.mutationJournal.replay(this.makeMutationApplier(), snapshotSeq);
+      if (replayed > 0) {
+        this.ctx.log(`WAL replay: applied ${replayed} mutation(s) from journal`, undefined, {
+          category: 'system',
+        });
+        // Force an immediate snapshot so the journal can be safely truncated.
+        this.persistImmediate();
+        this.ctx.mutationJournal.truncate();
+        this.ctx.mutationJournal.setNextSeq(this.ctx.mutationJournal.peekSeq());
+      }
+    }
+  }
+
+  /**
+   * P2.1: factory for the MutationApplier consumed by `MutationJournal.replay`.
+   * Replays each journaled mutation by calling the same code paths the
+   * original write took — `addNode`/`addEdge` etc. — but with journaling
+   * temporarily suppressed (via `mutationJournal: null`) so we don't
+   * double-record entries during replay.
+   */
+  private makeMutationApplier(): import('./mutation-journal.js').MutationApplier {
+    const ctx = this.ctx;
+    return {
+      apply(entry) {
+        // Suppress nested journaling during replay.
+        const savedJournal = ctx.mutationJournal;
+        ctx.mutationJournal = null;
+        try {
+          switch (entry.type) {
+            case 'add_node': {
+              const props = (entry.payload as { props: NodeProperties }).props;
+              if (!ctx.graph.hasNode(props.id)) {
+                ctx.graph.addNode(props.id, props);
+              }
+              break;
+            }
+            case 'merge_node_attrs': {
+              const props = (entry.payload as { props: NodeProperties }).props;
+              if (ctx.graph.hasNode(props.id)) {
+                ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
+              } else {
+                ctx.graph.addNode(props.id, props);
+              }
+              break;
+            }
+            case 'add_edge': {
+              const p = entry.payload as { source: string; target: string; props: import('../types.js').EdgeProperties };
+              if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) break;
+              const existingEdges = ctx.graph.edges(p.source, p.target);
+              let merged = false;
+              for (const eid of existingEdges) {
+                const ea = ctx.graph.getEdgeAttributes(eid);
+                if (ea.type === p.props.type) {
+                  ctx.graph.mergeEdgeAttributes(eid, p.props as Partial<import('../types.js').EdgeProperties>);
+                  merged = true;
+                  break;
+                }
+              }
+              if (!merged) {
+                const baseKey = `${p.source}--${p.props.type}--${p.target}`;
+                try { ctx.graph.addEdgeWithKey(baseKey, p.source, p.target, p.props); } catch { /* edge already exists */ }
+              }
+              break;
+            }
+            case 'drop_edge': {
+              const p = entry.payload as { edge_id: string };
+              if (ctx.graph.hasEdge(p.edge_id)) ctx.graph.dropEdge(p.edge_id);
+              break;
+            }
+            default:
+              // Unknown / future types are tolerated (forward-compat for
+              // journals written by a newer version of the engine).
+              break;
+          }
+        } finally {
+          ctx.mutationJournal = savedJournal;
+        }
+      },
+    };
   }
 
   recoverFromSnapshot(builtinRules: InferenceRule[]): boolean {

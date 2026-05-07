@@ -185,7 +185,18 @@ export class GraphEngine {
       }
     } else {
       this.seedFromConfig();
-      this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
+      // P2.2: pin the construction-time timestamp to `created_at` so the
+      // initial log event is deterministic across replays. Without this,
+      // wall-clock leaks into the activity-log digest and breaks the
+      // golden-master determinism guarantee.
+      const seedAt = this.ctx.config.created_at;
+      if (seedAt) {
+        this.ctx.withClock(seedAt, () => {
+          this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
+        });
+      } else {
+        this.log('Engagement initialized from config', undefined, { category: 'system', event_type: 'system' });
+      }
     }
 
     this.syncObjectiveNodes();
@@ -236,7 +247,15 @@ export class GraphEngine {
   // =============================================
 
   addNode(props: NodeProperties): string {
-    if (this.ctx.graph.hasNode(props.id)) {
+    // P2.1: WAL append before in-memory mutation. Differentiated record
+    // for `add_node` (new) vs `merge_node_attrs` (update) so replay can
+    // call the same code path the original write took.
+    const isUpdate = this.ctx.graph.hasNode(props.id);
+    this.ctx.journalMutation(
+      isUpdate ? 'merge_node_attrs' : 'add_node',
+      { props },
+    );
+    if (isUpdate) {
       // P2.1: type-guard on merge. Previously, a second writer (e.g. an
       // AzureHound role assignment) could overwrite an existing node's
       // `type` simply by passing the same ID with a different type — a
@@ -276,6 +295,11 @@ export class GraphEngine {
   }
 
   addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean } {
+    // P2.1: journal the intent. We can't tell yet whether this will be a
+    // new edge or a property-merge on an existing one, so the entry is
+    // type=add_edge with the full props. Replay code re-runs addEdge so
+    // it independently makes the same determination.
+    this.ctx.journalMutation('add_edge', { source, target, props });
     // Check for duplicate edge of same type
     const existingEdges = this.ctx.graph.edges(source, target);
     // For scope-bearing Azure RBAC edges, dedupe must include `scope` so
@@ -335,6 +359,8 @@ export class GraphEngine {
   dropEdgeByRef(source: string, target: string, type: EdgeType): string | null {
     const edgeId = this.findEdgeId(source, target, type);
     if (!edgeId) return null;
+    // P2.1: journal the drop before applying.
+    this.ctx.journalMutation('drop_edge', { source, target, edge_type: type, edge_id: edgeId });
     this.ctx.graph.dropEdge(edgeId);
     this.invalidatePathGraph();
     this.invalidateAllCaches();

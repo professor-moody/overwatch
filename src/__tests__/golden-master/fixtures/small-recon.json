@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "small-recon",
+  "description": "Tiny synthetic engagement: discover one host, add a service, ingest a finding. Used to validate determinism across the full pipeline.",
+  "config": {
+    "id": "tape-small-recon",
+    "name": "tape: small recon",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "scope": {
+      "cidrs": [
+        "10.10.10.0/24"
+      ],
+      "domains": [],
+      "exclusions": []
+    },
+    "objectives": [],
+    "opsec": {
+      "name": "pentest",
+      "max_noise": 0.7
+    },
+    "engagement_nonce": "deadbeef000000000000000000000000000000000000000000000000cafebabe",
+    "hash_chain_enabled": true
+  },
+  "operations": [
+    {
+      "kind": "add_node",
+      "now": "2026-01-01T00:00:01.000Z",
+      "props": {
+        "id": "host-10-10-10-5",
+        "type": "host",
+        "label": "10.10.10.5",
+        "ip": "10.10.10.5",
+        "alive": true,
+        "discovered_at": "2026-01-01T00:00:01.000Z",
+        "confidence": 1
+      }
+    },
+    {
+      "kind": "add_node",
+      "now": "2026-01-01T00:00:02.000Z",
+      "props": {
+        "id": "svc-10-10-10-5-445",
+        "type": "service",
+        "label": "smb/445",
+        "port": 445,
+        "protocol": "tcp",
+        "service_name": "smb",
+        "discovered_at": "2026-01-01T00:00:02.000Z",
+        "confidence": 1
+      }
+    },
+    {
+      "kind": "add_edge",
+      "now": "2026-01-01T00:00:03.000Z",
+      "source": "host-10-10-10-5",
+      "target": "svc-10-10-10-5-445",
+      "props": {
+        "type": "RUNS",
+        "confidence": 1,
+        "discovered_at": "2026-01-01T00:00:03.000Z",
+        "discovered_by": "tape"
+      }
+    },
+    {
+      "kind": "log_event",
+      "now": "2026-01-01T00:00:04.000Z",
+      "description": "Tape checkpoint",
+      "event_type": "system",
+      "details": {
+        "tape": "small-recon"
+      }
+    }
+  ],
+  "expected_graph_hash": "49c910ecc1640c118bc6ba81329ee36fa4025ad266356be61e0c30dfec142216",
+  "expected_activity_digest": "cb9caf20ce37e30c4035d7b15968b5b13b6a413644f6547cb051b68a5e599b81"
+}
