@@ -27,6 +27,12 @@ export { parseZap } from './zap.js';
 export { parseSqlmap } from './sqlmap.js';
 export { parseWpscan } from './wpscan.js';
 export { parseGetNPUsers, parseGetUserSPNs, parseGetTGT, parseGetST, parseSmbclient, parseWmiexec, parsePsexec } from './impacket-suite.js';
+export { parseJwtTool } from './jwt-tool.js';
+export { parseRoadrecon } from './roadrecon.js';
+export { parseOkta } from './okta.js';
+export { parseMicroBurst } from './microburst.js';
+export { parseAadInternals } from './aadinternals.js';
+export { parseEvilginx } from './evilginx.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -52,6 +58,12 @@ import { parseZap } from './zap.js';
 import { parseSqlmap } from './sqlmap.js';
 import { parseWpscan } from './wpscan.js';
 import { parseGetNPUsers, parseGetUserSPNs, parseGetTGT, parseGetST, parseSmbclient, parseWmiexec, parsePsexec } from './impacket-suite.js';
+import { parseJwtTool } from './jwt-tool.js';
+import { parseRoadrecon } from './roadrecon.js';
+import { parseOkta } from './okta.js';
+import { parseMicroBurst } from './microburst.js';
+import { parseAadInternals } from './aadinternals.js';
+import { parseEvilginx } from './evilginx.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -112,6 +124,22 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'impacket-wmiexec': parseWmiexec,
   'psexec': parsePsexec,
   'impacket-psexec': parsePsexec,
+  // Phase 2 (enterprise readiness): SSO / cloud-identity parsers.
+  'jwt-tool': parseJwtTool,
+  'jwt': parseJwtTool,
+  'jwt_tool': parseJwtTool,
+  'oidc-token': parseJwtTool,
+  'roadrecon': parseRoadrecon,
+  'roadtools': parseRoadrecon,
+  'okta': parseOkta,
+  'okta-cli': parseOkta,
+  'microburst': parseMicroBurst,
+  'micro-burst': parseMicroBurst,
+  'get-azpasswords': parseMicroBurst,
+  'aadinternals': parseAadInternals,
+  'aad-internals': parseAadInternals,
+  'evilginx': parseEvilginx,
+  'evilginx2': parseEvilginx,
 };
 
 export function getSupportedParsers(): string[] {

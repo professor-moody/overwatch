@@ -148,6 +148,28 @@ export function cloudNetworkId(arnOrLabel: string): string {
   return `cloud-network-${normalizeKeyPart(arnOrLabel)}`;
 }
 
+// ============================================================
+// Identity tier (Phase 1 enterprise readiness)
+// ============================================================
+
+/** Canonical id for an `idp` node (Okta org, Entra tenant, …). */
+export function idpId(kind: string, tenantOrIssuer: string): string {
+  return `idp-${normalizeKeyPart(kind)}-${normalizeKeyPart(tenantOrIssuer)}`;
+}
+
+/** Canonical id for an `idp_application` (registered app). */
+export function idpApplicationId(idpKind: string, tenantOrIssuer: string, clientIdOrName: string): string {
+  return `idp-app-${normalizeKeyPart(idpKind)}-${normalizeKeyPart(tenantOrIssuer)}-${normalizeKeyPart(clientIdOrName)}`;
+}
+
+/**
+ * Canonical id for an `idp_principal`. Prefer the IdP-internal user id
+ * when available (stable across renames); fall back to UPN/email.
+ */
+export function idpPrincipalId(idpKind: string, tenantOrIssuer: string, userIdOrUpn: string): string {
+  return `idp-principal-${normalizeKeyPart(idpKind)}-${normalizeKeyPart(tenantOrIssuer)}-${normalizeKeyPart(userIdOrUpn)}`;
+}
+
 export function splitQualifiedAccount(raw: string): { domain?: string; username: string } {
   const match = raw.match(/^([^\\/]+)[\\/](.+)$/);
   if (!match) {
