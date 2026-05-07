@@ -22,7 +22,7 @@
 
 import { createHash } from 'crypto';
 import type { GraphEngine } from './graph-engine.js';
-import type { EngagementConfig, ExportedGraph, Finding, NodeProperties, EdgeProperties, EdgeType } from '../types.js';
+import type { EngagementConfig, ExportedGraph, Finding, NodeProperties, EdgeProperties } from '../types.js';
 
 export type TapeOperation =
   | { kind: 'add_node'; now: string; props: NodeProperties }
@@ -58,9 +58,13 @@ function canonicalJson(value: unknown): string {
 }
 
 export function hashGraph(graph: ExportedGraph): string {
-  // Sort nodes/edges by id so traversal order doesn't perturb the hash.
+  // Sort nodes/edges by a stable key so traversal order doesn't perturb
+  // the hash. Edge.id is optional in ExportedGraphEdge; fall back to a
+  // composite of (source, target, type) which is itself stable.
+  const edgeKey = (e: ExportedGraph['edges'][number]) =>
+    e.id ?? `${e.source}|${e.target}|${e.properties.type}`;
   const nodes = [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id));
-  const edges = [...graph.edges].sort((a, b) => a.id.localeCompare(b.id));
+  const edges = [...graph.edges].sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
   const cold = graph.cold_nodes ? [...graph.cold_nodes].sort((a, b) => a.id.localeCompare(b.id)) : undefined;
   const canonical = canonicalJson({ nodes, edges, ...(cold ? { cold_nodes: cold } : {}) });
   return createHash('sha256').update(canonical).digest('hex');

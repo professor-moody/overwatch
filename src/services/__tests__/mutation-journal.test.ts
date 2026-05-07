@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync, rmSync, readFileSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { MutationJournal } from '../mutation-journal.js';
