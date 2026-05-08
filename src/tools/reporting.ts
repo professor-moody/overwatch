@@ -2,8 +2,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { SkillIndex } from '../services/skill-index.js';
-import { generateFullReport, buildFindings, buildAttackNarrative, buildRemediationRanking } from '../services/report-generator.js';
-import type { ReportInput } from '../services/report-generator.js';
+import { generateFullReport, buildFindings, buildAttackNarrative, buildRemediationRanking, buildAttackPaths } from '../services/report-generator.js';
+import type { ReportInput, AttackPath } from '../services/report-generator.js';
 import { renderReportHtml } from '../services/report-html.js';
 import type { HtmlReportData, HtmlTimelineEntry, HtmlComplianceMapping } from '../services/report-html.js';
 import { runRetrospective, buildCredentialChains } from '../services/retrospective.js';
@@ -89,6 +89,10 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           .describe('Theme for HTML output'),
         client_safe: z.boolean().default(false)
           .describe('Phase I: produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.'),
+        include_attack_paths: z.boolean().default(true)
+          .describe('Include synthesized attack-path chains from current access to each engagement objective. Decorated with per-edge confidence and inferred-vs-confirmed flags.'),
+        max_paths_per_objective: z.number().int().min(1).max(20).default(3)
+          .describe('Cap on attack paths rendered per objective (top-K by confidence).'),
       },
       annotations: {
         readOnlyHint: false,
@@ -101,6 +105,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       format: rawFormat, include_evidence, include_narrative,
       include_retrospective, include_compliance, include_attack_navigator,
       include_gap_analysis, write_to_disk, output_dir, theme, client_safe,
+      include_attack_paths, max_paths_per_objective,
     }) => {
       const format = rawFormat === 'md' ? 'markdown' : rawFormat;
       const redactionOpts = { client_safe: client_safe === true };
@@ -127,8 +132,29 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         };
       }
 
+      // B.1: synthesize attack paths from current access to each
+      // objective. The path analyzer takes the objective id and walks
+      // from any host with live access to any node matching the
+      // objective's target_node_type + target_criteria; we decorate the
+      // result with edge metadata so the report can render confirmed vs
+      // inferred hops with per-edge confidence.
+      let attackPaths: AttackPath[] | undefined;
+      if (include_attack_paths) {
+        const all: AttackPath[] = [];
+        for (const obj of config.objectives) {
+          const raw = engine.findPathsToObjective(obj.id, max_paths_per_objective);
+          if (raw.length === 0) continue;
+          all.push(...buildAttackPaths(raw, graph, {
+            objective_id: obj.id,
+            objective_label: obj.description,
+          }));
+        }
+        if (all.length > 0) attackPaths = all;
+      }
+
       const reportInput: ReportInput = {
         config, graph, history, agents, retrospective,
+        attack_paths: attackPaths,
       };
 
       // F9: wire the evidence store loader so markdown/html previews can

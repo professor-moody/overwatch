@@ -86,6 +86,34 @@ export interface NarrativePhase {
   paragraphs: string[];
 }
 
+/**
+ * One step in a reportable attack path. Carries the node we landed on
+ * and the edge we traversed to reach the next step (omitted on the
+ * terminal node). Consumed by `renderAttackPathsSection`.
+ */
+export interface AttackPathStep {
+  node_id: string;
+  label: string;
+  type: string;
+  edge_to_next?: {
+    type: string;
+    confidence: number;
+    inferred: boolean;
+    rule?: string;
+  };
+}
+
+export interface AttackPath {
+  /** When the path was found by walking from start nodes to a specific objective. */
+  objective_id?: string;
+  objective_label?: string;
+  steps: AttackPathStep[];
+  total_confidence: number;
+  total_opsec_noise: number;
+  /** Whether any hop is inferred-only (no confirmed evidence). High-value signal for the report. */
+  contains_inferred: boolean;
+}
+
 export interface ReportOptions {
   include_evidence?: boolean;
   include_narrative?: boolean;
@@ -113,6 +141,11 @@ export interface ReportInput {
     context_improvements: ContextImprovementReport;
     trace_quality: TraceQualityReport;
   }>;
+  /** Pre-computed attack paths to render in the Attack Paths section.
+   * Caller (typically the generate_report MCP tool) walks objectives via
+   * `engine.findPathsToObjective` and decorates with edge metadata using
+   * `buildAttackPaths`. Empty/undefined → section is omitted. */
+  attack_paths?: AttackPath[];
 }
 
 // ============================================================
@@ -785,6 +818,151 @@ function buildPhaseNarrative(
 // Full Markdown Report
 // ============================================================
 
+/**
+ * Decorate raw `PathResult`-shaped tuples (just node ID lists) with the
+ * label/type of each step and the edge attributes traversed between
+ * consecutive steps. The edge picker prefers a confirmed edge of any
+ * type between (a→b); if none exists, falls back to the highest-
+ * confidence edge available, which can be an inferred edge.
+ *
+ * Stamped fields per step:
+ *   - `label` from the node's label property (or the node id as fallback)
+ *   - `type` from the node's `type` property
+ *   - `edge_to_next` (omitted on the terminal step) — type, confidence,
+ *     inferred flag (true when the edge has `inferred_by_rule` and no
+ *     `confirmed_at`), and the rule name when inferred.
+ */
+export function buildAttackPaths(
+  rawPaths: Array<{ nodes: string[]; total_confidence: number; total_opsec_noise: number }>,
+  graph: ExportedGraph,
+  opts: { objective_id?: string; objective_label?: string } = {},
+): AttackPath[] {
+  const nodeById = new Map<string, NodeProperties>();
+  for (const n of graph.nodes) nodeById.set(n.id, n.properties);
+
+  // Group edges by (source, target) key for fast lookup. Keep all
+  // candidates; the picker chooses confirmed first, then highest conf.
+  const edgesBetween = new Map<string, ExportedGraphEdge[]>();
+  for (const e of graph.edges) {
+    const k = `${e.source} ${e.target}`;
+    const arr = edgesBetween.get(k);
+    if (arr) arr.push(e);
+    else edgesBetween.set(k, [e]);
+  }
+
+  const pickEdge = (src: string, tgt: string): ExportedGraphEdge | null => {
+    const candidates = edgesBetween.get(`${src} ${tgt}`) ?? edgesBetween.get(`${tgt} ${src}`) ?? [];
+    if (candidates.length === 0) return null;
+    // Confirmed first — anything without `inferred_by_rule` OR with `confirmed_at`.
+    const confirmed = candidates.find(e => !e.properties.inferred_by_rule || e.properties.confirmed_at);
+    if (confirmed) return confirmed;
+    // Otherwise highest-confidence inferred.
+    return candidates.reduce((best, e) =>
+      (e.properties.confidence ?? 0) > (best.properties.confidence ?? 0) ? e : best);
+  };
+
+  const out: AttackPath[] = [];
+  // Dedup by node-set hash so the same chain reached via two objectives
+  // doesn't print twice.
+  const seen = new Set<string>();
+  for (const raw of rawPaths) {
+    const key = raw.nodes.join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const steps: AttackPathStep[] = [];
+    let containsInferred = false;
+    for (let i = 0; i < raw.nodes.length; i++) {
+      const id = raw.nodes[i];
+      const props = nodeById.get(id);
+      const step: AttackPathStep = {
+        node_id: id,
+        label: (props?.label as string | undefined) ?? id,
+        type: (props?.type as string | undefined) ?? 'unknown',
+      };
+      if (i < raw.nodes.length - 1) {
+        const edge = pickEdge(id, raw.nodes[i + 1]);
+        if (edge) {
+          const inferred = !!edge.properties.inferred_by_rule && !edge.properties.confirmed_at;
+          if (inferred) containsInferred = true;
+          step.edge_to_next = {
+            type: edge.properties.type as string,
+            confidence: (edge.properties.confidence as number | undefined) ?? 0,
+            inferred,
+            rule: inferred ? (edge.properties.inferred_by_rule as string | undefined) : undefined,
+          };
+        }
+      }
+      steps.push(step);
+    }
+    out.push({
+      objective_id: opts.objective_id,
+      objective_label: opts.objective_label,
+      steps,
+      total_confidence: raw.total_confidence,
+      total_opsec_noise: raw.total_opsec_noise,
+      contains_inferred: containsInferred,
+    });
+  }
+  return out;
+}
+
+/**
+ * Render the Attack Paths section in markdown. Returns an empty string
+ * when there are no paths so the caller can splice unconditionally.
+ */
+export function renderAttackPathsSection(paths: AttackPath[]): string {
+  if (paths.length === 0) return '';
+  const lines: string[] = [];
+  lines.push('## Attack Paths');
+  lines.push('');
+  lines.push('Synthesized attack chains from current access to engagement objectives. ' +
+    'Each path lists the node traversed, the edge type taken, and the per-edge confidence. ' +
+    'Inferred edges (flagged below) have not been live-replayed; confirmed edges are evidence-backed.');
+  lines.push('');
+
+  // Group by objective so multi-objective reports stay readable.
+  const byObjective = new Map<string, AttackPath[]>();
+  for (const p of paths) {
+    const key = p.objective_id ?? '__none__';
+    const arr = byObjective.get(key);
+    if (arr) arr.push(p);
+    else byObjective.set(key, [p]);
+  }
+
+  for (const [objKey, group] of byObjective.entries()) {
+    if (objKey !== '__none__') {
+      const objLabel = group[0].objective_label ?? objKey;
+      lines.push(`### Objective: ${objLabel}`);
+      lines.push('');
+    }
+
+    let pathIdx = 1;
+    for (const path of group) {
+      lines.push(`**Path ${pathIdx}** — confidence ${path.total_confidence.toFixed(2)}, ` +
+        `OPSEC noise ${path.total_opsec_noise.toFixed(2)}` +
+        (path.contains_inferred ? ', **contains inferred hops**' : ''));
+      lines.push('');
+      for (let i = 0; i < path.steps.length; i++) {
+        const step = path.steps[i];
+        const indent = '  '.repeat(i);
+        lines.push(`${indent}${i + 1}. ${step.label} \`(${step.type})\``);
+        if (step.edge_to_next) {
+          const edge = step.edge_to_next;
+          const tag = edge.inferred
+            ? `inferred by \`${edge.rule ?? 'rule'}\`, conf ${edge.confidence.toFixed(2)}`
+            : `confirmed, conf ${edge.confidence.toFixed(2)}`;
+          lines.push(`${indent}   → \`${edge.type}\` (${tag})`);
+        }
+      }
+      lines.push('');
+      pathIdx++;
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export function generateFullReport(input: ReportInput, options: ReportOptions = {}): string {
   const {
     include_evidence = true,
@@ -1052,6 +1230,15 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push(`| ${escapeTableCell(obj.description)} | ${status} | ${at} |`);
   }
   lines.push('');
+
+  // === Attack Paths === (requires caller to pass `attack_paths` in input)
+  if (input.attack_paths && input.attack_paths.length > 0) {
+    const section = renderAttackPathsSection(input.attack_paths);
+    if (section) {
+      lines.push(section);
+      lines.push('');
+    }
+  }
 
   // === Discovery Summary ===
   lines.push('## Discovery Summary');
