@@ -2049,6 +2049,7 @@ export class GraphEngine {
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),
       active_agents: Array.from(this.ctx.agents.values()).filter(a => a.status === 'running'),
+      agents: Array.from(this.ctx.agents.values()),
       recent_activity: this.filterRecentActivity({ activityCount, includeReasoning, includeSystem }),
       access_summary: {
         compromised_hosts: compromised,

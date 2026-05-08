@@ -905,6 +905,8 @@ export interface EngagementState {
   objectives: EngagementObjective[];
   frontier: FrontierItem[];
   active_agents: AgentTask[];
+  /** All agent tasks regardless of status (running, completed, failed, interrupted). The dashboard reads this for the AgentsPanel; `active_agents` stays running-only for the prompt-generator's per-agent context. */
+  agents: AgentTask[];
   recent_activity: Array<{
     event_id: string;
     timestamp: string;
