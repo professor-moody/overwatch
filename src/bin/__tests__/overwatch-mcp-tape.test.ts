@@ -99,3 +99,17 @@ process.stdin.on('end', () => process.exit(0));
     expect(s2c[2].parsed.id).toBe(3);
   }, 30_000);
 });
+
+// Track A regression: --out is accepted as an alias for --tape.
+// Earlier docs referenced --out; the proxy parser only accepted --tape,
+// so anyone copying the doc snippet hit a silent flag-not-recognized.
+describe('overwatch-mcp-tape arg parsing', () => {
+  it('accepts --out as an alias for --tape', async () => {
+    const { parseArgs } = await import('../overwatch-mcp-tape.js');
+    const aliased = parseArgs(['--out', '/tmp/x.jsonl', '--', 'node', 'srv.js']);
+    expect(aliased.tapePath).toBe('/tmp/x.jsonl');
+    expect(aliased.upstream).toEqual(['node', 'srv.js']);
+    const canonical = parseArgs(['--tape', '/tmp/y.jsonl', '--', 'node', 'srv.js']);
+    expect(canonical.tapePath).toBe('/tmp/y.jsonl');
+  });
+});

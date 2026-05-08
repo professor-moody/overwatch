@@ -30,13 +30,15 @@ interface ParsedArgs {
   upstream: string[];
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = { quiet: false, upstream: [] };
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
     if (arg === '--') { out.upstream = argv.slice(i + 1); break; }
-    if (arg === '--tape') { out.tapePath = argv[++i]; }
+    // `--tape` is the canonical flag; `--out` is accepted as an alias
+    // because earlier docs referenced it. Both behave identically.
+    if (arg === '--tape' || arg === '--out') { out.tapePath = argv[++i]; }
     else if (arg === '--tape-dir') { out.tapeDir = argv[++i]; }
     else if (arg === '--session') { out.sessionId = argv[++i]; }
     else if (arg === '--quiet') { out.quiet = true; }
@@ -143,7 +145,23 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { if (!child.killed) child.kill('SIGTERM'); });
 }
 
-main().catch((err) => {
-  process.stderr.write(`[overwatch-mcp-tape] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(1);
-});
+// Only run main when invoked directly. The test harness imports this
+// module to exercise parseArgs in isolation; running main() at import
+// time spawns a child and exits on missing args.
+const isDirect = (() => {
+  if (typeof require !== 'undefined' && (require as any).main === module) return true;
+  try {
+    const here = new URL(import.meta.url).pathname;
+    const argv1 = process.argv[1];
+    return !!argv1 && (here === argv1 || here.endsWith(argv1));
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirect) {
+  main().catch((err) => {
+    process.stderr.write(`[overwatch-mcp-tape] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
