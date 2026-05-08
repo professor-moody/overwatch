@@ -33,6 +33,9 @@ export { parseOkta } from './okta.js';
 export { parseMicroBurst } from './microburst.js';
 export { parseAadInternals } from './aadinternals.js';
 export { parseEvilginx } from './evilginx.js';
+export { parseGitHubActionsOidc } from './github-actions-oidc.js';
+export { parseGitlabCiOidc } from './gitlab-ci-oidc.js';
+export { parseCircleciOidc } from './circleci-oidc.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -64,6 +67,9 @@ import { parseOkta } from './okta.js';
 import { parseMicroBurst } from './microburst.js';
 import { parseAadInternals } from './aadinternals.js';
 import { parseEvilginx } from './evilginx.js';
+import { parseGitHubActionsOidc } from './github-actions-oidc.js';
+import { parseGitlabCiOidc } from './gitlab-ci-oidc.js';
+import { parseCircleciOidc } from './circleci-oidc.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -140,6 +146,14 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'aad-internals': parseAadInternals,
   'evilginx': parseEvilginx,
   'evilginx2': parseEvilginx,
+  // CI / OIDC federation parsers (Phase 5).
+  'github-actions-oidc': parseGitHubActionsOidc,
+  'gha-oidc': parseGitHubActionsOidc,
+  'aws-iam-trust-gha': parseGitHubActionsOidc,
+  'gitlab-ci-oidc': parseGitlabCiOidc,
+  'gitlab-ci': parseGitlabCiOidc,
+  'circleci-oidc': parseCircleciOidc,
+  'circleci': parseCircleciOidc,
 };
 
 export function getSupportedParsers(): string[] {

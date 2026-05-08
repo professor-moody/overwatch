@@ -223,6 +223,76 @@ function hybridIdentityPivot(host: CrossTierInferenceHost, agentId: string): num
   return added;
 }
 
+// =============================================
+// CI_TRUST_WILDCARD
+// =============================================
+
+/**
+ * Detect overly-broad CI/OIDC trust patterns. A pattern is "broad"
+ * when a wildcard appears outside a domain-bounded position — for
+ * GitHub Actions that's `repo:*` (any repo on the planet), not
+ * `repo:acme/*` (the org-bounded variant).
+ *
+ * Returns the count of new findings emitted. Each finding lives on
+ * the idp_application node itself (annotated as `partial: false`,
+ * `wildcard_trust: true`, plus a `wildcard_trust_reason` describing
+ * the bad position) so downstream consumers can surface it without
+ * a separate finding store.
+ */
+function ciTrustWildcard(host: CrossTierInferenceHost, agentId: string): number {
+  let added = 0;
+  for (const app of nodesByType(host.ctx, 'idp_application')) {
+    const idpId = app.attrs.idp_id as string | undefined;
+    if (!idpId) continue;
+    const idp = host.ctx.graph.hasNode(idpId) ? host.ctx.graph.getNodeAttributes(idpId) : null;
+    const idpKind = (idp?.idp_kind ?? '') as string;
+    if (!/^ci_/.test(idpKind)) continue; // only CI providers
+    const pattern = app.attrs.sub_claim_pattern as string | undefined;
+    if (!pattern) continue;
+
+    // GHA: pattern shape is `repo:<owner>/<repo>:ref:<...>` or
+    // `repo:<owner>/<repo>:environment:<...>` or `repo:<owner>/*` (broad
+    // but bounded by org) or `repo:*` (genuinely wide open).
+    //
+    // Bad position: any `*` that comes BEFORE the first `/` in the repo
+    // segment. We extract the repo segment via the prefix `repo:` and
+    // check whether a wildcard appears before the slash.
+    const m = pattern.match(/^repo:([^:]*)/i);
+    let reason: string | undefined;
+    if (m) {
+      const repoSegment = m[1];
+      if (repoSegment === '*' || /^\*/.test(repoSegment)) {
+        reason = 'unbounded wildcard at owner position (e.g. `repo:*`)';
+      } else if (!repoSegment.includes('/')) {
+        reason = 'no repo path component — claim only bounds the owner segment';
+      } else {
+        const ownerPart = repoSegment.split('/')[0];
+        if (ownerPart.includes('*')) {
+          reason = 'wildcard inside the owner segment (e.g. `repo:acme*/...`)';
+        }
+      }
+    } else if (pattern.includes('*')) {
+      // Non-`repo:` patterns (Circle / GitLab) — flag any naked wildcard.
+      reason = 'wildcard outside a domain-bounded segment';
+    }
+    if (!reason) continue;
+
+    if (app.attrs.wildcard_trust === true) continue; // already flagged
+    host.ctx.graph.mergeNodeAttributes(app.id, {
+      wildcard_trust: true,
+      wildcard_trust_reason: reason,
+      finding_severity: 'high',
+    });
+    host.log(
+      `CI trust wildcard on ${app.attrs.label ?? app.id}: ${reason} (pattern: ${pattern})`,
+      agentId,
+      { category: 'inference', outcome: 'failure' },
+    );
+    added++;
+  }
+  return added;
+}
+
 /**
  * Run all cross-tier inference rules over the current graph. Idempotent.
  * Intended to be called after major ingests (parser output, ingest_*
@@ -232,14 +302,16 @@ export function runCrossTierInference(host: CrossTierInferenceHost, agentId: str
   ssrf_reaches_imds: number;
   oidc_federation_pivot: number;
   hybrid_identity_pivot: number;
+  ci_trust_wildcard: number;
 } {
   const ssrf = ssrfReachesImds(host, agentId);
   const oidc = oidcFederationPivot(host, agentId);
   const hybrid = hybridIdentityPivot(host, agentId);
-  const total = ssrf + oidc + hybrid;
+  const ciWild = ciTrustWildcard(host, agentId);
+  const total = ssrf + oidc + hybrid + ciWild;
   if (total > 0) {
     host.log(
-      `Cross-tier inference: +${ssrf} CAN_REACH (SSRF→IMDS), +${oidc} ASSUMES_ROLE (OIDC fed), +${hybrid} VALID_FOR_IDP_PRINCIPAL (hybrid)`,
+      `Cross-tier inference: +${ssrf} CAN_REACH (SSRF→IMDS), +${oidc} ASSUMES_ROLE (OIDC fed), +${hybrid} VALID_FOR_IDP_PRINCIPAL (hybrid), +${ciWild} CI_TRUST_WILDCARD`,
       agentId,
       { category: 'inference' },
     );
@@ -248,5 +320,6 @@ export function runCrossTierInference(host: CrossTierInferenceHost, agentId: str
     ssrf_reaches_imds: ssrf,
     oidc_federation_pivot: oidc,
     hybrid_identity_pivot: hybrid,
+    ci_trust_wildcard: ciWild,
   };
 }

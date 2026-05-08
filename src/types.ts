@@ -254,7 +254,7 @@ export interface NodeProperties {
   // ISSUES_TOKENS_FOR cloud_identity (and federates with on-prem `domain`).
 
   /** IdP node: which kind of provider this is. */
-  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml';
+  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci';
   /** IdP node: tenant / org identifier (e.g. Okta org subdomain, Entra tenant GUID). */
   tenant_id?: string;
   /** IdP node: OIDC issuer URL (https://login.microsoftonline.com/<tenant>/v2.0). */
@@ -282,6 +282,15 @@ export interface NodeProperties {
   app_scopes?: string[];
   /** idp_application: requires MFA for sign-in (from conditional access / sign-on policy). */
   app_mfa_required?: boolean;
+  /**
+   * CI/OIDC trust subject claim pattern. For GitHub Actions this is
+   * the value of the `token.actions.githubusercontent.com:sub`
+   * StringLike/StringEquals condition in the IAM trust policy
+   * (e.g. `repo:acme/webapp:ref:refs/heads/main` or `repo:acme/*`).
+   * Wildcards outside a domain-bounded position (e.g. `repo:*`) are
+   * flagged as overly broad by the CI_TRUST_WILDCARD inference rule.
+   */
+  sub_claim_pattern?: string;
 
   /** idp_principal: IdP-internal user/group identifier. */
   idp_user_id?: string;
@@ -471,7 +480,7 @@ export interface EngagementConfig {
       azure_subscription?: string;      // Azure subscription id
       gcp_project?: string;             // GCP project id
       cloud_resource_prefix?: string;   // e.g. "arn:aws:lambda:us-east-1:123:function:client-api-*"
-      idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml';
+      idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci';
       tenant_id?: string;
       notes?: string;
     }>;
@@ -607,7 +616,7 @@ export const engagementConfigSchema = z.object({
       azure_subscription: z.string().optional(),
       gcp_project: z.string().optional(),
       cloud_resource_prefix: z.string().optional(),
-      idp_kind: z.enum(['okta', 'entra', 'auth0', 'ping', 'generic_oidc', 'generic_saml']).optional(),
+      idp_kind: z.enum(['okta', 'entra', 'auth0', 'ping', 'generic_oidc', 'generic_saml', 'ci_github_actions', 'ci_gitlab', 'ci_circleci']).optional(),
       tenant_id: z.string().optional(),
       notes: z.string().optional(),
     })).optional(),
