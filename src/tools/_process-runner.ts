@@ -33,6 +33,10 @@ const TARGET_FACING_TECHNIQUES = new Set([
   'web_scan', 'web_fuzz', 'web_brute', 'dir_brute', 'vuln_scan',
   'smb_enum', 'rpc_enum', 'snmp_enum',
   'cred_brute', 'auth_brute', 'spray', 'password_spray',
+  // Track D (Phase 6 enterprise): live token replay against IdP/cloud
+  // APIs. Quiet by default but always target-facing — the curl
+  // invocation always carries an explicit endpoint URL.
+  'token_replay',
 ]);
 
 // Phase D: network-capable binaries that aren't unambiguously target-facing
@@ -210,6 +214,8 @@ const TECHNIQUE_NOISE_DEFAULTS: Record<string, number> = {
   // Common AD-style techniques
   kerberoast: 0.2,
   asreproast: 0.2,
+  // Track D: token replay is a single quiet HTTPS call per invocation.
+  token_replay: 0.05,
 };
 const UNKNOWN_TECHNIQUE_DEFAULT_NOISE = 0.1;
 

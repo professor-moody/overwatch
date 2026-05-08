@@ -36,6 +36,10 @@ export { parseEvilginx } from './evilginx.js';
 export { parseGitHubActionsOidc } from './github-actions-oidc.js';
 export { parseGitlabCiOidc } from './gitlab-ci-oidc.js';
 export { parseCircleciOidc } from './circleci-oidc.js';
+export { parseTokenReplayMsGraph } from './token-replay-msgraph.js';
+export { parseTokenReplayAwsSts } from './token-replay-awssts.js';
+export { parseTokenReplayOkta } from './token-replay-okta.js';
+export { parseTokenReplayGitHub } from './token-replay-github.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -70,6 +74,10 @@ import { parseEvilginx } from './evilginx.js';
 import { parseGitHubActionsOidc } from './github-actions-oidc.js';
 import { parseGitlabCiOidc } from './gitlab-ci-oidc.js';
 import { parseCircleciOidc } from './circleci-oidc.js';
+import { parseTokenReplayMsGraph } from './token-replay-msgraph.js';
+import { parseTokenReplayAwsSts } from './token-replay-awssts.js';
+import { parseTokenReplayOkta } from './token-replay-okta.js';
+import { parseTokenReplayGitHub } from './token-replay-github.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -154,6 +162,11 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'gitlab-ci': parseGitlabCiOidc,
   'circleci-oidc': parseCircleciOidc,
   'circleci': parseCircleciOidc,
+  // Track D: token-replay response parsers (per provider).
+  'token_replay_msgraph': parseTokenReplayMsGraph,
+  'token_replay_awssts': parseTokenReplayAwsSts,
+  'token_replay_okta': parseTokenReplayOkta,
+  'token_replay_github': parseTokenReplayGitHub,
 };
 
 export function getSupportedParsers(): string[] {

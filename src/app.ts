@@ -45,6 +45,7 @@ import { registerSessionTools } from './tools/sessions.js';
 import { registerScopeTools } from './tools/scope.js';
 import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
+import { registerTokenReplayTool } from './tools/token-replay.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerDecisionLogTools } from './tools/decision-log.js';
 import { registerIntrospectionTools } from './tools/introspection.js';
@@ -169,6 +170,7 @@ export function registerAllTools(
   registerScopeTools(s, deps.engine);
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
+  registerTokenReplayTool(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
   registerDecisionLogTools(s, deps.engine);
   registerIntrospectionTools(s, deps.engine);
