@@ -17,6 +17,7 @@ import { EvidencePanel } from '../panels/EvidencePanel';
 import { EngagementsPanel } from '../panels/EngagementsPanel';
 import { SettingsPanel } from '../panels/SettingsPanel';
 import { IdentityPanel } from '../panels/IdentityPanel';
+import { AttackPathsPanel } from '../panels/AttackPathsPanel';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 
 export type PanelId =
@@ -29,6 +30,7 @@ export type PanelId =
   | 'activity'
   | 'evidence'
   | 'identity'
+  | 'paths'
   | 'engagements'
   | 'settings';
 
@@ -42,6 +44,7 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
   activity: ActivityPanel,
   evidence: EvidencePanel,
   identity: IdentityPanel,
+  paths: AttackPathsPanel,
   engagements: EngagementsPanel,
   settings: SettingsPanel,
 };

@@ -10,6 +10,7 @@ import {
   Briefcase,
   Settings,
   KeyRound,
+  Route,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
@@ -31,6 +32,7 @@ const NAV_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ class
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'evidence', label: 'Evidence', icon: FileText },
   { id: 'identity', label: 'Identity', icon: KeyRound },
+  { id: 'paths', label: 'Attack Paths', icon: Route },
 ];
 
 const BOTTOM_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
