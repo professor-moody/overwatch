@@ -7,31 +7,43 @@
 // cloud_resource → cloud_identity, idp_application → cloud_identity →
 // iam_role, idp → domain → credential → idp_principal).
 //
-// Rules implemented in this pass:
+// Rules implemented:
 //
-//   1. SSRF_REACHES_IMDS — when a webapp finding has a vulnerability
-//      classified as SSRF AND the webapp has BACKED_BY edges to one or
-//      more cloud_resource nodes (EC2/Lambda/ECS), emit
-//      `webapp → CAN_REACH → cloud_resource` for each backing
-//      resource. Confidence 0.7 — this is a "you should check IMDS"
-//      signal, not a confirmed exploit.
+//   1. SSRF_REACHES_IMDS — webapp + SSRF vuln + BACKED_BY (non-IMDSv2
+//      cloud_resource) → emit `webapp → CAN_REACH → cloud_resource`
+//      (confidence 0.7).
 //
-//   2. OIDC_FEDERATION_PIVOT — when an idp_application has
-//      ISSUES_TOKENS_FOR a cloud_identity, AND there's a captured
-//      credential with cred_audience matching the idp_application's
-//      audience, emit `credential → ASSUMES_ROLE → cloud_identity`.
+//   2. OIDC_FEDERATION_PIVOT — idp_application ISSUES_TOKENS_FOR a
+//      cloud_identity AND a captured token's audience matches the app
+//      → emit `credential → ASSUMES_ROLE → cloud_identity`. Gated on
+//      isCredentialUsableForAuth (Phase 3 fix F3).
 //
-//   3. HYBRID_IDENTITY_PIVOT — when an idp FEDERATES_WITH an on-prem
-//      domain AND a usable credential has cred_domain matching that
-//      domain, AND an idp_principal exists with upn matching the
-//      credential's username, emit
+//   3. HYBRID_IDENTITY_PIVOT — idp FEDERATES_WITH on-prem domain AND a
+//      usable domain credential's username matches a federated
+//      idp_principal's UPN → emit
 //      `credential → VALID_FOR_IDP_PRINCIPAL → idp_principal`.
 //
-// The remaining three rules in the plan (SAML_ROUND_TRIP,
-// MFA_BYPASS_VIA_AITM, CONSENT_ABUSE) are intentionally deferred to a
-// follow-up — the parsers (jwt-tool, evilginx, roadrecon) already shape
-// their output to make those rules straightforward additions when
-// operators see the need.
+//   4. CI_TRUST_WILDCARD — CI/OIDC idp_application with overly broad
+//      sub_claim_pattern (e.g. `repo:*`) → stamp wildcard_trust on
+//      the node as a finding signal. (Phase 5 / Track B.)
+//
+//   5. SAML_ROUND_TRIP — captured saml_assertion credential whose
+//      audience matches an idp_application → emit
+//      `credential → VALID_FOR_APP → idp_application`. Confidence 0.7.
+//      Symmetric counterpart to OIDC_FEDERATION_PIVOT for SAML flows.
+//
+//   6. MFA_BYPASS_VIA_AITM — session_cookie credential captured with
+//      cred_mfa_satisfied: true (typical evilginx output) is, by
+//      design, a post-MFA token. Stamp `aitm_bypass: true` on the
+//      credential and link it to every idp_application it can hit
+//      (matched by audience or shared idp), so reports/dashboards
+//      can flag the AiTM circumstance distinctly from a normal sign-in.
+//
+//   7. CONSENT_ABUSE — idp_application with overly permissive scopes
+//      (Mail.ReadWrite, User.ReadWrite.All, Files.ReadWrite.All, etc.)
+//      AND assigned_user_count >= 10 → stamp consent_phishing_target
+//      on the app with severity medium. The scope/assignment combo is
+//      the recognized consent-phishing surface.
 // ============================================================
 
 import type { EngineContext, ActivityLogEntry } from './engine-context.js';
@@ -293,6 +305,192 @@ function ciTrustWildcard(host: CrossTierInferenceHost, agentId: string): number 
   return added;
 }
 
+// =============================================
+// SAML_ROUND_TRIP
+// =============================================
+
+/**
+ * For each captured SAML assertion credential whose `cred_audience`
+ * matches an idp_application's audience, emit
+ * `credential → VALID_FOR_APP → idp_application`. Symmetric counterpart
+ * to OIDC_FEDERATION_PIVOT — SAML doesn't typically assume cloud roles
+ * (that's web SSO territory), so the edge type differs.
+ *
+ * Gated on isCredentialUsableForAuth (assertion expiry / MFA).
+ */
+function samlRoundTrip(host: CrossTierInferenceHost, agentId: string): number {
+  const now = new Date().toISOString();
+  let added = 0;
+  for (const cred of nodesByType(host.ctx, 'credential')) {
+    const kind = cred.attrs.cred_material_kind as string | undefined;
+    if (kind !== 'saml_assertion') continue;
+    if (!isCredentialUsableForAuth(cred.attrs)) continue;
+    if (isCredentialStaleOrExpired(cred.attrs)) continue;
+    if (isCredentialMfaBlocked(cred.attrs)) continue;
+    const credAud = cred.attrs.cred_audience as string | undefined;
+    if (!credAud) continue;
+
+    for (const app of nodesByType(host.ctx, 'idp_application')) {
+      const aud = app.attrs.audience as string | undefined;
+      const cid = app.attrs.client_id as string | undefined;
+      if (credAud !== aud && credAud !== cid) continue;
+      const result = host.addEdge(cred.id, app.id, {
+        type: 'VALID_FOR_APP' as EdgeType,
+        confidence: 0.7,
+        discovered_at: now,
+        discovered_by: agentId,
+        rule: 'saml_round_trip',
+        notes: `Captured SAML assertion audience matches idp_application ${aud ?? cid}`,
+      });
+      if (result.isNew) added++;
+    }
+  }
+  return added;
+}
+
+// =============================================
+// MFA_BYPASS_VIA_AITM
+// =============================================
+
+/**
+ * A `session_cookie` credential captured with `cred_mfa_satisfied: true`
+ * is, by design, a post-MFA token — operators ran an AiTM phishlet
+ * (evilginx) precisely to bypass the IdP's MFA gate. The credential
+ * model already lets such a cookie pass `isCredentialUsableForAuth`
+ * even when `cred_mfa_required` is true, so OIDC_FEDERATION_PIVOT and
+ * SAML_ROUND_TRIP fire correctly. What's missing is OPERATOR-FACING
+ * SIGNAL: the report and dashboard should distinguish "this cred works
+ * via AiTM bypass" from "this cred works because MFA wasn't required."
+ *
+ * This rule walks AiTM-captured session_cookie credentials and:
+ *   - stamps `aitm_bypass: true` on the credential.
+ *   - records `aitm_apps_at_risk: [...]` — every idp_application the
+ *     cookie can reach (sharing the parent IdP), so reports can list
+ *     the apps the bypass enables.
+ *   - records the credential's `finding_severity: 'high'` so
+ *     visibility tooling surfaces it.
+ *
+ * Idempotent — re-runs detect already-flagged credentials and skip.
+ */
+function mfaBypassViaAitm(host: CrossTierInferenceHost, agentId: string): number {
+  let added = 0;
+  for (const cred of nodesByType(host.ctx, 'credential')) {
+    if (cred.attrs.aitm_bypass === true) continue;
+    const kind = cred.attrs.cred_material_kind as string | undefined;
+    if (kind !== 'session_cookie') continue;
+    if (cred.attrs.cred_mfa_satisfied !== true) continue;
+
+    // Find the IdP this cookie belongs to (via cred_issuer back-ref or
+    // the OWNS_CRED principal's idp).
+    const issuer = cred.attrs.cred_issuer as string | undefined;
+    const ownerPrincipals = inbound(host.ctx, cred.id)
+      .filter(e => e.attrs.type === 'OWNS_CRED')
+      .map(e => host.ctx.graph.getNodeAttributes(e.source))
+      .filter(p => p.type === 'idp_principal');
+
+    // Apps at risk: idp_applications that share an idp_id with the
+    // principal (or audience with the cookie). Use a set so multiple
+    // owner paths don't double-count.
+    const appsAtRisk = new Set<string>();
+    for (const app of nodesByType(host.ctx, 'idp_application')) {
+      const appIdpId = app.attrs.idp_id as string | undefined;
+      const appAud = app.attrs.audience as string | undefined;
+      let matches = false;
+      if (issuer && (appIdpId === issuer || appAud === issuer)) matches = true;
+      if (!matches) {
+        for (const p of ownerPrincipals) {
+          // No direct idp_id on idp_principal nodes; correlate via
+          // assigned_apps when present, else fall back to issuer match
+          // performed above. The id-prefix heuristic mirrors the
+          // dashboard IdentityPanel's principal grouping.
+          const assigned = (p.assigned_apps ?? []) as string[];
+          if (assigned.includes(app.id) || assigned.includes(app.attrs.client_id as string)) {
+            matches = true;
+            break;
+          }
+        }
+      }
+      if (matches) appsAtRisk.add(app.id);
+    }
+
+    host.ctx.graph.mergeNodeAttributes(cred.id, {
+      aitm_bypass: true,
+      aitm_apps_at_risk: [...appsAtRisk],
+      finding_severity: 'high',
+    });
+    host.log(
+      `MFA bypass via AiTM: cookie ${cred.attrs.label ?? cred.id} satisfies MFA on ${appsAtRisk.size} app(s)`,
+      agentId,
+      { category: 'inference' },
+    );
+    added++;
+  }
+  return added;
+}
+
+// =============================================
+// CONSENT_ABUSE
+// =============================================
+
+/**
+ * Recognized high-privilege scope patterns across Microsoft Graph,
+ * Okta, Auth0, and Google Workspace. The list is conservative — these
+ * are scopes that, if granted to a malicious app via consent phishing,
+ * give the attacker mailbox/file/directory write access. Dashboard /
+ * report consumers can use `consent_phishing_target` to surface them.
+ */
+const HIGH_PRIVILEGE_SCOPE_PATTERNS = [
+  // Microsoft Graph
+  /^Mail\.(Send|ReadWrite)/i,
+  /^Mail\.(Read|Send)\.Shared/i,
+  /^Files\.(ReadWrite|FullControl)/i,
+  /^User\.(ReadWrite|Manage)/i,
+  /^Directory\.(ReadWrite|AccessAsUser)/i,
+  /^Sites\.(FullControl|Manage)/i,
+  /^Application\.ReadWrite/i,
+  /^AppRoleAssignment\.ReadWrite/i,
+  /^MailboxSettings\.ReadWrite/i,
+  // Okta
+  /^okta\.(users|apps|groups|policies|sessions)\.manage$/i,
+  /^okta\.(users|apps)\.delete$/i,
+  // Auth0
+  /^(create|update|delete):users$/i,
+  /^(create|update|delete):clients$/i,
+  /^(read|update):client_grants$/i,
+  // Google Workspace
+  /^https:\/\/www\.googleapis\.com\/auth\/(admin|drive|gmail\.modify|gmail\.send)/i,
+];
+
+const DEFAULT_CONSENT_ASSIGNMENT_THRESHOLD = 10;
+
+function consentAbuse(host: CrossTierInferenceHost, agentId: string, threshold = DEFAULT_CONSENT_ASSIGNMENT_THRESHOLD): number {
+  let added = 0;
+  for (const app of nodesByType(host.ctx, 'idp_application')) {
+    if (app.attrs.consent_phishing_target === true) continue;
+    const scopes = (app.attrs.app_scopes as string[] | undefined) ?? [];
+    const assigned = (app.attrs.assigned_user_count as number | undefined) ?? 0;
+    if (scopes.length === 0) continue;
+
+    const matchedScopes = scopes.filter(s => HIGH_PRIVILEGE_SCOPE_PATTERNS.some(re => re.test(s)));
+    if (matchedScopes.length === 0) continue;
+    if (assigned < threshold) continue;
+
+    host.ctx.graph.mergeNodeAttributes(app.id, {
+      consent_phishing_target: true,
+      consent_abuse_high_priv_scopes: matchedScopes,
+      consent_abuse_assignment_count: assigned,
+      finding_severity: app.attrs.finding_severity === 'high' ? 'high' : 'medium',
+    });
+    host.log(
+      `Consent abuse target: ${app.attrs.label ?? app.id} grants ${matchedScopes.length} high-priv scope(s) to ${assigned} principals`,
+      agentId,
+      { category: 'inference' },
+    );
+    added++;
+  }
+  return added;
+}
+
 /**
  * Run all cross-tier inference rules over the current graph. Idempotent.
  * Intended to be called after major ingests (parser output, ingest_*
@@ -303,15 +501,21 @@ export function runCrossTierInference(host: CrossTierInferenceHost, agentId: str
   oidc_federation_pivot: number;
   hybrid_identity_pivot: number;
   ci_trust_wildcard: number;
+  saml_round_trip: number;
+  mfa_bypass_via_aitm: number;
+  consent_abuse: number;
 } {
   const ssrf = ssrfReachesImds(host, agentId);
   const oidc = oidcFederationPivot(host, agentId);
   const hybrid = hybridIdentityPivot(host, agentId);
   const ciWild = ciTrustWildcard(host, agentId);
-  const total = ssrf + oidc + hybrid + ciWild;
+  const saml = samlRoundTrip(host, agentId);
+  const aitm = mfaBypassViaAitm(host, agentId);
+  const consent = consentAbuse(host, agentId);
+  const total = ssrf + oidc + hybrid + ciWild + saml + aitm + consent;
   if (total > 0) {
     host.log(
-      `Cross-tier inference: +${ssrf} CAN_REACH (SSRF→IMDS), +${oidc} ASSUMES_ROLE (OIDC fed), +${hybrid} VALID_FOR_IDP_PRINCIPAL (hybrid), +${ciWild} CI_TRUST_WILDCARD`,
+      `Cross-tier inference: +${ssrf} CAN_REACH (SSRF→IMDS), +${oidc} ASSUMES_ROLE (OIDC fed), +${hybrid} VALID_FOR_IDP_PRINCIPAL (hybrid), +${ciWild} CI_TRUST_WILDCARD, +${saml} VALID_FOR_APP (SAML), +${aitm} AITM_BYPASS, +${consent} CONSENT_ABUSE`,
       agentId,
       { category: 'inference' },
     );
@@ -321,5 +525,8 @@ export function runCrossTierInference(host: CrossTierInferenceHost, agentId: str
     oidc_federation_pivot: oidc,
     hybrid_identity_pivot: hybrid,
     ci_trust_wildcard: ciWild,
+    saml_round_trip: saml,
+    mfa_bypass_via_aitm: aitm,
+    consent_abuse: consent,
   };
 }

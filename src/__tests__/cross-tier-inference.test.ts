@@ -226,6 +226,190 @@ describe('HYBRID_IDENTITY_PIVOT', () => {
 });
 
 // =============================================
+// SAML_ROUND_TRIP
+// =============================================
+
+describe('SAML_ROUND_TRIP', () => {
+  it('emits VALID_FOR_APP when a SAML assertion audience matches an idp_application', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', { type: 'idp_application', client_id: 'sp-1', audience: 'https://sp.acme.com' });
+    addNode(graph, 'cred-saml', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'saml_assertion',
+      cred_audience: 'https://sp.acme.com',
+      cred_token_expires_at: '2099-01-01T00:00:00Z',
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.saml_round_trip).toBe(1);
+    const edges = graph.edges('cred-saml', 'idp-app').filter(e => graph.getEdgeAttributes(e).type === 'VALID_FOR_APP');
+    expect(edges.length).toBe(1);
+  });
+
+  it('does NOT fire when audience mismatches', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', { type: 'idp_application', client_id: 'sp-1', audience: 'https://sp.acme.com' });
+    addNode(graph, 'cred-saml', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'saml_assertion',
+      cred_audience: 'https://other.example.com',
+      cred_token_expires_at: '2099-01-01T00:00:00Z',
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.saml_round_trip).toBe(0);
+  });
+
+  it('does NOT fire when the assertion is expired', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', { type: 'idp_application', audience: 'https://sp.acme.com' });
+    addNode(graph, 'cred-saml', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'saml_assertion',
+      cred_audience: 'https://sp.acme.com',
+      cred_token_expires_at: '2020-01-01T00:00:00Z',
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.saml_round_trip).toBe(0);
+  });
+});
+
+// =============================================
+// MFA_BYPASS_VIA_AITM
+// =============================================
+
+describe('MFA_BYPASS_VIA_AITM', () => {
+  it('flags a session_cookie with cred_mfa_satisfied=true and lists apps at risk', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-okta', { type: 'idp', idp_kind: 'okta' });
+    addNode(graph, 'idp-app-1', { type: 'idp_application', client_id: 'app-1', idp_id: 'idp-okta', audience: 'idp-okta' });
+    addNode(graph, 'idp-app-2', { type: 'idp_application', client_id: 'app-2', idp_id: 'idp-okta', audience: 'idp-okta' });
+    addNode(graph, 'cred-cookie', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'session_cookie',
+      cred_mfa_required: true,
+      cred_mfa_satisfied: true,
+      cred_issuer: 'idp-okta',
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.mfa_bypass_via_aitm).toBe(1);
+    const cred = graph.getNodeAttributes('cred-cookie');
+    expect(cred.aitm_bypass).toBe(true);
+    expect((cred.aitm_apps_at_risk as string[]).sort()).toEqual(['idp-app-1', 'idp-app-2']);
+    expect(cred.finding_severity).toBe('high');
+  });
+
+  it('does NOT fire on a non-cookie credential', () => {
+    const graph = makeGraph();
+    addNode(graph, 'cred-token', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'oidc_access_token',
+      cred_mfa_satisfied: true,
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.mfa_bypass_via_aitm).toBe(0);
+  });
+
+  it('is idempotent — re-runs do not re-flag', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-okta', { type: 'idp', idp_kind: 'okta' });
+    addNode(graph, 'idp-app-1', { type: 'idp_application', client_id: 'app-1', idp_id: 'idp-okta', audience: 'idp-okta' });
+    addNode(graph, 'cred-cookie', {
+      type: 'credential',
+      cred_type: 'token',
+      cred_material_kind: 'session_cookie',
+      cred_mfa_satisfied: true,
+      cred_issuer: 'idp-okta',
+    });
+    const host = buildHost(graph, makeConfig());
+    const r1 = runCrossTierInference(host);
+    const r2 = runCrossTierInference(host);
+    expect(r1.mfa_bypass_via_aitm).toBe(1);
+    expect(r2.mfa_bypass_via_aitm).toBe(0);
+  });
+});
+
+// =============================================
+// CONSENT_ABUSE
+// =============================================
+
+describe('CONSENT_ABUSE', () => {
+  it('flags an idp_application with high-priv scopes + many assignments', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      app_scopes: ['Mail.ReadWrite', 'User.Read'],
+      assigned_user_count: 42,
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.consent_abuse).toBe(1);
+    const app = graph.getNodeAttributes('idp-app');
+    expect(app.consent_phishing_target).toBe(true);
+    expect(app.consent_abuse_high_priv_scopes).toContain('Mail.ReadWrite');
+    expect(app.consent_abuse_assignment_count).toBe(42);
+    expect(app.finding_severity).toBe('medium');
+  });
+
+  it('does NOT fire when scopes are low-privilege only', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      app_scopes: ['User.Read', 'profile', 'openid', 'email'],
+      assigned_user_count: 100,
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.consent_abuse).toBe(0);
+  });
+
+  it('does NOT fire when assignment count is below threshold', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      app_scopes: ['Mail.ReadWrite'],
+      assigned_user_count: 3,
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.consent_abuse).toBe(0);
+  });
+
+  it('preserves prior `high` severity rather than downgrading to medium', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      app_scopes: ['Files.ReadWrite.All'],
+      assigned_user_count: 50,
+      finding_severity: 'high',
+    });
+    const host = buildHost(graph, makeConfig());
+    runCrossTierInference(host);
+    expect(graph.getNodeAttributes('idp-app').finding_severity).toBe('high');
+  });
+
+  it('matches Okta admin scopes', () => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      app_scopes: ['okta.users.manage'],
+      assigned_user_count: 25,
+    });
+    const host = buildHost(graph, makeConfig());
+    const r = runCrossTierInference(host);
+    expect(r.consent_abuse).toBe(1);
+  });
+});
+
+// =============================================
 // inferFindingTier
 // =============================================
 
