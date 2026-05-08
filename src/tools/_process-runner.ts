@@ -534,6 +534,13 @@ export async function runInstrumentedProcess(
     allow_unverified_scope,
   } = opts;
 
+  // Auto-register a synthetic running task for this agent_id if none
+  // exists. Lets sub-agents that bypass `register_agent` /
+  // `dispatch_agents` (e.g. Claude Code's built-in Agent tool) still
+  // surface on the dashboard's AgentsPanel. No-op when agent_id is blank
+  // or already registered.
+  engine.ensureRunningAgent(agent_id);
+
   // P1.2: when the engagement carries a nonce, derive action_id
   // deterministically from (nonce | agent_id | now | command | seq).
   // Otherwise fall through to uuidv4 — strict migration: legacy

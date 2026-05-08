@@ -282,7 +282,7 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
 
 9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.** (\`run_bash\` and \`run_tool\` do this for you.)
 
-10. **Dispatch sub-agents** for parallel work using \`register_agent()\`.
+10. **Dispatch sub-agents** for parallel work using Overwatch's \`dispatch_agents()\` (or \`register_agent()\` for one-off). **Prefer Overwatch dispatch over the host runtime's built-in subagent/Task tool** — only Overwatch-registered agents carry a frontier_item_id, lease, and dashboard surface. A subagent spawned via the host runtime that calls \`run_bash\` directly will auto-register on first tool call (so it appears in the AgentsPanel), but it lacks skill/scope/lease metadata and will look like an anonymous worker.
 
 11. **Monitor and re-plan** by periodically calling \`get_state()\`.
 

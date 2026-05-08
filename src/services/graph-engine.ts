@@ -1640,6 +1640,17 @@ export class GraphEngine {
   }
 
   /**
+   * Auto-register a synthetic running task for `agent_id` if none exists.
+   * Idempotent. Used by the instrumented process runner so subagents
+   * that bypass `register_agent` still surface on the dashboard.
+   */
+  ensureRunningAgent(agentId: string | undefined): AgentTask | null {
+    const task = this.agentMgr.ensureRunningAgent(agentId, this.ctx.nowIso());
+    if (task) this.persist();
+    return task;
+  }
+
+  /**
    * P1.3: read the current ISO timestamp through the engine. Honors
    * `withClock(...)` injection if active; otherwise wall-clock.
    */

@@ -170,4 +170,40 @@ describe('AgentManager', () => {
       expect(mgr.getAll()).toHaveLength(3);
     });
   });
+
+  describe('ensureRunningAgent', () => {
+    it('creates a synthetic running task for an unknown agent_id', () => {
+      const { mgr } = setup();
+      const task = mgr.ensureRunningAgent('subagent-nmap-1');
+      expect(task).not.toBeNull();
+      expect(task!.agent_id).toBe('subagent-nmap-1');
+      expect(task!.status).toBe('running');
+      expect(task!.skill).toBe('auto');
+      expect(mgr.getAll()).toHaveLength(1);
+    });
+
+    it('is idempotent — second call returns the existing task', () => {
+      const { mgr } = setup();
+      const a = mgr.ensureRunningAgent('subagent-1')!;
+      const b = mgr.ensureRunningAgent('subagent-1')!;
+      expect(b.id).toBe(a.id);
+      expect(mgr.getAll()).toHaveLength(1);
+    });
+
+    it('returns null for blank/missing agent_id', () => {
+      const { mgr } = setup();
+      expect(mgr.ensureRunningAgent(undefined)).toBeNull();
+      expect(mgr.ensureRunningAgent('')).toBeNull();
+      expect(mgr.ensureRunningAgent('   ')).toBeNull();
+      expect(mgr.getAll()).toHaveLength(0);
+    });
+
+    it('does not collide with explicitly-registered agents on the same id', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask({ id: 't1', agent_id: 'subagent-1', frontier_item_id: 'fi-A', status: 'running' }));
+      const auto = mgr.ensureRunningAgent('subagent-1');
+      expect(auto!.id).toBe('t1');
+      expect(mgr.getAll()).toHaveLength(1);
+    });
+  });
 });

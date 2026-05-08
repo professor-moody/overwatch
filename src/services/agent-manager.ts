@@ -133,6 +133,38 @@ export class AgentManager {
   }
 
   /**
+   * Auto-register a synthetic running task for an `agent_id` we've never
+   * seen before. Called from the instrumented process runner so that
+   * subagents which never call `register_agent` / `dispatch_agents`
+   * still surface in the dashboard's AgentsPanel.
+   *
+   * Idempotent — if any running task already exists for this agent_id,
+   * returns it unchanged. Synthetic tasks carry `skill: 'auto'` so the
+   * operator can distinguish them from explicitly-dispatched agents.
+   *
+   * Returns null if `agent_id` is missing/blank (no synthesis).
+   */
+  ensureRunningAgent(agentId: string | undefined, now?: string): AgentTask | null {
+    if (!agentId || agentId.trim().length === 0) return null;
+    for (const task of this.ctx.agents.values()) {
+      if (task.agent_id === agentId && task.status === 'running') return task;
+    }
+    const ts = now ?? this.ctx.nowIso();
+    const task: AgentTask = {
+      id: `auto-${agentId}-${ts}`,
+      agent_id: agentId,
+      assigned_at: ts,
+      status: 'running',
+      subgraph_node_ids: [],
+      skill: 'auto',
+      heartbeat_at: ts,
+    };
+    // No frontier_item_id → no lease attempt → register cannot fail.
+    this.register(task);
+    return task;
+  }
+
+  /**
    * P0.3: heartbeat from a long-running sub-agent. Updates `heartbeat_at`
    * and emits a low-volume `heartbeat` activity event (excluded from the
    * hash chain — same class as `thought`). Returns false if the task is
