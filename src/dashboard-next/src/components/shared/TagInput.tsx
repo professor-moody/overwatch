@@ -35,6 +35,31 @@ export function TagInput({
     }
   }, [addTag, input, tags, onChange]);
 
+  // Bulk paste: split on whitespace, newline, comma, semicolon. Dedupe
+  // against existing tags (case-insensitive for hosts/domains, exact for
+  // CIDRs / IDs — we use exact since the caller controls casing).
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text');
+    // If the paste is a single token (no separators), let the default
+    // handler put it in the input field — operator can still hit Enter.
+    if (!/[\s,;]/.test(text)) return;
+    e.preventDefault();
+    const tokens = text
+      .split(/[\s,;]+/)
+      .map(t => t.trim())
+      .filter(Boolean);
+    if (tokens.length === 0) return;
+    const seen = new Set(tags);
+    const additions: string[] = [];
+    for (const t of tokens) {
+      if (seen.has(t)) continue;
+      seen.add(t);
+      additions.push(t);
+    }
+    if (additions.length > 0) onChange([...tags, ...additions]);
+    setInput('');
+  }, [tags, onChange]);
+
   return (
     <div className={cn('space-y-2', className)}>
       <div className="flex flex-wrap gap-1.5">
@@ -60,6 +85,7 @@ export function TagInput({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={placeholder}
           className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
         />
