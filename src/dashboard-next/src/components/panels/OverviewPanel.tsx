@@ -153,9 +153,9 @@ export function OverviewPanel() {
         {/* Graph Summary */}
         <section className="bg-surface border border-border rounded-lg p-4">
           <h3 className="text-sm font-medium mb-3">Graph Summary</h3>
-          {graphSummary?.node_counts && (
+          {graphSummary?.nodes_by_type && (
             <div className="space-y-1.5">
-              {Object.entries(graphSummary.node_counts)
+              {Object.entries(graphSummary.nodes_by_type)
                 .sort(([, a], [, b]) => b - a)
                 .map(([type, count]) => (
                   <button

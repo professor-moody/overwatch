@@ -121,7 +121,7 @@ export class DashboardServer {
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
       // Send full state on connect
-      const state = this.engine.getState();
+      const state = this.buildFrontendState();
       const graph = this.engine.exportGraph();
       const historyCount = this.engine.getFullHistory().length;
       ws.send(JSON.stringify({
@@ -237,7 +237,7 @@ export class DashboardServer {
     const changedEdgeIds = new Set([...(detail.new_edges || []), ...(detail.updated_edges || []), ...(detail.inferred_edges || [])]);
 
     // getState() first — materializes community_id on nodes before exportGraph() reads them
-    const state = this.engine.getState();
+    const state = this.buildFrontendState();
     const historyCount = this.engine.getFullHistory().length;
 
     const fullGraph = this.engine.exportGraph();
@@ -1080,8 +1080,23 @@ export class DashboardServer {
     }
   }
 
-  private serveState(res: ServerResponse): void {
+  /**
+   * Build the EngagementState payload that the dashboard frontend
+   * consumes via /api/state and the WebSocket full_state / graph_update
+   * pushes. Wraps engine.getState() and folds in dashboard-server-owned
+   * data (notably the SessionManager's session list) that the engine
+   * itself doesn't track. All four frontend-facing call sites must use
+   * this helper rather than calling engine.getState() directly so the
+   * payload stays consistent.
+   */
+  private buildFrontendState(): ReturnType<GraphEngine['getState']> & { sessions: ReturnType<NonNullable<SessionManager>['list']> } {
     const state = this.engine.getState();
+    const sessions = this.sessionManager?.list() ?? [];
+    return { ...state, sessions };
+  }
+
+  private serveState(res: ServerResponse): void {
+    const state = this.buildFrontendState();
     const graph = this.engine.exportGraph();
     const historyCount = this.engine.getFullHistory().length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1924,7 +1939,7 @@ export class DashboardServer {
       }
       const result = this.engine.correctGraph(reason, operations, `console-${Date.now()}`);
       // Broadcast full state update to all WS clients
-      const state = this.engine.getState();
+      const state = this.buildFrontendState();
       const graph = this.engine.exportGraph();
       this.broadcast({
         type: 'full_state',

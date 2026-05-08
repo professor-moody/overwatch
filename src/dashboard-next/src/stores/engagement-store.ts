@@ -151,7 +151,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       pendingActions: s.pending_actions || [],
       phases: s.phases || [],
       initialized: true,
-      readiness: s.readiness || null,
+      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : null,
       accessSummary: (s as any).access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });
@@ -200,7 +200,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       sessions: s.sessions || get().sessions,
       pendingActions: s.pending_actions || get().pendingActions,
       phases: s.phases || get().phases,
-      readiness: s.readiness || get().readiness,
+      readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
       accessSummary: (s as any).access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });

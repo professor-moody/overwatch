@@ -9,6 +9,10 @@ export const NODE_TYPES = [
   'share', 'certificate', 'ca', 'cert_template', 'pki_store', 'gpo', 'ou', 'subnet', 'objective',
   'webapp', 'vulnerability', 'api_endpoint',
   'cloud_identity', 'cloud_resource', 'cloud_policy', 'cloud_network',
+  // Identity tier (Phase 1 enterprise readiness — SSO / IdP modeling). Mirrors
+  // the backend union in src/types.ts.
+  'idp', 'idp_application', 'idp_principal',
+  'mock_service',
 ] as const;
 
 export type NodeType = typeof NODE_TYPES[number];
@@ -193,7 +197,13 @@ export interface EngagementState {
     total_edges: number;
     confirmed_edges: number;
     inferred_edges: number;
-    node_counts: Record<string, number>;
+    nodes_by_type: Record<string, number>;
+    edges_by_type?: Record<string, number>;
+    community_count?: number;
+    largest_community_size?: number;
+    unexplored_community_count?: number;
+    cold_node_count?: number;
+    cold_nodes_by_subnet?: Record<string, number>;
   };
   objectives?: Objective[];
   frontier?: FrontierItem[];
@@ -205,9 +215,10 @@ export interface EngagementState {
   history_count?: number;
   phases?: EngagementPhase[];
   inference_rule_effectiveness?: InferenceRuleEffectiveness[];
-  readiness?: {
+  /** Backend serializes this as `lab_readiness` with `top_issues`; the store re-keys both for the OverviewPanel. */
+  lab_readiness?: {
     status: string;
-    issues: string[];
+    top_issues: string[];
   };
 }
 

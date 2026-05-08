@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { TagInput } from '../shared';
 import { cn } from '../../lib/utils';
 import {
   getConfig,

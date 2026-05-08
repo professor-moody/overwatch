@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
+import * as api from '../../lib/api';
 import { cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
 
@@ -12,11 +13,29 @@ interface TerminalEntry {
 
 export function SessionsPanel() {
   const sessions = useEngagementStore((s) => s.sessions);
+  const setStoreSessions = useEngagementStore((s) => s.setSessions);
   const active = sessions.filter((s) => s.state === 'connected' || s.state === 'pending');
   const [attachedIds, setAttachedIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Safety net: pull fresh session state on mount and on a 5s poll. The
+  // store gets sessions via WS full_state / graph_update, but if no WS
+  // event has fired yet (or the backend wasn't sending sessions) we'd
+  // otherwise render an empty list while live sessions exist.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const data = await api.getSessions();
+        if (!cancelled) setStoreSessions(data.sessions || []);
+      } catch { /* silent */ }
+    };
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [setStoreSessions]);
 
   const attach = useCallback(async (sessionId: string) => {
     if (terminalsRef.current.has(sessionId)) {

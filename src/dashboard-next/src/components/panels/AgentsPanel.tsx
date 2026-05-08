@@ -46,6 +46,11 @@ export function AgentsPanel() {
     } catch { /* silent */ }
   }, [setStoreAgents]);
 
+  // Safety net: pull fresh agent state on mount in case the WS full_state
+  // arrived before this panel mounted (or before the backend was patched
+  // to include `agents` in EngagementState). Cheap — single GET.
+  useEffect(() => { refreshAgents(); }, [refreshAgents]);
+
   // Campaign groups
   const { groups, ungrouped } = useMemo(() => {
     const g = new Map<string, { name: string; strategy: string; agents: AgentInfo[] }>();
