@@ -152,8 +152,8 @@ function extractImplicitTargets(_toolName: string, args: string[], commandRepr: 
 }
 
 
-export const MAX_TIMEOUT_MS = 60 * 60 * 1000;          // 1 hour
-export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;       // 5 minutes
+export const MAX_TIMEOUT_MS = 4 * 60 * 60 * 1000;      // 4 hours
+export const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;      // 1 hour — enterprise scans (nmap full-port, nuclei) routinely exceed 5 min
 const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per stream
 /**
  * Hard memory cap per stream. Beyond this we keep a head + rolling tail
