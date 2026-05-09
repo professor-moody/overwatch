@@ -425,3 +425,86 @@ export async function toggleTape(opts?: {
     body: JSON.stringify(opts ?? {}),
   });
 }
+
+// --- B.2 / B.3 Findings + Reports ---
+
+export interface FindingClassificationLite {
+  cwe?: { id: string; name: string };
+  owasp_top_10?: { id: string; name: string };
+  nist_800_53?: Array<{ id: string; name: string }>;
+  pci_dss?: Array<{ id: string; requirement: string }>;
+  attack_techniques?: Array<{ id: string; name: string }>;
+}
+
+export interface FindingDto {
+  id: string;
+  title: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  category: string;
+  tier?: string;
+  description: string;
+  affected_assets: string[];
+  remediation: string;
+  risk_score: number;
+  cvss_score?: number;
+  classification?: FindingClassificationLite;
+}
+
+export interface FindingsResponse {
+  findings: FindingDto[];
+  total: number;
+  severity_summary: { critical: number; high: number; medium: number; low: number; info: number };
+}
+
+export async function getFindings(): Promise<FindingsResponse> {
+  return fetchJson('/api/findings');
+}
+
+export interface ReportRecord {
+  id: string;
+  generated_at: string;
+  format: 'markdown' | 'html' | 'json' | 'pdf';
+  redaction_mode: 'operator' | 'client_safe';
+  filename: string;
+  size_bytes: number;
+  content_sha256: string;
+  options: Record<string, unknown>;
+}
+
+export interface ReportsListResponse {
+  reports: ReportRecord[];
+  total: number;
+  total_bytes: number;
+}
+
+export async function listReports(): Promise<ReportsListResponse> {
+  return fetchJson('/api/reports');
+}
+
+export interface RenderReportBody {
+  format?: 'markdown' | 'html' | 'json';
+  include_evidence?: boolean;
+  include_narrative?: boolean;
+  include_retrospective?: boolean;
+  include_compliance?: boolean;
+  include_attack_paths?: boolean;
+  client_safe?: boolean;
+  theme?: 'light' | 'dark';
+  max_paths_per_objective?: number;
+}
+
+export async function renderReport(body: RenderReportBody): Promise<{ report: ReportRecord; findings_count: number; severity_summary: FindingsResponse['severity_summary'] }> {
+  return fetchJson('/api/reports/render', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Returns the absolute URL — caller can use `window.location.href = url` or `<a download>`. */
+export function reportDownloadUrl(id: string): string {
+  return `/api/reports/${id}`;
+}
+
+export async function deleteReport(id: string): Promise<{ deleted: boolean }> {
+  return fetchJson(`/api/reports/${id}`, { method: 'DELETE' });
+}

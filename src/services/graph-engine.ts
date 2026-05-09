@@ -27,6 +27,7 @@ import { normalizeNodeProvenance } from './provenance-utils.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { EvidenceStore } from './evidence-store.js';
+import { ReportArchive } from './report-archive.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
 import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
@@ -2372,6 +2373,13 @@ export class GraphEngine {
 
   getEvidenceStore(): EvidenceStore {
     return this.evidenceStore;
+  }
+
+  private reportArchive: ReportArchive | null = null;
+  /** Lazily-instantiated per-engagement report archive (B.2). */
+  getReportArchive(): ReportArchive {
+    if (!this.reportArchive) this.reportArchive = new ReportArchive(this.ctx.stateFilePath);
+    return this.reportArchive;
   }
 
   setTrackedProcesses(processes: import('./process-tracker.js').TrackedProcess[]): void {

@@ -93,6 +93,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           .describe('Include synthesized attack-path chains from current access to each engagement objective. Decorated with per-edge confidence and inferred-vs-confirmed flags.'),
         max_paths_per_objective: z.number().int().min(1).max(20).default(3)
           .describe('Cap on attack paths rendered per objective (top-K by confidence).'),
+        persist_to_archive: z.boolean().default(true)
+          .describe('B.2: write the rendered report to the engagement\'s persistent report archive (`<engagement-dir>/reports/`). Returned `report_id` can be fetched later via the dashboard\'s /api/reports endpoints.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -105,7 +107,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       format: rawFormat, include_evidence, include_narrative,
       include_retrospective, include_compliance, include_attack_navigator,
       include_gap_analysis, write_to_disk, output_dir, theme, client_safe,
-      include_attack_paths, max_paths_per_objective,
+      include_attack_paths, max_paths_per_objective, persist_to_archive,
     }) => {
       const format = rawFormat === 'md' ? 'markdown' : rawFormat;
       const redactionOpts = { client_safe: client_safe === true };
@@ -420,6 +422,31 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       const criticalCount = findings.filter(f => f.severity === 'critical').length;
       const highCount = findings.filter(f => f.severity === 'high').length;
 
+      // B.2: persist to per-engagement archive so the dashboard can list
+      // historical renders. Skipped on client_safe redactions of HTML
+      // when the archive already holds the operator variant — the
+      // dashboard distinguishes via redaction_mode.
+      let archivedReportId: string | undefined;
+      if (persist_to_archive) {
+        const archive = engine.getReportArchive();
+        const record = archive.add(output, {
+          generated_at: new Date().toISOString(),
+          format,
+          redaction_mode: redactionOpts.client_safe ? 'client_safe' : 'operator',
+          options: {
+            include_evidence,
+            include_narrative,
+            include_retrospective,
+            include_compliance,
+            include_attack_paths,
+            include_attack_navigator,
+            include_gap_analysis,
+            theme: format === 'html' ? theme : undefined,
+          },
+        });
+        archivedReportId = record.id;
+      }
+
       return {
         content: [{
           type: 'text',
@@ -435,6 +462,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             },
             report_preview: output.slice(0, 800) + (output.length > 800 ? '...' : ''),
             report_length: output.length,
+            ...(archivedReportId ? { report_id: archivedReportId } : {}),
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
           }, null, 2),
         }],

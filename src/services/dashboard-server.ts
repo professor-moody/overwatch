@@ -19,6 +19,10 @@ import { opsecPartialUpdateSchema } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
+import { assembleReport, type ReportFormat } from './report-assembler.js';
+import { buildFindings } from './report-generator.js';
+import { classifyAllFindings } from './finding-classifier.js';
+import type { ReportRecord } from './report-archive.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -61,6 +65,16 @@ export class DashboardServer {
 
   attachTape(controller: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string }): unknown; disable(): Promise<unknown> }): void {
     this.tape = controller;
+  }
+
+  /**
+   * Optional skill index. Required for `/api/reports/render` when
+   * `include_retrospective: true`; the retrospective walks loaded
+   * skills to flag gaps.
+   */
+  private skills: import('./skill-index.js').SkillIndex | null = null;
+  attachSkills(skills: import('./skill-index.js').SkillIndex): void {
+    this.skills = skills;
   }
 
   constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
@@ -508,6 +522,12 @@ export class DashboardServer {
       this.handleTapeStatus(res);
     } else if (pathname === '/api/tape/toggle' && method === 'POST') {
       this.handleTapeToggle(req, res);
+    } else if (pathname === '/api/findings' && method === 'GET') {
+      this.serveFindings(res);
+    } else if (pathname === '/api/reports' && method === 'GET') {
+      this.serveReportsList(res);
+    } else if (pathname === '/api/reports/render' && method === 'POST') {
+      this.handleRenderReport(req, res);
     } else {
       // Parameterized routes
       const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
@@ -524,6 +544,7 @@ export class DashboardServer {
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
       const pathsMatch = pathname.match(/^\/api\/paths\/([^/]+)$/);
+      const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
 
       if (agentCtxMatch) {
         this.serveAgentContext(agentCtxMatch[1], res);
@@ -559,6 +580,10 @@ export class DashboardServer {
         this.serveEvidenceChains(decodeURIComponent(evidenceChainMatch[1]), res);
       } else if (pathsMatch) {
         this.servePaths(decodeURIComponent(pathsMatch[1]), url, res);
+      } else if (reportDetailMatch && method === 'GET') {
+        this.serveReportDownload(reportDetailMatch[1], res);
+      } else if (reportDetailMatch && method === 'DELETE') {
+        this.handleReportDelete(reportDetailMatch[1], res);
       } else {
         this.serveStaticFile(url, res);
       }
@@ -1918,6 +1943,146 @@ export class DashboardServer {
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    }
+  }
+
+  // ---- B.2/B.3 — Findings + Reports endpoints ----
+
+  /**
+   * GET /api/findings — returns the structured Findings array (with
+   * compliance classification) that the FindingsPanel renders. Same
+   * pipeline `generate_report` uses, just wrapped as JSON for the UI.
+   */
+  private serveFindings(res: ServerResponse): void {
+    const config = this.engine.getConfig();
+    const graph = this.engine.exportGraph();
+    const history = this.engine.getFullHistory();
+    const evidenceLoader = (id: string): string | null => {
+      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+    };
+    const findings = buildFindings(graph, history, config, { evidenceLoader });
+    const classifications = classifyAllFindings(findings, graph);
+    const enriched = findings.map(f => ({
+      ...f,
+      classification: classifications.get(f.id) ?? f.classification,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      findings: enriched,
+      total: enriched.length,
+      severity_summary: {
+        critical: enriched.filter(f => f.severity === 'critical').length,
+        high: enriched.filter(f => f.severity === 'high').length,
+        medium: enriched.filter(f => f.severity === 'medium').length,
+        low: enriched.filter(f => f.severity === 'low').length,
+        info: enriched.filter(f => f.severity === 'info').length,
+      },
+    }));
+  }
+
+  /** GET /api/reports — list manifest entries newest-first. */
+  private serveReportsList(res: ServerResponse): void {
+    const archive = this.engine.getReportArchive();
+    const records = archive.list();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ reports: records, total: records.length, total_bytes: archive.totalBytes() }));
+  }
+
+  /** GET /api/reports/:id — stream the file content. */
+  private serveReportDownload(id: string, res: ServerResponse): void {
+    const archive = this.engine.getReportArchive();
+    const result = archive.get(id);
+    if (!result) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'report not found' }));
+      return;
+    }
+    const { record, content } = result;
+    const contentType = record.format === 'html' ? 'text/html'
+      : record.format === 'json' ? 'application/json'
+      : record.format === 'pdf' ? 'application/pdf'
+      : 'text/markdown';
+    const ext = record.format === 'markdown' ? 'md' : record.format;
+    const downloadName = `report-${record.id.slice(0, 8)}-${record.redaction_mode}.${ext}`;
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${downloadName}"`,
+      'Content-Length': content.byteLength,
+    });
+    res.end(content);
+  }
+
+  /** DELETE /api/reports/:id — remove from manifest + filesystem. */
+  private handleReportDelete(id: string, res: ServerResponse): void {
+    const archive = this.engine.getReportArchive();
+    const ok = archive.delete(id);
+    res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deleted: ok }));
+  }
+
+  /** POST /api/reports/render — assemble + persist a new report. Body shape mirrors generate_report's options. */
+  private async handleRenderReport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkMutationAuth(req, res)) return;
+    try {
+      const body = await this.readJsonBody(req).catch(() => ({} as Record<string, unknown>));
+      const formatRaw = (body as { format?: string }).format ?? 'markdown';
+      const format = (formatRaw === 'md' ? 'markdown' : formatRaw) as ReportFormat;
+      if (!['markdown', 'html', 'json'].includes(format)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `unsupported format: ${formatRaw}` }));
+        return;
+      }
+      const includeRetrospective = (body as { include_retrospective?: boolean }).include_retrospective === true;
+      if (includeRetrospective && !this.skills) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'retrospective requires skill index; pass include_retrospective:false or attach skills via attachSkills()' }));
+        return;
+      }
+
+      // assembleReport requires a non-null SkillIndex even when retrospective is off
+      // (it only reads skills when include_retrospective: true). Provide an empty
+      // shim when none is attached so the caller doesn't need to wire skills for
+      // the common case.
+      const skills = this.skills ?? ({ listSkills: () => [] } as unknown as import('./skill-index.js').SkillIndex);
+      const assembled = assembleReport(this.engine, skills, {
+        format,
+        include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,
+        include_narrative: (body as Record<string, unknown>).include_narrative as boolean | undefined,
+        include_retrospective: includeRetrospective,
+        include_compliance: (body as Record<string, unknown>).include_compliance as boolean | undefined,
+        include_attack_navigator: (body as Record<string, unknown>).include_attack_navigator as boolean | undefined,
+        include_gap_analysis: (body as Record<string, unknown>).include_gap_analysis as boolean | undefined,
+        include_attack_paths: (body as Record<string, unknown>).include_attack_paths as boolean | undefined,
+        max_paths_per_objective: (body as Record<string, unknown>).max_paths_per_objective as number | undefined,
+        theme: ((body as Record<string, unknown>).theme as 'light' | 'dark' | undefined),
+        client_safe: (body as Record<string, unknown>).client_safe === true,
+      });
+
+      const archive = this.engine.getReportArchive();
+      const record: ReportRecord = archive.add(assembled.content, {
+        generated_at: new Date().toISOString(),
+        format: assembled.format,
+        redaction_mode: (body as Record<string, unknown>).client_safe === true ? 'client_safe' : 'operator',
+        options: {
+          include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,
+          include_narrative: (body as Record<string, unknown>).include_narrative as boolean | undefined,
+          include_retrospective: includeRetrospective,
+          include_compliance: (body as Record<string, unknown>).include_compliance as boolean | undefined,
+          include_attack_paths: (body as Record<string, unknown>).include_attack_paths as boolean | undefined,
+          theme: format === 'html' ? ((body as Record<string, unknown>).theme as 'light' | 'dark' | undefined) : undefined,
+        },
+      });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        report: record,
+        findings_count: assembled.findings_count,
+        severity_summary: assembled.severity_summary,
+      }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.writeHead(500, { 'Content-Type': 'application/json' });

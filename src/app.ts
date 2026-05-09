@@ -224,6 +224,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   });
   if (dashboard) {
     dashboard.attachTape(tape);
+    dashboard.attachSkills(skills);
   }
 
   registerAllTools(server, {
