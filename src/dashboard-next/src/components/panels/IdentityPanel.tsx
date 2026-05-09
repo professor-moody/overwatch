@@ -11,7 +11,7 @@
 //   - Captured token credentials (audience, scopes, expiry, MFA flags)
 // ============================================================
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import type { ExportedNode, ExportedEdge } from '../../lib/types';
 import { EmptyState } from '../shared';
@@ -207,6 +207,7 @@ export function IdentityPanel() {
                       expires: <span className="font-mono">{expiry}</span>
                     </div>
                   ) : null}
+                  <CredValueRow value={asString(t.cred_value)} />
                 </div>
               );
             })}
@@ -216,6 +217,47 @@ export function IdentityPanel() {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * Reveal-on-click cred_value display with copy-to-clipboard. Operators
+ * need to be able to use captured credentials themselves; the dashboard
+ * is the natural surface to retrieve them. Hidden by default so a
+ * shoulder-surfer or screen-share doesn't leak the value casually.
+ */
+function CredValueRow({ value }: { value: string | undefined }) {
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (!value) return null;
+
+  const display = revealed ? value : '••••••••••••••••';
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked — operator can still reveal + select */ }
+  };
+
+  return (
+    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+      <span>value:</span>
+      <span className="font-mono bg-elevated px-1.5 py-0.5 rounded text-foreground select-all">{display}</span>
+      <button
+        onClick={() => setRevealed(v => !v)}
+        className="text-accent hover:underline text-[10px]"
+      >
+        {revealed ? 'hide' : 'reveal'}
+      </button>
+      <button
+        onClick={copy}
+        className="text-accent hover:underline text-[10px]"
+      >
+        {copied ? 'copied!' : 'copy'}
+      </button>
     </div>
   );
 }

@@ -124,13 +124,32 @@ function computePaths(
   maxHops: number,
   byId: Map<string, ExportedNode>,
 ): ComputedPath[] {
-  // Source: hosts with a live session, or any cloud_identity with policies (the analog of "compromised").
+  // Source: hosts the operator has access to. Match backend
+  // path-analyzer: a host qualifies if (a) compromised flag is set,
+  // (b) a live HAS_SESSION edge points at it, OR (c) an ADMIN_TO edge
+  // points at it with confidence ≥ 0.9. The ADMIN_TO clause matters
+  // for cloud-leaning engagements where the operator owns the
+  // jumpbox via cred-derived admin rather than a live shell.
   const sources = nodes.filter(n => {
-    if (n.type === 'host' && (n.compromised === true || edges.some(e => e.target === n.id && e.type === 'HAS_SESSION' && e.session_live !== false && (e.confidence ?? 1) >= 0.7))) return true;
-    return false;
+    if (n.type !== 'host') return false;
+    if (n.compromised === true) return true;
+    return edges.some(e => {
+      if (e.target !== n.id) return false;
+      if (e.type === 'HAS_SESSION') return e.session_live !== false && (e.confidence ?? 1) >= 0.7;
+      if (e.type === 'ADMIN_TO') return (e.confidence ?? 1) >= 0.9;
+      return false;
+    });
   }).map(n => n.id);
-  // Targets: objective nodes + high-value markers.
-  const targets = nodes.filter(n => n.objective_achieved !== undefined || n.hvt === true || n.type === 'cloud_resource' || n.type === 'idp_principal').map(n => n.id);
+  // Targets: objective nodes + cloud_identity (federated roles —
+  // typical pivot endpoint), cloud_resource, idp_principal, and any
+  // node explicitly flagged hvt.
+  const targets = nodes.filter(n =>
+    n.objective_achieved !== undefined ||
+    n.hvt === true ||
+    n.type === 'cloud_identity' ||
+    n.type === 'cloud_resource' ||
+    n.type === 'idp_principal',
+  ).map(n => n.id);
   if (sources.length === 0 || targets.length === 0) return [];
 
   const adj = buildAdjacency(nodes, edges, optimize);

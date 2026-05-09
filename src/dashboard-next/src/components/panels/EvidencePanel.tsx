@@ -62,6 +62,9 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   return (
     <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
       <h3 className="text-sm font-medium">Evidence Chain</h3>
+      <p className="text-xs text-muted-foreground">
+        Search a graph node ID (e.g. <span className="font-mono">cred-aws-power</span>, <span className="font-mono">host-jumpbox</span>) to see the actions that produced or touched it \u2014 the tool name, command, output preview, and timestamp for each step. Useful for "how did we end up with this credential?" or "what did we run against this host?".
+      </p>
       <div className="flex gap-2">
         <input value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}

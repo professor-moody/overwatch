@@ -122,7 +122,10 @@ export function ActionsPanel() {
       </div>
 
       {sorted.length === 0 ? (
-        <EmptyState message="No pending actions. Actions requiring approval will appear here." />
+        <EmptyState
+          title="No pending actions"
+          description="When an agent invokes a noisy or destructive tool under approve-critical mode, the action queues here for the operator to approve or deny. Quiet reads under the noise budget auto-approve and never show up here."
+        />
       ) : (
         <div className="space-y-2">
           {sorted.map((a) => {

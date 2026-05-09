@@ -319,7 +319,7 @@ function AgentCard({
           agent.status === 'interrupted' && 'bg-warning',
           agent.status === 'pending' && 'bg-muted',
         )} />
-        <span className="text-xs font-mono text-muted-foreground">{(agent.agent_id || agent.id).slice(0, 8)}</span>
+        <span className="text-xs font-mono text-muted-foreground truncate" title={agent.agent_id || agent.id}>{agent.agent_id || agent.id}</span>
         {cancellable && (
           <button
             onClick={e => { e.stopPropagation(); onCancel(); }}
