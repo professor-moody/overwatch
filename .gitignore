@@ -18,6 +18,7 @@ site/
 .venv/
 tmp/
 retrospective/
+smoke-engagement/
 
 # dashboard-next: Vite handles transpilation; tsc is typecheck-only.
 # Guard against accidental emit if someone runs `tsc -p src/dashboard-next`.
