@@ -25,6 +25,8 @@ import { classifyAllFindings, generateNavigatorLayer } from './finding-classifie
 import { redactReportText, redactSecretKeys } from './report-redaction.js';
 
 export type ReportFormat = 'markdown' | 'html' | 'json';
+/** Format the dashboard / generate_report tool can request, including PDF (which is rendered from HTML by `renderReportPdf`). */
+export type RenderFormat = ReportFormat | 'pdf';
 
 export interface AssembleOptions {
   format: ReportFormat;

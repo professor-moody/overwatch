@@ -67,8 +67,8 @@ Produces a client-deliverable report with:
 
 Use this at the end of an engagement to produce the final deliverable report.`,
       inputSchema: {
-        format: z.enum(['markdown', 'md', 'html', 'json']).default('markdown')
-          .describe('Output format: markdown (or md), html, or json (structured findings data)'),
+        format: z.enum(['markdown', 'md', 'html', 'json', 'pdf']).default('markdown')
+          .describe('Output format: markdown (or md), html, json (structured findings data), or pdf (HTML rendered through headless Chromium via puppeteer-core; requires a chromium binary).'),
         include_evidence: z.boolean().default(true)
           .describe('Include evidence chains for each finding'),
         include_narrative: z.boolean().default(true)
@@ -110,6 +110,10 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       include_attack_paths, max_paths_per_objective, persist_to_archive,
     }) => {
       const format = rawFormat === 'md' ? 'markdown' : rawFormat;
+      // B.4: pdf format renders HTML first then pipes through headless
+      // Chromium. Force HTML rendering on the way through so the
+      // existing pipeline (theme, redaction, compliance) all applies.
+      const renderHtmlForPdf = format === 'pdf';
       const redactionOpts = { client_safe: client_safe === true };
       const config = engine.getConfig();
       const graph = engine.exportGraph();
@@ -208,7 +212,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       }
 
       let html: string | undefined;
-      if (format === 'html') {
+      if (format === 'html' || renderHtmlForPdf) {
         // R2-7: thread the same evidenceLoader used for markdown so HTML
         // findings include head/tail stdout previews and streamed-evidence
         // diagnostics. Without this, the HTML deliverable cited
@@ -385,7 +389,27 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         html = renderReportHtml(renderData, { theme, include_toc: true, include_compliance });
       }
 
-      const output = format === 'html' ? html! : format === 'json' ? jsonOutput! : markdown;
+      // B.4: when format=pdf, render HTML through puppeteer-core and
+      // store the resulting buffer. All other formats are stringly-
+      // typed; only the archive add() and write_to_disk path care
+      // about the binary case.
+      let pdfBuffer: Buffer | undefined;
+      if (format === 'pdf') {
+        try {
+          const { renderReportPdf } = await import('../services/report-pdf.js');
+          pdfBuffer = await renderReportPdf(html!, { format: 'A4', printBackground: true });
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: `PDF rendering failed: ${err instanceof Error ? err.message : String(err)}` }, null, 2) }],
+            isError: true,
+          };
+        }
+      }
+
+      const output: string = format === 'html' ? html!
+        : format === 'json' ? jsonOutput!
+        : format === 'pdf' ? '' // unused for pdf — see pdfBuffer below
+        : markdown;
 
       if (write_to_disk) {
         let validatedDir: string;
@@ -411,6 +435,9 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         if (jsonOutput) {
           writeFileSync(join(validatedDir, `report${suffix}.json`), jsonOutput);
         }
+        if (pdfBuffer) {
+          writeFileSync(join(validatedDir, `report${suffix}.pdf`), pdfBuffer);
+        }
         if (include_attack_navigator) {
           const navFindings = buildFindings(graph, history, config);
           const navLayer = generateNavigatorLayer(navFindings, graph, config.name);
@@ -429,7 +456,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       let archivedReportId: string | undefined;
       if (persist_to_archive) {
         const archive = engine.getReportArchive();
-        const record = archive.add(output, {
+        const record = archive.add(format === 'pdf' ? pdfBuffer! : output, {
           generated_at: new Date().toISOString(),
           format,
           redaction_mode: redactionOpts.client_safe ? 'client_safe' : 'operator',
@@ -441,7 +468,7 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             include_attack_paths,
             include_attack_navigator,
             include_gap_analysis,
-            theme: format === 'html' ? theme : undefined,
+            theme: format === 'html' || format === 'pdf' ? theme : undefined,
           },
         });
         archivedReportId = record.id;

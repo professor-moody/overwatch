@@ -2030,8 +2030,8 @@ export class DashboardServer {
     try {
       const body = await this.readJsonBody(req).catch(() => ({} as Record<string, unknown>));
       const formatRaw = (body as { format?: string }).format ?? 'markdown';
-      const format = (formatRaw === 'md' ? 'markdown' : formatRaw) as ReportFormat;
-      if (!['markdown', 'html', 'json'].includes(format)) {
+      const format = (formatRaw === 'md' ? 'markdown' : formatRaw) as ReportFormat | 'pdf';
+      if (!['markdown', 'html', 'json', 'pdf'].includes(format)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `unsupported format: ${formatRaw}` }));
         return;
@@ -2048,8 +2048,10 @@ export class DashboardServer {
       // shim when none is attached so the caller doesn't need to wire skills for
       // the common case.
       const skills = this.skills ?? ({ listSkills: () => [] } as unknown as import('./skill-index.js').SkillIndex);
+      // For PDF, assemble HTML internally then pipe through puppeteer.
+      const assembleFormat: ReportFormat = format === 'pdf' ? 'html' : format;
       const assembled = assembleReport(this.engine, skills, {
-        format,
+        format: assembleFormat,
         include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,
         include_narrative: (body as Record<string, unknown>).include_narrative as boolean | undefined,
         include_retrospective: includeRetrospective,
@@ -2062,10 +2064,22 @@ export class DashboardServer {
         client_safe: (body as Record<string, unknown>).client_safe === true,
       });
 
+      let stored: Buffer | string = assembled.content;
+      if (format === 'pdf') {
+        try {
+          const { renderReportPdf } = await import('./report-pdf.js');
+          stored = await renderReportPdf(assembled.content, { format: 'A4', printBackground: true });
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `PDF rendering failed: ${err instanceof Error ? err.message : String(err)}` }));
+          return;
+        }
+      }
+
       const archive = this.engine.getReportArchive();
-      const record: ReportRecord = archive.add(assembled.content, {
+      const record: ReportRecord = archive.add(stored, {
         generated_at: new Date().toISOString(),
-        format: assembled.format,
+        format,
         redaction_mode: (body as Record<string, unknown>).client_safe === true ? 'client_safe' : 'operator',
         options: {
           include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,

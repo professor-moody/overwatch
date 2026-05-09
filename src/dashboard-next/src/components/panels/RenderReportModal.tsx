@@ -16,7 +16,7 @@ interface Props {
 }
 
 export function RenderReportModal({ onClose, onRendered }: Props) {
-  const [format, setFormat] = useState<'markdown' | 'html' | 'json'>('markdown');
+  const [format, setFormat] = useState<'markdown' | 'html' | 'json' | 'pdf'>('markdown');
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [clientSafe, setClientSafe] = useState(false);
   const [includeAttackPaths, setIncludeAttackPaths] = useState(true);
@@ -31,7 +31,7 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
     try {
       await api.renderReport({
         format,
-        theme: format === 'html' ? theme : undefined,
+        theme: format === 'html' || format === 'pdf' ? theme : undefined,
         client_safe: clientSafe,
         include_attack_paths: includeAttackPaths,
         include_retrospective: includeRetrospective,
@@ -57,7 +57,7 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Format</label>
             <div className="flex gap-1">
-              {(['markdown', 'html', 'json'] as const).map(f => (
+              {(['markdown', 'html', 'json', 'pdf'] as const).map(f => (
                 <button
                   key={f}
                   onClick={() => setFormat(f)}
@@ -67,21 +67,15 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
                       ? 'bg-accent/10 border-accent/40 text-accent'
                       : 'bg-elevated border-border text-muted-foreground hover:text-foreground'
                   )}
+                  title={f === 'pdf' ? 'Renders HTML through headless Chromium (requires chromium binary on the engine host).' : undefined}
                 >
                   {f}
                 </button>
               ))}
-              <button
-                disabled
-                title="PDF support is coming in B.4"
-                className="flex-1 px-3 py-1.5 text-xs rounded border bg-elevated/50 border-border text-muted-foreground/50 cursor-not-allowed"
-              >
-                pdf
-              </button>
             </div>
           </div>
 
-          {format === 'html' && (
+          {(format === 'html' || format === 'pdf') && (
             <div>
               <label className="block text-xs text-muted-foreground mb-1">Theme</label>
               <div className="flex gap-1">
