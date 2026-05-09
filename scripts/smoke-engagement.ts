@@ -20,11 +20,12 @@
 
 import { GraphEngine } from '../src/services/graph-engine.js';
 import type { EngagementConfig } from '../src/types.js';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 const ENG_DIR = './smoke-engagement';
-const STATE_FILE = join(ENG_DIR, 'engagement.json');
+const CONFIG_FILE = join(ENG_DIR, 'config.json');
+const STATE_FILE = join(ENG_DIR, 'state.json');
 
 if (existsSync(ENG_DIR)) {
   console.log(`Removing existing ${ENG_DIR}/ for clean smoke run`);
@@ -62,6 +63,11 @@ const config: EngagementConfig = {
     },
   ],
 };
+
+// Write the config to its own file so the MCP server's loadConfig
+// (which reads OVERWATCH_CONFIG and parses it as engagementConfigSchema)
+// finds a clean config — the state file shape is different.
+writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
 
 const engine = new GraphEngine(config, STATE_FILE);
 
@@ -277,6 +283,7 @@ engine.ingestFinding({
 console.log('');
 console.log('Smoke engagement seeded:');
 console.log(`  Engagement dir: ${ENG_DIR}/`);
+console.log(`  Config file:    ${CONFIG_FILE}`);
 console.log(`  State file:     ${STATE_FILE}`);
 console.log(`  Engagement id:  ${config.id}`);
 console.log('');
@@ -289,6 +296,6 @@ console.log('  cred-entra-at     Entra access token for alice@acme.local (post-M
 console.log('');
 console.log('Next steps:');
 console.log(`  1. Start MCP server pointing at the smoke engagement:`);
-console.log(`     OVERWATCH_ENGAGEMENT_PATH=${STATE_FILE} node dist/index.js`);
+console.log(`     OVERWATCH_CONFIG=${CONFIG_FILE} OVERWATCH_STATE_FILE=${STATE_FILE} node dist/index.js`);
 console.log(`  2. Open the dashboard at http://localhost:8384`);
 console.log(`  3. Follow docs/smoke-test.md`);

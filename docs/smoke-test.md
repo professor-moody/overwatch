@@ -35,7 +35,8 @@ You should see:
 ```
 Smoke engagement seeded:
   Engagement dir: ./smoke-engagement/
-  State file:     smoke-engagement/engagement.json
+  Config file:    smoke-engagement/config.json
+  State file:     smoke-engagement/state.json
   Engagement id:  smoke-credential-playbooks
 Seeded credentials:
   cred-aws-power    AWS poweruser temp creds (oidc_access_token shape)
@@ -48,7 +49,9 @@ Seeded credentials:
 ## 2. Start the MCP server pointed at the smoke engagement
 
 ```bash
-OVERWATCH_ENGAGEMENT_PATH=smoke-engagement/engagement.json node dist/index.js
+OVERWATCH_CONFIG=smoke-engagement/config.json \
+  OVERWATCH_STATE_FILE=smoke-engagement/state.json \
+  node dist/index.js
 ```
 
 The server starts on stdio (for MCP) and the dashboard on `http://localhost:8384`.
@@ -280,7 +283,7 @@ curl -s http://localhost:8384/api/reports | jq '.total, .reports[0]'
 curl -s http://localhost:8384/api/state | jq '.state.graph_summary.nodes_by_type.credential'
 
 # Attack paths panel has the OIDC pivot chain
-curl -s http://localhost:8384/api/paths/obj-aws-admin | jq '.[] | .nodes'
+curl -s http://localhost:8384/api/paths/obj-aws-admin | jq '.count, .paths[].nodes'
 ```
 
 Expected:

@@ -883,13 +883,19 @@ export function buildAttackPaths(
       if (i < raw.nodes.length - 1) {
         const edge = pickEdge(id, raw.nodes[i + 1]);
         if (edge) {
-          const inferred = !!edge.properties.inferred_by_rule && !edge.properties.confirmed_at;
+          // Cross-tier-inference rules currently stamp `rule` on the edge
+          // properties; the canonical schema field is `inferred_by_rule`.
+          // Read both so a renamed-but-not-rewritten codebase still
+          // classifies inferred edges correctly.
+          const ruleName = (edge.properties.inferred_by_rule as string | undefined)
+            ?? (edge.properties.rule as string | undefined);
+          const inferred = !!ruleName && !edge.properties.confirmed_at;
           if (inferred) containsInferred = true;
           step.edge_to_next = {
             type: edge.properties.type as string,
             confidence: (edge.properties.confidence as number | undefined) ?? 0,
             inferred,
-            rule: inferred ? (edge.properties.inferred_by_rule as string | undefined) : undefined,
+            rule: inferred ? ruleName : undefined,
           };
         }
       }

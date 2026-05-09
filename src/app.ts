@@ -196,7 +196,12 @@ export function registerAllTools(
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {
   const configPath = options.configPath || process.env.OVERWATCH_CONFIG || './engagement.json';
   const config = options.config || loadConfig(configPath);
-  const engine = new GraphEngine(config, options.stateFilePath);
+  // Honor OVERWATCH_STATE_FILE for non-default state file locations
+  // (e.g. the smoke harness keeps state inside ./smoke-engagement/).
+  // Falls back to options.stateFilePath, then the engine's
+  // `./state-<id>.json` default.
+  const stateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE;
+  const engine = new GraphEngine(config, stateFilePath);
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);
   console.error(`Loaded ${skills.count} skills from ${skillDir}`);
