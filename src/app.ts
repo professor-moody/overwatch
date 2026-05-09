@@ -46,6 +46,7 @@ import { registerScopeTools } from './tools/scope.js';
 import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
 import { registerTokenReplayTool } from './tools/token-replay.js';
+import { registerAwsPlaybookTool } from './tools/aws-playbook.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerDecisionLogTools } from './tools/decision-log.js';
 import { registerIntrospectionTools } from './tools/introspection.js';
@@ -171,6 +172,7 @@ export function registerAllTools(
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
   registerTokenReplayTool(s, deps.engine);
+  registerAwsPlaybookTool(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
   registerDecisionLogTools(s, deps.engine);
   registerIntrospectionTools(s, deps.engine);

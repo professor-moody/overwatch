@@ -40,6 +40,8 @@ export { parseTokenReplayMsGraph } from './token-replay-msgraph.js';
 export { parseTokenReplayAwsSts } from './token-replay-awssts.js';
 export { parseTokenReplayOkta } from './token-replay-okta.js';
 export { parseTokenReplayGitHub } from './token-replay-github.js';
+export { parseAwsStsIdentity } from './aws-sts-identity.js';
+export { parseAwsIamSummary } from './aws-iam-summary.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -78,6 +80,8 @@ import { parseTokenReplayMsGraph } from './token-replay-msgraph.js';
 import { parseTokenReplayAwsSts } from './token-replay-awssts.js';
 import { parseTokenReplayOkta } from './token-replay-okta.js';
 import { parseTokenReplayGitHub } from './token-replay-github.js';
+import { parseAwsStsIdentity } from './aws-sts-identity.js';
+import { parseAwsIamSummary } from './aws-iam-summary.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -167,6 +171,11 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'token_replay_awssts': parseTokenReplayAwsSts,
   'token_replay_okta': parseTokenReplayOkta,
   'token_replay_github': parseTokenReplayGitHub,
+  // A.1 — AWS playbook step parsers.
+  'aws-sts-identity': parseAwsStsIdentity,
+  'aws-sts-get-caller-identity': parseAwsStsIdentity,
+  'aws-iam-summary': parseAwsIamSummary,
+  'aws-iam-get-account-summary': parseAwsIamSummary,
 };
 
 export function getSupportedParsers(): string[] {
