@@ -15,6 +15,7 @@ const PANEL_LABELS: Record<PanelId, string> = {
   evidence: 'Evidence',
   identity: 'Identity',
   paths: 'Attack Paths',
+  findings: 'Findings',
   engagements: 'Engagements',
   settings: 'Settings',
 };

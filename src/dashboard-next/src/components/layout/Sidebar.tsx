@@ -11,6 +11,7 @@ import {
   Settings,
   KeyRound,
   Route,
+  ShieldAlert,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
@@ -33,6 +34,7 @@ const NAV_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ class
   { id: 'evidence', label: 'Evidence', icon: FileText },
   { id: 'identity', label: 'Identity', icon: KeyRound },
   { id: 'paths', label: 'Attack Paths', icon: Route },
+  { id: 'findings', label: 'Findings', icon: ShieldAlert },
 ];
 
 const BOTTOM_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [

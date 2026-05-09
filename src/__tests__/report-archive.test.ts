@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ReportArchive } from '../services/report-archive.js';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
