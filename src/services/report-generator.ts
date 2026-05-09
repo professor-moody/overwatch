@@ -230,42 +230,150 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
     });
   }
 
-  // 2. Credentials obtained
+  // 2. Credentials obtained — bucketed by cred_material_kind so a real
+  // engagement with hundreds of captured creds doesn't produce hundreds
+  // of identical-looking findings. Each kind becomes one finding whose
+  // severity is the max of its members' severities; individual creds
+  // with confirmed reachability surface in the description.
+  //
+  // Per-cred severity is computed from edges in the graph:
+  //   - VALID_ON, VALID_FOR_APP, ASSUMES_ROLE (confirmed) → high
+  //     (or critical if `privileged: true`).
+  //   - VALID_FOR_IDP_PRINCIPAL, OWNS_CRED (federated identity confirmed)
+  //     → high.
+  //   - POTENTIAL_AUTH only (untested candidate) → medium.
+  //   - No auth-related outbound edges → medium (the floor — captured
+  //     credentials are dangerous in principle even without a confirmed
+  //     path; operators chose this floor over 'low' in plan B.5).
+  const SEVERITY_RANK: Record<FindingSeverity, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+  const maxSeverity = (a: FindingSeverity, b: FindingSeverity): FindingSeverity =>
+    SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b;
+
+  function classifyCred(node: NodeProperties): { severity: FindingSeverity; reachable: boolean; risk_score: number } {
+    const confirmedAuthEdges = graph.edges.filter(e =>
+      e.source === node.id && (
+        e.properties.type === 'VALID_ON' ||
+        e.properties.type === 'VALID_FOR_APP' ||
+        e.properties.type === 'VALID_FOR_IDP_PRINCIPAL' ||
+        e.properties.type === 'ASSUMES_ROLE'
+      ) && (e.properties.confidence ?? 0) >= 0.9
+    );
+    const candidateEdges = graph.edges.filter(e =>
+      e.source === node.id && e.properties.type === 'POTENTIAL_AUTH'
+    );
+    if (node.privileged && confirmedAuthEdges.length > 0) {
+      return { severity: 'critical', reachable: true, risk_score: 9.5 };
+    }
+    if (confirmedAuthEdges.length > 0) {
+      return { severity: 'high', reachable: true, risk_score: 7.5 };
+    }
+    if (candidateEdges.length > 0) {
+      return { severity: 'medium', reachable: false, risk_score: 5.0 };
+    }
+    return { severity: 'medium', reachable: false, risk_score: 4.0 };
+  }
+
+  // First pass: collect + classify each usable credential; group by kind.
+  type CredEntry = {
+    node: NodeProperties;
+    severity: FindingSeverity;
+    reachable: boolean;
+    risk_score: number;
+    confirmed_targets: string[];
+    candidate_targets: string[];
+  };
+  const buckets = new Map<string, CredEntry[]>();
   for (const n of graph.nodes) {
     if (n.properties.type !== 'credential') continue;
     if (n.properties.confidence < 0.9 || !isCredentialUsableForAuth(n.properties)) continue;
+    const cls = classifyCred(n.properties);
+    const confirmedTargets = graph.edges
+      .filter(e => e.source === n.id && (
+        e.properties.type === 'VALID_ON' ||
+        e.properties.type === 'VALID_FOR_APP' ||
+        e.properties.type === 'ASSUMES_ROLE'
+      ) && (e.properties.confidence ?? 0) >= 0.9)
+      .map(e => nodeMap.get(e.target)?.label || e.target);
+    const candidateTargets = graph.edges
+      .filter(e => e.source === n.id && e.properties.type === 'POTENTIAL_AUTH')
+      .map(e => nodeMap.get(e.target)?.label || e.target);
+    const kind = (n.properties.cred_material_kind as string | undefined) ?? (n.properties.cred_type as string | undefined) ?? 'credential';
+    const list = buckets.get(kind) ?? [];
+    list.push({ node: n.properties, ...cls, confirmed_targets: confirmedTargets, candidate_targets: candidateTargets });
+    buckets.set(kind, list);
+  }
 
-    const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
-    const validOnEdges = graph.edges.filter(e =>
-      e.source === n.id && e.properties.type === 'VALID_ON'
+  // Second pass: emit one finding per kind bucket.
+  for (const [kind, entries] of buckets.entries()) {
+    if (entries.length === 0) continue;
+    let bucketSeverity: FindingSeverity = 'medium';
+    let maxRiskScore = 0;
+    const reachableEntries: CredEntry[] = [];
+    for (const e of entries) {
+      bucketSeverity = maxSeverity(bucketSeverity, e.severity);
+      if (e.risk_score > maxRiskScore) maxRiskScore = e.risk_score;
+      if (e.reachable) reachableEntries.push(e);
+    }
+    const total = entries.length;
+    const reachableCount = reachableEntries.length;
+    const kindLabel = entries[0].node.cred_material_kind
+      ? getCredentialDisplayKind(entries[0].node)
+      : kind;
+
+    // Title summarizes total + how many have a confirmed reachable target.
+    const title = total === 1
+      ? `Credential Obtained: ${entries[0].node.cred_user || entries[0].node.label || entries[0].node.id} (${kindLabel})`
+      : `${total} ${kindLabel} credentials captured` +
+        (reachableCount > 0 ? ` (${reachableCount} with confirmed reachability)` : '');
+
+    // Description: first list the reachable creds (the dangerous ones),
+    // then summarize the bucket as a whole.
+    const lines: string[] = [];
+    if (reachableEntries.length > 0) {
+      lines.push(`**${reachableEntries.length} with confirmed authentication path:**`);
+      for (const e of reachableEntries.slice(0, 10)) {
+        const user = e.node.cred_user || e.node.label || e.node.id;
+        const targets = e.confirmed_targets.slice(0, 3).join(', ');
+        lines.push(`- ${user}${e.confirmed_targets.length > 0 ? ` → ${targets}${e.confirmed_targets.length > 3 ? `, +${e.confirmed_targets.length - 3} more` : ''}` : ''}`);
+      }
+      if (reachableEntries.length > 10) lines.push(`- +${reachableEntries.length - 10} more`);
+    }
+    const inventoryEntries = entries.filter(e => !e.reachable);
+    if (inventoryEntries.length > 0) {
+      lines.push(`**${inventoryEntries.length} captured without confirmed reachability:**`);
+      for (const e of inventoryEntries.slice(0, 5)) {
+        const user = e.node.cred_user || e.node.label || e.node.id;
+        const candidates = e.candidate_targets.length > 0
+          ? ` (${e.candidate_targets.length} candidate target${e.candidate_targets.length === 1 ? '' : 's'})`
+          : '';
+        lines.push(`- ${user}${candidates}`);
+      }
+      if (inventoryEntries.length > 5) lines.push(`- +${inventoryEntries.length - 5} more`);
+    }
+
+    // Affected assets: prefer the reachable creds first (operator wants
+    // to see the dangerous ones at a glance), then fill with candidates.
+    const reachableAssets = reachableEntries.map(e => e.node.cred_user || e.node.label || e.node.id);
+    const inventoryAssets = inventoryEntries.map(e => e.node.cred_user || e.node.label || e.node.id);
+    const affected_assets = [...reachableAssets, ...inventoryAssets].slice(0, 25);
+
+    // Evidence: aggregate top-3 entries' chains so the report cites at
+    // least the reachable proofs without exploding for huge buckets.
+    const evidenceSampleEntries = [...reachableEntries.slice(0, 2), ...inventoryEntries.slice(0, 1)];
+    const evidence = evidenceSampleEntries.flatMap(e =>
+      buildEvidenceChainsForNode(e.node.id as string, graph, history, opts),
     );
-    const candidateEdges = graph.edges.filter(e =>
-      e.source === n.id && e.properties.type === 'POTENTIAL_AUTH'
-    );
-    const confirmedTargets = validOnEdges.map(e => nodeMap.get(e.target)?.label || e.target);
-    const candidateTargets = candidateEdges.map(e => nodeMap.get(e.target)?.label || e.target);
-    const targetHosts = [...confirmedTargets, ...candidateTargets];
-    const targetSummary = [
-      confirmedTargets.length > 0
-        ? `Confirmed valid on ${confirmedTargets.length} service(s): ${confirmedTargets.slice(0, 5).join(', ')}${confirmedTargets.length > 5 ? `, +${confirmedTargets.length - 5} more` : ''}`
-        : undefined,
-      candidateTargets.length > 0
-        ? `Untested candidate for ${candidateTargets.length} service(s): ${candidateTargets.slice(0, 5).join(', ')}${candidateTargets.length > 5 ? `, +${candidateTargets.length - 5} more` : ''}`
-        : undefined,
-    ].filter(Boolean).join('. ');
 
     findings.push({
-      id: `finding-cred-${n.id}`,
-      title: `Credential Obtained: ${n.properties.cred_user || n.properties.label || n.id}`,
-      severity: n.properties.privileged ? 'critical' : 'high',
+      id: `finding-creds-${kind.replace(/[^a-z0-9_]/gi, '-')}`,
+      title,
+      severity: bucketSeverity,
       category: 'credential',
-      description: `${getCredentialDisplayKind(n.properties)} credential for ${n.properties.cred_user || 'unknown user'}` +
-        (n.properties.cred_domain ? ` (domain: ${n.properties.cred_domain})` : '') +
-        (targetSummary ? `. ${targetSummary}.` : '. No confirmed target validity recorded.'),
-      affected_assets: [n.properties.cred_user || n.properties.label || n.id, ...targetHosts.slice(0, 5)],
+      description: lines.length > 0 ? lines.join('\n') : `${total} ${kindLabel} credential(s) captured.`,
+      affected_assets,
       evidence,
-      remediation: generateCredentialRemediation(n.properties),
-      risk_score: n.properties.privileged ? 9.5 : 7.0,
+      remediation: generateCredentialRemediation(entries[0].node),
+      risk_score: maxRiskScore,
     });
   }
 

@@ -153,18 +153,29 @@ describe('buildFindings', () => {
     expect(hostFindings[0].risk_score).toBeGreaterThan(5);
   });
 
-  it('generates findings for credentials', () => {
+  it('generates findings for credentials, bucketed by material kind', () => {
     const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
     const credFindings = findings.filter(f => f.category === 'credential');
+    // Two distinct material kinds (ntlm, plaintext) → two buckets.
     expect(credFindings.length).toBe(2);
+
     const adminCred = credFindings.find(f => f.title.includes('admin'));
     expect(adminCred).toBeDefined();
-    expect(adminCred!.severity).toBe('critical'); // privileged
+    // privileged + has VALID_ON → critical, risk 9.5.
+    expect(adminCred!.severity).toBe('critical');
     expect(adminCred!.risk_score).toBe(9.5);
-    expect(adminCred!.description).toContain('Confirmed valid on');
+    // Description groups creds with confirmed reachability separately.
+    expect(adminCred!.description).toMatch(/confirmed authentication path/);
+    expect(adminCred!.description).toContain('SMB'); // label of svc-smb-1
+
     const jdoeCred = credFindings.find(f => f.title.includes('jdoe'));
-    expect(jdoeCred?.description).toContain('Untested candidate for');
-    expect(jdoeCred?.description).not.toContain('Valid on');
+    expect(jdoeCred).toBeDefined();
+    // POTENTIAL_AUTH only → medium (was 'high' under old per-cred rule).
+    expect(jdoeCred!.severity).toBe('medium');
+    // No VALID_ON → goes into the "captured without confirmed reachability"
+    // section with candidate-target count.
+    expect(jdoeCred!.description).toMatch(/captured without confirmed reachability/);
+    expect(jdoeCred!.description).toMatch(/candidate target/);
   });
 
   it('reports ADMIN_TO-only paths as access paths, not compromised hosts', () => {
@@ -935,13 +946,16 @@ describe('buildFindings — credential field normalization regression', () => {
     };
     const findings = buildFindings(graph, [], makeConfig());
     const credFindings = findings.filter(f => f.category === 'credential');
-    expect(credFindings.length).toBe(2);
-    expect(credFindings.map(f => f.title)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('root'),
-        expect.stringContaining('wp-admin'),
-      ]),
-    );
+    // Both creds share cred_material_kind=plaintext_password → one bucket
+    // with both users surfaced in description + affected_assets.
+    expect(credFindings.length).toBe(1);
+    const bucket = credFindings[0];
+    expect(bucket.title).toMatch(/2 plaintext_password credentials captured/);
+    expect(bucket.description).toContain('root');
+    expect(bucket.description).toContain('wp-admin');
+    expect(bucket.affected_assets).toEqual(expect.arrayContaining(['root', 'wp-admin']));
+    // Both have VALID_ON edges → reachable → high severity.
+    expect(bucket.severity).toBe('high');
   });
 
   it('excludes credentials missing cred_type (pre-fix regression guard)', () => {
@@ -1313,5 +1327,112 @@ describe('buildFindings — session_live awareness', () => {
     expect(hostFindings.find(f => f.title.includes('10.10.10.66'))).toBeUndefined();
     const accessPaths = findings.filter(f => f.category === 'access_path');
     expect(accessPaths.find(f => f.title.includes('10.10.10.66'))).toBeDefined();
+  });
+});
+
+// ============================================================
+// Credential bucketing (B.5)
+// ============================================================
+
+describe('buildFindings — credential bucketing by material kind', () => {
+  function credNode(id: string, overrides: Partial<NodeProperties> = {}): { id: string; properties: NodeProperties } {
+    return {
+      id,
+      properties: {
+        id, type: 'credential', label: id, discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0,
+        cred_type: 'token', cred_material_kind: 'oidc_access_token', cred_user: id,
+        cred_usable_for_auth: true,
+        cred_token_expires_at: '2099-01-01T00:00:00Z',
+        ...overrides,
+      } as NodeProperties,
+    };
+  }
+
+  it('groups many same-kind credentials into a single bucket finding', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        credNode('cred-1'),
+        credNode('cred-2'),
+        credNode('cred-3'),
+        credNode('cred-4'),
+        credNode('cred-5'),
+      ],
+      edges: [],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const credFindings = findings.filter(f => f.category === 'credential');
+    expect(credFindings.length).toBe(1);
+    expect(credFindings[0].title).toMatch(/5 oidc_access_token credentials captured/);
+    // No reachable edges → severity floor is medium.
+    expect(credFindings[0].severity).toBe('medium');
+  });
+
+  it('emits one bucket per cred_material_kind', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        credNode('cred-oidc-1', { cred_material_kind: 'oidc_access_token' }),
+        credNode('cred-oidc-2', { cred_material_kind: 'oidc_access_token' }),
+        credNode('cred-pat-1', { cred_material_kind: 'pat' }),
+        credNode('cred-saml-1', { cred_material_kind: 'saml_assertion' }),
+      ],
+      edges: [],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const credFindings = findings.filter(f => f.category === 'credential');
+    expect(credFindings.length).toBe(3);
+    const kinds = credFindings.map(f => f.title);
+    expect(kinds).toEqual(expect.arrayContaining([
+      expect.stringMatching(/oidc_access_token/),
+      expect.stringMatching(/pat/),
+      expect.stringMatching(/saml_assertion/),
+    ]));
+  });
+
+  it('escalates to high when a cred has confirmed authentication path; floor stays medium otherwise', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        credNode('cred-reachable'),
+        credNode('cred-orphan'),
+        { id: 'role-power', properties: { id: 'role-power', type: 'cloud_identity', label: 'PowerUser', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'cred-reachable', target: 'role-power', properties: { type: 'ASSUMES_ROLE', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const credFindings = findings.filter(f => f.category === 'credential');
+    expect(credFindings.length).toBe(1);
+    const bucket = credFindings[0];
+    // Bucket severity = max(medium, high). One reachable, one not.
+    expect(bucket.severity).toBe('high');
+    expect(bucket.title).toContain('1 with confirmed reachability');
+    expect(bucket.description).toContain('cred-reachable');
+    expect(bucket.description).toContain('cred-orphan');
+  });
+
+  it('elevates a privileged + reachable cred to critical', () => {
+    const graph: ExportedGraph = {
+      nodes: [
+        credNode('cred-domain-admin', { privileged: true }),
+        { id: 'host-dc', properties: { id: 'host-dc', type: 'host', label: 'DC01', discovered_at: '2026-01-01T00:00:00Z', confidence: 1.0 } as NodeProperties },
+      ],
+      edges: [
+        { source: 'cred-domain-admin', target: 'host-dc', properties: { type: 'VALID_ON', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' } as EdgeProperties },
+      ],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    const credFindings = findings.filter(f => f.category === 'credential');
+    expect(credFindings.length).toBe(1);
+    expect(credFindings[0].severity).toBe('critical');
+    expect(credFindings[0].risk_score).toBe(9.5);
+  });
+
+  it('uses singular title format when bucket has exactly one cred', () => {
+    const graph: ExportedGraph = {
+      nodes: [credNode('cred-solo', { cred_user: 'svc-deploy' })],
+      edges: [],
+    };
+    const findings = buildFindings(graph, [], makeConfig());
+    expect(findings[0].title).toMatch(/^Credential Obtained: svc-deploy/);
   });
 });
