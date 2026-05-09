@@ -16,25 +16,10 @@ function getEdgeKey(edge: ExportedEdge): string {
   return `${edge.source}--${edge.type || ''}--${edge.target}`;
 }
 
-// ---- Normalize wrapped {id, properties:{...}} export shape into the flat
-// ---- shape the dashboard code expects. The backend's exportGraph() emits
-// ---- the wrapped form; legacy/test fixtures may already be flat.
-
-function flattenNode(n: ExportedNode | (ExportedNode & { properties?: Record<string, unknown> })): ExportedNode {
-  const props = (n as { properties?: Record<string, unknown> }).properties;
-  if (props && typeof props === 'object') {
-    return { ...(props as Record<string, unknown>), ...n, ...props, id: n.id } as ExportedNode;
-  }
-  return n as ExportedNode;
-}
-
-function flattenEdge(e: ExportedEdge | (ExportedEdge & { properties?: Record<string, unknown> })): ExportedEdge {
-  const props = (e as { properties?: Record<string, unknown> }).properties;
-  if (props && typeof props === 'object') {
-    return { ...(props as Record<string, unknown>), ...e, ...props, id: e.id, source: e.source, target: e.target } as ExportedEdge;
-  }
-  return e as ExportedEdge;
-}
+// Normalization helpers shared with the engagement store live in
+// lib/graph-flatten — keep useGraph using the same code path so the
+// shape contract is single-source.
+import { flattenNode, flattenEdge } from '../lib/graph-flatten';
 
 function getEdgeColor(edgeType: string, confidence: number): string {
   if (confidence < 1.0) {

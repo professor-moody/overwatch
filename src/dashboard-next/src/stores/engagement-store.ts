@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { flattenNode, flattenEdge } from '../lib/graph-flatten';
 import type {
   EngagementState,
   ExportedGraph,
@@ -135,11 +136,19 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
 
   loadFullState: (data: FullStateData) => {
     const s = data.state;
+    // Backend exports `{ id, properties: {...} }`; the panel code reads
+    // flat fields. Normalize once on load so every consumer sees the
+    // same shape (fixes IdentityPanel + AttackPathsPanel rendering
+    // empty against real engagements).
+    const flatGraph: ExportedGraph = {
+      nodes: data.graph.nodes.map(flattenNode),
+      edges: data.graph.edges.map(flattenEdge),
+    };
     set({
       engagement: s.engagement || null,
       accessLevel: s.access_level || 'none',
       historyCount: data.history_count ?? 0,
-      graph: data.graph,
+      graph: flatGraph,
       graphSummary: s.graph_summary || null,
       graphVersion: get().graphVersion + 1,
       lastDelta: null,
@@ -161,13 +170,14 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     const s = data.state;
     const prev = get().graph;
 
-    // Merge delta into existing graph
+    // Merge delta into existing graph. Flatten incoming nodes/edges
+    // so panel code can read flat fields consistently.
     const nodeMap = new Map<string, ExportedNode>();
     for (const n of prev.nodes) nodeMap.set(n.id, n);
     // Remove deleted nodes
     for (const id of data.delta.removed_nodes || []) nodeMap.delete(id);
-    // Add/update nodes from delta
-    for (const n of data.delta.nodes) nodeMap.set(n.id, n);
+    // Add/update nodes from delta (flattened)
+    for (const n of data.delta.nodes) nodeMap.set(n.id, flattenNode(n));
 
     const edgeMap = new Map<string, ExportedEdge>();
     for (const e of prev.edges) {
@@ -176,10 +186,11 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     }
     // Remove deleted edges
     for (const id of data.delta.removed_edges || []) edgeMap.delete(id);
-    // Add/update edges from delta
+    // Add/update edges from delta (flattened)
     for (const e of data.delta.edges) {
-      const key = e.id || `${e.source}-${e.type}-${e.target}`;
-      edgeMap.set(key, e);
+      const flat = flattenEdge(e);
+      const key = flat.id || `${flat.source}-${flat.type}-${flat.target}`;
+      edgeMap.set(key, flat);
     }
 
     set({

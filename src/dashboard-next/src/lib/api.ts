@@ -482,7 +482,7 @@ export async function listReports(): Promise<ReportsListResponse> {
 }
 
 export interface RenderReportBody {
-  format?: 'markdown' | 'html' | 'json';
+  format?: 'markdown' | 'html' | 'json' | 'pdf';
   include_evidence?: boolean;
   include_narrative?: boolean;
   include_retrospective?: boolean;
