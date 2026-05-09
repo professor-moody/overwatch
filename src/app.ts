@@ -49,6 +49,7 @@ import { registerTokenReplayTool } from './tools/token-replay.js';
 import { registerAwsPlaybookTool } from './tools/aws-playbook.js';
 import { registerGithubPlaybookTool } from './tools/github-playbook.js';
 import { registerCicdOidcPlaybookTool } from './tools/cicd-oidc-playbook.js';
+import { registerEntraPlaybookTools } from './tools/entra-playbook.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerDecisionLogTools } from './tools/decision-log.js';
 import { registerIntrospectionTools } from './tools/introspection.js';
@@ -177,6 +178,7 @@ export function registerAllTools(
   registerAwsPlaybookTool(s, deps.engine);
   registerGithubPlaybookTool(s, deps.engine);
   registerCicdOidcPlaybookTool(s, deps.engine);
+  registerEntraPlaybookTools(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
   registerDecisionLogTools(s, deps.engine);
   registerIntrospectionTools(s, deps.engine);

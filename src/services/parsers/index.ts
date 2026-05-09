@@ -47,6 +47,10 @@ export { parseGhApiRepos } from './gh-api-repos.js';
 export { parseGhApiSecrets } from './gh-api-secrets.js';
 export { parseGhApiBranchProtection } from './gh-api-branch-protection.js';
 export { parseGhApiDeployKeys } from './gh-api-deploy-keys.js';
+export { parseMsGraphUsers } from './msgraph-users.js';
+export { parseMsGraphApplications } from './msgraph-applications.js';
+export { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
+export { parseMsGraphGroups } from './msgraph-groups.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -92,6 +96,10 @@ import { parseGhApiRepos } from './gh-api-repos.js';
 import { parseGhApiSecrets } from './gh-api-secrets.js';
 import { parseGhApiBranchProtection } from './gh-api-branch-protection.js';
 import { parseGhApiDeployKeys } from './gh-api-deploy-keys.js';
+import { parseMsGraphUsers } from './msgraph-users.js';
+import { parseMsGraphApplications } from './msgraph-applications.js';
+import { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
+import { parseMsGraphGroups } from './msgraph-groups.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -193,6 +201,13 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'gh-api-actions-secrets': parseGhApiSecrets,
   'gh-api-branch-protection': parseGhApiBranchProtection,
   'gh-api-deploy-keys': parseGhApiDeployKeys,
+  // A.4 — Entra/Azure playbook step parsers.
+  'msgraph-users': parseMsGraphUsers,
+  'msgraph-applications': parseMsGraphApplications,
+  'msgraph-apps': parseMsGraphApplications,
+  'msgraph-serviceprincipals': parseMsGraphServicePrincipals,
+  'msgraph-sp': parseMsGraphServicePrincipals,
+  'msgraph-groups': parseMsGraphGroups,
 };
 
 export function getSupportedParsers(): string[] {

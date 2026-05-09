@@ -76,7 +76,7 @@ describe('parseGhApiBranchProtection', () => {
   it('flags fully unprotected branches as high severity', () => {
     const output = JSON.stringify({ message: 'Branch not protected' });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp', branch_name: 'main' } as any);
-    const node = finding.nodes[0];
+    const node = finding.nodes[0] as any;
     expect(node.branch_protection.status).toBe('unprotected');
     expect(node.finding_severity).toBe('high');
     expect(node.branch_protection_gaps.length).toBeGreaterThan(0);
@@ -90,7 +90,7 @@ describe('parseGhApiBranchProtection', () => {
       required_signatures: { enabled: false },
     });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp' } as any);
-    const node = finding.nodes[0];
+    const node = finding.nodes[0] as any;
     expect(node.branch_protection.status).toBe('weak');
     expect(node.branch_protection_gaps).toContain('admins can bypass protection');
     expect(node.finding_severity).toBe('high');
@@ -104,7 +104,7 @@ describe('parseGhApiBranchProtection', () => {
       required_signatures: { enabled: true },
     });
     const finding = parseGhApiBranchProtection(output, 'test', { repo_full_name: 'acme/webapp' } as any);
-    const node = finding.nodes[0];
+    const node = finding.nodes[0] as any;
     expect(node.branch_protection.status).toBe('strong');
     expect(node.finding_severity).toBeUndefined();
   });
