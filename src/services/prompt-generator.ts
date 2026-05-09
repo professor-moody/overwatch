@@ -371,7 +371,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '',
     '- **`get_decision_log` / `get_timeline` / `explain_action`** are read-only views derived from the activity log. Use them when you need to answer "why did I take action X?", "what was true at time T?", or "what did the planner suggest before I overrode it?" — they\'re the human-facing audit surface.',
     '- **Engagements with `engagement_nonce` are deterministic and replayable.** Action IDs (`act_<sha256>…`) and event IDs are derived from the nonce + agent + sequence + command, not random. Evidence blobs are content-addressed by sha256 — identical scanner output dedups automatically. State is journaled (WAL) and survives mid-mutation crashes.',
-    '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`.',
+    '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`. Reports persist to the engagement archive by default and are listable from the dashboard FindingsPanel.',
     '',
     '### Scope guardrails',
     '',
@@ -574,7 +574,21 @@ function generateTacticalSection(): string {
 ### Credential Awareness
 - When a credential is cracked or captured, **immediately** evaluate all services it can authenticate to using \`query_graph()\`. Don't wait for the next frontier cycle.
 - Track credential state: captured → cracking → cracked → used → expired. Don't attempt actions with expired credentials.
-- Check for credential reuse: if \`user:password\` works on one service, test it against all services that user has POTENTIAL_AUTH edges to.`;
+- Check for credential reuse: if \`user:password\` works on one service, test it against all services that user has POTENTIAL_AUTH edges to.
+
+### Credential-Driven Playbooks
+For captured cloud / SaaS credentials, prefer the **playbook tools** over re-deriving the canonical recon chain by hand. Each tool returns a numbered plan with per-step \`command\`, \`parse_with\` parser, technique tag, and expected node/edge shape — every step still goes through the existing \`run_bash\` / \`run_tool\` + approval flow.
+- **\`expand_aws_credential({ credential_id })\`** — STS get-caller-identity → IAM summary → CloudFox inventory → S3/Lambda enumeration. Use as soon as an AWS access key, STS session, or assumed-role token lands in the graph.
+- **\`expand_github_credential({ credential_id })\`** — /user → /user/orgs → /user/repos → per-repo: actions/secrets, branch/protection, deploy keys, OIDC trust customization. Pass \`candidate_repos: [...]\` to pre-expand specific repos.
+- **\`expand_oidc_capture({ credential_id })\`** — for captured CI/CD OIDC tokens (GitHub Actions / GitLab CI / CircleCI). Walks inferred ASSUMES_ROLE edges, emits one \`validate_token_credential\` step per candidate cloud role. Successful replays mint temp AWS creds — chain into \`expand_aws_credential\` for the resulting session.
+- **\`exchange_refresh_token({ credential_id, client_id })\`** — exchanges an Entra refresh token for a fresh access token. Approval-gated by default. Set \`REFRESH_TOKEN\` env var before running the emitted curl.
+- **\`expand_entra_credential({ credential_id })\`** — /me → /users → /applications → /servicePrincipals → /groups. The CONSENT_ABUSE inference rule fires after step 4 lands and stamps high-priv apps for the FindingsPanel.
+
+### Reporting
+- **\`generate_report\`** writes to the per-engagement archive by default (\`persist_to_archive: true\`); the returned \`report_id\` is fetchable via \`/api/reports/:id\` and shows up in the dashboard's Findings tab → Reports archive.
+- **Formats:** \`markdown\`, \`html\`, \`json\`, \`pdf\`. PDFs are rendered through headless Chromium via puppeteer-core; if no chromium binary is available the tool returns a clear error pointing at \`PUPPETEER_EXECUTABLE_PATH\`.
+- **\`include_attack_paths: true\` (default)** synthesizes per-objective attack chains from current access using \`find_paths\` and decorates each hop with confirmed-vs-inferred + per-edge confidence. Prefer the default — operator-facing reports without an attack-paths section read like inventory reports.
+- The dashboard's Findings tab also exposes a "Generate Report" button; if you've already produced the right artifact, point operators there instead of re-rendering.`;
 }
 
 // ============================================================
