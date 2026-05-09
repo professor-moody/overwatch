@@ -18,7 +18,7 @@ interface CrossTierLink {
   azure_subscription?: string;
   gcp_project?: string;
   cloud_resource_prefix?: string;
-  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci';
+  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci' | 'github_org';
   tenant_id?: string;
   notes?: string;
 }

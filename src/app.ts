@@ -47,6 +47,8 @@ import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
 import { registerTokenReplayTool } from './tools/token-replay.js';
 import { registerAwsPlaybookTool } from './tools/aws-playbook.js';
+import { registerGithubPlaybookTool } from './tools/github-playbook.js';
+import { registerCicdOidcPlaybookTool } from './tools/cicd-oidc-playbook.js';
 import { registerLogThoughtTool } from './tools/log-thought.js';
 import { registerDecisionLogTools } from './tools/decision-log.js';
 import { registerIntrospectionTools } from './tools/introspection.js';
@@ -173,6 +175,8 @@ export function registerAllTools(
   registerRunToolTool(s, deps.engine);
   registerTokenReplayTool(s, deps.engine);
   registerAwsPlaybookTool(s, deps.engine);
+  registerGithubPlaybookTool(s, deps.engine);
+  registerCicdOidcPlaybookTool(s, deps.engine);
   registerLogThoughtTool(s, deps.engine);
   registerDecisionLogTools(s, deps.engine);
   registerIntrospectionTools(s, deps.engine);

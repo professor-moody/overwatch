@@ -254,7 +254,7 @@ export interface NodeProperties {
   // ISSUES_TOKENS_FOR cloud_identity (and federates with on-prem `domain`).
 
   /** IdP node: which kind of provider this is. */
-  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci';
+  idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci' | 'github_org';
   /** IdP node: tenant / org identifier (e.g. Okta org subdomain, Entra tenant GUID). */
   tenant_id?: string;
   /** IdP node: OIDC issuer URL (https://login.microsoftonline.com/<tenant>/v2.0). */
@@ -480,7 +480,7 @@ export interface EngagementConfig {
       azure_subscription?: string;      // Azure subscription id
       gcp_project?: string;             // GCP project id
       cloud_resource_prefix?: string;   // e.g. "arn:aws:lambda:us-east-1:123:function:client-api-*"
-      idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci';
+      idp_kind?: 'okta' | 'entra' | 'auth0' | 'ping' | 'generic_oidc' | 'generic_saml' | 'ci_github_actions' | 'ci_gitlab' | 'ci_circleci' | 'github_org';
       tenant_id?: string;
       notes?: string;
     }>;

@@ -42,6 +42,11 @@ export { parseTokenReplayOkta } from './token-replay-okta.js';
 export { parseTokenReplayGitHub } from './token-replay-github.js';
 export { parseAwsStsIdentity } from './aws-sts-identity.js';
 export { parseAwsIamSummary } from './aws-iam-summary.js';
+export { parseGhApiOrgs } from './gh-api-orgs.js';
+export { parseGhApiRepos } from './gh-api-repos.js';
+export { parseGhApiSecrets } from './gh-api-secrets.js';
+export { parseGhApiBranchProtection } from './gh-api-branch-protection.js';
+export { parseGhApiDeployKeys } from './gh-api-deploy-keys.js';
 
 import { parseNmapXml } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -82,6 +87,11 @@ import { parseTokenReplayOkta } from './token-replay-okta.js';
 import { parseTokenReplayGitHub } from './token-replay-github.js';
 import { parseAwsStsIdentity } from './aws-sts-identity.js';
 import { parseAwsIamSummary } from './aws-iam-summary.js';
+import { parseGhApiOrgs } from './gh-api-orgs.js';
+import { parseGhApiRepos } from './gh-api-repos.js';
+import { parseGhApiSecrets } from './gh-api-secrets.js';
+import { parseGhApiBranchProtection } from './gh-api-branch-protection.js';
+import { parseGhApiDeployKeys } from './gh-api-deploy-keys.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmapXml,
@@ -176,6 +186,13 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'aws-sts-get-caller-identity': parseAwsStsIdentity,
   'aws-iam-summary': parseAwsIamSummary,
   'aws-iam-get-account-summary': parseAwsIamSummary,
+  // A.2 — GitHub playbook step parsers.
+  'gh-api-orgs': parseGhApiOrgs,
+  'gh-api-repos': parseGhApiRepos,
+  'gh-api-secrets': parseGhApiSecrets,
+  'gh-api-actions-secrets': parseGhApiSecrets,
+  'gh-api-branch-protection': parseGhApiBranchProtection,
+  'gh-api-deploy-keys': parseGhApiDeployKeys,
 };
 
 export function getSupportedParsers(): string[] {
