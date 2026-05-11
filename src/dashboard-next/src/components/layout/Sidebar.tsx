@@ -12,6 +12,7 @@ import {
   KeyRound,
   Route,
   ShieldAlert,
+  Key,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
@@ -33,6 +34,7 @@ const NAV_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ class
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'evidence', label: 'Evidence', icon: FileText },
   { id: 'identity', label: 'Identity', icon: KeyRound },
+  { id: 'credentials', label: 'Credentials', icon: Key },
   { id: 'paths', label: 'Attack Paths', icon: Route },
   { id: 'findings', label: 'Findings', icon: ShieldAlert },
 ];
@@ -45,11 +47,13 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
   const runningAgents = useEngagementStore((s) => s.agents.filter(a => a.status === 'running').length);
   const pendingActions = useEngagementStore((s) => s.pendingActions.length);
   const frontierCount = useEngagementStore((s) => s.frontier.length);
+  const credentialCount = useEngagementStore((s) => s.graph.nodes.filter(n => n.type === 'credential').length);
 
   const badges: Partial<Record<PanelId, number>> = {
     agents: runningAgents,
     actions: pendingActions,
     frontier: frontierCount,
+    credentials: credentialCount,
   };
 
   return (
