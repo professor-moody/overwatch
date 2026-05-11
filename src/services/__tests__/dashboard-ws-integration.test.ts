@@ -74,9 +74,7 @@ beforeAll(async () => {
   engine = new GraphEngine(makeConfig(), stateFile);
   seed(engine);
   dashboard = new DashboardServer(engine, 0, '127.0.0.1', undefined, undefined);
-  // app.ts wires this in production; do it manually here so engine
-  // mutations actually trigger dashboard graph_update pushes.
-  engine.onUpdate(detail => dashboard.onGraphUpdate(detail));
+  // DashboardServer constructor wires engine.onUpdate automatically.
   const result = await dashboard.start();
   if (!result.started) throw new Error(`dashboard failed to start: ${result.error}`);
   baseUrl = dashboard.address;

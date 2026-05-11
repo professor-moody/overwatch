@@ -23,6 +23,7 @@ import { assembleReport, type ReportFormat } from './report-assembler.js';
 import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
+import { ScriptedAgentRunner } from './scripted-agent-runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -77,6 +78,8 @@ export class DashboardServer {
     this.skills = skills;
   }
 
+  private scriptedRunner: ScriptedAgentRunner;
+
   constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
     this.engine = engine;
     this.port = port;
@@ -85,6 +88,11 @@ export class DashboardServer {
     if (configPath) {
       this.engagementManager = new EngagementManager(configPath);
     }
+
+    // Wire engine updates to WS push without requiring external wiring in app.ts.
+    engine.onUpdate(detail => this.onGraphUpdate(detail));
+
+    this.scriptedRunner = new ScriptedAgentRunner(engine);
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -179,6 +187,7 @@ export class DashboardServer {
           this.host = addr.address;
         }
         this._running = true;
+        this.scriptedRunner.start();
         console.error(`Dashboard running at http://${this.host}:${this.port}`);
         resolve({ started: true });
       });
@@ -187,6 +196,7 @@ export class DashboardServer {
 
   stop(): Promise<void> {
     this._running = false;
+    this.scriptedRunner.stop();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;

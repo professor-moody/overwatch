@@ -267,10 +267,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
 
 export async function startStdioApp(app: OverwatchApp): Promise<void> {
   if (app.dashboard) {
-    const result = await app.dashboard.start();
-    if (result.started) {
-      app.engine.onUpdate((detail) => app.dashboard?.onGraphUpdate(detail));
-    }
+    await app.dashboard.start();
   }
 
   // Auto-enable tape recorder if env or engagement config asks for it.
@@ -413,10 +410,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 
   // Start dashboard (on its own port as before)
   if (app.dashboard) {
-    const result = await app.dashboard.start();
-    if (result.started) {
-      app.engine.onUpdate((detail) => app.dashboard?.onGraphUpdate(detail));
-    }
+    await app.dashboard.start();
   }
 
   // Start HTTP server — use http.createServer so server.address() is
