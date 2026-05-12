@@ -283,6 +283,7 @@ function generateCoreLoopSection(profile: LabProfile, opsecEnabled: boolean): st
 9. **Log the final outcome** with \`log_action_event(event_type="action_completed" | "action_failed")\`. **Always pass \`action_id\`.** (\`run_bash\` and \`run_tool\` do this for you.)
 
 10. **Dispatch sub-agents** for parallel work using Overwatch's \`dispatch_agents()\` (or \`register_agent()\` for one-off). **Prefer Overwatch dispatch over the host runtime's built-in subagent/Task tool** — only Overwatch-registered agents carry a frontier_item_id, lease, and dashboard surface. A subagent spawned via the host runtime that calls \`run_bash\` directly will auto-register on first tool call (so it appears in the AgentsPanel), but it lacks skill/scope/lease metadata and will look like an anonymous worker.
+   - **`credential_test` frontier items are automatically executed** by the scripted runner when the dashboard is running — token credentials with a `cred_value` are validated via curl through the approval gate without operator intervention. You do NOT need to dispatch agents or manually call `validate_token_credential` for these items; they resolve on their own. Call `get_state()` to see results after the runner finishes. Dispatch agents for credential_test items only if you need LLM reasoning (e.g., unusual audiences, custom parsers).
 
 11. **Monitor and re-plan** by periodically calling \`get_state()\`.
 
@@ -371,7 +372,8 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '',
     '- **`get_decision_log` / `get_timeline` / `explain_action`** are read-only views derived from the activity log. Use them when you need to answer "why did I take action X?", "what was true at time T?", or "what did the planner suggest before I overrode it?" — they\'re the human-facing audit surface.',
     '- **Engagements with `engagement_nonce` are deterministic and replayable.** Action IDs (`act_<sha256>…`) and event IDs are derived from the nonce + agent + sequence + command, not random. Evidence blobs are content-addressed by sha256 — identical scanner output dedups automatically. State is journaled (WAL) and survives mid-mutation crashes.',
-    '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`. Reports persist to the engagement archive by default and are listable from the dashboard FindingsPanel.',
+    '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`. Reports persist to the engagement archive by default and are listable from the dashboard **Findings** tab → Reports section.',
+  '- **Dashboard tabs:** Overview · Agents · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Campaigns. The **Credentials** tab shows all captured tokens/keys with status, reachability, and reveal/copy for `cred_value`. The **Findings** tab shows classified severity groups + report archive.',
     '',
     '### Scope guardrails',
     '',
@@ -538,6 +540,9 @@ function generateAgentContextSection(agent: AgentTask, state?: EngagementState, 
       if (node.version) props.push(`version=${node.version}`);
       if (node.os) props.push(`os=${node.os}`);
       if (node.cred_type) props.push(`cred_type=${node.cred_type}`);
+      if (node.cred_material_kind) props.push(`cred_material_kind=${node.cred_material_kind}`);
+      if (node.cred_audience) props.push(`cred_audience=${node.cred_audience}`);
+      if (node.credential_status) props.push(`credential_status=${node.credential_status}`);
       nodeSnippets.push(`- \`${nid}\`: ${props.join(', ')}`);
     }
     if (nodeSnippets.length > 0) {
@@ -583,6 +588,11 @@ For captured cloud / SaaS credentials, prefer the **playbook tools** over re-der
 - **\`expand_oidc_capture({ credential_id })\`** — for captured CI/CD OIDC tokens (GitHub Actions / GitLab CI / CircleCI). Walks inferred ASSUMES_ROLE edges, emits one \`validate_token_credential\` step per candidate cloud role. Successful replays mint temp AWS creds — chain into \`expand_aws_credential\` for the resulting session.
 - **\`exchange_refresh_token({ credential_id, client_id })\`** — exchanges an Entra refresh token for a fresh access token. Approval-gated by default. Set \`REFRESH_TOKEN\` env var before running the emitted curl.
 - **\`expand_entra_credential({ credential_id })\`** — /me → /users → /applications → /servicePrincipals → /groups. The CONSENT_ABUSE inference rule fires after step 4 lands and stamps high-priv apps for the FindingsPanel.
+
+> **Scripted runner note:** simple token-validation steps (`credential_test` frontier items) are automatically executed by the dashboard's scripted runner — you only need the playbook tools for the multi-step enumeration phases (inventory, resource discovery, org-wide enum) that require LLM interpretation or chained follow-ups.
+
+### Credentials Panel
+The dashboard's **Credentials** tab surfaces all captured credential nodes in a flat, searchable view — filterable by status (active/stale/expired), sortable by recency/kind/status, with reachability badges for tokens confirmed via VALID_FOR_APP / ASSUMES_ROLE edges. Use it to spot gaps (tokens captured but never validated), prioritize expiring tokens, and reveal `cred_value` for manual use. No action needed from the model — it updates automatically as findings land.
 
 ### Reporting
 - **\`generate_report\`** writes to the per-engagement archive by default (\`persist_to_archive: true\`); the returned \`report_id\` is fetchable via \`/api/reports/:id\` and shows up in the dashboard's Findings tab → Reports archive.
