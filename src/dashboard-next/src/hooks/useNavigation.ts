@@ -74,6 +74,10 @@ export function useNavigation() {
     navigateToPanel('agents', agentId);
   }, [navigateToPanel]);
 
+  const navigateToFrontier = useCallback((nodeId: string) => {
+    navigateToPanel('frontier', nodeId);
+  }, [navigateToPanel]);
+
   return {
     navigateToGraph,
     navigateToPanel,
@@ -81,5 +85,6 @@ export function useNavigation() {
     navigateToEvidenceObjective,
     navigateToCampaign,
     navigateToAgent,
+    navigateToFrontier,
   };
 }

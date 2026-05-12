@@ -1,6 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
+import { parseHash } from '../../hooks/useNavigation';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
 
@@ -12,6 +14,7 @@ const SECTION_LABELS: Record<string, string> = {
   untested_edge: 'Untested Edges',
   inferred_edge: 'Inferred Opportunities',
   network_discovery: 'Network Discovery',
+  credential_test: 'Credential Tests',
 };
 
 const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -19,7 +22,17 @@ const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
   untested_edge: { label: 'test', cls: 'bg-warning/10 text-warning' },
   inferred_edge: { label: 'infer', cls: 'bg-purple-dim text-purple' },
   network_discovery: { label: 'net', cls: 'bg-accent-dim text-accent' },
+  credential_test: { label: 'cred', cls: 'bg-success/10 text-success' },
 };
+
+const TYPE_FILTER_OPTIONS = [
+  { value: null, label: 'All' },
+  { value: 'incomplete_node', label: 'Nodes' },
+  { value: 'untested_edge', label: 'Edges' },
+  { value: 'inferred_edge', label: 'Inferred' },
+  { value: 'network_discovery', label: 'Network' },
+  { value: 'credential_test', label: 'Creds' },
+] as const;
 
 function getNoiseColor(noise: number): string {
   if (noise <= 0.3) return '#3ecf8e';
@@ -32,6 +45,16 @@ function metric(item: FrontierItem, key: string): string {
   return v !== undefined && v !== null ? String(v) : '—';
 }
 
+function itemReferencesNode(item: FrontierItem, nodeId: string): boolean {
+  return (
+    item.target_node === nodeId ||
+    item.node_id === nodeId ||
+    item.edge_source === nodeId ||
+    item.edge_target === nodeId ||
+    (item as unknown as Record<string, unknown>).source_node === nodeId
+  );
+}
+
 interface Section {
   key: string;
   title: string;
@@ -39,16 +62,26 @@ interface Section {
   total: number;
 }
 
-function buildSections(frontier: FrontierItem[]): Section[] {
-  const topPriority = frontier.slice(0, SECTION_PRIORITY_LIMIT);
+function buildSections(frontier: FrontierItem[], typeFilter: string | null, nodeFilter: string | null): Section[] {
+  let list = frontier;
+  if (typeFilter) list = list.filter(i => i.type === typeFilter);
+  if (nodeFilter) list = list.filter(i => itemReferencesNode(i, nodeFilter));
+
+  const topPriority = list.slice(0, SECTION_PRIORITY_LIMIT);
   const topIds = new Set(topPriority.map(i => i.id));
+
+  // When a node filter is active, skip the type sub-sections and just show everything.
+  if (nodeFilter) {
+    return [{ key: 'priority', title: 'Matching Items', items: topPriority, total: list.length }];
+  }
+
   const sections: Section[] = [
     { key: 'priority', title: 'Top Priority', items: topPriority, total: topPriority.length },
   ];
-  for (const type of ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery'] as const) {
-    const items = frontier.filter(i => i.type === type && !topIds.has(i.id));
-    const total = frontier.filter(i => i.type === type).length;
-    if (total > 0) sections.push({ key: type, title: SECTION_LABELS[type] || type, items, total });
+  for (const type of ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'credential_test'] as const) {
+    const typeItems = list.filter(i => i.type === type && !topIds.has(i.id));
+    const total = list.filter(i => i.type === type).length;
+    if (total > 0) sections.push({ key: type, title: SECTION_LABELS[type] || type, items: typeItems, total });
   }
   return sections;
 }
@@ -56,22 +89,34 @@ function buildSections(frontier: FrontierItem[]): Section[] {
 export function FrontierPanel() {
   const frontier = useEngagementStore(s => s.frontier);
   const { navigateToGraph } = useNavigation();
+  const location = useLocation();
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [nodeFilter, setNodeFilter] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    if (!typeFilter) return frontier;
-    const f = frontier.filter(item => {
-      if (item.type === 'incomplete_node' && item.node_id) return true; // would need graph check
-      const targets = [item.edge_source, item.edge_target, item.target_node, item.source_node].filter(Boolean);
-      return targets.length > 0; // basic passthrough — real filtering when graph is available
-    });
-    return f.length > 0 ? f : frontier;
-  }, [frontier, typeFilter]);
+  // Read node filter from URL hash (item= param set by navigateToFrontier).
+  useEffect(() => {
+    const target = parseHash(location.hash);
+    if (target?.panel === 'frontier' && target.item) {
+      setNodeFilter(target.item);
+    } else {
+      setNodeFilter(null);
+    }
+  }, [location.hash]);
 
-  const sections = useMemo(() => buildSections(filtered), [filtered]);
+  const sections = useMemo(
+    () => buildSections(frontier, typeFilter, nodeFilter),
+    [frontier, typeFilter, nodeFilter],
+  );
+
+  const totalVisible = useMemo(() => {
+    let list = frontier;
+    if (typeFilter) list = list.filter(i => i.type === typeFilter);
+    if (nodeFilter) list = list.filter(i => itemReferencesNode(i, nodeFilter));
+    return list.length;
+  }, [frontier, typeFilter, nodeFilter]);
 
   const toggleCollapse = (key: string) => {
     setCollapsed(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
@@ -90,27 +135,58 @@ export function FrontierPanel() {
     if (nodeId) navigateToGraph(nodeId, 2);
   };
 
+  const clearNodeFilter = () => {
+    setNodeFilter(null);
+    // Also clear the hash item param so Back works sensibly.
+    const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+    params.delete('item');
+    const newHash = params.toString() ? `#${params.toString()}` : '#panel=frontier';
+    window.history.replaceState(null, '', `/${newHash}`);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-lg font-semibold">
           Frontier <span className="text-muted-foreground font-normal text-sm">
-            {typeFilter ? `(${filtered.length}/${frontier.length})` : `(${frontier.length})`}
+            {(typeFilter || nodeFilter) ? `(${totalVisible}/${frontier.length})` : `(${frontier.length})`}
           </span>
         </h2>
-        {typeFilter && (
-          <button
-            onClick={() => setTypeFilter(null)}
-            className="text-xs px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground"
-          >
-            Clear filter ✕
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Type filter chips */}
+          <div className="flex gap-1">
+            {TYPE_FILTER_OPTIONS.map(opt => (
+              <button
+                key={String(opt.value)}
+                onClick={() => setTypeFilter(opt.value)}
+                className={cn(
+                  'text-[10px] px-2 py-0.5 rounded border transition-colors',
+                  typeFilter === opt.value
+                    ? 'bg-accent text-accent-foreground border-accent'
+                    : 'border-border bg-surface text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {/* Node filter chip */}
+          {nodeFilter && (
+            <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
+              <span className="font-mono truncate max-w-32">{nodeFilter}</span>
+              <button onClick={clearNodeFilter} className="text-accent hover:text-foreground ml-1">✕</button>
+            </div>
+          )}
+        </div>
       </div>
 
       {frontier.length === 0 ? (
         <div className="bg-surface border border-border rounded-lg p-8 text-center text-sm text-muted-foreground">
           Frontier empty — ingest data to generate candidates
+        </div>
+      ) : totalVisible === 0 ? (
+        <div className="bg-surface border border-border rounded-lg p-8 text-center text-sm text-muted-foreground">
+          No frontier items match the current filter.
         </div>
       ) : (
         <div className="space-y-3">
@@ -213,7 +289,6 @@ function FrontierItemCard({
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-          {/* Noise bar */}
           <span className="flex items-center gap-1">
             <span className="w-12 h-1.5 rounded-full bg-elevated overflow-hidden">
               <span

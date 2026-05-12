@@ -18,6 +18,7 @@
 import { useMemo, useState } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
+
 import type { ExportedEdge, ExportedNode } from '../../lib/types';
 import { isCrossTierPath, tierForNode, tiersForPath, type Tier } from '../../lib/tier';
 import { EmptyState } from '../shared';
@@ -212,7 +213,7 @@ function tierBadgeClass(t: Tier): string {
 export function AttackPathsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const initialized = useEngagementStore((s) => s.initialized);
-  const { navigateToGraph } = useNavigation();
+  const { navigateToGraph, navigateToFrontier } = useNavigation();
 
   const [tierFilter, setTierFilter] = useState<TierFilter>('cross_tier');
   const [maxHops, setMaxHops] = useState<number>(6);
@@ -293,7 +294,7 @@ export function AttackPathsPanel() {
       ) : (
         <div className="space-y-2">
           {visiblePaths.slice(0, 100).map((p, idx) => (
-            <PathRow key={idx} path={p} byId={byId} onNavigate={(id) => navigateToGraph?.(id)} />
+            <PathRow key={idx} path={p} byId={byId} onNavigate={(id) => navigateToGraph?.(id)} onFrontier={(id) => navigateToFrontier?.(id)} />
           ))}
           {visiblePaths.length > 100 ? (
             <p className="text-xs text-muted-foreground">+ {visiblePaths.length - 100} more not shown — narrow the filter to focus.</p>
@@ -304,8 +305,14 @@ export function AttackPathsPanel() {
   );
 }
 
-function PathRow({ path, byId, onNavigate }: { path: ComputedPath; byId: Map<string, ExportedNode>; onNavigate?: (id: string) => void }) {
+function PathRow({ path, byId, onNavigate, onFrontier }: {
+  path: ComputedPath;
+  byId: Map<string, ExportedNode>;
+  onNavigate?: (id: string) => void;
+  onFrontier?: (id: string) => void;
+}) {
   const isCross = isCrossTierPath(path.nodes, byId);
+  const targetId = path.nodes[path.nodes.length - 1];
   return (
     <div className="rounded border border-border bg-card p-3">
       <div className="flex items-center justify-between mb-2">
@@ -317,8 +324,19 @@ function PathRow({ path, byId, onNavigate }: { path: ComputedPath; byId: Map<str
           ))}
           {isCross ? <span className="px-1.5 py-0.5 text-[10px] rounded border bg-yellow-500/20 text-yellow-300 border-yellow-500/40 font-mono uppercase">cross-tier</span> : null}
         </div>
-        <div className="text-xs text-muted-foreground font-mono">
-          {path.nodes.length - 1} hop{path.nodes.length === 2 ? '' : 's'} · conf {path.total_confidence.toFixed(2)} · noise {path.total_opsec_noise.toFixed(2)}
+        <div className="flex items-center gap-2">
+          <div className="text-xs text-muted-foreground font-mono">
+            {path.nodes.length - 1} hop{path.nodes.length === 2 ? '' : 's'} · conf {path.total_confidence.toFixed(2)} · noise {path.total_opsec_noise.toFixed(2)}
+          </div>
+          {onFrontier && targetId && (
+            <button
+              onClick={() => onFrontier(targetId)}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground hover:border-accent/50 transition-colors"
+              title="Show frontier items for target node"
+            >
+              Frontier →
+            </button>
+          )}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-1 text-xs font-mono">

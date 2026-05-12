@@ -87,6 +87,21 @@ export function FindingsPanel() {
             )}
           </div>
           <button
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(findings, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `findings-${new Date().toISOString().slice(0, 10)}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="text-xs px-2.5 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors"
+            title="Export findings as JSON"
+          >
+            Export JSON
+          </button>
+          <button
             onClick={() => setShowRender(true)}
             className="text-xs px-2.5 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
           >
