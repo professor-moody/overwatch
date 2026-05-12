@@ -15,7 +15,6 @@ import {
   getInferenceRules,
   getTemplates,
   exportGraphJson,
-  updateScope,
 } from '../../lib/api';
 import type {
   EngagementConfig,
@@ -26,7 +25,6 @@ import type {
   ToolCheckResult,
   InferenceRuleInfo,
   EngagementTemplate,
-  ScopeConfig,
 } from '../../lib/types';
 
 export function SettingsPanel() {
@@ -81,9 +79,6 @@ export function SettingsPanel() {
 
       {config && <IdentitySection config={config} onSave={async (body) => {
         try { await updateConfig(body); flash('Saved \u2713'); load(); } catch { flash('Error saving', false); }
-      }} />}
-      {config && <ScopeSection scope={config.scope} onSave={async (s) => {
-        try { await updateScope(s); flash('Scope saved \u2713'); load(); } catch { flash('Error saving scope', false); }
       }} />}
       {config && <ObjectivesSection objectives={config.objectives || []} onReload={load} />}
       {config && <FailurePatternsSection patterns={config.failure_patterns || []} onSave={async (fp) => {
@@ -156,87 +151,6 @@ function IdentitySection({ config, onSave }: { config: EngagementConfig; onSave:
 }
 
 /* ============ Scope ============ */
-
-function ScopeSection({ scope, onSave }: { scope?: ScopeConfig; onSave: (s: Partial<ScopeConfig>) => Promise<void> }) {
-  const join = (arr?: string[]) => (arr ?? []).join('\n');
-  const [cidrs, setCidrs] = useState(join(scope?.cidrs));
-  const [domains, setDomains] = useState(join(scope?.domains));
-  const [exclusions, setExclusions] = useState(join(scope?.exclusions));
-  const [hosts, setHosts] = useState(join(scope?.hosts));
-  const [awsAccounts, setAwsAccounts] = useState(join(scope?.aws_accounts));
-  const [azureSubs, setAzureSubs] = useState(join(scope?.azure_subscriptions));
-  const [gcpProjects, setGcpProjects] = useState(join(scope?.gcp_projects));
-
-  useEffect(() => {
-    setCidrs(join(scope?.cidrs));
-    setDomains(join(scope?.domains));
-    setExclusions(join(scope?.exclusions));
-    setHosts(join(scope?.hosts));
-    setAwsAccounts(join(scope?.aws_accounts));
-    setAzureSubs(join(scope?.azure_subscriptions));
-    setGcpProjects(join(scope?.gcp_projects));
-  }, [scope]);
-
-  const parseLines = (s: string): string[] =>
-    s.split(/[\n,]+/).map(l => l.trim()).filter(Boolean);
-
-  const handleSave = async () => {
-    const body: Partial<ScopeConfig> = {};
-    const c = parseLines(cidrs); if (c.length) body.cidrs = c;
-    const d = parseLines(domains); if (d.length) body.domains = d;
-    const ex = parseLines(exclusions); if (ex.length) body.exclusions = ex;
-    const h = parseLines(hosts); if (h.length) body.hosts = h;
-    const aws = parseLines(awsAccounts); if (aws.length) body.aws_accounts = aws;
-    const az = parseLines(azureSubs); if (az.length) body.azure_subscriptions = az;
-    const gcp = parseLines(gcpProjects); if (gcp.length) body.gcp_projects = gcp;
-    await onSave(body);
-  };
-
-  return (
-    <Section title="Scope">
-      <p className="text-xs text-muted-foreground">
-        One entry per line (or comma-separated). Paste a full list and save.
-      </p>
-      <div className="grid grid-cols-2 gap-4">
-        <ScopeTextarea label="CIDRs" value={cidrs} onChange={setCidrs}
-          placeholder={'10.0.0.0/8\n192.168.1.0/24'} />
-        <ScopeTextarea label="Domains" value={domains} onChange={setDomains}
-          placeholder={'corp.example.com\nexample.internal'} />
-        <ScopeTextarea label="Exclusions" value={exclusions} onChange={setExclusions}
-          placeholder={'10.0.0.1\nhoneypot.corp.example.com'} />
-        <ScopeTextarea label="Hosts" value={hosts} onChange={setHosts}
-          placeholder={'10.0.0.5\ndc01.corp.example.com'} />
-        <ScopeTextarea label="AWS Accounts" value={awsAccounts} onChange={setAwsAccounts}
-          placeholder={'123456789012\n987654321098'} />
-        <ScopeTextarea label="Azure Subscriptions" value={azureSubs} onChange={setAzureSubs}
-          placeholder={'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'} />
-      </div>
-      <ScopeTextarea label="GCP Projects" value={gcpProjects} onChange={setGcpProjects}
-        placeholder={'my-project-123\nanother-project'} />
-      <button onClick={handleSave} className="settings-save-btn">Save Scope</button>
-    </Section>
-  );
-}
-
-function ScopeTextarea({ label, value, onChange, placeholder }: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const count = value.split(/[\n,]+/).filter(l => l.trim()).length;
-  return (
-    <Field label={`${label}${count > 0 ? ` (${count})` : ''}`}>
-      <textarea
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        rows={4}
-        className="settings-input font-mono text-xs resize-y"
-      />
-    </Field>
-  );
-}
 
 /* ============ Objectives ============ */
 
