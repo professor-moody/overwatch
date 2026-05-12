@@ -1,45 +1,37 @@
 # Overwatch
 
-**An offensive security engagement orchestrator built as an MCP server.**
+**An MCP server that gives Claude a persistent engagement graph for offensive security operations.**
 
-LLM-powered penetration testing has a fundamental problem: the context window is finite, but engagements are not. Every discovery, credential, and relationship matters — and stuffing it into a prompt doesn't scale. Overwatch solves this by inverting the pattern. Instead of the LLM holding state, a **persistent MCP server** holds the engagement graph. The LLM proposes actions. The server validates them. The graph survives compaction, restarts, and session handoffs with zero information loss.
+The core problem with LLM-driven pentesting: context windows are finite but engagements aren't. Every credential, lateral movement path, and discovered host matters — and they accumulate faster than they fit in a prompt. Overwatch solves this by moving state out of the context window entirely. The LLM calls tools. A persistent server holds the graph. Compaction, restarts, and agent handoffs lose nothing.
 
 ---
 
-## Why Overwatch
+## What it does
 
-| Problem | Overwatch Solution |
-|---------|-------------------|
-| Context window overflow loses engagement state | Graph lives outside the context window; `get_state()` reconstructs everything |
-| No structured way to track discoveries | Directed property graph — traversable attack paths, not rows in a table |
-| LLM can't enforce scope/OPSEC consistently | Deterministic layer handles hard constraints; LLM handles reasoning |
-| Manual note-taking across sessions | Automatic persistence with atomic writes and snapshot rollback |
-| No way to parallelize work | Sub-agent dispatch with scoped subgraph views |
+You run Overwatch as an MCP server alongside Claude. As you work an engagement, every discovery feeds into a directed property graph: hosts, credentials, services, users, cloud identities, and the relationships between them. The LLM queries this graph to plan next steps, validates actions against scope and OPSEC constraints, and dispatches sub-agents for parallel work — all without you having to manually track state between sessions.
+
+After a compaction or restart, one call to [`get_state()`](tools/get-state.md) reconstructs a full engagement briefing from the graph. You pick up exactly where you left off.
 
 ## Key Features
 
-- **[Graph-based state](graph-model.md)** — Engagements are directed property graphs: hosts, services, credentials, users, and the relationships between them. Every attack path is a traversable route.
-- **Survives compaction** — The orchestrator lives outside the context window. After compaction, [`get_state()`](tools/get-state.md) reconstructs a complete briefing. Zero information loss.
-- **[Hybrid scoring](architecture.md#hybrid-scoring)** — Deterministic layer handles hard constraints (scope, dedup, OPSEC vetoes). The LLM handles nuanced reasoning (chain spotting, sequencing, risk).
-- **[Inference rules](architecture.md#inference-rules)** — Findings trigger automatic hypothesis generation (e.g., "SMB signing disabled → relay target"). These become frontier items for the LLM to evaluate.
-- **[Full graph access](tools/query-graph.md)** — `query_graph()` gives unrestricted access for creative path discovery beyond scored frontier items.
-- **[51 MCP tools](tools/index.md)** — From state management to BloodHound/AzureHound ingestion to structured output parsing to persistent interactive sessions to pentest report generation, plus first-class [operator-infrastructure registration](tools/register-mock-service.md).
+- **[Graph-based state](graph-model.md)** — 23 node types, 73 edge types. Every attack path is a traversable route through the engagement graph, not a list of notes.
+- **[Inference engine](architecture.md#inference-rules)** — 61 built-in rules that fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity"). Surfaces follow-on opportunities as scored frontier items automatically.
+- **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Captured tokens track status (active/stale/expired), reachability via confirmed edges, expiry estimation, and provenance. The Credentials dashboard tab shows all of this at a glance.
+- **[60+ MCP tools](tools/index.md)** — State management, action logging, graph queries, BloodHound/AzureHound ingestion, 50 output parsers, persistent interactive sessions, credential playbooks, and pentest report generation.
+- **[Credential-driven playbooks](tools/index.md)** — Five tools (`expand_aws_credential`, `expand_github_credential`, `expand_oidc_capture`, `exchange_refresh_token`, `expand_entra_credential`) that turn a captured credential into a sequenced recon plan queued through the approval gate.
 - **[34 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
-- **[Persistent sessions](tools/sessions.md)** — Long-lived interactive sessions (SSH, local PTY, reverse shell) with cursor-based I/O, ownership enforcement, and TTY quality tracking. Listener-mode sessions auto-register as `mock_service` graph nodes so captured credentials attribute back to the listener that caught them.
-- **[Live dashboard](dashboard.md)** — Real-time WebGL graph visualization with interactive node dragging, path highlighting, and neighborhood focus. Operator-controlled infrastructure renders alongside discovered targets.
-- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log + JSON-RPC tape proxy let retrospectives prove the AI did exactly what it claimed, in the order it claimed.
-- **[Retrospective analysis](playbook/retrospective.md)** — Post-engagement skill gaps, inference suggestions, RLVR training traces, automatic inference rule application, technique priors, and skill annotations.
-- **[IAM policy simulation](concepts.md#iam-policy-simulation)** — Cloud-native permission evaluation for AWS (deny-overrides-allow), Azure (RBAC scope hierarchy), and GCP (deny policy precedence).
-- **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Automatic expiry estimation, graduated frontier scoring, and provenance chain tracking.
-- **[Web attack path modeling](concepts.md#web-attack-path-modeling)** — API endpoint nodes, authentication bypass edges, and automated web attack inference rules.
+- **[Scope and OPSEC enforcement](concepts.md#opsec)** — Hard constraints live in the deterministic layer. The LLM handles reasoning. Out-of-scope calls fail closed.
+- **[Persistent sessions](tools/sessions.md)** — Long-lived interactive shells (SSH, local PTY, reverse shell) with cursor-based I/O and TTY quality tracking.
+- **[Live dashboard](dashboard.md)** — Real-time graph visualization, approval queue, frontier view, agent status, credential tracker, findings panel with report generation.
+- **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log and JSON-RPC tape proxy. Retrospectives can prove the AI did exactly what it claimed, in the order it claimed.
 
 ### By the Numbers
 
 | | |
 |---|---|
-| **51** MCP tools | **34** offensive skills |
-| **28** output parsers with 50 aliases (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, burp, zap, sqlmap, wpscan, getnpusers, getuserspns, gettgt, getst, smbclient, wmiexec, psexec) | **61** built-in declarative inference rules |
-| **2440+** tests across **99** files | **23** node types, **73** edge types |
+| **60+** MCP tools | **34** offensive skills |
+| **50** output parsers (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, sqlmap, wpscan, and more) | **61** built-in inference rules |
+| **2775+** tests across **127** files | **23** node types, **73** edge types |
 
 ## Quick Start
 
