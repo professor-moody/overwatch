@@ -20,6 +20,7 @@ import { IdentityPanel } from '../panels/IdentityPanel';
 import { AttackPathsPanel } from '../panels/AttackPathsPanel';
 import { FindingsPanel } from '../panels/FindingsPanel';
 import { CredentialsPanel } from '../panels/CredentialsPanel';
+import { SmokePanel } from '../panels/SmokePanel';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 
 export type PanelId =
@@ -36,6 +37,7 @@ export type PanelId =
   | 'paths'
   | 'findings'
   | 'engagements'
+  | 'smoke'
   | 'settings';
 
 const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
@@ -52,6 +54,7 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
   paths: AttackPathsPanel,
   findings: FindingsPanel,
   engagements: EngagementsPanel,
+  smoke: SmokePanel,
   settings: SettingsPanel,
 };
 

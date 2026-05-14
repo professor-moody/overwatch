@@ -13,6 +13,7 @@ import {
   Route,
   ShieldAlert,
   Key,
+  FlaskConical,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
@@ -40,6 +41,7 @@ const NAV_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ class
 ];
 
 const BOTTOM_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'smoke', label: 'Smoke', icon: FlaskConical },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 

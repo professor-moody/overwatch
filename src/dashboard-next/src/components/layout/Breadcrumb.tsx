@@ -18,6 +18,7 @@ const PANEL_LABELS: Record<PanelId, string> = {
   paths: 'Attack Paths',
   findings: 'Findings',
   engagements: 'Engagements',
+  smoke: 'Smoke',
   settings: 'Settings',
 };
 
