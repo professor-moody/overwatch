@@ -17,6 +17,7 @@ interface GraphToolbarProps {
   attackPathActive: boolean;
   credFlowActive: boolean;
   communityHullsActive: boolean;
+  showEdgeLabels: boolean;
   hideOrphans: boolean;
   hideReachableOnly: boolean;
   // Actions
@@ -33,6 +34,7 @@ interface GraphToolbarProps {
   onToggleAttackPath: () => void;
   onToggleCredFlow: () => void;
   onToggleCommunityHulls: () => void;
+  onToggleEdgeLabels: () => void;
   onToggleHideOrphans: () => void;
   onToggleHideReachableOnly: () => void;
   onToggleShortcuts: () => void;
@@ -45,11 +47,11 @@ interface GraphToolbarProps {
 
 export function GraphToolbar({
   nodeCount, edgeCount, layoutRunning, graphMode, labelDensity, activeFocusPreset,
-  attackPathActive, credFlowActive, communityHullsActive, hideOrphans, hideReachableOnly,
+  attackPathActive, credFlowActive, communityHullsActive, showEdgeLabels, hideOrphans, hideReachableOnly,
   onZoomIn, onZoomOut, onFit, onToggleLayout, onReset,
   onExportPNG, onExportSVG,
   onSetGraphMode, onSetLabelDensity, onSetFocusPreset,
-  onToggleAttackPath, onToggleCredFlow, onToggleCommunityHulls,
+  onToggleAttackPath, onToggleCredFlow, onToggleCommunityHulls, onToggleEdgeLabels,
   onToggleHideOrphans, onToggleHideReachableOnly,
   onToggleShortcuts,
   editMode, onToggleEditMode, onUndo, undoCount,
@@ -99,6 +101,7 @@ export function GraphToolbar({
               <DropBtn onClick={onToggleAttackPath} active={attackPathActive}>Attack Path</DropBtn>
               <DropBtn onClick={onToggleCredFlow} active={credFlowActive}>Credential Flow</DropBtn>
               <DropBtn onClick={onToggleCommunityHulls} active={communityHullsActive}>Community Hulls</DropBtn>
+              <DropBtn onClick={onToggleEdgeLabels} active={showEdgeLabels}>Edge Labels</DropBtn>
               <DropBtn onClick={onToggleHideOrphans} active={hideOrphans}>Hide Orphans</DropBtn>
               <DropBtn onClick={onToggleHideReachableOnly} active={hideReachableOnly}>Hide Reachable-Only</DropBtn>
             </Dropdown>

@@ -52,6 +52,7 @@ export function GraphPage() {
   const [layoutRunning, setLayoutRunning] = useState(false);
   const [communityHullsActive, setCommunityHullsActive] = useState(true);
   useCommunityHulls(rendererRef, graph, communityHullsActive);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
 
@@ -343,6 +344,7 @@ export function GraphPage() {
         attackPathActive={!!s.attackPathOverlay}
         credFlowActive={s.credentialFlowMode}
         communityHullsActive={communityHullsActive}
+        showEdgeLabels={showEdgeLabels}
         hideOrphans={s.hideOrphans}
         hideReachableOnly={s.hideReachableOnly}
         onZoomIn={zoomIn}
@@ -358,6 +360,11 @@ export function GraphPage() {
         onToggleAttackPath={handleToggleAttackPath}
         onToggleCredFlow={handleToggleCredFlow}
         onToggleCommunityHulls={() => setCommunityHullsActive(v => !v)}
+        onToggleEdgeLabels={() => {
+          const next = !showEdgeLabels;
+          setShowEdgeLabels(next);
+          rendererRef.current?.setSetting('renderEdgeLabels', next);
+        }}
         onToggleHideOrphans={() => { s.hideOrphans = !s.hideOrphans; refresh(); }}
         onToggleHideReachableOnly={() => { s.hideReachableOnly = !s.hideReachableOnly; refresh(); }}
         onToggleShortcuts={() => setShowShortcuts(v => !v)}
