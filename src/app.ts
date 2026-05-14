@@ -58,6 +58,7 @@ import { registerTranscriptTools } from './tools/transcripts.js';
 import { registerTapeTools } from './tools/tapes.js';
 import { registerOperatorInfraTools } from './tools/operator-infra.js';
 import { registerPostgresTools } from './tools/postgres.js';
+import { registerIngestJsonTools } from './tools/ingest-json.js';
 import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
@@ -188,6 +189,7 @@ export function registerAllTools(
   registerTapeTools(s, deps.engine);
   registerOperatorInfraTools(s, deps.engine);
   registerPostgresTools(s, deps.engine);
+  registerIngestJsonTools(s, deps.engine);
 
   // Register instruction tools last (needs the collected tool list)
   registerInstructionTools(s, deps.engine, () => registrar.getEntries());
