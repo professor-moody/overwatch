@@ -130,6 +130,13 @@ export function CredentialsPanel() {
   const activeCreds = creds.filter(c => (c.credential_status as string | undefined) === 'active').length;
   const reachableCreds = creds.filter(c => isReachable(c, graph.edges as { source: string; type: string }[])).length;
 
+  const now = Date.now();
+  const expiredTokenCreds = useMemo(() => creds.filter(c => {
+    const exp = c.cred_token_expires_at as string | undefined;
+    if (!exp) return false;
+    return new Date(exp).getTime() < now;
+  }), [creds, now]);
+
   const toggleReveal = (id: string) => {
     setRevealed(prev => {
       const next = new Set(prev);
@@ -140,6 +147,16 @@ export function CredentialsPanel() {
 
   return (
     <div className="space-y-4">
+      {/* Expired token warning banner */}
+      {expiredTokenCreds.length > 0 && (
+        <div className="px-3 py-2 bg-warning/5 border border-warning/20 rounded text-xs text-warning flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-warning flex-shrink-0" />
+          {expiredTokenCreds.length} credential{expiredTokenCreds.length > 1 ? 's' : ''} with expired token(s):{' '}
+          {expiredTokenCreds.slice(0, 3).map(c => c.label || c.id).join(', ')}
+          {expiredTokenCreds.length > 3 && ` and ${expiredTokenCreds.length - 3} more`}
+        </div>
+      )}
+
       {/* Header + summary bar */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">

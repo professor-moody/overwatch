@@ -520,6 +520,13 @@ export interface EngagementConfig {
     dir?: string;
     file?: string;
   };
+  /**
+   * Optional postgres connection string for ingest from an operator-controlled
+   * database (Metasploit, custom tool tables, etc.). Stored encrypted at rest
+   * — never appears in activity log command_repr.
+   * Set via `connect_postgres(connection_string)`.
+   */
+  postgres_dsn?: string;
 }
 
 export const engagementObjectiveSchema = z.object({

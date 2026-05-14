@@ -349,6 +349,7 @@ export interface EvidenceChainEntry {
   action_id?: string;
   agent_id?: string;
   tool?: string;
+  command?: string;
   snippet?: string;
 }
 

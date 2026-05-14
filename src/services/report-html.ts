@@ -320,6 +320,7 @@ function renderEvidenceHtml(ev: EvidenceChain): string {
   if (ev.tool) html += ` <span class="evidence-tool">(${esc(ev.tool)})</span>`;
   if (ev.timestamp) html += ` <span class="evidence-time">${formatTs(ev.timestamp)}</span>`;
   if (ev.action_id) html += ` <code class="evidence-action">${esc(ev.action_id.slice(0, 8))}</code>`;
+  if (ev.command) html += `\n<pre class="evidence-command">${esc(ev.command)}</pre>`;
   if (ev.evidence_filename) html += `\n<div class="evidence-file">File: ${esc(ev.evidence_filename)}</div>`;
   if (ev.evidence_content) {
     const truncated = truncateText(ev.evidence_content, 2048, 30);

@@ -125,6 +125,8 @@ nav:
       - generate_report: tools/generate-report.md
     - Analysis:
       - run_retrospective: tools/run-retrospective.md
+  - Reference:
+    - Data Storage: reference/data-storage.md
   - Skills:
     - skills/index.md
     - "Featured: Kerberoasting": skills/featured.md

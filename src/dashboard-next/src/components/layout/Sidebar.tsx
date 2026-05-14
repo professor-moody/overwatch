@@ -50,12 +50,20 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
   const pendingActions = useEngagementStore((s) => s.pendingActions.length);
   const frontierCount = useEngagementStore((s) => s.frontier.length);
   const credentialCount = useEngagementStore((s) => s.graph.nodes.filter(n => n.type === 'credential').length);
+  const expiredCredCount = useEngagementStore((s) => {
+    const now = Date.now();
+    return s.graph.nodes.filter(n => {
+      if (n.type !== 'credential') return false;
+      const exp = n.cred_token_expires_at as string | undefined;
+      return exp ? new Date(exp).getTime() < now : false;
+    }).length;
+  });
 
   const badges: Partial<Record<PanelId, number>> = {
     agents: runningAgents,
     actions: pendingActions,
     frontier: frontierCount,
-    credentials: credentialCount,
+    credentials: expiredCredCount > 0 ? expiredCredCount : credentialCount,
   };
 
   return (

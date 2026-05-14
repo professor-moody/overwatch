@@ -147,6 +147,116 @@ export function parseNmapXml(xml: string, agentId: string = 'nmap-parser'): Find
   };
 }
 
+// --- Nmap Grepable Parser (-oG / .gnmap) ---
+
+export function parseNmapGrepable(text: string, agentId: string = 'nmap-parser'): Finding {
+  const nodes: Finding['nodes'] = [];
+  const edges: Finding['edges'] = [];
+  const now = new Date().toISOString();
+
+  // Collect all lines for a given IP so we can merge status + ports
+  const ipData = new Map<string, { hostname?: string; alive: boolean; portLines: string[] }>();
+
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    // Status line: "Host: 1.2.3.4 (hostname)  Status: Up"
+    const statusMatch = line.match(/^Host:\s+([\d.a-fA-F:]+)\s+\(([^)]*)\)\s+Status:\s+(\w+)/);
+    if (statusMatch) {
+      const [, ip, rawHostname, state] = statusMatch;
+      const hostname = rawHostname || undefined;
+      const existing = ipData.get(ip) || { alive: false, portLines: [] };
+      ipData.set(ip, { ...existing, hostname: hostname || existing.hostname, alive: state.toLowerCase() === 'up' });
+      continue;
+    }
+
+    // Port line: "Host: 1.2.3.4 (hostname)  Ports: 22/open/tcp//ssh//banner/, ..."
+    const portLineMatch = line.match(/^Host:\s+([\d.a-fA-F:]+)\s+\([^)]*\).*Ports:\s+(.+)/);
+    if (portLineMatch) {
+      const [, ip, portsStr] = portLineMatch;
+      const existing = ipData.get(ip) || { alive: true, portLines: [] };
+      ipData.set(ip, { ...existing, portLines: [...existing.portLines, portsStr] });
+    }
+  }
+
+  if (ipData.size === 0 && text.length > 100) {
+    return {
+      id: uuidv4(),
+      agent_id: agentId,
+      timestamp: now,
+      nodes: [],
+      edges: [],
+      raw_output: `[PARSE WARNING] Nmap grepable (${text.length} chars) produced 0 hosts. Input may be malformed.\n${text.slice(0, 500)}`,
+    };
+  }
+
+  for (const [ip, data] of ipData) {
+    const resolvedId = hostId(ip);
+    nodes.push({
+      id: resolvedId,
+      type: 'host',
+      label: data.hostname || ip,
+      ip,
+      hostname: data.hostname,
+      alive: data.alive,
+    });
+
+    for (const portsStr of data.portLines) {
+      for (const seg of portsStr.split(', ')) {
+        // Segment: port/state/proto//service//extrainfo/
+        const parts = seg.trim().split('/');
+        if (parts.length < 3) continue;
+        const port = parseInt(parts[0]);
+        const state = parts[1];
+        const proto = parts[2] || 'tcp';
+        if (state !== 'open' || isNaN(port)) continue;
+
+        const rawService = parts[4] || undefined;
+        const banner = parts[6] || undefined;
+
+        const protoPrefix = proto !== 'tcp' ? `${proto}-` : '';
+        const svcId = `svc-${ip.replace(/[.:]/g, '-')}-${protoPrefix}${port}`;
+        nodes.push({
+          id: svcId,
+          type: 'service',
+          label: `${rawService || 'unknown'}/${port}`,
+          port,
+          protocol: proto,
+          service_name: normalizeServiceName(rawService),
+          banner,
+        });
+        edges.push({
+          source: resolvedId,
+          target: svcId,
+          properties: {
+            type: 'RUNS',
+            confidence: 1.0,
+            discovered_at: now,
+            discovered_by: agentId,
+          },
+        });
+      }
+    }
+  }
+
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+}
+
+export function parseNmap(text: string, agentId?: string): Finding {
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('<?xml') || trimmed.startsWith('<nmaprun') || trimmed.startsWith('<Nmap')) {
+    return parseNmapXml(text, agentId);
+  }
+  if (trimmed.startsWith('#') && trimmed.includes('Nmap')) {
+    return parseNmapGrepable(text, agentId);
+  }
+  // Try XML first, fall back to grepable
+  const xmlResult = parseNmapXml(text, agentId);
+  if ((xmlResult.nodes?.length ?? 0) > 0) return xmlResult;
+  return parseNmapGrepable(text, agentId);
+}
+
 const nmapXmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',

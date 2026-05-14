@@ -83,6 +83,7 @@ export type ActivityLogEntry = {
   event_type?: ActivityEventType;
   tool_name?: string;
   technique?: string;
+  command_repr?: string;
   target_node_ids?: string[];
   target_ips?: string[];
   target_edge?: { source: string; target: string; type?: string };
@@ -431,6 +432,7 @@ export function normalizeActivityLogEntry(
     event_type: entry.event_type,
     tool_name: entry.tool_name,
     technique: entry.technique,
+    command_repr: entry.command_repr,
     target_node_ids: entry.target_node_ids,
     target_ips: entry.target_ips,
     target_edge: entry.target_edge,

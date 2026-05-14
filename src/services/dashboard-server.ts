@@ -1680,17 +1680,22 @@ export class DashboardServer {
   private serveEvidenceChains(nodeId: string, res: ServerResponse): void {
     // Build evidence chains for a node from the activity log
     const history = this.engine.getFullHistory();
-    const chains: Array<{ action_id?: string; tool?: string; timestamp: string; snippet?: string }> = [];
+    const chains: Array<{ action_id?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
 
     for (const entry of history) {
       // Match entries that reference this node
       const entryStr = JSON.stringify(entry);
       if (!entryStr.includes(nodeId)) continue;
 
+      const det = (entry as Record<string, unknown>).details as Record<string, unknown> | undefined;
+      const commandRepr = (entry as Record<string, unknown>).command_repr as string | undefined
+        || (typeof det?.command === 'string' ? det.command : undefined);
+
       chains.push({
         action_id: (entry as Record<string, unknown>).action_id as string | undefined,
         tool: (entry as Record<string, unknown>).tool_name as string | undefined
           || (entry as Record<string, unknown>).action_type as string | undefined,
+        command: commandRepr,
         timestamp: entry.timestamp,
         snippet: (entry as Record<string, unknown>).description as string | undefined
           || (entry as Record<string, unknown>).summary as string | undefined,

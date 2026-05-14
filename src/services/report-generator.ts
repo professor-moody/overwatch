@@ -54,6 +54,7 @@ export interface EvidenceChain {
   action_id?: string;
   tool?: string;
   technique?: string;
+  command?: string;
   timestamp?: string;
   source_nodes: string[];
   target_nodes: string[];
@@ -655,11 +656,24 @@ export function buildEvidenceChainsForNode(
       }
     }
 
+    // Extract command_repr: prefer typed field (action_completed), fall back to details.command
+    let commandRepr: string | undefined;
+    for (const entry of allEntries) {
+      if (entry.command_repr) { commandRepr = entry.command_repr; break; }
+    }
+    if (!commandRepr) {
+      for (const entry of allEntries) {
+        const det = entry.details as Record<string, unknown> | undefined;
+        if (typeof det?.command === 'string') { commandRepr = det.command; break; }
+      }
+    }
+
     const chain: EvidenceChain = {
       claim: first.description,
       action_id: actionId,
       tool: first.tool_name,
       technique: first.technique,
+      command: commandRepr,
       timestamp: first.timestamp,
       source_nodes: entries.flatMap(e => e.target_node_ids || []).filter(id => id !== nodeId),
       target_nodes: [nodeId],
@@ -1238,6 +1252,11 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
         if (ev.timestamp) evLine += ` — ${formatTimestamp(ev.timestamp)}`;
         if (ev.action_id) evLine += ` [action: ${ev.action_id.slice(0, 8)}]`;
         lines.push(evLine);
+        if (ev.command) {
+          lines.push('  ```bash');
+          lines.push(`  ${ev.command}`);
+          lines.push('  ```');
+        }
         if (ev.evidence_filename) {
           lines.push(`  - Attachment: ${ev.evidence_filename} (${ev.evidence_type})`);
         }

@@ -133,6 +133,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
                     {entry.tool && <span className="px-1.5 py-0.5 rounded bg-elevated text-accent text-[10px]">{entry.tool}</span>}
                     {entry.action_id && <span className="font-mono text-muted-foreground">{entry.action_id.slice(0, 8)}</span>}
                   </div>
+                  {entry.command && <div className="text-xs font-mono text-foreground bg-background rounded p-1.5 mt-1 border border-border">{entry.command}</div>}
                   {entry.snippet && <div className="text-xs font-mono text-muted-foreground bg-background rounded p-1.5 mt-1">{entry.snippet}</div>}
                 </div>
               ))}

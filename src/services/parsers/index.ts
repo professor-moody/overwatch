@@ -3,7 +3,7 @@
 
 import type { Finding, ParseContext } from '../../types.js';
 
-export { parseNmapXml } from './nmap.js';
+export { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
 export { parseNxc } from './nxc.js';
 export { parseCertipy } from './certipy.js';
 export { parseSecretsdump } from './impacket.js';
@@ -51,8 +51,9 @@ export { parseMsGraphUsers } from './msgraph-users.js';
 export { parseMsGraphApplications } from './msgraph-applications.js';
 export { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
 export { parseMsGraphGroups } from './msgraph-groups.js';
+export { parseNessus } from './nessus.js';
 
-import { parseNmapXml } from './nmap.js';
+import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
 import { parseNxc } from './nxc.js';
 import { parseCertipy } from './certipy.js';
 import { parseSecretsdump } from './impacket.js';
@@ -100,10 +101,13 @@ import { parseMsGraphUsers } from './msgraph-users.js';
 import { parseMsGraphApplications } from './msgraph-applications.js';
 import { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
 import { parseMsGraphGroups } from './msgraph-groups.js';
+import { parseNessus } from './nessus.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
-  'nmap': parseNmapXml,
+  'nmap': parseNmap,
   'nmap-xml': parseNmapXml,
+  'nmap-gnmap': parseNmapGrepable,
+  'nmap-grepable': parseNmapGrepable,
   'netexec': parseNxc,
   'nxc': parseNxc,
   'certipy': parseCertipy,
@@ -208,6 +212,10 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'msgraph-serviceprincipals': parseMsGraphServicePrincipals,
   'msgraph-sp': parseMsGraphServicePrincipals,
   'msgraph-groups': parseMsGraphGroups,
+  // Nessus vulnerability scanner
+  'nessus': parseNessus,
+  'nessus-xml': parseNessus,
+  '.nessus': parseNessus,
 };
 
 export function getSupportedParsers(): string[] {

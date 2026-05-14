@@ -125,12 +125,21 @@ export function GraphPage() {
     }
   }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh]);
 
-  // Track layout running state
+  // Track layout running state; detect running→stopped transitions so the
+  // zoom-to-node effect can wait until FA2 has positioned nodes.
+  const [layoutCompletedCount, setLayoutCompletedCount] = useState(0);
+  const prevLayoutRunningRef = useRef(false);
   useEffect(() => {
     const interval = setInterval(() => {
-      setLayoutRunning(layout.running);
+      const running = layout.running;
+      setLayoutRunning(running);
       setNodeCount(graph.order);
       setEdgeCount(graph.size);
+      // Detect running→stopped transition
+      if (prevLayoutRunningRef.current && !running) {
+        setLayoutCompletedCount(c => c + 1);
+      }
+      prevLayoutRunningRef.current = running;
     }, 200);
     return () => clearInterval(interval);
   }, [layout, graph]);
@@ -146,6 +155,8 @@ export function GraphPage() {
     const hopsParam = parseInt(searchParams.get('hops') || '0', 10);
 
     if (nodeParam && graph.hasNode(nodeParam)) {
+      // Wait until FA2 has run at least once so node positions are non-zero.
+      if (layoutCompletedCount === 0) return;
       appliedParamsRef.current = true;
       if (hopsParam > 0) {
         enterNeighborhoodFocus(nodeParam, hopsParam);
@@ -163,7 +174,7 @@ export function GraphPage() {
       refresh();
       setSearchParams({}, { replace: true });
     }
-  }, [graph, searchParams, setSearchParams, stateRef, refresh, selectNode, selectAndCenter, enterNeighborhoodFocus]);
+  }, [graph, searchParams, setSearchParams, stateRef, refresh, selectNode, selectAndCenter, enterNeighborhoodFocus, layoutCompletedCount]);
 
   // ---- Toolbar callbacks ----
   const handleReset = useCallback(() => {
