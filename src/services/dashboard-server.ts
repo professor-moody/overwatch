@@ -1683,22 +1683,29 @@ export class DashboardServer {
     const chains: Array<{ action_id?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
 
     for (const entry of history) {
-      // Match entries that reference this node
-      const entryStr = JSON.stringify(entry);
-      if (!entryStr.includes(nodeId)) continue;
+      // Match entries that explicitly reference this node via structured fields
+      const e = entry as Record<string, unknown>;
+      const det = e.details as Record<string, unknown> | undefined;
+      const targetNodeIds = Array.isArray(e.target_node_ids) ? e.target_node_ids as string[] : [];
+      const ingestedNodeIds = Array.isArray(det?.ingested_node_ids) ? det.ingested_node_ids as string[] : [];
+      const nodeIds = Array.isArray(det?.node_ids) ? det.node_ids as string[] : [];
+      const referencesNode =
+        targetNodeIds.includes(nodeId) ||
+        ingestedNodeIds.includes(nodeId) ||
+        nodeIds.includes(nodeId) ||
+        e.action_id === nodeId ||
+        e.node_id === nodeId;
+      if (!referencesNode) continue;
 
-      const det = (entry as Record<string, unknown>).details as Record<string, unknown> | undefined;
-      const commandRepr = (entry as Record<string, unknown>).command_repr as string | undefined
+      const commandRepr = e.command_repr as string | undefined
         || (typeof det?.command === 'string' ? det.command : undefined);
 
       chains.push({
-        action_id: (entry as Record<string, unknown>).action_id as string | undefined,
-        tool: (entry as Record<string, unknown>).tool_name as string | undefined
-          || (entry as Record<string, unknown>).action_type as string | undefined,
+        action_id: e.action_id as string | undefined,
+        tool: e.tool_name as string | undefined || e.action_type as string | undefined,
         command: commandRepr,
         timestamp: entry.timestamp,
-        snippet: (entry as Record<string, unknown>).description as string | undefined
-          || (entry as Record<string, unknown>).summary as string | undefined,
+        snippet: e.description as string | undefined || e.summary as string | undefined,
       });
     }
 

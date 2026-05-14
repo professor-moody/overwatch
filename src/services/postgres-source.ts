@@ -98,14 +98,20 @@ export class PostgresSource {
       const params: unknown[] = [];
       if (filter) {
         // Filter is operator-supplied raw SQL — for read-only usage only.
-        // We wrap in a transaction that is always read-only to prevent writes.
+        // BEGIN READ ONLY makes the guard transaction-scoped, not just session-hinted.
         sql += ` WHERE ${filter}`;
       }
       sql += ` LIMIT $${params.length + 1}`;
       params.push(limit);
-      await client.query('SET TRANSACTION READ ONLY');
-      const { rows } = await client.query(sql, params);
-      return rows as Record<string, unknown>[];
+      await client.query('BEGIN READ ONLY');
+      try {
+        const { rows } = await client.query(sql, params);
+        await client.query('COMMIT');
+        return rows as Record<string, unknown>[];
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      }
     } finally {
       client.release();
     }

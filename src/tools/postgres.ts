@@ -8,14 +8,16 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { PostgresSource, redactDsn } from '../services/postgres-source.js';
+import { nodeTypeSchema, NODE_TYPES } from '../types.js';
 import type { NodeType } from '../types.js';
 
-// Per-server singleton — one pool per engagement process.
-let activeSource: PostgresSource | null = null;
+// Per-engagement connection pool — keyed by engagement ID to support multi-engagement servers.
+const sourcesById = new Map<string, PostgresSource>();
 
-function getSource(): PostgresSource {
-  if (!activeSource) throw new Error('No postgres connection active. Call connect_postgres first.');
-  return activeSource;
+function getSource(engagementId: string): PostgresSource {
+  const src = sourcesById.get(engagementId);
+  if (!src) throw new Error('No postgres connection active for this engagement. Call connect_postgres first.');
+  return src;
 }
 
 export function registerPostgresTools(server: McpServer, engine: GraphEngine): void {
@@ -37,6 +39,8 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
       },
     },
     withErrorBoundary('connect_postgres', async ({ connection_string, schema }) => {
+      const engagementId = engine.getConfig().id;
+
       // Test and store
       const src = new PostgresSource(connection_string);
       try {
@@ -46,9 +50,10 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
         throw new Error(`Failed to connect: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // Replace any existing source
-      if (activeSource) await activeSource.end().catch(() => {});
-      activeSource = src;
+      // Replace any existing source for this engagement
+      const existing = sourcesById.get(engagementId);
+      if (existing) await existing.end().catch(() => {});
+      sourcesById.set(engagementId, src);
 
       // Persist redacted DSN in engagement config
       const cfg = engine.getConfig();
@@ -86,7 +91,7 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
       },
     },
     withErrorBoundary('list_postgres_tables', async ({ schema }) => {
-      const src = getSource();
+      const src = getSource(engine.getConfig().id);
       const tables = await src.discoverTables(schema);
       return {
         content: [{
@@ -134,7 +139,13 @@ Examples:
       },
     },
     withErrorBoundary('ingest_postgres_table', async ({ table, mapping, filter, limit, agent_id }) => {
-      const src = getSource();
+      const typeResult = nodeTypeSchema.safeParse(mapping.node_type);
+      if (!typeResult.success) {
+        throw new Error(`Invalid node_type "${mapping.node_type}". Valid types: ${NODE_TYPES.join(', ')}`);
+      }
+      const nodeType: NodeType = typeResult.data;
+
+      const src = getSource(engine.getConfig().id);
       const rows = await src.queryTable(table, filter, limit);
 
       if (rows.length === 0) {
@@ -145,8 +156,6 @@ Examples:
           }],
         };
       }
-
-      const nodeType = mapping.node_type as NodeType;
       const now = new Date().toISOString();
       const nodeIds: string[] = [];
 

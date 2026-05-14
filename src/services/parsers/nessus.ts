@@ -77,17 +77,19 @@ export function parseNessus(text: string, agentId: string = 'nessus-parser'): Fi
       if (name) tagMap.set(name, val);
     }
 
-    const ip = tagMap.get('host-ip') || (hostName.match(/^[\d.]+$/) ? hostName : '');
-    const fqdn = tagMap.get('host-fqdn') || tagMap.get('netbios-name') || undefined;
+    const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+    const ip = tagMap.get('host-ip') || (IPV4_RE.test(hostName) ? hostName : '');
+    const fqdn = tagMap.get('host-fqdn') || tagMap.get('netbios-name') || (!ip ? hostName : undefined);
     const os = tagMap.get('operating-system') || tagMap.get('os') || undefined;
 
+    // Use IP for node ID when available; fall back to hostname (FQDN) for ID only
     const resolvedIp = ip || hostName;
     const hid = hostId(resolvedIp);
     addNode({
       id: hid,
       type: 'host',
-      label: fqdn || resolvedIp,
-      ip: resolvedIp,
+      label: fqdn || ip || hostName,
+      ip: ip || undefined,
       hostname: fqdn,
       os,
       discovered_at: now,
@@ -119,9 +121,11 @@ export function parseNessus(text: string, agentId: string = 'nessus-parser'): Fi
       const riskFactor = String(ri.risk_factor || '');
 
       // Create service node for any item with a real port
+      let targetNodeId = hid;
       if (port > 0) {
         const protoPrefix = proto !== 'tcp' ? `${proto}-` : '';
         const svcId = `svc-${resolvedIp.replace(/[.:]/g, '-')}-${protoPrefix}${port}`;
+        targetNodeId = svcId;
         if (!seenSvcs.has(svcId)) {
           seenSvcs.add(svcId);
           addNode({
@@ -146,42 +150,42 @@ export function parseNessus(text: string, agentId: string = 'nessus-parser'): Fi
             },
           });
         }
+      }
 
-        // Create vulnerability node for severity >= 1
-        if (severity >= 1) {
-          const techId = cve || `plugin-${pluginId}`;
-          const vuln_id = vulnerabilityId(techId, svcId);
-          const sevLabel = SEVERITY_MAP[String(severity)] || riskFactor.toLowerCase() || 'medium';
-          const shortDesc = description.slice(0, 300);
-          const vuln_notes = [
-            pluginName ? `${pluginName}: ${shortDesc}` : shortDesc,
-            solution ? `Remediation: ${solution.slice(0, 200)}` : '',
-            sevLabel ? `Severity: ${sevLabel}` : '',
-          ].filter(Boolean).join(' | ');
+      // Create vulnerability node for severity >= 1 (port=0 → anchored to host)
+      if (severity >= 1) {
+        const techId = cve || `plugin-${pluginId}`;
+        const vuln_id = vulnerabilityId(techId, targetNodeId);
+        const sevLabel = SEVERITY_MAP[String(severity)] || riskFactor.toLowerCase() || 'medium';
+        const shortDesc = description.slice(0, 300);
+        const vuln_notes = [
+          pluginName ? `${pluginName}: ${shortDesc}` : shortDesc,
+          solution ? `Remediation: ${solution.slice(0, 200)}` : '',
+          sevLabel ? `Severity: ${sevLabel}` : '',
+        ].filter(Boolean).join(' | ');
 
-          addNode({
-            id: vuln_id,
-            type: 'vulnerability',
-            label: pluginName || techId,
-            cve: cve || undefined,
-            cvss: Number.isFinite(cvss) ? cvss : undefined,
-            vuln_type: cve ? 'cve' : 'plugin',
-            notes: vuln_notes || undefined,
+        addNode({
+          id: vuln_id,
+          type: 'vulnerability',
+          label: pluginName || techId,
+          cve: cve || undefined,
+          cvss: Number.isFinite(cvss) ? cvss : undefined,
+          vuln_type: cve ? 'cve' : 'plugin',
+          notes: vuln_notes || undefined,
+          discovered_at: now,
+          discovered_by: agentId,
+          confidence: 1.0,
+        });
+        edges.push({
+          source: targetNodeId,
+          target: vuln_id,
+          properties: {
+            type: 'VULNERABLE_TO',
+            confidence: 1.0,
             discovered_at: now,
             discovered_by: agentId,
-            confidence: 1.0,
-          });
-          edges.push({
-            source: svcId,
-            target: vuln_id,
-            properties: {
-              type: 'VULNERABLE_TO',
-              confidence: 1.0,
-              discovered_at: now,
-              discovered_by: agentId,
-            },
-          });
-        }
+          },
+        });
       }
     }
   }

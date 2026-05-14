@@ -303,14 +303,15 @@ export function SmokePanel() {
   useEffect(() => { void runAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allResults = Object.values(results);
-  const passing = allResults.filter(r => r.status === 'pass').length;
-  const failing = allResults.filter(r => r.status === 'fail').length;
+  const passing = allResults.filter(r => r.status === 'pass').length + (wsStatus === 'pass' ? 1 : 0);
+  const failing = allResults.filter(r => r.status === 'fail').length + (wsStatus === 'fail' ? 1 : 0);
   const running = allResults.filter(r => r.status === 'running').length;
+  const totalCount = allResults.length + 1; // +1 for WebSocket
 
   const overallStatus: CheckStatus =
     running > 0 ? 'running' :
     failing > 0 ? 'fail' :
-    passing === allResults.length ? 'pass' : 'pending';
+    passing === totalCount ? 'pass' : 'pending';
 
   return (
     <div className="space-y-5">
@@ -321,7 +322,7 @@ export function SmokePanel() {
           <StatusPill status={overallStatus} />
           {overallStatus !== 'running' && (
             <span className="text-xs text-muted-foreground font-mono">
-              {passing}/{allResults.length + 1} pass
+              {passing}/{totalCount} pass
               {failing > 0 && <span className="text-destructive ml-1">· {failing} fail</span>}
             </span>
           )}
