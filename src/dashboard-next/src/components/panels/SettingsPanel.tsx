@@ -78,19 +78,19 @@ export function SettingsPanel() {
       </div>
 
       {config && <IdentitySection config={config} onSave={async (body) => {
-        try { await updateConfig(body); flash('Saved \u2713'); load(); } catch { flash('Error saving', false); }
+        try { await updateConfig(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {config && <ObjectivesSection objectives={config.objectives || []} onReload={load} />}
       {config && <FailurePatternsSection patterns={config.failure_patterns || []} onSave={async (fp) => {
-        try { await updateConfig({ failure_patterns: fp } as Partial<EngagementConfig>); flash('Saved \u2713'); load(); } catch { flash('Error saving', false); }
+        try { await updateConfig({ failure_patterns: fp } as Partial<EngagementConfig>); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {settings && <OpsecSection settings={settings} onSave={async (body) => {
-        try { await updateConfig(body); flash('Saved \u2713'); load(); } catch { flash('Error saving', false); }
+        try { await updateConfig(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {weights && <FrontierWeightsSection weights={weights} onSave={async (w) => {
-        try { await updateFrontierWeights(w); flash('Weights saved \u2713'); load(); } catch { flash('Error saving', false); }
+        try { await updateFrontierWeights(w); flash('Weights saved ✓'); load(); } catch { flash('Error saving', false); }
       }} onReset={async () => {
-        try { await resetFrontierWeights(); flash('Weights reset \u2713'); load(); } catch { flash('Error resetting', false); }
+        try { await resetFrontierWeights(); flash('Weights reset ✓'); load(); } catch { flash('Error resetting', false); }
       }} />}
       <ToolInventorySection tools={toolCheck} onRefresh={async () => {
         try { setToolCheck(await getTools()); } catch {}
@@ -195,7 +195,7 @@ function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; 
                 <div className="text-[10px] text-muted-foreground mt-0.5 flex gap-2">
                   {obj.target_node_type && <span>type: {obj.target_node_type}</span>}
                   {obj.achievement_edge_types?.length ? <span>edges: {obj.achievement_edge_types.join(', ')}</span> : null}
-                  {obj.achieved_at && <span className="text-success">{'\u2713'} {new Date(obj.achieved_at).toLocaleDateString()}</span>}
+                  {obj.achieved_at && <span className="text-success">{'✓'} {new Date(obj.achieved_at).toLocaleDateString()}</span>}
                 </div>
               </div>
               <button onClick={() => remove(obj.id)} className="text-muted-foreground hover:text-destructive text-xs">&times;</button>
@@ -400,7 +400,7 @@ function HealthSection({ health, onRefresh }: { health: HealthStatus | null; onR
       <div className="flex items-center gap-2">
         <span className={cn('w-2 h-2 rounded-full', totalIssues === 0 ? 'bg-success' : errors.length > 0 ? 'bg-destructive' : 'bg-warning')} />
         <span className="text-xs">
-          {stats ? `${stats.nodes} nodes, ${stats.edges} edges${health?.ad_context ? ' (AD)' : ''}` : 'Loading\u2026'}
+          {stats ? `${stats.nodes} nodes, ${stats.edges} edges${health?.ad_context ? ' (AD)' : ''}` : 'Loading…'}
         </span>
         <button onClick={onRefresh} className="text-xs text-muted-foreground hover:text-foreground ml-auto">Refresh</button>
       </div>
@@ -487,7 +487,7 @@ function ToolInventorySection({ tools, onRefresh }: { tools: ToolCheckResult | n
         <div className="flex items-center gap-2">
           <p className="text-xs text-muted-foreground flex-1">Scan to detect installed offensive tools</p>
           <button onClick={scan} disabled={loading} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
-            {loading ? 'Scanning\u2026' : 'Scan Tools'}
+            {loading ? 'Scanning…' : 'Scan Tools'}
           </button>
         </div>
       ) : (
@@ -500,7 +500,7 @@ function ToolInventorySection({ tools, onRefresh }: { tools: ToolCheckResult | n
               <span className="text-muted-foreground">{tools.missing_count} missing</span>
             </span>
             <button onClick={scan} disabled={loading} className="text-xs text-muted-foreground hover:text-foreground ml-auto">
-              {loading ? 'Scanning\u2026' : 'Rescan'}
+              {loading ? 'Scanning…' : 'Rescan'}
             </button>
           </div>
           <div className="grid grid-cols-2 gap-1">
@@ -535,7 +535,7 @@ function InferenceRulesSection({ rules, onRefresh }: { rules: InferenceRuleInfo[
         <div className="flex items-center gap-2">
           <p className="text-xs text-muted-foreground flex-1">Load active inference rules from the graph engine</p>
           <button onClick={loadRules} disabled={loading} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
-            {loading ? 'Loading\u2026' : 'Load Rules'}
+            {loading ? 'Loading…' : 'Load Rules'}
           </button>
         </div>
       ) : (
@@ -573,8 +573,8 @@ function InferenceRulesSection({ rules, onRefresh }: { rules: InferenceRuleInfo[
                     {rule.produces.map((p, i) => (
                       <div key={i} className="text-[10px] font-mono flex items-center gap-1.5">
                         <span className="text-muted-foreground">{p.source_selector}</span>
-                        <span className="text-accent">{'\u2192'} {p.edge_type}</span>
-                        <span className="text-muted-foreground">{'\u2192'} {p.target_selector}</span>
+                        <span className="text-accent">{'→'} {p.edge_type}</span>
+                        <span className="text-muted-foreground">{'→'} {p.target_selector}</span>
                         <span className="text-muted-foreground ml-auto">conf: {p.confidence}</span>
                       </div>
                     ))}
@@ -637,7 +637,7 @@ function TemplatesBrowserSection({ templates }: { templates: EngagementTemplate[
                 )}
                 {tpl.phases && tpl.phases.length > 0 && (
                   <div className="text-[10px] text-muted-foreground">
-                    Phases: {tpl.phases.map(p => p.name).join(' \u2192 ')}
+                    Phases: {tpl.phases.map(p => p.name).join(' → ')}
                   </div>
                 )}
               </div>
@@ -668,7 +668,7 @@ function GraphExportSection({ health }: { health: HealthStatus | null }) {
       a.click();
       URL.revokeObjectURL(url);
       const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
-      setLastSize(`${sizeMB} MB \u2014 ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
+      setLastSize(`${sizeMB} MB — ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
     } catch {
       setLastSize('Export failed');
     } finally {
@@ -690,7 +690,7 @@ function GraphExportSection({ health }: { health: HealthStatus | null }) {
         </div>
         <button onClick={doExport} disabled={exporting}
           className="text-xs px-3 py-1.5 rounded bg-accent/10 border border-accent/20 text-accent hover:bg-accent/20 transition-colors disabled:opacity-50">
-          {exporting ? 'Exporting\u2026' : 'Export JSON'}
+          {exporting ? 'Exporting…' : 'Export JSON'}
         </button>
       </div>
       {lastSize && <p className="text-[10px] text-muted-foreground mt-1">{lastSize}</p>}

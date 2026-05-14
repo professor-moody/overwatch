@@ -176,7 +176,7 @@ export function ActionsPanel() {
                 {isExpanded && (
                   <div className="mt-3 flex items-center gap-2 pt-2 border-t border-border">
                     <input value={formInput} onChange={e => setFormInput(e.target.value)}
-                      placeholder={formType === 'approve' ? 'Notes (optional)\u2026' : 'Reason (optional)\u2026'}
+                      placeholder={formType === 'approve' ? 'Notes (optional)…' : 'Reason (optional)…'}
                       className="settings-input flex-1"
                       onKeyDown={e => {
                         if (e.key === 'Enter') formType === 'approve' ? handleApprove(a.action_id) : handleDeny(a.action_id);

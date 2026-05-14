@@ -63,16 +63,16 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
     <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
       <h3 className="text-sm font-medium">Evidence Chain</h3>
       <p className="text-xs text-muted-foreground">
-        Search a graph node ID (e.g. <span className="font-mono">cred-aws-power</span>, <span className="font-mono">host-jumpbox</span>) to see the actions that produced or touched it \u2014 the tool name, command, output preview, and timestamp for each step. Useful for "how did we end up with this credential?" or "what did we run against this host?".
+        Search a graph node ID (e.g. <span className="font-mono">cred-aws-power</span>, <span className="font-mono">host-jumpbox</span>) to see the actions that produced or touched it — the tool name, command, output preview, and timestamp for each step. Useful for "how did we end up with this credential?" or "what did we run against this host?".
       </p>
       <div className="flex gap-2">
         <input value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
-          placeholder="Node ID or label\u2026" className="settings-input flex-1" />
+          placeholder="Node ID or label…" className="settings-input flex-1" />
         <button onClick={search} className="settings-save-btn">Search</button>
       </div>
 
-      {loading && <p className="text-xs text-muted-foreground">Searching\u2026</p>}
+      {loading && <p className="text-xs text-muted-foreground">Searching…</p>}
       {error && <p className="text-xs text-muted-foreground">{error}</p>}
 
       {data && (
@@ -182,9 +182,9 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
       <h3 className="text-sm font-medium">Attack Paths</h3>
       <div className="flex gap-2">
         <select value={selectedObjective} onChange={e => setSelectedObjective(e.target.value)} className="settings-input flex-1">
-          <option value="">Select objective\u2026</option>
+          <option value="">Select objective…</option>
           {objectives.map(obj => (
-            <option key={obj.id} value={obj.id}>{obj.description}{obj.achieved ? ' \u2713' : ''}</option>
+            <option key={obj.id} value={obj.id}>{obj.description}{obj.achieved ? ' ✓' : ''}</option>
           ))}
         </select>
         <select value={optimize} onChange={e => setOptimize(e.target.value as typeof optimize)} className="settings-input w-auto">
@@ -195,7 +195,7 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
         <button onClick={search} className="settings-save-btn">Find Paths</button>
       </div>
 
-      {loading && <p className="text-xs text-muted-foreground">Finding paths\u2026</p>}
+      {loading && <p className="text-xs text-muted-foreground">Finding paths…</p>}
 
       {paths.length > 0 && (
         <div className="space-y-3">

@@ -90,7 +90,7 @@ export function EngagementsPanel() {
           <div className="space-y-2">
             {engagements.map(e => {
               const isActive = e.is_active || e.id === activeId;
-              const scopeStr = e.scope_cidrs.length ? e.scope_cidrs.join(', ') : (e.scope_domains.join(', ') || '\u2014');
+              const scopeStr = e.scope_cidrs.length ? e.scope_cidrs.join(', ') : (e.scope_domains.join(', ') || '—');
               return (
                 <div key={e.id}
                   onClick={() => setDetailId(e.id)}
@@ -211,8 +211,8 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
   const hasScope = cidrs.length > 0 || domains.length > 0 || hosts.length > 0;
   const hasObjectives = objectives.some(o => o.trim());
   const warnings: string[] = [];
-  if (!hasScope) warnings.push('No scope defined \u2014 the agent won\u2019t have targets.');
-  if (!hasObjectives) warnings.push('No objectives defined \u2014 the agent won\u2019t have goals.');
+  if (!hasScope) warnings.push('No scope defined — the agent won’t have targets.');
+  if (!hasObjectives) warnings.push('No objectives defined — the agent won’t have goals.');
 
   const submit = async () => {
     if (!name.trim()) return;
@@ -276,7 +276,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
           <select value={templateId} onChange={e => applyTemplate(e.target.value)} className="settings-input">
             <option value="">None</option>
             {templates.map(t => (
-              <option key={t.id} value={t.id}>{t.name}{t.description ? ` \u2014 ${t.description.slice(0, 50)}` : ''}</option>
+              <option key={t.id} value={t.id}>{t.name}{t.description ? ` — ${t.description.slice(0, 50)}` : ''}</option>
             ))}
           </select>
         </Field>
@@ -326,11 +326,11 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Time Window Start (hour)">
-            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="\u2014" />
+            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="—" />
           </Field>
           <Field label="Time Window End (hour)">
             <div className="flex gap-2">
-              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1" placeholder="\u2014" />
+              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1" placeholder="—" />
               <button onClick={() => { setTwStart(''); setTwEnd(''); }} className="text-xs text-muted-foreground hover:text-foreground">Clear</button>
             </div>
           </Field>
@@ -351,7 +351,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
       </Section>
 
       <div className="flex gap-2 pt-1">
-        <button onClick={submit} disabled={creating} className="settings-save-btn">{creating ? 'Creating\u2026' : 'Create Engagement'}</button>
+        <button onClick={submit} disabled={creating} className="settings-save-btn">{creating ? 'Creating…' : 'Create Engagement'}</button>
         <button onClick={onCancel} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
       </div>
     </div>
@@ -671,7 +671,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
         failure_patterns: failurePatterns,
         phases,
       });
-      setSaveMsg('Saved \u2713');
+      setSaveMsg('Saved ✓');
       setEditing(false);
       load();
     } catch {
@@ -685,7 +685,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
     return (
       <div className="space-y-4">
         <button onClick={onBack} className="text-xs text-muted-foreground hover:text-foreground">&larr; Back</button>
-        <div className="text-sm text-muted-foreground animate-pulse">Loading\u2026</div>
+        <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       </div>
     );
   }
@@ -711,7 +711,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
           {saveMsg && <span className={cn('text-xs', saveMsg.includes('Error') ? 'text-destructive' : 'text-success')}>{saveMsg}</span>}
           {editing ? (
             <>
-              <button onClick={save} disabled={saving} className="settings-save-btn">{saving ? 'Saving\u2026' : 'Save'}</button>
+              <button onClick={save} disabled={saving} className="settings-save-btn">{saving ? 'Saving…' : 'Save'}</button>
               <button onClick={() => { setEditing(false); if (detail) populateEditable(detail); }} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
             </>
           ) : (
@@ -739,7 +739,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
           </div>
         ) : (
           <div className="text-xs space-y-1">
-            <div><span className="text-muted-foreground">Profile:</span> {detail.profile || '\u2014'}</div>
+            <div><span className="text-muted-foreground">Profile:</span> {detail.profile || '—'}</div>
           </div>
         )}
       </Section>
@@ -777,7 +777,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
             ) : (detail.objectives || []).map((obj, i) => (
               <div key={i} className={cn('flex items-center gap-2 text-xs p-1.5 rounded border',
                 obj.achieved ? 'border-success/20 bg-success/5' : 'border-border bg-elevated')}>
-                <span className={obj.achieved ? 'text-success' : 'text-muted-foreground'}>{obj.achieved ? '\u2713' : '\u25cb'}</span>
+                <span className={obj.achieved ? 'text-success' : 'text-muted-foreground'}>{obj.achieved ? '✓' : '○'}</span>
                 <span className="flex-1">{obj.description}</span>
               </div>
             ))}
@@ -804,10 +804,10 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Time Window Start">
-                <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="\u2014" />
+                <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="—" />
               </Field>
               <Field label="Time Window End">
-                <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input" placeholder="\u2014" />
+                <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input" placeholder="—" />
               </Field>
             </div>
             <Field label="Blacklisted Techniques">
@@ -913,10 +913,10 @@ function OpsecReadView({ detail }: { detail: EngagementDetail }) {
   const o = detail.opsec || {};
   return (
     <div className="space-y-1 text-xs">
-      <div><span className="text-muted-foreground">Max Noise:</span> {o.max_noise?.toFixed(2) ?? '\u2014'}</div>
-      <div><span className="text-muted-foreground">Approval:</span> {o.approval_mode || '\u2014'}</div>
+      <div><span className="text-muted-foreground">Max Noise:</span> {o.max_noise?.toFixed(2) ?? '—'}</div>
+      <div><span className="text-muted-foreground">Approval:</span> {o.approval_mode || '—'}</div>
       {o.approval_timeout_ms != null && <div><span className="text-muted-foreground">Timeout:</span> {Math.round(o.approval_timeout_ms / 1000)}s</div>}
-      {o.time_window && <div><span className="text-muted-foreground">Time Window:</span> {o.time_window.start_hour}:00\u2013{o.time_window.end_hour}:00</div>}
+      {o.time_window && <div><span className="text-muted-foreground">Time Window:</span> {o.time_window.start_hour}:00–{o.time_window.end_hour}:00</div>}
       {o.blacklisted_techniques && o.blacklisted_techniques.length > 0 && (
         <div><span className="text-muted-foreground">Blacklisted:</span> <span className="font-mono">{o.blacklisted_techniques.join(', ')}</span></div>
       )}

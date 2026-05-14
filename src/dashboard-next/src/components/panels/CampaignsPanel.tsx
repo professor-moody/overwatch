@@ -14,9 +14,9 @@ import type { Campaign, FrontierItem } from '../../lib/types';
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '\ud83d\udd11',
   enumeration: '\ud83d\udd0d',
-  post_exploitation: '\u26a1',
+  post_exploitation: '⚡',
   network_discovery: '\ud83c\udf10',
-  custom: '\u2699',
+  custom: '⚙',
 };
 
 const STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, draft: 2, completed: 3, aborted: 4 };
@@ -127,7 +127,7 @@ function CampaignCard({ campaign: c, selected, onToggleSelect, onClickDetail, on
   onClone: () => Promise<void>;
   expanded: boolean;
 }) {
-  const icon = STRATEGY_ICONS[c.strategy] || '\u2699';
+  const icon = STRATEGY_ICONS[c.strategy] || '⚙';
   const pct = c.completion_pct ?? 0;
 
   const actions: { action: 'activate' | 'pause' | 'resume' | 'abort'; label: string; cls: string }[] = [];
@@ -149,7 +149,7 @@ function CampaignCard({ campaign: c, selected, onToggleSelect, onClickDetail, on
         <input type="checkbox" checked={selected} onChange={onToggleSelect} onClick={e => e.stopPropagation()} className="accent-accent" />
         <span title={c.strategy}>{icon}</span>
         <h3 className="text-sm font-medium flex-1">{c.name || c.id}</h3>
-        {c.parent_id && <span className="text-[10px] text-muted-foreground bg-elevated px-1 rounded">{'\u21b3'} child</span>}
+        {c.parent_id && <span className="text-[10px] text-muted-foreground bg-elevated px-1 rounded">{'↳'} child</span>}
         <StatusBadge status={c.status} />
       </div>
 
@@ -208,7 +208,7 @@ function CampaignCard({ campaign: c, selected, onToggleSelect, onClickDetail, on
               {c.items.slice(0, 5).map((item, i) => (
                 <div key={item.id || i} className="text-muted-foreground truncate pl-2">{item.description}</div>
               ))}
-              {c.items.length > 5 && <div className="text-muted pl-2">\u2026 {c.items.length - 5} more</div>}
+              {c.items.length > 5 && <div className="text-muted pl-2">… {c.items.length - 5} more</div>}
             </div>
           )}
         </div>
@@ -287,7 +287,7 @@ function CampaignBuilder({ frontier, onClose, onCreated }: {
         </div>
       )}
       <div className="flex gap-2">
-        <button onClick={submit} disabled={creating} className="settings-save-btn">{creating ? 'Creating\u2026' : 'Create'}</button>
+        <button onClick={submit} disabled={creating} className="settings-save-btn">{creating ? 'Creating…' : 'Create'}</button>
         <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
       </div>
     </div>
@@ -336,7 +336,7 @@ function DispatchModal({ campaignId, onClose, onDone }: {
         </div>
       </div>
       <div className="flex gap-2">
-        <button onClick={submit} disabled={dispatching} className="settings-save-btn">{dispatching ? 'Dispatching\u2026' : 'Dispatch'}</button>
+        <button onClick={submit} disabled={dispatching} className="settings-save-btn">{dispatching ? 'Dispatching…' : 'Dispatch'}</button>
         <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
       </div>
     </div>
