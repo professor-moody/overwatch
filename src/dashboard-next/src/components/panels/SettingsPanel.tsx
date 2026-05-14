@@ -100,6 +100,7 @@ export function SettingsPanel() {
       }} />
       {templates && <TemplatesBrowserSection templates={templates} />}
       <GraphExportSection health={health} />
+      <BundleSection />
       <HealthSection health={health} onRefresh={async () => { try { setHealth(await getHealth()); } catch {} }} />
     </div>
   );
@@ -694,6 +695,61 @@ function GraphExportSection({ health }: { health: HealthStatus | null }) {
         </button>
       </div>
       {lastSize && <p className="text-[10px] text-muted-foreground mt-1">{lastSize}</p>}
+    </Section>
+  );
+}
+
+/* ============ Engagement Bundle ============ */
+
+function BundleSection() {
+  const [status, setStatus] = useState<'idle' | 'building' | 'done' | 'error'>('idle');
+  const [detail, setDetail] = useState<string | null>(null);
+
+  const download = async () => {
+    setStatus('building');
+    setDetail(null);
+    try {
+      const res = await fetch('/api/bundle', { method: 'GET' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+      const cd = res.headers.get('Content-Disposition') || '';
+      const nameMatch = cd.match(/filename="([^"]+)"/);
+      const filename = nameMatch ? nameMatch[1] : `bundle-${Date.now()}.tar.gz`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      setStatus('done');
+      setDetail(`${sizeMB} MB — ${filename}`);
+    } catch (err) {
+      setStatus('error');
+      setDetail(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Section title="Engagement Bundle">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 text-xs text-muted-foreground">
+          Archive containing the state file, evidence, and reports as a portable .tar.gz
+        </div>
+        <button
+          onClick={download}
+          disabled={status === 'building'}
+          className="text-xs px-3 py-1.5 rounded bg-accent/10 border border-accent/20 text-accent hover:bg-accent/20 transition-colors disabled:opacity-50 flex-shrink-0"
+        >
+          {status === 'building' ? 'Building…' : 'Download Bundle'}
+        </button>
+      </div>
+      {detail && (
+        <p className={`text-[10px] mt-1 ${status === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {status === 'done' ? '✓ ' : ''}{detail}
+        </p>
+      )}
     </Section>
   );
 }

@@ -20,6 +20,7 @@ import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
+import { gatherBundleEntries, pipeTarGzToStream } from './bundle-builder.js';
 import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
@@ -538,6 +539,8 @@ export class DashboardServer {
       this.serveReportsList(res);
     } else if (pathname === '/api/reports/render' && method === 'POST') {
       this.handleRenderReport(req, res);
+    } else if (pathname === '/api/bundle' && method === 'GET') {
+      this.streamBundle(req, res);
     } else {
       // Parameterized routes
       const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
@@ -2004,6 +2007,32 @@ export class DashboardServer {
         info: enriched.filter(f => f.severity === 'info').length,
       },
     }));
+  }
+
+  /** GET /api/bundle — stream the engagement archive as a .tar.gz download. */
+  private async streamBundle(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const stateFilePath = this.engine.getStateFilePath();
+      const { stateDir, entries } = gatherBundleEntries(stateFilePath, { includeSnapshots: false });
+      const cfg = this.engine.getConfig();
+      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      const filename = `bundle-${cfg.id}-${ts}.tar.gz`;
+
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-store',
+      });
+
+      await pipeTarGzToStream(res, stateDir, entries);
+      res.end();
+    } catch (err) {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
   }
 
   /** GET /api/reports — list manifest entries newest-first. */
