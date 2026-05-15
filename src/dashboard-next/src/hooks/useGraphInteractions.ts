@@ -15,6 +15,8 @@ export interface UseGraphInteractionsOptions {
   refresh: () => void;
   onNodeSelect?: (nodeId: string | null) => void;
   onNodeFocus?: (nodeId: string, hops: number) => void;
+  onUserLayoutChange?: () => void;
+  onNodePositionCommit?: (nodeId: string, position: { x: number; y: number }) => void;
 }
 
 export function useGraphInteractions({
@@ -24,6 +26,8 @@ export function useGraphInteractions({
   refresh,
   onNodeSelect,
   onNodeFocus,
+  onUserLayoutChange,
+  onNodePositionCommit,
 }: UseGraphInteractionsOptions) {
   const suppressNextClickRef = useRef(false);
 
@@ -116,6 +120,7 @@ export function useGraphInteractions({
 
     // ---- Drag ----
     const onDownNode = (e: { node: string; event: { original: MouseEvent } }) => {
+      onUserLayoutChange?.();
       isDragging = true;
       hasMoved = false;
       draggedNode = e.node;
@@ -123,6 +128,7 @@ export function useGraphInteractions({
       dragStartY = e.event.original.clientY;
       graph.setNodeAttribute(draggedNode, 'fixed', true);
       renderer.getCamera().disable();
+      container.classList.add('node-grabbed');
       container.classList.add('dragging');
     };
 
@@ -139,10 +145,17 @@ export function useGraphInteractions({
     const endDrag = () => {
       if (isDragging && draggedNode && hasMoved) {
         suppressNextClickRef.current = true;
+        const attrs = graph.getNodeAttributes(draggedNode);
+        const x = attrs.x as number;
+        const y = attrs.y as number;
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          onNodePositionCommit?.(draggedNode, { x, y });
+        }
       }
       isDragging = false;
       draggedNode = null;
       hasMoved = false;
+      container.classList.remove('node-grabbed');
       container.classList.remove('dragging');
       renderer.getCamera().enable();
     };
@@ -151,12 +164,14 @@ export function useGraphInteractions({
     const onEnterNode = ({ node }: { node: string }) => {
       s.hoveredNode = node;
       s.hoveredNeighbors = new Set(graph.neighbors(node));
+      container.classList.add('node-grabbable');
       renderer.refresh();
     };
 
     const onLeaveNode = () => {
       s.hoveredNode = null;
       s.hoveredNeighbors = null;
+      container.classList.remove('node-grabbable');
       renderer.refresh();
     };
 
@@ -227,7 +242,7 @@ export function useGraphInteractions({
       renderer.off('clickStage', onClickStage as never);
       renderer.off('doubleClickStage', onDoubleClickStage as never);
     };
-  }, [graph, rendererRef, stateRef, selectNode, clearSelection, handlePathClick, enterNeighborhoodFocus]);
+  }, [graph, rendererRef, stateRef, selectNode, clearSelection, handlePathClick, enterNeighborhoodFocus, onUserLayoutChange, onNodePositionCommit]);
 
   return {
     selectNode,

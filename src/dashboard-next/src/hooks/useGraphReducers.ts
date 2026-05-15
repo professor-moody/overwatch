@@ -16,6 +16,7 @@ import {
 } from '../lib/graph-constants';
 import { dimColor } from '../lib/graph-utils';
 import { getNodeDisplayLabel } from '../lib/node-display';
+import { isReachableOnlyEdge } from '../lib/graph-layers';
 
 // ---- State interface held in a mutable ref for per-frame access ----
 
@@ -118,7 +119,7 @@ export function useGraphReducers(graph: Graph, reachableOnlyCacheRef: React.Muta
         if (deg === 0) return;
         let allReachable = true;
         graph.forEachEdge(id, (_edge, attrs) => {
-          if (allReachable && attrs.type !== 'REACHABLE') allReachable = false;
+          if (allReachable && !isReachableOnlyEdge(attrs)) allReachable = false;
         });
         if (allReachable) reachableOnlyCacheRef.current!.add(id);
       });
@@ -259,8 +260,17 @@ export function useGraphReducers(graph: Graph, reachableOnlyCacheRef: React.Muta
 
     // Selection
     if (s.selectedNode && !s.hoveredNode && !s.pathNodes.size) {
-      if (node === s.selectedNode) { res.highlighted = true; res.zIndex = 3; }
-      else if (s.selectedNeighborhood?.has(node)) { res.zIndex = 2; }
+      if (node === s.selectedNode) {
+        res.highlighted = true;
+        res.zIndex = 4;
+        res.forceLabel = true;
+        res.size = ((data.size as number) || 5) * 1.3;
+      }
+      else if (s.selectedNeighborhood?.has(node)) {
+        res.zIndex = 2;
+        res.forceLabel = true;
+        res.size = ((data.size as number) || 5) * 1.1;
+      }
       else { res.color = dimColor(data.color as string, 0.1); res.label = ''; res.zIndex = 0; }
     }
 

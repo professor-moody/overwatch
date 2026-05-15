@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
-import { parseHash } from '../../hooks/useNavigation';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
+import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 const SECTION_PRIORITY_LIMIT = 8;
 const SECTION_DEFAULT_LIMIT = 5;
@@ -66,6 +66,13 @@ function buildSections(frontier: FrontierItem[], typeFilter: string | null, node
   let list = frontier;
   if (typeFilter) list = list.filter(i => i.type === typeFilter);
   if (nodeFilter) list = list.filter(i => itemReferencesNode(i, nodeFilter));
+  list = [...list].sort((a, b) => {
+    const priority = (b.priority ?? 0) - (a.priority ?? 0);
+    if (priority !== 0) return priority;
+    const aId = a.frontier_item_id || a.id || '';
+    const bId = b.frontier_item_id || b.id || '';
+    return aId.localeCompare(bId);
+  });
 
   const topPriority = list.slice(0, SECTION_PRIORITY_LIMIT);
   const topIds = new Set(topPriority.map(i => i.id));
@@ -88,23 +95,23 @@ function buildSections(frontier: FrontierItem[], typeFilter: string | null, node
 
 export function FrontierPanel() {
   const frontier = useEngagementStore(s => s.frontier);
-  const { navigateToGraph } = useNavigation();
-  const location = useLocation();
+  const { navigateToEvidence, navigateToGraph } = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
 
-  // Read node filter from URL hash (item= param set by navigateToFrontier).
+  // Read node filter from route query (node= param set by navigateToFrontier).
   useEffect(() => {
-    const target = parseHash(location.hash);
-    if (target?.panel === 'frontier' && target.item) {
-      setNodeFilter(target.item);
+    const node = searchParams.get('node');
+    if (node) {
+      setNodeFilter(node);
     } else {
       setNodeFilter(null);
     }
-  }, [location.hash]);
+  }, [searchParams]);
 
   const sections = useMemo(
     () => buildSections(frontier, typeFilter, nodeFilter),
@@ -135,26 +142,23 @@ export function FrontierPanel() {
     if (nodeId) navigateToGraph(nodeId, 2);
   };
 
+  const handleEvidence = (item: FrontierItem) => {
+    const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
+    if (nodeId) navigateToEvidence(nodeId);
+  };
+
   const clearNodeFilter = () => {
     setNodeFilter(null);
-    // Also clear the hash item param so Back works sensibly.
-    const params = new URLSearchParams(location.hash.replace(/^#/, ''));
-    params.delete('item');
-    const newHash = params.toString() ? `#${params.toString()}` : '#panel=frontier';
-    window.history.replaceState(null, '', `/${newHash}`);
+    setSearchParams({}, { replace: true });
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h2 className="text-lg font-semibold">
-          Frontier <span className="text-muted-foreground font-normal text-sm">
-            {(typeFilter || nodeFilter) ? `(${totalVisible}/${frontier.length})` : `(${frontier.length})`}
-          </span>
-        </h2>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Type filter chips */}
-          <div className="flex gap-1">
+      <PageHeader
+        title="Frontier"
+        meta={(typeFilter || nodeFilter) ? `(${totalVisible}/${frontier.length})` : `(${frontier.length})`}
+        actions={(
+          <FilterBar>
             {TYPE_FILTER_OPTIONS.map(opt => (
               <button
                 key={String(opt.value)}
@@ -169,16 +173,15 @@ export function FrontierPanel() {
                 {opt.label}
               </button>
             ))}
-          </div>
-          {/* Node filter chip */}
-          {nodeFilter && (
-            <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
-              <span className="font-mono truncate max-w-32">{nodeFilter}</span>
-              <button onClick={clearNodeFilter} className="text-accent hover:text-foreground ml-1">✕</button>
-            </div>
-          )}
-        </div>
-      </div>
+            {nodeFilter && (
+              <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
+                <span className="font-mono truncate max-w-32">{nodeFilter}</span>
+                <button onClick={clearNodeFilter} className="text-accent hover:text-foreground ml-1">✕</button>
+              </div>
+            )}
+          </FilterBar>
+        )}
+      />
 
       {frontier.length === 0 ? (
         <div className="bg-surface border border-border rounded-lg p-8 text-center text-sm text-muted-foreground">
@@ -198,7 +201,7 @@ export function FrontierPanel() {
             const hasMore = section.items.length > limit;
 
             return (
-              <div key={section.key} className="bg-surface border border-border rounded-lg overflow-hidden">
+              <PanelSection key={section.key} className="p-0 overflow-hidden">
                 <button
                   onClick={() => toggleCollapse(section.key)}
                   className="w-full px-3 py-2 flex items-center justify-between text-xs hover:bg-hover transition-colors"
@@ -218,6 +221,7 @@ export function FrontierPanel() {
                         item={item}
                         onZoom={() => handleZoom(item)}
                         onFocus={() => handleFocus(item)}
+                        onEvidence={() => handleEvidence(item)}
                       />
                     ))}
                     {hasMore && (
@@ -230,7 +234,7 @@ export function FrontierPanel() {
                     )}
                   </div>
                 )}
-              </div>
+              </PanelSection>
             );
           })}
         </div>
@@ -243,10 +247,12 @@ function FrontierItemCard({
   item,
   onZoom,
   onFocus,
+  onEvidence,
 }: {
   item: FrontierItem;
   onZoom: () => void;
   onFocus: () => void;
+  onEvidence: () => void;
 }) {
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
   const noise = item.opsec_noise ?? 0;
@@ -270,9 +276,7 @@ function FrontierItemCard({
   return (
     <div className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
       <div className="flex items-center gap-2 mb-1">
-        <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', badge.cls)}>
-          {badge.label}
-        </span>
+        <StatusPill className={badge.cls}>{badge.label}</StatusPill>
         <span className="text-xs text-foreground flex-1 truncate" title={item.description}>
           {label}
         </span>
@@ -314,6 +318,12 @@ function FrontierItemCard({
             className="text-[10px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition-colors"
           >
             Focus
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); onEvidence(); }}
+            className="text-[10px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition-colors"
+          >
+            Evidence
           </button>
         </div>
       </div>

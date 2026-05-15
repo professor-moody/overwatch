@@ -7,9 +7,10 @@ import { SkeletonPanel } from '../shared/Skeleton';
 import { TelemetrySection } from './TelemetrySection';
 import * as api from '../../lib/api';
 import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
+import { MetricTile, PageHeader, PanelSection } from '../shared/primitives';
 
 export function OverviewPanel() {
-  const { navigateToGraph, navigateToPanel, navigateToEvidence } = useNavigation();
+  const { navigateToGraph, navigateToGraphFilter, navigateToPanel, navigateToEvidence } = useNavigation();
   const graphSummary = useEngagementStore((s) => s.graphSummary);
   const objectives = useEngagementStore((s) => s.objectives);
   const frontier = useEngagementStore((s) => s.frontier);
@@ -17,6 +18,8 @@ export function OverviewPanel() {
   const readiness = useEngagementStore((s) => s.readiness);
   const phases = useEngagementStore((s) => s.phases);
   const campaigns = useEngagementStore((s) => s.campaigns);
+  const pendingActions = useEngagementStore((s) => s.pendingActions);
+  const sessions = useEngagementStore((s) => s.sessions);
   const accessSummary = useEngagementStore((s) => s.accessSummary);
   const opsecBudget = useEngagementStore((s) => s.opsecBudget);
   const recentActivity = useEngagementStore((s) => s.recentActivity);
@@ -52,6 +55,21 @@ export function OverviewPanel() {
     return campaigns.filter(c => c.status === 'active' || c.status === 'paused');
   }, [campaigns]);
 
+  const decisionFrontier = useMemo(() => {
+    return [...frontier].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 3);
+  }, [frontier]);
+
+  const activeSessions = useMemo(() => {
+    return sessions.filter(s => s.state === 'connected');
+  }, [sessions]);
+
+  const recentChanges = useMemo(() => {
+    return recentActivity
+      .filter(e => e.description || e.event_type)
+      .slice(-5)
+      .reverse();
+  }, [recentActivity]);
+
   const engagement = useEngagementStore((s) => s.engagement);
 
   if (!initialized) return <SkeletonPanel />;
@@ -59,7 +77,7 @@ export function OverviewPanel() {
   if (!engagement && !graphSummary) {
     return (
       <div className="space-y-6">
-        <h2 className="text-lg font-semibold">Overview</h2>
+        <PageHeader title="Overview" />
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="text-4xl mb-4 opacity-40">⊘</div>
           <h3 className="text-sm font-medium text-foreground mb-1">No engagement loaded</h3>
@@ -73,35 +91,35 @@ export function OverviewPanel() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Overview</h2>
+      <PageHeader title="Overview" />
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <SummaryCard
+        <MetricTile
           label="Nodes"
           value={graphSummary?.total_nodes ?? 0}
           sub={`${graphSummary?.confirmed_edges ?? 0} confirmed · ${graphSummary?.inferred_edges ?? 0} inferred`}
           onClick={() => navigateToGraph()}
         />
-        <SummaryCard
+        <MetricTile
           label="Objectives"
           value={`${achievedCount}/${objectives.length}`}
           sub={achievedCount === objectives.length && objectives.length > 0 ? 'All achieved' : 'In progress'}
           accent={achievedCount === objectives.length && objectives.length > 0}
         />
-        <SummaryCard
+        <MetricTile
           label="Frontier"
           value={frontier.length}
           sub="actionable items"
           onClick={() => navigateToPanel('frontier')}
         />
-        <SummaryCard
+        <MetricTile
           label="Agents"
           value={agents.filter((a) => a.status === 'running').length}
           sub={`${agents.length} total`}
           onClick={() => navigateToPanel('agents')}
         />
-        <SummaryCard
+        <MetricTile
           label="Access"
           value={accessSummary.current_access_level}
           sub={`${accessSummary.compromised_hosts.length} hosts · ${accessSummary.valid_credentials.length} creds`}
@@ -109,13 +127,57 @@ export function OverviewPanel() {
         />
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <PanelSection title="Needs Attention">
+          <div className="space-y-2 text-xs">
+            {pendingActions.length > 0 && (
+              <DecisionRow label={`${pendingActions.length} pending approval${pendingActions.length === 1 ? '' : 's'}`} tone="warning" onClick={() => navigateToPanel('actions')} />
+            )}
+            {readiness && readiness.issues.length > 0 && (
+              <DecisionRow label={`${readiness.issues.length} readiness warning${readiness.issues.length === 1 ? '' : 's'}`} tone="warning" />
+            )}
+            {decisionFrontier.map((item) => (
+              <DecisionRow
+                key={item.frontier_item_id || item.id}
+                label={item.description || item.id}
+                meta={(item.priority ?? 0).toFixed(1)}
+                onClick={() => navigateToPanel('frontier')}
+              />
+            ))}
+            {pendingActions.length === 0 && (!readiness || readiness.issues.length === 0) && decisionFrontier.length === 0 && (
+              <p className="text-muted-foreground">No immediate operator action queued.</p>
+            )}
+          </div>
+        </PanelSection>
+
+        <PanelSection title="Current Access">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <AccessFact label="Level" value={accessSummary.current_access_level} />
+            <AccessFact label="Sessions" value={activeSessions.length} />
+            <AccessFact label="Hosts" value={accessSummary.compromised_hosts.length} />
+            <AccessFact label="Valid creds" value={accessSummary.valid_credentials.length} />
+          </div>
+        </PanelSection>
+
+        <PanelSection title="Recent Change">
+          {recentChanges.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No recent activity yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {recentChanges.map(entry => (
+                <FindingEntry key={entry.id} entry={entry} />
+              ))}
+            </div>
+          )}
+        </PanelSection>
+      </div>
+
       {/* OPSEC Noise Gauge */}
       {opsecBudget && <OpsecGauge budget={opsecBudget} />}
 
       {/* Phases */}
       {phases.length > 0 && (
-        <section className="bg-surface border border-border rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Engagement Phases</h3>
+        <PanelSection title="Engagement Phases">
           <div className="flex gap-2">
             {phases.map((phase, i) => (
               <div
@@ -131,28 +193,23 @@ export function OverviewPanel() {
               </div>
             ))}
           </div>
-        </section>
+        </PanelSection>
       )}
 
       {/* Active Campaigns */}
       {activeCampaigns.length > 0 && (
-        <section className="bg-surface border border-border rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">
-            Active Campaigns
-            <span className="text-muted-foreground font-normal ml-1">({activeCampaigns.length})</span>
-          </h3>
+        <PanelSection title="Active Campaigns" meta={`(${activeCampaigns.length})`}>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {activeCampaigns.slice(0, 6).map(c => (
               <CampaignCard key={c.id} campaign={c} onClick={() => navigateToPanel('campaigns', c.id)} />
             ))}
           </div>
-        </section>
+        </PanelSection>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Graph Summary */}
-        <section className="bg-surface border border-border rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Graph Summary</h3>
+        <PanelSection title="Graph Summary">
           {graphSummary?.nodes_by_type && (
             <div className="space-y-1.5">
               {Object.entries(graphSummary.nodes_by_type)
@@ -160,7 +217,7 @@ export function OverviewPanel() {
                 .map(([type, count]) => (
                   <button
                     key={type}
-                    onClick={() => { window.location.href = `/graph?filter=${encodeURIComponent(type)}`; }}
+                    onClick={() => navigateToGraphFilter(type)}
                     className="w-full flex items-center justify-between text-xs hover:bg-hover rounded px-1.5 py-0.5 -mx-1.5 transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
@@ -175,11 +232,10 @@ export function OverviewPanel() {
                 ))}
             </div>
           )}
-        </section>
+        </PanelSection>
 
         {/* Objectives */}
-        <section className="bg-surface border border-border rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Objectives</h3>
+        <PanelSection title="Objectives">
           {objectives.length === 0 ? (
             <p className="text-xs text-muted-foreground">No objectives defined</p>
           ) : (
@@ -205,27 +261,23 @@ export function OverviewPanel() {
               ))}
             </div>
           )}
-        </section>
+        </PanelSection>
       </div>
 
       {/* Recent Findings Feed */}
       {recentFindings.length > 0 && (
-        <section className="bg-surface border border-border rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">
-            Recent Findings
-            <span className="text-muted-foreground font-normal ml-1">({recentFindings.length})</span>
-          </h3>
+        <PanelSection title="Recent Findings" meta={`(${recentFindings.length})`}>
           <div className="space-y-1.5 max-h-48 overflow-y-auto">
             {recentFindings.map((entry) => (
               <FindingEntry key={entry.id} entry={entry} />
             ))}
           </div>
-        </section>
+        </PanelSection>
       )}
 
       {/* Readiness */}
       {readiness && readiness.issues.length > 0 && (
-        <section className="bg-surface border border-border rounded-lg p-4">
+        <PanelSection>
           <h3 className="text-sm font-medium mb-2 flex items-center gap-2">
             Lab Readiness
             <span className={cn(
@@ -243,18 +295,14 @@ export function OverviewPanel() {
               </li>
             ))}
           </ul>
-        </section>
+        </PanelSection>
       )}
 
       {/* Telemetry */}
       <TelemetrySection />
 
       {/* Top Frontier */}
-      <section className="bg-surface border border-border rounded-lg p-4">
-        <h3 className="text-sm font-medium mb-3">
-          Top Frontier Items
-          <span className="text-muted-foreground font-normal ml-1">({frontier.length})</span>
-        </h3>
+      <PanelSection title="Top Frontier Items" meta={`(${frontier.length})`}>
         {frontier.length === 0 ? (
           <p className="text-xs text-muted-foreground">No frontier items</p>
         ) : (
@@ -284,7 +332,7 @@ export function OverviewPanel() {
             })}
           </div>
         )}
-      </section>
+      </PanelSection>
     </div>
   );
 }
@@ -384,6 +432,42 @@ function FindingEntry({ entry }: { entry: ActivityEntry }) {
       <span className="text-muted-foreground font-mono flex-shrink-0 w-14">{formatTimestamp(entry.timestamp)}</span>
       <span className="w-1.5 h-1.5 rounded-full bg-warning flex-shrink-0" />
       <span className="text-muted-foreground flex-1 truncate">{entry.description}</span>
+    </div>
+  );
+}
+
+function DecisionRow({
+  label,
+  meta,
+  tone,
+  onClick,
+}: {
+  label: string;
+  meta?: string;
+  tone?: 'warning';
+  onClick?: () => void;
+}) {
+  const Wrapper = onClick ? 'button' : 'div';
+  return (
+    <Wrapper
+      onClick={onClick}
+      className={cn(
+        'w-full flex items-center gap-2 text-left rounded px-2 py-1.5',
+        onClick && 'hover:bg-hover transition-colors',
+      )}
+    >
+      <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', tone === 'warning' ? 'bg-warning' : 'bg-accent')} />
+      <span className="text-muted-foreground truncate flex-1">{label}</span>
+      {meta && <span className="font-mono text-foreground">{meta}</span>}
+    </Wrapper>
+  );
+}
+
+function AccessFact({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded border border-border bg-elevated px-2 py-1.5">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold text-foreground truncate">{value}</div>
     </div>
   );
 }

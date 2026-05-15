@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { WsProvider } from './providers/ws-provider';
 import { OperatorLayout } from './components/layout/OperatorLayout';
 import { ToastContainer } from './components/shared/ToastContainer';
@@ -21,7 +21,6 @@ export function App() {
     <WsProvider>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
         <Routes>
-          <Route path="/*" element={<OperatorLayout />} />
           <Route
             path="/graph"
             element={
@@ -30,6 +29,9 @@ export function App() {
               </Suspense>
             }
           />
+          <Route path="/" element={<OperatorLayout />} />
+          <Route path="/:panelId" element={<OperatorLayout />} />
+          <Route path="*" element={<Navigate to="/overview" replace />} />
         </Routes>
         <ToastContainer />
       </BrowserRouter>

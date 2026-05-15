@@ -5,6 +5,7 @@
 import { useRef, useCallback } from 'react';
 import Graph from 'graphology';
 import type { ExportedGraph, ExportedNode, ExportedEdge } from '../lib/types';
+import type { GraphNodePosition } from '../lib/graph-position-store';
 import { NODE_COLORS, NODE_BASE_SIZES, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR, DETAIL_NODE_TYPES, SUPPORTING_NODE_TYPES } from '../lib/graph-constants';
 import { dimColor } from '../lib/graph-utils';
 import { getNodeDisplayLabel } from '../lib/node-display';
@@ -197,7 +198,10 @@ function groupInitialPositions(
 
 export interface UseGraphReturn {
   graph: Graph;
-  loadGraphData: (data: ExportedGraph) => void;
+  loadGraphData: (data: ExportedGraph, opts?: {
+    savedPositions?: Record<string, GraphNodePosition>;
+    preserveExisting?: boolean;
+  }) => void;
   mergeGraphDelta: (delta: {
     nodes: ExportedNode[];
     edges: ExportedEdge[];
@@ -220,9 +224,24 @@ export function useGraph(): UseGraphReturn {
     reachableOnlyCacheRef.current = null;
   }, []);
 
-  const loadGraphData = useCallback((data: ExportedGraph) => {
+  const loadGraphData = useCallback((data: ExportedGraph, opts: {
+    savedPositions?: Record<string, GraphNodePosition>;
+    preserveExisting?: boolean;
+  } = {}) => {
     if (!data || !data.nodes) return;
     reachableOnlyCacheRef.current = null;
+
+    const existingPositions = new Map<string, { x: number; y: number; fixed?: boolean }>();
+    if (opts.preserveExisting !== false) {
+      graph.forEachNode((id, attrs) => {
+        const x = attrs.x as number;
+        const y = attrs.y as number;
+        if (typeof x === 'number' && typeof y === 'number') {
+          existingPositions.set(id, { x, y, fixed: attrs.fixed as boolean | undefined });
+        }
+      });
+    }
+
     graph.clear();
 
     const flatNodes = data.nodes.map(flattenNode);
@@ -231,11 +250,14 @@ export function useGraph(): UseGraphReturn {
 
     flatNodes.forEach(node => {
       const nodeType = node.type || 'host';
-      const pos = positions[node.id] || { x: Math.random() * 10, y: Math.random() * 10 };
+      const existing = existingPositions.get(node.id);
+      const saved = opts.savedPositions?.[node.id];
+      const pos = existing || saved || positions[node.id] || { x: Math.random() * 10, y: Math.random() * 10 };
       graph.addNode(node.id, {
         label: getNodeDisplayLabel(node as Record<string, unknown>, node.id),
         x: pos.x,
         y: pos.y,
+        fixed: existing?.fixed || !!saved,
         size: NODE_BASE_SIZES[nodeType] || 5,
         color: NODE_COLORS[nodeType] || '#888',
         nodeType,

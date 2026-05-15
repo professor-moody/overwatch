@@ -54,8 +54,9 @@ export function useCommunityHulls(
     const canvasLayers = (renderer as unknown as { getCanvases: () => Record<string, HTMLCanvasElement> }).getCanvases?.();
     if (!canvasLayers) return;
 
-    // Use the "hovers" canvas which draws above edges but below labels, or fall back to first canvas
-    const canvas = canvasLayers['hovers'] || canvasLayers['edges'] || Object.values(canvasLayers)[0];
+    // Draw only on Sigma's overlay canvas. Falling back to the only
+    // available canvas can clear the main graph layer in some renderers.
+    const canvas = canvasLayers['hovers'];
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;

@@ -137,3 +137,20 @@ body {
   background: rgba(91,141,239,0.2);
   border-color: var(--color-accent);
 }
+
+.sigma-container,
+.sigma-container canvas {
+  cursor: default;
+}
+
+.sigma-container.node-grabbable,
+.sigma-container.node-grabbable canvas {
+  cursor: grab;
+}
+
+.sigma-container.node-grabbed,
+.sigma-container.node-grabbed canvas,
+.sigma-container.dragging,
+.sigma-container.dragging canvas {
+  cursor: grabbing;
+}

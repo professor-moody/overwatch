@@ -3,14 +3,14 @@ import type { PanelId } from '../components/layout/OperatorLayout';
 
 const PANEL_KEYS: Record<string, PanelId> = {
   '1': 'overview',
-  '2': 'campaigns',
-  '3': 'agents',
-  '4': 'sessions',
-  '5': 'actions',
-  '6': 'frontier',
-  '7': 'activity',
-  '8': 'evidence',
-  '9': 'engagements',
+  '2': 'frontier',
+  '3': 'actions',
+  '4': 'agents',
+  '5': 'sessions',
+  '6': 'campaigns',
+  '7': 'evidence',
+  '8': 'credentials',
+  '9': 'paths',
   '0': 'settings',
 };
 
@@ -74,9 +74,10 @@ export function useKeyboardShortcuts({
 }
 
 export const SHORTCUT_HELP: { key: string; desc: string }[] = [
-  { key: '1-0', desc: 'Switch panels (Overview through Settings)' },
-  { key: 'g', desc: 'Open Graph Explorer' },
-  { key: 'e', desc: 'Evidence panel' },
+  { key: '1-0', desc: 'Routes: Overview, Frontier, Actions, Agents, Sessions, Campaigns, Evidence, Credentials, Paths, Settings' },
+  { key: 'g', desc: 'Open Graph workspace' },
+  { key: 'e', desc: 'Open Evidence route' },
+  { key: 'F / Space', desc: 'Graph route: fit view / pause or resume layout' },
   { key: '?', desc: 'Toggle this help' },
   { key: 'Esc', desc: 'Close overlays / forms' },
 ];

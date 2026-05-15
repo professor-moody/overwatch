@@ -3,40 +3,34 @@
 // ============================================================
 
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { FOCUS_PRESETS } from '../../lib/graph-constants';
 import { cn } from '../../lib/utils';
+import type { GraphLayerState } from '../../lib/graph-layers';
 
 interface GraphToolbarProps {
   nodeCount: number;
   edgeCount: number;
   layoutRunning: boolean;
+  layoutMode: 'auto' | 'manual' | 'paused';
   graphMode: string;
   labelDensity: string;
   activeFocusPreset: string | null;
-  // Overlay toggles
-  attackPathActive: boolean;
-  credFlowActive: boolean;
-  communityHullsActive: boolean;
-  showEdgeLabels: boolean;
-  hideOrphans: boolean;
-  hideReachableOnly: boolean;
+  layers: GraphLayerState[];
   // Actions
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFit: () => void;
   onToggleLayout: () => void;
+  onResumeLayout: () => void;
   onReset: () => void;
+  onResetPositions: () => void;
   onExportPNG: () => void;
   onExportSVG: () => void;
   onSetGraphMode: (mode: string) => void;
   onSetLabelDensity: (density: string) => void;
   onSetFocusPreset: (preset: string) => void;
-  onToggleAttackPath: () => void;
-  onToggleCredFlow: () => void;
-  onToggleCommunityHulls: () => void;
-  onToggleEdgeLabels: () => void;
-  onToggleHideOrphans: () => void;
-  onToggleHideReachableOnly: () => void;
+  onToggleLayer: (id: GraphLayerState['id']) => void;
   onToggleShortcuts: () => void;
   // Edit mode
   editMode?: boolean;
@@ -46,13 +40,12 @@ interface GraphToolbarProps {
 }
 
 export function GraphToolbar({
-  nodeCount, edgeCount, layoutRunning, graphMode, labelDensity, activeFocusPreset,
-  attackPathActive, credFlowActive, communityHullsActive, showEdgeLabels, hideOrphans, hideReachableOnly,
-  onZoomIn, onZoomOut, onFit, onToggleLayout, onReset,
+  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, activeFocusPreset,
+  layers,
+  onZoomIn, onZoomOut, onFit, onToggleLayout, onResumeLayout, onReset, onResetPositions,
   onExportPNG, onExportSVG,
   onSetGraphMode, onSetLabelDensity, onSetFocusPreset,
-  onToggleAttackPath, onToggleCredFlow, onToggleCommunityHulls, onToggleEdgeLabels,
-  onToggleHideOrphans, onToggleHideReachableOnly,
+  onToggleLayer,
   onToggleShortcuts,
   editMode, onToggleEditMode, onUndo, undoCount,
 }: GraphToolbarProps) {
@@ -62,10 +55,10 @@ export function GraphToolbar({
   return (
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50">
       {/* Back */}
-      <a href="/" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+      <Link to="/overview" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         Dashboard
-      </a>
+      </Link>
 
       <span className="text-accent font-semibold">◆ OVERWATCH</span>
       <span className="font-medium">Graph Explorer</span>
@@ -78,8 +71,11 @@ export function GraphToolbar({
         <ToolBtn onClick={onZoomOut} title="Zoom out">−</ToolBtn>
         <ToolBtn onClick={onFit} title="Fit to screen">Fit</ToolBtn>
         <Sep />
-        <ToolBtn onClick={onToggleLayout} title="Toggle layout" active={layoutRunning}>Layout</ToolBtn>
-        <ToolBtn onClick={onReset} title="Reset filters">Reset</ToolBtn>
+        <LayoutStatus mode={layoutMode} running={layoutRunning} />
+        {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout">Resume</ToolBtn>}
+        <ToolBtn onClick={onToggleLayout} title="Pause or resume layout" active={layoutRunning}>Layout</ToolBtn>
+        <ToolBtn onClick={onReset} title="Reset filters and focus">Reset</ToolBtn>
+        <ToolBtn onClick={onResetPositions} title="Clear saved positions and relayout">Reset positions</ToolBtn>
         <Sep />
 
         {/* Export dropdown */}
@@ -98,12 +94,9 @@ export function GraphToolbar({
           <ToolBtn onClick={() => { setShowLayers(!showLayers); setShowExport(false); }} title="Layers">Layers ▾</ToolBtn>
           {showLayers && (
             <Dropdown onClose={() => setShowLayers(false)} wide>
-              <DropBtn onClick={onToggleAttackPath} active={attackPathActive}>Attack Path</DropBtn>
-              <DropBtn onClick={onToggleCredFlow} active={credFlowActive}>Credential Flow</DropBtn>
-              <DropBtn onClick={onToggleCommunityHulls} active={communityHullsActive}>Community Hulls</DropBtn>
-              <DropBtn onClick={onToggleEdgeLabels} active={showEdgeLabels}>Edge Labels</DropBtn>
-              <DropBtn onClick={onToggleHideOrphans} active={hideOrphans}>Hide Orphans</DropBtn>
-              <DropBtn onClick={onToggleHideReachableOnly} active={hideReachableOnly}>Hide Reachable-Only</DropBtn>
+              {layers.map(layer => (
+                <LayerBtn key={layer.id} layer={layer} onToggle={() => onToggleLayer(layer.id)} />
+              ))}
             </Dropdown>
           )}
         </div>
@@ -176,6 +169,20 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
+function LayoutStatus({ mode, running }: { mode: GraphToolbarProps['layoutMode']; running: boolean }) {
+  const label = mode === 'manual' ? 'Manual layout' : mode === 'paused' ? 'Paused' : 'Auto layout';
+  return (
+    <span className={cn(
+      'px-2 py-1 rounded text-[11px] border',
+      mode === 'manual' && 'bg-warning/10 text-warning border-warning/20',
+      mode === 'paused' && 'bg-elevated text-muted-foreground border-border',
+      mode === 'auto' && 'bg-success/10 text-success border-success/20',
+    )}>
+      {label}{running && mode === 'auto' ? ' · running' : ''}
+    </span>
+  );
+}
+
 function Dropdown({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <>
@@ -190,16 +197,38 @@ function Dropdown({ children, onClose, wide }: { children: React.ReactNode; onCl
   );
 }
 
-function DropBtn({ children, onClick, active }: { children: React.ReactNode; onClick: () => void; active?: boolean }) {
+function LayerBtn({ layer, onToggle }: { layer: GraphLayerState; onToggle: () => void }) {
+  return (
+    <button
+      onClick={layer.available ? onToggle : undefined}
+      disabled={!layer.available}
+      title={layer.available ? layer.description : layer.disabledReason}
+      className={cn(
+        'w-full px-3 py-1.5 text-left text-xs transition-colors flex items-start gap-2',
+        layer.available ? 'hover:bg-hover' : 'opacity-45 cursor-not-allowed',
+        layer.enabled && 'text-accent',
+      )}
+    >
+      <span className={cn(
+        'mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0',
+        layer.enabled ? 'bg-accent' : 'bg-muted',
+      )} />
+      <span className="min-w-0">
+        <span className="block text-foreground">{layer.label}</span>
+        <span className="block text-[10px] text-muted-foreground leading-snug">
+          {layer.available ? layer.description : layer.disabledReason}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function DropBtn({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className={cn(
-        'w-full px-3 py-1.5 text-left text-xs hover:bg-hover transition-colors flex items-center gap-2',
-        active && 'text-accent',
-      )}
+      className="w-full px-3 py-1.5 text-left text-xs hover:bg-hover transition-colors"
     >
-      {active && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
       {children}
     </button>
   );

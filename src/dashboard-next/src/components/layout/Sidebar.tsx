@@ -14,7 +14,9 @@ import {
   ShieldAlert,
   Key,
   FlaskConical,
+  Network,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '../../lib/utils';
 import { useEngagementStore } from '../../stores/engagement-store';
 import type { PanelId } from './OperatorLayout';
@@ -24,28 +26,49 @@ interface SidebarProps {
   onPanelChange: (panel: PanelId) => void;
 }
 
-const NAV_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'overview', label: 'Overview', icon: LayoutGrid },
-  { id: 'engagements', label: 'Engagements', icon: Briefcase },
-  { id: 'campaigns', label: 'Campaigns', icon: Bookmark },
-  { id: 'agents', label: 'Agents', icon: User },
-  { id: 'sessions', label: 'Sessions', icon: Terminal },
-  { id: 'actions', label: 'Actions', icon: Clock },
-  { id: 'frontier', label: 'Frontier', icon: Crosshair },
-  { id: 'activity', label: 'Activity', icon: Activity },
-  { id: 'evidence', label: 'Evidence', icon: FileText },
-  { id: 'identity', label: 'Identity', icon: KeyRound },
-  { id: 'credentials', label: 'Credentials', icon: Key },
-  { id: 'paths', label: 'Attack Paths', icon: Route },
-  { id: 'findings', label: 'Findings', icon: ShieldAlert },
-];
+type SidebarItem = {
+  id?: PanelId;
+  path?: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+};
 
-const BOTTOM_ITEMS: { id: PanelId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'smoke', label: 'Smoke', icon: FlaskConical },
-  { id: 'settings', label: 'Settings', icon: Settings },
+const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
+  {
+    label: 'Operate',
+    items: [
+      { id: 'overview', label: 'Overview', icon: LayoutGrid },
+      { id: 'frontier', label: 'Frontier', icon: Crosshair },
+      { id: 'actions', label: 'Actions', icon: Clock },
+      { id: 'agents', label: 'Agents', icon: User },
+      { id: 'sessions', label: 'Sessions', icon: Terminal },
+      { id: 'campaigns', label: 'Campaigns', icon: Bookmark },
+    ],
+  },
+  {
+    label: 'Evidence',
+    items: [
+      { path: '/graph', label: 'Graph', icon: Network },
+      { id: 'evidence', label: 'Evidence', icon: FileText },
+      { id: 'identity', label: 'Identity', icon: KeyRound },
+      { id: 'credentials', label: 'Credentials', icon: Key },
+      { id: 'paths', label: 'Attack Paths', icon: Route },
+      { id: 'findings', label: 'Findings', icon: ShieldAlert },
+      { id: 'activity', label: 'Activity', icon: Activity },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [
+      { id: 'engagements', label: 'Engagements', icon: Briefcase },
+      { id: 'smoke', label: 'Smoke', icon: FlaskConical },
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
 
 export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
+  const navigate = useNavigate();
   const runningAgents = useEngagementStore((s) => s.agents.filter(a => a.status === 'running').length);
   const pendingActions = useEngagementStore((s) => s.pendingActions.length);
   const frontierCount = useEngagementStore((s) => s.frontier.length);
@@ -68,25 +91,26 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
 
   return (
     <nav className="fixed left-0 top-12 bottom-0 w-16 bg-surface border-r border-border flex flex-col items-center py-2 z-40">
-      <div className="flex flex-col gap-1 flex-1">
-        {NAV_ITEMS.map((item) => (
-          <SidebarButton
-            key={item.id}
-            item={item}
-            active={activePanel === item.id}
-            badge={badges[item.id] || 0}
-            onClick={() => onPanelChange(item.id)}
-          />
-        ))}
-      </div>
-      <div className="flex flex-col gap-1 mb-2">
-        {BOTTOM_ITEMS.map((item) => (
-          <SidebarButton
-            key={item.id}
-            item={item}
-            active={activePanel === item.id}
-            onClick={() => onPanelChange(item.id)}
-          />
+      <div className="flex flex-col gap-2 flex-1">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="flex flex-col items-center gap-1">
+            <div className="text-[8px] uppercase tracking-[0.12em] text-muted h-3">{group.label.slice(0, 3)}</div>
+            {group.items.map((item) => {
+              const active = item.id ? activePanel === item.id : false;
+              return (
+                <SidebarButton
+                  key={item.id || item.path}
+                  item={item}
+                  active={active}
+                  badge={item.id ? badges[item.id] || 0 : 0}
+                  onClick={() => {
+                    if (item.path) navigate(item.path);
+                    else if (item.id) onPanelChange(item.id);
+                  }}
+                />
+              );
+            })}
+          </div>
         ))}
       </div>
     </nav>
@@ -99,7 +123,7 @@ function SidebarButton({
   badge,
   onClick,
 }: {
-  item: { id: string; label: string; icon: React.ComponentType<{ className?: string }> };
+  item: SidebarItem;
   active: boolean;
   badge?: number;
   onClick: () => void;
@@ -108,7 +132,7 @@ function SidebarButton({
   return (
     <button
       className={cn(
-        'w-12 h-12 flex flex-col items-center justify-center rounded-md text-muted-foreground transition-colors relative',
+        'group w-10 h-9 flex items-center justify-center rounded-md text-muted-foreground transition-colors relative',
         'hover:text-foreground hover:bg-hover',
         active && 'text-accent bg-accent-dim',
       )}
@@ -116,9 +140,12 @@ function SidebarButton({
       title={item.label}
     >
       <Icon className="w-4 h-4" />
-      <span className="text-[9px] mt-0.5 leading-none">{item.label}</span>
+      {active && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-accent" />}
+      <span className="pointer-events-none absolute left-12 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-elevated border border-border px-2 py-1 text-[11px] text-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        {item.label}
+      </span>
       {badge != null && badge > 0 && (
-        <span className="absolute top-1 right-1 min-w-[14px] h-[14px] flex items-center justify-center rounded-full bg-accent text-background text-[8px] font-bold leading-none px-0.5">
+        <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] flex items-center justify-center rounded-full bg-accent text-background text-[8px] font-bold leading-none px-0.5">
           {badge > 99 ? '99+' : badge}
         </span>
       )}

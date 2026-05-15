@@ -1,29 +1,22 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
-import { parseHash } from '../../hooks/useNavigation';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { getEvidenceChains, getPaths } from '../../lib/api';
 import type { EvidenceChainResponse, AttackPath, Objective } from '../../lib/types';
+import { PageHeader, PanelSection } from '../shared/primitives';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
-  const location = useLocation();
+  const [searchParams] = useSearchParams();
 
-  // Deep-link: read item from hash as pre-filled search
-  const [initialQuery, setInitialQuery] = useState('');
-  const [initialObjective, setInitialObjective] = useState('');
-
-  useEffect(() => {
-    const target = parseHash(location.hash);
-    if (target?.item) setInitialQuery(target.item);
-    if (target?.subview) setInitialObjective(target.subview);
-  }, [location.hash]);
+  const initialQuery = searchParams.get('node') || '';
+  const initialObjective = searchParams.get('objective') || '';
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Evidence</h2>
+      <PageHeader title="Evidence" />
       <EvidenceChainSearch initialQuery={initialQuery} />
       <AttackPathViewer objectives={objectives} initialObjective={initialObjective} />
     </div>
@@ -60,8 +53,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   }, [initialQuery]);
 
   return (
-    <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
-      <h3 className="text-sm font-medium">Evidence Chain</h3>
+    <PanelSection title="Evidence Chain" className="space-y-3">
       <p className="text-xs text-muted-foreground">
         Search a graph node ID (e.g. <span className="font-mono">cred-aws-power</span>, <span className="font-mono">host-jumpbox</span>) to see the actions that produced or touched it — the tool name, command, output preview, and timestamp for each step. Useful for "how did we end up with this credential?" or "what did we run against this host?".
       </p>
@@ -143,7 +135,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
           {data.chains.length === 0 && <p className="text-xs text-muted-foreground">No evidence chain entries</p>}
         </div>
       )}
-    </section>
+    </PanelSection>
   );
 }
 

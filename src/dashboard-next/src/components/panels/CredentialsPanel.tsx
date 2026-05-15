@@ -3,64 +3,17 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import type { ExportedNode } from '../../lib/types';
+import {
+  getCredentialKindBadgeClass,
+  getCredentialKindLabel,
+  getCredentialMaterialKind,
+  getCredentialStatusClass,
+  isCredentialReachable,
+} from '../../lib/credential-display';
+import { DataRow, FilterBar, PageHeader, StatusPill } from '../shared/primitives';
 
 type SortMode = 'recent' | 'kind' | 'status';
 type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
-
-const KIND_LABELS: Record<string, string> = {
-  plaintext_password: 'Password',
-  ntlm_hash: 'NTLM',
-  ntlmv1_challenge: 'NTLMv1',
-  ntlmv2_challenge: 'NTLMv2',
-  kerberos_tgt: 'Kerberos TGT',
-  kerberos_tgs: 'Kerberos TGS',
-  kerberos_asrep: 'Kerberos ASREPRoast',
-  aes256_key: 'AES-256',
-  certificate: 'Certificate',
-  token: 'Token',
-  ssh_key: 'SSH Key',
-  oidc_id_token: 'OIDC ID Token',
-  oidc_access_token: 'OIDC Access Token',
-  oidc_refresh_token: 'OIDC Refresh Token',
-  saml_assertion: 'SAML Assertion',
-  oauth_client_secret: 'OAuth Secret',
-  pat: 'PAT',
-  app_password: 'App Password',
-  session_cookie: 'Session Cookie',
-};
-
-function kindLabel(kind: string | undefined): string {
-  return kind ? (KIND_LABELS[kind] ?? kind) : 'Unknown';
-}
-
-function statusColor(status: string | undefined): string {
-  switch (status) {
-    case 'active': return 'text-success bg-success/10';
-    case 'stale': return 'text-warning bg-warning/10';
-    case 'expired': return 'text-muted-foreground bg-elevated';
-    case 'rotated': return 'text-destructive bg-destructive/10';
-    default: return 'text-muted-foreground bg-elevated';
-  }
-}
-
-function kindBadgeColor(kind: string | undefined): string {
-  if (!kind) return 'bg-elevated text-muted-foreground';
-  if (kind.includes('oidc') || kind.includes('saml') || kind.includes('oauth') || kind === 'pat') {
-    return 'bg-accent-dim text-accent';
-  }
-  if (kind.includes('kerberos') || kind === 'aes256_key' || kind === 'certificate') {
-    return 'bg-purple-dim text-purple';
-  }
-  if (kind === 'ssh_key') return 'bg-elevated text-foreground';
-  return 'bg-elevated text-muted-foreground';
-}
-
-function isReachable(cred: ExportedNode, edges: { source: string; type: string }[]): boolean {
-  return edges.some(
-    e => e.source === cred.id &&
-      ['VALID_FOR_APP', 'ASSUMES_ROLE', 'VALID_ON', 'AUTHENTICATES_TO'].includes(e.type)
-  );
-}
 
 export function CredentialsPanel() {
   const graph = useEngagementStore((s) => s.graph);
@@ -102,8 +55,8 @@ export function CredentialsPanel() {
       });
     } else if (sortMode === 'kind') {
       sorted.sort((a, b) => {
-        const ka = kindLabel(a.cred_material_kind as string | undefined);
-        const kb = kindLabel(b.cred_material_kind as string | undefined);
+        const ka = getCredentialKindLabel(a);
+        const kb = getCredentialKindLabel(b);
         return ka.localeCompare(kb);
       });
     } else if (sortMode === 'status') {
@@ -121,14 +74,14 @@ export function CredentialsPanel() {
   const kindCounts = useMemo(() => {
     const map: Record<string, number> = {};
     for (const c of creds) {
-      const k = (c.cred_material_kind as string | undefined) ?? 'unknown';
+      const k = getCredentialMaterialKind(c);
       map[k] = (map[k] ?? 0) + 1;
     }
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [creds]);
 
   const activeCreds = creds.filter(c => (c.credential_status as string | undefined) === 'active').length;
-  const reachableCreds = creds.filter(c => isReachable(c, graph.edges as { source: string; type: string }[])).length;
+  const reachableCreds = creds.filter(c => isCredentialReachable(c, graph.edges)).length;
 
   const now = Date.now();
   const expiredTokenCreds = useMemo(() => creds.filter(c => {
@@ -158,14 +111,10 @@ export function CredentialsPanel() {
       )}
 
       {/* Header + summary bar */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          Credentials
-          <span className="text-muted-foreground font-normal text-sm ml-2">
-            ({creds.length} total · {activeCreds} active · {reachableCreds} reachable)
-          </span>
-        </h2>
-      </div>
+      <PageHeader
+        title="Credentials"
+        meta={`(${creds.length} total · ${activeCreds} active · ${reachableCreds} reachable)`}
+      />
 
       {/* Kind breakdown chips */}
       {kindCounts.length > 0 && (
@@ -176,18 +125,18 @@ export function CredentialsPanel() {
               onClick={() => setSearch(kind)}
               className={cn(
                 'text-[10px] px-2 py-0.5 rounded-full border transition-colors',
-                kindBadgeColor(kind),
+                getCredentialKindBadgeClass(kind),
                 'border-transparent hover:border-border'
               )}
             >
-              {kindLabel(kind)} <span className="opacity-60">{count}</span>
+              {getCredentialKindLabel(kind)} <span className="opacity-60">{count}</span>
             </button>
           ))}
         </div>
       )}
 
       {/* Filters */}
-      <div className="flex gap-2 flex-wrap">
+      <FilterBar>
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -213,7 +162,7 @@ export function CredentialsPanel() {
           <option value="kind">By kind</option>
           <option value="status">By status</option>
         </select>
-      </div>
+      </FilterBar>
 
       {/* List */}
       {filtered.length === 0 ? (
@@ -225,32 +174,27 @@ export function CredentialsPanel() {
       ) : (
         <div className="space-y-2">
           {filtered.map(cred => {
-            const kind = cred.cred_material_kind as string | undefined;
+            const kind = getCredentialMaterialKind(cred);
             const status = cred.credential_status as string | undefined;
-            const reachable = isReachable(cred, graph.edges as { source: string; type: string }[]);
+            const reachable = isCredentialReachable(cred, graph.edges);
             const isExpanded = expandedId === cred.id;
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;
 
             return (
-              <div
+              <DataRow
                 key={cred.id}
                 className={cn(
-                  'bg-surface border rounded-lg p-3 transition-colors',
                   reachable ? 'border-warning/40' : 'border-border'
                 )}
               >
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Kind badge */}
-                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', kindBadgeColor(kind))}>
-                    {kindLabel(kind)}
-                  </span>
+                  <StatusPill className={getCredentialKindBadgeClass(kind)}>{getCredentialKindLabel(kind)}</StatusPill>
 
                   {/* Status badge */}
                   {status && (
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded', statusColor(status))}>
-                      {status}
-                    </span>
+                    <StatusPill className={getCredentialStatusClass(status)}>{status}</StatusPill>
                   )}
 
                   {/* Reachable indicator */}
@@ -374,7 +318,7 @@ export function CredentialsPanel() {
                     )}
                   </div>
                 )}
-              </div>
+              </DataRow>
             );
           })}
         </div>

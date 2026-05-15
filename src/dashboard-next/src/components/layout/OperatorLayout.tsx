@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { Breadcrumb } from './Breadcrumb';
 import { useWs } from '../../providers/ws-provider';
 import { useKeyboardShortcuts, SHORTCUT_HELP } from '../../hooks/useKeyboardShortcuts';
-import { parseHash, buildHash } from '../../hooks/useNavigation';
+import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
 import { OverviewPanel } from '../panels/OverviewPanel';
 import { CampaignsPanel } from '../panels/CampaignsPanel';
 import { AgentsPanel } from '../panels/AgentsPanel';
@@ -59,27 +59,32 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
 };
 
 export function OperatorLayout() {
-  const [activePanel, setActivePanel] = useState<PanelId>('overview');
+  const { panelId } = useParams();
+  const activePanel: PanelId = isPanelId(panelId) ? panelId : 'overview';
   const [selectedItem, setSelectedItem] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Read URL hash on mount and on hash change
+  // Temporary compatibility shim for old #panel=... deep links.
   useEffect(() => {
     const target = parseHash(location.hash);
     if (target) {
-      setActivePanel(target.panel);
-      setSelectedItem(target.item);
+      navigate(buildPanelPath(target), { replace: true });
+      return;
     }
-  }, [location.hash]);
+    if (!isPanelId(panelId)) {
+      navigate('/overview', { replace: true });
+      return;
+    }
+    const params = new URLSearchParams(location.search);
+    setSelectedItem(params.get('node') || params.get('item') || params.get('objective') || undefined);
+  }, [location.hash, location.search, navigate, panelId]);
 
-  // Write hash when panel changes
   const handlePanelChange = useCallback((panel: PanelId) => {
-    setActivePanel(panel);
     setSelectedItem(undefined);
-    window.history.replaceState(null, '', `/${buildHash({ panel })}`);
-  }, []);
+    navigate(buildPanelPath({ panel }));
+  }, [navigate]);
 
   useKeyboardShortcuts({
     onPanelChange: handlePanelChange,

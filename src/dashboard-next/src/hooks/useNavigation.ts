@@ -1,15 +1,52 @@
 // ============================================================
-// useNavigation — cross-panel deep linking with URL hash state
+// useNavigation — cross-panel deep linking with route state
 // ============================================================
 
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PanelId } from '../components/layout/OperatorLayout';
 
+export const PANEL_IDS = [
+  'overview',
+  'campaigns',
+  'agents',
+  'sessions',
+  'actions',
+  'frontier',
+  'activity',
+  'evidence',
+  'identity',
+  'credentials',
+  'paths',
+  'findings',
+  'engagements',
+  'smoke',
+  'settings',
+] as const satisfies PanelId[];
+
 export interface NavigationTarget {
   panel: PanelId;
   item?: string;
   subview?: string;
+}
+
+export function isPanelId(value: string | undefined): value is PanelId {
+  return !!value && (PANEL_IDS as readonly string[]).includes(value);
+}
+
+export function buildPanelPath(target: NavigationTarget): string {
+  const params = new URLSearchParams();
+  if (target.item) {
+    if (target.panel === 'frontier') params.set('node', target.item);
+    else if (target.panel === 'evidence') params.set('node', target.item);
+    else params.set('item', target.item);
+  }
+  if (target.subview) {
+    if (target.panel === 'evidence') params.set('objective', target.subview);
+    else params.set('subview', target.subview);
+  }
+  const q = params.toString();
+  return `/${target.panel}${q ? `?${q}` : ''}`;
 }
 
 /**
@@ -20,9 +57,9 @@ export function parseHash(hash: string): NavigationTarget | null {
   if (!hash || hash === '#') return null;
   const params = new URLSearchParams(hash.replace(/^#/, ''));
   const panel = params.get('panel');
-  if (!panel) return null;
+  if (!isPanelId(panel || undefined)) return null;
   return {
-    panel: panel as PanelId,
+    panel,
     item: params.get('item') || undefined,
     subview: params.get('subview') || undefined,
   };
@@ -52,10 +89,13 @@ export function useNavigation() {
     navigate(`/graph?${params.toString()}`);
   }, [navigate]);
 
+  const navigateToGraphFilter = useCallback((filter: string) => {
+    const params = new URLSearchParams({ filter });
+    navigate(`/graph?${params.toString()}`);
+  }, [navigate]);
+
   const navigateToPanel = useCallback((panel: PanelId, item?: string, subview?: string) => {
-    const target: NavigationTarget = { panel, item, subview };
-    // Navigate to root with hash state
-    navigate(`/${buildHash(target)}`);
+    navigate(buildPanelPath({ panel, item, subview }));
   }, [navigate]);
 
   const navigateToEvidence = useCallback((nodeId: string) => {
@@ -80,6 +120,7 @@ export function useNavigation() {
 
   return {
     navigateToGraph,
+    navigateToGraphFilter,
     navigateToPanel,
     navigateToEvidence,
     navigateToEvidenceObjective,

@@ -2,7 +2,7 @@
 // GraphContainer — sigma.js mount point + resize observer
 // ============================================================
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import type Sigma from 'sigma';
 
 interface GraphContainerProps {
@@ -12,14 +12,11 @@ interface GraphContainerProps {
 
 export function GraphContainer({ onMount, rendererRef }: GraphContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mountedRef = useRef(false);
 
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || mountedRef.current) return;
-    mountedRef.current = true;
-    onMount(el);
-  }, [onMount]);
+  const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el;
+    if (el && !rendererRef.current) onMount(el);
+  }, [onMount, rendererRef]);
 
   // ResizeObserver for responsive sigma
   useEffect(() => {
@@ -35,7 +32,7 @@ export function GraphContainer({ onMount, rendererRef }: GraphContainerProps) {
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       className="absolute inset-0"
       style={{ background: '#080a0f' }}
     />

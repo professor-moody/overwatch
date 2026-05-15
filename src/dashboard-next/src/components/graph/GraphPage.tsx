@@ -2,7 +2,7 @@
 // GraphPage — Full Graph Explorer (Phase 3)
 // ============================================================
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { NODE_COLORS, FOCUS_PRESETS } from '../../lib/graph-constants';
@@ -26,6 +26,8 @@ import { exportScreenshot, exportSVG } from './GraphExport';
 import { NodeContextMenu, type ContextMenuState } from './NodeContextMenu';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
+import { buildGraphLayerStates, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
+import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 
 export function GraphPage() {
   // ---- Graph data layer ----
@@ -55,6 +57,13 @@ export function GraphPage() {
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
+  const [renderIssue, setRenderIssue] = useState<string | null>(null);
+  const [layoutMode, setLayoutMode] = useState<'auto' | 'manual' | 'paused'>('auto');
+  const [showManualHint, setShowManualHint] = useState(true);
+  const [uiRevision, setUiRevision] = useState(0);
+  const userPinnedLayoutRef = useRef(false);
+  const engagementId = useEngagementStore(s => s.engagement?.id || 'default');
+  const forceGraphUi = useCallback(() => setUiRevision(v => v + 1), []);
 
   // ---- Edit mode ----
   const [editMode, setEditMode] = useState(false);
@@ -84,6 +93,24 @@ export function GraphPage() {
       rendererRef,
       stateRef,
       refresh,
+      onUserLayoutChange: () => {
+        if (!userPinnedLayoutRef.current) {
+          toast({
+            type: 'info',
+            title: 'Manual layout',
+            message: 'Node positions will stay pinned in this browser until reset.',
+          });
+        }
+        userPinnedLayoutRef.current = true;
+        setLayoutMode('manual');
+        setShowManualHint(false);
+        layout.stop();
+        setLayoutRunning(false);
+        forceGraphUi();
+      },
+      onNodePositionCommit: (nodeId, position) => {
+        saveGraphNodePosition(engagementId, nodeId, position);
+      },
       onNodeSelect: setSelectedNodeId,
       onNodeFocus: (nodeId, hops) => {
         // Zoom to the focus neighborhood
@@ -96,11 +123,13 @@ export function GraphPage() {
   const storeGraph = useEngagementStore(s => s.graph);
   const graphVersion = useEngagementStore(s => s.graphVersion);
   const lastDelta = useEngagementStore(s => s.lastDelta);
-  const loadedVersionRef = useRef(0);
+  const loadedVersionRef = useRef(-1);
+  const loadedEngagementRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (graphVersion === loadedVersionRef.current) return;
+    if (graphVersion === loadedVersionRef.current && engagementId === loadedEngagementRef.current) return;
     loadedVersionRef.current = graphVersion;
+    loadedEngagementRef.current = engagementId;
 
     if (lastDelta && graph.order > 0) {
       // Incremental delta merge
@@ -109,22 +138,59 @@ export function GraphPage() {
       setEdgeCount(graph.size);
       // Brief layout burst for new nodes
       if ((lastDelta.nodes?.length || 0) > 0) {
-        layout.start();
-        setLayoutRunning(true);
+        if (!userPinnedLayoutRef.current) {
+          layout.start();
+          setLayoutRunning(true);
+        }
         setTimeout(() => { layout.stop(); setLayoutRunning(false); }, 1500);
       }
       refresh();
     } else if (storeGraph && storeGraph.nodes && storeGraph.nodes.length > 0) {
       // Full reload
-      loadGraphData(storeGraph);
+      const savedPositions = loadGraphPositions(engagementId);
+      const hasSavedPositions = Object.keys(savedPositions).length > 0;
+      if (hasSavedPositions) {
+        userPinnedLayoutRef.current = true;
+        setLayoutMode('manual');
+        setShowManualHint(false);
+      }
+      loadGraphData(storeGraph, { savedPositions });
       setNodeCount(graph.order);
       setEdgeCount(graph.size);
+      setRenderIssue(null);
       setTimeout(() => {
-        layout.start();
-        setLayoutRunning(true);
+        refresh();
+        if (!userPinnedLayoutRef.current) {
+          zoomToFit();
+          layout.start();
+          setLayoutRunning(true);
+        }
       }, 50);
     }
-  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh]);
+  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh, zoomToFit, engagementId]);
+
+  useEffect(() => {
+    if (!storeGraph?.nodes?.length) {
+      setRenderIssue(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const renderer = rendererRef.current;
+      if (!renderer) {
+        setRenderIssue('Graph renderer is not mounted.');
+        return;
+      }
+      if (graph.order === 0) {
+        setRenderIssue('Graph data is loaded, but no renderable nodes were added.');
+        return;
+      }
+      setRenderIssue(null);
+      refresh();
+    }, 700);
+
+    return () => clearTimeout(timer);
+  }, [graph, graphVersion, refresh, rendererRef, storeGraph?.nodes?.length]);
 
   // Track layout running state; detect running→stopped transitions so the
   // zoom-to-node effect can wait until FA2 has positioned nodes.
@@ -192,8 +258,51 @@ export function GraphPage() {
     clearSelection();
     clearPathHighlight();
     exitNeighborhoodFocus();
+    refresh();
     zoomToFit();
-  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, zoomToFit]);
+    forceGraphUi();
+  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, refresh, zoomToFit, forceGraphUi]);
+
+  const handleToggleLayout = useCallback(() => {
+    if (layout.running) {
+      layout.stop();
+      setLayoutRunning(false);
+      setLayoutMode('paused');
+      forceGraphUi();
+      return;
+    }
+    userPinnedLayoutRef.current = false;
+    setLayoutMode('auto');
+    layout.start();
+    setLayoutRunning(true);
+    forceGraphUi();
+  }, [layout, forceGraphUi]);
+
+  const handleResumeLayout = useCallback(() => {
+    userPinnedLayoutRef.current = false;
+    setLayoutMode('auto');
+    layout.start();
+    setLayoutRunning(true);
+    forceGraphUi();
+  }, [layout, forceGraphUi]);
+
+  const handleResetPositions = useCallback(() => {
+    clearGraphPositions(engagementId);
+    userPinnedLayoutRef.current = false;
+    setLayoutMode('auto');
+    setShowManualHint(true);
+    if (storeGraph?.nodes?.length) {
+      loadGraphData(storeGraph, { savedPositions: {}, preserveExisting: false });
+    }
+    setTimeout(() => {
+      refresh();
+      zoomToFit();
+      layout.start();
+      setLayoutRunning(true);
+    }, 50);
+    toast({ type: 'info', title: 'Positions reset', message: 'Auto layout is running again.' });
+    forceGraphUi();
+  }, [engagementId, storeGraph, loadGraphData, refresh, zoomToFit, layout, toast, forceGraphUi]);
 
   const handleSetGraphMode = useCallback((mode: string) => {
     stateRef.current.graphMode = mode as 'overview' | 'focused' | 'raw';
@@ -258,12 +367,21 @@ export function GraphPage() {
     const s = stateRef.current;
     if (s.attackPathOverlay) {
       s.attackPathOverlay = null;
+    } else if (s.pathEdges.size > 0) {
+      s.attackPathOverlay = {
+        actual: { nodes: new Set(s.pathNodes), edges: new Set(s.pathEdges) },
+        theoretical: null,
+      };
     } else {
-      // Placeholder — real implementation would fetch from API
-      s.attackPathOverlay = { actual: { nodes: new Set(), edges: new Set() }, theoretical: null };
+      toast({
+        type: 'info',
+        title: 'No attack path selected',
+        message: 'Shift-click two nodes to create a path before enabling this layer.',
+      });
     }
     refresh();
-  }, [stateRef, refresh]);
+    forceGraphUi();
+  }, [stateRef, refresh, toast, forceGraphUi]);
 
   const handleToggleCredFlow = useCallback(() => {
     const s = stateRef.current;
@@ -275,9 +393,8 @@ export function GraphPage() {
       // Build credential flow data
       const flowEdges = new Set<string>();
       const flowNodes = new Set<string>();
-      const credTypes = new Set(['DERIVED_FROM', 'DUMPED_FROM', 'OWNS_CRED', 'SHARED_CREDENTIAL', 'VALID_ON', 'TESTED_CRED']);
       graph.forEachEdge((_edge, attrs, src, tgt) => {
-        if (credTypes.has(attrs.edgeType as string)) {
+        if (isCredentialFlowEdge(attrs.edgeType)) {
           flowEdges.add(_edge);
           flowNodes.add(src);
           flowNodes.add(tgt);
@@ -286,7 +403,51 @@ export function GraphPage() {
       s.credFlowData = { flowEdges, flowNodes };
     }
     refresh();
-  }, [graph, stateRef, refresh]);
+    forceGraphUi();
+  }, [graph, stateRef, refresh, forceGraphUi]);
+
+  const handleToggleLayer = useCallback((id: GraphLayerId) => {
+    const s = stateRef.current;
+    if (id === 'edgeLabels') {
+      const next = !showEdgeLabels;
+      setShowEdgeLabels(next);
+      rendererRef.current?.setSetting('renderEdgeLabels', next);
+      forceGraphUi();
+      return;
+    }
+    if (id === 'communityHulls') {
+      setCommunityHullsActive(v => !v);
+      forceGraphUi();
+      return;
+    }
+    if (id === 'credentialFlow') {
+      handleToggleCredFlow();
+      return;
+    }
+    if (id === 'attackPath') {
+      handleToggleAttackPath();
+      return;
+    }
+    if (id === 'hideOrphans') {
+      s.hideOrphans = !s.hideOrphans;
+      refresh();
+      forceGraphUi();
+      return;
+    }
+    if (id === 'hideReachableOnly') {
+      s.hideReachableOnly = !s.hideReachableOnly;
+      refresh();
+      forceGraphUi();
+    }
+  }, [
+    stateRef,
+    showEdgeLabels,
+    rendererRef,
+    handleToggleCredFlow,
+    handleToggleAttackPath,
+    refresh,
+    forceGraphUi,
+  ]);
 
   const handleSearchSelect = useCallback((nodeId: string) => {
     selectNode(nodeId);
@@ -301,7 +462,7 @@ export function GraphPage() {
 
       switch (e.key) {
         case 'f': case 'F': e.preventDefault(); zoomToFit(); break;
-        case ' ': e.preventDefault(); layout.toggle(); break;
+        case ' ': e.preventDefault(); handleToggleLayout(); break;
         case 'Escape':
           e.preventDefault();
           setShowShortcuts(false);
@@ -316,9 +477,19 @@ export function GraphPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [zoomToFit, zoomIn, zoomOut, layout, clearSelection, clearPathHighlight, handleReset]);
+  }, [zoomToFit, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
 
   const s = stateRef.current;
+  const layers = useMemo(() => buildGraphLayerStates({
+    graph,
+    edgeLabels: showEdgeLabels,
+    communityHulls: communityHullsActive,
+    credentialFlow: s.credentialFlowMode,
+    attackPath: !!s.attackPathOverlay,
+    hideOrphans: s.hideOrphans,
+    hideReachableOnly: s.hideReachableOnly,
+    pathEdgeCount: s.pathEdges.size,
+  }), [graph, showEdgeLabels, communityHullsActive, s, graphVersion, nodeCount, edgeCount, uiRevision]);
 
   // ---- Right-click context menu ----
   useEffect(() => {
@@ -338,35 +509,24 @@ export function GraphPage() {
         nodeCount={nodeCount}
         edgeCount={edgeCount}
         layoutRunning={layoutRunning}
+        layoutMode={layoutMode}
         graphMode={s.graphMode}
         labelDensity={s.labelDensity}
         activeFocusPreset={s.activeFocusPreset}
-        attackPathActive={!!s.attackPathOverlay}
-        credFlowActive={s.credentialFlowMode}
-        communityHullsActive={communityHullsActive}
-        showEdgeLabels={showEdgeLabels}
-        hideOrphans={s.hideOrphans}
-        hideReachableOnly={s.hideReachableOnly}
+        layers={layers}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onFit={zoomToFit}
-        onToggleLayout={() => { layout.toggle(); setLayoutRunning(layout.running); }}
+        onToggleLayout={handleToggleLayout}
+        onResumeLayout={handleResumeLayout}
         onReset={handleReset}
+        onResetPositions={handleResetPositions}
         onExportPNG={() => exportScreenshot(rendererRef.current)}
         onExportSVG={() => exportSVG(rendererRef.current, graph)}
         onSetGraphMode={handleSetGraphMode}
         onSetLabelDensity={handleSetLabelDensity}
         onSetFocusPreset={handleSetFocusPreset}
-        onToggleAttackPath={handleToggleAttackPath}
-        onToggleCredFlow={handleToggleCredFlow}
-        onToggleCommunityHulls={() => setCommunityHullsActive(v => !v)}
-        onToggleEdgeLabels={() => {
-          const next = !showEdgeLabels;
-          setShowEdgeLabels(next);
-          rendererRef.current?.setSetting('renderEdgeLabels', next);
-        }}
-        onToggleHideOrphans={() => { s.hideOrphans = !s.hideOrphans; refresh(); }}
-        onToggleHideReachableOnly={() => { s.hideReachableOnly = !s.hideReachableOnly; refresh(); }}
+        onToggleLayer={handleToggleLayer}
         onToggleShortcuts={() => setShowShortcuts(v => !v)}
         editMode={editMode}
         onToggleEditMode={() => setEditMode(v => !v)}
@@ -385,6 +545,24 @@ export function GraphPage() {
       {/* Main graph area */}
       <div className="flex-1 relative overflow-hidden">
         <GraphContainer onMount={mount} rendererRef={rendererRef} />
+
+        {renderIssue && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-2 text-xs shadow-lg">
+            {renderIssue}
+          </div>
+        )}
+
+        {showManualHint && layoutMode === 'auto' && nodeCount > 0 && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-surface/95 border border-border text-muted-foreground rounded px-3 py-1.5 text-xs shadow-lg">
+            Drag a node to pin the layout.
+          </div>
+        )}
+
+        {layoutMode === 'manual' && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
+            Manual layout: positions are saved in this browser.
+          </div>
+        )}
 
         {/* Overlays */}
         <GraphSearch graph={graph} onSelect={handleSearchSelect} />
@@ -421,7 +599,7 @@ export function GraphPage() {
               <div className="space-y-1.5 text-xs">
                 {[
                   ['F', 'Fit to screen'],
-                  ['Space', 'Toggle layout'],
+                  ['Space', 'Pause/resume graph layout'],
                   ['Esc', 'Clear selection'],
                   ['R', 'Reset filters'],
                   ['+ / −', 'Zoom'],
