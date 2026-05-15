@@ -4,12 +4,14 @@
 // ============================================================
 
 import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { PostgresSource, redactDsn } from '../services/postgres-source.js';
 import { nodeTypeSchema, NODE_TYPES } from '../types.js';
-import type { NodeType } from '../types.js';
+import type { NodeType, Finding } from '../types.js';
+import { prepareFindingForIngest } from '../services/finding-validation.js';
 
 // Per-engagement connection pool — keyed by engagement ID to support multi-engagement servers.
 const sourcesById = new Map<string, PostgresSource>();
@@ -156,14 +158,20 @@ Examples:
           }],
         };
       }
+
       const now = new Date().toISOString();
-      const nodeIds: string[] = [];
+      const discoveredBy = agent_id || 'postgres-ingest';
+      const findingNodes: Finding['nodes'] = [];
+      const seenIds = new Set<string>();
 
       for (const row of rows) {
         const rawId = String(row[mapping.id_column] ?? '').trim();
         if (!rawId) continue;
 
         const nodeId = `pg-${nodeType}-${rawId.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+        if (seenIds.has(nodeId)) continue;
+        seenIds.add(nodeId);
+
         const label = mapping.label_column ? String(row[mapping.label_column] ?? rawId) : rawId;
 
         const extraProps: Record<string, unknown> = {};
@@ -173,26 +181,41 @@ Examples:
           }
         }
 
-        engine.addNode({
+        findingNodes.push({
           id: nodeId,
           type: nodeType,
           label,
           ...extraProps,
           discovered_at: now,
-          discovered_by: agent_id || 'postgres-ingest',
+          discovered_by: discoveredBy,
           confidence: 0.9,
         });
-        nodeIds.push(nodeId);
       }
 
+      const finding: Finding = {
+        id: uuidv4(),
+        agent_id: discoveredBy,
+        timestamp: now,
+        nodes: findingNodes,
+        edges: [],
+      };
+
+      const prepared = prepareFindingForIngest(finding, id => engine.getNode(id));
+
+      if (prepared.errors.length > 0) {
+        throw new Error(`Ingest validation failed: ${prepared.errors.map(e => e.message).join('; ')}`);
+      }
+
+      const ingestResult = engine.ingestFinding(prepared.finding);
+      const allNodeIds = [...ingestResult.new_nodes, ...ingestResult.updated_nodes];
+
       engine.logActionEvent({
-        description: `postgres ingest: ${rows.length} rows from ${table} → ${nodeIds.length} ${nodeType} nodes`,
+        description: `postgres ingest: ${rows.length} rows from ${table} → ${ingestResult.new_nodes.length} new + ${ingestResult.updated_nodes.length} updated ${nodeType} nodes`,
         agent_id,
         event_type: 'parse_output',
         category: 'finding',
-        target_node_ids: nodeIds.slice(0, 50),
+        target_node_ids: allNodeIds.slice(0, 50),
       });
-      engine.persist();
 
       return {
         content: [{
@@ -200,9 +223,10 @@ Examples:
           text: JSON.stringify({
             table,
             rows_read: rows.length,
-            nodes_upserted: nodeIds.length,
+            new_nodes: ingestResult.new_nodes.length,
+            updated_nodes: ingestResult.updated_nodes.length,
             node_type: nodeType,
-            sample_node_ids: nodeIds.slice(0, 5),
+            sample_node_ids: allNodeIds.slice(0, 5),
           }, null, 2),
         }],
       };

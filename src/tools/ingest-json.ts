@@ -5,11 +5,13 @@
 // ============================================================
 
 import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
 import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema, NODE_TYPES, EDGE_TYPES } from '../types.js';
-import type { NodeType, EdgeType } from '../types.js';
+import type { NodeType, EdgeType, Finding } from '../types.js';
+import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { validateFilePath } from '../utils/path-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
 
@@ -222,10 +224,19 @@ in the graph or be created by an earlier mapping in the same call.
       }
 
       const now = new Date().toISOString();
-      const allNodeIds: string[] = [];
-      let edgesCreated = 0;
+      const discoveredBy = agent_id || 'json-ingest';
       const warnings: string[] = [];
       const mappingErrors: string[] = [];
+
+      // Per-mapping diagnostics for P2 zero-yield detection
+      interface MappingStat { node_type: string; items_seen: number; ids_missing: number; nodes_staged: number }
+      const mappingStats: MappingStat[] = [];
+
+      // Accumulate nodes + edges into a single Finding so prepareFindingForIngest
+      // can validate all edge constraints and run credential normalization (P1, P2).
+      const findingNodes: Finding['nodes'] = [];
+      const findingEdges: Finding['edges'] = [];
+      const seenNodeIds = new Set<string>();
 
       for (const rawMapping of mappings) {
         // Validate node_type
@@ -235,21 +246,20 @@ in the graph or be created by an earlier mapping in the same call.
           continue;
         }
         const nodeType: NodeType = typeResult.data;
-        const defaultPrefix = `json-${nodeType}-`;
-        const idPrefix = rawMapping.id_prefix ?? defaultPrefix;
+        const idPrefix = rawMapping.id_prefix ?? `json-${nodeType}-`;
 
-        // Validate parent edge type if specified
+        // Validate parent edge type
         let parentEdgeType: EdgeType = 'RUNS';
         if (rawMapping.parent_edge_type) {
           const edgeResult = edgeTypeSchema.safeParse(rawMapping.parent_edge_type);
           if (!edgeResult.success) {
-            warnings.push(`Invalid parent_edge_type "${rawMapping.parent_edge_type}" in mapping for ${nodeType} — defaulting to RUNS`);
+            warnings.push(`Invalid parent_edge_type "${rawMapping.parent_edge_type}" for ${nodeType} mapping — defaulting to RUNS`);
           } else {
             parentEdgeType = edgeResult.data;
           }
         }
 
-        // Resolve items for this mapping
+        // Resolve the item list for this mapping (top-level or via array_path)
         let items: unknown[] = topLevelItems;
         if (rawMapping.array_path) {
           const nested: unknown[] = [];
@@ -261,16 +271,17 @@ in the graph or be created by an earlier mapping in the same call.
           items = nested;
         }
 
+        const stat: MappingStat = { node_type: nodeType, items_seen: items.length, ids_missing: 0, nodes_staged: 0 };
+
         for (const item of items) {
           const rawId = String(getPath(item, rawMapping.id_field) ?? '').trim();
-          if (!rawId) continue;
+          if (!rawId) { stat.ids_missing++; continue; }
 
           const nodeId = `${idPrefix}${sanitizeId(rawId)}`;
-
           const rawLabel = rawMapping.label_field ? getPath(item, rawMapping.label_field) : undefined;
           const nodeLabel = rawLabel != null ? String(rawLabel) : rawId;
 
-          // Collect properties
+          // Collect mapped properties
           const props: Record<string, unknown> = {};
           for (const pf of rawMapping.property_fields ?? []) {
             if (typeof pf === 'string') {
@@ -282,42 +293,107 @@ in the graph or be created by an earlier mapping in the same call.
             }
           }
 
-          engine.addNode({
-            id: nodeId,
-            type: nodeType,
-            label: nodeLabel,
-            ...props,
-            discovered_at: now,
-            discovered_by: agent_id || 'json-ingest',
-            confidence: 0.9,
-          });
-          allNodeIds.push(nodeId);
+          if (!seenNodeIds.has(nodeId)) {
+            seenNodeIds.add(nodeId);
+            findingNodes.push({
+              id: nodeId,
+              type: nodeType,
+              label: nodeLabel,
+              ...props,
+              discovered_at: now,
+              discovered_by: discoveredBy,
+              confidence: 0.9,
+            });
+            stat.nodes_staged++;
+          }
 
-          // Create parent edge if specified
+          // Stage parent edge — prepareFindingForIngest will validate endpoint
+          // types and surface any constraint violations (P1 fix).
           if (rawMapping.parent_field) {
             const rawParentId = String(getPath(item, rawMapping.parent_field) ?? '').trim();
             if (rawParentId) {
-              try {
-                engine.addEdge(rawParentId, nodeId, {
+              findingEdges.push({
+                source: rawParentId,
+                target: nodeId,
+                properties: {
                   type: parentEdgeType,
                   confidence: 0.9,
                   discovered_at: now,
-                  discovered_by: agent_id || 'json-ingest',
-                });
-                edgesCreated++;
-              } catch {
-                // Parent node may not exist yet; skip silently
-              }
+                  discovered_by: discoveredBy,
+                },
+              });
             }
           }
         }
+
+        // P2: warn when a mapping resolves zero nodes — likely schema mismatch
+        if (stat.items_seen > 0 && stat.nodes_staged === 0) {
+          warnings.push(
+            `Mapping "${nodeType}" saw ${stat.items_seen} item(s) but staged 0 nodes ` +
+            `(${stat.ids_missing} missing id_field "${rawMapping.id_field}"). Check array_path and id_field.`,
+          );
+        }
+        mappingStats.push(stat);
       }
 
-      if (mappingErrors.length > 0 && allNodeIds.length === 0) {
+      if (mappingErrors.length > 0 && findingNodes.length === 0) {
         throw new Error(mappingErrors.join('; '));
       }
 
-      const description = label || `json ingest: ${topLevelItems.length} item${topLevelItems.length !== 1 ? 's' : ''} → ${allNodeIds.length} node${allNodeIds.length !== 1 ? 's' : ''}${file_path ? ` (${file_path.split('/').pop()})` : ''}`;
+      // Run through the same validation + normalization path as parse_output (P1, P2).
+      const finding: Finding = {
+        id: uuidv4(),
+        agent_id: discoveredBy,
+        timestamp: now,
+        nodes: findingNodes,
+        edges: findingEdges,
+      };
+
+      const prepared = prepareFindingForIngest(finding, id => engine.getNode(id));
+
+      // Separate hard constraint errors from missing-parent errors (which are
+      // expected when parent nodes are not in the graph yet).
+      const hardErrors = prepared.errors.filter(e => e.code !== 'missing_node_reference');
+      const skippedEdges = prepared.errors
+        .filter(e => e.code === 'missing_node_reference' || e.code === 'edge_type_constraint')
+        .map(e => ({ source: e.source_id, target: e.target_id, edge_type: e.edge_type, reason: e.message }));
+
+      if (hardErrors.length > 0) {
+        engine.logActionEvent({
+          description: `json ingest rejected: ${hardErrors.length} validation error(s)`,
+          agent_id,
+          event_type: 'parse_output',
+          category: 'finding',
+          details: { validation_errors: hardErrors },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ingested: false,
+              validation_errors: hardErrors,
+              ...(warnings.length > 0 ? { warnings } : {}),
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+
+      // Remove edges that failed validation from the prepared finding before ingest
+      if (skippedEdges.length > 0) {
+        const skipSet = new Set(
+          prepared.errors.map(e => `${e.source_id}→${e.target_id}→${e.edge_type}`),
+        );
+        prepared.finding.edges = prepared.finding.edges.filter(
+          e => !skipSet.has(`${e.source}→${e.target}→${e.properties.type}`),
+        );
+      }
+
+      const ingestResult = engine.ingestFinding(prepared.finding);
+      const allNodeIds = [...ingestResult.new_nodes, ...ingestResult.updated_nodes];
+
+      const description = label || `json ingest: ${topLevelItems.length} item(s) → ${ingestResult.new_nodes.length} new + ${ingestResult.updated_nodes.length} updated nodes${file_path ? ` (${file_path.split('/').pop()})` : ''}`;
 
       engine.logActionEvent({
         description,
@@ -326,16 +402,19 @@ in the graph or be created by an earlier mapping in the same call.
         category: 'finding',
         target_node_ids: allNodeIds.slice(0, 50),
       });
-      engine.persist();
 
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             items_parsed: topLevelItems.length,
-            nodes_upserted: allNodeIds.length,
-            edges_created: edgesCreated,
+            new_nodes: ingestResult.new_nodes.length,
+            updated_nodes: ingestResult.updated_nodes.length,
+            new_edges: ingestResult.new_edges.length,
+            inferred_edges: ingestResult.inferred_edges.length,
             mappings_applied: mappings.length - mappingErrors.length,
+            mapping_stats: mappingStats,
+            ...(skippedEdges.length > 0 ? { skipped_edges: skippedEdges } : {}),
             ...(warnings.length > 0 ? { warnings } : {}),
             ...(mappingErrors.length > 0 ? { mapping_errors: mappingErrors } : {}),
             sample_node_ids: allNodeIds.slice(0, 5),
