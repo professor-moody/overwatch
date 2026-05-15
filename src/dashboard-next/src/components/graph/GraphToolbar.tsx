@@ -69,7 +69,7 @@ export function GraphToolbar({
       <div className="flex items-center gap-1">
         <ToolBtn onClick={onZoomIn} title="Zoom in">+</ToolBtn>
         <ToolBtn onClick={onZoomOut} title="Zoom out">−</ToolBtn>
-        <ToolBtn onClick={onFit} title="Fit to screen">Fit</ToolBtn>
+        <ToolBtn onClick={() => onFit()} title="Fit to screen">Fit</ToolBtn>
         <Sep />
         <LayoutStatus mode={layoutMode} running={layoutRunning} />
         {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout">Resume</ToolBtn>}

@@ -85,10 +85,11 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
     rendererRef.current?.refresh();
   }, []);
 
-  const zoomToFit = useCallback((duration = 300) => {
+  const zoomToFit = useCallback((duration: number | unknown = 300) => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    renderer.getCamera().animatedReset({ duration });
+    const safeDuration = typeof duration === 'number' && Number.isFinite(duration) ? duration : 300;
+    renderer.getCamera().animatedReset({ duration: safeDuration });
   }, []);
 
   const zoomIn = useCallback(() => {
