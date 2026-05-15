@@ -37,6 +37,13 @@ export function isReachableOnlyEdge(attrs: { edgeType?: unknown; type?: unknown 
   return attrs.edgeType === 'REACHABLE';
 }
 
+export function edgeMatchesSemanticType(
+  attrs: { edgeType?: unknown; type?: unknown },
+  edgeTypes: Set<string>,
+): boolean {
+  return typeof attrs.edgeType === 'string' && edgeTypes.has(attrs.edgeType);
+}
+
 export function hasCredentialFlowEdges(graph: Graph): boolean {
   let found = false;
   graph.forEachEdge((_edge, attrs) => {

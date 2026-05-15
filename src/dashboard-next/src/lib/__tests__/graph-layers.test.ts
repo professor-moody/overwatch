@@ -2,6 +2,7 @@ import Graph from 'graphology';
 import { describe, expect, it } from 'vitest';
 import {
   buildGraphLayerStates,
+  edgeMatchesSemanticType,
   hasCommunityHulls,
   isCredentialFlowEdge,
   isReachableOnlyEdge,
@@ -24,6 +25,13 @@ describe('graph layer helpers', () => {
   it('checks reachable-only filtering against semantic edgeType', () => {
     expect(isReachableOnlyEdge({ edgeType: 'REACHABLE', type: 'arrow' })).toBe(true);
     expect(isReachableOnlyEdge({ edgeType: 'RUNS', type: 'REACHABLE' })).toBe(false);
+  });
+
+  it('matches focus presets against semantic edgeType, not Sigma render type', () => {
+    const highlighted = new Set(['ADMIN_TO']);
+
+    expect(edgeMatchesSemanticType({ edgeType: 'ADMIN_TO', type: 'arrow' }, highlighted)).toBe(true);
+    expect(edgeMatchesSemanticType({ edgeType: 'RUNS', type: 'ADMIN_TO' }, highlighted)).toBe(false);
   });
 
   it('disables community hulls when no community ids are present', () => {

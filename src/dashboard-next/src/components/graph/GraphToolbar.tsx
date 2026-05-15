@@ -69,7 +69,7 @@ export function GraphToolbar({
       <div className="flex items-center gap-1">
         <ToolBtn onClick={onZoomIn} title="Zoom in">+</ToolBtn>
         <ToolBtn onClick={onZoomOut} title="Zoom out">−</ToolBtn>
-        <ToolBtn onClick={() => onFit()} title="Fit to screen">Fit</ToolBtn>
+        <ToolBtn onClick={onFit} title="Fit to screen">Fit</ToolBtn>
         <Sep />
         <LayoutStatus mode={layoutMode} running={layoutRunning} />
         {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout">Resume</ToolBtn>}
@@ -139,12 +139,16 @@ export function GraphToolbar({
   );
 }
 
+export function createToolbarActionHandler(action: () => void): (_event?: unknown) => void {
+  return () => action();
+}
+
 function ToolBtn({ children, onClick, title, active }: {
   children: React.ReactNode; onClick: () => void; title?: string; active?: boolean;
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={createToolbarActionHandler(onClick)}
       title={title}
       className={cn(
         'px-2 py-1 rounded text-xs transition-colors whitespace-nowrap',

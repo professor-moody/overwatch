@@ -5,6 +5,7 @@
 import { useRef, useCallback, useEffect } from 'react';
 import Sigma from 'sigma';
 import type Graph from 'graphology';
+import { safeCameraDuration } from '../lib/graph-camera';
 
 export interface UseSigmaOptions {
   graph: Graph;
@@ -88,8 +89,7 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
   const zoomToFit = useCallback((duration: number | unknown = 300) => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    const safeDuration = typeof duration === 'number' && Number.isFinite(duration) ? duration : 300;
-    renderer.getCamera().animatedReset({ duration: safeDuration });
+    renderer.getCamera().animatedReset({ duration: safeCameraDuration(duration) });
   }, []);
 
   const zoomIn = useCallback(() => {

@@ -26,7 +26,7 @@ import { exportScreenshot, exportSVG } from './GraphExport';
 import { NodeContextMenu, type ContextMenuState } from './NodeContextMenu';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
-import { buildGraphLayerStates, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
+import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 
 export function GraphPage() {
@@ -345,7 +345,7 @@ export function GraphPage() {
     });
     for (const nodeId of [...neighborhood]) {
       graph.forEachEdge(nodeId, (_edge, attrs, src, tgt) => {
-        if (preset.edgeHighlight.has(attrs.type as string)) {
+        if (edgeMatchesSemanticType(attrs, preset.edgeHighlight)) {
           neighborhood.add(src);
           neighborhood.add(tgt);
         }
@@ -603,6 +603,7 @@ export function GraphPage() {
                   ['Esc', 'Clear selection'],
                   ['R', 'Reset filters'],
                   ['+ / −', 'Zoom'],
+                  ['Drag', 'Pin a manual node position'],
                   ['?', 'Toggle this help'],
                   ['Shift+Click', 'Path highlight'],
                   ['Dbl-Click', 'Neighborhood focus'],

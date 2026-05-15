@@ -32,6 +32,26 @@ describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
       expect(text).not.toContain('Graph data is loaded, but no renderable nodes were added.');
 
       await page.evaluate(() => {
+        const fit = [...document.querySelectorAll('button')]
+          .find(button => button.textContent?.trim() === 'Fit');
+        if (!(fit instanceof HTMLButtonElement)) throw new Error('Fit button missing');
+        fit.click();
+      });
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      const graphCanvasShot = await page.evaluate(async () => {
+        const canvases = [...document.querySelectorAll('canvas')]
+          .map(canvas => ({ canvas, rect: canvas.getBoundingClientRect() }))
+          .filter(item => item.rect.width > 500 && item.rect.height > 300)
+          .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+        const target = canvases[0]?.canvas;
+        if (!target) return 0;
+        const blob = await new Promise<Blob | null>(resolve => target.toBlob(resolve));
+        return blob?.size || 0;
+      });
+      expect(graphCanvasShot).toBeGreaterThan(5_000);
+
+      await page.evaluate(() => {
         const layersButton = [...document.querySelectorAll('button')]
           .find(button => button.textContent?.includes('Layers'));
         if (!(layersButton instanceof HTMLButtonElement)) throw new Error('Layers button missing');

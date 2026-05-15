@@ -140,10 +140,14 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           </div>
         )}
 
-        {(relationships.sessions.length > 0 || relationships.pendingActions.length > 0 || relationships.frontier.length > 0 || relationships.findings.length > 0) && (
-          <div>
-            <h4 className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Operator Context</h4>
-            <div className="space-y-2">
+        <div>
+          <h4 className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Operator Context</h4>
+          <div className="divide-y divide-border border-y border-border">
+            <ContextBlock title="Evidence" count={entries.length} onClick={() => navigateToEvidence(nodeId)}>
+              <div className="text-[11px] text-muted-foreground truncate">
+                Open the evidence chain for this node.
+              </div>
+            </ContextBlock>
               {relationships.sessions.length > 0 && (
                 <ContextBlock title="Sessions" count={relationships.sessions.length} onClick={() => navigateToPanel('sessions')}>
                   {relationships.sessions.slice(0, 3).map(session => (
@@ -155,7 +159,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
                 </ContextBlock>
               )}
               {relationships.pendingActions.length > 0 && (
-                <ContextBlock title="Pending Actions" count={relationships.pendingActions.length} onClick={() => navigateToPanel('actions')}>
+                <ContextBlock title="Actions" count={relationships.pendingActions.length} onClick={() => navigateToPanel('actions')}>
                   {relationships.pendingActions.slice(0, 3).map(action => (
                     <div key={action.action_id} className="text-[11px] text-muted-foreground truncate">
                       <span className="text-foreground">{action.technique}</span> · {action.description}
@@ -181,9 +185,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
                   ))}
                 </ContextBlock>
               )}
-            </div>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Actions */}
@@ -228,7 +231,7 @@ function ContextBlock({
   onClick: () => void;
 }) {
   return (
-    <button onClick={onClick} className="w-full text-left rounded border border-border bg-elevated/60 p-2 hover:bg-hover transition-colors">
+    <button onClick={onClick} className="w-full text-left py-2 hover:bg-hover transition-colors">
       <div className="flex items-center justify-between mb-1">
         <span className="text-[11px] font-medium text-foreground">{title}</span>
         <span className="text-[10px] font-mono text-muted-foreground">{count}</span>
