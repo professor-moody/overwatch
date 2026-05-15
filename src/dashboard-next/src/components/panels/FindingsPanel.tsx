@@ -16,8 +16,8 @@ import { cn, formatTimestamp } from '../../lib/utils';
 import { RenderReportModal } from './RenderReportModal';
 import { ReportsList } from './ReportsList';
 import { useEngagementStore } from '../../stores/engagement-store';
-import { useNavigation } from '../../hooks/useNavigation';
 import { resolveAssetToNodeId } from '../../lib/relationships';
+import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -31,7 +31,6 @@ const SEVERITY_BADGE: Record<FindingDto['severity'], string> = {
 
 export function FindingsPanel() {
   const graph = useEngagementStore(s => s.graph);
-  const { navigateToEvidence, navigateToGraph } = useNavigation();
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [summary, setSummary] = useState<{ critical: number; high: number; medium: number; low: number; info: number }>({
     critical: 0, high: 0, medium: 0, low: 0, info: 0,
@@ -153,8 +152,6 @@ export function FindingsPanel() {
                         key={f.id}
                         finding={f}
                         resolveAsset={(asset) => resolveAssetToNodeId(asset, graph)}
-                        onGraph={navigateToGraph}
-                        onEvidence={navigateToEvidence}
                       />
                     ))}
                   </div>
@@ -178,13 +175,9 @@ export function FindingsPanel() {
 function FindingRow({
   finding: f,
   resolveAsset,
-  onGraph,
-  onEvidence,
 }: {
   finding: FindingDto;
   resolveAsset: (asset: string) => string | null;
-  onGraph: (nodeId?: string, hops?: number) => void;
-  onEvidence: (nodeId: string) => void;
 }) {
   const cls = f.classification;
   return (
@@ -198,11 +191,7 @@ function FindingRow({
               {f.affected_assets.slice(0, 6).map(asset => {
                 const nodeId = resolveAsset(asset);
                 return nodeId ? (
-                  <span key={asset} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono">
-                    {asset}
-                    <button onClick={() => onGraph(nodeId, 2)} className="hover:text-foreground">graph</button>
-                    <button onClick={() => onEvidence(nodeId)} className="hover:text-foreground">evidence</button>
-                  </span>
+                  <GraphNodeLinks key={asset} nodeId={nodeId} label={asset} className="rounded bg-accent/10 px-1 py-0.5 text-accent" />
                 ) : (
                   <span key={asset} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground font-mono">{asset}</span>
                 );

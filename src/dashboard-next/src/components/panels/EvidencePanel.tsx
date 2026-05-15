@@ -7,6 +7,7 @@ import { getEvidenceChains, getFindings, getPaths, type FindingDto } from '../..
 import type { EvidenceChainResponse, AttackPath, Objective } from '../../lib/types';
 import { PageHeader, PanelSection } from '../shared/primitives';
 import { deriveNodeRelationships } from '../../lib/relationships';
+import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
@@ -32,7 +33,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const { navigateToGraph, navigateToPanel } = useNavigation();
+  const { navigateToPanel } = useNavigation();
   const graph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
   const pendingActions = useEngagementStore(s => s.pendingActions);
@@ -93,14 +94,8 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
         <div className="space-y-3">
           {/* Node header */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-mono text-sm text-accent">{data.node_id}</span>
+            <GraphNodeLinks nodeId={data.node_id} />
             <span className="text-xs text-muted-foreground">{data.count} entries</span>
-            <button
-              onClick={() => navigateToGraph(data.node_id, 2)}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
-            >
-              View in Graph
-            </button>
           </div>
 
           {/* Node properties */}

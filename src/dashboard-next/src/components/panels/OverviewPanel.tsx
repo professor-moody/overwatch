@@ -8,6 +8,7 @@ import { TelemetrySection } from './TelemetrySection';
 import * as api from '../../lib/api';
 import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
 import { MetricTile, PageHeader, PanelSection } from '../shared/primitives';
+import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges, type AttentionItem } from '../../lib/overview-workspace';
 
 export function OverviewPanel() {
   const { navigateToGraph, navigateToGraphFilter, navigateToPanel, navigateToEvidence } = useNavigation();
@@ -55,20 +56,14 @@ export function OverviewPanel() {
     return campaigns.filter(c => c.status === 'active' || c.status === 'paused');
   }, [campaigns]);
 
-  const decisionFrontier = useMemo(() => {
-    return [...frontier].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).slice(0, 3);
-  }, [frontier]);
+  const attentionItems = useMemo(() => deriveAttentionItems({
+    pendingActions,
+    readinessIssues: readiness?.issues || [],
+    frontier,
+  }), [frontier, pendingActions, readiness]);
 
-  const activeSessions = useMemo(() => {
-    return sessions.filter(s => s.state === 'connected');
-  }, [sessions]);
-
-  const recentChanges = useMemo(() => {
-    return recentActivity
-      .filter(e => e.description || e.event_type)
-      .slice(-5)
-      .reverse();
-  }, [recentActivity]);
+  const accessFacts = useMemo(() => deriveAccessFacts(accessSummary, sessions), [accessSummary, sessions]);
+  const recentChanges = useMemo(() => deriveRecentChanges(recentActivity), [recentActivity]);
 
   const engagement = useEngagementStore((s) => s.engagement);
 
@@ -130,21 +125,16 @@ export function OverviewPanel() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <PanelSection title="Needs Attention">
           <div className="space-y-2 text-xs">
-            {pendingActions.length > 0 && (
-              <DecisionRow label={`${pendingActions.length} pending approval${pendingActions.length === 1 ? '' : 's'}`} tone="warning" onClick={() => navigateToPanel('actions')} />
-            )}
-            {readiness && readiness.issues.length > 0 && (
-              <DecisionRow label={`${readiness.issues.length} readiness warning${readiness.issues.length === 1 ? '' : 's'}`} tone="warning" />
-            )}
-            {decisionFrontier.map((item) => (
+            {attentionItems.map((item) => (
               <DecisionRow
-                key={item.frontier_item_id || item.id}
-                label={item.description || item.id}
-                meta={(item.priority ?? 0).toFixed(1)}
-                onClick={() => navigateToPanel('frontier')}
+                key={item.id}
+                label={item.label}
+                meta={item.meta}
+                tone={item.tone === 'warning' ? 'warning' : undefined}
+                onClick={() => navigateAttention(item, navigateToPanel, navigateToGraph)}
               />
             ))}
-            {pendingActions.length === 0 && (!readiness || readiness.issues.length === 0) && decisionFrontier.length === 0 && (
+            {attentionItems.length === 0 && (
               <p className="text-muted-foreground">No immediate operator action queued.</p>
             )}
           </div>
@@ -152,10 +142,10 @@ export function OverviewPanel() {
 
         <PanelSection title="Current Access">
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <AccessFact label="Level" value={accessSummary.current_access_level} />
-            <AccessFact label="Sessions" value={activeSessions.length} />
-            <AccessFact label="Hosts" value={accessSummary.compromised_hosts.length} />
-            <AccessFact label="Valid creds" value={accessSummary.valid_credentials.length} />
+            <AccessFact label="Level" value={accessFacts.level} onClick={() => navigateToGraph()} />
+            <AccessFact label="Sessions" value={accessFacts.liveSessions} onClick={() => navigateToPanel('sessions')} />
+            <AccessFact label="Hosts" value={accessFacts.hosts} onClick={() => navigateToGraphFilter('host')} />
+            <AccessFact label="Valid creds" value={accessFacts.validCredentials} onClick={() => navigateToPanel('credentials')} />
           </div>
         </PanelSection>
 
@@ -436,6 +426,18 @@ function FindingEntry({ entry }: { entry: ActivityEntry }) {
   );
 }
 
+function navigateAttention(
+  item: AttentionItem,
+  navigateToPanel: ReturnType<typeof useNavigation>['navigateToPanel'],
+  navigateToGraph: ReturnType<typeof useNavigation>['navigateToGraph'],
+) {
+  if (item.nodeId) {
+    navigateToGraph(item.nodeId, 2);
+    return;
+  }
+  navigateToPanel(item.route);
+}
+
 function DecisionRow({
   label,
   meta,
@@ -463,47 +465,18 @@ function DecisionRow({
   );
 }
 
-function AccessFact({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div className="rounded border border-border bg-elevated px-2 py-1.5">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold text-foreground truncate">{value}</div>
-    </div>
-  );
-}
-
-// ---- Summary Card ----
-
-function SummaryCard({
-  label,
-  value,
-  sub,
-  accent,
-  onClick,
-}: {
-  label: string;
-  value: number | string;
-  sub: string;
-  accent?: boolean;
-  onClick?: () => void;
-}) {
+function AccessFact({ label, value, onClick }: { label: string; value: number | string; onClick?: () => void }) {
   const Wrapper = onClick ? 'button' : 'div';
   return (
     <Wrapper
       onClick={onClick}
       className={cn(
-        'bg-surface border border-border rounded-lg p-4 text-left',
-        onClick && 'hover:border-accent/40 cursor-pointer transition-colors',
+        'w-full rounded border border-border bg-elevated px-2 py-1.5 text-left',
+        onClick && 'hover:border-accent/40 hover:bg-hover transition-colors',
       )}
     >
-      <div className="text-xs text-muted-foreground mb-1">{label}</div>
-      <div className={cn(
-        'text-2xl font-semibold tabular-nums',
-        accent ? 'text-success' : 'text-foreground',
-      )}>
-        {value}
-      </div>
-      <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold text-foreground truncate">{value}</div>
     </Wrapper>
   );
 }

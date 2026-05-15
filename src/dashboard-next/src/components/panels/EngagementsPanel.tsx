@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '../../lib/utils';
 import { TagInput, EmptyState, StatusBadge } from '../shared';
+import { MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { getEngagements, getTemplates, createEngagement, getEngagement, updateEngagement } from '../../lib/api';
 import type {
   EngagementListItem,
@@ -32,8 +33,12 @@ export function EngagementsPanel() {
   const [showForm, setShowForm] = useState(false);
   const [loadHint, setLoadHint] = useState<EngagementListItem | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
       const [engData, tmplData] = await Promise.all([
         getEngagements(),
@@ -42,7 +47,11 @@ export function EngagementsPanel() {
       setEngagements(engData.engagements || []);
       setActiveId(engData.active_id || null);
       setTemplates(tmplData.templates || []);
-    } catch {}
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -56,16 +65,28 @@ export function EngagementsPanel() {
     );
   }
 
+  const activeEngagement = engagements.find(e => e.is_active || e.id === activeId) || null;
+  const inactiveCount = engagements.length - (activeEngagement ? 1 : 0);
+  const totalObjectives = engagements.reduce((sum, item) => sum + item.objectives_count, 0);
+  const totalPhases = engagements.reduce((sum, item) => sum + item.phases_count, 0);
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          Engagements <span className="text-muted-foreground font-normal text-sm">({engagements.length})</span>
-        </h2>
-        <button onClick={() => setShowForm(!showForm)} className="settings-save-btn">
-          {showForm ? 'Cancel' : '+ New Engagement'}
-        </button>
-      </div>
+      <PageHeader
+        title="Engagements"
+        meta={`(${engagements.length})`}
+        actions={(
+          <button onClick={() => setShowForm(!showForm)} className="settings-save-btn">
+            {showForm ? 'Cancel' : '+ New Engagement'}
+          </button>
+        )}
+      />
+
+      {error && (
+        <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
 
       {showForm && (
         <CreateEngagementForm
@@ -76,50 +97,112 @@ export function EngagementsPanel() {
       )}
 
       {loadHint && (
-        <div className="bg-elevated border border-warning/20 rounded-lg p-3 text-xs space-y-1">
-          <div className="text-warning font-medium">To load this engagement, restart the server with:</div>
-          <code className="block text-foreground bg-background p-1.5 rounded font-mono">{loadHint.config_path}</code>
-          <button onClick={() => setLoadHint(null)} className="text-muted-foreground hover:text-foreground">Dismiss</button>
+        <div className="bg-elevated border border-warning/20 rounded-lg p-3 text-xs space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-warning font-medium">Restart required to load {loadHint.name}</div>
+              <div className="text-muted-foreground">The dashboard follows the server's active engagement.</div>
+            </div>
+            <button onClick={() => setLoadHint(null)} className="text-muted-foreground hover:text-foreground">Dismiss</button>
+          </div>
+          <code className="block text-foreground bg-background p-1.5 rounded font-mono overflow-x-auto">{loadHint.config_path}</code>
         </div>
       )}
 
       {!showForm && (
-        engagements.length === 0 ? (
-          <EmptyState message="No engagements yet. Create one above." />
+        loading ? (
+          <PanelSection>
+            <div className="text-xs text-muted-foreground">Loading engagements...</div>
+          </PanelSection>
+        ) : engagements.length === 0 ? (
+          <EmptyState title="No engagements yet" description="Create an engagement to define scope, objectives, OPSEC, phases, and campaign defaults." />
         ) : (
-          <div className="space-y-2">
-            {engagements.map(e => {
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <MetricTile label="Active" value={activeEngagement ? activeEngagement.name : 'None'} sub={activeEngagement?.profile || 'server not attached'} accent={!!activeEngagement} />
+              <MetricTile label="Available" value={inactiveCount} sub="restart-loadable configs" />
+              <MetricTile label="Objectives" value={totalObjectives} sub="configured goals" />
+              <MetricTile label="Phases" value={totalPhases} sub="workflow gates" />
+            </div>
+
+            {activeEngagement && (
+              <PanelSection title="Active Engagement">
+                <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3 text-xs">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">{activeEngagement.name}</span>
+                      <StatusBadge status="active" />
+                      {activeEngagement.profile && <StatusPill>{activeEngagement.profile}</StatusPill>}
+                    </div>
+                    <div className="text-muted-foreground">
+                      {scopeLabel(activeEngagement)}
+                    </div>
+                    {activeEngagement.config_path && (
+                      <code className="block rounded bg-background px-2 py-1 font-mono text-muted-foreground overflow-x-auto">
+                        {activeEngagement.config_path}
+                      </code>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ReadinessFact label="Objectives" value={activeEngagement.objectives_count} />
+                    <ReadinessFact label="Phases" value={activeEngagement.phases_count} />
+                    <ReadinessFact label="Exclusions" value={activeEngagement.exclusions_count ?? 0} />
+                  </div>
+                </div>
+              </PanelSection>
+            )}
+
+            <PanelSection title="Engagement Library" meta={`${engagements.length} config${engagements.length === 1 ? '' : 's'}`} className="p-0 overflow-hidden">
+              <div className="divide-y divide-border">
+                {engagements.map(e => {
               const isActive = e.is_active || e.id === activeId;
-              const scopeStr = e.scope_cidrs.length ? e.scope_cidrs.join(', ') : (e.scope_domains.join(', ') || '—');
+              const scopeStr = scopeLabel(e);
               return (
                 <div key={e.id}
                   onClick={() => setDetailId(e.id)}
-                  className={cn('bg-surface border rounded-lg p-4 cursor-pointer hover:border-accent/40 transition-colors', isActive ? 'border-accent/30' : 'border-border')}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium">{e.name}</span>
+                  className={cn('p-3 cursor-pointer hover:bg-hover/50 transition-colors', isActive && 'bg-accent/5')}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-foreground truncate">{e.name}</span>
                     {isActive && <StatusBadge status="active" />}
                     {e.profile && <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground">{e.profile}</span>}
+                    {!isActive && (
+                      <button onClick={(ev) => { ev.stopPropagation(); setLoadHint(e); }}
+                        className="ml-auto text-xs text-accent hover:underline">Load guidance</button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground mb-1">
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
                     <span>{e.objectives_count} obj</span>
                     <span>{e.phases_count} phases</span>
                     {(e.exclusions_count ?? 0) > 0 && <span>{e.exclusions_count} exclusions</span>}
+                    {e.created_at && <span>{new Date(e.created_at).toLocaleDateString()}</span>}
                   </div>
-                  <div className="text-xs text-muted-foreground truncate">{scopeStr}</div>
-                  <div className="flex items-center gap-2 mt-2 text-xs">
+                  <div className="mt-1 grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-2 text-xs text-muted-foreground">
+                    <span className="truncate">{scopeStr}</span>
                     <span className="font-mono text-muted">{e.id}</span>
-                    {e.created_at && <span className="text-muted-foreground">{new Date(e.created_at).toLocaleDateString()}</span>}
-                    {!isActive && (
-                      <button onClick={(ev) => { ev.stopPropagation(); setLoadHint(e); }}
-                        className="ml-auto text-accent hover:underline">Load</button>
-                    )}
                   </div>
                 </div>
               );
-            })}
-          </div>
+                })}
+              </div>
+            </PanelSection>
+          </>
         )
       )}
+    </div>
+  );
+}
+
+function scopeLabel(e: EngagementListItem): string {
+  if (e.scope_cidrs.length) return e.scope_cidrs.join(', ');
+  if (e.scope_domains.length) return e.scope_domains.join(', ');
+  return 'No target scope configured';
+}
+
+function ReadinessFact({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded border border-border bg-elevated px-2 py-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold text-foreground">{value}</div>
     </div>
   );
 }
