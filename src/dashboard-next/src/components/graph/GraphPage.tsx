@@ -547,19 +547,19 @@ export function GraphPage() {
         <GraphContainer onMount={mount} rendererRef={rendererRef} />
 
         {renderIssue && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-2 text-xs shadow-lg">
+          <div className="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-2 text-xs shadow-lg">
             {renderIssue}
           </div>
         )}
 
         {showManualHint && layoutMode === 'auto' && nodeCount > 0 && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-surface/95 border border-border text-muted-foreground rounded px-3 py-1.5 text-xs shadow-lg">
+          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 z-30 bg-surface/95 border border-border text-muted-foreground rounded px-3 py-1.5 text-xs shadow-lg">
             Drag a node to pin the layout.
           </div>
         )}
 
         {layoutMode === 'manual' && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
+          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 z-30 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
             Manual layout: positions are saved in this browser.
           </div>
         )}

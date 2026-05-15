@@ -53,7 +53,7 @@ export function GraphToolbar({
   const [showLayers, setShowLayers] = useState(false);
 
   return (
-    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50">
+    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-x-auto overflow-y-visible">
       {/* Back */}
       <Link to="/overview" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -147,7 +147,7 @@ function ToolBtn({ children, onClick, title, active }: {
       onClick={onClick}
       title={title}
       className={cn(
-        'px-2 py-1 rounded text-xs transition-colors',
+        'px-2 py-1 rounded text-xs transition-colors whitespace-nowrap',
         active ? 'bg-accent/20 text-accent' : 'text-muted-foreground hover:text-foreground hover:bg-hover',
       )}
     >
@@ -173,7 +173,7 @@ function LayoutStatus({ mode, running }: { mode: GraphToolbarProps['layoutMode']
   const label = mode === 'manual' ? 'Manual layout' : mode === 'paused' ? 'Paused' : 'Auto layout';
   return (
     <span className={cn(
-      'px-2 py-1 rounded text-[11px] border',
+      'px-2 py-1 rounded text-[11px] border whitespace-nowrap',
       mode === 'manual' && 'bg-warning/10 text-warning border-warning/20',
       mode === 'paused' && 'bg-elevated text-muted-foreground border-border',
       mode === 'auto' && 'bg-success/10 text-success border-success/20',
