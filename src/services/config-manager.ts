@@ -101,18 +101,21 @@ export function seedFromConfig(host: ConfigManagerHost): void {
 }
 
 /**
- * Merge partial config updates into current config.
- * Validates CIDRs/domains before applying. Throws on validation failure.
+ * Merge partial config updates into current config atomically.
+ * Applies changes to a deep clone, validates the result, then commits.
+ * If validation fails the live runtime config is never touched.
  */
 export function updateConfig(host: ConfigManagerHost, partial: Record<string, unknown>): EngagementConfig {
-  const current = host.ctx.config;
+  // Work on a deep clone so a validation failure cannot leave the live
+  // config in a half-mutated state (P1 atomicity fix).
+  const draft = JSON.parse(JSON.stringify(host.ctx.config)) as EngagementConfig;
+
   // Merge top-level scalars
-  if (typeof partial.name === 'string' && partial.name.length > 0) current.name = partial.name;
-  if (typeof partial.profile === 'string') current.profile = partial.profile as EngagementConfig['profile'];
-  if (typeof partial.community_resolution === 'number') current.community_resolution = partial.community_resolution;
+  if (typeof partial.name === 'string' && partial.name.length > 0) draft.name = partial.name;
+  if (typeof partial.profile === 'string') draft.profile = partial.profile as EngagementConfig['profile'];
+  if (typeof partial.community_resolution === 'number') draft.community_resolution = partial.community_resolution;
 
   // Merge scope (partial merge — only overwrite provided keys)
-  // Validate CIDRs and domains before applying, matching updateScope validation.
   if (partial.scope && typeof partial.scope === 'object') {
     const s = partial.scope as Record<string, unknown>;
     const scopeErrors: string[] = [];
@@ -131,55 +134,47 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
     if (scopeErrors.length > 0) {
       throw new Error(`Scope validation failed: ${scopeErrors.join('; ')}`);
     }
-    if (Array.isArray(s.cidrs)) current.scope.cidrs = s.cidrs;
-    if (Array.isArray(s.domains)) current.scope.domains = s.domains;
-    if (Array.isArray(s.exclusions)) current.scope.exclusions = s.exclusions;
-    if (Array.isArray(s.hosts)) current.scope.hosts = s.hosts;
-    if (Array.isArray(s.aws_accounts)) current.scope.aws_accounts = s.aws_accounts;
-    if (Array.isArray(s.azure_subscriptions)) current.scope.azure_subscriptions = s.azure_subscriptions;
-    if (Array.isArray(s.gcp_projects)) current.scope.gcp_projects = s.gcp_projects;
-    if (Array.isArray(s.url_patterns)) current.scope.url_patterns = s.url_patterns;
+    if (Array.isArray(s.cidrs)) draft.scope.cidrs = s.cidrs;
+    if (Array.isArray(s.domains)) draft.scope.domains = s.domains;
+    if (Array.isArray(s.exclusions)) draft.scope.exclusions = s.exclusions;
+    if (Array.isArray(s.hosts)) draft.scope.hosts = s.hosts;
+    if (Array.isArray(s.aws_accounts)) draft.scope.aws_accounts = s.aws_accounts;
+    if (Array.isArray(s.azure_subscriptions)) draft.scope.azure_subscriptions = s.azure_subscriptions;
+    if (Array.isArray(s.gcp_projects)) draft.scope.gcp_projects = s.gcp_projects;
+    if (Array.isArray(s.url_patterns)) draft.scope.url_patterns = s.url_patterns;
   }
 
   // Merge opsec
   if (partial.opsec && typeof partial.opsec === 'object') {
     const o = partial.opsec as Record<string, unknown>;
-    if (typeof o.name === 'string') current.opsec.name = o.name;
-    if (typeof o.enabled === 'boolean') current.opsec.enabled = o.enabled;
-    if (typeof o.max_noise === 'number') current.opsec.max_noise = o.max_noise;
-    if (typeof o.approval_mode === 'string') current.opsec.approval_mode = o.approval_mode as EngagementConfig['opsec']['approval_mode'];
-    if (typeof o.approval_timeout_ms === 'number') current.opsec.approval_timeout_ms = o.approval_timeout_ms;
-    if (Array.isArray(o.blacklisted_techniques)) current.opsec.blacklisted_techniques = o.blacklisted_techniques;
-    if (o.time_window === null) current.opsec.time_window = undefined;
+    if (typeof o.name === 'string') draft.opsec.name = o.name;
+    if (typeof o.enabled === 'boolean') draft.opsec.enabled = o.enabled;
+    if (typeof o.max_noise === 'number') draft.opsec.max_noise = o.max_noise;
+    if (typeof o.approval_mode === 'string') draft.opsec.approval_mode = o.approval_mode as EngagementConfig['opsec']['approval_mode'];
+    if (typeof o.approval_timeout_ms === 'number') draft.opsec.approval_timeout_ms = o.approval_timeout_ms;
+    if (Array.isArray(o.blacklisted_techniques)) draft.opsec.blacklisted_techniques = o.blacklisted_techniques;
+    if (o.time_window === null) draft.opsec.time_window = undefined;
     else if (o.time_window && typeof o.time_window === 'object') {
       const tw = o.time_window as Record<string, unknown>;
       if (typeof tw.start_hour === 'number' && typeof tw.end_hour === 'number') {
-        current.opsec.time_window = { start_hour: tw.start_hour, end_hour: tw.end_hour };
+        draft.opsec.time_window = { start_hour: tw.start_hour, end_hour: tw.end_hour };
       }
     }
-    if (typeof o.notes === 'string') current.opsec.notes = o.notes;
+    if (typeof o.notes === 'string') draft.opsec.notes = o.notes;
   }
 
   // Merge failure_patterns (full replace)
   if (Array.isArray(partial.failure_patterns)) {
-    current.failure_patterns = partial.failure_patterns as EngagementConfig['failure_patterns'];
+    draft.failure_patterns = partial.failure_patterns as EngagementConfig['failure_patterns'];
   }
 
   // Merge objectives (full replace if provided)
   if (Array.isArray(partial.objectives)) {
-    current.objectives = partial.objectives as EngagementConfig['objectives'];
+    draft.objectives = partial.objectives as EngagementConfig['objectives'];
   }
 
-  // P3.5: zod-validate the merged config before persisting. Previously
-  // updateConfig hand-validated CIDRs/domains but bypassed the rest of
-  // the schema (range-bounded numbers, enum fields, etc.), so an invalid
-  // value (e.g. max_noise=2.0, an unknown approval_mode, or a malformed
-  // OPSEC time_window) could land on disk and fail validation later when
-  // the engagement reloaded. We now run engagementConfigSchema.parse on
-  // the merged result and throw on failure, matching how the config
-  // is validated at every other entry point (template merge, engagement
-  // create/update). The thrown error is surfaced by callers as a 400.
-  const parsed = engagementConfigSchema.safeParse(current);
+  // Validate the fully-merged draft before committing to live config.
+  const parsed = engagementConfigSchema.safeParse(draft);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(i =>
       `${i.path.join('.') || '<root>'}: ${i.message}`,
@@ -187,6 +182,8 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
     throw new Error(`Config validation failed: ${issues.join('; ')}`);
   }
 
+  // Commit: only now does the live config change.
+  host.ctx.config = parsed.data;
   host.persist();
-  return current;
+  return host.ctx.config;
 }

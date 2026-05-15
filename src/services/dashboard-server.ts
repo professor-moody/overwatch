@@ -2012,6 +2012,10 @@ export class DashboardServer {
   /** GET /api/bundle — stream the engagement archive as a .tar.gz download. */
   private async streamBundle(_req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      // Flush any pending mutations before archiving so the download reflects
+      // the latest engagement state (P1).
+      this.engine.flushNow();
+
       const stateFilePath = this.engine.getStateFilePath();
       const { stateDir, entries } = gatherBundleEntries(stateFilePath, { includeSnapshots: false });
       const cfg = this.engine.getConfig();
@@ -2027,6 +2031,13 @@ export class DashboardServer {
 
       await pipeTarGzToStream(res, stateDir, entries);
       res.end();
+
+      this.engine.logActionEvent({
+        description: `Dashboard bundle downloaded: ${filename}`,
+        event_type: 'system',
+        category: 'system',
+      });
+      this.engine.flushNow();
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

@@ -521,10 +521,9 @@ export interface EngagementConfig {
     file?: string;
   };
   /**
-   * Optional postgres connection string for ingest from an operator-controlled
-   * database (Metasploit, custom tool tables, etc.). Stored encrypted at rest
-   * — never appears in activity log command_repr.
-   * Set via `connect_postgres(connection_string)`.
+   * Redacted DSN recorded for display purposes only. The live connection is
+   * session-scoped (in-process pool); re-run connect_postgres after restart.
+   * Never contains credentials — a redacted placeholder is stored here.
    */
   postgres_dsn?: string;
 }

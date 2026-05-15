@@ -31,7 +31,11 @@ export function registerPostgresTools(server: McpServer, engine: GraphEngine): v
       title: 'Connect to Postgres',
       description: `Establish a read-only connection to an operator-controlled PostgreSQL database.
 
-The connection string is stored in the engagement config (never in the activity log).
+The connection is **session-scoped** — it lives only for the current server process.
+You must call connect_postgres again after an MCP server restart. A redacted form of
+the DSN is recorded in engagement config for display purposes, but credentials are
+not persisted and cannot be automatically reconnected.
+
 On success returns the list of tables in the public schema.
 
 Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
@@ -57,7 +61,8 @@ Example: connect_postgres("postgresql://user:pass@localhost:5432/msf")`,
       if (existing) await existing.end().catch(() => {});
       sourcesById.set(engagementId, src);
 
-      // Persist redacted DSN in engagement config
+      // Record a redacted DSN in engagement config for display only.
+      // Credentials are never stored — operators must reconnect after restart.
       const cfg = engine.getConfig();
       cfg.postgres_dsn = redactDsn(connection_string);
       engine.persist();

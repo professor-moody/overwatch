@@ -208,16 +208,23 @@ export class MutationJournal {
     }
   }
 
-  /** Replay every entry in the journal through the supplied applier. */
-  replay(applier: MutationApplier, fromSeq: number): number {
+  /**
+   * Replay every entry in the journal through the supplied applier.
+   * Returns detailed counts so callers can decide whether to truncate —
+   * truncation should be skipped when entries failed or were skipped
+   * unexpectedly, so the evidence is preserved for manual inspection (P2).
+   */
+  replay(applier: MutationApplier, fromSeq: number): { read: number; applied: number; skipped: number; failed: number } {
     const entries = this.readSince(fromSeq);
+    let applied = 0;
+    let skipped = 0;
+    let failed = 0;
     for (const entry of entries) {
       try {
         applier.apply(entry);
+        applied++;
       } catch (err) {
-        // A single failed apply should not kill the whole engine. Log to
-        // stderr; the caller can decide whether to bail. Preserving the
-        // sequence number lets us continue past the failure deterministically.
+        failed++;
         // eslint-disable-next-line no-console
         console.warn(`[mutation-journal] apply failed for seq=${entry.seq} type=${entry.type}: ${err instanceof Error ? err.message : err}`);
       }
@@ -225,7 +232,7 @@ export class MutationJournal {
     if (entries.length > 0) {
       this.nextSeq = Math.max(this.nextSeq, entries[entries.length - 1].seq);
     }
-    return entries.length;
+    return { read: entries.length, applied, skipped, failed };
   }
 
   /** Path to the journal file. Useful for tests + diagnostics. */

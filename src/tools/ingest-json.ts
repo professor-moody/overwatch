@@ -268,6 +268,15 @@ in the graph or be created by an earlier mapping in the same call.
             if (Array.isArray(val)) nested.push(...val);
             else if (val != null) nested.push(val);
           }
+          // Warn immediately if the explicit array_path resolved to nothing —
+          // this indicates a schema mismatch that would silently look like
+          // success (P2 zero-yield fix: items_seen=0 skips the later check).
+          if (nested.length === 0) {
+            warnings.push(
+              `Mapping "${nodeType}": array_path "${rawMapping.array_path}" resolved to 0 items ` +
+              `across ${topLevelItems.length} top-level object(s). Check the path against your input schema.`,
+            );
+          }
           items = nested;
         }
 

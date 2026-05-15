@@ -58,6 +58,10 @@ Returns the absolute path to the created archive and its size.`,
         event_type: 'system',
         category: 'system',
       });
+      // Persist so the audit event above is durable — logActionEvent only
+      // mutates in-memory state; without a flush the event can be lost if
+      // the process exits before the next debounced write (P3).
+      engine.flushNow();
 
       return {
         content: [{

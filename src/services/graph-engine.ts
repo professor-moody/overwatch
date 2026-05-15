@@ -419,6 +419,8 @@ export class GraphEngine {
       ...nextNode,
       ...normalizeNodeProvenance(nextNode),
     };
+    // Journal the patch before applying so a crash-before-flush can replay it.
+    this.ctx.journalMutation('merge_node_attrs', { props: nextAttrs });
     this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
     this.invalidateAllCaches();
     return this.ctx.graph.getNodeAttributes(nodeId);
@@ -1544,49 +1546,71 @@ export class GraphEngine {
       }
     }
 
-    for (const operation of operations) {
-      if (operation.kind === 'drop_edge') {
-        const dropped = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
-        if (!dropped) {
-          throw new Error(`Edge disappeared before correction: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
-        }
-        droppedEdges.push(dropped);
-        removedEdges.push(dropped);
-        continue;
-      }
+    // Apply all operations against an in-memory graph snapshot so that if any
+    // operation fails, we can restore the graph to its pre-correction state.
+    // Journal entries are suppressed during the attempt and only committed
+    // on full success (P2 correctGraph atomicity fix).
+    const graphSnapshot = this.ctx.graph.export();
+    const savedJournal = this.ctx.mutationJournal;
+    this.ctx.mutationJournal = null;
 
-      if (operation.kind === 'replace_edge') {
-        const existingEdgeId = this.findEdgeId(operation.source_id, operation.target_id, operation.edge_type);
-        const previousAttrs = existingEdgeId ? this.ctx.graph.getEdgeAttributes(existingEdgeId) : null;
-        const oldEdgeId = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
-        if (!oldEdgeId) {
-          throw new Error(`Edge disappeared before replacement: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+    try {
+      for (const operation of operations) {
+        if (operation.kind === 'drop_edge') {
+          const dropped = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
+          if (!dropped) {
+            throw new Error(`Edge disappeared before correction: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+          }
+          droppedEdges.push(dropped);
+          removedEdges.push(dropped);
+          continue;
         }
-        removedEdges.push(oldEdgeId);
-        droppedEdges.push(oldEdgeId);
-        const sourceId = operation.new_source_id || operation.source_id;
-        const targetId = operation.new_target_id || operation.target_id;
-        const edgeType = operation.new_edge_type || operation.edge_type;
-        const nextProps: EdgeProperties = {
-          ...(previousAttrs || {}),
-          ...(operation.properties || {}),
-          type: edgeType,
-          confidence: operation.confidence ?? previousAttrs?.confidence ?? 1.0,
-          discovered_at: previousAttrs?.discovered_at || new Date().toISOString(),
-          discovered_by: previousAttrs?.discovered_by,
-        };
-        const { id: newEdgeId } = this.addEdge(sourceId, targetId, nextProps);
-        replacedEdges.push({ old_edge_id: oldEdgeId, new_edge_id: newEdgeId });
-        newEdges.push(newEdgeId);
-        continue;
-      }
 
-      if (operation.kind === 'patch_node') {
-        this.patchNodeProperties(operation.node_id, operation.set_properties, operation.unset_properties);
-        patchedNodes.push(operation.node_id);
-        updatedNodes.push(operation.node_id);
+        if (operation.kind === 'replace_edge') {
+          const existingEdgeId = this.findEdgeId(operation.source_id, operation.target_id, operation.edge_type);
+          const previousAttrs = existingEdgeId ? this.ctx.graph.getEdgeAttributes(existingEdgeId) : null;
+          const oldEdgeId = this.dropEdgeByRef(operation.source_id, operation.target_id, operation.edge_type);
+          if (!oldEdgeId) {
+            throw new Error(`Edge disappeared before replacement: ${operation.source_id} --[${operation.edge_type}]--> ${operation.target_id}`);
+          }
+          removedEdges.push(oldEdgeId);
+          droppedEdges.push(oldEdgeId);
+          const sourceId = operation.new_source_id || operation.source_id;
+          const targetId = operation.new_target_id || operation.target_id;
+          const edgeType = operation.new_edge_type || operation.edge_type;
+          const nextProps: EdgeProperties = {
+            ...(previousAttrs || {}),
+            ...(operation.properties || {}),
+            type: edgeType,
+            confidence: operation.confidence ?? previousAttrs?.confidence ?? 1.0,
+            discovered_at: previousAttrs?.discovered_at || new Date().toISOString(),
+            discovered_by: previousAttrs?.discovered_by,
+          };
+          const { id: newEdgeId } = this.addEdge(sourceId, targetId, nextProps);
+          replacedEdges.push({ old_edge_id: oldEdgeId, new_edge_id: newEdgeId });
+          newEdges.push(newEdgeId);
+          continue;
+        }
+
+        if (operation.kind === 'patch_node') {
+          this.patchNodeProperties(operation.node_id, operation.set_properties, operation.unset_properties);
+          patchedNodes.push(operation.node_id);
+          updatedNodes.push(operation.node_id);
+        }
       }
+    } catch (err) {
+      // Restore graph to pre-correction state so callers see a clean failure
+      // with no partial mutations applied.
+      this.ctx.graph.clear();
+      this.ctx.graph.import(graphSnapshot);
+      this.invalidateAllCaches();
+      this.ctx.mutationJournal = savedJournal;
+      throw err;
     }
+
+    // All operations succeeded: re-enable journal and flush so the new state
+    // is immediately durable (no window for a partial-state crash).
+    this.ctx.mutationJournal = savedJournal;
 
     this.evaluateObjectives();
     this.logActionEvent({
@@ -1608,7 +1632,7 @@ export class GraphEngine {
         patched_nodes: patchedNodes,
       },
     });
-    this.persist({ removed_edges: removedEdges, new_edges: newEdges, updated_nodes: updatedNodes });
+    this.flushNow();
 
     return {
       dropped_edges: droppedEdges,

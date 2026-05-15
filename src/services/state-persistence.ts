@@ -406,6 +406,34 @@ export class StatePersistence {
   private _rollbackFrom(snapPath: string, builtinRules: InferenceRule[]): boolean {
     const raw = readFileSync(snapPath, 'utf-8');
     const data = JSON.parse(raw);
+    const snapshotSeq = this._restoreFromData(data, builtinRules);
+    // Discard journal entries that post-date this snapshot; they describe
+    // mutations that no longer apply to the rolled-back state.
+    if (this.ctx.mutationJournal) {
+      this.ctx.mutationJournal.truncate();
+      this.ctx.mutationJournal.setNextSeq(snapshotSeq);
+    }
+    this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
+    this.persistImmediate();
+    return true;
+  }
+
+  /**
+   * Shared state-restore routine used by rollback and recovery.
+   * Restores every persisted field (graph, config, agents, campaigns,
+   * tracked processes, inference rules, cold store, opsec tracker, frontier
+   * linkage, chain checkpoints, deterministic sequence, frontier leases,
+   * last phase id) so the two paths are always in sync.
+   *
+   * Journal handling is intentionally left to the caller: rollback and
+   * recovery both truncate post-snapshot entries, while loadState replays
+   * them first and truncates after.
+   *
+   * Returns the raw `journalSnapshotSeq` from the snapshot data so callers
+   * can reset the journal sequence to the right value.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _restoreFromData(data: any, builtinRules: InferenceRule[]): number {
     this.ctx.graph.clear();
     this.ctx.config = data.config;
     this.ctx.graph.import(data.graph);
@@ -414,8 +442,8 @@ export class StatePersistence {
     this.ctx.invalidatePathGraph();
     this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
     this.ctx.agents = new Map(data.agents || []);
+    this.ctx.campaigns = new Map(data.campaigns || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
-    // Restore inference rules: builtins + any custom rules from the snapshot
     this.ctx.inferenceRules = [...builtinRules];
     if (data.inferenceRules) {
       for (const rule of data.inferenceRules) {
@@ -431,26 +459,12 @@ export class StatePersistence {
     this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
     this.ctx.rebuildActionFrontierMap();
     this.ctx.rebuildChainTail();
-    // P0.2: restore chain checkpoints. If the field is missing (legacy
-    // snapshots, or hash chain disabled), keep the empty array.
     this.ctx.chainCheckpoints = Array.isArray(data.chainCheckpoints) ? data.chainCheckpoints : [];
     this.ctx.chainEventsSinceCheckpoint = 0;
-    // P1.2: restore deterministic sequence counter so post-restart IDs
-    // don't collide with pre-restart ones.
     this.ctx.deterministicSeq = typeof data.deterministicSeq === 'number' ? data.deterministicSeq : 0;
-    // P1.4: restore frontier leases.
     this.ctx.frontierLeases = FrontierLeases.deserialize(data.frontierLeases);
-    // P4.1: restore last-known phase id (undefined for legacy snapshots).
     this.ctx.lastKnownPhaseId = typeof data.lastKnownPhaseId === 'string' ? data.lastKnownPhaseId : undefined;
-    // P2.1: rollback discards any journal entries since the snapshot —
-    // they describe mutations that don't apply to this older state.
-    if (this.ctx.mutationJournal) {
-      this.ctx.mutationJournal.truncate();
-      this.ctx.mutationJournal.setNextSeq(typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0);
-    }
-    this.ctx.log('Rolled back to snapshot: ' + basename(snapPath), undefined, { category: 'system' });
-    this.persistImmediate();
-    return true;
+    return typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
   }
 
   loadState(): void {
@@ -501,15 +515,26 @@ export class StatePersistence {
     if (this.ctx.mutationJournal) {
       const snapshotSeq = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
       this.ctx.mutationJournal.setNextSeq(snapshotSeq);
-      const replayed = this.ctx.mutationJournal.replay(this.makeMutationApplier(), snapshotSeq);
-      if (replayed > 0) {
-        this.ctx.log(`WAL replay: applied ${replayed} mutation(s) from journal`, undefined, {
+      const replay = this.ctx.mutationJournal.replay(this.makeMutationApplier(), snapshotSeq);
+      if (replay.read > 0) {
+        const parts: string[] = [`applied ${replay.applied}`];
+        if (replay.skipped > 0) parts.push(`skipped ${replay.skipped}`);
+        if (replay.failed > 0) parts.push(`FAILED ${replay.failed}`);
+        this.ctx.log(`WAL replay: ${parts.join(', ')} of ${replay.read} mutation(s)`, undefined, {
           category: 'system',
+          outcome: replay.failed > 0 ? 'failure' : 'success',
         });
-        // Force an immediate snapshot so the journal can be safely truncated.
-        this.persistImmediate();
-        this.ctx.mutationJournal.truncate();
-        this.ctx.mutationJournal.setNextSeq(this.ctx.mutationJournal.peekSeq());
+        // Only truncate the journal when every entry was applied successfully.
+        // If any entry failed, preserve the journal file so the operator can
+        // inspect and recover manually — truncating would destroy the evidence (P2).
+        if (replay.failed === 0 && replay.skipped === 0) {
+          this.persistImmediate();
+          this.ctx.mutationJournal.truncate();
+          this.ctx.mutationJournal.setNextSeq(this.ctx.mutationJournal.peekSeq());
+        } else {
+          // Still snapshot so in-memory state is durable, but keep journal.
+          this.persistImmediate();
+        }
       }
     }
   }
@@ -589,31 +614,18 @@ export class StatePersistence {
         const dir = dirname(this.ctx.stateFilePath);
         const raw = readFileSync(join(dir, snap), 'utf-8');
         const data = JSON.parse(raw);
-        this.ctx.graph.clear();
-        this.ctx.config = data.config;
-        this.ctx.graph.import(data.graph);
-        this.normalizeLoadedNodeProvenance();
-        this.migrateDefaultCredentialFlags();
-        this.ctx.invalidatePathGraph();
-        this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
-        this.ctx.agents = new Map(data.agents || []);
-        this.ctx.campaigns = new Map(data.campaigns || []);
-        this.ctx.trackedProcesses = data.trackedProcesses || [];
-        this.ctx.inferenceRules = [...builtinRules];
-        if (data.inferenceRules) {
-          for (const rule of data.inferenceRules) {
-            this.ctx.inferenceRules.push(rule);
-          }
+        // Use the shared restore routine so all fields (deterministicSeq,
+        // frontierLeases, chainCheckpoints, lastKnownPhaseId) are restored
+        // — previously these were skipped, causing potential ID reuse and
+        // stale lease/phase state after recovery (P1 fix).
+        const snapshotSeq = this._restoreFromData(data, builtinRules);
+        // Truncate journal and reset seq, same as rollback, so stale
+        // post-snapshot mutations cannot replay into recovered state (P1 fix).
+        if (this.ctx.mutationJournal) {
+          this.ctx.mutationJournal.truncate();
+          this.ctx.mutationJournal.setNextSeq(snapshotSeq);
         }
-        if (data.coldStore) {
-          this.ctx.coldStore.import(data.coldStore);
-        }
-        this.ctx.opsecTracker = data.opsecTracker
-          ? OpsecTracker.deserialize(data.opsecTracker, this.ctx)
-          : new OpsecTracker(this.ctx);
-        this.ctx.frontierLinkage = FrontierLinkageTracker.deserialize(data.frontierLinkage);
-        this.ctx.rebuildActionFrontierMap();
-        this.ctx.rebuildChainTail();
+        this.ctx.log('Recovered from snapshot: ' + basename(snap), undefined, { category: 'system' });
         // Overwrite corrupted state file with valid snapshot data
         this.persistImmediate();
         return true;

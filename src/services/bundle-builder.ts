@@ -45,6 +45,11 @@ export function gatherBundleEntries(
   const stateDir = dirname(stateFilePath);
   const entries: string[] = [basename(stateFilePath)];
 
+  // Include WAL journal alongside the state file — captures any mutations not
+  // yet folded into a snapshot, so the archive is complete even under load.
+  const journalFile = basename(stateFilePath, '.json') + '.journal.jsonl';
+  if (existsSync(join(stateDir, journalFile))) entries.push(journalFile);
+
   for (const sub of ['evidence', 'reports']) {
     if (existsSync(join(stateDir, sub))) entries.push(sub);
   }
@@ -85,6 +90,10 @@ export function createTarGz(
 /**
  * Pipe `tar czf - -C stateDir [entries...]` to a writable stream.
  * Used by the HTTP endpoint to stream the archive directly to the browser.
+ *
+ * Resolves only after the tar process exits with code 0 so the caller can
+ * be sure the archive is complete before ending the HTTP response. Errors
+ * from the destination stream (e.g. client disconnect) kill the child.
  */
 export function pipeTarGzToStream(
   dest: NodeJS.WritableStream,
@@ -96,14 +105,23 @@ export function pipeTarGzToStream(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
+    let settled = false;
+    const settle = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err); else resolve();
+    };
+
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
     child.stdout.pipe(dest, { end: false });
-    child.stdout.on('end', () => resolve());
-    child.on('close', (code) => {
-      if (code !== 0) reject(new Error(`tar exited ${code}: ${stderr.trim()}`));
-      else resolve();
-    });
-    child.on('error', (err) => reject(new Error(`tar spawn failed: ${err.message}`)));
+
+    // Resolve/reject only once the process exits — stdout.end fires before
+    // close, so hooking it alone masks non-zero exit codes (P2).
+    child.on('close', (code) => settle(code !== 0 ? new Error(`tar exited ${code}: ${stderr.trim()}`) : undefined));
+    child.on('error', (err) => settle(new Error(`tar spawn failed: ${err.message}`)));
+
+    // If the HTTP client disconnects, kill tar rather than streaming into the void.
+    dest.on('error', (err) => { child.kill(); settle(err); });
   });
 }
 
@@ -116,6 +134,10 @@ export async function buildBundle(
   engine: GraphEngine,
   opts: BundleOptions & { outputPath?: string } = {},
 ): Promise<{ archivePath: string; sizeBytes: number; manifest: BundleManifest }> {
+  // Flush any pending mutations to disk before archiving so the bundle
+  // captures the latest engagement state (P1).
+  engine.flushNow();
+
   const stateFilePath = engine.getStateFilePath();
   const stateDir = dirname(stateFilePath);
   const cfg = engine.getConfig();

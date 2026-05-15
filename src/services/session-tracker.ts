@@ -156,6 +156,10 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
 
   if (edgesToDowngrade.length > 0) {
     host.invalidateFrontierCache();
+    // Persist immediately so the on-disk state and bundle exports reflect the
+    // closed session — without this the live edge attributes survive until the
+    // next unrelated persist, which may never come (P1 session-close fix).
+    host.persist();
   }
 }
 
@@ -180,6 +184,9 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
   if (downgraded > 0) {
     host.log(`Reconciled ${downgraded} stale HAS_SESSION edge(s) on startup — marked as historical`, undefined, { category: 'system', event_type: 'system' });
     host.invalidateFrontierCache();
+    // Persist so the reconciled edge attributes reach disk before the first
+    // tool call changes something else (P1 session-close fix).
+    host.persist();
   }
 }
 
