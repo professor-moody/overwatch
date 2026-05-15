@@ -2,13 +2,16 @@
 // NodeDetailDrawer — right-side node detail panel
 // ============================================================
 
-import { useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
+import { correctGraph, getFindings, type FindingDto, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
+import { useEngagementStore } from '../../stores/engagement-store';
+import { deriveNodeRelationships } from '../../lib/relationships';
+import { StatusPill } from '../shared/primitives';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -20,7 +23,21 @@ interface NodeDetailDrawerProps {
 }
 
 export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, onUndoPush }: NodeDetailDrawerProps) {
-  const { navigateToEvidence } = useNavigation();
+  const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
+  const storeGraph = useEngagementStore(s => s.graph);
+  const sessions = useEngagementStore(s => s.sessions);
+  const pendingActions = useEngagementStore(s => s.pendingActions);
+  const frontier = useEngagementStore(s => s.frontier);
+  const [findings, setFindings] = useState<FindingDto[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFindings()
+      .then(data => { if (!cancelled) setFindings(data.findings || []); })
+      .catch(() => { if (!cancelled) setFindings([]); });
+    return () => { cancelled = true; };
+  }, []);
+
   if (!nodeId || !graph.hasNode(nodeId)) return null;
 
   const attrs = graph.getNodeAttributes(nodeId);
@@ -28,6 +45,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
   const nodeType = (attrs.nodeType as string) || 'host';
   const label = getNodeDisplayLabel(props, nodeId);
   const entries = getNodeIdentityEntries(props, nodeId);
+  const relationships = deriveNodeRelationships(nodeId, {
+    graph: storeGraph,
+    sessions,
+    pendingActions,
+    frontier,
+    findings,
+  });
 
   // Collect connected edges grouped by type
   const edgeGroups = new Map<string, { count: number; peers: { id: string; label: string; type: string }[] }>();
@@ -115,6 +139,51 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             </div>
           </div>
         )}
+
+        {(relationships.sessions.length > 0 || relationships.pendingActions.length > 0 || relationships.frontier.length > 0 || relationships.findings.length > 0) && (
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Operator Context</h4>
+            <div className="space-y-2">
+              {relationships.sessions.length > 0 && (
+                <ContextBlock title="Sessions" count={relationships.sessions.length} onClick={() => navigateToPanel('sessions')}>
+                  {relationships.sessions.slice(0, 3).map(session => (
+                    <div key={session.id} className="flex items-center gap-2 text-[11px]">
+                      <StatusPill className={session.state === 'connected' ? 'bg-success/10 text-success' : 'bg-elevated text-muted-foreground'}>{session.state}</StatusPill>
+                      <span className="truncate">{session.title || session.id.slice(0, 8)}</span>
+                    </div>
+                  ))}
+                </ContextBlock>
+              )}
+              {relationships.pendingActions.length > 0 && (
+                <ContextBlock title="Pending Actions" count={relationships.pendingActions.length} onClick={() => navigateToPanel('actions')}>
+                  {relationships.pendingActions.slice(0, 3).map(action => (
+                    <div key={action.action_id} className="text-[11px] text-muted-foreground truncate">
+                      <span className="text-foreground">{action.technique}</span> · {action.description}
+                    </div>
+                  ))}
+                </ContextBlock>
+              )}
+              {relationships.frontier.length > 0 && (
+                <ContextBlock title="Frontier" count={relationships.frontier.length} onClick={() => navigateToPanel('frontier', nodeId)}>
+                  {relationships.frontier.slice(0, 3).map(item => (
+                    <div key={item.frontier_item_id || item.id} className="text-[11px] text-muted-foreground truncate">
+                      <span className="font-mono text-accent">{(item.priority ?? 0).toFixed(1)}</span> · {item.description}
+                    </div>
+                  ))}
+                </ContextBlock>
+              )}
+              {relationships.findings.length > 0 && (
+                <ContextBlock title="Findings" count={relationships.findings.length} onClick={() => navigateToPanel('findings')}>
+                  {relationships.findings.slice(0, 3).map(finding => (
+                    <div key={finding.id} className="text-[11px] text-muted-foreground truncate">
+                      <span className="text-foreground">{finding.severity}</span> · {finding.title}
+                    </div>
+                  ))}
+                </ContextBlock>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Actions */}
@@ -132,12 +201,40 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           >
             Evidence
           </button>
+          <button
+            onClick={() => navigateToGraph(nodeId, 2)}
+            className="flex-1 text-xs py-1.5 rounded bg-elevated text-foreground hover:bg-hover transition-colors"
+          >
+            Graph
+          </button>
         </div>
         {editMode && (
           <AddEdgeInline graph={graph} sourceId={nodeId} onUndoPush={onUndoPush} />
         )}
       </div>
     </div>
+  );
+}
+
+function ContextBlock({
+  title,
+  count,
+  children,
+  onClick,
+}: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick} className="w-full text-left rounded border border-border bg-elevated/60 p-2 hover:bg-hover transition-colors">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[11px] font-medium text-foreground">{title}</span>
+        <span className="text-[10px] font-mono text-muted-foreground">{count}</span>
+      </div>
+      <div className="space-y-1">{children}</div>
+    </button>
   );
 }
 

@@ -738,6 +738,59 @@ describe('DashboardServer', () => {
     expect(payload.sessions).toHaveLength(2);
   });
 
+  it('handleSessionClose closes a session through the manager', () => {
+    const close = vi.fn(() => ({
+      metadata: { id: 'abc-123', state: 'closed', title: 'Shell', kind: 'pty' },
+      final: { session_id: 'abc-123', start_pos: 0, end_pos: 0, text: '', truncated: false },
+    }));
+    (dashboard as any).sessionManager = { close };
+
+    const req = { headers: {}, url: '/api/sessions/abc-123/close' } as any;
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).handleSessionClose('abc-123', req, res);
+
+    expect(close).toHaveBeenCalledWith('abc-123', 'dashboard', true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).metadata.state).toBe('closed');
+  });
+
+  it('handleSessionUpdate updates title and notes through the manager', async () => {
+    const update = vi.fn(() => ({ id: 'abc-123', state: 'connected', title: 'New title', notes: 'keep' }));
+    (dashboard as any).sessionManager = { update };
+
+    const req = {
+      headers: { 'content-type': 'application/json' },
+      url: '/api/sessions/abc-123',
+      on(event: string, cb: (chunk?: Buffer) => void) {
+        if (event === 'data') cb(Buffer.from(JSON.stringify({ title: 'New title', notes: 'keep', ignored: true })));
+        if (event === 'end') cb();
+      },
+    } as any;
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).handleSessionUpdate('abc-123', req, res);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(update).toHaveBeenCalledWith('abc-123', { title: 'New title', notes: 'keep' }, 'dashboard', true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).metadata.title).toBe('New title');
+  });
+
   it('handleSessionConnection closes with 4503 when no session manager', () => {
     const mockWs = {
       close: vi.fn(),

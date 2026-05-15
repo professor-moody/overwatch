@@ -70,6 +70,17 @@ export async function getSessions(): Promise<{ sessions: SessionInfo[]; total: n
   return fetchJson('/api/sessions');
 }
 
+export async function closeSession(id: string): Promise<{ metadata: SessionInfo; final: { text: string; end_pos: number } }> {
+  return fetchJson(`/api/sessions/${id}/close`, { method: 'POST' });
+}
+
+export async function updateSession(id: string, body: { title?: string; notes?: string }): Promise<{ metadata: SessionInfo }> {
+  return fetchJson(`/api/sessions/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
 // --- Agents ---
 
 export async function getAgents(): Promise<{ agents: AgentInfo[] }> {

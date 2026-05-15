@@ -3,9 +3,10 @@ import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatTimestamp } from '../../lib/utils';
-import { getEvidenceChains, getPaths } from '../../lib/api';
+import { getEvidenceChains, getFindings, getPaths, type FindingDto } from '../../lib/api';
 import type { EvidenceChainResponse, AttackPath, Objective } from '../../lib/types';
 import { PageHeader, PanelSection } from '../shared/primitives';
+import { deriveNodeRelationships } from '../../lib/relationships';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
@@ -28,9 +29,14 @@ export function EvidencePanel() {
 function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const [query, setQuery] = useState(initialQuery || '');
   const [data, setData] = useState<EvidenceChainResponse | null>(null);
+  const [findings, setFindings] = useState<FindingDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const { navigateToGraph } = useNavigation();
+  const { navigateToGraph, navigateToPanel } = useNavigation();
+  const graph = useEngagementStore(s => s.graph);
+  const sessions = useEngagementStore(s => s.sessions);
+  const pendingActions = useEngagementStore(s => s.pendingActions);
+  const frontier = useEngagementStore(s => s.frontier);
 
   const search = useCallback(async () => {
     const q = query.trim();
@@ -51,6 +57,22 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
       getEvidenceChains(initialQuery).then(setData).catch(() => setError('No evidence found'));
     }
   }, [initialQuery]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFindings()
+      .then(resp => { if (!cancelled) setFindings(resp.findings || []); })
+      .catch(() => { if (!cancelled) setFindings([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const relationships = data ? deriveNodeRelationships(data.node_id, {
+    graph,
+    sessions,
+    pendingActions,
+    frontier,
+    findings,
+  }) : null;
 
   return (
     <PanelSection title="Evidence Chain" className="space-y-3">
@@ -114,6 +136,29 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
             </div>
           )}
 
+          {relationships && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <RelatedCard title="Sessions" count={relationships.sessions.length} onClick={() => navigateToPanel('sessions')} />
+              <RelatedCard title="Actions" count={relationships.pendingActions.length} onClick={() => navigateToPanel('actions')} />
+              <RelatedCard title="Frontier" count={relationships.frontier.length} onClick={() => navigateToPanel('frontier', data.node_id)} />
+              {relationships.findings.length > 0 && (
+                <div className="md:col-span-3 rounded border border-border bg-elevated p-2">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="font-medium">Related Findings</span>
+                    <button onClick={() => navigateToPanel('findings')} className="text-accent hover:underline">Open findings</button>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {relationships.findings.slice(0, 6).map(finding => (
+                      <span key={finding.id} className="text-[10px] px-1.5 py-0.5 rounded bg-background text-muted-foreground">
+                        {finding.severity} · {finding.title}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Timeline */}
           {data.chains.length > 0 && (
             <div className="space-y-0 ml-3 border-l border-border pl-4">
@@ -136,6 +181,15 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
         </div>
       )}
     </PanelSection>
+  );
+}
+
+function RelatedCard({ title, count, onClick }: { title: string; count: number; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="rounded border border-border bg-elevated p-2 text-left hover:bg-hover transition-colors">
+      <div className="text-[10px] text-muted-foreground">{title}</div>
+      <div className="text-lg font-semibold text-foreground">{count}</div>
+    </button>
   );
 }
 

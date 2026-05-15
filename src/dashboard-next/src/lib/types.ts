@@ -135,10 +135,41 @@ export interface AbortCondition {
 export interface SessionInfo {
   id: string;
   kind: string;
+  transport?: string;
   state: 'pending' | 'connected' | 'closed' | 'error';
+  auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
   title?: string;
+  host?: string;
+  user?: string;
+  port?: number;
+  pid?: number;
   owner?: string;
+  agent_id?: string;
+  target_node?: string;
+  principal_node?: string;
+  credential_node?: string;
+  action_id?: string;
+  frontier_item_id?: string;
+  claimed_by?: string;
   created_at?: string;
+  started_at?: string;
+  last_activity_at?: string;
+  closed_at?: string;
+  capabilities?: {
+    has_stdin?: boolean;
+    has_stdout?: boolean;
+    supports_resize?: boolean;
+    supports_signals?: boolean;
+    tty_quality?: string;
+  };
+  buffer_end_pos?: number;
+  notes?: string;
+  default_validation?: {
+    technique?: string;
+    target_ip?: string;
+    target_url?: string;
+    allow_unverified_scope?: boolean;
+  };
 }
 
 // --- Pending Actions ---
@@ -544,4 +575,3 @@ export interface InferenceRuleInfo {
   produces: InferenceRuleProduction[];
   self_confirming?: boolean;
 }
-

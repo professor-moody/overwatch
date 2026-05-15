@@ -15,6 +15,9 @@ import { EmptyState } from '../shared';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { RenderReportModal } from './RenderReportModal';
 import { ReportsList } from './ReportsList';
+import { useEngagementStore } from '../../stores/engagement-store';
+import { useNavigation } from '../../hooks/useNavigation';
+import { resolveAssetToNodeId } from '../../lib/relationships';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -27,6 +30,8 @@ const SEVERITY_BADGE: Record<FindingDto['severity'], string> = {
 };
 
 export function FindingsPanel() {
+  const graph = useEngagementStore(s => s.graph);
+  const { navigateToEvidence, navigateToGraph } = useNavigation();
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [summary, setSummary] = useState<{ critical: number; high: number; medium: number; low: number; info: number }>({
     critical: 0, high: 0, medium: 0, low: 0, info: 0,
@@ -144,7 +149,13 @@ export function FindingsPanel() {
                 {isExpanded && (
                   <div className="border-t border-border divide-y divide-border">
                     {group.map(f => (
-                      <FindingRow key={f.id} finding={f} />
+                      <FindingRow
+                        key={f.id}
+                        finding={f}
+                        resolveAsset={(asset) => resolveAssetToNodeId(asset, graph)}
+                        onGraph={navigateToGraph}
+                        onEvidence={navigateToEvidence}
+                      />
                     ))}
                   </div>
                 )}
@@ -164,7 +175,17 @@ export function FindingsPanel() {
   );
 }
 
-function FindingRow({ finding: f }: { finding: FindingDto }) {
+function FindingRow({
+  finding: f,
+  resolveAsset,
+  onGraph,
+  onEvidence,
+}: {
+  finding: FindingDto;
+  resolveAsset: (asset: string) => string | null;
+  onGraph: (nodeId?: string, hops?: number) => void;
+  onEvidence: (nodeId: string) => void;
+}) {
   const cls = f.classification;
   return (
     <div className="px-3 py-2 hover:bg-hover transition-colors">
@@ -173,8 +194,20 @@ function FindingRow({ finding: f }: { finding: FindingDto }) {
           <div className="text-sm font-medium text-foreground">{f.title}</div>
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{f.description}</div>
           {f.affected_assets.length > 0 && (
-            <div className="text-[10px] text-muted-foreground mt-1 font-mono truncate">
-              affects: {f.affected_assets.slice(0, 3).join(', ')}{f.affected_assets.length > 3 ? ` +${f.affected_assets.length - 3} more` : ''}
+            <div className="mt-1 flex flex-wrap gap-1">
+              {f.affected_assets.slice(0, 6).map(asset => {
+                const nodeId = resolveAsset(asset);
+                return nodeId ? (
+                  <span key={asset} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono">
+                    {asset}
+                    <button onClick={() => onGraph(nodeId, 2)} className="hover:text-foreground">graph</button>
+                    <button onClick={() => onEvidence(nodeId)} className="hover:text-foreground">evidence</button>
+                  </span>
+                ) : (
+                  <span key={asset} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground font-mono">{asset}</span>
+                );
+              })}
+              {f.affected_assets.length > 6 && <span className="text-[10px] text-muted-foreground">+{f.affected_assets.length - 6} more</span>}
             </div>
           )}
           {cls && (

@@ -5,6 +5,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
 import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { deriveNodeRelationships } from '../../lib/relationships';
 
 const SECTION_PRIORITY_LIMIT = 8;
 const SECTION_DEFAULT_LIMIT = 5;
@@ -95,6 +96,9 @@ function buildSections(frontier: FrontierItem[], typeFilter: string | null, node
 
 export function FrontierPanel() {
   const frontier = useEngagementStore(s => s.frontier);
+  const graph = useEngagementStore(s => s.graph);
+  const sessions = useEngagementStore(s => s.sessions);
+  const pendingActions = useEngagementStore(s => s.pendingActions);
   const { navigateToEvidence, navigateToGraph } = useNavigation();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -222,6 +226,10 @@ export function FrontierPanel() {
                         onZoom={() => handleZoom(item)}
                         onFocus={() => handleFocus(item)}
                         onEvidence={() => handleEvidence(item)}
+                        related={(() => {
+                          const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
+                          return nodeId ? deriveNodeRelationships(nodeId, { graph, sessions, pendingActions }) : null;
+                        })()}
                       />
                     ))}
                     {hasMore && (
@@ -248,11 +256,13 @@ function FrontierItemCard({
   onZoom,
   onFocus,
   onEvidence,
+  related,
 }: {
   item: FrontierItem;
   onZoom: () => void;
   onFocus: () => void;
   onEvidence: () => void;
+  related?: ReturnType<typeof deriveNodeRelationships> | null;
 }) {
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
   const noise = item.opsec_noise ?? 0;
@@ -272,6 +282,8 @@ function FrontierItemCard({
   }
   if (item.edge_type) chips.push({ text: item.edge_type, cls: 'bg-accent-dim text-accent' });
   if (degree != null) chips.push({ text: `deg ${degree}`, cls: 'bg-elevated text-muted-foreground' });
+  if (related?.sessions.length) chips.push({ text: `${related.sessions.length} session`, cls: 'bg-success/10 text-success' });
+  if (related?.pendingActions.length) chips.push({ text: `${related.pendingActions.length} action`, cls: 'bg-warning/10 text-warning' });
 
   return (
     <div className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">

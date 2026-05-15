@@ -444,7 +444,7 @@ export class DashboardServer {
     if (isAllowedOrigin && origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (method === 'OPTIONS') {
@@ -555,6 +555,8 @@ export class DashboardServer {
       const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
+      const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
+      const sessionDetailMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
       const pathsMatch = pathname.match(/^\/api\/paths\/([^/]+)$/);
       const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
@@ -589,6 +591,10 @@ export class DashboardServer {
         this.handleActionApprove(actionApproveMatch[1], req, res);
       } else if (actionDenyMatch && method === 'POST') {
         this.handleActionDeny(actionDenyMatch[1], req, res);
+      } else if (sessionCloseMatch && method === 'POST') {
+        this.handleSessionClose(sessionCloseMatch[1], req, res);
+      } else if (sessionDetailMatch && method === 'PATCH') {
+        this.handleSessionUpdate(sessionDetailMatch[1], req, res);
       } else if (evidenceChainMatch) {
         this.serveEvidenceChains(decodeURIComponent(evidenceChainMatch[1]), res);
       } else if (pathsMatch) {
@@ -1197,6 +1203,47 @@ export class DashboardServer {
     const active = all.filter(s => s.state === 'connected' || s.state === 'pending');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ total: all.length, active: active.length, sessions: all }));
+  }
+
+  private handleSessionClose(sessionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    if (!this.sessionManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session manager not available' }));
+      return;
+    }
+    try {
+      const result = this.sessionManager.close(sessionId, 'dashboard', true);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const notFound = /not found/i.test(message);
+      res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    }
+  }
+
+  private handleSessionUpdate(sessionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    if (!this.sessionManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session manager not available' }));
+      return;
+    }
+    this.readJsonBody(req).then(body => {
+      const updates: { title?: string; notes?: string } = {};
+      if (typeof body?.title === 'string') updates.title = body.title;
+      if (typeof body?.notes === 'string') updates.notes = body.notes;
+      const metadata = this.sessionManager!.update(sessionId, updates, 'dashboard', true);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ metadata }));
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const notFound = /not found/i.test(message);
+      res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    });
   }
 
   get running(): boolean {
