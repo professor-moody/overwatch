@@ -1,22 +1,21 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
-import { useNavigation } from '../../hooks/useNavigation';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
 import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { deriveNodeRelationships } from '../../lib/relationships';
+import {
+  buildFrontierSections,
+  filterFrontierItems,
+  getFrontierPrimaryNodeId,
+  getFrontierNodeIds,
+} from '../../lib/frontier-workspace';
+import { GraphNodeLinks } from '../shared/GraphNodeLinks';
+import { getFindings, type FindingDto } from '../../lib/api';
 
 const SECTION_PRIORITY_LIMIT = 8;
 const SECTION_DEFAULT_LIMIT = 5;
-
-const SECTION_LABELS: Record<string, string> = {
-  incomplete_node: 'Incomplete Nodes',
-  untested_edge: 'Untested Edges',
-  inferred_edge: 'Inferred Opportunities',
-  network_discovery: 'Network Discovery',
-  credential_test: 'Credential Tests',
-};
 
 const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
   incomplete_node: { label: 'node', cls: 'bg-elevated text-muted-foreground' },
@@ -46,66 +45,18 @@ function metric(item: FrontierItem, key: string): string {
   return v !== undefined && v !== null ? String(v) : '—';
 }
 
-function itemReferencesNode(item: FrontierItem, nodeId: string): boolean {
-  return (
-    item.target_node === nodeId ||
-    item.node_id === nodeId ||
-    item.edge_source === nodeId ||
-    item.edge_target === nodeId ||
-    (item as unknown as Record<string, unknown>).source_node === nodeId
-  );
-}
-
-interface Section {
-  key: string;
-  title: string;
-  items: FrontierItem[];
-  total: number;
-}
-
-function buildSections(frontier: FrontierItem[], typeFilter: string | null, nodeFilter: string | null): Section[] {
-  let list = frontier;
-  if (typeFilter) list = list.filter(i => i.type === typeFilter);
-  if (nodeFilter) list = list.filter(i => itemReferencesNode(i, nodeFilter));
-  list = [...list].sort((a, b) => {
-    const priority = (b.priority ?? 0) - (a.priority ?? 0);
-    if (priority !== 0) return priority;
-    const aId = a.frontier_item_id || a.id || '';
-    const bId = b.frontier_item_id || b.id || '';
-    return aId.localeCompare(bId);
-  });
-
-  const topPriority = list.slice(0, SECTION_PRIORITY_LIMIT);
-  const topIds = new Set(topPriority.map(i => i.id));
-
-  // When a node filter is active, skip the type sub-sections and just show everything.
-  if (nodeFilter) {
-    return [{ key: 'priority', title: 'Matching Items', items: topPriority, total: list.length }];
-  }
-
-  const sections: Section[] = [
-    { key: 'priority', title: 'Top Priority', items: topPriority, total: topPriority.length },
-  ];
-  for (const type of ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'credential_test'] as const) {
-    const typeItems = list.filter(i => i.type === type && !topIds.has(i.id));
-    const total = list.filter(i => i.type === type).length;
-    if (total > 0) sections.push({ key: type, title: SECTION_LABELS[type] || type, items: typeItems, total });
-  }
-  return sections;
-}
-
 export function FrontierPanel() {
   const frontier = useEngagementStore(s => s.frontier);
   const graph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
   const pendingActions = useEngagementStore(s => s.pendingActions);
-  const { navigateToEvidence, navigateToGraph } = useNavigation();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
+  const [findings, setFindings] = useState<FindingDto[]>([]);
 
   // Read node filter from route query (node= param set by navigateToFrontier).
   useEffect(() => {
@@ -117,16 +68,21 @@ export function FrontierPanel() {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getFindings()
+      .then(data => { if (!cancelled) setFindings(data.findings || []); })
+      .catch(() => { if (!cancelled) setFindings([]); });
+    return () => { cancelled = true; };
+  }, []);
+
   const sections = useMemo(
-    () => buildSections(frontier, typeFilter, nodeFilter),
+    () => buildFrontierSections(frontier, { typeFilter, nodeFilter, priorityLimit: SECTION_PRIORITY_LIMIT }),
     [frontier, typeFilter, nodeFilter],
   );
 
   const totalVisible = useMemo(() => {
-    let list = frontier;
-    if (typeFilter) list = list.filter(i => i.type === typeFilter);
-    if (nodeFilter) list = list.filter(i => itemReferencesNode(i, nodeFilter));
-    return list.length;
+    return filterFrontierItems(frontier, typeFilter, nodeFilter).length;
   }, [frontier, typeFilter, nodeFilter]);
 
   const toggleCollapse = (key: string) => {
@@ -134,21 +90,6 @@ export function FrontierPanel() {
   };
   const toggleExpand = (key: string) => {
     setExpanded(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  };
-
-  const handleZoom = (item: FrontierItem) => {
-    const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
-    if (nodeId) navigateToGraph(nodeId, 1);
-  };
-
-  const handleFocus = (item: FrontierItem) => {
-    const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
-    if (nodeId) navigateToGraph(nodeId, 2);
-  };
-
-  const handleEvidence = (item: FrontierItem) => {
-    const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
-    if (nodeId) navigateToEvidence(nodeId);
   };
 
   const clearNodeFilter = () => {
@@ -223,12 +164,9 @@ export function FrontierPanel() {
                       <FrontierItemCard
                         key={item.frontier_item_id || item.id || idx}
                         item={item}
-                        onZoom={() => handleZoom(item)}
-                        onFocus={() => handleFocus(item)}
-                        onEvidence={() => handleEvidence(item)}
                         related={(() => {
-                          const nodeId = item.target_node || item.node_id || item.edge_source || item.edge_target;
-                          return nodeId ? deriveNodeRelationships(nodeId, { graph, sessions, pendingActions }) : null;
+                          const nodeId = getFrontierPrimaryNodeId(item);
+                          return nodeId ? deriveNodeRelationships(nodeId, { graph, sessions, pendingActions, frontier, findings }) : null;
                         })()}
                       />
                     ))}
@@ -253,15 +191,9 @@ export function FrontierPanel() {
 
 function FrontierItemCard({
   item,
-  onZoom,
-  onFocus,
-  onEvidence,
   related,
 }: {
   item: FrontierItem;
-  onZoom: () => void;
-  onFocus: () => void;
-  onEvidence: () => void;
   related?: ReturnType<typeof deriveNodeRelationships> | null;
 }) {
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
@@ -284,6 +216,8 @@ function FrontierItemCard({
   if (degree != null) chips.push({ text: `deg ${degree}`, cls: 'bg-elevated text-muted-foreground' });
   if (related?.sessions.length) chips.push({ text: `${related.sessions.length} session`, cls: 'bg-success/10 text-success' });
   if (related?.pendingActions.length) chips.push({ text: `${related.pendingActions.length} action`, cls: 'bg-warning/10 text-warning' });
+  if (related?.findings.length) chips.push({ text: `${related.findings.length} finding`, cls: 'bg-destructive/10 text-destructive' });
+  const nodeIds = getFrontierNodeIds(item);
 
   return (
     <div className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
@@ -303,7 +237,16 @@ function FrontierItemCard({
         </div>
       )}
 
-      <div className="flex items-center justify-between">
+      {nodeIds.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-1.5">
+          {nodeIds.slice(0, 3).map((nodeId, index) => (
+            <GraphNodeLinks key={`${nodeId}-${index}`} nodeId={nodeId} className="rounded bg-background/60 px-1 py-0.5" />
+          ))}
+          {nodeIds.length > 3 && <span className="text-[10px] text-muted-foreground">+{nodeIds.length - 3} nodes</span>}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1">
             <span className="w-12 h-1.5 rounded-full bg-elevated overflow-hidden">
@@ -317,26 +260,6 @@ function FrontierItemCard({
           <span>hops {hops}</span>
           <span>fan {fanOut}</span>
           <span>conf {confStr}</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={e => { e.stopPropagation(); onZoom(); }}
-            className="text-[10px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition-colors"
-          >
-            Zoom
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); onFocus(); }}
-            className="text-[10px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition-colors"
-          >
-            Focus
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); onEvidence(); }}
-            className="text-[10px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition-colors"
-          >
-            Evidence
-          </button>
         </div>
       </div>
     </div>

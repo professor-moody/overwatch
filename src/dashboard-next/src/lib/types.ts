@@ -49,7 +49,7 @@ export interface ExportedGraph {
 
 export interface FrontierItem {
   id: string;
-  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery';
+  type: 'incomplete_node' | 'untested_edge' | 'inferred_edge' | 'network_discovery' | 'credential_test';
   priority: number;
   description: string;
   target_node?: string;

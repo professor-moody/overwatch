@@ -1,5 +1,6 @@
 import type { ExportedGraph, FrontierItem, PendingAction, SessionInfo } from './types';
 import type { FindingDto } from './api';
+import { getFrontierNodeIds as getWorkspaceFrontierNodeIds } from './frontier-workspace';
 
 export interface NodeRelationshipInput {
   graph?: ExportedGraph;
@@ -38,13 +39,7 @@ export function getActionNodeIds(action: PendingAction): string[] {
 }
 
 export function getFrontierNodeIds(item: FrontierItem): string[] {
-  return [
-    item.target_node,
-    item.source_node,
-    item.node_id,
-    item.edge_source,
-    item.edge_target,
-  ].map(clean).filter((v): v is string => !!v);
+  return getWorkspaceFrontierNodeIds(item);
 }
 
 export function buildAssetNodeMatcher(graph: ExportedGraph | undefined): (asset: string, nodeId: string) => boolean {
