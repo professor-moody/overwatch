@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   actionNodeId,
+  classifyActionLifecycle,
   computeActionRisk,
   groupActionsByTechnique,
   sortActionsForQueue,
   sortTechniqueGroups,
+  terminalApprovalCommand,
+  terminalApprovalSummary,
 } from '../action-queue';
 import type { PendingAction } from '../types';
 
@@ -51,5 +54,22 @@ describe('action queue helpers', () => {
 
   it('prefers explicit target node for graph links', () => {
     expect(actionNodeId(action({ target: 'raw-target', target_node: 'node-1' }))).toBe('node-1');
+  });
+
+  it('classifies terminal approval lifecycle states', () => {
+    const now = new Date('2026-05-15T10:00:00Z').getTime();
+    expect(classifyActionLifecycle(action({ timeout_at: '2026-05-15T10:00:30Z' }), now)).toBe('timeout_soon');
+    expect(classifyActionLifecycle(action({ validation_result: 'warning_only' }), now)).toBe('blocked_warning');
+    expect(classifyActionLifecycle(action({ noise_level: 4 }), now)).toBe('high_risk');
+    expect(classifyActionLifecycle(action({ noise_level: 0.1 }), now)).toBe('pending_terminal_approval');
+  });
+
+  it('builds terminal-forward approval context', () => {
+    const pending = action({ action_id: 'act-123', technique: 'nmap', target_node: 'host-1', noise_level: 0.25 });
+
+    expect(terminalApprovalSummary(pending)).toContain('action_id=act-123');
+    expect(terminalApprovalSummary(pending)).toContain('target=host-1');
+    expect(terminalApprovalCommand(pending, 'approve')).toContain('approve_action action_id=act-123');
+    expect(terminalApprovalCommand(pending, 'deny')).toContain('deny_action action_id=act-123');
   });
 });

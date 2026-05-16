@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatRelativeTime } from '../../lib/utils';
-import type { ExportedNode } from '../../lib/types';
 import {
   getCredentialKindBadgeClass,
   getCredentialKindLabel,

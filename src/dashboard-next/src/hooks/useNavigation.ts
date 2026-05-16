@@ -56,10 +56,10 @@ export function buildPanelPath(target: NavigationTarget): string {
 export function parseHash(hash: string): NavigationTarget | null {
   if (!hash || hash === '#') return null;
   const params = new URLSearchParams(hash.replace(/^#/, ''));
-  const panel = params.get('panel');
-  if (!isPanelId(panel || undefined)) return null;
+  const panelParam = params.get('panel') || undefined;
+  if (!isPanelId(panelParam)) return null;
   return {
-    panel,
+    panel: panelParam,
     item: params.get('item') || undefined,
     subview: params.get('subview') || undefined,
   };

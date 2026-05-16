@@ -1,6 +1,7 @@
 import type { PendingAction } from './types';
 
 export type ActionSortMode = 'risk' | 'arrival' | 'noise-desc' | 'timeout-asc';
+export type ActionLifecycle = 'pending_terminal_approval' | 'timeout_soon' | 'blocked_warning' | 'high_risk';
 
 export interface ActionRisk {
   label: 'LOW' | 'MED' | 'HIGH';
@@ -28,6 +29,36 @@ export function actionNodeId(action: PendingAction): string | null {
 export function actionSubmittedTime(action: PendingAction): number {
   const time = new Date(action.submitted_at || 0).getTime();
   return Number.isFinite(time) ? time : 0;
+}
+
+export function actionTimeoutMs(action: PendingAction, now = Date.now()): number | null {
+  if (!action.timeout_at) return null;
+  const time = new Date(action.timeout_at).getTime();
+  if (!Number.isFinite(time)) return null;
+  return time - now;
+}
+
+export function classifyActionLifecycle(action: PendingAction, now = Date.now()): ActionLifecycle {
+  const timeoutMs = actionTimeoutMs(action, now);
+  if (timeoutMs !== null && timeoutMs <= 60_000) return 'timeout_soon';
+  if (action.validation_result === 'warning_only') return 'blocked_warning';
+  if (computeActionRisk(action).label === 'HIGH') return 'high_risk';
+  return 'pending_terminal_approval';
+}
+
+export function terminalApprovalCommand(action: PendingAction, decision: 'approve' | 'deny' = 'approve'): string {
+  const reason = decision === 'approve' ? 'reviewed in dashboard' : 'denied from dashboard review';
+  return `${decision}_action action_id=${action.action_id} notes="${reason}"`;
+}
+
+export function terminalApprovalSummary(action: PendingAction): string {
+  const target = actionNodeId(action) || action.target_ip || action.target || 'unknown-target';
+  return [
+    `action_id=${action.action_id}`,
+    `technique=${action.technique || 'unknown'}`,
+    `target=${target}`,
+    `noise=${actionNoise(action).toFixed(2)}`,
+  ].join(' ');
 }
 
 function timeoutTime(action: PendingAction): number {

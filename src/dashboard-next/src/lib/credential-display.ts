@@ -1,5 +1,11 @@
 import type { ExportedEdge, ExportedNode } from './types';
 
+export interface CredentialKindSource {
+  cred_material_kind?: unknown;
+  cred_type?: unknown;
+  [key: string]: unknown;
+}
+
 const KIND_LABELS: Record<string, string> = {
   plaintext_password: 'Password',
   ntlm_hash: 'NTLM',
@@ -22,7 +28,7 @@ const KIND_LABELS: Record<string, string> = {
   session_cookie: 'Session Cookie',
 };
 
-export function getCredentialMaterialKind(cred: Pick<ExportedNode, 'cred_material_kind' | 'cred_type'>): string {
+export function getCredentialMaterialKind(cred: CredentialKindSource): string {
   if (typeof cred.cred_material_kind === 'string' && cred.cred_material_kind) return cred.cred_material_kind;
   switch (cred.cred_type) {
     case 'plaintext': return 'plaintext_password';
@@ -34,7 +40,7 @@ export function getCredentialMaterialKind(cred: Pick<ExportedNode, 'cred_materia
   }
 }
 
-export function getCredentialKindLabel(credOrKind: Pick<ExportedNode, 'cred_material_kind' | 'cred_type'> | string | undefined): string {
+export function getCredentialKindLabel(credOrKind: CredentialKindSource | string | undefined): string {
   const kind = typeof credOrKind === 'string'
     ? credOrKind
     : credOrKind ? getCredentialMaterialKind(credOrKind) : 'unknown';

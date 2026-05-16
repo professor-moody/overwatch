@@ -10,7 +10,6 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import {
   SESSION_GROUP_LABELS,
   addAttachedSession,
-  groupForSession,
   groupSessions,
   removeAttachedSession,
   searchSession,

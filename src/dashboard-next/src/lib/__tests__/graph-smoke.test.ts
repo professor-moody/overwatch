@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import puppeteer from 'puppeteer-core';
 
-const smokeUrl = process.env.OVERWATCH_DASHBOARD_SMOKE_URL;
+const smokeUrl = process.env.OVERWATCH_DASHBOARD_SMOKE_URL || '';
 const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
