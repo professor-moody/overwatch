@@ -11,17 +11,21 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import {
   SESSION_GROUP_LABELS,
   addAttachedSession,
+  cleanTerminalText,
+  extractCommandLikeLines,
   groupSessions,
   removeAttachedSession,
   relatedSessionActions,
   relatedSessionActivity,
   relatedSessionFrontier,
+  searchSessionBuffer,
   searchSession,
   sessionCopyFields,
   sessionTitle,
   sortSessionsForWorkspace,
   type SessionGroup,
 } from '../../lib/session-workspace';
+import type { SessionBufferResponse } from '../../lib/types';
 
 interface TerminalEntry {
   sessionId: string;
@@ -55,6 +59,8 @@ export function SessionsPanel() {
   const [saving, setSaving] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [buffer, setBuffer] = useState<SessionBufferResponse | null>(null);
+  const [bufferQuery, setBufferQuery] = useState('');
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -277,6 +283,20 @@ export function SessionsPanel() {
   const selectedRelatedFrontier = selectedSession ? relatedSessionFrontier(selectedSession, frontier) : [];
   const selectedRelatedActivity = selectedSession ? relatedSessionActivity(selectedSession, recentActivity).slice(0, 5) : [];
   const selectedCopyFields = selectedSession ? sessionCopyFields(selectedSession) : [];
+  const bufferCommands = useMemo(() => extractCommandLikeLines(buffer), [buffer]);
+  const bufferMatches = useMemo(() => searchSessionBuffer(buffer, bufferQuery), [buffer, bufferQuery]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      setBuffer(null);
+      return;
+    }
+    let cancelled = false;
+    api.getSessionBuffer(selectedSession.id, { tailBytes: 12000 })
+      .then(data => { if (!cancelled) setBuffer(data); })
+      .catch(() => { if (!cancelled) setBuffer(null); });
+    return () => { cancelled = true; };
+  }, [selectedSession?.id]);
 
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
@@ -435,6 +455,66 @@ export function SessionsPanel() {
                           <div key={(entry.event_id || entry.id || index)} className="text-[10px] text-muted-foreground truncate">
                             {entry.event_type}
                           </div>
+                        ))}
+                      </div>
+                    )}
+                  </SessionContextBlock>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-2">
+                  <SessionContextBlock title="Buffer Tail">
+                    <div className="flex items-center gap-2 mb-2">
+                      <input
+                        value={bufferQuery}
+                        onChange={e => setBufferQuery(e.target.value)}
+                        placeholder="Search buffer"
+                        className="settings-input h-7 text-xs flex-1"
+                      />
+                      <button
+                        onClick={() => selectedSession && api.getSessionBuffer(selectedSession.id, { tailBytes: 12000 }).then(setBuffer).catch(() => setBuffer(null))}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    <pre className="max-h-40 overflow-auto rounded bg-background border border-border p-2 text-[10px] text-muted-foreground whitespace-pre-wrap">
+                      {buffer ? cleanTerminalText(buffer.text).slice(-4000) || 'No buffered output.' : 'No buffer available.'}
+                    </pre>
+                    {buffer && (
+                      <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+                        <span>{buffer.start_pos}-{buffer.end_pos}</span>
+                        {buffer.truncated && <span className="text-warning">truncated</span>}
+                        <button onClick={() => copyText('Buffer', cleanTerminalText(buffer.text))} className="text-accent hover:underline">
+                          {copied === 'Buffer' ? 'copied' : 'copy buffer'}
+                        </button>
+                      </div>
+                    )}
+                  </SessionContextBlock>
+                  <SessionContextBlock title="Commands / Matches">
+                    {bufferQuery.trim() ? (
+                      bufferMatches.length === 0 ? (
+                        <div className="text-[10px] text-muted-foreground">No matches</div>
+                      ) : (
+                        <div className="space-y-1 max-h-40 overflow-auto">
+                          {bufferMatches.map(match => (
+                            <div key={`${match.line}-${match.text}`} className="text-[10px] text-muted-foreground font-mono truncate">
+                              {match.line}: {match.text}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    ) : bufferCommands.length === 0 ? (
+                      <div className="text-[10px] text-muted-foreground">No command-like lines detected</div>
+                    ) : (
+                      <div className="space-y-1 max-h-40 overflow-auto">
+                        {bufferCommands.map(command => (
+                          <button
+                            key={`${command.line}-${command.text}`}
+                            onClick={() => copyText('Command', command.text)}
+                            className="block w-full text-left text-[10px] text-muted-foreground hover:text-foreground font-mono truncate"
+                          >
+                            {command.text}
+                          </button>
                         ))}
                       </div>
                     )}

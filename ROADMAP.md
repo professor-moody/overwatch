@@ -609,6 +609,19 @@ Full tactical intelligence in dynamic system prompts (710 lines, 25+ tests):
 
 ---
 
+### 6.5 Deferred Dashboard Demo / Director Mode
+
+**Priority: Medium** · Depends on: current dashboard refactor · **Status: Deferred**
+
+Keep demo-specific work out of the next operator slice, but track it for a later recording/pass:
+
+- Scenario reset controls for the rich demo fixture
+- Fixture health screen proving graph, sessions, actions, identity, paths, evidence, and findings are populated
+- Guided recording jumps to selected node/path/action/session states
+- Scripted walkthrough states for repeatable product demos
+
+---
+
 ## Cross-Cutting Concerns
 
 These apply across all phases and should be addressed continuously.

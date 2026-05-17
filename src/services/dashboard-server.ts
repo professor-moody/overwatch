@@ -561,9 +561,11 @@ export class DashboardServer {
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
       const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
+      const sessionBufferMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/buffer$/);
       const sessionDetailMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)$/);
       const evidenceChainMatch = pathname.match(/^\/api\/evidence-chains\/([^/]+)$/);
       const pathsMatch = pathname.match(/^\/api\/paths\/([^/]+)$/);
+      const findingContextMatch = pathname.match(/^\/api\/findings\/([^/]+)\/context$/);
       const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
 
       if (agentCtxMatch) {
@@ -600,12 +602,16 @@ export class DashboardServer {
         this.handleActionDeny(actionDenyMatch[1], req, res);
       } else if (sessionCloseMatch && method === 'POST') {
         this.handleSessionClose(sessionCloseMatch[1], req, res);
+      } else if (sessionBufferMatch && method === 'GET') {
+        this.serveSessionBuffer(sessionBufferMatch[1], url, res);
       } else if (sessionDetailMatch && method === 'PATCH') {
         this.handleSessionUpdate(sessionDetailMatch[1], req, res);
       } else if (evidenceChainMatch) {
         this.serveEvidenceChains(decodeURIComponent(evidenceChainMatch[1]), res);
       } else if (pathsMatch) {
         this.servePaths(decodeURIComponent(pathsMatch[1]), url, res);
+      } else if (findingContextMatch && method === 'GET') {
+        this.serveFindingContext(decodeURIComponent(findingContextMatch[1]), res);
       } else if (reportDetailMatch && method === 'GET') {
         this.serveReportDownload(reportDetailMatch[1], res);
       } else if (reportDetailMatch && method === 'DELETE') {
@@ -1266,6 +1272,35 @@ export class DashboardServer {
     res.end(JSON.stringify({ total: all.length, active: active.length, sessions: all }));
   }
 
+  private serveSessionBuffer(sessionId: string, url: string, res: ServerResponse): void {
+    if (!this.sessionManager) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session manager not available' }));
+      return;
+    }
+
+    const params = new URL(url, 'http://localhost').searchParams;
+    const rawFrom = params.get('from');
+    const rawTail = params.get('tail_bytes');
+    const from = rawFrom !== null ? parseInt(rawFrom, 10) : undefined;
+    const tailBytes = rawTail !== null ? Math.min(Math.max(parseInt(rawTail, 10) || 4096, 0), 65536) : undefined;
+
+    try {
+      const result = this.sessionManager.read(
+        sessionId,
+        Number.isFinite(from) ? from : undefined,
+        tailBytes,
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const notFound = /not found/i.test(message);
+      res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    }
+  }
+
   private handleSessionClose(sessionId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     if (!this.sessionManager) {
@@ -1788,10 +1823,16 @@ export class DashboardServer {
   // Evidence Chains & Path Visualization
   // =============================================
 
-  private serveEvidenceChains(nodeId: string, res: ServerResponse): void {
+  private buildEvidenceChain(nodeId: string): {
+    node_id: string;
+    chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }>;
+    count: number;
+    node_props?: Record<string, unknown>;
+    findings?: Array<{ finding_type?: string; severity?: string; technique_id?: string; description?: string }>;
+  } {
     // Build evidence chains for a node from the activity log
     const history = this.engine.getFullHistory();
-    const chains: Array<{ action_id?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
+    const chains: Array<{ action_id?: string; agent_id?: string; event_type?: string; tool?: string; command?: string; timestamp: string; snippet?: string }> = [];
 
     for (const entry of history) {
       // Match entries that explicitly reference this node via structured fields
@@ -1813,6 +1854,8 @@ export class DashboardServer {
 
       chains.push({
         action_id: e.action_id as string | undefined,
+        agent_id: e.agent_id as string | undefined,
+        event_type: e.event_type as string | undefined,
         tool: e.tool_name as string | undefined || e.action_type as string | undefined,
         command: commandRepr,
         timestamp: entry.timestamp,
@@ -1851,8 +1894,104 @@ export class DashboardServer {
       }
     }
 
+    return { node_id: nodeId, chains, count: chains.length, node_props, findings };
+  }
+
+  private serveEvidenceChains(nodeId: string, res: ServerResponse): void {
+    const payload = this.buildEvidenceChain(nodeId);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ node_id: nodeId, chains, count: chains.length, node_props, findings }));
+    res.end(JSON.stringify(payload));
+  }
+
+  private resolveAssetToNode(asset: string, graph: ReturnType<GraphEngine['exportGraph']>): { id: string; properties: Record<string, unknown> } | null {
+    const needle = asset.trim().toLowerCase();
+    if (!needle) return null;
+    for (const node of graph.nodes) {
+      const props = (node.properties || {}) as Record<string, unknown>;
+      const candidates = [
+        node.id,
+        props.id,
+        props.label,
+        props.hostname,
+        props.ip,
+        props.username,
+        props.domain,
+        props.url,
+        props.arn,
+        props.provider_resource_id,
+        props.cred_user,
+      ];
+      if (candidates.some(value => typeof value === 'string' && value.toLowerCase() === needle)) {
+        return { id: node.id, properties: props };
+      }
+    }
+    return null;
+  }
+
+  private serveFindingContext(findingId: string, res: ServerResponse): void {
+    const config = this.engine.getConfig();
+    const graph = this.engine.exportGraph();
+    const history = this.engine.getFullHistory();
+    const evidenceLoader = (id: string): string | null => {
+      try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+    };
+    const findings = buildFindings(graph, history, config, { evidenceLoader });
+    const classifications = classifyAllFindings(findings, graph);
+    const finding = findings.find(f => f.id === findingId);
+
+    if (!finding) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Finding not found: ${findingId}` }));
+      return;
+    }
+
+    const affectedNodes = finding.affected_assets
+      .map(asset => {
+        const node = this.resolveAssetToNode(asset, graph);
+        return node ? { asset, id: node.id, ...node.properties } : null;
+      })
+      .filter((node): node is Record<string, unknown> & { asset: string; id: string } => !!node);
+    const affectedNodeIds = [...new Set(affectedNodes.map(node => node.id))];
+    const evidence_chains = affectedNodeIds.map(nodeId => this.buildEvidenceChain(nodeId));
+    const sessions = (this.sessionManager?.list() || []).filter(session =>
+      affectedNodeIds.includes(session.target_node || '')
+      || affectedNodeIds.includes(session.principal_node || '')
+      || affectedNodeIds.includes(session.credential_node || ''),
+    );
+    const pending_actions = this.engine.getPendingActionQueue().getPending().filter(action =>
+      affectedNodeIds.includes(action.target_node || '')
+      || affectedNodeIds.includes(((action as unknown as { target?: string }).target) || ''),
+    );
+    const state = this.engine.getState();
+    const frontier = state.frontier.filter(item =>
+      affectedNodeIds.includes(item.node_id || '')
+      || affectedNodeIds.includes(((item as unknown as { target_node?: string }).target_node) || '')
+      || affectedNodeIds.includes(item.edge_source || '')
+      || affectedNodeIds.includes(item.edge_target || ''),
+    );
+    const path_impacts = config.objectives.flatMap(objective => {
+      if (!objective.id) return [];
+      return this.engine.findPathsToObjective(objective.id, 3, 'confidence')
+        .filter(path => path.nodes.some(nodeId => affectedNodeIds.includes(nodeId)))
+        .map(path => ({ objective_id: objective.id, objective: objective.description, nodes: path.nodes, total_confidence: path.total_confidence, total_opsec_noise: path.total_opsec_noise }));
+    });
+
+    const enrichedFinding = {
+      ...finding,
+      classification: classifications.get(finding.id) ?? finding.classification,
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      finding: enrichedFinding,
+      affected_nodes: affectedNodes,
+      evidence_chains,
+      sessions,
+      pending_actions,
+      frontier,
+      path_impacts,
+      report_ready: evidence_chains.some(chain => chain.count > 0) || affectedNodes.length > 0,
+    }));
   }
 
   private servePaths(objectiveId: string, url: string, res: ServerResponse): void {

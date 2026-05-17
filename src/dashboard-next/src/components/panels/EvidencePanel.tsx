@@ -8,6 +8,8 @@ import type { EvidenceChainResponse, AttackPath, Objective } from '../../lib/typ
 import { PageHeader, PanelSection } from '../shared/primitives';
 import { deriveNodeRelationships } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
+import { EvidenceNarrative } from '../shared/EvidenceNarrative';
+import { narrativeItemsFromChains, resolveEvidenceQuery } from '../../lib/evidence-narrative';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
@@ -44,12 +46,13 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
     if (!q) return;
     setLoading(true); setError(''); setData(null);
     try {
-      const resp = await getEvidenceChains(q);
+      const resolved = resolveEvidenceQuery(q, graph, findings) || q;
+      const resp = await getEvidenceChains(resolved);
       setData(resp);
     } catch {
       setError('No evidence found');
     } finally { setLoading(false); }
-  }, [query]);
+  }, [query, graph, findings]);
 
   // Auto-search if initialQuery provided
   useEffect(() => {
@@ -153,6 +156,11 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
               )}
             </div>
           )}
+
+          <div className="rounded border border-border bg-background/40 p-2">
+            <div className="mb-2 text-xs font-medium text-muted-foreground">Narrative</div>
+            <EvidenceNarrative items={narrativeItemsFromChains([data])} />
+          </div>
 
           {/* Timeline */}
           {data.chains.length > 0 && (

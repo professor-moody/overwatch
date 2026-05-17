@@ -6,11 +6,13 @@ import type {
   ActionExplanation,
   TimelineEntry,
   SessionInfo,
+  SessionBufferResponse,
   AgentInfo,
   Campaign,
   PendingAction,
   HealthStatus,
   EvidenceChainResponse,
+  FindingContextResponse,
   AttackPath,
   FrontierItem,
   ScopeConfig,
@@ -120,6 +122,14 @@ export async function updateSession(id: string, body: { title?: string; notes?: 
     method: 'PATCH',
     body: JSON.stringify(body),
   });
+}
+
+export async function getSessionBuffer(id: string, params?: { from?: number; tailBytes?: number }): Promise<SessionBufferResponse> {
+  const qs = new URLSearchParams();
+  if (params?.from !== undefined) qs.set('from', String(params.from));
+  if (params?.tailBytes !== undefined) qs.set('tail_bytes', String(params.tailBytes));
+  const q = qs.toString();
+  return fetchJson(`/api/sessions/${id}/buffer${q ? `?${q}` : ''}`);
 }
 
 // --- Agents ---
@@ -511,6 +521,10 @@ export interface FindingsResponse {
 
 export async function getFindings(): Promise<FindingsResponse> {
   return fetchJson('/api/findings');
+}
+
+export async function getFindingContext(id: string): Promise<FindingContextResponse> {
+  return fetchJson(`/api/findings/${encodeURIComponent(id)}/context`);
 }
 
 export interface ReportRecord {

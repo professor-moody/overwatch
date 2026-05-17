@@ -11,6 +11,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '../../lib/api';
 import type { FindingDto, ReportRecord } from '../../lib/api';
+import type { FindingContextResponse } from '../../lib/types';
 import { EmptyState } from '../shared';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { RenderReportModal } from './RenderReportModal';
@@ -18,6 +19,8 @@ import { ReportsList } from './ReportsList';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { resolveAssetToNodeId } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
+import { EvidenceNarrative } from '../shared/EvidenceNarrative';
+import { narrativeItemsFromFindingContext } from '../../lib/evidence-narrative';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -39,6 +42,9 @@ export function FindingsPanel() {
   const [showRender, setShowRender] = useState(false);
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [expandedSeverity, setExpandedSeverity] = useState<Set<FindingDto['severity']>>(new Set(['critical', 'high']));
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [findingContext, setFindingContext] = useState<FindingContextResponse | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
 
   const refreshFindings = useCallback(async () => {
     try {
@@ -74,6 +80,20 @@ export function FindingsPanel() {
 
   const grouped: Record<FindingDto['severity'], FindingDto[]> = { critical: [], high: [], medium: [], low: [], info: [] };
   for (const f of findings) grouped[f.severity].push(f);
+
+  useEffect(() => {
+    if (!selectedFindingId) {
+      setFindingContext(null);
+      return;
+    }
+    let cancelled = false;
+    setContextLoading(true);
+    api.getFindingContext(selectedFindingId)
+      .then(context => { if (!cancelled) setFindingContext(context); })
+      .catch(() => { if (!cancelled) setFindingContext(null); })
+      .finally(() => { if (!cancelled) setContextLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedFindingId]);
 
   return (
     <div className="space-y-4">
@@ -119,6 +139,14 @@ export function FindingsPanel() {
         <ReportsList reports={reports} onRefresh={refreshReports} />
       )}
 
+      {(selectedFindingId || findingContext) && (
+        <FindingInspector
+          context={findingContext}
+          loading={contextLoading}
+          onClose={() => setSelectedFindingId(null)}
+        />
+      )}
+
       {/* Findings list */}
       {loading ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
@@ -152,6 +180,8 @@ export function FindingsPanel() {
                         key={f.id}
                         finding={f}
                         resolveAsset={(asset) => resolveAssetToNodeId(asset, graph)}
+                        selected={selectedFindingId === f.id}
+                        onInspect={() => setSelectedFindingId(f.id)}
                       />
                     ))}
                   </div>
@@ -175,13 +205,17 @@ export function FindingsPanel() {
 function FindingRow({
   finding: f,
   resolveAsset,
+  selected,
+  onInspect,
 }: {
   finding: FindingDto;
   resolveAsset: (asset: string) => string | null;
+  selected: boolean;
+  onInspect: () => void;
 }) {
   const cls = f.classification;
   return (
-    <div className="px-3 py-2 hover:bg-hover transition-colors">
+    <div className={cn('px-3 py-2 hover:bg-hover transition-colors', selected && 'bg-accent/5')}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-foreground">{f.title}</div>
@@ -218,8 +252,99 @@ function FindingRow({
           {f.cvss_score !== undefined && (
             <div className="text-[10px] text-muted-foreground">CVSS {f.cvss_score.toFixed(1)}</div>
           )}
+          <button onClick={onInspect} className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20">
+            Inspect
+          </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FindingInspector({
+  context,
+  loading,
+  onClose,
+}: {
+  context: FindingContextResponse | null;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-border bg-surface p-3 text-sm text-muted-foreground">
+        Loading finding context…
+      </div>
+    );
+  }
+  if (!context) {
+    return (
+      <div className="rounded-lg border border-border bg-surface p-3 flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">Finding context unavailable.</span>
+        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
+      </div>
+    );
+  }
+
+  const f = context.finding;
+  return (
+    <div className="rounded-lg border border-border bg-surface p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold">{f.title}</div>
+          <div className="text-xs text-muted-foreground">{f.category} · {f.severity} · risk {f.risk_score.toFixed(1)}</div>
+        </div>
+        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3">
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-muted-foreground">Supporting Evidence</div>
+          <EvidenceNarrative items={narrativeItemsFromFindingContext(context)} />
+        </div>
+        <div className="space-y-2">
+          <ContextMetric label="Affected nodes" value={context.affected_nodes.length} />
+          <ContextMetric label="Sessions" value={context.sessions.length} />
+          <ContextMetric label="Pending actions" value={context.pending_actions.length} />
+          <ContextMetric label="Frontier" value={context.frontier.length} />
+          <ContextMetric label="Path impacts" value={context.path_impacts.length} />
+          <ContextMetric label="Report ready" value={context.report_ready ? 'yes' : 'no'} />
+        </div>
+      </div>
+
+      {context.affected_nodes.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Affected Graph Nodes</div>
+          <div className="flex flex-wrap gap-1">
+            {context.affected_nodes.map(node => (
+              <GraphNodeLinks key={`${node.asset || ''}-${node.id}`} nodeId={node.id} label={(node.label as string) || node.asset} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {context.path_impacts.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Path Impact</div>
+          <div className="space-y-1">
+            {context.path_impacts.slice(0, 3).map((path, index) => (
+              <div key={`${path.objective_id}-${index}`} className="rounded border border-border bg-elevated p-2 text-xs">
+                <div className="font-medium">{path.objective}</div>
+                <div className="mt-1 font-mono text-[10px] text-muted-foreground truncate">{path.nodes.join(' -> ')}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContextMetric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="flex items-center justify-between rounded border border-border bg-elevated px-2 py-1 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono text-foreground">{value}</span>
     </div>
   );
 }

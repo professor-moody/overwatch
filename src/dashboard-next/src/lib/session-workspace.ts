@@ -1,4 +1,4 @@
-import type { ActivityEntry, FrontierItem, PendingAction, SessionInfo } from './types';
+import type { ActivityEntry, FrontierItem, PendingAction, SessionBufferResponse, SessionInfo } from './types';
 
 export type SessionGroup = 'live' | 'pending' | 'closed';
 
@@ -131,4 +131,45 @@ export function sessionCopyFields(session: SessionInfo): Array<{ label: string; 
     session.frontier_item_id ? { label: 'Frontier', value: session.frontier_item_id } : null,
     session.target_node ? { label: 'Target', value: session.target_node } : null,
   ].filter((field): field is { label: string; value: string } => field !== null);
+}
+
+export interface SessionBufferCommand {
+  text: string;
+  line: number;
+}
+
+export interface SessionBufferMatch {
+  line: number;
+  text: string;
+}
+
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+export function cleanTerminalText(text: string): string {
+  return text.replace(ANSI_RE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+export function extractCommandLikeLines(buffer: SessionBufferResponse | null | undefined): SessionBufferCommand[] {
+  if (!buffer?.text) return [];
+  const lines = cleanTerminalText(buffer.text).split('\n');
+  const commands: SessionBufferCommand[] = [];
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    const promptMatch = trimmed.match(/(?:^[$#]\s+|[>]\s+)([^>$#\n]{1,180})$/);
+    const command = promptMatch?.[1]?.trim();
+    if (!command) return;
+    if (/^(Microsoft Windows|Last login|Connected to session|Session disconnected)/i.test(command)) return;
+    if (command.length > 0) commands.push({ text: command, line: index + 1 });
+  });
+  return commands.slice(-12);
+}
+
+export function searchSessionBuffer(buffer: SessionBufferResponse | null | undefined, query: string): SessionBufferMatch[] {
+  const q = query.trim().toLowerCase();
+  if (!buffer?.text || !q) return [];
+  return cleanTerminalText(buffer.text)
+    .split('\n')
+    .map((line, index) => ({ line: index + 1, text: line }))
+    .filter(match => match.text.toLowerCase().includes(q))
+    .slice(-25);
 }

@@ -847,6 +847,76 @@ describe('DashboardServer', () => {
     expect(JSON.parse(res.body).metadata.title).toBe('New title');
   });
 
+  it('serveSessionBuffer reads tail text through the manager', () => {
+    const read = vi.fn(() => ({
+      session_id: 'abc-123',
+      start_pos: 10,
+      end_pos: 25,
+      text: 'whoami\ncorp\\jdoe',
+      truncated: false,
+    }));
+    (dashboard as any).sessionManager = { read };
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+
+    (dashboard as any).serveSessionBuffer('abc-123', '/api/sessions/abc-123/buffer?tail_bytes=2048', res);
+
+    expect(read).toHaveBeenCalledWith('abc-123', undefined, 2048);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).text).toContain('whoami');
+  });
+
+  it('serveFindingContext returns affected nodes and evidence chains', () => {
+    engine.ingestFinding({
+      id: 'finding-context-seed',
+      agent_id: 'test-agent',
+      action_id: 'act-context',
+      timestamp: '2026-05-15T00:00:00Z',
+      target_node_ids: ['host-context'],
+      nodes: [
+        { id: 'host-context', type: 'host', label: 'DC01.test.local', hostname: 'DC01', ip: '10.10.10.10', alive: true },
+        { id: 'user-context', type: 'user', label: 'admin', username: 'admin' },
+      ],
+      edges: [
+        { source: 'user-context', target: 'host-context', properties: { type: 'ADMIN_TO', confidence: 1.0, discovered_at: '2026-05-15T00:00:00Z' } },
+      ],
+    });
+
+    const findingsRes = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+    (dashboard as any).serveFindings(findingsRes);
+    const findingId = JSON.parse(findingsRes.body).findings[0].id;
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) { this.statusCode = statusCode; this.headers = headers; },
+      end(body?: string) { this.body = body || ''; },
+      setHeader() {},
+    };
+    (dashboard as any).serveFindingContext(findingId, res);
+
+    const payload = JSON.parse(res.body);
+    expect(res.statusCode).toBe(200);
+    expect(payload.finding.id).toBe(findingId);
+    expect(payload.affected_nodes.length).toBeGreaterThan(0);
+    expect(payload.evidence_chains.length).toBeGreaterThan(0);
+    expect(payload.report_ready).toBe(true);
+  });
+
   it('handleSessionConnection closes with 4503 when no session manager', () => {
     const mockWs = {
       close: vi.fn(),

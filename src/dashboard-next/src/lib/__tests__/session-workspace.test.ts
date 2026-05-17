@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   addAttachedSession,
+  cleanTerminalText,
+  extractCommandLikeLines,
   groupSessions,
   relatedSessionActions,
   relatedSessionActivity,
   relatedSessionFrontier,
   removeAttachedSession,
   searchSession,
+  searchSessionBuffer,
   sessionCopyFields,
   sortSessionsForWorkspace,
 } from '../session-workspace';
@@ -117,5 +120,19 @@ describe('session workspace helpers', () => {
     ]).map(item => item.id)).toEqual(['evt-1', 'evt-2']);
 
     expect(sessionCopyFields(s).map(field => field.label)).toEqual(['Session', 'Action', 'Frontier', 'Target']);
+  });
+
+  it('cleans, searches, and extracts command-like terminal buffer lines', () => {
+    const buffer = {
+      session_id: 'sess-1',
+      start_pos: 0,
+      end_pos: 96,
+      truncated: true,
+      text: '\u001b[32mConnected\u001b[0m\r\ncorp\\jdoe@WS01 C:\\Users\\jdoe> whoami\r\ncorp\\jdoe\r\n$ hostname\r\nWS01\r\n',
+    };
+
+    expect(cleanTerminalText(buffer.text)).not.toContain('\u001b');
+    expect(extractCommandLikeLines(buffer).map(command => command.text)).toEqual(['whoami', 'hostname']);
+    expect(searchSessionBuffer(buffer, 'jdoe').map(match => match.line)).toEqual([2, 3]);
   });
 });

@@ -172,6 +172,14 @@ export interface SessionInfo {
   };
 }
 
+export interface SessionBufferResponse {
+  session_id: string;
+  start_pos: number;
+  end_pos: number;
+  text: string;
+  truncated: boolean;
+}
+
 // --- Pending Actions ---
 
 export interface PendingAction {
@@ -477,6 +485,23 @@ export interface EvidenceFinding {
   severity?: 'critical' | 'high' | 'medium' | 'low';
   technique_id?: string;
   description?: string;
+}
+
+export interface FindingContextResponse {
+  finding: import('./api').FindingDto;
+  affected_nodes: Array<ExportedNode & { asset?: string }>;
+  evidence_chains: EvidenceChainResponse[];
+  sessions: SessionInfo[];
+  pending_actions: PendingAction[];
+  frontier: FrontierItem[];
+  path_impacts: Array<{
+    objective_id: string;
+    objective: string;
+    nodes: string[];
+    total_confidence: number;
+    total_opsec_noise: number;
+  }>;
+  report_ready: boolean;
 }
 
 export interface AttackPathNode {
