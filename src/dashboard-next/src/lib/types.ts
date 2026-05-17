@@ -112,7 +112,7 @@ export interface Campaign {
   name: string;
   strategy: 'credential_spray' | 'enumeration' | 'post_exploitation' | 'network_discovery' | 'custom';
   status: 'draft' | 'active' | 'paused' | 'completed' | 'aborted';
-  items: FrontierItem[];
+  items: Array<FrontierItem | string>;
   abort_conditions?: AbortCondition[];
   created_at: string;
   started_at?: string;
@@ -206,6 +206,80 @@ export interface ActivityEntry {
   description: string;
   agent_id?: string;
   details?: Record<string, unknown>;
+  frontier_item_id?: string;
+  target_node_ids?: string[];
+  event_id?: string;
+  result_classification?: 'success' | 'failure' | 'partial' | 'neutral';
+  validation_result?: string;
+}
+
+// --- Read-only introspection ---
+
+export interface DecisionStage {
+  stage: string;
+  timestamp: string;
+  details_ref?: string;
+  summary?: string;
+}
+
+export interface DecisionLogEntry {
+  decision_id: string;
+  frontier_item_id?: string;
+  action_id?: string;
+  agent_id?: string;
+  opened_at: string;
+  closed_at: string;
+  outcome?: 'completed' | 'failed' | 'denied' | 'dropped' | 'open';
+  stages: DecisionStage[];
+}
+
+export interface ActionExplanation {
+  action_id: string;
+  found: boolean;
+  agent_id?: string;
+  frontier_item_id?: string;
+  frontier_item?: FrontierItem;
+  log_thought_chain: Array<{
+    event_id: string;
+    timestamp: string;
+    kind?: string;
+    description: string;
+    confidence?: number;
+  }>;
+  considered_alternatives: string[];
+  prior_actions_referenced: string[];
+  validation?: {
+    event_id: string;
+    timestamp: string;
+    validation_result?: string;
+    errors?: string[];
+    warnings?: string[];
+  };
+  approval?: {
+    event_id: string;
+    timestamp: string;
+    approval_status?: 'approved' | 'denied' | 'timeout';
+    auto_approved?: boolean;
+    operator_notes?: string;
+    reason?: string;
+  };
+  outcome?: {
+    event_id: string;
+    timestamp: string;
+    classification?: 'success' | 'failure' | 'partial' | 'neutral';
+    description: string;
+  };
+}
+
+export interface TimelineEntry {
+  entity_id: string;
+  kind: 'node' | 'edge';
+  became_true_at: string;
+  became_false_at?: string;
+  last_observed_at?: string;
+  evidence_refs: string[];
+  superseding_id?: string;
+  invalidation_reason?: string;
 }
 
 // --- Engagement State (from get_state) ---

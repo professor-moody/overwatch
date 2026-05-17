@@ -24,10 +24,10 @@ import { isCrossTierPath, tierForNode, tiersForPath, type Tier } from '../../lib
 import { EmptyState } from '../shared';
 import { cn } from '../../lib/utils';
 
-type Optimize = 'confidence' | 'stealth';
+export type Optimize = 'confidence' | 'stealth';
 type TierFilter = 'any' | 'cross_tier' | Tier;
 
-interface ComputedPath {
+export interface ComputedPath {
   nodes: string[];
   edge_types: string[];
   weight: number;
@@ -41,7 +41,8 @@ const BIDIRECTIONAL = new Set([
   'OWNS_CRED', 'VALID_ON', 'MEMBER_OF', 'MEMBER_OF_DOMAIN',
   'RELATED', 'SAME_DOMAIN', 'TRUSTS', 'ASSUMES_ROLE', 'MANAGED_BY',
   'FEDERATES_WITH', 'ISSUES_TOKENS_FOR', 'AUTHENTICATES_VIA',
-  'BACKED_BY', 'CAN_REACH',
+  'ASSIGNED_TO_APP', 'MFA_REQUIRED_FOR', 'VALID_FOR_APP', 'VALID_FOR_IDP_PRINCIPAL',
+  'BACKED_BY', 'CAN_REACH', 'HOSTS', 'POLICY_ALLOWS',
 ]);
 
 function edgeWeight(e: ExportedEdge, mode: Optimize): number {
@@ -118,7 +119,7 @@ function reconstructPath(target: string, dijkstraResult: ReturnType<typeof dijks
   return { nodes, edge_types };
 }
 
-function computePaths(
+export function computePaths(
   nodes: ExportedNode[],
   edges: ExportedEdge[],
   optimize: Optimize,
@@ -253,6 +254,17 @@ export function AttackPathsPanel() {
 
   return (
     <div className="space-y-4 p-4">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
+        <div>
+          <h2 className="text-lg font-semibold">Attack Paths</h2>
+          <p className="text-xs text-muted-foreground">
+            Live session sources to domain, identity, cloud, and high-value targets.
+          </p>
+        </div>
+        <div className="text-xs text-muted-foreground font-mono">
+          {allPaths.length} computed · {visiblePaths.length} visible
+        </div>
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-1">
           {(['cross_tier', 'any', 'network', 'app', 'cloud', 'identity'] as TierFilter[]).map(t => (

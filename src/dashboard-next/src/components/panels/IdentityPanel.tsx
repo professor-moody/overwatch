@@ -27,7 +27,7 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function groupByIdp(nodes: ExportedNode[], edges: ExportedEdge[]): IdpGroup[] {
+export function groupByIdp(nodes: ExportedNode[], edges: ExportedEdge[]): IdpGroup[] {
   const idps = nodes.filter(n => n.type === 'idp');
   const apps = nodes.filter(n => n.type === 'idp_application');
   const principals = nodes.filter(n => n.type === 'idp_principal');
@@ -48,6 +48,7 @@ function groupByIdp(nodes: ExportedNode[], edges: ExportedEdge[]): IdpGroup[] {
     const idpKind = asString(idp.idp_kind);
     const idpTenant = asString(idp.tenant_id);
     const principalsForIdp = principals.filter(p => {
+      if (asString(p.idp_id) === idp.id) return true;
       const assigned = trustEdges.some(e => e.source === p.id && appIdSet.has(e.target));
       if (assigned) return true;
       // Heuristic fallback: principal id encodes the same IdP kind/tenant.
@@ -67,7 +68,7 @@ function groupByIdp(nodes: ExportedNode[], edges: ExportedEdge[]): IdpGroup[] {
   });
 }
 
-function tokenCredentials(nodes: ExportedNode[]): ExportedNode[] {
+export function tokenCredentials(nodes: ExportedNode[]): ExportedNode[] {
   const TOKEN_KINDS = new Set([
     'oidc_id_token', 'oidc_access_token', 'oidc_refresh_token',
     'saml_assertion', 'oauth_client_secret', 'pat', 'app_password', 'session_cookie',
@@ -128,7 +129,10 @@ export function IdentityPanel() {
                       <span className="font-mono text-xs uppercase rounded bg-elevated px-1.5 py-0.5 mr-2">
                         {asString(idp.idp_kind) ?? 'idp'}
                       </span>
-                      <span className="font-medium">{asString(idp.tenant_id) ?? idp.label}</span>
+                      <span className="font-medium">{idp.label}</span>
+                      {asString(idp.tenant_id) ? (
+                        <span className="ml-2 text-xs text-muted-foreground font-mono">{asString(idp.tenant_id)}</span>
+                      ) : null}
                     </div>
                     {asString(idp.federation_mode) ? (
                       <span className="text-xs text-muted-foreground">
@@ -152,6 +156,20 @@ export function IdentityPanel() {
                       </div>
                     </div>
                   </div>
+                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                    <div>
+                      Apps:{' '}
+                      <span className="font-mono text-foreground">
+                        {apps.length > 0 ? apps.slice(0, 3).map(a => asString(a.app_name) ?? a.label).join(', ') : 'none'}
+                      </span>
+                    </div>
+                    <div>
+                      Principals:{' '}
+                      <span className="font-mono text-foreground">
+                        {principals.length > 0 ? principals.slice(0, 3).map(p => asString(p.username) ?? p.label).join(', ') : 'none'}
+                      </span>
+                    </div>
+                  </div>
                   {apps.length > 0 ? (
                     <details className="mt-2">
                       <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
@@ -168,6 +186,27 @@ export function IdentityPanel() {
                           </li>
                         ))}
                         {apps.length > 20 ? <li className="text-muted-foreground">+ {apps.length - 20} more</li> : null}
+                      </ul>
+                    </details>
+                  ) : null}
+                  {principals.length > 0 ? (
+                    <details className="mt-2">
+                      <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                        Show principals
+                      </summary>
+                      <ul className="mt-2 space-y-1 text-xs font-mono">
+                        {principals.slice(0, 20).map(p => {
+                          const factors = Array.isArray(p.mfa_factors) ? (p.mfa_factors as string[]) : [];
+                          return (
+                            <li key={p.id} className="flex justify-between gap-3">
+                              <span className="truncate">{asString(p.username) ?? p.label}</span>
+                              <span className="text-muted-foreground shrink-0">
+                                {factors.length > 0 ? `MFA: ${factors.slice(0, 2).join(', ')}` : 'MFA: unknown'}
+                              </span>
+                            </li>
+                          );
+                        })}
+                        {principals.length > 20 ? <li className="text-muted-foreground">+ {principals.length - 20} more</li> : null}
                       </ul>
                     </details>
                   ) : null}

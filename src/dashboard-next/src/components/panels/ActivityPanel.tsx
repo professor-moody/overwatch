@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
-import type { ActivityEntry } from '../../lib/types';
+import type { ActionExplanation, ActivityEntry, DecisionLogEntry, TimelineEntry } from '../../lib/types';
 import { formatRelativeTime, formatTimestamp, cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
 import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
@@ -23,6 +23,8 @@ export function ActivityPanel() {
   const connected = useEngagementStore((s) => s.connected);
   const initialized = useEngagementStore((s) => s.initialized);
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
+  const [decisions, setDecisions] = useState<DecisionLogEntry[]>([]);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [classFilter, setClassFilter] = useState<ActivityClass | ''>('');
   const [search, setSearch] = useState('');
   const [selectedEntryOverride, setSelectedEntryOverride] = useState<ActivityEntry | null>(null);
@@ -35,6 +37,12 @@ export function ActivityPanel() {
     try {
       const data = await api.getHistory({ limit: 250 });
       setEntries(data.entries || []);
+      const [decisionData, timelineData] = await Promise.allSettled([
+        api.getDecisionLog({ limit: 50 }),
+        api.getTimeline({ limit: 50 }),
+      ]);
+      if (decisionData.status === 'fulfilled') setDecisions(decisionData.value.decisions || []);
+      if (timelineData.status === 'fulfilled') setTimeline(timelineData.value.entries || []);
       hasLoaded.current = true;
     } catch { /* keep current stream visible */ }
   }, []);
@@ -134,7 +142,7 @@ export function ActivityPanel() {
           )}
         </PanelSection>
 
-        <ActivityDetail entry={selectedEntry} />
+        <ActivityDetail entry={selectedEntry} decisions={decisions} timeline={timeline} />
       </div>
     </div>
   );
@@ -176,8 +184,33 @@ function ActivityRow({ entry, selected, onSelect }: { entry: ActivityEntry; sele
   );
 }
 
-function ActivityDetail({ entry }: { entry: ActivityEntry | null }) {
+function ActivityDetail({ entry, decisions, timeline }: {
+  entry: ActivityEntry | null;
+  decisions: DecisionLogEntry[];
+  timeline: TimelineEntry[];
+}) {
   const { navigateToPanel } = useNavigation();
+  const [explanation, setExplanation] = useState<ActionExplanation | null>(null);
+
+  const links = entry ? extractActivityLinks(entry) : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!links?.actionId) {
+        setExplanation(null);
+        return;
+      }
+      try {
+        const data = await api.explainAction(links.actionId);
+        if (!cancelled) setExplanation(data);
+      } catch {
+        if (!cancelled) setExplanation(null);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [links?.actionId]);
 
   if (!entry) {
     return (
@@ -188,7 +221,12 @@ function ActivityDetail({ entry }: { entry: ActivityEntry | null }) {
   }
 
   const cls = classifyActivity(entry);
-  const links = extractActivityLinks(entry);
+  const eventLinks = links || extractActivityLinks(entry);
+  const matchingDecision = decisions.find(decision =>
+    (!!eventLinks.actionId && decision.action_id === eventLinks.actionId)
+    || (!!eventLinks.frontierItemId && decision.frontier_item_id === eventLinks.frontierItemId),
+  );
+  const matchingTimeline = timeline.filter(item => eventLinks.nodeIds.includes(item.entity_id)).slice(0, 3);
 
   return (
     <PanelSection title="Event Detail" className="overflow-y-auto">
@@ -203,17 +241,50 @@ function ActivityDetail({ entry }: { entry: ActivityEntry | null }) {
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <DetailFact label="Action" value={links.actionId || '—'} onClick={links.actionId ? () => navigateToPanel('actions') : undefined} />
-          <DetailFact label="Agent" value={links.agentId || '—'} onClick={links.agentId ? () => navigateToPanel('agents', links.agentId) : undefined} />
-          <DetailFact label="Frontier" value={links.frontierItemId || '—'} onClick={links.frontierItemId ? () => navigateToPanel('frontier') : undefined} />
+          <DetailFact label="Action" value={eventLinks.actionId || '—'} onClick={eventLinks.actionId ? () => navigateToPanel('actions') : undefined} />
+          <DetailFact label="Agent" value={eventLinks.agentId || '—'} onClick={eventLinks.agentId ? () => navigateToPanel('agents', eventLinks.agentId) : undefined} />
+          <DetailFact label="Frontier" value={eventLinks.frontierItemId || '—'} onClick={eventLinks.frontierItemId ? () => navigateToPanel('frontier') : undefined} />
           <DetailFact label="Age" value={formatRelativeTime(entry.timestamp)} />
         </div>
 
-        {links.nodeIds.length > 0 && (
+        {eventLinks.nodeIds.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Graph Links</div>
             <div className="flex flex-wrap gap-1">
-              {links.nodeIds.slice(0, 6).map(nodeId => <GraphNodeLinks key={nodeId} nodeId={nodeId} />)}
+              {eventLinks.nodeIds.slice(0, 6).map(nodeId => <GraphNodeLinks key={nodeId} nodeId={nodeId} />)}
+            </div>
+          </div>
+        )}
+
+        {(matchingDecision || explanation || matchingTimeline.length > 0) && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Introspection</div>
+            <div className="space-y-1.5">
+              {matchingDecision && (
+                <div className="rounded border border-border bg-elevated px-2 py-1.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-foreground truncate">{matchingDecision.decision_id}</span>
+                    <StatusPill className="bg-accent/10 text-accent">{matchingDecision.outcome || 'open'}</StatusPill>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">{matchingDecision.stages.length} stages · opened {formatRelativeTime(matchingDecision.opened_at)}</div>
+                </div>
+              )}
+              {explanation?.found && (
+                <div className="rounded border border-border bg-elevated px-2 py-1.5 text-xs">
+                  <div className="text-foreground">Why this action</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground line-clamp-3">
+                    {explanation.log_thought_chain[0]?.description || explanation.validation?.validation_result || explanation.outcome?.description || 'No reasoning chain recorded.'}
+                  </div>
+                </div>
+              )}
+              {matchingTimeline.map(item => (
+                <div key={`${item.kind}:${item.entity_id}`} className="rounded border border-border bg-elevated px-2 py-1.5 text-xs">
+                  <div className="font-mono text-foreground truncate">{item.entity_id}</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">
+                    {item.kind} · true {formatRelativeTime(item.became_true_at)}{item.became_false_at ? ` · ended ${formatRelativeTime(item.became_false_at)}` : ''}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}

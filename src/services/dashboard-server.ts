@@ -362,7 +362,7 @@ export class DashboardServer {
           }
         } else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
           try {
-            this.sessionManager!.resize(sessionId, msg.cols, msg.rows);
+            this.sessionManager!.resize(sessionId, msg.cols, msg.rows, 'dashboard', true);
           } catch (err) {
             ws.send(JSON.stringify({
               type: 'error',
@@ -469,6 +469,10 @@ export class DashboardServer {
       this.serveGraph(res);
     } else if (pathname === '/api/history') {
       this.serveHistory(url, res);
+    } else if (pathname === '/api/decision-log') {
+      this.serveDecisionLog(url, res);
+    } else if (pathname === '/api/timeline') {
+      this.serveTimeline(url, res);
     } else if (pathname === '/api/sessions') {
       this.serveSessions(res);
     } else if (pathname === '/api/agents') {
@@ -553,6 +557,7 @@ export class DashboardServer {
       const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/clone$/);
       const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/split$/);
       const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
+      const actionExplainMatch = pathname.match(/^\/api\/actions\/([^/]+)\/explain$/);
       const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
       const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
       const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
@@ -587,6 +592,8 @@ export class DashboardServer {
         this.handleCampaignDelete(campaignDetailMatch[1], req, res);
       } else if (campaignDetailMatch) {
         this.serveCampaignDetail(campaignDetailMatch[1], res);
+      } else if (actionExplainMatch && method === 'GET') {
+        this.serveActionExplanation(decodeURIComponent(actionExplainMatch[1]), res);
       } else if (actionApproveMatch && method === 'POST') {
         this.handleActionApprove(actionApproveMatch[1], req, res);
       } else if (actionDenyMatch && method === 'POST') {
@@ -1191,6 +1198,60 @@ export class DashboardServer {
     const graph = this.engine.exportGraph();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
+  }
+
+  private serveDecisionLog(url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const query: NonNullable<Parameters<GraphEngine['getDecisionLog']>[0]> = {};
+    const actionId = params.get('action_id') || undefined;
+    const frontierItemId = params.get('frontier_item_id') || undefined;
+    const agentId = params.get('agent_id') || undefined;
+    const outcome = params.get('outcome') || undefined;
+    const rawLimit = params.get('limit') || undefined;
+
+    if (actionId) query.action_id = actionId;
+    if (frontierItemId) query.frontier_item_id = frontierItemId;
+    if (agentId) query.agent_id = agentId;
+    if (outcome && ['completed', 'failed', 'denied', 'dropped', 'open'].includes(outcome)) {
+      query.outcome = outcome as NonNullable<typeof query.outcome>;
+    }
+    if (rawLimit) {
+      const limit = parseInt(rawLimit, 10);
+      if (Number.isFinite(limit) && limit >= 1) query.limit = limit;
+    }
+
+    const decisions = this.engine.getDecisionLog(query);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ decisions, total: decisions.length }));
+  }
+
+  private serveActionExplanation(actionId: string, res: ServerResponse): void {
+    const explanation = this.engine.explainAction(actionId);
+    res.writeHead(explanation.found ? 200 : 404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(explanation));
+  }
+
+  private serveTimeline(url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const query: NonNullable<Parameters<GraphEngine['getTimeline']>[0]> = {};
+    const entityId = params.get('entity_id') || undefined;
+    const kind = params.get('kind') || undefined;
+    const since = params.get('since') || undefined;
+    const at = params.get('at') || undefined;
+    const rawLimit = params.get('limit') || undefined;
+
+    if (entityId) query.entity_id = entityId;
+    if (kind === 'node' || kind === 'edge') query.kind = kind;
+    if (since && !isNaN(Date.parse(since))) query.since = since;
+    if (at && !isNaN(Date.parse(at))) query.at = at;
+    if (rawLimit) {
+      const limit = parseInt(rawLimit, 10);
+      if (Number.isFinite(limit) && limit >= 1) query.limit = limit;
+    }
+
+    const entries = this.engine.getTimeline(query);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ entries, total: entries.length }));
   }
 
   private serveSessions(res: ServerResponse): void {

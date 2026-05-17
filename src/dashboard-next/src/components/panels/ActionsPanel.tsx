@@ -1,9 +1,9 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { CountdownTimer, EmptyState } from '../shared';
-import { getPendingActions } from '../../lib/api';
-import type { PendingAction } from '../../lib/types';
+import { explainAction, getPendingActions } from '../../lib/api';
+import type { ActionExplanation, PendingAction } from '../../lib/types';
 import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import {
@@ -206,6 +206,15 @@ function ActionDetail({
   const denyCommand = terminalApprovalCommand(action, 'deny');
   const summary = terminalApprovalSummary(action);
   const signals = action.opsec_context?.defensive_signals || [];
+  const [explanation, setExplanation] = useState<ActionExplanation | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    explainAction(action.action_id)
+      .then(data => { if (!cancelled) setExplanation(data); })
+      .catch(() => { if (!cancelled) setExplanation(null); });
+    return () => { cancelled = true; };
+  }, [action.action_id]);
 
   return (
     <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
@@ -258,6 +267,20 @@ function ActionDetail({
           )}
         </div>
       </PanelSection>
+
+      {explanation?.found && (
+        <PanelSection title="Read-Only Introspection">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs mb-3">
+            <DetailFact label="Decision Agent" value={explanation.agent_id || '—'} mono />
+            <DetailFact label="Frontier" value={explanation.frontier_item_id || '—'} mono />
+            <DetailFact label="Validation" value={explanation.validation?.validation_result || '—'} />
+            <DetailFact label="Outcome" value={explanation.outcome?.classification || 'open'} />
+          </div>
+          <div className="rounded border border-border bg-background/40 p-2 text-xs text-muted-foreground">
+            {explanation.log_thought_chain[0]?.description || explanation.outcome?.description || 'No log_thought chain has been recorded for this action yet.'}
+          </div>
+        </PanelSection>
+      )}
 
       <PanelSection title="Future Dashboard Approval">
         <div className="rounded border border-dashed border-border bg-background/40 p-3">

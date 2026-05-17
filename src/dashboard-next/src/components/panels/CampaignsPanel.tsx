@@ -1,344 +1,506 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { Copy, Pause, Play, Plus, RefreshCw, Send, Square } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
-import { StatusBadge, EmptyState } from '../shared';
+import { EmptyState } from '../shared';
+import { DataRow, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import {
-  getCampaigns,
-  createCampaign,
   campaignAction,
-  dispatchCampaign,
   cloneCampaign,
+  createCampaign,
+  dispatchCampaign,
+  getCampaigns,
 } from '../../lib/api';
 import type { Campaign, FrontierItem } from '../../lib/types';
+import {
+  campaignItemNodeLabel,
+  campaignLifecycleActions,
+  deriveCampaignPreviewMetrics,
+  filterCampaignFrontierItems,
+  isCampaignDispatchReady,
+  resolveCampaignItems,
+} from '../../lib/campaign-workspace';
+import { getFrontierKey } from '../../lib/frontier-workspace';
+import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 
-const STRATEGY_ICONS: Record<string, string> = {
-  credential_spray: '\ud83d\udd11',
-  enumeration: '\ud83d\udd0d',
-  post_exploitation: '⚡',
-  network_discovery: '\ud83c\udf10',
-  custom: '⚙',
+const STATUS_ORDER: Record<Campaign['status'], number> = {
+  active: 0,
+  paused: 1,
+  draft: 2,
+  completed: 3,
+  aborted: 4,
 };
-
-const STATUS_ORDER: Record<string, number> = { active: 0, paused: 1, draft: 2, completed: 3, aborted: 4 };
 
 export function CampaignsPanel() {
   const campaigns = useEngagementStore((s) => s.campaigns);
   const frontier = useEngagementStore((s) => s.frontier);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const [showBuilder, setShowBuilder] = useState(false);
-  const [dispatchTarget, setDispatchTarget] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(campaigns[0]?.id || null);
+  const [mode, setMode] = useState<'detail' | 'builder'>('detail');
+  const [query, setQuery] = useState('');
 
-  const sorted = [...campaigns].sort((a, b) => (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5));
+  const sortedCampaigns = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return [...campaigns]
+      .sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) || a.name.localeCompare(b.name))
+      .filter(campaign => !q || [
+        campaign.id,
+        campaign.name,
+        campaign.strategy,
+        campaign.status,
+      ].some(value => value.toLowerCase().includes(q)));
+  }, [campaigns, query]);
+
+  const selectedCampaign = campaigns.find(campaign => campaign.id === selectedId) || sortedCampaigns[0] || null;
+  const activeCount = campaigns.filter(campaign => campaign.status === 'active').length;
+  const draftCount = campaigns.filter(campaign => campaign.status === 'draft').length;
 
   const refresh = useCallback(async () => {
     try {
       const data = await getCampaigns();
       useEngagementStore.setState({ campaigns: data.campaigns || [] });
-    } catch {}
+    } catch { /* keep current campaigns visible */ }
   }, []);
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const selectAll = (checked: boolean) => {
-    setSelectedIds(checked ? new Set(sorted.map(c => c.id)) : new Set());
-  };
-
-  const batchAction = async (action: string) => {
-    await Promise.allSettled([...selectedIds].map(id =>
-      campaignAction(id, action as 'activate' | 'pause' | 'resume' | 'abort')
-    ));
-    setSelectedIds(new Set());
-    refresh();
-  };
-
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          Campaigns <span className="text-muted-foreground font-normal text-sm">({campaigns.length})</span>
-        </h2>
-        <button onClick={() => setShowBuilder(true)} className="settings-save-btn">+ New Campaign</button>
-      </div>
-
-      {/* Builder */}
-      {showBuilder && (
-        <CampaignBuilder frontier={frontier} onClose={() => setShowBuilder(false)} onCreated={() => { setShowBuilder(false); refresh(); }} />
-      )}
-
-      {/* Batch bar */}
-      {selectedIds.size > 0 && (
-        <div className="flex items-center gap-2 p-2 rounded bg-elevated border border-border text-xs">
-          <span className="text-muted-foreground">{selectedIds.size} selected</span>
-          <button onClick={() => batchAction('activate')} className="px-2 py-0.5 rounded bg-success/10 text-success border border-success/20">Activate</button>
-          <button onClick={() => batchAction('pause')} className="px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">Pause</button>
-          <button onClick={() => batchAction('abort')} className="px-2 py-0.5 rounded bg-destructive/10 text-destructive border border-destructive/20">Abort</button>
-          <button onClick={() => setSelectedIds(new Set())} className="text-muted-foreground hover:text-foreground ml-auto">Deselect</button>
-        </div>
-      )}
-
-      {/* Dispatch modal */}
-      {dispatchTarget && (
-        <DispatchModal campaignId={dispatchTarget} onClose={() => setDispatchTarget(null)} onDone={() => { setDispatchTarget(null); refresh(); }} />
-      )}
-
-      {sorted.length === 0 ? (
-        <EmptyState message="No campaigns yet. Create one to get started." />
-      ) : (
-        <div className="space-y-2">
-          {sorted.length > 1 && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground pl-1">
-              <input type="checkbox" checked={sorted.every(c => selectedIds.has(c.id))} onChange={e => selectAll(e.target.checked)} />
-              Select all
-            </label>
-          )}
-          {sorted.map((c) => (
-            <CampaignCard key={c.id} campaign={c}
-              selected={selectedIds.has(c.id)}
-              onToggleSelect={() => toggleSelect(c.id)}
-              onClickDetail={() => setDetailId(detailId === c.id ? null : c.id)}
-              onAction={async (action) => { await campaignAction(c.id, action); refresh(); }}
-              onDispatch={() => setDispatchTarget(c.id)}
-              onClone={async () => { await cloneCampaign(c.id); refresh(); }}
-              expanded={detailId === c.id}
+    <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
+      <PageHeader
+        title="Campaigns"
+        meta={`(${campaigns.length} total · ${activeCount} active · ${draftCount} drafts)`}
+        actions={(
+          <FilterBar>
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Filter campaigns..."
+              className="settings-input w-56"
             />
-          ))}
-        </div>
-      )}
+            <button onClick={refresh} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </button>
+            <button onClick={() => setMode('builder')} className="settings-save-btn inline-flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" />
+              New Campaign
+            </button>
+          </FilterBar>
+        )}
+      />
+
+      <div className="grid grid-cols-[minmax(340px,420px)_1fr] gap-4 flex-1 min-h-0">
+        <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
+          <div className="grid grid-cols-3 border-b border-border text-center text-xs">
+            <CampaignStat label="Active" value={activeCount} tone="success" />
+            <CampaignStat label="Drafts" value={draftCount} tone="accent" />
+            <CampaignStat label="Frontier" value={frontier.length} />
+          </div>
+          <div className="overflow-y-auto p-2 space-y-1.5">
+            {sortedCampaigns.length === 0 ? (
+              <EmptyState message={campaigns.length === 0 ? 'No campaigns yet.' : 'No campaigns match the filter.'} />
+            ) : sortedCampaigns.map(campaign => (
+              <CampaignRow
+                key={campaign.id}
+                campaign={campaign}
+                selected={selectedCampaign?.id === campaign.id && mode === 'detail'}
+                onSelect={() => { setSelectedId(campaign.id); setMode('detail'); }}
+              />
+            ))}
+          </div>
+        </PanelSection>
+
+        {mode === 'builder' ? (
+          <CampaignBuilder frontier={frontier} onCancel={() => setMode('detail')} onCreated={(campaign) => {
+            setSelectedId(campaign.id);
+            setMode('detail');
+            refresh();
+          }} />
+        ) : selectedCampaign ? (
+          <CampaignDetail campaign={selectedCampaign} frontier={frontier} onRefresh={refresh} />
+        ) : (
+          <PanelSection>
+            <EmptyState message="Select a campaign or build one from Frontier items." />
+          </PanelSection>
+        )}
+      </div>
     </div>
   );
 }
 
-/* ============ Campaign Card ============ */
-
-function CampaignCard({ campaign: c, selected, onToggleSelect, onClickDetail, onAction, onDispatch, onClone, expanded }: {
-  campaign: Campaign;
-  selected: boolean;
-  onToggleSelect: () => void;
-  onClickDetail: () => void;
-  onAction: (action: 'activate' | 'pause' | 'resume' | 'abort' | 'complete') => Promise<void>;
-  onDispatch: () => void;
-  onClone: () => Promise<void>;
-  expanded: boolean;
-}) {
-  const icon = STRATEGY_ICONS[c.strategy] || '⚙';
-  const pct = c.completion_pct ?? 0;
-
-  const actions: { action: 'activate' | 'pause' | 'resume' | 'abort'; label: string; cls: string }[] = [];
-  if (c.status === 'draft') actions.push({ action: 'activate', label: 'Activate', cls: 'bg-success/10 text-success border-success/20' });
-  if (c.status === 'active') {
-    actions.push({ action: 'pause', label: 'Pause', cls: 'bg-warning/10 text-warning border-warning/20' });
-    actions.push({ action: 'abort', label: 'Abort', cls: 'bg-destructive/10 text-destructive border-destructive/20' });
-  }
-  if (c.status === 'paused') {
-    actions.push({ action: 'resume', label: 'Resume', cls: 'bg-success/10 text-success border-success/20' });
-    actions.push({ action: 'abort', label: 'Abort', cls: 'bg-destructive/10 text-destructive border-destructive/20' });
-  }
-
-  const canDispatch = c.status === 'draft' || c.status === 'active';
-
+function CampaignRow({ campaign, selected, onSelect }: { campaign: Campaign; selected: boolean; onSelect: () => void }) {
+  const pct = campaign.completion_pct ?? 0;
   return (
-    <div className={cn('bg-surface border rounded-lg p-4 transition-colors', c.parent_id && 'ml-4 border-border/50', !c.parent_id && 'border-border')}>
-      <div className="flex items-center gap-2 mb-2 cursor-pointer" onClick={onClickDetail}>
-        <input type="checkbox" checked={selected} onChange={onToggleSelect} onClick={e => e.stopPropagation()} className="accent-accent" />
-        <span title={c.strategy}>{icon}</span>
-        <h3 className="text-sm font-medium flex-1">{c.name || c.id}</h3>
-        {c.parent_id && <span className="text-[10px] text-muted-foreground bg-elevated px-1 rounded">{'↳'} child</span>}
-        <StatusBadge status={c.status} />
-      </div>
-
-      {/* Progress */}
-      <div className="flex items-center gap-2 mb-2">
-        <div className="flex-1 h-1 bg-elevated rounded-full overflow-hidden">
-          <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${Math.min(100, pct)}%` }} />
+    <DataRow onClick={onSelect} className={cn('p-2.5', selected && 'border-accent/50 bg-accent/5')}>
+      <div className="flex items-start gap-2">
+        <StatusDot status={campaign.status} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium truncate">{campaign.name || campaign.id}</span>
+            <StatusPill className={statusClass(campaign.status)}>{campaign.status}</StatusPill>
+          </div>
+          <div className="mt-0.5 text-[10px] text-muted-foreground truncate">
+            {campaign.strategy} · {campaign.items?.length ?? 0} items · {campaign.agents_active ?? 0}/{campaign.agents_total ?? 0} agents
+          </div>
+          <div className="mt-2 h-1 bg-elevated rounded overflow-hidden">
+            <div className="h-full bg-accent rounded" style={{ width: `${Math.min(100, pct)}%` }} />
+          </div>
         </div>
         <span className="text-[10px] text-muted-foreground font-mono">{pct}%</span>
       </div>
+    </DataRow>
+  );
+}
 
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span>{c.items?.length ?? 0} items</span>
-        <span>{c.agents_active ?? 0}/{c.agents_total ?? 0} agents</span>
-        <span>{c.findings_count ?? 0} findings</span>
-        {c.started_at && <span>{formatRelativeTime(c.started_at)}</span>}
-      </div>
+function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign; frontier: FrontierItem[]; onRefresh: () => void }) {
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const actions = campaignLifecycleActions(campaign);
+  const ready = isCampaignDispatchReady(campaign);
+  const itemDetails = useMemo(() => resolveCampaignItems(campaign.items || [], frontier), [campaign.items, frontier]);
+  const metrics = deriveCampaignPreviewMetrics(itemDetails);
 
-      {/* Expanded detail */}
-      {expanded && (
-        <div className="mt-3 pt-3 border-t border-border space-y-2">
-          <div className="flex gap-1.5 flex-wrap">
-            {actions.map(a => (
-              <button key={a.action} onClick={() => onAction(a.action)}
-                className={cn('text-xs px-2 py-0.5 rounded border transition-colors', a.cls)}>
-                {a.label}
+  const runLifecycleAction = async (action: typeof actions[number]['action']) => {
+    setBusy(action);
+    try {
+      await campaignAction(campaign.id, action);
+      onRefresh();
+    } catch { /* leave current state visible */ }
+    finally { setBusy(null); }
+  };
+
+  const clone = async () => {
+    setBusy('clone');
+    try {
+      await cloneCampaign(campaign.id);
+      onRefresh();
+    } catch { /* silent */ }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
+      <PanelSection>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-2">
+              <StatusPill className={statusClass(campaign.status)}>{campaign.status}</StatusPill>
+              <span className="text-xs text-muted-foreground">{campaign.strategy}</span>
+              {campaign.parent_id && <StatusPill className="bg-elevated text-muted-foreground">child</StatusPill>}
+            </div>
+            <h3 className="text-base font-semibold truncate">{campaign.name || campaign.id}</h3>
+            <div className="text-[11px] text-muted-foreground font-mono truncate">{campaign.id}</div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {actions.map(action => (
+              <button
+                key={action.action}
+                onClick={() => runLifecycleAction(action.action)}
+                disabled={busy === action.action}
+                className={cn('text-xs px-2 py-1 rounded border inline-flex items-center gap-1 disabled:opacity-50', actionToneClass(action.tone))}
+              >
+                {actionIcon(action.action)}
+                {busy === action.action ? 'Working...' : action.label}
               </button>
             ))}
-            {canDispatch && (
-              <button onClick={onDispatch} className="text-xs px-2 py-0.5 rounded bg-accent-dim text-accent border border-accent/20">
-                Dispatch Agents
-              </button>
-            )}
-            <button onClick={onClone} className="text-xs px-2 py-0.5 rounded bg-elevated text-muted-foreground border border-border hover:text-foreground">
+            <button
+              onClick={() => setDispatchOpen(prev => !prev)}
+              disabled={!ready}
+              className="text-xs px-2 py-1 rounded bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+            >
+              <Send className="h-3.5 w-3.5" />
+              Dispatch
+            </button>
+            <button onClick={clone} disabled={busy === 'clone'} className="text-xs px-2 py-1 rounded bg-elevated text-muted-foreground border border-border hover:text-foreground inline-flex items-center gap-1">
+              <Copy className="h-3.5 w-3.5" />
               Clone
             </button>
           </div>
-
-          {/* Abort conditions */}
-          {c.abort_conditions && c.abort_conditions.length > 0 && (
-            <div className="text-xs space-y-0.5">
-              <span className="text-muted-foreground">Abort conditions:</span>
-              {c.abort_conditions.map((ac, i) => (
-                <div key={i} className="flex gap-2 text-muted-foreground">
-                  <span className="font-mono">{ac.type}</span>
-                  <span>{ac.description || String(ac.value)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Items preview */}
-          {c.items && c.items.length > 0 && (
-            <div className="text-xs space-y-0.5">
-              <span className="text-muted-foreground">Items ({c.items.length}):</span>
-              {c.items.slice(0, 5).map((item, i) => (
-                <div key={item.id || i} className="text-muted-foreground truncate pl-2">{item.description}</div>
-              ))}
-              {c.items.length > 5 && <div className="text-muted pl-2">… {c.items.length - 5} more</div>}
-            </div>
-          )}
         </div>
-      )}
+
+        <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+          <DetailFact label="Items" value={String((campaign.items || []).length)} />
+          <DetailFact label="Agents" value={`${campaign.agents_active ?? 0}/${campaign.agents_total ?? metrics.expectedAgentCount}`} />
+          <DetailFact label="Priority" value={metrics.maxPriority.toFixed(1)} />
+          <DetailFact label="Avg Noise" value={metrics.avgNoise.toFixed(2)} />
+          <DetailFact label="Started" value={campaign.started_at ? formatRelativeTime(campaign.started_at) : '—'} />
+        </div>
+
+        {!ready && (campaign.status === 'draft' || campaign.status === 'active') && (
+          <div className="mt-3 rounded border border-warning/20 bg-warning/10 p-2 text-xs text-warning">
+            Dispatch needs at least one Frontier item. Build or clone a campaign with selected items before launching agents.
+          </div>
+        )}
+      </PanelSection>
+
+      {dispatchOpen && <DispatchPanel campaign={campaign} onDone={() => { setDispatchOpen(false); onRefresh(); }} />}
+
+      <PanelSection title="Dispatch Preview">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs mb-3">
+          <DetailFact label="Expected Agents" value={String(metrics.expectedAgentCount)} />
+          <DetailFact label="Unique Nodes" value={String(metrics.nodeIds.length)} />
+          <DetailFact label="Findings" value={String(campaign.findings_count ?? 0)} />
+          <DetailFact label="Completion" value={`${campaign.completion_pct ?? 0}%`} />
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {metrics.nodeIds.slice(0, 10).map(nodeId => <GraphNodeLinks key={nodeId} nodeId={nodeId} />)}
+          {metrics.nodeIds.length > 10 && <span className="text-[10px] text-muted-foreground">+{metrics.nodeIds.length - 10} more</span>}
+        </div>
+      </PanelSection>
+
+      <PanelSection title="Frontier Items" meta={`(${campaign.items?.length ?? 0})`}>
+        {(campaign.items || []).length === 0 ? (
+          <EmptyState message="No Frontier items are attached to this campaign." />
+        ) : (
+          <div className="space-y-1.5">
+            {itemDetails.map(item => (
+              <CampaignItemRow key={getFrontierKey(item)} item={item} />
+            ))}
+            {itemDetails.length === 0 && (
+              <div className="text-xs text-muted-foreground">Frontier details for this campaign are not in the current filtered state.</div>
+            )}
+          </div>
+        )}
+      </PanelSection>
     </div>
   );
 }
 
-/* ============ Campaign Builder ============ */
-
-function CampaignBuilder({ frontier, onClose, onCreated }: {
+function CampaignBuilder({ frontier, onCancel, onCreated }: {
   frontier: FrontierItem[];
-  onClose: () => void;
-  onCreated: () => void;
+  onCancel: () => void;
+  onCreated: (campaign: Campaign) => void;
 }) {
   const [name, setName] = useState('');
   const [strategy, setStrategy] = useState<Campaign['strategy']>('custom');
-  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [type, setType] = useState('');
+  const [node, setNode] = useState('');
+  const [minPriority, setMinPriority] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
 
-  const toggleItem = (id: string) => {
-    setSelectedItems(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
+  const filtered = useMemo(() => filterCampaignFrontierItems(frontier, {
+    search,
+    type: type || undefined,
+    node,
+    minPriority,
+  }), [frontier, search, type, node, minPriority]);
+  const selectedItems = useMemo(() => frontier.filter(item => selected.has(getFrontierKey(item))), [frontier, selected]);
+  const metrics = useMemo(() => deriveCampaignPreviewMetrics(selectedItems), [selectedItems]);
 
   const submit = async () => {
-    if (!name.trim()) return;
+    if (!name.trim() || selected.size === 0) return;
     setCreating(true);
     try {
-      const items = frontier.filter(f => selectedItems.has(f.frontier_item_id || f.id));
-      await createCampaign({ name: name.trim(), strategy, items: items.length > 0 ? items : undefined });
-      onCreated();
-    } catch { /* silent */ }
+      const campaign = await createCampaign({
+        name: name.trim(),
+        strategy,
+        item_ids: selectedItems.map(getFrontierKey),
+      });
+      onCreated(campaign);
+    } catch { /* keep builder open */ }
     finally { setCreating(false); }
   };
 
   return (
-    <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">New Campaign</h3>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xs">&times;</button>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Name</label>
-          <input value={name} onChange={e => setName(e.target.value)} className="settings-input" placeholder="Campaign name" />
+    <div className="min-w-0 min-h-0 flex flex-col gap-3 overflow-y-auto">
+      <PanelSection title="Campaign Builder">
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-xs text-muted-foreground">
+            Name
+            <input value={name} onChange={e => setName(e.target.value)} className="settings-input mt-1 w-full" placeholder="Credential validation wave" />
+          </label>
+          <label className="text-xs text-muted-foreground">
+            Strategy
+            <select value={strategy} onChange={e => setStrategy(e.target.value as Campaign['strategy'])} className="settings-input mt-1 w-full">
+              <option value="custom">Custom</option>
+              <option value="credential_spray">Credential Spray</option>
+              <option value="enumeration">Enumeration</option>
+              <option value="post_exploitation">Post Exploitation</option>
+              <option value="network_discovery">Network Discovery</option>
+            </select>
+          </label>
         </div>
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Strategy</label>
-          <select value={strategy} onChange={e => setStrategy(e.target.value as Campaign['strategy'])} className="settings-input">
-            <option value="custom">Custom</option>
-            <option value="credential_spray">Credential Spray</option>
-            <option value="enumeration">Enumeration</option>
-            <option value="post_exploitation">Post Exploitation</option>
-            <option value="network_discovery">Network Discovery</option>
+      </PanelSection>
+
+      <PanelSection title="Frontier Selection" meta={`(${selected.size} selected)`}>
+        <FilterBar className="mb-3">
+          <input value={search} onChange={e => setSearch(e.target.value)} className="settings-input w-56" placeholder="Search item, node, type..." />
+          <input value={node} onChange={e => setNode(e.target.value)} className="settings-input w-44" placeholder="Node filter..." />
+          <select value={type} onChange={e => setType(e.target.value)} className="settings-input w-auto text-xs">
+            <option value="">All types</option>
+            <option value="incomplete_node">Incomplete</option>
+            <option value="untested_edge">Untested</option>
+            <option value="inferred_edge">Inferred</option>
+            <option value="network_discovery">Network</option>
+            <option value="credential_test">Credential</option>
           </select>
+          <label className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
+            Min priority
+            <input type="number" min={0} step={0.5} value={minPriority} onChange={e => setMinPriority(Number(e.target.value) || 0)} className="settings-input w-20" />
+          </label>
+        </FilterBar>
+
+        <div className="max-h-[330px] overflow-y-auto space-y-1.5">
+          {filtered.length === 0 ? (
+            <EmptyState message="No Frontier items match these filters." />
+          ) : filtered.map(item => {
+            const id = getFrontierKey(item);
+            const checked = selected.has(id);
+            return (
+              <DataRow
+                key={id}
+                onClick={() => setSelected(prev => {
+                  const next = new Set(prev);
+                  checked ? next.delete(id) : next.add(id);
+                  return next;
+                })}
+                className={cn('p-2.5', checked && 'border-accent/50 bg-accent/5')}
+              >
+                <div className="flex items-start gap-2">
+                  <input readOnly type="checkbox" checked={checked} className="mt-0.5 accent-accent" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-foreground line-clamp-2">{item.description}</div>
+                    <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+                      <span>{item.type}</span>
+                      <span>priority {(item.priority ?? 0).toFixed(1)}</span>
+                      <span>noise {(item.opsec_noise ?? 0).toFixed(2)}</span>
+                      <span className="font-mono">{campaignItemNodeLabel(item)}</span>
+                    </div>
+                  </div>
+                </div>
+              </DataRow>
+            );
+          })}
         </div>
+      </PanelSection>
+
+      <PanelSection title="Launch Preview">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+          <DetailFact label="Selected" value={String(metrics.selectedCount)} />
+          <DetailFact label="Expected Agents" value={String(metrics.expectedAgentCount)} />
+          <DetailFact label="Max Priority" value={metrics.maxPriority.toFixed(1)} />
+          <DetailFact label="Avg Noise" value={metrics.avgNoise.toFixed(2)} />
+          <DetailFact label="Nodes" value={String(metrics.nodeIds.length)} />
+        </div>
+        <div className="mt-3 flex justify-end gap-2">
+          <button onClick={onCancel} className="text-xs px-3 py-1 rounded bg-elevated text-muted-foreground border border-border hover:text-foreground">Cancel</button>
+          <button onClick={submit} disabled={!name.trim() || selected.size === 0 || creating} className="settings-save-btn disabled:opacity-50">
+            {creating ? 'Creating...' : 'Create Draft'}
+          </button>
+        </div>
+      </PanelSection>
+    </div>
+  );
+}
+
+function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () => void }) {
+  const [maxAgents, setMaxAgents] = useState(3);
+  const [scopeHops, setScopeHops] = useState(1);
+  const [throttle, setThrottle] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await dispatchCampaign(campaign.id, {
+        max_agents: maxAgents,
+        scope_hops: scopeHops,
+        throttle_seconds: throttle || undefined,
+      });
+      onDone();
+    } catch { /* leave dispatch panel open */ }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <PanelSection title="Explicit Dispatch Gate">
+      <div className="grid grid-cols-3 gap-3">
+        <label className="text-xs text-muted-foreground">
+          Max agents
+          <input type="number" min={1} max={20} value={maxAgents} onChange={e => setMaxAgents(parseInt(e.target.value, 10) || 1)} className="settings-input mt-1 w-full" />
+        </label>
+        <label className="text-xs text-muted-foreground">
+          Scope hops
+          <input type="number" min={0} max={5} value={scopeHops} onChange={e => setScopeHops(parseInt(e.target.value, 10) || 0)} className="settings-input mt-1 w-full" />
+        </label>
+        <label className="text-xs text-muted-foreground">
+          Throttle seconds
+          <input type="number" min={0} value={throttle} onChange={e => setThrottle(parseInt(e.target.value, 10) || 0)} className="settings-input mt-1 w-full" />
+        </label>
       </div>
-      {frontier.length > 0 && (
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Frontier Items ({selectedItems.size}/{frontier.length})</label>
-          <div className="max-h-32 overflow-y-auto space-y-0.5">
-            {frontier.slice(0, 30).map(item => {
-              const id = item.frontier_item_id || item.id;
-              return (
-                <label key={id} className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer">
-                  <input type="checkbox" checked={selectedItems.has(id)} onChange={() => toggleItem(id)} className="accent-accent" />
-                  <span className="truncate">{item.description}</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div className="flex gap-2">
-        <button onClick={submit} disabled={creating} className="settings-save-btn">{creating ? 'Creating…' : 'Create'}</button>
-        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+      <div className="mt-3 rounded border border-warning/20 bg-warning/10 p-2 text-xs text-warning">
+        Dispatch launches agents from the campaign through the existing backend path. Individual action approval remains terminal-forward.
+      </div>
+      <div className="mt-3 flex justify-end">
+        <button onClick={submit} disabled={busy} className="settings-save-btn disabled:opacity-50 inline-flex items-center gap-1">
+          <Send className="h-3.5 w-3.5" />
+          {busy ? 'Dispatching...' : 'Dispatch Agents'}
+        </button>
+      </div>
+    </PanelSection>
+  );
+}
+
+function CampaignItemRow({ item }: { item: FrontierItem }) {
+  return (
+    <div className="rounded border border-border bg-background/40 p-2">
+      <div className="text-xs text-foreground line-clamp-2">{item.description}</div>
+      <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+        <StatusPill className="bg-elevated text-muted-foreground">{item.type}</StatusPill>
+        <span>priority {(item.priority ?? 0).toFixed(1)}</span>
+        <span>noise {(item.opsec_noise ?? 0).toFixed(2)}</span>
+        <span className="font-mono">{campaignItemNodeLabel(item)}</span>
       </div>
     </div>
   );
 }
 
-/* ============ Dispatch Modal ============ */
-
-function DispatchModal({ campaignId, onClose, onDone }: {
-  campaignId: string;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [maxAgents, setMaxAgents] = useState(3);
-  const [scopeHops, setScopeHops] = useState(1);
-  const [throttle, setThrottle] = useState(0);
-  const [dispatching, setDispatching] = useState(false);
-
-  const submit = async () => {
-    setDispatching(true);
-    try {
-      await dispatchCampaign(campaignId, { max_agents: maxAgents, scope_hops: scopeHops, throttle_seconds: throttle || undefined });
-      onDone();
-    } catch {}
-    finally { setDispatching(false); }
-  };
-
+function CampaignStat({ label, value, tone }: { label: string; value: number; tone?: 'success' | 'accent' }) {
   return (
-    <div className="bg-surface border border-accent/20 rounded-lg p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-accent">Dispatch Agents</h3>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xs">&times;</button>
-      </div>
-      <div className="grid grid-cols-3 gap-3">
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Max Agents</label>
-          <input type="number" min={1} max={20} value={maxAgents} onChange={e => setMaxAgents(parseInt(e.target.value) || 1)} className="settings-input" />
-        </div>
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Scope Hops</label>
-          <input type="number" min={0} max={5} value={scopeHops} onChange={e => setScopeHops(parseInt(e.target.value) || 0)} className="settings-input" />
-        </div>
-        <div>
-          <label className="text-[11px] text-muted-foreground block mb-1">Throttle (s)</label>
-          <input type="number" min={0} value={throttle} onChange={e => setThrottle(parseInt(e.target.value) || 0)} className="settings-input" />
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button onClick={submit} disabled={dispatching} className="settings-save-btn">{dispatching ? 'Dispatching…' : 'Dispatch'}</button>
-        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
-      </div>
+    <div className="py-2 border-r border-border last:border-r-0">
+      <div className={cn('text-base font-semibold tabular-nums', tone === 'success' && 'text-success', tone === 'accent' && 'text-accent')}>{value}</div>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
     </div>
   );
+}
+
+function DetailFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-border bg-elevated px-2 py-1.5 min-w-0">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-xs text-foreground truncate">{value}</div>
+    </div>
+  );
+}
+
+function StatusDot({ status }: { status: Campaign['status'] }) {
+  return <span className={cn('mt-1.5 w-2 h-2 rounded-full flex-shrink-0', dotClass(status))} />;
+}
+
+function statusClass(status: Campaign['status']): string {
+  if (status === 'active') return 'bg-success/10 text-success';
+  if (status === 'paused') return 'bg-warning/10 text-warning';
+  if (status === 'aborted') return 'bg-destructive/10 text-destructive';
+  if (status === 'completed') return 'bg-accent/10 text-accent';
+  return 'bg-elevated text-muted-foreground';
+}
+
+function dotClass(status: Campaign['status']): string {
+  if (status === 'active') return 'bg-success';
+  if (status === 'paused') return 'bg-warning';
+  if (status === 'aborted') return 'bg-destructive';
+  if (status === 'completed') return 'bg-accent';
+  return 'bg-muted';
+}
+
+function actionToneClass(tone: 'success' | 'warning' | 'destructive' | 'muted'): string {
+  if (tone === 'success') return 'bg-success/10 text-success border-success/20 hover:bg-success/20';
+  if (tone === 'warning') return 'bg-warning/10 text-warning border-warning/20 hover:bg-warning/20';
+  if (tone === 'destructive') return 'bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20';
+  return 'bg-elevated text-muted-foreground border-border hover:text-foreground';
+}
+
+function actionIcon(action: 'activate' | 'pause' | 'resume' | 'abort' | 'complete') {
+  if (action === 'pause') return <Pause className="h-3.5 w-3.5" />;
+  if (action === 'abort' || action === 'complete') return <Square className="h-3.5 w-3.5" />;
+  return <Play className="h-3.5 w-3.5" />;
 }

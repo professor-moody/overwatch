@@ -2,6 +2,9 @@ import type {
   EngagementState,
   ExportedGraph,
   ActivityEntry,
+  DecisionLogEntry,
+  ActionExplanation,
+  TimelineEntry,
   SessionInfo,
   AgentInfo,
   Campaign,
@@ -64,6 +67,44 @@ export async function getHistory(params?: {
   return fetchJson(`/api/history${q ? `?${q}` : ''}`);
 }
 
+export async function getDecisionLog(params?: {
+  limit?: number;
+  action_id?: string;
+  frontier_item_id?: string;
+  agent_id?: string;
+  outcome?: string;
+}): Promise<{ decisions: DecisionLogEntry[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.action_id) qs.set('action_id', params.action_id);
+  if (params?.frontier_item_id) qs.set('frontier_item_id', params.frontier_item_id);
+  if (params?.agent_id) qs.set('agent_id', params.agent_id);
+  if (params?.outcome) qs.set('outcome', params.outcome);
+  const q = qs.toString();
+  return fetchJson(`/api/decision-log${q ? `?${q}` : ''}`);
+}
+
+export async function explainAction(id: string): Promise<ActionExplanation> {
+  return fetchJson(`/api/actions/${encodeURIComponent(id)}/explain`);
+}
+
+export async function getTimeline(params?: {
+  limit?: number;
+  entity_id?: string;
+  kind?: 'node' | 'edge';
+  since?: string;
+  at?: string;
+}): Promise<{ entries: TimelineEntry[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.entity_id) qs.set('entity_id', params.entity_id);
+  if (params?.kind) qs.set('kind', params.kind);
+  if (params?.since) qs.set('since', params.since);
+  if (params?.at) qs.set('at', params.at);
+  const q = qs.toString();
+  return fetchJson(`/api/timeline${q ? `?${q}` : ''}`);
+}
+
 // --- Sessions ---
 
 export async function getSessions(): Promise<{ sessions: SessionInfo[]; total: number; active: number }> {
@@ -119,6 +160,7 @@ export async function getCampaign(id: string): Promise<Campaign> {
 export async function createCampaign(body: {
   name: string;
   strategy: string;
+  item_ids?: string[];
   items?: FrontierItem[];
   abort_conditions?: unknown[];
 }): Promise<Campaign> {

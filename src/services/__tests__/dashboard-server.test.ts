@@ -215,6 +215,62 @@ describe('DashboardServer', () => {
     expect(payload.entries.length).toBe(payload.total);
   });
 
+  it('serveDecisionLog, serveActionExplanation, and serveTimeline expose read-only introspection views', () => {
+    const decisionSpy = vi.spyOn(engine, 'getDecisionLog').mockReturnValue([{
+      decision_id: 'act:act-1',
+      action_id: 'act-1',
+      opened_at: '2026-03-21T10:00:00Z',
+      closed_at: '2026-03-21T10:01:00Z',
+      outcome: 'open',
+      stages: [],
+    }]);
+    const explainSpy = vi.spyOn(engine, 'explainAction').mockReturnValue({
+      action_id: 'act-1',
+      found: true,
+      log_thought_chain: [],
+      considered_alternatives: [],
+      prior_actions_referenced: [],
+    });
+    const timelineSpy = vi.spyOn(engine, 'getTimeline').mockReturnValue([{
+      entity_id: 'host-a',
+      kind: 'node',
+      became_true_at: '2026-03-21T10:00:00Z',
+      evidence_refs: [],
+    }]);
+
+    const makeRes = () => ({
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    });
+
+    const decisionsRes = makeRes();
+    (dashboard as any).serveDecisionLog('/api/decision-log?limit=5&action_id=act-1&outcome=open', decisionsRes);
+    expect(decisionsRes.statusCode).toBe(200);
+    expect(JSON.parse(decisionsRes.body).decisions[0].action_id).toBe('act-1');
+    expect(decisionSpy).toHaveBeenCalledWith({ action_id: 'act-1', outcome: 'open', limit: 5 });
+
+    const explainRes = makeRes();
+    (dashboard as any).serveActionExplanation('act-1', explainRes);
+    expect(explainRes.statusCode).toBe(200);
+    expect(JSON.parse(explainRes.body).found).toBe(true);
+    expect(explainSpy).toHaveBeenCalledWith('act-1');
+
+    const timelineRes = makeRes();
+    (dashboard as any).serveTimeline('/api/timeline?kind=node&entity_id=host-a&limit=3', timelineRes);
+    expect(timelineRes.statusCode).toBe(200);
+    expect(JSON.parse(timelineRes.body).entries[0].entity_id).toBe('host-a');
+    expect(timelineSpy).toHaveBeenCalledWith({ entity_id: 'host-a', kind: 'node', limit: 3 });
+  });
+
   it('serveHistory respects limit parameter', () => {
     // Ingest multiple findings to create activity
     for (let i = 0; i < 5; i++) {
@@ -918,7 +974,7 @@ describe('DashboardServer', () => {
 
     // Send resize
     messageHandler(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
-    expect(resizeSpy).toHaveBeenCalledWith('sess-1', 120, 40);
+    expect(resizeSpy).toHaveBeenCalledWith('sess-1', 120, 40, 'dashboard', true);
 
     // Cleanup
     listeners['close']?.[0]?.();

@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { EmptyState } from '../shared';
-import { DataRow, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { useNavigation } from '../../hooks/useNavigation';
 import type { SessionInfo } from '../../lib/types';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -12,7 +13,11 @@ import {
   addAttachedSession,
   groupSessions,
   removeAttachedSession,
+  relatedSessionActions,
+  relatedSessionActivity,
+  relatedSessionFrontier,
   searchSession,
+  sessionCopyFields,
   sessionTitle,
   sortSessionsForWorkspace,
   type SessionGroup,
@@ -38,7 +43,8 @@ export function SessionsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const pendingActions = useEngagementStore((s) => s.pendingActions);
   const frontier = useEngagementStore((s) => s.frontier);
-  const { navigateToEvidence, navigateToGraph } = useNavigation();
+  const recentActivity = useEngagementStore((s) => s.recentActivity);
+  const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
   const [query, setQuery] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [attachedIds, setAttachedIds] = useState<string[]>([]);
@@ -48,6 +54,7 @@ export function SessionsPanel() {
   const [draftNotes, setDraftNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -229,6 +236,16 @@ export function SessionsPanel() {
     finally { setSaving(false); }
   }, [selectedSession, draftTitle, draftNotes, refresh]);
 
+  const copyText = useCallback(async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      window.setTimeout(() => setCopied(null), 1200);
+    } catch {
+      setCopied(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!activeTab || !containerRef.current) return;
     const entry = terminalsRef.current.get(activeTab);
@@ -256,6 +273,10 @@ export function SessionsPanel() {
   const selectedTargetLabel = selectedSession?.target_node
     ? graph.nodes.find(n => n.id === selectedSession.target_node)?.label || selectedSession.target_node
     : null;
+  const selectedRelatedActions = selectedSession ? relatedSessionActions(selectedSession, pendingActions) : [];
+  const selectedRelatedFrontier = selectedSession ? relatedSessionFrontier(selectedSession, frontier) : [];
+  const selectedRelatedActivity = selectedSession ? relatedSessionActivity(selectedSession, recentActivity).slice(0, 5) : [];
+  const selectedCopyFields = selectedSession ? sessionCopyFields(selectedSession) : [];
 
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
@@ -380,6 +401,45 @@ export function SessionsPanel() {
                     {selectedRelationships && selectedRelationships.frontier.length > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">{selectedRelationships.frontier.length} frontier item{selectedRelationships.frontier.length === 1 ? '' : 's'}</span>}
                   </div>
                 )}
+
+                <div className="mt-3 grid grid-cols-1 xl:grid-cols-3 gap-2">
+                  <SessionContextBlock title="Copy Context">
+                    <div className="flex flex-wrap gap-1">
+                      {selectedCopyFields.map(field => (
+                        <button
+                          key={field.label}
+                          onClick={() => copyText(field.label, field.value)}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground font-mono"
+                        >
+                          {copied === field.label ? 'copied' : field.label}
+                        </button>
+                      ))}
+                    </div>
+                  </SessionContextBlock>
+                  <SessionContextBlock title="Terminal Links">
+                    <div className="flex flex-wrap gap-1">
+                      <button onClick={() => navigateToPanel('actions')} className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning">
+                        {selectedRelatedActions.length} actions
+                      </button>
+                      <button onClick={() => navigateToPanel('frontier', selectedSession.target_node || undefined)} className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">
+                        {selectedRelatedFrontier.length} frontier
+                      </button>
+                    </div>
+                  </SessionContextBlock>
+                  <SessionContextBlock title="Recent Activity">
+                    {selectedRelatedActivity.length === 0 ? (
+                      <div className="text-[10px] text-muted-foreground">No linked events</div>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {selectedRelatedActivity.map((entry, index) => (
+                          <div key={(entry.event_id || entry.id || index)} className="text-[10px] text-muted-foreground truncate">
+                            {entry.event_type}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </SessionContextBlock>
+                </div>
               </PanelSection>
             )}
 
@@ -440,7 +500,21 @@ function SessionRow({
   onDetach: () => void;
 }) {
   return (
-    <DataRow onClick={onSelect} className={cn('p-2.5', selected && 'border-accent/50 bg-accent/5')}>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={cn(
+        'w-full bg-surface border border-border rounded-lg p-2.5 text-left transition-colors hover:border-accent/40 hover:bg-hover/30 cursor-pointer',
+        selected && 'border-accent/50 bg-accent/5',
+      )}
+    >
       <div className="flex items-start gap-2">
         <span className={cn('mt-1.5 w-2 h-2 rounded-full flex-shrink-0',
           session.state === 'connected' && 'bg-success',
@@ -471,7 +545,7 @@ function SessionRow({
           </button>
         )}
       </div>
-    </DataRow>
+    </div>
   );
 }
 
@@ -480,6 +554,15 @@ function DetailFact({ label, value, mono }: { label: string; value: string; mono
     <div className="rounded border border-border bg-elevated px-2 py-1.5 min-w-0">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className={cn('text-xs text-foreground truncate', mono && 'font-mono')}>{value}</div>
+    </div>
+  );
+}
+
+function SessionContextBlock({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded border border-border bg-background/40 px-2 py-1.5 min-w-0">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{title}</div>
+      {children}
     </div>
   );
 }
