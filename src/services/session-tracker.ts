@@ -148,10 +148,12 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
   });
 
   for (const edgeId of edgesToDowngrade) {
-    host.ctx.graph.mergeEdgeAttributes(edgeId, {
+    const props = {
       session_live: false,
       session_closed_at: new Date().toISOString(),
-    });
+    };
+    host.ctx.journalMutation('merge_edge_attrs', { edge_id: edgeId, props });
+    host.ctx.graph.mergeEdgeAttributes(edgeId, props);
   }
 
   if (edgesToDowngrade.length > 0) {
@@ -174,10 +176,12 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
     // Only downgrade edges that are still marked as live (or have no session_live flag,
     // meaning they were created before this feature and never closed properly)
     if (attrs.session_live !== false) {
-      host.ctx.graph.mergeEdgeAttributes(_edgeId, {
+      const props = {
         session_live: false,
         session_closed_at: attrs.session_closed_at || new Date().toISOString(),
-      });
+      };
+      host.ctx.journalMutation('merge_edge_attrs', { edge_id: _edgeId, props });
+      host.ctx.graph.mergeEdgeAttributes(_edgeId, props);
       downgraded++;
     }
   });

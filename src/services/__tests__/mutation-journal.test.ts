@@ -79,6 +79,25 @@ describe('MutationJournal (P2.1)', () => {
       expect(entries).toHaveLength(1);
       expect(entries[0].seq).toBe(1);
     });
+
+    it('replay reports applied, skipped, and failed entries separately', () => {
+      const j = new MutationJournal(TEST_STATE);
+      j.append({ type: 'add_node', payload: { props: { id: 'a' } } });
+      j.append({ type: 'add_edge', payload: { source: 'missing', target: 'also-missing' } });
+      j.append({ type: 'drop_edge', payload: { edge_id: 'boom' } });
+
+      const result = j.replay({
+        apply(entry) {
+          if (entry.seq === 1) return { status: 'applied' };
+          if (entry.seq === 2) return { status: 'skipped', reason: 'missing endpoint(s)' };
+          throw new Error('synthetic replay failure');
+        },
+      }, 0);
+
+      expect(result).toMatchObject({ read: 3, applied: 1, skipped: 1, failed: 1 });
+      expect(result.skipped_reasons[0]).toMatchObject({ seq: 2, type: 'add_edge', reason: 'missing endpoint(s)' });
+      expect(result.failed_reasons[0]).toMatchObject({ seq: 3, type: 'drop_edge', reason: 'synthetic replay failure' });
+    });
   });
 
   describe('integrated with engine', () => {
@@ -119,6 +138,37 @@ describe('MutationJournal (P2.1)', () => {
       // The 'post' node should be present after WAL replay.
       expect(eng2.getNode('post')).toBeDefined();
       expect(eng2.getNode('baseline')).toBeDefined();
+    });
+
+    it('preserves the journal when replay skips unsupported or incomplete mutations', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'baseline', type: 'host', label: 'baseline', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      eng.dispose();
+
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      j.append({
+        type: 'add_edge',
+        payload: {
+          source: 'missing-host',
+          target: 'missing-service',
+          props: { type: 'RUNS', confidence: 1.0, discovered_at: '2026-01-01T00:00:00Z' },
+        },
+      });
+      j.append({
+        type: 'merge_edge_attrs',
+        payload: { edge_id: 'missing-edge', props: { session_live: false } },
+      });
+      j.append({ type: 'future_mutation' as any, payload: {} });
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      expect(existsSync(JOURNAL_PATH)).toBe(true);
+      const replayEvent = eng2.getFullHistory().find(e => e.description.startsWith('WAL replay:'));
+      expect(replayEvent?.details).toMatchObject({ skipped: 3, failed: 0 });
+      expect((replayEvent?.details as any).read).toBeGreaterThanOrEqual(3);
+      expect(String(JSON.stringify(replayEvent?.details))).toContain('unsupported mutation type');
     });
 
     it('legacy engagement keeps the empty manifest assertion (no journal field)', () => {

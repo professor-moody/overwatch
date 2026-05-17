@@ -24,6 +24,13 @@ export interface BundleManifest {
   tape_paths: string[];
 }
 
+export interface PreparedBundle {
+  stateDir: string;
+  entries: string[];
+  manifest: BundleManifest;
+  cleanup: () => void;
+}
+
 /** Derive registered tape file paths from the activity log. */
 export function extractTapePaths(engine: GraphEngine): string[] {
   const paths: string[] = [];
@@ -126,14 +133,13 @@ export function pipeTarGzToStream(
 }
 
 /**
- * Build a bundle: write a manifest JSON alongside the archive,
- * then create the .tar.gz including that manifest.
- * Returns the final archive path and size.
+ * Prepare a bundle entry list and write the temporary manifest. Call cleanup()
+ * after tar creation/streaming finishes.
  */
-export async function buildBundle(
+export function prepareBundle(
   engine: GraphEngine,
-  opts: BundleOptions & { outputPath?: string } = {},
-): Promise<{ archivePath: string; sizeBytes: number; manifest: BundleManifest }> {
+  opts: BundleOptions = {},
+): PreparedBundle {
   // Flush any pending mutations to disk before archiving so the bundle
   // captures the latest engagement state (P1).
   engine.flushNow();
@@ -142,7 +148,6 @@ export async function buildBundle(
   const stateDir = dirname(stateFilePath);
   const cfg = engine.getConfig();
   const now = new Date().toISOString();
-  const ts = now.slice(0, 19).replace(/[T:]/g, '-');
 
   const { entries } = gatherBundleEntries(stateFilePath, opts);
   const tapePaths = opts.includeTapes !== false ? extractTapePaths(engine) : [];
@@ -157,6 +162,7 @@ export async function buildBundle(
     } catch { /* ignore */ }
     const desc =
       e === basename(stateFilePath) ? 'Engagement state (graph + activity log + config)' :
+      e === basename(stateFilePath, '.json') + '.journal.jsonl' ? 'Write-ahead mutation journal' :
       e === 'evidence' ? 'Evidence files and manifest' :
       e === 'reports' ? 'Rendered report archive' :
       e === '.snapshots' ? 'Periodic state snapshots' : e;
@@ -176,15 +182,39 @@ export async function buildBundle(
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   entries.push('bundle-manifest.json');
 
-  const archivePath = opts.outputPath ?? join(stateDir, `bundle-${cfg.id}-${ts}.tar.gz`);
+  return {
+    stateDir,
+    entries,
+    manifest,
+    cleanup: () => {
+      try { unlinkSync(manifestPath); } catch { /* cleanup */ }
+    },
+  };
+}
+
+/**
+ * Build a bundle: write a manifest JSON alongside the archive,
+ * then create the .tar.gz including that manifest.
+ * Returns the final archive path and size.
+ */
+export async function buildBundle(
+  engine: GraphEngine,
+  opts: BundleOptions & { outputPath?: string } = {},
+): Promise<{ archivePath: string; sizeBytes: number; manifest: BundleManifest }> {
+  const prepared = prepareBundle(engine, opts);
+  const cfg = engine.getConfig();
+  const now = prepared.manifest.created_at;
+  const ts = now.slice(0, 19).replace(/[T:]/g, '-');
+
+  const archivePath = opts.outputPath ?? join(prepared.stateDir, `bundle-${cfg.id}-${ts}.tar.gz`);
 
   // Ensure output directory exists
   mkdirSync(dirname(archivePath), { recursive: true });
 
   try {
-    const sizeBytes = await createTarGz(archivePath, stateDir, entries);
-    return { archivePath, sizeBytes, manifest };
+    const sizeBytes = await createTarGz(archivePath, prepared.stateDir, prepared.entries);
+    return { archivePath, sizeBytes, manifest: prepared.manifest };
   } finally {
-    try { unlinkSync(manifestPath); } catch { /* cleanup */ }
+    prepared.cleanup();
   }
 }

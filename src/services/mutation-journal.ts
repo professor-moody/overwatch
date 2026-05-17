@@ -55,8 +55,21 @@ export interface MutationEntry {
   source_action_id?: string;   // optional cross-reference to the originating action
 }
 
+export type MutationApplyResult =
+  | { status: 'applied' }
+  | { status: 'skipped'; reason: string };
+
+export interface MutationReplayResult {
+  read: number;
+  applied: number;
+  skipped: number;
+  failed: number;
+  skipped_reasons: Array<{ seq: number; type: string; reason: string }>;
+  failed_reasons: Array<{ seq: number; type: string; reason: string }>;
+}
+
 export interface MutationApplier {
-  apply(entry: MutationEntry): void;
+  apply(entry: MutationEntry): MutationApplyResult;
 }
 
 export class MutationJournal {
@@ -214,25 +227,34 @@ export class MutationJournal {
    * truncation should be skipped when entries failed or were skipped
    * unexpectedly, so the evidence is preserved for manual inspection (P2).
    */
-  replay(applier: MutationApplier, fromSeq: number): { read: number; applied: number; skipped: number; failed: number } {
+  replay(applier: MutationApplier, fromSeq: number): MutationReplayResult {
     const entries = this.readSince(fromSeq);
     let applied = 0;
     let skipped = 0;
     let failed = 0;
+    const skipped_reasons: MutationReplayResult['skipped_reasons'] = [];
+    const failed_reasons: MutationReplayResult['failed_reasons'] = [];
     for (const entry of entries) {
       try {
-        applier.apply(entry);
-        applied++;
+        const result = applier.apply(entry);
+        if (result.status === 'skipped') {
+          skipped++;
+          skipped_reasons.push({ seq: entry.seq, type: entry.type, reason: result.reason });
+        } else {
+          applied++;
+        }
       } catch (err) {
         failed++;
+        const reason = err instanceof Error ? err.message : String(err);
+        failed_reasons.push({ seq: entry.seq, type: entry.type, reason });
         // eslint-disable-next-line no-console
-        console.warn(`[mutation-journal] apply failed for seq=${entry.seq} type=${entry.type}: ${err instanceof Error ? err.message : err}`);
+        console.warn(`[mutation-journal] apply failed for seq=${entry.seq} type=${entry.type}: ${reason}`);
       }
     }
     if (entries.length > 0) {
       this.nextSeq = Math.max(this.nextSeq, entries[entries.length - 1].seq);
     }
-    return { read: entries.length, applied, skipped, failed };
+    return { read: entries.length, applied, skipped, failed, skipped_reasons, failed_reasons };
   }
 
   /** Path to the journal file. Useful for tests + diagnostics. */

@@ -20,7 +20,7 @@ import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
 import { assembleReport, type ReportFormat } from './report-assembler.js';
-import { gatherBundleEntries, pipeTarGzToStream } from './bundle-builder.js';
+import { prepareBundle, pipeTarGzToStream } from './bundle-builder.js';
 import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
@@ -2258,13 +2258,9 @@ export class DashboardServer {
 
   /** GET /api/bundle — stream the engagement archive as a .tar.gz download. */
   private async streamBundle(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let prepared: ReturnType<typeof prepareBundle> | null = null;
     try {
-      // Flush any pending mutations before archiving so the download reflects
-      // the latest engagement state (P1).
-      this.engine.flushNow();
-
-      const stateFilePath = this.engine.getStateFilePath();
-      const { stateDir, entries } = gatherBundleEntries(stateFilePath, { includeSnapshots: false });
+      prepared = prepareBundle(this.engine, { includeSnapshots: false });
       const cfg = this.engine.getConfig();
       const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
       const filename = `bundle-${cfg.id}-${ts}.tar.gz`;
@@ -2276,7 +2272,7 @@ export class DashboardServer {
         'Cache-Control': 'no-store',
       });
 
-      await pipeTarGzToStream(res, stateDir, entries);
+      await pipeTarGzToStream(res, prepared.stateDir, prepared.entries);
       res.end();
 
       this.engine.logActionEvent({
@@ -2290,6 +2286,8 @@ export class DashboardServer {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
       }
+    } finally {
+      prepared?.cleanup();
     }
   }
 

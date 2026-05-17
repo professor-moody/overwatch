@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import { execFileSync } from 'child_process';
+import { PassThrough } from 'stream';
 import { unlinkSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -32,7 +34,7 @@ function makeConfig(overrides?: Partial<EngagementConfig>): EngagementConfig {
 }
 
 function cleanup() {
-  for (const f of [TEST_STATE_FILE]) {
+  for (const f of [TEST_STATE_FILE, TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl'), './bundle-manifest.json']) {
     try { if (existsSync(f)) unlinkSync(f); } catch {}
   }
 }
@@ -55,6 +57,51 @@ describe('DashboardServer', () => {
 
   it('reports address property', () => {
     expect(dashboard.address).toBe('http://127.0.0.1:8384');
+  });
+
+  it('streams dashboard bundle with manifest and journal entries', async () => {
+    engine.addNode({
+      id: 'host-bundle',
+      type: 'host',
+      label: 'bundle host',
+      discovered_at: new Date().toISOString(),
+      confidence: 1.0,
+    });
+    engine.persist();
+    engine.flushNow();
+    const journalName = TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl');
+    writeFileSync(journalName, JSON.stringify({
+      seq: 1,
+      ts: new Date().toISOString(),
+      type: 'add_node',
+      payload: { props: { id: 'journal-only' } },
+    }) + '\n');
+
+    const chunks: Buffer[] = [];
+    const res = new PassThrough() as any;
+    res.headersSent = false;
+    res.writeHead = (statusCode: number, headers?: Record<string, string>) => {
+      res.statusCode = statusCode;
+      res.headers = headers;
+      res.headersSent = true;
+    };
+    res.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+
+    await (dashboard as any).streamBundle({}, res);
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-bundle-test-'));
+    try {
+      const archivePath = join(tempDir, 'bundle.tar.gz');
+      writeFileSync(archivePath, Buffer.concat(chunks));
+      const listing = execFileSync('tar', ['tzf', archivePath], { encoding: 'utf-8' }).split('\n').filter(Boolean);
+      expect(res.statusCode).toBe(200);
+      expect(listing).toContain('state-test-dashboard.json');
+      expect(listing).toContain('state-test-dashboard.journal.jsonl');
+      expect(listing).toContain('bundle-manifest.json');
+      expect(existsSync('./bundle-manifest.json')).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('onGraphUpdate skips getState/exportGraph with zero clients', () => {

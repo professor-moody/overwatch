@@ -659,6 +659,11 @@ export const engagementConfigSchema = z.object({
     /** Explicit tape file path. Overrides `dir` when set. */
     file: z.string().optional(),
   }).optional(),
+  /**
+   * Redacted Postgres DSN recorded for display only. Live Postgres pools remain
+   * session-scoped and must be reconnected after restart.
+   */
+  postgres_dsn: z.string().optional(),
 });
 
 export interface ExportedGraphNode {

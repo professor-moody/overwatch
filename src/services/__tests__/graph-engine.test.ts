@@ -37,6 +37,8 @@ function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig
 
 function cleanup() {
   if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
+  const journalFile = TEST_STATE_FILE.replace(/\.json$/, '.journal.jsonl');
+  if (existsSync(journalFile)) unlinkSync(journalFile);
   // Clean up snapshot files (legacy same-dir and new .snapshots/ subdir)
   const base = 'state-test-eng';
   try {
@@ -3196,6 +3198,30 @@ describe('GraphEngine', () => {
       const edges = engine.queryGraph({ edge_type: 'HAS_SESSION' });
       expect(edges.edges[0].properties.session_live).toBe(false);
       expect(edges.edges[0].properties.session_closed_at).toBeDefined();
+    });
+
+    it('replays a journaled session close after crash-before-flush', () => {
+      const engine1 = trackedEngine(makeConfig({ engagement_nonce: 'c'.repeat(64) }), TEST_STATE_FILE);
+      engine1.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), confidence: 1.0 });
+      engine1.addNode({ id: 'user-op', type: 'user', label: 'operator', discovered_at: new Date().toISOString(), confidence: 1.0 });
+      engine1.addEdge('user-op', 'host-10-10-10-1', {
+        type: 'HAS_SESSION',
+        confidence: 1.0,
+        discovered_at: new Date().toISOString(),
+        session_live: true,
+        session_id: 'session-1',
+      });
+      engine1.persist();
+      engine1.flushNow();
+
+      engine1.onSessionClosed('session-1', 'host-10-10-10-1', 'user-op');
+      engine1.dispose(); // cancel debounced persist; only the journal has the close.
+
+      const engine2 = trackedEngine(makeConfig({ engagement_nonce: 'c'.repeat(64) }), TEST_STATE_FILE);
+      const edges = engine2.queryGraph({ edge_type: 'HAS_SESSION' });
+      expect(edges.edges[0].properties.session_live).toBe(false);
+      expect(edges.edges[0].properties.session_closed_at).toBeDefined();
+      expect(engine2.getState().access_summary.compromised_hosts).toHaveLength(0);
     });
 
     it('access_summary still reports host via ADMIN_TO edge regardless of session_live', () => {

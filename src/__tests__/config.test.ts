@@ -32,6 +32,15 @@ describe('engagement config validation', () => {
     expect(config.scope.domains).toEqual(['test.local']);
   });
 
+  it('preserves redacted session-scoped postgres DSN metadata', () => {
+    const raw = {
+      ...JSON.parse(VALID_CONFIG),
+      postgres_dsn: 'postgresql://operator:[redacted]@localhost:5432/msf',
+    };
+    const config = parseEngagementConfig(JSON.stringify(raw));
+    expect(config.postgres_dsn).toBe('postgresql://operator:[redacted]@localhost:5432/msf');
+  });
+
   it('fails fast on invalid config shape with actionable paths', () => {
     let thrown: unknown;
 

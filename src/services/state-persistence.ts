@@ -520,9 +520,19 @@ export class StatePersistence {
         const parts: string[] = [`applied ${replay.applied}`];
         if (replay.skipped > 0) parts.push(`skipped ${replay.skipped}`);
         if (replay.failed > 0) parts.push(`FAILED ${replay.failed}`);
-        this.ctx.log(`WAL replay: ${parts.join(', ')} of ${replay.read} mutation(s)`, undefined, {
+        this.ctx.logEvent({
+          description: `WAL replay: ${parts.join(', ')} of ${replay.read} mutation(s)`,
+          event_type: 'system',
           category: 'system',
-          outcome: replay.failed > 0 ? 'failure' : 'success',
+          outcome: replay.failed > 0 ? 'failure' : replay.skipped > 0 ? 'neutral' : 'success',
+          details: {
+            read: replay.read,
+            applied: replay.applied,
+            skipped: replay.skipped,
+            failed: replay.failed,
+            skipped_reasons: replay.skipped_reasons,
+            failed_reasons: replay.failed_reasons,
+          },
         });
         // Only truncate the journal when every entry was applied successfully.
         // If any entry failed, preserve the journal file so the operator can
@@ -560,7 +570,7 @@ export class StatePersistence {
               if (!ctx.graph.hasNode(props.id)) {
                 ctx.graph.addNode(props.id, props);
               }
-              break;
+              return { status: 'applied' };
             }
             case 'merge_node_attrs': {
               const props = (entry.payload as { props: NodeProperties }).props;
@@ -569,11 +579,13 @@ export class StatePersistence {
               } else {
                 ctx.graph.addNode(props.id, props);
               }
-              break;
+              return { status: 'applied' };
             }
             case 'add_edge': {
               const p = entry.payload as { source: string; target: string; props: import('../types.js').EdgeProperties };
-              if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) break;
+              if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) {
+                return { status: 'skipped', reason: `missing endpoint(s): ${p.source} -> ${p.target}` };
+              }
               const existingEdges = ctx.graph.edges(p.source, p.target);
               let merged = false;
               for (const eid of existingEdges) {
@@ -588,17 +600,28 @@ export class StatePersistence {
                 const baseKey = `${p.source}--${p.props.type}--${p.target}`;
                 try { ctx.graph.addEdgeWithKey(baseKey, p.source, p.target, p.props); } catch { /* edge already exists */ }
               }
-              break;
+              return { status: 'applied' };
+            }
+            case 'merge_edge_attrs': {
+              const p = entry.payload as { edge_id: string; props: Partial<import('../types.js').EdgeProperties> };
+              if (!ctx.graph.hasEdge(p.edge_id)) {
+                return { status: 'skipped', reason: `missing edge: ${p.edge_id}` };
+              }
+              ctx.graph.mergeEdgeAttributes(p.edge_id, p.props);
+              return { status: 'applied' };
             }
             case 'drop_edge': {
               const p = entry.payload as { edge_id: string };
-              if (ctx.graph.hasEdge(p.edge_id)) ctx.graph.dropEdge(p.edge_id);
-              break;
+              if (!ctx.graph.hasEdge(p.edge_id)) {
+                return { status: 'skipped', reason: `missing edge: ${p.edge_id}` };
+              }
+              ctx.graph.dropEdge(p.edge_id);
+              return { status: 'applied' };
             }
             default:
               // Unknown / future types are tolerated (forward-compat for
               // journals written by a newer version of the engine).
-              break;
+              return { status: 'skipped', reason: `unsupported mutation type: ${entry.type}` };
           }
         } finally {
           ctx.mutationJournal = savedJournal;
