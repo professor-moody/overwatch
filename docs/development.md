@@ -23,11 +23,11 @@ overwatch/
 │   ├── config.ts             # Config parsing and validation
 │   ├── types.ts              # Shared types + Zod schemas
 │   ├── tools/                # MCP tool modules (one per domain)
-│   │   ├── state.ts          # get_state, run_lab_preflight, run_graph_health, get_history, export_graph
+│   │   ├── state.ts          # get_state, run_lab_preflight, run_graph_health, recompute_objectives, get_history, export_graph, verify_activity_chain
 │   │   ├── scoring.ts        # next_task, validate_action
 │   │   ├── findings.ts       # report_finding
 │   │   ├── exploration.ts    # query_graph, find_paths
-│   │   ├── agents.ts         # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent, agent_heartbeat
+│   │   ├── agents.ts         # register_agent, dispatch_agents, dispatch_subnet_agents, get_agent_context, update_agent, submit_agent_transcript, agent_heartbeat
 │   │   ├── decision-log.ts   # get_decision_log (P3.1)
 │   │   ├── introspection.ts  # explain_action (P3.2)
 │   │   ├── timeline.ts       # get_timeline (P3.3)
@@ -40,7 +40,16 @@ overwatch/
 │   │   ├── logging.ts        # log_action_event
 │   │   ├── retrospective.ts  # run_retrospective
 │   │   ├── remediation.ts    # correct_graph
-│   │   ├── sessions.ts       # open_session, write/read/send_to/list/update/resize/signal/close_session
+│   │   ├── sessions.ts       # open/write/read/send/list/update/resize/signal/close session tools
+│   │   ├── run-bash.ts       # run_bash
+│   │   ├── run-tool.ts       # run_tool
+│   │   ├── ingest-json.ts    # ingest_json
+│   │   ├── postgres.ts       # connect/list/ingest Postgres helpers
+│   │   ├── bundle.ts         # bundle_engagement
+│   │   ├── log-thought.ts    # log_thought
+│   │   ├── transcripts.ts    # ingest_transcript
+│   │   ├── tapes.ts          # register_tape_session
+│   │   ├── token-replay.ts   # validate_token_credential
 │   │   ├── scope.ts          # update_scope
 │   │   ├── instructions.ts   # get_system_prompt
 │   │   ├── reporting.ts      # generate_report

@@ -413,7 +413,7 @@ Overwatch maintains **persistent interactive sessions** — long-lived bidirecti
 
 The core primitives are `write_session` (raw bytes) and `read_session` (cursor-based). Each session has a 128KB ring buffer with absolute monotonic positions. Agents track `end_pos` from each read and pass it as `from_pos` on the next to get only new output.
 
-`send_to_session` is an experimental convenience tool that writes a command, waits for output to settle (idle timeout or regex match), and returns the captured output in one call.
+`send_to_session` is the audited command path for persistent sessions. It validates scope using per-call metadata or the session's `default_validation`, writes the command, waits for output to settle, persists the captured output as evidence, and records action lifecycle events. Use `write_session` and `read_session` for partial I/O such as prompts, REPL navigation, and streaming tools.
 
 ### TTY Quality
 

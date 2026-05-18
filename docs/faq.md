@@ -209,7 +209,7 @@ The engagement graph (findings, frontier, objectives) survives restarts. Session
 ### What's the difference between `write_session` and `send_to_session`?
 
 - **`write_session`** — raw I/O primitive. Writes bytes, returns the new buffer position. You call `read_session` separately to get output.
-- **`send_to_session`** — convenience sugar (experimental). Writes a command, waits for output to settle (idle timeout or regex match), then returns the captured output in one call. Simpler but less flexible — use `write`/`read` for interactive prompts, password entry, or REPL input.
+- **`send_to_session`** — audited command path. It validates the command against session/default scope metadata, writes it, waits for output to settle, stores captured output as evidence, and emits action lifecycle events. Use `write_session`/`read_session` for interactive prompts, password entry, REPL navigation, or streaming output where a single command lifecycle would be misleading.
 
 ### How does credential expiry estimation work?
 

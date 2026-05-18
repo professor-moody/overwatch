@@ -26,3 +26,4 @@ An `ExportedGraph` object:
 - Returns the entire graph — can be large for complex engagements
 - Used by `run_retrospective` as input for analysis
 - Useful for external tooling, custom reporting, or graph visualization
+- For a portable archive that includes evidence, reports, a bundle manifest, and the mutation journal, use [`bundle_engagement`](bundle-engagement.md)

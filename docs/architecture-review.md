@@ -236,7 +236,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (42)
+## MCP Tools (60+)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -308,7 +308,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 | `open_session` | Create persistent interactive session (SSH, PTY, socket) |
 | `write_session` | Write raw bytes to a session (I/O primitive) |
 | `read_session` | Cursor-based read from session buffer |
-| `send_to_session` | [Experimental] Write command + wait + read |
+| `send_to_session` | Instrumented command send with validation, evidence, and action lifecycle events |
 | `list_sessions` | List sessions with metadata |
 | `update_session` | Update capabilities, title, ownership |
 | `resize_session` | Resize terminal dimensions (PTY only) |
@@ -442,7 +442,12 @@ overwatch/
 │   │   ├── skills.ts               # get_skill
 │   │   ├── toolcheck.ts            # check_tools
 │   │   ├── processes.ts            # track_process, check_processes
-│   │   ├── sessions.ts             # open/write/read/send_to/list/update/resize/signal/close_session
+│   │   ├── sessions.ts             # open/write/read/send/list/update/resize/signal/close session tools
+│   │   ├── run-bash.ts             # run_bash
+│   │   ├── run-tool.ts             # run_tool
+│   │   ├── ingest-json.ts          # ingest_json
+│   │   ├── postgres.ts             # connect/list/ingest Postgres helpers
+│   │   ├── bundle.ts               # bundle_engagement
 │   │   ├── scope.ts                # update_scope
 │   │   ├── instructions.ts         # get_system_prompt
 │   │   ├── reporting.ts            # generate_report

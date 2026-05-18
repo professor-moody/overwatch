@@ -9,21 +9,28 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`get_state`](get-state.md) | Full engagement briefing from graph | Yes |
 | [`run_lab_preflight`](run-lab-preflight.md) | Aggregate lab-readiness checks | Yes |
 | [`run_graph_health`](run-graph-health.md) | Full graph integrity report | Yes |
-| [`recompute_objectives`](#) | Re-evaluate objective achievement status | No |
+| [`recompute_objectives`](recompute-objectives.md) | Re-evaluate objective achievement status | No |
+| [`verify_activity_chain`](verify-activity-chain.md) | Verify the tamper-evident activity hash chain | Yes |
 | [`get_history`](get-history.md) | Full activity log | Yes |
 | [`export_graph`](export-graph.md) | Complete graph dump | Yes |
+| [`bundle_engagement`](bundle-engagement.md) | Portable archive with state, evidence, reports, manifest, and journal | Yes |
 | [`next_task`](next-task.md) | Filtered frontier candidates for scoring | No |
 | [`validate_action`](validate-action.md) | Pre-execution sanity check | No |
 | [`log_action_event`](log-action-event.md) | Record action lifecycle events | No |
+| [`log_thought`](log-thought.md) | Record plans, hypotheses, decisions, and reflections | No |
+| [`run_bash`](run-bash.md) | Auto-instrumented one-shot shell execution | No |
+| [`run_tool`](run-tool.md) | Auto-instrumented argv-form tool execution | No |
 | [`report_finding`](report-finding.md) | Submit new nodes/edges to the graph | No |
 | [`get_evidence`](get-evidence.md) | Retrieve full-fidelity evidence by ID or list stored evidence records | Yes |
 | [`parse_output`](parse-output.md) | Parse supported tool output into findings | No |
+| [`ingest_json`](ingest-json.md) | Generic JSON/JSONL ingestion using caller-provided mappings | No |
 | [`query_graph`](query-graph.md) | Open-ended graph exploration | Yes |
 | [`find_paths`](find-paths.md) | Shortest paths to objectives | Yes |
 | [`register_agent`](register-agent.md) | Dispatch a sub-agent task (TTL-leased) | No |
 | [`dispatch_agents`](dispatch-agents.md) | Batch-dispatch agents from frontier | No |
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | Yes |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | No |
+| [`submit_agent_transcript`](transcripts.md) | Sub-agent wrap-up with optional transcript evidence | No |
 | [`agent_heartbeat`](agent-heartbeat.md) | Sub-agent liveness ping (extends lease) | No |
 | [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | No |
 | [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch agents for a campaign's grouped frontier items | No |
@@ -31,9 +38,21 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`get_decision_log`](get-decision-log.md) | Per-decision timeline (frontier → completed) over the activity log | Yes |
 | [`explain_action`](explain-action.md) | "Why did the agent do X?" — full chain for an action_id | Yes |
 | [`get_timeline`](get-timeline.md) | Per-node/edge "what was true at time T" view | Yes |
+| [`ingest_transcript`](transcripts.md) | Import external chat/IDE JSONL transcript into the activity log | No |
+| [`register_tape_session`](tape-sessions.md) | Register an external JSON-RPC tape pointer for retrospectives | No |
 | [`get_skill`](get-skill.md) | RAG search over skill library | Yes |
 | [`suggest_inference_rule`](suggest-inference-rule.md) | Add a custom inference rule | No |
 | [`ingest_bloodhound`](ingest-bloodhound.md) | Import BloodHound JSON collections | No |
+| [`ingest_azurehound`](ingest-azurehound.md) | Import AzureHound / ROADtools JSON collections | No |
+| [`connect_postgres`](postgres.md) | Open an in-process PostgreSQL connection for this server session | No |
+| [`list_postgres_tables`](postgres.md) | List visible PostgreSQL tables from the active connection | Yes |
+| [`ingest_postgres_table`](postgres.md) | Ingest rows from a PostgreSQL table into graph nodes | No |
+| [`validate_token_credential`](token-credential.md) | Replay a token credential against a provider API | No |
+| [`expand_aws_credential`](cloud-playbooks.md) | Generate an AWS recon plan from a captured credential | No |
+| [`expand_github_credential`](cloud-playbooks.md) | Generate a GitHub recon plan from a captured token | No |
+| [`expand_entra_credential`](cloud-playbooks.md) | Generate an Entra ID / Microsoft Graph recon plan | No |
+| [`exchange_refresh_token`](cloud-playbooks.md) | Generate a refresh-token exchange step for Entra tokens | No |
+| [`expand_oidc_capture`](cloud-playbooks.md) | Generate replay steps for captured CI/CD OIDC tokens | No |
 | [`check_tools`](check-tools.md) | Inspect installed offensive tooling | Yes |
 | [`track_process`](track-process.md) | Register a long-running scan | No |
 | [`check_processes`](check-processes.md) | Inspect tracked process state | Yes |
@@ -42,7 +61,7 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`open_session`](sessions.md) | Create persistent interactive session (SSH, PTY, socket) | No |
 | [`write_session`](sessions.md) | Write raw bytes to a session | No |
 | [`read_session`](sessions.md) | Cursor-based read from session buffer | Yes |
-| [`send_to_session`](sessions.md) | [Experimental] Write + wait + read | No |
+| [`send_to_session`](sessions.md) | Instrumented command send with validation, action logging, and evidence capture | No |
 | [`list_sessions`](sessions.md) | List sessions with metadata | Yes |
 | [`update_session`](sessions.md) | Update capabilities, title, ownership | No |
 | [`resize_session`](sessions.md) | Resize terminal dimensions | No |

@@ -88,6 +88,6 @@ If the action_id is unknown, returns `{"found": false, …}` with empty arrays. 
 
 ## See Also
 
-- [`log_thought`](../concepts.md#action-lifecycle) — what feeds the `log_thought_chain`
+- [`log_thought`](log-thought.md) — what feeds the `log_thought_chain`
 - [`get_decision_log`](get-decision-log.md) — multi-decision view
 - [`get_history`](get-history.md) — raw event timeline

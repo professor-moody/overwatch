@@ -6,7 +6,7 @@ Persistent interactive sessions maintained server-side across MCP tool calls. Su
 
 Sessions are long-lived bidirectional I/O channels owned by the Overwatch server process. They survive across individual MCP tool calls but are ephemeral across server restarts (PTY file descriptors cannot be serialized).
 
-**I/O model:** `write_session` (raw bytes) and `read_session` (cursor-based) are the foundation. `send_to_session` is convenience sugar built on top.
+**I/O model:** `write_session` (raw bytes) and `read_session` (cursor-based) are the low-level primitives. `send_to_session` is the audited command path: it writes a command, waits for output, persists captured evidence, and emits action lifecycle events.
 
 **Adapter model:** Transport is decoupled from TTY capability. A reverse shell starts as `tty_quality: 'dumb'` and can be upgraded after `python3 -c 'import pty; ...'` + stty.
 
@@ -33,6 +33,11 @@ Create a new persistent session.
 | `rows` | number? | Terminal rows (default: 30) |
 | `agent_id` | string? | Owning agent (sets `claimed_by`) |
 | `target_node` | string? | Graph node ID this session targets |
+| `principal_node` | string? | Principal associated with the session, when known |
+| `credential_node` | string? | Credential used for the session, when known |
+| `action_id` | string? | Existing action ID to associate with the session open |
+| `frontier_item_id` | string? | Frontier item associated with the session open |
+| `default_validation` | object? | Baseline `technique`, `target_ip`, `target_url`, `target_node`, `allow_unverified_scope`, and `noise_estimate` inherited by later `send_to_session` calls |
 | `mock_service_purpose` | enum? | When opening a `socket`/`listen` session, auto-register it as an operator-controlled `mock_service`. See [`register_mock_service`](register-mock-service.md). |
 | `mock_service_protocol` | string? | Wire protocol of the mock service (defaults to socket protocol). |
 | `mock_service_notes` | string? | Free-form notes carried onto the `mock_service` node. |
@@ -40,6 +45,8 @@ Create a new persistent session.
 Returns `{ session, initial_output, mock_service? }` — `session` is the full session metadata object and `initial_output` is a `SessionReadResult` with the first bytes of output. When `mock_service_purpose` is set the response also contains `mock_service: { mock_service_id, new }` and the session's `capabilities.serves_mock_service_id` is stamped, enabling dashboard pivot session ↔ listener.
 
 > **Scope check:** Remote sessions (SSH and socket connect mode) are **scope-enforced and fail closed**. If `host` resolves to an out-of-scope address, the request is rejected with an error containing `scope_reason: "host_out_of_scope"`. Local PTY and socket listen sessions are not scope-checked.
+
+> **Default validation:** For SSH and socket-connect sessions, pass `default_validation` when opening the session. Later `send_to_session` calls inherit it and can run the full validate → started → evidence → completed lifecycle without repeating target metadata on every command.
 
 ### `write_session`
 
@@ -69,9 +76,9 @@ Returns `SessionReadResult`: `{ session_id, start_pos, end_pos, text, truncated 
 
 **Cursor pattern:** Track `end_pos` from each read. Pass it as `from_pos` on the next read to get only new output.
 
-### `send_to_session` *(experimental)*
+### `send_to_session`
 
-Convenience: write command + wait for output to settle + return captured output.
+Instrumented command send: validate scope, write command, wait for output to settle, persist captured output as evidence, and record action lifecycle events.
 
 Uses a two-phase wait: first waits for any output to arrive after the command is written (up to `timeout_ms`), then uses idle settling — returns once no new output has arrived for `idle_ms` consecutive milliseconds. This prevents early empty returns on slow-starting commands.
 
@@ -84,8 +91,18 @@ Uses a two-phase wait: first waits for any output to arrive after the command is
 | `wait_for` | string? | Regex — return immediately on match |
 | `agent_id` | string? | Checked against `claimed_by` |
 | `force` | boolean? | Override ownership check |
+| `technique` | string? | Per-command technique override. Required when no session `default_validation.technique` exists |
+| `target_ip` | string? | Per-command target IP override |
+| `target_url` | string? | Per-command target URL override |
+| `target_node` | string? | Per-command target node override |
+| `allow_unverified_scope` | boolean? | Allow intentional commands whose target cannot be verified |
+| `noise_estimate` | number? | Per-command OPSEC noise estimate |
+| `frontier_item_id` | string? | Frontier item for attribution |
+| `action_id` | string? | Existing action ID to continue |
 
-For password prompts, REPLs, or streaming tools (`tail -f`, `tcpdump`), use `write_session` + `read_session` directly.
+Returns the captured text and cursor positions plus action metadata such as `action_id`, `evidence_id`, `validation_result`, and `completion_reason`.
+
+For password prompts, REPL navigation, or streaming tools (`tail -f`, `tcpdump`), use `write_session` + `read_session` directly because those are partial I/O operations rather than command-shaped actions.
 
 ### `list_sessions`
 
@@ -177,11 +194,18 @@ Sessions have a `claimed_by` field (agent ID). Only the claiming agent can write
 
 ### SSH session
 ```
-open_session(kind="ssh", title="target-dc01", host="10.10.110.5", user="admin", key_path="/root/.ssh/id_rsa")
+open_session(
+  kind="ssh",
+  title="target-dc01",
+  host="10.10.110.5",
+  user="admin",
+  key_path="/root/.ssh/id_rsa",
+  default_validation={ technique="ssh_command", target_ip="10.10.110.5" }
+)
 → session.id = "abc-123"
 
 send_to_session(session_id="abc-123", command="whoami")
-→ { text: "admin\n$", end_pos: 42 }
+→ { action_id: "act_...", evidence_id: "ev_...", text: "admin\n$", end_pos: 42 }
 ```
 
 ### Reverse shell catch

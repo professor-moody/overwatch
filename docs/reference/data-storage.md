@@ -164,7 +164,9 @@ The state file is self-contained — it includes the full graph, activity log, a
 
 **To move to another machine:** copy the directory, set `OVERWATCH_CONFIG` to point at the new path, and start the server.
 
-**To export a shareable bundle:** use `export_graph` which produces a single JSON file with the graph and metadata (no credentials or raw evidence).
+**To export a shareable bundle:** use `bundle_engagement`. It produces a portable `.tar.gz` containing the state file, evidence blobs, generated reports, `bundle-manifest.json`, and the mutation journal when present. Optional snapshots can be included. Registered JSON-RPC tapes are referenced in the manifest but are not copied.
+
+**To export only the graph:** use `export_graph`. It returns a JSON graph dump for external analysis, custom reporting, or visualization; it is not a full evidence/report bundle.
 
 ---
 

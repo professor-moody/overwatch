@@ -77,16 +77,23 @@ nav:
       - get_state: tools/get-state.md
       - run_lab_preflight: tools/run-lab-preflight.md
       - run_graph_health: tools/run-graph-health.md
+      - recompute_objectives: tools/recompute-objectives.md
+      - verify_activity_chain: tools/verify-activity-chain.md
       - get_history: tools/get-history.md
       - export_graph: tools/export-graph.md
+      - bundle_engagement: tools/bundle-engagement.md
     - Scoring & Validation:
       - next_task: tools/next-task.md
       - validate_action: tools/validate-action.md
       - log_action_event: tools/log-action-event.md
+      - log_thought: tools/log-thought.md
+      - run_bash: tools/run-bash.md
+      - run_tool: tools/run-tool.md
     - Findings & Parsing:
       - report_finding: tools/report-finding.md
       - parse_output: tools/parse-output.md
       - get_evidence: tools/get-evidence.md
+      - ingest_json: tools/ingest-json.md
     - Graph Exploration:
       - query_graph: tools/query-graph.md
       - find_paths: tools/find-paths.md
@@ -95,6 +102,7 @@ nav:
       - dispatch_agents: tools/dispatch-agents.md
       - get_agent_context: tools/get-agent-context.md
       - update_agent: tools/update-agent.md
+      - submit_agent_transcript: tools/transcripts.md
       - agent_heartbeat: tools/agent-heartbeat.md
       - dispatch_subnet_agents: tools/dispatch-subnet-agents.md
       - dispatch_campaign_agents: tools/dispatch-campaign-agents.md
@@ -103,12 +111,18 @@ nav:
       - get_decision_log: tools/get-decision-log.md
       - explain_action: tools/explain-action.md
       - get_timeline: tools/get-timeline.md
+      - ingest_transcript: tools/transcripts.md
+      - register_tape_session: tools/tape-sessions.md
     - Skills & Inference:
       - get_skill: tools/get-skill.md
       - suggest_inference_rule: tools/suggest-inference-rule.md
     - Ingestion:
       - ingest_bloodhound: tools/ingest-bloodhound.md
       - ingest_azurehound: tools/ingest-azurehound.md
+      - PostgreSQL: tools/postgres.md
+    - Cloud & Tokens:
+      - validate_token_credential: tools/token-credential.md
+      - Cloud Playbooks: tools/cloud-playbooks.md
     - Remediation:
       - correct_graph: tools/correct-graph.md
     - Utilities:
