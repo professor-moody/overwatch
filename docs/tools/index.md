@@ -13,7 +13,7 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`verify_activity_chain`](verify-activity-chain.md) | Verify the tamper-evident activity hash chain | Yes |
 | [`get_history`](get-history.md) | Full activity log | Yes |
 | [`export_graph`](export-graph.md) | Complete graph dump | Yes |
-| [`bundle_engagement`](bundle-engagement.md) | Portable archive with state, evidence, reports, manifest, and journal | Yes |
+| [`bundle_engagement`](bundle-engagement.md) | Portable archive with state, evidence, reports, manifest, and journal | No |
 | [`next_task`](next-task.md) | Filtered frontier candidates for scoring | No |
 | [`validate_action`](validate-action.md) | Pre-execution sanity check | No |
 | [`log_action_event`](log-action-event.md) | Record action lifecycle events | No |
@@ -68,7 +68,7 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`signal_session`](sessions.md) | Send signal to session process | No |
 | [`close_session`](sessions.md) | Close and destroy a session | No |
 | [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | No |
-| [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | Yes |
+| [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | No |
 | [`generate_report`](generate-report.md) | Full pentest report with findings, narrative, evidence, remediation | Yes |
 | [`ingest_azurehound`](ingest-azurehound.md) | Import AzureHound / ROADtools JSON collections | No |
 | [`register_mock_service`](register-mock-service.md) | Register an operator-controlled decoy / listener / relay as a graph node | No |

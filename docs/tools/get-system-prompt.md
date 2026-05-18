@@ -14,6 +14,7 @@ Returns a markdown system prompt tailored to the specified role, including engag
 | `agent_id` | `string` | No | — | For sub_agent role: the agent ID to scope the instructions |
 | `include_state` | `boolean` | No | `true` | Include current state snapshot in the prompt |
 | `include_tools` | `boolean` | No | `true` | Include tool reference table in the prompt |
+| `snapshot` | `boolean` | No | `true` | Persist the generated prompt to evidence and log a `system` event. Set `false` for a non-persisting read. |
 
 ## Roles
 
@@ -50,5 +51,5 @@ A single text content block containing the generated markdown system prompt.
 
 ## Annotations
 
-- **Read-only:** Yes
+- **Read-only:** No by default. Set `snapshot: false` to avoid evidence/log persistence.
 - **Idempotent:** Yes

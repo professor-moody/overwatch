@@ -188,6 +188,7 @@ function generateSubAgentPrompt(
     'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
     'run_bash', 'run_tool',
     'parse_output', 'report_finding', 'submit_agent_transcript',
+    'agent_heartbeat',
     'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
     'list_sessions', 'close_session', 'resize_session', 'signal_session',
@@ -371,9 +372,12 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '### Visibility & audit',
     '',
     '- **`get_decision_log` / `get_timeline` / `explain_action`** are read-only views derived from the activity log. Use them when you need to answer "why did I take action X?", "what was true at time T?", or "what did the planner suggest before I overrode it?" — they\'re the human-facing audit surface.',
-    '- **Engagements with `engagement_nonce` are deterministic and replayable.** Action IDs (`act_<sha256>…`) and event IDs are derived from the nonce + agent + sequence + command, not random. Evidence blobs are content-addressed by sha256 — identical scanner output dedups automatically. State is journaled (WAL) and survives mid-mutation crashes.',
+    '- **Engagements with `engagement_nonce` are deterministic and replayable.** Action IDs (`act_<sha256>…`) and event IDs are derived from the nonce + agent + sequence + command, not random. Evidence blobs are content-addressed by sha256 — identical scanner output dedups automatically. State is journaled (WAL) and survives mid-mutation crashes. Use `verify_activity_chain()` during retrospectives or after suspected log tampering.',
     '- **Reports default to evidence-rich (operator-internal).** Pass `{ client_safe: true }` to `generate_report` for client deliverables — strips `cred_value`, raw stdout, and operator paths; outputs `report.client-safe.<ext>`. Reports persist to the engagement archive by default and are listable from the dashboard **Findings** tab → Reports section.',
-  '- **Dashboard tabs:** Overview · Agents · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Campaigns. The **Credentials** tab shows all captured tokens/keys with status, reachability, and reveal/copy for `cred_value`. The **Findings** tab shows classified severity groups + report archive.',
+    '- **Use the right export path.** `bundle_engagement()` creates a portable archive with state, evidence, reports, manifest, and the WAL journal. `export_graph()` is graph JSON only.',
+    '- **Runtime-only connectors stay runtime-only.** `connect_postgres()` opens an in-process connection for this server session; only the redacted `postgres_dsn` display value survives config validation/reload. Reconnect after restart before `list_postgres_tables()` or `ingest_postgres_table()`.',
+    '- **Use `ingest_json()` for one-off structured imports.** Prefer dedicated parsers when they exist; use generic JSON/JSONL mappings for unsupported tool output or custom datasets.',
+    '- **Dashboard tabs:** Overview · Agents · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Campaigns. The **Credentials** tab shows all captured tokens/keys with status, reachability, and reveal/copy for `cred_value`. The **Findings** tab shows classified severity groups + report archive.',
     '',
     '### Scope guardrails',
     '',
@@ -474,7 +478,8 @@ function generateSubAgentWorkflowSection(): string {
 8. Call \`log_thought({ kind: "reflection", thought: "..." })\` summarizing what you learned before closing the task
 9. Use \`query_graph()\` if you need more context
 10. Use \`get_skill()\` for methodology guidance
-11. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ agent_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
+11. If the task runs longer than roughly a minute, call \`agent_heartbeat({ task_id })\` periodically so the watchdog does not reap your lease
+12. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ task_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Use \`agent_id\` only as a legacy fallback if you do not have the task ID. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;
 }
@@ -590,6 +595,11 @@ For captured cloud / SaaS credentials, prefer the **playbook tools** over re-der
 - **\`expand_entra_credential({ credential_id })\`** — /me → /users → /applications → /servicePrincipals → /groups. The CONSENT_ABUSE inference rule fires after step 4 lands and stamps high-priv apps for the FindingsPanel.
 
 > **Scripted runner note:** simple token-validation steps (\`credential_test\` frontier items) are automatically executed by the dashboard's scripted runner — you only need the playbook tools for the multi-step enumeration phases (inventory, resource discovery, org-wide enum) that require LLM interpretation or chained follow-ups.
+
+### Data Import, Connectors, and Portability
+- Use \`ingest_json()\` for unsupported JSON/JSONL output when no dedicated parser exists. Keep mappings explicit: node type, ID field/prefix, property fields, and parent edge shape.
+- Use \`connect_postgres()\` only as a session-scoped connector. The live DSN/credentials are not persisted; reconnect after server restart before calling \`list_postgres_tables()\` or \`ingest_postgres_table()\`.
+- Use \`bundle_engagement()\` for a portable archive with state, evidence, reports, manifest, and WAL journal. Use \`export_graph()\` only when you need graph JSON for external analysis.
 
 ### Credentials Panel
 The dashboard's **Credentials** tab surfaces all captured credential nodes in a flat, searchable view — filterable by status (active/stale/expired), sortable by recency/kind/status, with reachability badges for tokens confirmed via VALID_FOR_APP / ASSUMES_ROLE edges. Use it to spot gaps (tokens captured but never validated), prioritize expiring tokens, and reveal \`cred_value\` for manual use. No action needed from the model — it updates automatically as findings land.

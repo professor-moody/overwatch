@@ -2,7 +2,7 @@
 
 Create a portable engagement archive.
 
-**Read-only:** Yes
+**Read-only:** No. The tool writes an archive and records an audit event.
 
 ## Description
 

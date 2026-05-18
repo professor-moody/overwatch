@@ -74,6 +74,12 @@ const ALL_REGISTERED_TOOLS: ToolEntry[] = [
   { name: 'run_bash', description: 'Execute shell command' },
   { name: 'run_tool', description: 'Execute binary with argv' },
   { name: 'submit_agent_transcript', description: 'Sub-agent wrap-up handoff' },
+  { name: 'agent_heartbeat', description: 'Refresh task heartbeat' },
+  { name: 'bundle_engagement', description: 'Create portable engagement archive' },
+  { name: 'ingest_json', description: 'Generic JSON ingestion' },
+  { name: 'connect_postgres', description: 'Connect to PostgreSQL' },
+  { name: 'list_postgres_tables', description: 'List PostgreSQL tables' },
+  { name: 'ingest_postgres_table', description: 'Ingest PostgreSQL table rows' },
 ];
 
 describe('prompt-generator', () => {
@@ -267,7 +273,7 @@ describe('prompt-generator', () => {
 
     it('tool table includes every tool the sub-agent workflow references', () => {
       // Regression: the workflow text told sub-agents to use log_thought,
-      // run_bash, run_tool, and submit_agent_transcript, but the tool-table
+      // run_bash, run_tool, agent_heartbeat, and submit_agent_transcript, but the tool-table
       // allowlist omitted them — so get_system_prompt(role="sub_agent") was
       // self-contradictory. Keep the allowlist and the workflow in lockstep.
       const engine = createTestEngine();
@@ -275,9 +281,18 @@ describe('prompt-generator', () => {
       const toolTableMatch = prompt.match(/\| `(\w+)` \|/g) || [];
       const subAgentToolsInPrompt = new Set(toolTableMatch.map(m => m.match(/`(\w+)`/)![1]));
 
-      for (const required of ['log_thought', 'run_bash', 'run_tool', 'submit_agent_transcript']) {
+      for (const required of ['log_thought', 'run_bash', 'run_tool', 'agent_heartbeat', 'submit_agent_transcript']) {
         expect(subAgentToolsInPrompt.has(required), `${required} missing from sub-agent tool table`).toBe(true);
       }
+    });
+
+    it('tells sub-agents to submit transcripts by task_id and heartbeat long tasks', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'sub_agent' });
+
+      expect(prompt).toContain('agent_heartbeat({ task_id })');
+      expect(prompt).toContain('submit_agent_transcript({ task_id, summary');
+      expect(prompt).toContain('Use `agent_id` only as a legacy fallback');
     });
   });
 
@@ -338,6 +353,17 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('Credential Awareness');
       expect(prompt).toContain('query_graph()');
       expect(prompt).toContain('credential reuse');
+    });
+
+    it('includes current data import and portability guidance', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('bundle_engagement()');
+      expect(prompt).toContain('export_graph()');
+      expect(prompt).toContain('ingest_json()');
+      expect(prompt).toContain('connect_postgres()');
+      expect(prompt).toContain('verify_activity_chain()');
     });
 
     it('includes tactical section in sub-agent prompt too', () => {

@@ -34,7 +34,7 @@ instructions for session initialization.
         snapshot: z.boolean().default(true).describe('Persist the generated prompt to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent was instructed with.'),
       },
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,

@@ -8,3 +8,5 @@ If `get_system_prompt` is unavailable, fall back to [AGENTS.md](./AGENTS.md) (in
 
 Do not treat this file as the engagement briefing or tool reference.
 Those are generated dynamically from current engagement state.
+
+When changing operator workflow, keep `src/services/prompt-generator.ts`, [AGENTS.md](./AGENTS.md), and [docs/tools/index.md](./docs/tools/index.md) aligned. The generated prompt wins at runtime; the markdown files are bootstrap and offline fallbacks.

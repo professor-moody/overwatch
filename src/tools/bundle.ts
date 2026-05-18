@@ -43,6 +43,12 @@ Returns the absolute path to the created archive and its size.`,
         include_tapes: z.boolean().default(true)
           .describe('List registered tape file paths in the bundle manifest (tapes are not copied, only referenced).'),
       },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     withErrorBoundary('bundle_engagement', async ({ output_path, include_snapshots, include_tapes }) => {
       const resolvedOutputPath = output_path ? validateFilePath(output_path) : undefined;
