@@ -16,14 +16,14 @@
         <link rel="prev" href="..">
       
       
-        <link rel="next" href="../configuration/">
+        <link rel="next" href="../claude-hooks/">
       
       
         
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
     
     
       
@@ -314,6 +314,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../reference/data-storage/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../skills/" class="md-tabs__link">
           
   
@@ -480,6 +502,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -595,66 +621,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#quick-start-5-minutes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Quick Start (5 minutes)
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Install
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configure-an-engagement" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configure an Engagement
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#connect-to-claude-code" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Connect to Claude Code
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Run
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Run">
+    <nav class="md-nav" aria-label="Quick Start (5 minutes)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#stdio-default-claude-code" class="md-nav__link">
+  <a href="#1-install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        stdio (default — Claude Code)
+        1. Install
       
     </span>
   </a>
@@ -662,10 +644,43 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#httpsse-remote-deployment" class="md-nav__link">
+  <a href="#2-pick-a-template" class="md-nav__link">
     <span class="md-ellipsis">
       
-        HTTP/SSE (remote deployment)
+        2. Pick a template
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-wire-overwatch-into-claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Wire Overwatch into Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Launch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-open-the-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Open the dashboard
       
     </span>
   </a>
@@ -674,6 +689,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-say-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to say next
+      
+    </span>
+  </a>
   
 </li>
       
@@ -689,22 +715,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#accessing-the-dashboard" class="md-nav__link">
+  <a href="#advanced-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Accessing the Dashboard
+        Advanced Setup
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Accessing the Dashboard">
+    <nav class="md-nav" aria-label="Advanced Setup">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#what-youll-see" class="md-nav__link">
+  <a href="#http-sse-transport-remote-multi-client" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What You'll See
+        HTTP / SSE transport (remote, multi-client)
       
     </span>
   </a>
@@ -712,10 +738,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#audit-trail-defensible-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Audit trail (defensible evidence)
       
     </span>
   </a>
@@ -723,10 +749,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
+  <a href="#dashboard-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Troubleshooting
+        Dashboard configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writing-engagementjson-from-scratch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing engagement.json from scratch
       
     </span>
   </a>
@@ -739,7 +776,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting_1" class="md-nav__link">
+  <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
       
         Troubleshooting
@@ -747,62 +784,40 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#server-wont-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Server Won't Start
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dashboard-not-loading" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Dashboard Not Loading
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#claude-code-cant-find-tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Claude Code Can't Find Tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#state-file-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        State File Issues
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../claude-hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Code Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -864,6 +879,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smoke-test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Smoke Test
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -879,6 +922,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -1017,6 +1064,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tape-recording/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tape Recording
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1035,6 +1138,12 @@
       
         
           
+        
+      
+        
+      
+        
+      
         
       
         
@@ -1125,6 +1234,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1274,6 +1389,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/recompute-objectives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    recompute_objectives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/verify-activity-chain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    verify_activity_chain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-history/" class="md-nav__link">
         
   
@@ -1323,6 +1494,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/bundle-engagement/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    bundle_engagement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1339,6 +1538,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1477,6 +1682,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/log-thought/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    log_thought
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-bash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_bash
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-tool/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_tool
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1493,6 +1782,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -1588,6 +1881,62 @@
     
   
     parse_output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/ingest-json/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ingest_json
   
 
     
@@ -1754,6 +2103,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -1836,6 +2191,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/dispatch-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    dispatch_agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-agent-context/" class="md-nav__link">
         
   
@@ -1872,6 +2255,62 @@
     
   
     update_agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/agent-heartbeat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    agent_heartbeat
   
 
     
@@ -1990,6 +2429,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -2015,7 +2460,7 @@
   <span class="md-ellipsis">
     
   
-    Skills & Inference
+    Visibility & Introspection
   
 
     
@@ -2028,6 +2473,214 @@
         
         <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Visibility & Introspection
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-decision-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_decision_log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/explain-action/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    explain_action
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-timeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_timeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/tape-sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_tape_session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Inference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2114,6 +2767,8 @@
       
         
       
+        
+      
     
     
     
@@ -2129,10 +2784,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
         
           
-          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
             
   
   
@@ -2150,8 +2805,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_8">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2217,6 +2872,158 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/postgres/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PostgreSQL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud & Tokens
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Cloud & Tokens
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/token-credential/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    validate_token_credential
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/cloud-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2251,10 +3058,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
         
           
-          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
             
   
   
@@ -2272,8 +3079,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_9">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2334,6 +3141,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -2349,10 +3160,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
         
           
-          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
             
   
   
@@ -2370,8 +3181,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_10">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_12">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2465,6 +3276,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/update-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    update_scope
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_system_prompt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2499,10 +3366,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
         
           
-          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
             
   
   
@@ -2520,8 +3387,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_11">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_13">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2593,10 +3460,104 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_14" >
         
           
-          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_14" id="__nav_4_14_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_14_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_14">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/register-mock-service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_mock_service
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_15" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_15" id="__nav_4_15_label" tabindex="0">
             
   
   
@@ -2614,8 +3575,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_12">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_15_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_15">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2687,10 +3648,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_16" >
         
           
-          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_16" id="__nav_4_16_label" tabindex="0">
             
   
   
@@ -2708,8 +3669,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_13">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_16_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_16">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2772,6 +3733,99 @@
     
       
         
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/data-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
           
         
       
@@ -2792,7 +3846,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -2814,14 +3868,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2897,6 +3951,8 @@
       
         
       
+        
+      
     
     
     
@@ -2912,7 +3968,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -2934,14 +3990,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3128,6 +4184,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../playbook/operator-infra/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../playbook/parse-vs-report/" class="md-nav__link">
         
   
@@ -3224,6 +4308,8 @@
       
         
       
+        
+      
     
     
     
@@ -3239,10 +4325,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -3260,8 +4346,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3327,6 +4413,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3361,66 +4475,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#quick-start-5-minutes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Quick Start (5 minutes)
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Install
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configure-an-engagement" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configure an Engagement
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#connect-to-claude-code" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Connect to Claude Code
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Run
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Run">
+    <nav class="md-nav" aria-label="Quick Start (5 minutes)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#stdio-default-claude-code" class="md-nav__link">
+  <a href="#1-install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        stdio (default — Claude Code)
+        1. Install
       
     </span>
   </a>
@@ -3428,10 +4498,43 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#httpsse-remote-deployment" class="md-nav__link">
+  <a href="#2-pick-a-template" class="md-nav__link">
     <span class="md-ellipsis">
       
-        HTTP/SSE (remote deployment)
+        2. Pick a template
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-wire-overwatch-into-claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Wire Overwatch into Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Launch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-open-the-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Open the dashboard
       
     </span>
   </a>
@@ -3440,6 +4543,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-say-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to say next
+      
+    </span>
+  </a>
   
 </li>
       
@@ -3455,22 +4569,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#accessing-the-dashboard" class="md-nav__link">
+  <a href="#advanced-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Accessing the Dashboard
+        Advanced Setup
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Accessing the Dashboard">
+    <nav class="md-nav" aria-label="Advanced Setup">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#what-youll-see" class="md-nav__link">
+  <a href="#http-sse-transport-remote-multi-client" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What You'll See
+        HTTP / SSE transport (remote, multi-client)
       
     </span>
   </a>
@@ -3478,10 +4592,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#audit-trail-defensible-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Audit trail (defensible evidence)
       
     </span>
   </a>
@@ -3489,10 +4603,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
+  <a href="#dashboard-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Troubleshooting
+        Dashboard configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writing-engagementjson-from-scratch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing engagement.json from scratch
       
     </span>
   </a>
@@ -3505,63 +4630,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting_1" class="md-nav__link">
+  <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
       
         Troubleshooting
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#server-wont-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Server Won't Start
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dashboard-not-loading" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Dashboard Not Loading
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#claude-code-cant-find-tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Claude Code Can't Find Tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#state-file-issues" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        State File Issues
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -3586,74 +4661,170 @@
 
 
 <h1 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h1>
-<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>Node.js 20+</strong></li>
-<li><strong>Claude Code CLI</strong> (<code>claude</code> command)</li>
-</ul>
-<h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
+<p>This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. Anything not strictly required for that path is in <a href="#advanced-setup">Advanced Setup</a> at the bottom.</p>
+<div class="admonition tip">
+<p class="admonition-title">Already past setup?</p>
+<p>Jump to the <a href="../playbook/">Operator Playbook</a> for what to actually do once Overwatch is running, or the <a href="../playbook/walkthrough/">End-to-End Walkthrough</a> for a narrated lab engagement.</p>
+</div>
+<hr />
+<h2 id="quick-start-5-minutes">Quick Start (5 minutes)<a class="headerlink" href="#quick-start-5-minutes" title="Permanent link">&para;</a></h2>
+<h3 id="1-install">1. Install<a class="headerlink" href="#1-install" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/professor-moody/overwatch.git
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>overwatch
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>npm<span class="w"> </span>install
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>npm<span class="w"> </span>run<span class="w"> </span>build
 </span></code></pre></div>
-<h2 id="configure-an-engagement">Configure an Engagement<a class="headerlink" href="#configure-an-engagement" title="Permanent link">&para;</a></h2>
-<p>Create or edit <code>engagement.json</code> in the project root:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;eng-001&quot;</span><span class="p">,</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Internal Pentest - Target Corp&quot;</span><span class="p">,</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;created_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-03-20T00:00:00Z&quot;</span><span class="p">,</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">&quot;scope&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">&quot;cidrs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;10.10.10.0/24&quot;</span><span class="p">],</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;domains&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;target.local&quot;</span><span class="p">],</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">&quot;exclusions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;10.10.10.254&quot;</span><span class="p">],</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">&quot;hosts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p">},</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">&quot;objectives&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="p">{</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;obj-da&quot;</span><span class="p">,</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Achieve Domain Admin on target.local&quot;</span><span class="p">,</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">      </span><span class="nt">&quot;target_node_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;credential&quot;</span><span class="p">,</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">      </span><span class="nt">&quot;target_criteria&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;privileged&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cred_domain&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;target.local&quot;</span><span class="w"> </span><span class="p">},</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">      </span><span class="nt">&quot;achieved&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="p">],</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">&quot;opsec&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pentest&quot;</span><span class="p">,</span>
-</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="nt">&quot;max_noise&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span>
-</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="nt">&quot;blacklisted_techniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;zerologon&quot;</span><span class="p">],</span>
-</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="nt">&quot;notes&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Standard internal pentest.&quot;</span>
-</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="p">}</span>
+<p>Requires <strong>Node.js 20+</strong> and the <strong>Claude Code CLI</strong> (<code>claude</code>).</p>
+<h3 id="2-pick-a-template">2. Pick a template<a class="headerlink" href="#2-pick-a-template" title="Permanent link">&para;</a></h3>
+<p>Start with the general-purpose <strong><code>ctf.json</code></strong> template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cp<span class="w"> </span>engagement-templates/ctf.json<span class="w"> </span>engagement.json
 </span></code></pre></div>
-<p>See <a href="../configuration/">Configuration</a> for the full schema reference.</p>
-<h2 id="connect-to-claude-code">Connect to Claude Code<a class="headerlink" href="#connect-to-claude-code" title="Permanent link">&para;</a></h2>
-<p>Add Overwatch as an MCP server in your Claude Code config (<code>~/.claude/settings.json</code> or project-level <code>.claude/settings.json</code>):</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">&quot;overwatch&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;&lt;path-to-overwatch&gt;/dist/index.js&quot;</span><span class="p">],</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">      </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">        </span><span class="nt">&quot;OVERWATCH_CONFIG&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;path-to-engagement.json&gt;&quot;</span><span class="p">,</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">        </span><span class="nt">&quot;OVERWATCH_SKILLS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;path-to-overwatch&gt;/skills&quot;</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">      </span><span class="p">}</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="p">}</span>
+<p>Then open <code>engagement.json</code> and fill in <strong>just two things</strong>:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>{
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  &quot;scope&quot;: {
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    &quot;cidrs&quot;: [&quot;10.10.10.0/24&quot;],          // your target network or single IP
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    &quot;domains&quot;: [],                        // leave empty if no AD; fill in if you have one
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    &quot;exclusions&quot;: []
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  }
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>  // leave the rest alone for now
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>}
 </span></code></pre></div>
-<h2 id="run">Run<a class="headerlink" href="#run" title="Permanent link">&para;</a></h2>
-<h3 id="stdio-default-claude-code">stdio (default — Claude Code)<a class="headerlink" href="#stdio-default-claude-code" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>claude
+<p>That's enough to start. The full schema is in <a href="../configuration/">Configuration</a> when you want it.</p>
+<details class="info">
+<summary>Other templates (for real engagements)</summary>
+<p>Once you've gotten comfortable with the basics, swap in the template that matches your engagement profile. Each one preconfigures sensible objectives, OPSEC posture, and the right <code>profile</code> field so preflight checks the right tools.</p>
+<table>
+<thead>
+<tr>
+<th>Template</th>
+<th>What it does</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>ctf.json</code></strong></td>
+<td>No OPSEC, auto-approve, network profile, single "compromise everything" objective</td>
+<td>Labs, CTFs, HTB, kicking the tires</td>
+</tr>
+<tr>
+<td><strong><code>internal-pentest.json</code></strong></td>
+<td><code>goad_ad</code> profile, Domain Admin + DCSync objectives, <code>max_noise=0.7</code>, <code>approve-critical</code> mode</td>
+<td>Internal AD-heavy networks where you can be moderately loud</td>
+</tr>
+<tr>
+<td><strong><code>external-assessment.json</code></strong></td>
+<td><code>web_app</code> profile, "initial access" objective, conservative noise, full approval gates</td>
+<td>External attack surface against web apps and cloud perimeter</td>
+</tr>
+<tr>
+<td><strong><code>red-team.json</code></strong></td>
+<td><code>hybrid</code> profile, full kill-chain objectives (initial access → persistence → lateral → exfil), strict OPSEC, low-and-slow</td>
+<td>Stealth engagements with detection-aware adversary simulation</td>
+</tr>
+<tr>
+<td><strong><code>assumed-breach.json</code></strong></td>
+<td><code>network</code> profile, lateral movement + data access objectives, post-foothold posture</td>
+<td>Starting from a known foothold credential or compromised host</td>
+</tr>
+<tr>
+<td><strong><code>cloud-assessment.json</code></strong></td>
+<td><code>cloud</code> profile, AWS/Azure/GCP scope fields, IAM-escalation + cross-account-pivot objectives</td>
+<td>Multi-account cloud security assessments</td>
+</tr>
+</tbody>
+</table>
+<p>All templates live in <code>engagement-templates/</code>. Open the one closest to your engagement, read the <code>description</code> and <code>objectives</code> fields, and tweak as needed.</p>
+</details>
+<h3 id="3-wire-overwatch-into-claude-code">3. Wire Overwatch into Claude Code<a class="headerlink" href="#3-wire-overwatch-into-claude-code" title="Permanent link">&para;</a></h3>
+<p>Use two local config files:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.mcp.json</code></td>
+<td>Starts the Overwatch MCP server.</td>
+</tr>
+<tr>
+<td><code>.claude/settings.json</code></td>
+<td>Enables Claude Code hooks that keep Claude using Overwatch correctly.</td>
+</tr>
+</tbody>
+</table>
+<p>Both files are local and gitignored because they contain machine-specific paths.</p>
+<p>First, create <code>.mcp.json</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cp<span class="w"> </span>.mcp.example.json<span class="w"> </span>.mcp.json
 </span></code></pre></div>
-<p>Claude Code will connect to the Overwatch MCP server automatically. The <code>AGENTS.md</code> file in the project root provides the primary session instructions. Claude will call <code>get_state()</code> first to load the engagement briefing, then enter the main scoring loop.</p>
-<h3 id="httpsse-remote-deployment">HTTP/SSE (remote deployment)<a class="headerlink" href="#httpsse-remote-deployment" title="Permanent link">&para;</a></h3>
-<p>For remote deployment, web-based consumers, or multiple simultaneous clients:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">OVERWATCH_TRANSPORT</span><span class="o">=</span>http<span class="w"> </span>npm<span class="w"> </span>start
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="c1"># or</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>node<span class="w"> </span>dist/index.js<span class="w"> </span>--http
+<p>Edit <code>.mcp.json</code> with absolute paths:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">&quot;overwatch&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;/absolute/path/to/overwatch/dist/index.js&quot;</span><span class="p">],</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">      </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="nt">&quot;OVERWATCH_CONFIG&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/absolute/path/to/overwatch/engagement.json&quot;</span><span class="p">,</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">        </span><span class="nt">&quot;OVERWATCH_SKILLS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/absolute/path/to/overwatch/skills&quot;</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">      </span><span class="p">}</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>The HTTP server binds to <code>127.0.0.1:3000</code> by default. Configure with:</p>
+<p>Then enable the Claude hooks:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cp<span class="w"> </span>.claude/settings.example.json<span class="w"> </span>.claude/settings.json
+</span></code></pre></div>
+<p>That is the recommended setup: <code>.mcp.json</code> contains <code>mcpServers</code>, and <code>.claude/settings.json</code> contains <code>hooks</code>.</p>
+<div class="admonition important">
+<p class="admonition-title">Do not skip hooks</p>
+<p>Hooks keep Claude from drifting away from Overwatch during long sessions. They block raw target-facing Bash and remind Claude to put discoveries into the graph. Full setup and verification steps are in <a href="../claude-hooks/">Claude Code Hooks</a>.</p>
+</div>
+<h3 id="4-launch">4. Launch<a class="headerlink" href="#4-launch" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">cd</span><span class="w"> </span>/absolute/path/to/overwatch
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>claude
+</span></code></pre></div>
+<p>Claude Code starts the Overwatch MCP server automatically and reads <a href="https://github.com/professor-moody/overwatch/blob/main/AGENTS.md"><code>AGENTS.md</code></a> as the primary session prompt. The first thing the AI does is call <code>get_state()</code> to load the engagement briefing.</p>
+<h3 id="5-open-the-dashboard">5. Open the dashboard<a class="headerlink" href="#5-open-the-dashboard" title="Permanent link">&para;</a></h3>
+<p>In another tab: <strong><a href="http://localhost:8384">http://localhost:8384</a></strong></p>
+<p>You'll see the live engagement graph, frontier items, agent activity, and discovered credentials in real time as the AI works. It starts automatically — no extra setup.</p>
+<p><strong>You're ready.</strong> Jump to <a href="#what-to-say-next">What to say next</a>.</p>
+<hr />
+<h2 id="what-to-say-next">What to say next<a class="headerlink" href="#what-to-say-next" title="Permanent link">&para;</a></h2>
+<p>Once <code>claude</code> is running and connected, the AI is waiting for direction. Some good opening prompts:</p>
+<blockquote>
+<p><strong>"Run lab preflight, then start the bootstrap phase."</strong>
+Verifies tooling and graph health, then begins reconnaissance against the scope you defined.</p>
+<p><strong>"What's on the frontier? Pick the highest-leverage item and execute it."</strong>
+Hands the wheel to the AI and lets it work the priority queue.</p>
+<p><strong>"I just stood up Responder on <code>0.0.0.0:445</code>. Register it as a mock_service and watch for captures."</strong>
+Wires operator infrastructure into the graph. See <a href="../playbook/operator-infra/">Operator Infrastructure</a>.</p>
+<p><strong>"Show me a path from any owned credential to Domain Admin."</strong>
+Triggers <code>find_paths</code> and the AI explains what's missing.</p>
+</blockquote>
+<p>You're the operator giving direction; the AI handles the <code>validate_action</code> → <code>log_action_event</code> → execute → <code>parse_output</code> → <code>report_finding</code> bookkeeping for you.</p>
+<p>For a fully narrated example, read the <a href="../playbook/walkthrough/">End-to-End Walkthrough</a>.</p>
+<hr />
+<h2 id="verify-setup">Verify Setup<a class="headerlink" href="#verify-setup" title="Permanent link">&para;</a></h2>
+<p>If something looks off, ask Claude:</p>
+<ol>
+<li><strong><code>get_state</code></strong> — confirms the server is up and the engagement loaded.</li>
+<li><strong><code>run_lab_preflight</code></strong> — checks tools, graph health, dashboard.</li>
+<li><strong><code>check_tools</code></strong> — lists which offensive tools are installed (<code>nmap</code>, <code>nxc</code>, <code>bloodhound-python</code>, etc.).</li>
+</ol>
+<p>All three returning clean output means you're good.</p>
+<hr />
+<h2 id="advanced-setup">Advanced Setup<a class="headerlink" href="#advanced-setup" title="Permanent link">&para;</a></h2>
+<p>Skip this section unless you actually need it.</p>
+<h3 id="http-sse-transport-remote-multi-client">HTTP / SSE transport (remote, multi-client)<a class="headerlink" href="#http-sse-transport-remote-multi-client" title="Permanent link">&para;</a></h3>
+<p>Default transport is stdio (Claude Code talks directly to a child process). For remote deployments, dashboards talking to the same server, or a long-running shared instance:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nv">OVERWATCH_TRANSPORT</span><span class="o">=</span>http<span class="w"> </span>npm<span class="w"> </span>start
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1"># or</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>node<span class="w"> </span>dist/index.js<span class="w"> </span>--http
+</span></code></pre></div>
+<p>Binds <code>127.0.0.1:3000</code> by default. The MCP endpoint is <code>POST /mcp</code>; sessions are tracked via the <code>mcp-session-id</code> header.</p>
 <table>
 <thead>
 <tr>
@@ -3675,26 +4846,15 @@
 </tr>
 </tbody>
 </table>
-<p>The MCP endpoint is at <code>POST /mcp</code>. Sessions are tracked via the <code>mcp-session-id</code> header. Multiple clients can connect simultaneously — each gets its own MCP session sharing the same underlying graph.</p>
-<h2 id="verify-setup">Verify Setup<a class="headerlink" href="#verify-setup" title="Permanent link">&para;</a></h2>
-<p>Once connected, ask Claude to:</p>
+<h3 id="audit-trail-defensible-evidence">Audit trail (defensible evidence)<a class="headerlink" href="#audit-trail-defensible-evidence" title="Permanent link">&para;</a></h3>
+<p>Two opt-in features turn Overwatch into a tamper-evident, replayable system of record. Both are off by default and free to ignore for a lab or CTF.</p>
 <ol>
-<li>Call <code>get_state</code> — confirms the server is running and the engagement is loaded</li>
-<li>Call <code>run_lab_preflight</code> — validates tool availability, graph health, and dashboard readiness</li>
-<li>Call <code>check_tools</code> — shows which offensive tools are installed</li>
+<li><strong>Hash-chained activity log</strong> — set <code>"hash_chain_enabled": true</code> in <code>engagement.json</code>. Every system + agent event gets <code>prev_hash</code> and <code>event_hash</code>; <code>verify_activity_chain</code> proves the log hasn't been edited.</li>
+<li><strong>JSON-RPC tape proxy</strong> — run the AI client through <code>overwatch-mcp-tape</code> to capture every wire-level MCP frame. After the engagement, <code>register_tape_session</code> imports the tape and links it to the activity log. Now you can prove the AI called <code>validate_action</code> before every <code>run_bash</code>.</li>
 </ol>
-<p>If all three succeed, you're ready to start. See the <a href="../playbook/">Operator Playbook</a> for step-by-step lab workflows.</p>
-<h2 id="accessing-the-dashboard">Accessing the Dashboard<a class="headerlink" href="#accessing-the-dashboard" title="Permanent link">&para;</a></h2>
-<p>The live dashboard starts automatically alongside the MCP server — no extra setup needed.</p>
-<p><strong>Open it at:</strong> <a href="http://localhost:8384"><code>http://localhost:8384</code></a></p>
-<h3 id="what-youll-see">What You'll See<a class="headerlink" href="#what-youll-see" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Graph visualization</strong> — an interactive WebGL graph (sigma.js) showing all discovered nodes and edges. Drag nodes, hover for tooltips, Shift+click two nodes for shortest path.</li>
-<li><strong>Sidebar panels</strong> — Lab Readiness, Graph Summary, Objectives, Frontier (top 15 items), Agents, and Recent Activity.</li>
-<li><strong>Search</strong> — filter nodes by label, IP, hostname, or ID.</li>
-<li><strong>Overlays</strong> — Toggle Attack Path (gold), Compare Shortest (cyan), Credential Flow (status badges), or Community Hulls from the Layers dropdown.</li>
-</ul>
-<h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
+<p>Details in <a href="../concepts/#audit-trail">Concepts — Audit Trail</a>.</p>
+<h3 id="dashboard-configuration">Dashboard configuration<a class="headerlink" href="#dashboard-configuration" title="Permanent link">&para;</a></h3>
+<p>The dashboard is on by default at <code>http://localhost:8384</code>. To change the port or token-protect it:</p>
 <table>
 <thead>
 <tr>
@@ -3707,71 +4867,68 @@
 <tr>
 <td><code>OVERWATCH_DASHBOARD_PORT</code></td>
 <td><code>8384</code></td>
-<td>Dashboard port. Set to <code>0</code> to disable.</td>
+<td>Set to <code>0</code> to disable</td>
 </tr>
 <tr>
 <td><code>OVERWATCH_DASHBOARD_TOKEN</code></td>
 <td><em>(none)</em></td>
-<td>If set, requires <code>?token=&lt;value&gt;</code> query parameter for access</td>
+<td>If set, requires <code>?token=&lt;value&gt;</code></td>
 </tr>
 </tbody>
 </table>
-<h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
+<p>Full feature list, keyboard shortcuts, and API endpoints in the <a href="../dashboard/">Dashboard Guide</a>.</p>
+<h3 id="writing-engagementjson-from-scratch">Writing engagement.json from scratch<a class="headerlink" href="#writing-engagementjson-from-scratch" title="Permanent link">&para;</a></h3>
+<p>If none of the templates fit, the full schema is in <a href="../configuration/">Configuration</a>. The fields you'll always need: <code>id</code>, <code>name</code>, <code>scope</code>, <code>objectives</code>, <code>opsec</code>. Everything else has sensible defaults.</p>
+<hr />
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<details class="failure">
+<summary>Server won't start: Cannot find engagement config</summary>
+<p>Set <code>OVERWATCH_CONFIG</code> to an absolute path, or create <code>engagement.json</code> in the directory you launched from.</p>
+</details>
+<details class="failure">
+<summary>Server won't start: Failed to parse engagement config</summary>
+<p>Validate the JSON. Common culprits: trailing commas, unquoted keys, smart quotes from copy-paste.</p>
+</details>
+<details class="failure">
+<summary>Claude Code can't find Overwatch tools</summary>
+<p>Open <code>.mcp.json</code> and confirm:</p>
 <ul>
-<li><strong>Port conflict</strong> — Set <code>OVERWATCH_DASHBOARD_PORT</code> to a different port</li>
-<li><strong>Blank page</strong> — Open the browser console (F12) for errors; requires WebGL</li>
-<li><strong>WebSocket disconnects</strong> — Auto-reconnects every 3 seconds with HTTP polling fallback</li>
+<li>The <code>overwatch</code> block is present under <code>mcpServers</code>.</li>
+<li><code>args</code> and <code>env</code> use <strong>absolute</strong> paths (not <code>~</code> or relative).</li>
+<li>You ran <code>npm run build</code> so <code>dist/index.js</code> exists.</li>
 </ul>
-<p>See the full <a href="../dashboard/">Dashboard Guide</a> for all features, keyboard shortcuts, and API endpoints.</p>
-<h2 id="troubleshooting_1">Troubleshooting<a class="headerlink" href="#troubleshooting_1" title="Permanent link">&para;</a></h2>
-<h3 id="server-wont-start">Server Won't Start<a class="headerlink" href="#server-wont-start" title="Permanent link">&para;</a></h3>
-<p><strong>Missing config file:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Error: Cannot find engagement config at ./engagement.json
-</span></code></pre></div>
-Set <code>OVERWATCH_CONFIG</code> to the correct path, or create <code>engagement.json</code> in the project root.</p>
-<p><strong>Invalid JSON:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Error: Failed to parse engagement config
-</span></code></pre></div>
-Validate your <code>engagement.json</code> with a JSON linter. Common issues: trailing commas, missing quotes.</p>
-<p><strong>Missing skills directory:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Warning: Skills directory not found
-</span></code></pre></div>
-Set <code>OVERWATCH_SKILLS</code> to the correct path. Default is <code>./skills</code> relative to the project root.</p>
-<h3 id="dashboard-not-loading">Dashboard Not Loading<a class="headerlink" href="#dashboard-not-loading" title="Permanent link">&para;</a></h3>
+</details>
+<details class="failure">
+<summary>Claude hooks don't show up</summary>
+<p>Open <code>.claude/settings.json</code> and confirm:</p>
 <ul>
-<li><strong>Port conflict</strong> — If port 8384 is in use, set <code>OVERWATCH_DASHBOARD_PORT</code> to another port</li>
-<li><strong>Dashboard disabled</strong> — Check that <code>OVERWATCH_DASHBOARD_PORT</code> is not set to <code>0</code></li>
-<li><strong>Blank page</strong> — Open the browser console (F12) and check for JavaScript errors. The dashboard requires WebGL support.</li>
-<li><strong>WebSocket disconnects</strong> — The dashboard auto-reconnects every 3 seconds and falls back to HTTP polling every 5 seconds. Check that no firewall or proxy is blocking WebSocket connections.</li>
+<li>It exists in this repo.</li>
+<li>It contains the <code>"hooks"</code> block from <code>.claude/settings.example.json</code>.</li>
+<li>You restarted Claude Code after editing it.</li>
+<li><code>/hooks</code> lists <code>UserPromptSubmit</code>, <code>PreToolUse</code>, <code>PostToolUse</code>, and <code>Stop</code>.</li>
 </ul>
-<h3 id="claude-code-cant-find-tools">Claude Code Can't Find Tools<a class="headerlink" href="#claude-code-cant-find-tools" title="Permanent link">&para;</a></h3>
-<p><strong>MCP config not loaded:</strong>
-Make sure <code>overwatch</code> is in your MCP config (<code>~/.claude/settings.json</code> or <code>.claude/settings.json</code>):</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">&quot;overwatch&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">      </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;&lt;absolute-path&gt;/dist/index.js&quot;</span><span class="p">]</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="p">}</span>
-</span></code></pre></div>
-<div class="admonition warning">
-<p class="admonition-title">Use absolute paths</p>
-<p>The <code>args</code> and <code>env</code> values must use <strong>absolute paths</strong>. Relative paths resolve from Claude Code's working directory, which may not be the Overwatch project root.</p>
-</div>
-<p><strong>Build not run:</strong>
-If you see <code>Cannot find module dist/index.js</code>, run <code>npm run build</code> first.</p>
-<h3 id="state-file-issues">State File Issues<a class="headerlink" href="#state-file-issues" title="Permanent link">&para;</a></h3>
-<p><strong>Corrupted state file:</strong>
-The atomic write-rename mechanism prevents corruption during normal operation. If a state file is corrupted (e.g., disk full during write):</p>
+</details>
+<details class="failure">
+<summary>Dashboard won't load</summary>
+<ul>
+<li>Port conflict? Set <code>OVERWATCH_DASHBOARD_PORT</code> to something else.</li>
+<li>Blank page? Open browser console (F12) — the dashboard needs WebGL.</li>
+<li>WebSocket disconnects? It auto-reconnects every 3s and falls back to HTTP polling. Check for a proxy/firewall blocking WS.</li>
+</ul>
+</details>
+<details class="failure">
+<summary>Corrupted state file</summary>
+<p>Atomic write-rename normally prevents this. If it happens (disk full mid-write):</p>
 <ol>
-<li>Delete the corrupted <code>state-&lt;id&gt;.json</code></li>
-<li>Check for snapshot files (<code>state-&lt;id&gt;.json.bak.*</code>) — the most recent valid one can be renamed</li>
-<li>Restart the server — it will create a fresh graph from the engagement config</li>
+<li>Delete the broken <code>state-&lt;id&gt;.json</code>.</li>
+<li>Look for snapshot files (<code>state-&lt;id&gt;.json.bak.*</code>) and rename the most recent valid one.</li>
+<li>Or just restart — Overwatch reseeds the graph from <code>engagement.json</code>.</li>
 </ol>
-<p><strong>Starting fresh:</strong>
-Delete <code>state-&lt;id&gt;.json</code> and restart. The server seeds a new graph from <code>engagement.json</code>.</p>
+</details>
+<details class="tip">
+<summary>Starting fresh</summary>
+<p>Delete <code>state-&lt;id&gt;.json</code> and restart. The server rebuilds the graph from <code>engagement.json</code> on next launch.</p>
+</details>
 
 
 

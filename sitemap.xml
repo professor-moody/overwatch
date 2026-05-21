@@ -2,222 +2,318 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://REDACTED.github.io/overwatch/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/architecture-review/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/architecture/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/claude-hooks/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/concepts/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/configuration/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/contributing/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/dashboard/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/development/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/faq/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/getting-started/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/graph-model/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/smoke-test/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tape-recording/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/threat-model/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/cli-adapter/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/goad-lab/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/htb-network/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/htb-single/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/playbook/operator-infra/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/parse-vs-report/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/retrospective/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/session-instructions/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/playbook/walkthrough/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/reference/data-storage/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/skills/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/skills/featured/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/agent-heartbeat/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/bundle-engagement/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/check-processes/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/check-tools/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/cloud-playbooks/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/correct-graph/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/dispatch-agents/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/dispatch-campaign-agents/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/dispatch-subnet-agents/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/explain-action/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/export-graph/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/find-paths/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/generate-report/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-agent-context/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/get-decision-log/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-evidence/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-history/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-skill/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-state/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/get-system-prompt/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/get-timeline/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/ingest-azurehound/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/ingest-bloodhound/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/ingest-json/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/log-action-event/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/log-thought/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/manage-campaign/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/next-task/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/parse-output/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/postgres/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/query-graph/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/recompute-objectives/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/register-agent/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/register-mock-service/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/report-finding/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/run-bash/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/run-graph-health/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/run-lab-preflight/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/run-retrospective/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/run-tool/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/sessions/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/suggest-inference-rule/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/tape-sessions/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/token-credential/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/track-process/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/transcripts/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/update-agent/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/update-scope/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://REDACTED.github.io/overwatch/tools/validate-action/</loc>
-         <lastmod>2026-04-28</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://REDACTED.github.io/overwatch/tools/verify-activity-chain/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
 </urlset>

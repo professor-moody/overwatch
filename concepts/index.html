@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
     
     
       
@@ -314,6 +314,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../reference/data-storage/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../skills/" class="md-tabs__link">
           
   
@@ -478,6 +500,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -560,6 +586,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../claude-hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Code Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../configuration/" class="md-nav__link">
         
   
@@ -609,6 +663,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smoke-test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Smoke Test
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -626,6 +708,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -864,6 +950,100 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#agent-heartbeat-and-watchdog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent Heartbeat and Watchdog
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operator-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-trail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit Trail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Audit Trail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-activity-log-with-causal-linkage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Activity Log with Causal Linkage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-hash-chain-with-signed-checkpoints-hash_chain_enabled-default-true" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Hash Chain with Signed Checkpoints (hash_chain_enabled, default true)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-content-addressed-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Content-Addressed Evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-evidence-stream-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Evidence Stream Integrity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-json-rpc-tape-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. JSON-RPC Tape Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#deterministic-layer-vs-llm-layer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -902,6 +1082,17 @@
     <span class="md-ellipsis">
       
         Credential Provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-coverage-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Coverage Matrix
       
     </span>
   </a>
@@ -1002,6 +1193,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#listener-mode-and-mock-service-binding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Listener Mode and Mock-Service Binding
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1068,6 +1270,72 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#campaigns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Campaigns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#technique-priors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Technique Priors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adaptive-prompt-token-budgeting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adaptive Prompt Token Budgeting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#finding-deduplication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding Deduplication
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-call-telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool Call Telemetry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-rule-effectiveness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference Rule Effectiveness
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1105,6 +1373,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tape-recording/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tape Recording
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1123,6 +1447,12 @@
       
         
           
+        
+      
+        
+      
+        
+      
         
       
         
@@ -1213,6 +1543,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1362,6 +1698,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/recompute-objectives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    recompute_objectives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/verify-activity-chain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    verify_activity_chain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-history/" class="md-nav__link">
         
   
@@ -1411,6 +1803,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/bundle-engagement/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    bundle_engagement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1427,6 +1847,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1565,6 +1991,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/log-thought/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    log_thought
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-bash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_bash
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-tool/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_tool
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1581,6 +2091,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -1676,6 +2190,62 @@
     
   
     parse_output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/ingest-json/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ingest_json
   
 
     
@@ -1842,6 +2412,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -1924,6 +2500,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/dispatch-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    dispatch_agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-agent-context/" class="md-nav__link">
         
   
@@ -1960,6 +2564,62 @@
     
   
     update_agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/agent-heartbeat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    agent_heartbeat
   
 
     
@@ -2078,6 +2738,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -2103,7 +2769,7 @@
   <span class="md-ellipsis">
     
   
-    Skills & Inference
+    Visibility & Introspection
   
 
     
@@ -2116,6 +2782,214 @@
         
         <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Visibility & Introspection
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-decision-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_decision_log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/explain-action/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    explain_action
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-timeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_timeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/tape-sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_tape_session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Inference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2202,6 +3076,8 @@
       
         
       
+        
+      
     
     
     
@@ -2217,10 +3093,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
         
           
-          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
             
   
   
@@ -2238,8 +3114,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_8">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2305,6 +3181,158 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/postgres/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PostgreSQL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud & Tokens
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Cloud & Tokens
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/token-credential/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    validate_token_credential
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/cloud-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2339,10 +3367,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
         
           
-          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
             
   
   
@@ -2360,8 +3388,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_9">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2422,6 +3450,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -2437,10 +3469,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
         
           
-          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
             
   
   
@@ -2458,8 +3490,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_10">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_12">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2553,6 +3585,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/update-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    update_scope
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_system_prompt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2587,10 +3675,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
         
           
-          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
             
   
   
@@ -2608,8 +3696,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_11">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_13">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2681,10 +3769,104 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_14" >
         
           
-          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_14" id="__nav_4_14_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_14_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_14">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/register-mock-service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_mock_service
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_15" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_15" id="__nav_4_15_label" tabindex="0">
             
   
   
@@ -2702,8 +3884,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_12">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_15_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_15">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2775,10 +3957,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_16" >
         
           
-          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_16" id="__nav_4_16_label" tabindex="0">
             
   
   
@@ -2796,8 +3978,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_13">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_16_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_16">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2860,6 +4042,99 @@
     
       
         
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/data-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
           
         
       
@@ -2880,7 +4155,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -2902,14 +4177,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2985,6 +4260,8 @@
       
         
       
+        
+      
     
     
     
@@ -3000,7 +4277,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -3022,14 +4299,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3216,6 +4493,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../playbook/operator-infra/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../playbook/parse-vs-report/" class="md-nav__link">
         
   
@@ -3312,6 +4617,8 @@
       
         
       
+        
+      
     
     
     
@@ -3327,10 +4634,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -3348,8 +4655,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3402,6 +4709,34 @@
     
   
     Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Review
   
 
     
@@ -3537,6 +4872,100 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#agent-heartbeat-and-watchdog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent Heartbeat and Watchdog
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operator-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-trail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit Trail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Audit Trail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-activity-log-with-causal-linkage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Activity Log with Causal Linkage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-hash-chain-with-signed-checkpoints-hash_chain_enabled-default-true" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Hash Chain with Signed Checkpoints (hash_chain_enabled, default true)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-content-addressed-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Content-Addressed Evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-evidence-stream-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Evidence Stream Integrity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-json-rpc-tape-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. JSON-RPC Tape Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#deterministic-layer-vs-llm-layer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3575,6 +5004,17 @@
     <span class="md-ellipsis">
       
         Credential Provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#credential-coverage-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credential Coverage Matrix
       
     </span>
   </a>
@@ -3675,6 +5115,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#listener-mode-and-mock-service-binding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Listener Mode and Mock-Service Binding
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3741,6 +5192,72 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#campaigns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Campaigns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#technique-priors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Technique Priors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adaptive-prompt-token-budgeting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adaptive Prompt Token Budgeting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#finding-deduplication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding Deduplication
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-call-telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool Call Telemetry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-rule-effectiveness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference Rule Effectiveness
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3801,6 +5318,11 @@
 <td><code>network_pivot</code></td>
 <td>Host reachable via pivot but without a session</td>
 <td>Host in same subnet as session-holder</td>
+</tr>
+<tr>
+<td><code>credential_test</code></td>
+<td>Untested credential/target pair from the coverage matrix</td>
+<td>Test <code>jdoe:NTLM</code> against DC01 (SMB)</td>
 </tr>
 </tbody>
 </table>
@@ -4008,6 +5530,75 @@
 <li><strong>RLVR training traces</strong> — state→action→outcome triplets</li>
 <li><strong>Audit trail</strong> — every graph change is attributable to a specific action</li>
 </ul>
+<p><strong>Action ID determinism.</strong> Engagements created with an <code>engagement_nonce</code> (the strict-migration boundary; see <a href="../configuration/#deterministic-id-and-replay">Configuration</a>) get <strong>deterministic</strong> <code>action_id</code>s of the form <code>act_&lt;16hex&gt;</code> derived from <code>sha256(nonce | agent_id | timestamp | command_signature | sequence)</code>. Same inputs always produce the same <code>action_id</code>. Legacy engagements (no nonce) keep <code>uuidv4</code> IDs.</p>
+<p><strong>Frontier leases.</strong> When an agent claims a frontier item via <code>register_agent</code>, the engine takes a TTL lease (default 600s). A second agent attempting to claim the same item gets <code>lease_conflict</code> rather than racing. Heartbeats extend the lease; terminal status releases it; the <a href="#agent-heartbeat-and-watchdog">agent watchdog</a> reaps expired leases.</p>
+<p><strong>"Why did the agent do X?"</strong> — the <a href="../tools/explain-action/"><code>explain_action</code></a> tool projects an action_id's full chain (frontier item, log_thought, alternatives, validation, approval, outcome) into a single answer. The <a href="../tools/get-decision-log/"><code>get_decision_log</code></a> tool gives the same view across many decisions at once.</p>
+<h2 id="agent-heartbeat-and-watchdog">Agent Heartbeat and Watchdog<a class="headerlink" href="#agent-heartbeat-and-watchdog" title="Permanent link">&para;</a></h2>
+<p>Long-running sub-agents call <code>agent_heartbeat({task_id})</code> periodically (recommended every 30–60s) to signal liveness. The runtime watchdog walks running tasks on an interval and marks any whose <code>heartbeat_at</code> is older than <code>heartbeat_ttl_seconds</code> (default 120s) as <code>interrupted</code>, releasing their frontier leases at the same moment.</p>
+<p>Tasks that <strong>never</strong> heartbeat are exempt from the watchdog — preserves backward-compat for tools that complete in a single MCP turn.</p>
+<p>Heartbeat events are excluded from the hash chain (high-volume, low-stakes) but persist in the activity log so dashboards can show liveness.</p>
+<h2 id="operator-infrastructure">Operator Infrastructure<a class="headerlink" href="#operator-infrastructure" title="Permanent link">&para;</a></h2>
+<p>Anything the operator stands up to <strong>receive</strong> incoming connections — Responder, ntlmrelayx, fake LDAP, socat redirector, reverse-shell catcher, HTTP/SMB capture endpoint — is a first-class graph object: a <code>mock_service</code> node.</p>
+<p>Why this matters: without it, captured credentials float free of the listener that caught them, and retrospectives can't tell "we found 3 hashes" from "our Responder caught 3 hashes." With it, the capture chain is structural and queryable.</p>
+<pre class="mermaid"><code>flowchart LR
+    OP([operator user]):::user
+    MS["mock_service&lt;br/&gt;Responder&lt;br/&gt;0.0.0.0:445"]:::mock
+    SESS["session&lt;br/&gt;kind=socket, mode=listen"]:::sess
+    HOST[(attacker host)]:::host
+    CRED["credential&lt;br/&gt;CORP/victim NTLMv2"]:::cred
+    USR["user&lt;br/&gt;victim"]:::user
+    TARGET[(target host)]:::host
+
+    SESS -- "serves_mock_service_id" --&gt; MS
+    MS -- OPERATED_BY --&gt; OP
+    MS -- RUNS_ON --&gt; HOST
+    MS -- "BAITED (auto)" --&gt; CRED
+    CRED -- OWNS_CRED --&gt; USR
+    CRED -- "VALID_ON (after test)" --&gt; TARGET
+
+    classDef mock fill:#d97706,stroke:#92400e,color:#fff
+    classDef cred fill:#f0b54a,stroke:#92400e,color:#000
+    classDef user fill:#afa9ec,stroke:#3730a3,color:#000
+    classDef host fill:#6e9eff,stroke:#1e40af,color:#fff
+    classDef sess fill:#94a3b8,stroke:#334155,color:#000</code></pre>
+<p><strong>The capture chain in plain words:</strong></p>
+<ol>
+<li>The operator opens a listening session with <code>open_session kind=socket mode=listen mock_service_purpose=responder</code>. The server auto-registers a <code>mock_service</code> node and stamps <code>capabilities.serves_mock_service_id</code> onto the session.</li>
+<li>The target environment fires off a poisoned NetBIOS query and authenticates to the listener.</li>
+<li>Whoever parses the capture (Responder log parser, manual <code>report_finding</code>, future agent) reports the credential with <code>via_mock_service_id</code> set.</li>
+<li>The built-in <code>rule-baited-credential</code> inference rule fires and emits a <code>BAITED</code> edge from the listener to the credential.</li>
+<li>When <code>close_session</code> is called, the server stamps <code>stopped_at</code> on the listener so the dashboard renders it inactive and retrospectives know the active window.</li>
+</ol>
+<p><strong>Idempotency.</strong> <code>register_mock_service</code> dedupes on <code>(purpose, bind_host, bind_port, agent_id)</code>. Re-registering is safe and refreshes <code>last_seen_at</code> without duplicating the node.</p>
+<p><strong>OPSEC defaults.</strong> <code>opsec_loud=true</code> is the default for <code>responder</code>, <code>ntlmrelayx</code>, <code>fake_ldap</code>, and <code>smb_capture</code>. The OPSEC scorer can read this directly instead of hardcoding a noisy-tool list.</p>
+<p>See <a href="../tools/register-mock-service/"><code>register_mock_service</code></a> and <a href="../playbook/operator-infra/">Playbook — Operator Infrastructure</a>.</p>
+<h2 id="audit-trail">Audit Trail<a class="headerlink" href="#audit-trail" title="Permanent link">&para;</a></h2>
+<p>Five independent layers make engagement evidence defensible. The first three are <strong>default-on for new engagements</strong> (i.e. those created with an <code>engagement_nonce</code>); the latter two are explicit opt-ins.</p>
+<h3 id="1-activity-log-with-causal-linkage">1. Activity Log with Causal Linkage<a class="headerlink" href="#1-activity-log-with-causal-linkage" title="Permanent link">&para;</a></h3>
+<p>Every action emits structured events (<code>action_planned</code>, <code>action_validated</code>, <code>action_started</code>, <code>action_completed</code>/<code>action_failed</code>, plus parse and finding events). Each event carries <code>action_id</code>, <code>frontier_item_id</code>, and <code>agent_id</code>, so the entire decision chain is reconstructable as a directed graph — not as a stream of timestamps you have to correlate.</p>
+<p>The activity log also captures <strong><code>mock_service_registered</code></strong> / <strong><code>mock_service_refreshed</code></strong> events with <code>provenance: 'operator'</code>, plus <code>phase_entered</code> / <code>phase_exited</code> events when phase-aware policy transitions fire. The operator-infrastructure timeline interleaves cleanly with discovery and exploitation events.</p>
+<h3 id="2-hash-chain-with-signed-checkpoints-hash_chain_enabled-default-true">2. Hash Chain with Signed Checkpoints (<code>hash_chain_enabled</code>, default true)<a class="headerlink" href="#2-hash-chain-with-signed-checkpoints-hash_chain_enabled-default-true" title="Permanent link">&para;</a></h3>
+<p>Every qualifying activity event (provenance ∈ <code>{agent, system}</code>, excluding <code>thought</code> and <code>heartbeat</code>) gets a <code>prev_hash</code> and <code>event_hash</code>, forming a tamper-evident chain. <code>verify_activity_chain</code> walks the chain and confirms it's intact.</p>
+<p><strong>Signed checkpoints</strong> are emitted every 500 events / 30 minutes (configurable). Verifiers can resume from the latest checkpoint instead of replaying from genesis — O(events_since_checkpoint) instead of O(n). Checkpoints carry an optional <code>signing_key_id</code> slot for Ed25519-signed audit deliverables (signing implementation is staged for follow-up).</p>
+<p>If anyone — the AI itself, a bug, a malicious operator — modifies an old entry, the chain breaks and the system can prove it. Ingested events (from external transcripts) get <code>chain_excluded: true</code> so they don't pollute the live chain.</p>
+<h3 id="3-content-addressed-evidence">3. Content-Addressed Evidence<a class="headerlink" href="#3-content-addressed-evidence" title="Permanent link">&para;</a></h3>
+<p>Every evidence row carries <code>content_hash = sha256(content)</code>. Two runs that produce identical output deduplicate to a single row; tampering with content on disk changes the address (the manifest's <code>content_hash</code> no longer resolves). Lookups via <code>get_evidence</code> accept either the legacy UUID <code>evidence_id</code> or the new <code>content_hash</code>.</p>
+<p>Streaming sinks (<code>createBlobStream</code> for live <code>run_bash</code>/<code>run_tool</code> output) accumulate the hash incrementally and finalize it when the stream closes, so the evidence record's hash always matches the bytes actually durable on disk.</p>
+<h3 id="4-evidence-stream-integrity">4. Evidence Stream Integrity<a class="headerlink" href="#4-evidence-stream-integrity" title="Permanent link">&para;</a></h3>
+<p><code>run_bash</code> and <code>run_tool</code> stream stdout/stderr <strong>directly</strong> into the evidence store rather than buffering, with backpressure-aware writes. Every action's evidence file has a manifest record that says either:</p>
+<ul>
+<li><code>bytes_written: N, capture_error: null</code> — the full output is on disk, and it's exactly N bytes.</li>
+<li><code>bytes_written: N, capture_error: "&lt;reason&gt;"</code> — partial capture; the system explicitly knows how much was lost and why.</li>
+</ul>
+<p>Evidence can never be silently truncated. If your report cites an nmap scan, the manifest tells you whether you have the whole thing.</p>
+<h3 id="5-json-rpc-tape-proxy">5. JSON-RPC Tape Proxy<a class="headerlink" href="#5-json-rpc-tape-proxy" title="Permanent link">&para;</a></h3>
+<p><code>overwatch-mcp-tape</code> sits between the AI client and the Overwatch MCP server, recording every wire-level frame in both directions to a JSONL tape. The tape captures things the server might never log itself (malformed requests, requests that errored before reaching a handler, batched calls).</p>
+<p>After the engagement, <code>register_tape_session</code> imports the tape and emits <code>tape_session_started</code> events linked to the live activity log. A retrospective can then ask:</p>
+<ul>
+<li>"Did the AI actually validate every command before running it?" → join tape <code>tools/call validate_action</code> against tape <code>tools/call run_bash</code>.</li>
+<li>"Did the AI claim a result the server never produced?" → diff tape responses against AI transcript turns.</li>
+</ul>
+<p>This is the difference between trusting the AI's narrative and being able to independently verify it.</p>
 <h2 id="deterministic-layer-vs-llm-layer">Deterministic Layer vs LLM Layer<a class="headerlink" href="#deterministic-layer-vs-llm-layer" title="Permanent link">&para;</a></h2>
 <p>Overwatch splits decision-making into two layers:</p>
 <p><img alt="Hybrid Scoring" src="../assets/hybrid-scoring-light.svg#only-light" />
@@ -4138,6 +5729,65 @@
 </ul>
 <p>The dashboard visualizes provenance chains via the <code>/api/evidence-chains/:nodeId</code> endpoint.</p>
 <p>See <a href="../graph-model/#credential-lifecycle-properties">Graph Model — Credential Lifecycle Properties</a> for the full property reference.</p>
+<h3 id="credential-coverage-matrix">Credential Coverage Matrix<a class="headerlink" href="#credential-coverage-matrix" title="Permanent link">&para;</a></h3>
+<p>The engine tracks which credentials have been tested against which targets, surfacing untested pairs as <code>credential_test</code> frontier items. This gives the LLM a systematic "spray progress" view rather than relying on ad-hoc enumeration.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li><strong>Collect usable credentials</strong> — active, non-stale, non-expired credentials with <code>isCredentialUsableForAuth()</code></li>
+<li><strong>Collect auth targets</strong> — hosts running auth-accepting services (SMB, RDP, SSH, WinRM, MSSQL, etc.)</li>
+<li><strong>Build tested set</strong> — scan <code>TESTED_CRED</code>, <code>VALID_ON</code>, <code>HAS_SESSION</code>, <code>ADMIN_TO</code> edges to identify already-tested pairs</li>
+<li><strong>Rank untested pairs</strong> — priority based on credential type × service type × hops-to-objective × same-domain boost</li>
+</ol>
+<p><strong>Priority scoring:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Credential Type</th>
+<th>Weight</th>
+<th>Service Type</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Plaintext password</td>
+<td>1.0</td>
+<td>SMB</td>
+<td>0.9</td>
+</tr>
+<tr>
+<td>NTLM hash</td>
+<td>0.9</td>
+<td>RDP</td>
+<td>0.85</td>
+</tr>
+<tr>
+<td>AES256 key</td>
+<td>0.85</td>
+<td>SSH / WinRM</td>
+<td>0.8</td>
+</tr>
+<tr>
+<td>Kerberos TGT</td>
+<td>0.8</td>
+<td>MSSQL</td>
+<td>0.7</td>
+</tr>
+<tr>
+<td>SSH key</td>
+<td>0.8</td>
+<td>LDAP</td>
+<td>0.7</td>
+</tr>
+<tr>
+<td>Token / Certificate</td>
+<td>0.7</td>
+<td>HTTP(S)</td>
+<td>0.5</td>
+</tr>
+</tbody>
+</table>
+<p>Coverage stats appear in <code>get_state().credential_coverage</code> and in the system prompt as "Credential Spray Progress." The dashboard shows a coverage progress bar with top untested pairs.</p>
 <h2 id="iam-policy-simulation">IAM Policy Simulation<a class="headerlink" href="#iam-policy-simulation" title="Permanent link">&para;</a></h2>
 <p>Overwatch includes a cloud IAM policy simulator (<code>evaluateIAM()</code>) that evaluates whether an identity is permitted to perform an action on a resource. The simulator understands the permission evaluation semantics of all three major cloud providers:</p>
 <table>
@@ -4196,7 +5846,7 @@
 <p>Overwatch maintains <strong>persistent interactive sessions</strong> — long-lived bidirectional I/O channels that survive across MCP tool calls. Sessions support SSH, local PTY, and TCP socket transports (for reverse shells and listeners).</p>
 <h3 id="io-model">I/O Model<a class="headerlink" href="#io-model" title="Permanent link">&para;</a></h3>
 <p>The core primitives are <code>write_session</code> (raw bytes) and <code>read_session</code> (cursor-based). Each session has a 128KB ring buffer with absolute monotonic positions. Agents track <code>end_pos</code> from each read and pass it as <code>from_pos</code> on the next to get only new output.</p>
-<p><code>send_to_session</code> is an experimental convenience tool that writes a command, waits for output to settle (idle timeout or regex match), and returns the captured output in one call.</p>
+<p><code>send_to_session</code> is the audited command path for persistent sessions. It validates scope using per-call metadata or the session's <code>default_validation</code>, writes the command, waits for output to settle, persists the captured output as evidence, and records action lifecycle events. Use <code>write_session</code> and <code>read_session</code> for partial I/O such as prompts, REPL navigation, and streaming tools.</p>
 <h3 id="tty-quality">TTY Quality<a class="headerlink" href="#tty-quality" title="Permanent link">&para;</a></h3>
 <p>Sessions track their terminal capability via <code>tty_quality</code>:</p>
 <table>
@@ -4239,6 +5889,14 @@
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                   → error
 </span></code></pre></div>
 <p>Socket sessions (reverse shells, listeners) start in <code>pending</code> and transition to <code>connected</code> when a connection is established. PTY and SSH sessions connect immediately. Sessions are ephemeral across server restarts — PTY file descriptors cannot be serialized.</p>
+<h3 id="listener-mode-and-mock-service-binding">Listener Mode and Mock-Service Binding<a class="headerlink" href="#listener-mode-and-mock-service-binding" title="Permanent link">&para;</a></h3>
+<p><code>open_session</code> with <code>kind=socket mode=listen mock_service_purpose=&lt;purpose&gt;</code> does two things atomically:</p>
+<ol>
+<li>Creates the listener session.</li>
+<li>Auto-registers a <code>mock_service</code> graph node and stamps <code>capabilities.serves_mock_service_id</code> on the session, so anything captured through that listener can be attributed back to the operator-controlled infrastructure that caught it.</li>
+</ol>
+<p>Closing the session stamps <code>stopped_at</code> on the bound <code>mock_service</code> node — the listener stays in the graph for retrospective analysis but is rendered inactive in the dashboard.</p>
+<p>See <a href="#operator-infrastructure">Operator Infrastructure</a> for the full capture chain.</p>
 <p>See <a href="../tools/sessions/">Session Tools</a> for the full API reference.</p>
 <h2 id="graph-compaction-cold-store">Graph Compaction (Cold Store)<a class="headerlink" href="#graph-compaction-cold-store" title="Permanent link">&para;</a></h2>
 <p>During large network sweeps, hundreds of hosts may respond to ping without offering any services. To keep the <strong>hot graph</strong> focused on actionable targets, Overwatch uses a <strong>cold store</strong> — an in-memory census that tracks these low-interest hosts outside the main graphology graph.</p>
@@ -4298,6 +5956,19 @@
 <li><strong>Engagement state</strong> — the synthesized view returned by <code>get_state()</code>. It includes graph summaries, computed frontier items, objective progress, agent status, and recent activity. This is derived from the graph state plus runtime data (active agents, activity log).</li>
 </ul>
 <p>Both survive compaction and restarts. The graph state is the source of truth; the engagement state is a computed view of it.</p>
+<h2 id="campaigns">Campaigns<a class="headerlink" href="#campaigns" title="Permanent link">&para;</a></h2>
+<p>A <strong>campaign</strong> is a coordinated set of frontier items sharing a common theme (e.g., "spray all SMB services with captured DA hash"). The campaign planner groups related frontier items, assigns them to agents in parallel via <code>dispatch_campaign_agents</code>, and tracks collective progress with abort conditions (e.g., too many failures).</p>
+<p>Campaigns are created via <a href="../tools/manage-campaign/"><code>manage_campaign</code></a> and have states: <code>active</code>, <code>paused</code>, <code>completed</code>, <code>aborted</code>.</p>
+<h2 id="technique-priors">Technique Priors<a class="headerlink" href="#technique-priors" title="Permanent link">&para;</a></h2>
+<p>Knowledge-base statistics on how likely a technique is to succeed, derived from historical engagement data. The <code>TechniqueStats</code> include success rate, average noise, and sample count. These are surfaced in <code>validate_action</code> and frontier scoring to help the LLM prioritize.</p>
+<h2 id="adaptive-prompt-token-budgeting">Adaptive Prompt Token Budgeting<a class="headerlink" href="#adaptive-prompt-token-budgeting" title="Permanent link">&para;</a></h2>
+<p>The system prompt generated by <code>get_system_prompt</code> uses priority-based trimming to stay within a configurable <code>max_prompt_tokens</code> budget (default: 8000 tokens). Sections are scored by urgency (expiring credentials &gt; active campaigns &gt; scope suggestions) and lower-priority sections are compressed or replaced with summaries when the budget is tight.</p>
+<h2 id="finding-deduplication">Finding Deduplication<a class="headerlink" href="#finding-deduplication" title="Permanent link">&para;</a></h2>
+<p>When the model processes the same tool output multiple times (common after context compaction), the engine deduplicates findings using <strong>SHA-256 content hashing</strong>. The hash covers <code>tool_name</code>, sorted node signatures (stable properties only), sorted edge keys, and the first 500 characters of <code>raw_output</code>. Exact duplicates within a <strong>5-minute rolling window</strong> are rejected immediately with <code>{ deduplicated: true }</code> — no graph mutations occur. Findings with the same nodes but different properties pass through for property merging.</p>
+<h2 id="tool-call-telemetry">Tool Call Telemetry<a class="headerlink" href="#tool-call-telemetry" title="Permanent link">&para;</a></h2>
+<p>Runtime instrumentation that tracks per-tool call counts, error rates, response times, and call sequence patterns. This data is <strong>not persisted</strong> — it exists only for the current server process. The telemetry is exported in the <code>tool_telemetry</code> section of <code>run_retrospective</code> output and helps identify unused tools, slow tools, and common tool-call sequences.</p>
+<h2 id="inference-rule-effectiveness">Inference Rule Effectiveness<a class="headerlink" href="#inference-rule-effectiveness" title="Permanent link">&para;</a></h2>
+<p>Each inference rule's performance is tracked via <code>inferred_by_rule</code> and <code>confirmed_at</code> properties on edges. The engine computes per-rule <strong>confirmation rates</strong> (confirmed / total inferred edges) and surfaces rules with ≥3 edges in <code>get_state()</code> under <code>inference_rule_effectiveness</code>. Rules are <strong>dynamically ordered</strong> by confirmation rate — high-performing rules run first, and rules with 0 confirmations over ≥5 attempts are deprioritized.</p>
 
 
 

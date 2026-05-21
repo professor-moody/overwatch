@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://REDACTED.github.io/overwatch/architecture/">
       
       
-        <link rel="prev" href="../dashboard/">
+        <link rel="prev" href="../smoke-test/">
       
       
         <link rel="next" href="../concepts/">
@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
     
     
       
@@ -314,6 +314,28 @@
     
     
       <li class="md-tabs__item">
+        <a href="../reference/data-storage/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
         <a href="../skills/" class="md-tabs__link">
           
   
@@ -478,6 +500,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -560,6 +586,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../claude-hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Code Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../configuration/" class="md-nav__link">
         
   
@@ -609,6 +663,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smoke-test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Smoke Test
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -626,6 +708,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -911,6 +997,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="State Persistence">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mutation-journal-write-ahead-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mutation Journal (Write-Ahead Log)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#foundations-trust-audit-replay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Foundations: Trust, Audit, Replay
+      
+    </span>
+  </a>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1000,6 +1114,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tape-recording/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tape Recording
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1018,6 +1188,12 @@
       
         
           
+        
+      
+        
+      
+        
+      
         
       
         
@@ -1108,6 +1284,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1257,6 +1439,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/recompute-objectives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    recompute_objectives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/verify-activity-chain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    verify_activity_chain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-history/" class="md-nav__link">
         
   
@@ -1306,6 +1544,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/bundle-engagement/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    bundle_engagement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1322,6 +1588,12 @@
   
     
     
+      
+        
+      
+        
+      
+        
       
         
       
@@ -1460,6 +1732,90 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/log-thought/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    log_thought
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-bash/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_bash
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/run-tool/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run_tool
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1476,6 +1832,10 @@
   
     
     
+      
+        
+      
+        
       
         
       
@@ -1571,6 +1931,62 @@
     
   
     parse_output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/ingest-json/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ingest_json
   
 
     
@@ -1737,6 +2153,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -1819,6 +2241,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/dispatch-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    dispatch_agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../tools/get-agent-context/" class="md-nav__link">
         
   
@@ -1855,6 +2305,62 @@
     
   
     update_agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/agent-heartbeat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    agent_heartbeat
   
 
     
@@ -1973,6 +2479,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -1998,7 +2510,7 @@
   <span class="md-ellipsis">
     
   
-    Skills & Inference
+    Visibility & Introspection
   
 
     
@@ -2011,6 +2523,214 @@
         
         <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Visibility & Introspection
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-decision-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_decision_log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/explain-action/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    explain_action
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-timeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_timeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/transcripts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    submit_agent_transcript
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/tape-sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_tape_session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Inference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2097,6 +2817,8 @@
       
         
       
+        
+      
     
     
     
@@ -2112,10 +2834,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
         
           
-          <label class="md-nav__link" for="__nav_4_8" id="__nav_4_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
             
   
   
@@ -2133,8 +2855,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_8">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2200,6 +2922,158 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/postgres/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PostgreSQL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud & Tokens
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Cloud & Tokens
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/token-credential/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    validate_token_credential
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/cloud-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cloud Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2234,10 +3108,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
         
           
-          <label class="md-nav__link" for="__nav_4_9" id="__nav_4_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
             
   
   
@@ -2255,8 +3129,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_9">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_11">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2317,6 +3191,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -2332,10 +3210,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_10" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
         
           
-          <label class="md-nav__link" for="__nav_4_10" id="__nav_4_10_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
             
   
   
@@ -2353,8 +3231,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_10_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_10">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_12">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2448,6 +3326,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/update-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    update_scope
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/get-system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    get_system_prompt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2482,10 +3416,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
         
           
-          <label class="md-nav__link" for="__nav_4_11" id="__nav_4_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
             
   
   
@@ -2503,8 +3437,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_11">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_13">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2576,10 +3510,104 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_12" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_14" >
         
           
-          <label class="md-nav__link" for="__nav_4_12" id="__nav_4_12_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_14" id="__nav_4_14_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_14_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_14">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/register-mock-service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    register_mock_service
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_15" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_15" id="__nav_4_15_label" tabindex="0">
             
   
   
@@ -2597,8 +3625,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_12_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_12">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_15_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_15">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2670,10 +3698,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_13" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_16" >
         
           
-          <label class="md-nav__link" for="__nav_4_13" id="__nav_4_13_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_16" id="__nav_4_16_label" tabindex="0">
             
   
   
@@ -2691,8 +3719,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_13_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_13">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_16_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_16">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2755,6 +3783,99 @@
     
       
         
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/data-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
           
         
       
@@ -2775,7 +3896,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -2797,14 +3918,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2880,6 +4001,8 @@
       
         
       
+        
+      
     
     
     
@@ -2895,7 +4018,7 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -2917,14 +4040,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3111,6 +4234,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../playbook/operator-infra/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../playbook/parse-vs-report/" class="md-nav__link">
         
   
@@ -3207,6 +4358,8 @@
       
         
       
+        
+      
     
     
     
@@ -3222,10 +4375,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
             
   
   
@@ -3243,8 +4396,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3297,6 +4450,34 @@
     
   
     Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Review
   
 
     
@@ -3507,6 +4688,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="State Persistence">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mutation-journal-write-ahead-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mutation Journal (Write-Ahead Log)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#foundations-trust-audit-replay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Foundations: Trust, Audit, Replay
+      
+    </span>
+  </a>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3594,7 +4803,7 @@
 <li><strong>Creative path discovery</strong> — finding non-obvious routes through the graph</li>
 </ul>
 <h3 id="inference-rules">Inference Rules<a class="headerlink" href="#inference-rules" title="Permanent link">&para;</a></h3>
-<p>When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Thirty-one built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:</p>
+<p>When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Fifty-five built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:</p>
 <table>
 <thead>
 <tr>
@@ -3606,8 +4815,13 @@
 <tbody>
 <tr>
 <td><strong>AD &amp; Service</strong></td>
-<td>18</td>
-<td>Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1, Delegation, Roasting, LAPS/gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync</td>
+<td>21</td>
+<td>Kerberos → Domain, SMB Relay, Credential Fanout, ADCS ESC1–ESC8+, Delegation, Roasting, LAPS/gMSA, RBCD, DACL escalation, Shadow Credentials, GPO abuse, DCSync</td>
+</tr>
+<tr>
+<td><strong>ADCS</strong></td>
+<td>14</td>
+<td>ESC1–ESC8, ESC9/10/11, ESC13, EDITF_ATTRIBUTESUBJECTALTNAME2</td>
 </tr>
 <tr>
 <td><strong>Linux Privesc</strong></td>
@@ -3616,13 +4830,13 @@
 </tr>
 <tr>
 <td><strong>Web</strong></td>
-<td>2</td>
-<td>Webapp login spray, web login form</td>
+<td>8</td>
+<td>Webapp login spray, web login form, token→webapp auth, auth bypass escalation, default CMS creds, IMDSv1 SSRF</td>
 </tr>
 <tr>
 <td><strong>MSSQL</strong></td>
-<td>1</td>
-<td>Linked server → REACHABLE</td>
+<td>2</td>
+<td>Linked server → REACHABLE, xp_cmdshell → code execution</td>
 </tr>
 <tr>
 <td><strong>Cloud</strong></td>
@@ -3728,7 +4942,57 @@
 <tr>
 <td><strong>State Persistence</strong></td>
 <td><code>src/services/state-persistence.ts</code></td>
-<td>Atomic write-rename with snapshot rotation</td>
+<td>Atomic write-rename with snapshot rotation; replays the <a href="#mutation-journal-write-ahead-log">Mutation Journal</a> on load for engagements with a nonce</td>
+</tr>
+<tr>
+<td><strong>Activity Chain</strong></td>
+<td><code>src/services/activity-chain.ts</code></td>
+<td>Tamper-evident SHA-256 chain over agent/system events; signed checkpoints for O(events_since_checkpoint) verification (default-on for new engagements)</td>
+</tr>
+<tr>
+<td><strong>Mutation Journal</strong></td>
+<td><code>src/services/mutation-journal.ts</code></td>
+<td>Write-ahead log of graph mutations; replay on load + compaction after snapshot. Gated on <code>engagement_nonce</code></td>
+</tr>
+<tr>
+<td><strong>Deterministic ID</strong></td>
+<td><code>src/services/deterministic-id.ts</code></td>
+<td>sha256-derived action and event IDs for engagements with <code>engagement_nonce</code>; <code>uuidv4</code> fallback for legacy</td>
+</tr>
+<tr>
+<td><strong>Frontier Leases</strong></td>
+<td><code>src/services/frontier-leases.ts</code></td>
+<td>TTL leases on frontier items so two agents can't race on the same target</td>
+</tr>
+<tr>
+<td><strong>Agent Watchdog</strong></td>
+<td><code>src/services/agent-watchdog.ts</code></td>
+<td>Periodic reaper for stale heartbeats and expired frontier leases</td>
+</tr>
+<tr>
+<td><strong>Decision Log</strong></td>
+<td><code>src/services/decision-log.ts</code></td>
+<td>Derived view: per-action timeline (frontier_emitted → ... → completed) over the activity log</td>
+</tr>
+<tr>
+<td><strong>Introspection</strong></td>
+<td><code>src/services/introspection.ts</code></td>
+<td>"Why did the agent do X?" — frontier item, log_thought chain, alternatives, validation, outcome for an action_id</td>
+</tr>
+<tr>
+<td><strong>Timeline</strong></td>
+<td><code>src/services/timeline.ts</code></td>
+<td>Per-node and per-edge "what was true at time T" derivation over graph + activity log</td>
+</tr>
+<tr>
+<td><strong>Golden Replay</strong></td>
+<td><code>src/services/golden-replay.ts</code></td>
+<td>Tape-driven byte-identical replay harness; canonical graph hash for regression detection</td>
+</tr>
+<tr>
+<td><strong>Sub-agent IPC</strong></td>
+<td><code>src/services/subagent-ipc.ts</code>, <code>src/services/subagent-process-runner.ts</code></td>
+<td>Typed JSON-over-stdio contract + parent-side runner for the optional <code>subagent_isolation: 'process'</code> mode (default <code>'in_process'</code>)</td>
 </tr>
 <tr>
 <td><strong>Skill Index</strong></td>
@@ -3863,7 +5127,7 @@
 <tr>
 <td><strong>Evidence Store</strong></td>
 <td><code>src/services/evidence-store.ts</code></td>
-<td>Durable evidence blob storage with action/finding linkage</td>
+<td>Durable evidence blob storage with action/finding linkage. Records carry a <code>content_hash</code> (sha256) so identical content from two runs deduplicates and lookups accept either evidence_id (UUID) or content_hash. Streaming sinks finalize the hash on close.</td>
 </tr>
 <tr>
 <td><strong>Finding Ingestion</strong></td>
@@ -3884,6 +5148,26 @@
 <td><strong>Graph Query</strong></td>
 <td><code>src/services/graph-query.ts</code></td>
 <td>Structured graph queries with filtering</td>
+</tr>
+<tr>
+<td><strong>Objective Manager</strong></td>
+<td><code>src/services/objective-manager.ts</code></td>
+<td>Objective CRUD, achievement evaluation, phase tracking</td>
+</tr>
+<tr>
+<td><strong>Session Tracker</strong></td>
+<td><code>src/services/session-tracker.ts</code></td>
+<td>HAS_SESSION edge lifecycle, frontier marking, startup reconciliation</td>
+</tr>
+<tr>
+<td><strong>Config Manager</strong></td>
+<td><code>src/services/config-manager.ts</code></td>
+<td>Config seeding, update validation, scope/opsec merging</td>
+</tr>
+<tr>
+<td><strong>Tool Telemetry</strong></td>
+<td><code>src/services/tool-telemetry.ts</code></td>
+<td>Runtime tool call counting, timing, sequence analysis</td>
 </tr>
 <tr>
 <td><strong>Engine Context</strong></td>
@@ -3925,7 +5209,22 @@
 <tr>
 <td><strong>Agents</strong></td>
 <td><code>src/tools/agents.ts</code></td>
-<td><code>register_agent</code>, <code>dispatch_agents</code>, <code>get_agent_context</code>, <code>update_agent</code>, <code>dispatch_subnet_agents</code>, <code>dispatch_campaign_agents</code>, <code>manage_campaign</code></td>
+<td><code>register_agent</code>, <code>dispatch_agents</code>, <code>get_agent_context</code>, <code>update_agent</code>, <code>dispatch_subnet_agents</code>, <code>dispatch_campaign_agents</code>, <code>manage_campaign</code>, <code>agent_heartbeat</code></td>
+</tr>
+<tr>
+<td><strong>Decision Log</strong></td>
+<td><code>src/tools/decision-log.ts</code></td>
+<td><code>get_decision_log</code></td>
+</tr>
+<tr>
+<td><strong>Introspection</strong></td>
+<td><code>src/tools/introspection.ts</code></td>
+<td><code>explain_action</code></td>
+</tr>
+<tr>
+<td><strong>Timeline</strong></td>
+<td><code>src/tools/timeline.ts</code></td>
+<td><code>get_timeline</code></td>
 </tr>
 <tr>
 <td><strong>Skills</strong></td>
@@ -4000,37 +5299,47 @@
 </tbody>
 </table>
 <h3 id="dashboard">Dashboard<a class="headerlink" href="#dashboard" title="Permanent link">&para;</a></h3>
+<p>The dashboard is a React SPA built with Vite, served from <code>src/dashboard-next/</code>
+(build output: <code>dist/dashboard-next/</code>). It exposes panels for engagements,
+campaigns, agents, sessions (xterm-based terminal multiplexer), pending
+actions, frontier, activity, evidence, settings, telemetry, and a sigma.js
+graph explorer with attack-path overlay, focus presets, community hulls,
+edit mode, and minimap.</p>
 <table>
 <thead>
 <tr>
-<th>File</th>
-<th>Purpose</th>
+<th>Area</th>
+<th>Source</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>src/dashboard/index.html</code></td>
-<td>Slim HTML shell loading CDN deps + local scripts</td>
+<td>Entry shell</td>
+<td><code>src/dashboard-next/src/main.tsx</code>, <code>App.tsx</code></td>
 </tr>
 <tr>
-<td><code>src/dashboard/styles.css</code></td>
-<td>Dark theme, animations, responsive layout</td>
+<td>Layout</td>
+<td><code>src/dashboard-next/src/components/layout/</code> (Toolbar, Sidebar, OperatorLayout, TapeToggle)</td>
 </tr>
 <tr>
-<td><code>src/dashboard/graph.js</code></td>
-<td>Sigma.js, ForceAtlas2, drag, hover, path/neighborhood highlight, minimap</td>
+<td>Panels</td>
+<td><code>src/dashboard-next/src/components/panels/</code></td>
 </tr>
 <tr>
-<td><code>src/dashboard/ui.js</code></td>
-<td>Sidebar panels, node detail, search, keyboard shortcuts</td>
+<td>Graph explorer</td>
+<td><code>src/dashboard-next/src/components/graph/</code> (sigma.js + hooks)</td>
 </tr>
 <tr>
-<td><code>src/dashboard/ws.js</code></td>
-<td>WebSocket connection, reconnect, HTTP polling</td>
+<td>State</td>
+<td><code>src/dashboard-next/src/stores/</code> (Zustand)</td>
 </tr>
 <tr>
-<td><code>src/dashboard/main.js</code></td>
-<td>Entry point wiring modules together</td>
+<td>API client</td>
+<td><code>src/dashboard-next/src/lib/api.ts</code></td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td><code>src/dashboard-next/src/providers/ws-provider.tsx</code></td>
 </tr>
 </tbody>
 </table>
@@ -4048,6 +5357,90 @@
 <li><strong>Resume anywhere</strong> — restart Claude Code, restart the server, come back days later</li>
 <li><strong>Post-engagement analysis</strong> — persisted state feeds retrospective analysis</li>
 </ul>
+<h3 id="mutation-journal-write-ahead-log">Mutation Journal (Write-Ahead Log)<a class="headerlink" href="#mutation-journal-write-ahead-log" title="Permanent link">&para;</a></h3>
+<p>Engagements created with an <code>engagement_nonce</code> (the deterministic-ID family, see <a href="#foundations-trust-audit-replay">Foundations</a>) layer a write-ahead log on top of the snapshot:</p>
+<ul>
+<li>Every graph-affecting mutation (<code>add_node</code>, <code>add_edge</code>, <code>merge_node_attrs</code>, <code>drop_edge</code>) appends a <code>MutationEntry { seq, ts, type, payload }</code> to <code>&lt;state-file&gt;.journal.jsonl</code> and <code>fsync</code>s <strong>before</strong> the in-memory mutation is applied.</li>
+<li>On load, the engine reads the snapshot, then replays journal entries with <code>seq &gt; journalSnapshotSeq</code>. A crash between journal append and the next snapshot rotation is recoverable.</li>
+<li>Snapshot rotation truncates the journal up to the snapshot's seq. Crash mid-write leaves a partial line; the reader stops at it without poisoning subsequent replays.</li>
+</ul>
+<p>Legacy engagements (no nonce) keep the debounced-snapshot-only path with no behavior change.</p>
+<h2 id="foundations-trust-audit-replay">Foundations: Trust, Audit, Replay<a class="headerlink" href="#foundations-trust-audit-replay" title="Permanent link">&para;</a></h2>
+<p>Engagements created after the foundations work shipped get a coordinated set of guarantees. <strong>All gated on <code>engagement_nonce</code> populated</strong> (the strict-migration boundary for new engagements; legacy engagements keep their original UUID-based identity model).</p>
+<table>
+<thead>
+<tr>
+<th>Guarantee</th>
+<th>What it gives you</th>
+<th>Where it lives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Hash-chained activity log</strong></td>
+<td>Tamper-evident SHA-256 chain over agent/system events. Default-on for new engagements. Signed checkpoints emitted every 500 events / 30 minutes so verifiers don't have to re-walk genesis.</td>
+<td><code>src/services/activity-chain.ts</code></td>
+</tr>
+<tr>
+<td><strong>Content-addressed evidence</strong></td>
+<td>Every evidence row carries <code>content_hash = sha256(content)</code>. Two runs with identical output deduplicate; tampering changes the address. Lookups accept either UUID or hash.</td>
+<td><code>src/services/evidence-store.ts</code></td>
+</tr>
+<tr>
+<td><strong>Deterministic action / event IDs</strong></td>
+<td><code>act_&lt;16hex&gt;</code> / <code>evt_&lt;16hex&gt;</code> derived from <code>sha256(nonce \| agent_id \| timestamp \| command_signature \| sequence)</code>. Same inputs → same IDs.</td>
+<td><code>src/services/deterministic-id.ts</code></td>
+</tr>
+<tr>
+<td><strong>Caller-provided clocks</strong></td>
+<td><code>engine.withClock(now, fn)</code> pins time across a sequence of mutations so timestamps don't leak wall-clock noise into golden-master fixtures.</td>
+<td><code>src/services/engine-context.ts</code> (<code>withClock</code>, <code>nowIso</code>)</td>
+</tr>
+<tr>
+<td><strong>Write-ahead log</strong></td>
+<td>Crash-safe state recovery; mutation lost only when the journal append itself fails.</td>
+<td><code>src/services/mutation-journal.ts</code></td>
+</tr>
+<tr>
+<td><strong>Golden-master replay</strong></td>
+<td>Replaying a tape against a fresh engine produces a byte-identical state hash. Real-behavior change requires explicit re-recording.</td>
+<td><code>src/services/golden-replay.ts</code>, fixtures in <code>src/__tests__/golden-master/</code></td>
+</tr>
+<tr>
+<td><strong>Frontier leases + heartbeat</strong></td>
+<td>Two agents can't claim the same frontier item; silent sub-agents get reaped.</td>
+<td><code>src/services/frontier-leases.ts</code>, <code>src/services/agent-watchdog.ts</code></td>
+</tr>
+</tbody>
+</table>
+<p>For the threat model context — what these mitigate, what's still residual — see <a href="../threat-model/">Threat Model</a>.</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph New["new engagement (engagement_nonce populated)"]
+        ID[deterministic-id&lt;br/&gt;act_/evt_ from sha256]
+        WAL[mutation-journal&lt;br/&gt;journal.jsonl]
+        CHAIN[activity-chain&lt;br/&gt;+ signed checkpoints]
+        EV[evidence-store&lt;br/&gt;content_hash sha256]
+        LEASE[frontier-leases&lt;br/&gt;TTL on items]
+        WATCH[agent-watchdog&lt;br/&gt;heartbeat reaper]
+        REPLAY[golden-replay&lt;br/&gt;tape harness]
+    end
+
+    Action[action] --&gt; ID
+    ID --&gt; WAL
+    WAL --&gt; Persist[snapshot.json]
+    Action --&gt; CHAIN
+    Action --&gt; EV
+    Register[register_agent] --&gt; LEASE
+    Heartbeat[agent_heartbeat] --&gt; WATCH
+    WATCH -. interrupts stale .-&gt; LEASE
+
+    Replay[replayTape] --&gt; ID
+    Replay --&gt; Persist
+    Replay --&gt; Hash[graph hash]
+
+    classDef new fill:#10b981,stroke:#047857,color:#fff
+    class ID,WAL,CHAIN,EV,LEASE,WATCH,REPLAY new</code></pre>
+<p>The whole substrate snaps together when the engagement carries a nonce: deterministic IDs become the keys for the journal, the journal feeds replay, replay validates the hash chain, the chain references content-addressed evidence. Each layer is independent at the implementation level but compose into a single audit story.</p>
 <h2 id="session-transport-architecture">Session + Transport Architecture<a class="headerlink" href="#session-transport-architecture" title="Permanent link">&para;</a></h2>
 <p><img alt="Session Transport" src="../assets/session-transport-light.svg#only-light" />
 <img alt="Session Transport" src="../assets/session-transport-dark.svg#only-dark" /></p>

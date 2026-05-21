@@ -1,8 +1,9 @@
-<svg viewBox="0 0 680 640" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 760 700" xmlns="http://www.w3.org/2000/svg">
 <style>
   text{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
   .th{font-size:13px;font-weight:500;fill:#1e293b}
   .ts{font-size:11px;fill:#475569}
+  .tx{font-size:10px;fill:#64748b}
   .arr{stroke:#94a3b8;stroke-width:1}
   .n-purple rect{fill:#ede9fe;stroke:#8b5cf6;stroke-width:.5}
   .n-purple .th{fill:#5b21b6}.n-purple .ts{fill:#7c3aed}
@@ -18,31 +19,40 @@
   .n-pink .th{fill:#9d174d}.n-pink .ts{fill:#db2777}
   .n-gray rect{fill:#f1f5f9;stroke:#94a3b8;stroke-width:.5}
   .n-gray .th{fill:#334155}.n-gray .ts{fill:#475569}
-  .n-red rect{fill:#fee2e2;stroke:#ef4444;stroke-width:.5}
-  .n-red .th{fill:#991b1b}.n-red .ts{fill:#dc2626}
+  .n-emerald rect{fill:#ecfdf5;stroke:#059669;stroke-width:.5}
+  .n-emerald .th{fill:#047857}.n-emerald .ts{fill:#10b981}
+  .n-violet rect{fill:#f3f4f6;stroke:#6366f1;stroke-width:.5}
+  .n-violet .th{fill:#3730a3}.n-violet .ts{fill:#4f46e5}
 </style>
 <rect width="100%" height="100%" fill="#ffffff" rx="6"/>
 <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
-  <g class="n-purple"><rect x="180" y="10" width="320" height="40" rx="7"/><text class="th" x="340" y="30" text-anchor="middle" dominant-baseline="central">1. validate_action() → action_id</text></g>
-  <line x1="340" y1="50" x2="340" y2="66" class="arr" marker-end="url(#arr)"/>
-  <g class="n-blue"><rect x="180" y="66" width="320" height="48" rx="7"/><text class="th" x="340" y="84" text-anchor="middle" dominant-baseline="central">2. Deterministic validation</text><text class="ts" x="340" y="100" text-anchor="middle" dominant-baseline="central">Scope, dedup, OPSEC check</text></g>
-  <line x1="340" y1="114" x2="340" y2="130" class="arr" marker-end="url(#arr)"/>
-  <g class="n-gray"><rect x="180" y="130" width="320" height="40" rx="7"/><text class="th" x="340" y="150" text-anchor="middle" dominant-baseline="central">3. log_action_event(started)</text></g>
-  <line x1="340" y1="170" x2="340" y2="186" class="arr" marker-end="url(#arr)"/>
-  <g class="n-amber"><rect x="180" y="186" width="320" height="48" rx="7"/><text class="th" x="340" y="204" text-anchor="middle" dominant-baseline="central">4. Execute (bash / nmap / nxc)</text><text class="ts" x="340" y="220" text-anchor="middle" dominant-baseline="central">Claude Code native bash</text></g>
-  <line x1="340" y1="234" x2="340" y2="250" class="arr" marker-end="url(#arr)"/>
-  <g class="n-coral"><rect x="80" y="250" width="240" height="48" rx="7"/><text class="th" x="200" y="268" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="284" text-anchor="middle" dominant-baseline="central">21 parsers / 36 aliases</text></g>
-  <g class="n-coral"><rect x="360" y="250" width="240" height="48" rx="7"/><text class="th" x="480" y="268" text-anchor="middle" dominant-baseline="central">5b. report_finding()</text><text class="ts" x="480" y="284" text-anchor="middle" dominant-baseline="central">Manual nodes/edges</text></g>
-  <text class="ts" x="340" y="278" text-anchor="middle">or</text>
-  <line x1="200" y1="298" x2="200" y2="322" class="arr" marker-end="url(#arr)"/><line x1="480" y1="298" x2="480" y2="322" class="arr" marker-end="url(#arr)"/>
-  <g class="n-teal"><rect x="100" y="322" width="480" height="48" rx="7"/><text class="th" x="340" y="340" text-anchor="middle" dominant-baseline="central">6. Graph engine ingests</text><text class="ts" x="340" y="356" text-anchor="middle" dominant-baseline="central">Identity resolution, dedup, cold store triage</text></g>
-  <line x1="340" y1="370" x2="340" y2="386" class="arr" marker-end="url(#arr)"/>
-  <g class="n-pink"><rect x="140" y="386" width="400" height="48" rx="7"/><text class="th" x="340" y="404" text-anchor="middle" dominant-baseline="central">7. Inference rules fire</text><text class="ts" x="340" y="420" text-anchor="middle" dominant-baseline="central">Hypothesis edges (confidence 0.3-0.7)</text></g>
-  <line x1="340" y1="434" x2="340" y2="450" class="arr" marker-end="url(#arr)"/>
-  <g class="n-blue"><rect x="140" y="450" width="400" height="48" rx="7"/><text class="th" x="340" y="468" text-anchor="middle" dominant-baseline="central">8. Frontier recomputed + state persisted</text><text class="ts" x="340" y="484" text-anchor="middle" dominant-baseline="central">Atomic write-rename, snapshot rotation</text></g>
-  <line x1="340" y1="498" x2="340" y2="514" class="arr" marker-end="url(#arr)"/>
-  <g class="n-gray"><rect x="140" y="514" width="400" height="48" rx="7"/><text class="th" x="340" y="532" text-anchor="middle" dominant-baseline="central">9. Dashboard broadcast + next_task()</text><text class="ts" x="340" y="548" text-anchor="middle" dominant-baseline="central">WebSocket delta → UI; frontier → LLM</text></g>
-  <path d="M540 540 L610 540 L610 30 L502 30" fill="none" class="arr" marker-end="url(#arr)" stroke-dasharray="4 3"/>
-  <text class="ts" x="622" y="290" text-anchor="start" transform="rotate(90 622 290)">Loop</text>
+  <g class="n-purple"><rect x="180" y="10" width="360" height="48" rx="7"/><text class="th" x="360" y="28" text-anchor="middle" dominant-baseline="central">1. validate_action() → act_&lt;sha256&gt;</text><text class="ts" x="360" y="44" text-anchor="middle" dominant-baseline="central">Deterministic ID (engagement_nonce | agent | seq)</text></g>
+  <line x1="360" y1="58" x2="360" y2="74" class="arr" marker-end="url(#arr)"/>
+  <g class="n-blue"><rect x="180" y="74" width="360" height="48" rx="7"/><text class="th" x="360" y="92" text-anchor="middle" dominant-baseline="central">2. Deterministic validation</text><text class="ts" x="360" y="108" text-anchor="middle" dominant-baseline="central">Scope, dedup, OPSEC check, frontier lease</text></g>
+  <line x1="360" y1="122" x2="360" y2="138" class="arr" marker-end="url(#arr)"/>
+  <g class="n-gray"><rect x="180" y="138" width="360" height="48" rx="7"/><text class="th" x="360" y="156" text-anchor="middle" dominant-baseline="central">3. log_action_event(started)</text><text class="ts" x="360" y="172" text-anchor="middle" dominant-baseline="central">Hash-chained activity entry (when chain enabled)</text></g>
+  <line x1="360" y1="186" x2="360" y2="202" class="arr" marker-end="url(#arr)"/>
+  <g class="n-amber"><rect x="180" y="202" width="360" height="48" rx="7"/><text class="th" x="360" y="220" text-anchor="middle" dominant-baseline="central">4. Execute (bash / nmap / nxc)</text><text class="ts" x="360" y="236" text-anchor="middle" dominant-baseline="central">Claude Code native bash</text></g>
+  <line x1="360" y1="250" x2="360" y2="266" class="arr" marker-end="url(#arr)"/>
+  <g class="n-coral"><rect x="60" y="266" width="280" height="56" rx="7"/><text class="th" x="200" y="284" text-anchor="middle" dominant-baseline="central">5a. parse_output()</text><text class="ts" x="200" y="300" text-anchor="middle" dominant-baseline="central">21 parsers / 36 aliases</text><text class="tx" x="200" y="314" text-anchor="middle" dominant-baseline="central">evidence keyed by sha256(content)</text></g>
+  <g class="n-coral"><rect x="380" y="266" width="280" height="56" rx="7"/><text class="th" x="520" y="284" text-anchor="middle" dominant-baseline="central">5b. report_finding()</text><text class="ts" x="520" y="300" text-anchor="middle" dominant-baseline="central">Manual nodes/edges</text><text class="tx" x="520" y="314" text-anchor="middle" dominant-baseline="central">evidence sha256 dedups identical blobs</text></g>
+  <text class="ts" x="360" y="294" text-anchor="middle">or</text>
+  <line x1="200" y1="322" x2="200" y2="346" class="arr" marker-end="url(#arr)"/><line x1="520" y1="322" x2="520" y2="346" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="80" y="346" width="560" height="48" rx="7"/><text class="th" x="360" y="364" text-anchor="middle" dominant-baseline="central">6. Graph engine ingests</text><text class="ts" x="360" y="380" text-anchor="middle" dominant-baseline="central">Identity resolution, dedup, cold store triage</text></g>
+  <line x1="360" y1="394" x2="360" y2="410" class="arr" marker-end="url(#arr)"/>
+  <g class="n-pink"><rect x="120" y="410" width="480" height="48" rx="7"/><text class="th" x="360" y="428" text-anchor="middle" dominant-baseline="central">7. Inference rules fire</text><text class="ts" x="360" y="444" text-anchor="middle" dominant-baseline="central">Hypothesis edges (confidence 0.3–0.7)</text></g>
+  <line x1="360" y1="458" x2="360" y2="474" class="arr" marker-end="url(#arr)"/>
+  <g class="n-blue"><rect x="120" y="474" width="480" height="56" rx="7"/><text class="th" x="360" y="492" text-anchor="middle" dominant-baseline="central">8. Frontier recomputed + state persisted</text><text class="ts" x="360" y="508" text-anchor="middle" dominant-baseline="central">Atomic write-rename, snapshot rotation</text><text class="tx" x="360" y="522" text-anchor="middle" dominant-baseline="central">+ WAL append (journal.jsonl) for crash-safe replay</text></g>
+  <line x1="360" y1="530" x2="360" y2="546" class="arr" marker-end="url(#arr)"/>
+  <g class="n-gray"><rect x="120" y="546" width="480" height="48" rx="7"/><text class="th" x="360" y="564" text-anchor="middle" dominant-baseline="central">9. Dashboard broadcast + next_task()</text><text class="ts" x="360" y="580" text-anchor="middle" dominant-baseline="central">WebSocket delta → UI; frontier → LLM</text></g>
+  <line x1="360" y1="594" x2="360" y2="610" class="arr" marker-end="url(#arr)" stroke-dasharray="3 2"/>
+  <g class="n-violet"><rect x="120" y="610" width="480" height="44" rx="7"/><text class="th" x="360" y="626" text-anchor="middle" dominant-baseline="central">10. Derived views (read-only)</text><text class="ts" x="360" y="642" text-anchor="middle" dominant-baseline="central">decision log · timeline · explain_action — pure functions over the activity log</text></g>
+
+  <!-- Loop arrow back to top -->
+  <path d="M600 570 L690 570 L690 34 L542 34" fill="none" class="arr" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <text class="ts" x="700" y="320" text-anchor="start" transform="rotate(90 700 320)">Loop</text>
+
+  <!-- Foundations annotation -->
+  <g class="n-emerald"><rect x="20" y="610" width="92" height="44" rx="6"/><text class="ts" x="66" y="626" text-anchor="middle" dominant-baseline="central">Foundations</text><text class="tx" x="66" y="640" text-anchor="middle" dominant-baseline="central">enable replay</text></g>
 </svg>
