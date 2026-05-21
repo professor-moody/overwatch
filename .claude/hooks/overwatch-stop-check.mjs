@@ -4,6 +4,7 @@ import {
   getRecentUserPrompt,
   isLikelyEngagementPrompt,
   readHookInput,
+  readRecentTranscript,
   transcriptHasRecentOverwatchTool,
   writeHookOutput,
 } from './overwatch-hook-lib.mjs';
@@ -14,13 +15,14 @@ if (input?.stop_hook_active === true) {
   process.exit(0);
 }
 
-const recentPrompt = getRecentUserPrompt(input);
+const transcriptLines = readRecentTranscript(input);
+const recentPrompt = getRecentUserPrompt(transcriptLines);
 const lastAssistant = String(input?.last_assistant_message || '');
 const looksEngagementRelated = isLikelyEngagementPrompt(recentPrompt) || (
   isLikelyEngagementPrompt(lastAssistant) && /\b(frontier|graph|target|credential|finding|objective)\b/i.test(lastAssistant)
 );
 
-if (looksEngagementRelated && !transcriptHasRecentOverwatchTool(input)) {
+if (looksEngagementRelated && !transcriptHasRecentOverwatchTool(transcriptLines)) {
   writeHookOutput({
     decision: 'block',
     reason: [

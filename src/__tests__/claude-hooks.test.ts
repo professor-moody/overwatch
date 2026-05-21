@@ -39,7 +39,7 @@ describe('Claude Code Overwatch hooks', () => {
   it('injects grounding context on user prompt submit', () => {
     const result = runHook('overwatch-user-context.mjs', {
       hook_event_name: 'UserPromptSubmit',
-      prompt: 'continue',
+      prompt: 'what should we scan next on the target?',
     });
 
     expect(result.status).toBe(0);
@@ -47,6 +47,16 @@ describe('Claude Code Overwatch hooks', () => {
     expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     expect(output.hookSpecificOutput.additionalContext).toContain('Overwatch grounding');
     expect(output.hookSpecificOutput.additionalContext).toContain('get_state()');
+  });
+
+  it('skips grounding context for obvious repo maintenance prompts', () => {
+    const result = runHook('overwatch-user-context.mjs', {
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'commit and push the docs changes',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('blocks target-facing raw Bash and redirects to Overwatch tools', () => {
@@ -61,6 +71,7 @@ describe('Claude Code Overwatch hooks', () => {
     expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(output.hookSpecificOutput.permissionDecisionReason).toContain('run_tool/run_bash');
+    expect(output.hookSpecificOutput.permissionDecisionReason).toContain("run_bash(command='nmap -sV 10.0.0.5')");
   });
 
   it('allows normal repo-maintenance Bash', () => {
@@ -105,6 +116,25 @@ describe('Claude Code Overwatch hooks', () => {
     const output = parseStdout(result);
     expect(output.decision).toBe('block');
     expect(output.reason).toContain('get_state()');
+  });
+
+  it('does not block stop when recent transcript contains an Overwatch tool call beyond 250 lines', () => {
+    const filler = Array.from({ length: 300 }, (_, i) => ({ role: 'tool_result', content: `line ${i}` }));
+    const transcript = writeTranscript([
+      { role: 'user', content: 'What should we scan next on the target?' },
+      { role: 'assistant', name: 'parse_output', content: 'parsed nmap output' },
+      ...filler,
+      { role: 'assistant', content: 'The graph now has the scan result.' },
+    ]);
+    const result = runHook('overwatch-stop-check.mjs', {
+      hook_event_name: 'Stop',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      last_assistant_message: 'The target scan result is in the graph.',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('does not loop when stop hook is already active', () => {

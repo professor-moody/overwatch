@@ -29,6 +29,7 @@ const TARGET_TOKEN_RE = new RegExp([
 
 const ENGAGEMENT_TERMS_RE = /\b(frontier|objective|target|recon|scan|exploit|credential|hash|session|shell|finding|parse_output|report_finding|get_state|next_task|validate_action|nmap|bloodhound|kerberoast|adcs|entra|aws|github token|mcp)\b/i;
 const DEV_TERMS_RE = /\b(commit|push|git|docs?|markdown|typescript|codebase|refactor|test|build|tsc|mkdocs|package\.json|settings\.json|claude\.md|agents\.md|hook|file|repo|diff|branch)\b/i;
+const TRANSCRIPT_SCAN_LINES = 500;
 
 export async function readHookInput() {
   const chunks = [];
@@ -69,6 +70,10 @@ export function getBashCommand(input) {
   return String(input?.tool_input?.command || '');
 }
 
+export function getUserPrompt(input) {
+  return String(input?.prompt || input?.user_prompt || input?.message || '');
+}
+
 export function isLikelyTargetFacingCommand(command) {
   const normalized = stripComments(command);
   if (!TARGET_TOOL_RE.test(normalized)) return false;
@@ -76,8 +81,15 @@ export function isLikelyTargetFacingCommand(command) {
   return true;
 }
 
+export function suggestedOverwatchRoute(command) {
+  const oneLine = command.trim().replace(/\s+/g, ' ');
+  if (!oneLine) return 'Use Overwatch run_tool/run_bash or session tools instead.';
+  const escaped = oneLine.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `Use Overwatch run_bash(command='${escaped}') for this command, or run_tool with argv form when no shell features are needed.`;
+}
+
 export function outputLooksLikeDiscovery(input) {
-  const response = JSON.stringify(input?.tool_response ?? '').slice(0, 12000);
+  const response = extractToolResponseText(input?.tool_response).slice(0, 12000);
   return /\b(open port|host is up|discovered|credential|password|hash|vulnerab|shell|token|domain|service|PORT\s+STATE|Starting Nmap|Nmap scan report)\b/i.test(response);
 }
 
@@ -86,33 +98,56 @@ export function isLikelyEngagementPrompt(prompt) {
   return ENGAGEMENT_TERMS_RE.test(prompt);
 }
 
-export function transcriptHasRecentOverwatchTool(input) {
+export function readRecentTranscript(input, maxLines = TRANSCRIPT_SCAN_LINES) {
   const path = input?.transcript_path;
-  if (!path || !existsSync(path)) return false;
+  if (!path || !existsSync(path)) return [];
   try {
-    const lines = readFileSync(path, 'utf8').trim().split('\n').slice(-250);
-    const recent = lines.join('\n');
-    return /mcp__overwatch__|"(?:tool_name|name)"\s*:\s*"(?:get_state|next_task|validate_action|run_tool|run_bash|parse_output|report_finding|query_graph|send_to_session)"/i.test(recent);
+    return readFileSync(path, 'utf8').trim().split('\n').slice(-maxLines);
   } catch {
-    return false;
+    return [];
   }
 }
 
-export function getRecentUserPrompt(input) {
-  const path = input?.transcript_path;
-  if (!path || !existsSync(path)) return '';
-  try {
-    const lines = readFileSync(path, 'utf8').trim().split('\n').slice(-250).reverse();
-    for (const line of lines) {
-      if (!line.includes('"user"') && !line.includes('"human"')) continue;
-      const parsed = safeJson(line);
-      const text = extractText(parsed);
-      if (text) return text;
-    }
-  } catch {
-    return '';
+export function transcriptHasRecentOverwatchTool(linesOrInput) {
+  const lines = Array.isArray(linesOrInput) ? linesOrInput : readRecentTranscript(linesOrInput);
+  const recent = lines.join('\n');
+  return /mcp__overwatch__|"(?:tool_name|name)"\s*:\s*"(?:get_state|next_task|validate_action|run_tool|run_bash|parse_output|report_finding|query_graph|send_to_session)"/i.test(recent);
+}
+
+export function getRecentUserPrompt(linesOrInput) {
+  const lines = Array.isArray(linesOrInput) ? linesOrInput : readRecentTranscript(linesOrInput);
+  for (const line of [...lines].reverse()) {
+    if (!line.includes('"user"') && !line.includes('"human"')) continue;
+    const parsed = safeJson(line);
+    const text = extractText(parsed);
+    if (text) return text;
   }
   return '';
+}
+
+function extractToolResponseText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractToolResponseText).filter(Boolean).join('\n');
+  if (typeof value === 'object') {
+    const parts = [];
+    for (const key of ['stdout', 'stderr', 'text', 'output', 'content']) {
+      if (value[key] != null) parts.push(extractToolResponseText(value[key]));
+    }
+    return parts.filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+export function shouldInjectUserContext(input) {
+  const prompt = getUserPrompt(input);
+  if (!prompt) return true;
+  if (isLikelyEngagementPrompt(prompt)) return true;
+  if (DEV_TERMS_RE.test(prompt)) return false;
+  if (/^\s*(commit|push|status|review|fix|implement|test|build|docs?)\b/i.test(prompt)) {
+    return false;
+  }
+  return true;
 }
 
 export function extractText(value) {
