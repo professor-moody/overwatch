@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "overwatch": {
+      "command": "node",
+      "args": ["/absolute/path/to/overwatch/dist/index.js"],
+      "env": {
+        "OVERWATCH_CONFIG": "/absolute/path/to/overwatch/engagement.json",
+        "OVERWATCH_SKILLS": "/absolute/path/to/overwatch/skills"
+      }
+    }
+  }
+}

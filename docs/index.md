@@ -22,6 +22,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 - **[34 offensive skills](skills/index.md)** — RAG-searchable methodology library covering AD, cloud, web, and infrastructure.
 - **[Scope and OPSEC enforcement](concepts.md#opsec-noise)** — Hard constraints live in the deterministic layer. The LLM handles reasoning. Out-of-scope calls fail closed.
 - **[Persistent sessions](tools/sessions.md)** — Long-lived interactive shells (SSH, local PTY, reverse shell) with cursor-based I/O and TTY quality tracking.
+- **[Claude Code hooks](claude-hooks.md)** — Local hooks that re-anchor Claude to Overwatch, block raw target-facing Bash, and nudge discovery output back into the graph.
 - **[Live dashboard](dashboard.md)** — Real-time graph visualization, approval queue, frontier view, agent status, credential tracker, findings panel with report generation.
 - **[Tamper-evident audit trail](concepts.md#audit-trail)** — Optional hash-chained activity log and JSON-RPC tape proxy. Retrospectives can prove the AI did exactly what it claimed, in the order it claimed.
 

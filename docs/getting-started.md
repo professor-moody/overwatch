@@ -59,7 +59,22 @@ That's enough to start. The full schema is in [Configuration](configuration.md) 
 
 ### 3. Wire Overwatch into Claude Code
 
-Add this block to `~/.claude/settings.json` (or your project's `.claude/settings.json`). **Use absolute paths** — relative paths break.
+Use two local config files:
+
+| File | Purpose |
+|------|---------|
+| `.mcp.json` | Starts the Overwatch MCP server. |
+| `.claude/settings.json` | Enables Claude Code hooks that keep Claude using Overwatch correctly. |
+
+Both files are local and gitignored because they contain machine-specific paths.
+
+First, create `.mcp.json`:
+
+```bash
+cp .mcp.example.json .mcp.json
+```
+
+Edit `.mcp.json` with absolute paths:
 
 ```json
 {
@@ -75,6 +90,17 @@ Add this block to `~/.claude/settings.json` (or your project's `.claude/settings
   }
 }
 ```
+
+Then enable the Claude hooks:
+
+```bash
+cp .claude/settings.example.json .claude/settings.json
+```
+
+That is the recommended setup: `.mcp.json` contains `mcpServers`, and `.claude/settings.json` contains `hooks`.
+
+!!! important "Do not skip hooks"
+    Hooks keep Claude from drifting away from Overwatch during long sessions. They block raw target-facing Bash and remind Claude to put discoveries into the graph. Full setup and verification steps are in [Claude Code Hooks](claude-hooks.md).
 
 ### 4. Launch
 
@@ -185,11 +211,19 @@ If none of the templates fit, the full schema is in [Configuration](configuratio
     Validate the JSON. Common culprits: trailing commas, unquoted keys, smart quotes from copy-paste.
 
 ??? failure "Claude Code can't find Overwatch tools"
-    Open `~/.claude/settings.json` and confirm:
+    Open `.mcp.json` and confirm:
 
     - The `overwatch` block is present under `mcpServers`.
     - `args` and `env` use **absolute** paths (not `~` or relative).
     - You ran `npm run build` so `dist/index.js` exists.
+
+??? failure "Claude hooks don't show up"
+    Open `.claude/settings.json` and confirm:
+
+    - It exists in this repo.
+    - It contains the `"hooks"` block from `.claude/settings.example.json`.
+    - You restarted Claude Code after editing it.
+    - `/hooks` lists `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
 
 ??? failure "Dashboard won't load"
     - Port conflict? Set `OVERWATCH_DASHBOARD_PORT` to something else.

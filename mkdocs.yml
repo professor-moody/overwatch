@@ -62,6 +62,7 @@ nav:
   - Home: index.md
   - Getting Started:
     - Installation: getting-started.md
+    - Claude Code Hooks: claude-hooks.md
     - Configuration: configuration.md
     - Dashboard: dashboard.md
     - Smoke Test: smoke-test.md

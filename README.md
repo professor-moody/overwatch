@@ -13,7 +13,14 @@ npm run build
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
-Add to your Claude Code MCP config:
+Create local Claude config files from the examples:
+
+```bash
+cp .mcp.example.json .mcp.json
+cp .claude/settings.example.json .claude/settings.json
+```
+
+Edit `.mcp.json` with absolute paths:
 
 ```json
 {
@@ -30,11 +37,11 @@ Add to your Claude Code MCP config:
 }
 ```
 
-Then run `claude` — see the full [Getting Started](https://professor-moody.github.io/overwatch/getting-started/) guide.
+Then run `claude`. `.mcp.json` starts Overwatch; `.claude/settings.json` enables hooks that keep Claude using Overwatch instead of drifting into raw target-facing Bash. See the full [Getting Started](https://professor-moody.github.io/overwatch/getting-started/) guide.
 
 ## Documentation
 
-**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 42 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 60+ MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 

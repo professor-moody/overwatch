@@ -366,6 +366,19 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('verify_activity_chain()');
     });
 
+    it('includes drift prevention invariants', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'primary' });
+
+      expect(prompt).toContain('Drift prevention invariants');
+      expect(prompt).toContain('Never answer engagement-state');
+      expect(prompt).toContain('Never leave useful recon output only in prose');
+      expect(prompt).toContain('Never run target-facing commands through raw shell');
+      expect(prompt).toContain('parse_output()');
+      expect(prompt).toContain('report_finding()');
+      expect(prompt).toContain('ingest_json()');
+    });
+
     it('includes tactical section in sub-agent prompt too', () => {
       const engine = createTestEngine();
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
