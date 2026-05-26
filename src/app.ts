@@ -471,6 +471,8 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
   await app.tape.disable().catch(() => {});
   app.engine.setTrackedProcesses(app.processTracker.serialize());
   app.engine.persist();
+  app.engine.flushNow();
+  app.engine.dispose();
 }
 
 export function createAppOrExit(options: CreateOverwatchAppOptions = {}): OverwatchApp {
