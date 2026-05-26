@@ -64,7 +64,7 @@ import { registerInstructionTools } from './tools/instructions.js';
 import type { ToolEntry } from './services/prompt-generator.js';
 import { ToolTelemetry } from './services/tool-telemetry.js';
 import { setTelemetry, getTelemetry } from './tools/error-boundary.js';
-import { InProcessTapeController } from './services/in-process-tape.js';
+import { InProcessTapeController, type TapeStartSource } from './services/in-process-tape.js';
 
 type DashboardStatusProvider = () => {
   enabled: boolean;
@@ -276,12 +276,7 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
     await app.dashboard.start();
   }
 
-  // Auto-enable tape recorder if env or engagement config asks for it.
-  // Off by default; opt in via OVERWATCH_TAPE=1 or engagement.tape.enabled.
-  if (shouldAutoEnableTape(app.config)) {
-    app.tape.enable();
-    console.error(`Overwatch tape recording to ${app.tape.getStatus().path}`);
-  }
+  maybeAutoEnableTape(app);
 
   const baseTransport = new StdioServerTransport();
   // Wrap unconditionally so the dashboard can flip recording on/off without
@@ -292,15 +287,24 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
 }
 
 /**
- * Decide whether to auto-enable the in-process tape at startup. Env wins
- * over engagement config (operator override). `OVERWATCH_TAPE=0` forces off
- * even when the config says on, so a single shell prefix can disable it.
+ * Decide whether to auto-enable the in-process tape at startup. Env wins over
+ * engagement config (operator override). `OVERWATCH_TAPE=0` forces off even
+ * when the config says on, so a single shell prefix can disable it.
  */
-function shouldAutoEnableTape(config: EngagementConfig): boolean {
+export function getAutoTapeStartDecision(config: EngagementConfig): { enabled: boolean; startedBy?: TapeStartSource } {
   const env = process.env.OVERWATCH_TAPE;
-  if (env === '0' || env === 'false' || env === 'off') return false;
-  if (env === '1' || env === 'true' || env === 'on') return true;
-  return config.tape?.enabled === true;
+  if (env === '0' || env === 'false' || env === 'off') return { enabled: false };
+  if (env === '1' || env === 'true' || env === 'on') return { enabled: true, startedBy: 'env' };
+  if (config.tape?.enabled === true) return { enabled: true, startedBy: 'config' };
+  return { enabled: false };
+}
+
+export function maybeAutoEnableTape(app: OverwatchApp): void {
+  const decision = getAutoTapeStartDecision(app.config);
+  if (!decision.enabled || app.tape.isEnabled()) return;
+  const status = app.tape.enable({ startedBy: decision.startedBy });
+  const suffix = status.started_by ? ` (started_by=${status.started_by})` : '';
+  console.error(`Overwatch tape recording to ${status.path}${suffix}`);
 }
 
 export const MAX_HTTP_SESSIONS = 50;
@@ -314,6 +318,8 @@ export type StartHttpAppOptions = {
 export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptions = {}): Promise<Express> {
   const port = options.port ?? parseInt(process.env.OVERWATCH_HTTP_PORT || '3000', 10);
   const host = options.host ?? process.env.OVERWATCH_HTTP_HOST ?? '127.0.0.1';
+
+  maybeAutoEnableTape(app);
 
   const expressApp = createMcpExpressApp({ host });
   const transports: Record<string, StreamableHTTPServerTransport> = {};
@@ -462,6 +468,7 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
   if (app.dashboard) {
     await app.dashboard.stop().catch(() => {});
   }
+  await app.tape.disable().catch(() => {});
   app.engine.setTrackedProcesses(app.processTracker.serialize());
   app.engine.persist();
 }

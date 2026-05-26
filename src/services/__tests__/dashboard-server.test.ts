@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
+import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-dashboard.json';
@@ -57,6 +58,43 @@ describe('DashboardServer', () => {
 
   it('reports address property', () => {
     expect(dashboard.address).toBe('http://127.0.0.1:8384');
+  });
+
+  it('attributes dashboard tape toggles to dashboard', async () => {
+    const tapeDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-tape-'));
+    const tape = new InProcessTapeController(engine, { defaultDir: tapeDir });
+    dashboard.attachTape(tape);
+
+    const req = new PassThrough() as any;
+    req.headers = {};
+    req.url = '/api/tape/toggle';
+    req.method = 'POST';
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '' as string,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string) {
+        this.body = body || '';
+      },
+      setHeader() {},
+    };
+
+    const pending = (dashboard as any).handleTapeToggle(req, res);
+    req.end(JSON.stringify({ action: 'enable' }));
+    await pending;
+
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.enabled).toBe(true);
+    expect(payload.started_by).toBe('dashboard');
+    expect(engine.getFullHistory().slice(-1)[0].details?.started_by).toBe('dashboard');
+
+    await tape.disable();
+    rmSync(tapeDir, { recursive: true, force: true });
   });
 
   it('streams dashboard bundle with manifest and journal entries', async () => {

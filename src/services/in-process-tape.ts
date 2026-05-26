@@ -34,6 +34,8 @@ import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/
 import type { GraphEngine } from './graph-engine.js';
 import { TapeWriter } from './tape-recorder.js';
 
+export type TapeStartSource = 'env' | 'config' | 'dashboard';
+
 export interface InProcessTapeOptions {
   /** Default directory for auto-named tape files. */
   defaultDir?: string;
@@ -41,6 +43,8 @@ export interface InProcessTapeOptions {
   file?: string;
   /** Optional human-readable session id baked into auto-generated names. */
   sessionId?: string;
+  /** What caused this tape recording session to start. */
+  startedBy?: TapeStartSource;
 }
 
 export interface TapeStatus {
@@ -53,6 +57,8 @@ export interface TapeStatus {
   frame_count: number;
   /** ISO timestamp of last enable(). */
   started_at?: string;
+  /** What caused this tape recording session to start. */
+  started_by?: TapeStartSource;
 }
 
 function autoTapePath(dir: string, sessionId?: string): string {
@@ -70,6 +76,7 @@ export class InProcessTapeController {
   private writer: TapeWriter | null = null;
   private currentPath: string | undefined;
   private currentSessionId: string | undefined;
+  private currentStartedBy: TapeStartSource | undefined;
   private startedAt: string | undefined;
   private startEventId: string | undefined;
   private defaults: InProcessTapeOptions;
@@ -89,6 +96,7 @@ export class InProcessTapeController {
       session_id: this.currentSessionId,
       frame_count: this.writer?.count ?? 0,
       started_at: this.startedAt,
+      started_by: this.currentStartedBy,
     };
   }
 
@@ -105,6 +113,7 @@ export class InProcessTapeController {
     this.writer = new TapeWriter(path);
     this.currentPath = path;
     this.currentSessionId = sessionId;
+    this.currentStartedBy = opts.startedBy ?? this.defaults.startedBy;
     this.startedAt = new Date().toISOString();
     // Auto-register with the engagement so retrospectives can locate the
     // tape without needing the operator to call register_tape_session.
@@ -118,6 +127,7 @@ export class InProcessTapeController {
         tape_path: path,
         capture_mode: 'in_process',
         started_at: this.startedAt,
+        started_by: this.currentStartedBy,
       },
     });
     this.startEventId = event.event_id;
@@ -133,6 +143,7 @@ export class InProcessTapeController {
     if (!this.writer) return this.getStatus();
     const path = this.currentPath;
     const sessionId = this.currentSessionId;
+    const startedBy = this.currentStartedBy;
     const frames = this.writer.count;
     await this.writer.close();
     this.writer = null;
@@ -147,11 +158,13 @@ export class InProcessTapeController {
         capture_mode: 'in_process',
         frame_count: frames,
         started_event_id: this.startEventId,
+        started_by: startedBy,
         stopped_at: new Date().toISOString(),
       },
     });
     this.currentPath = undefined;
     this.currentSessionId = undefined;
+    this.currentStartedBy = undefined;
     this.startedAt = undefined;
     this.startEventId = undefined;
     return this.getStatus();
@@ -177,6 +190,7 @@ export class InProcessTapeController {
       this.writer = null;
       this.currentPath = undefined;
       this.currentSessionId = undefined;
+      this.currentStartedBy = undefined;
     }
   }
 

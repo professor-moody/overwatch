@@ -63,9 +63,9 @@ export class DashboardServer {
    * never owns the controller — toggling here mirrors what env / config
    * achieve at startup.
    */
-  private tape: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string }): unknown; disable(): Promise<unknown> } | null = null;
+  private tape: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string; startedBy?: 'env' | 'config' | 'dashboard' }): unknown; disable(): Promise<unknown> } | null = null;
 
-  attachTape(controller: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string }): unknown; disable(): Promise<unknown> }): void {
+  attachTape(controller: { getStatus(): unknown; enable(opts?: { defaultDir?: string; file?: string; sessionId?: string; startedBy?: 'env' | 'config' | 'dashboard' }): unknown; disable(): Promise<unknown> }): void {
     this.tape = controller;
   }
 
@@ -2203,7 +2203,7 @@ export class DashboardServer {
       const sessionId = (body as { session_id?: string }).session_id;
       let status;
       if (action === 'enable') {
-        status = this.tape.enable({ defaultDir: dir, file, sessionId });
+        status = this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
       } else if (action === 'disable') {
         status = await this.tape.disable();
       } else {
@@ -2211,7 +2211,7 @@ export class DashboardServer {
         const cur = this.tape.getStatus() as { enabled?: boolean };
         status = cur.enabled
           ? await this.tape.disable()
-          : this.tape.enable({ defaultDir: dir, file, sessionId });
+          : this.tape.enable({ defaultDir: dir, file, sessionId, startedBy: 'dashboard' });
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));

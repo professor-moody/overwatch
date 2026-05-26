@@ -105,6 +105,17 @@ describe('InProcessTapeController', () => {
     expect(recs[0].parsed.method).toBe('tools/list');
   });
 
+  it('records start attribution in status and activity events', async () => {
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    const status = c.enable({ startedBy: 'config' });
+    expect(status.started_by).toBe('config');
+    await c.disable();
+
+    const recent = engine.getFullHistory().slice(-2);
+    expect(recent[0].details?.started_by).toBe('config');
+    expect(recent[1].details?.started_by).toBe('config');
+  });
+
   it('emits paired tape_session_started / tape_session_stopped activity events', async () => {
     const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
     const before = engine.getFullHistory().length;

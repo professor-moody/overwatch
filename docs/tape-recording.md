@@ -13,7 +13,7 @@ Both modes write the same JSONL format and are interchangeable for retrospective
 
 ## In-Process Recorder
 
-The in-process recorder is **off by default**. Three independent switches can turn it on; the order of precedence is **env > config > dashboard**.
+The in-process recorder is **off by default**. Three independent switches can turn it on; the order of precedence is **env > config > dashboard**. Startup auto-enable applies to both stdio MCP and HTTP MCP transports.
 
 ### Enabling at startup
 
@@ -44,12 +44,20 @@ Engagement config (`engagement.json`):
 
 `OVERWATCH_TAPE=0` (or `false`/`off`) **forces the recorder off** even when `tape.enabled` is true in the config — useful for ephemeral debugging without editing the engagement file.
 
+When recording starts, Overwatch records why it started:
+
+| `started_by` | Meaning |
+|--------------|---------|
+| `env` | `OVERWATCH_TAPE=1`, `true`, or `on` enabled recording at startup. |
+| `config` | `engagement.tape.enabled: true` enabled recording at startup. |
+| `dashboard` | The operator clicked the dashboard Tape toggle or called `POST /api/tape/toggle`. |
+
 ### Toggling at runtime (dashboard)
 
 The operator dashboard toolbar shows a **Tape** pill in the top bar:
 
 - Grey: recorder is off.
-- Red (pulsing): recorder is on; the pill shows the live frame count.
+- Red (pulsing): recorder is on; the pill shows the source and live frame count when available.
 - Hover for the active tape file path.
 
 Click to flip state. The toggle calls `POST /api/tape/toggle` (with mutation auth applied for non-loopback dashboards).
@@ -57,7 +65,7 @@ Click to flip state. The toggle calls `POST /api/tape/toggle` (with mutation aut
 ### REST API
 
 ```
-GET  /api/tape           → { enabled, path, session_id, frame_count, started_at }
+GET  /api/tape           → { enabled, path, session_id, frame_count, started_at, started_by }
 POST /api/tape/toggle    → flip state, returns updated status
                          body: { action?: "enable" | "disable",
                                  dir?, file?, session_id? }
@@ -65,7 +73,7 @@ POST /api/tape/toggle    → flip state, returns updated status
 
 ### Activity log integration
 
-Every enable/disable pair emits a matched `tape_session_started` / `tape_session_stopped` event under `provenance: system`. The stop event records the `frame_count` and links back to the start event id, so retrospectives can reconstruct exact recording windows from the activity log alone.
+Every enable/disable pair emits a matched `tape_session_started` / `tape_session_stopped` event under `provenance: system`. Both events include `started_by`; the stop event records the `frame_count` and links back to the start event id, so retrospectives can reconstruct exact recording windows from the activity log alone.
 
 ## Standalone Proxy
 

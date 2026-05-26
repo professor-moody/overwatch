@@ -471,6 +471,7 @@ export interface TapeStatus {
   frame_count?: number;
   session_id?: string | null;
   started_at?: string | null;
+  started_by?: 'env' | 'config' | 'dashboard' | null;
 }
 
 export async function getTapeStatus(): Promise<TapeStatus> {

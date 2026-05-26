@@ -108,6 +108,12 @@ The Bash guard is intentionally narrow. It should not block normal repo work suc
 You can smoke-test the scripts outside Claude Code:
 
 ```bash
+npm run hooks:smoke
+```
+
+Or run the underlying hook directly:
+
+```bash
 printf '%s' '{"tool_input":{"command":"nmap -sV 10.0.0.5"}}' \
   | node .claude/hooks/overwatch-bash-guard.mjs
 
@@ -116,6 +122,8 @@ printf '%s' '{"tool_input":{"command":"rg hooks docs"}}' \
 ```
 
 The first command should print a JSON denial. The second should print nothing and exit successfully.
+
+Hooks are local Claude Code behavior. Tape attribution is server-side Overwatch behavior: when the in-process recorder starts, `/api/tape` and the activity log show `started_by` as `env`, `config`, or `dashboard`.
 
 ## Troubleshooting
 

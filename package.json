@@ -26,6 +26,7 @@
     "verify": "npm run test:source && npm run test:integration:stdio && npm run test:integration:http && npm run check:dist",
     "retrospective": "node dist/cli/retrospective.js",
     "lab:smoke": "node dist/cli/lab-smoke.js",
+    "hooks:smoke": "node scripts/smoke-claude-hooks.mjs",
     "docs:serve": "mkdocs serve",
     "docs:deploy": "mkdocs gh-deploy --remote-name sandbox --force"
   },

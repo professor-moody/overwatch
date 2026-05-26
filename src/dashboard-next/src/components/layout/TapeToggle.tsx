@@ -46,8 +46,10 @@ export function TapeToggle() {
 
   const enabled = !!status?.enabled;
   const frames = status?.frame_count ?? 0;
+  const source = status?.started_by;
+  const sourceLabel = source ? ` via ${source}` : '';
   const title = enabled
-    ? `Recording → ${status?.path || '(memory)'} — click to stop`
+    ? `Recording${sourceLabel} → ${status?.path || '(memory)'} — click to stop`
     : 'JSON-RPC tape: off — click to start recording';
 
   return (
@@ -71,7 +73,7 @@ export function TapeToggle() {
         )}
       />
       <span className="tabular-nums">
-        {enabled ? `Tape ● ${frames}` : 'Tape'}
+        {enabled ? `Tape${source ? ` ${source}` : ''} ● ${frames}` : 'Tape'}
       </span>
     </button>
   );

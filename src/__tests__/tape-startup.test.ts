@@ -1,0 +1,122 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import {
+  createOverwatchApp,
+  getAutoTapeStartDecision,
+  maybeAutoEnableTape,
+  shutdownOverwatchApp,
+  startHttpApp,
+  type OverwatchApp,
+} from '../app.js';
+import type { EngagementConfig } from '../types.js';
+
+function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
+  return {
+    id: `test-tape-startup-${Math.random().toString(16).slice(2)}`,
+    name: 'Tape Startup Test',
+    created_at: '2026-05-26T00:00:00Z',
+    scope: { cidrs: [], domains: [], exclusions: [] },
+    objectives: [],
+    opsec: { name: 'pentest', max_noise: 0.7 },
+    ...overrides,
+  };
+}
+
+describe('tape startup attribution', () => {
+  let tmpDir: string;
+  let app: OverwatchApp | null;
+  let originalTapeEnv: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'overwatch-tape-startup-'));
+    app = null;
+    originalTapeEnv = process.env.OVERWATCH_TAPE;
+    delete process.env.OVERWATCH_TAPE;
+  });
+
+  afterEach(async () => {
+    if (app) await shutdownOverwatchApp(app).catch(() => {});
+    if (originalTapeEnv === undefined) delete process.env.OVERWATCH_TAPE;
+    else process.env.OVERWATCH_TAPE = originalTapeEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('attributes env-forced startup to env', () => {
+    process.env.OVERWATCH_TAPE = '1';
+    const config = makeConfig();
+    expect(getAutoTapeStartDecision(config)).toEqual({ enabled: true, startedBy: 'env' });
+
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tmpDir, 'state-env.json'),
+    });
+    maybeAutoEnableTape(app);
+
+    expect(app.tape.getStatus().enabled).toBe(true);
+    expect(app.tape.getStatus().started_by).toBe('env');
+  });
+
+  it('attributes config startup to config', () => {
+    const config = makeConfig({ tape: { enabled: true, dir: tmpDir } });
+    expect(getAutoTapeStartDecision(config)).toEqual({ enabled: true, startedBy: 'config' });
+
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tmpDir, 'state-config.json'),
+    });
+    maybeAutoEnableTape(app);
+
+    expect(app.tape.getStatus().enabled).toBe(true);
+    expect(app.tape.getStatus().started_by).toBe('config');
+  });
+
+  it('lets env false override config startup', () => {
+    process.env.OVERWATCH_TAPE = '0';
+    const config = makeConfig({ tape: { enabled: true, dir: tmpDir } });
+    expect(getAutoTapeStartDecision(config)).toEqual({ enabled: false });
+
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tmpDir, 'state-disabled.json'),
+    });
+    maybeAutoEnableTape(app);
+
+    expect(app.tape.getStatus().enabled).toBe(false);
+  });
+
+  it('auto-enables tape for HTTP startup and records HTTP frames', async () => {
+    const config = makeConfig({ tape: { enabled: true, dir: tmpDir } });
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tmpDir, 'state-http.json'),
+    });
+    await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+
+    const addr = app.httpServer?.address();
+    if (!addr || typeof addr === 'string') throw new Error('Failed to get HTTP server address');
+
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${addr.port}/mcp`));
+    const client = new Client({ name: 'tape-startup-test', version: '0.1.0' });
+    try {
+      await client.connect(transport);
+      await client.listTools();
+      expect(app.tape.getStatus().enabled).toBe(true);
+      expect(app.tape.getStatus().started_by).toBe('config');
+      expect(app.tape.getStatus().frame_count).toBeGreaterThan(0);
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }, 15000);
+});
