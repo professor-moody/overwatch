@@ -25,9 +25,51 @@ import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
 import { ScriptedAgentRunner } from './scripted-agent-runner.js';
+import type { ToolEntry } from './prompt-generator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+function categorizeMcpTool(name: string): string {
+  if (['get_state', 'next_task', 'get_system_prompt', 'run_lab_preflight', 'run_graph_health'].includes(name)) {
+    return 'state-readiness';
+  }
+  if (
+    name.includes('session') ||
+    ['validate_action', 'log_action_event', 'run_bash', 'run_tool', 'track_process', 'check_processes'].includes(name)
+  ) {
+    return 'execution';
+  }
+  if (
+    name.includes('graph') ||
+    name.includes('ingest') ||
+    ['query_graph', 'find_paths', 'parse_output', 'report_finding', 'get_evidence', 'recompute_objectives', 'correct_graph'].includes(name)
+  ) {
+    return 'graph-data';
+  }
+  if (name.includes('agent') || name.includes('campaign')) {
+    return 'agents-campaigns';
+  }
+  if (
+    name.includes('credential') ||
+    name.includes('token') ||
+    name.includes('postgres') ||
+    ['expand_aws_credential', 'expand_github_credential', 'expand_oidc_capture', 'expand_entra_credential', 'exchange_refresh_token'].includes(name)
+  ) {
+    return 'credentials-playbooks';
+  }
+  if (
+    name.includes('report') ||
+    name.includes('timeline') ||
+    name.includes('decision') ||
+    name.includes('retrospective') ||
+    name.includes('tape') ||
+    ['get_history', 'explain_action', 'verify_activity_chain', 'bundle_engagement'].includes(name)
+  ) {
+    return 'audit-reporting';
+  }
+  return 'other';
+}
 
 export interface DashboardStartResult {
   started: boolean;
@@ -77,6 +119,11 @@ export class DashboardServer {
   private skills: import('./skill-index.js').SkillIndex | null = null;
   attachSkills(skills: import('./skill-index.js').SkillIndex): void {
     this.skills = skills;
+  }
+
+  private mcpTools: ToolEntry[] = [];
+  attachMcpTools(tools: ToolEntry[]): void {
+    this.mcpTools = tools.slice();
   }
 
   private scriptedRunner: ScriptedAgentRunner;
@@ -525,6 +572,10 @@ export class DashboardServer {
       this.servePendingActions(res);
     } else if (pathname === '/api/tools' && method === 'GET') {
       this.serveTools(res);
+    } else if (pathname === '/api/mcp-tools' && method === 'GET') {
+      this.serveMcpTools(res);
+    } else if (pathname === '/api/readiness' && method === 'GET') {
+      this.serveReadiness(res);
     } else if (pathname === '/api/inference-rules' && method === 'GET') {
       this.serveInferenceRules(res);
     } else if (pathname === '/api/telemetry' && method === 'GET') {
@@ -2125,6 +2176,103 @@ export class DashboardServer {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Tool check failed: ' + (err as Error).message }));
+    }
+  }
+
+  private serveMcpTools(res: ServerResponse): void {
+    const tools = this.mcpTools
+      .map(tool => ({
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        category: tool.category ?? categorizeMcpTool(tool.name),
+        read_only: tool.read_only,
+        destructive: tool.destructive,
+        idempotent: tool.idempotent,
+        open_world: tool.open_world,
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+    const categories = tools.reduce((acc: Record<string, number>, tool) => {
+      acc[tool.category] = (acc[tool.category] || 0) + 1;
+      return acc;
+    }, {});
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ total: tools.length, categories, tools }));
+  }
+
+  private serveReadiness(res: ServerResponse): void {
+    try {
+      const graph = this.engine.exportGraph();
+      const state = this.engine.getState({ activityCount: 5, includeSystem: false });
+      const health = this.engine.getHealthReport();
+      const pending = this.engine.getPendingActionQueue().getPending();
+      const agents = this.engine.getAllAgents();
+      const sessions = this.sessionManager?.list(false) ?? (Array.isArray((state as any).sessions) ? (state as any).sessions : []);
+      const tapeStatus = this.tape?.getStatus() ?? { enabled: false, attached: false };
+      const persistence = this.engine.getPersistMetrics();
+      const activeSessions = sessions.filter((session: any) => session.state === 'connected' || session.state === 'pending').length;
+      const runningAgents = agents.filter(agent => agent.status === 'running').length;
+      const failedAgents = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
+      const issues = [
+        ...health.issues.slice(0, 3).map(issue => issue.message),
+        ...(failedAgents > 0 ? [`${failedAgents} agent${failedAgents === 1 ? '' : 's'} failed or interrupted`] : []),
+      ];
+      const status =
+        health.status === 'critical' ? 'critical' :
+        health.status === 'warning' || failedAgents > 0 ? 'warning' :
+        'ready';
+
+      const payload: Record<string, unknown> = {
+        status,
+        generated_at: new Date().toISOString(),
+        graph: {
+          status: health.status,
+          nodes: graph.nodes.length,
+          edges: graph.edges.length,
+          counts_by_severity: health.counts_by_severity,
+          top_issues: health.issues.slice(0, 5),
+        },
+        api: {
+          dashboard_running: this.running,
+          websocket_clients: this.clients.size,
+          mcp_tools_registered: this.mcpTools.length,
+        },
+        tape: tapeStatus,
+        sessions: {
+          total: sessions.length,
+          active: activeSessions,
+          closed: sessions.length - activeSessions,
+        },
+        actions: {
+          pending: pending.length,
+        },
+        agents: {
+          total: agents.length,
+          running: runningAgents,
+          failed: failedAgents,
+        },
+        persistence: {
+          dirty: persistence.dirty,
+          last_flush_at: persistence.lastFlushAt,
+          flush_count: persistence.flushCount,
+          last_flush_ms: persistence.lastFlushMs,
+        },
+        issues,
+      };
+
+      if (process.env.NODE_ENV !== 'production') {
+        payload.dev = {
+          node_env: process.env.NODE_ENV ?? 'development',
+          host: this.host,
+          port: this.port,
+        };
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Readiness check failed: ' + (err as Error).message }));
     }
   }
 

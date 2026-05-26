@@ -6,6 +6,7 @@ import { unlinkSync, existsSync } from 'fs';
 import type { AdapterHandle, EdgeProperties, EngagementConfig, NodeProperties, SessionCapabilities } from '../src/types.js';
 import { GraphEngine } from '../src/services/graph-engine.js';
 import { DashboardServer } from '../src/services/dashboard-server.js';
+import { InProcessTapeController } from '../src/services/in-process-tape.js';
 import { SessionManager, type SessionAdapterFactory } from '../src/services/session-manager.js';
 import type { OpsecContext } from '../src/services/opsec-tracker.js';
 import { setTelemetry } from '../src/tools/error-boundary.js';
@@ -721,6 +722,15 @@ for (let i = 0; i < 20; i++) {
 }
 
 const dashboard = new DashboardServer(engine, 8384, undefined, sessionManager);
+dashboard.attachTape(new InProcessTapeController(engine));
+dashboard.attachMcpTools([
+  { name: 'get_state', description: 'Full engagement briefing' },
+  { name: 'validate_action', description: 'Validate a proposed action' },
+  { name: 'run_bash', description: 'Instrumented shell command execution' },
+  { name: 'parse_output', description: 'Parse raw tool output into graph artifacts' },
+  { name: 'report_finding', description: 'Submit analyst findings to the graph' },
+  { name: 'get_system_prompt', description: 'Dynamic operator instructions' },
+]);
 
 const result = await dashboard.start();
 if (result.started) {

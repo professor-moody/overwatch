@@ -86,7 +86,15 @@ export class ToolRegistrar implements OverwatchToolRegistrar {
     config: { title?: string; description?: string; inputSchema?: InputArgs; outputSchema?: OutputArgs; annotations?: ToolAnnotations; _meta?: Record<string, unknown> },
     cb: ToolCallback<InputArgs>,
   ): RegisteredTool {
-    this.entries.push({ name, description: config?.description || '' });
+    this.entries.push({
+      name,
+      title: config?.title,
+      description: config?.description || '',
+      read_only: config?.annotations?.readOnlyHint,
+      destructive: config?.annotations?.destructiveHint,
+      idempotent: config?.annotations?.idempotentHint,
+      open_world: config?.annotations?.openWorldHint,
+    });
     return this.server.registerTool(name, config, cb);
   }
   getEntries(): ToolEntry[] { return this.entries; }
@@ -246,7 +254,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     dashboard.attachSkills(skills);
   }
 
-  registerAllTools(server, {
+  const registeredTools = registerAllTools(server, {
     engine,
     skills,
     processTracker,
@@ -257,6 +265,9 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
       address: dashboard?.address,
     }),
   });
+  if (dashboard) {
+    dashboard.attachMcpTools(registeredTools);
+  }
 
   return {
     config,

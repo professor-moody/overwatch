@@ -401,9 +401,10 @@ export function SessionsPanel() {
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
                   <DetailFact label="Target" value={selectedTargetLabel || '—'} mono />
                   <DetailFact label="Owner" value={selectedSession.claimed_by || selectedSession.owner || selectedSession.agent_id || 'dashboard'} mono />
+                  <DetailFact label="Validation" value={selectedSession.default_validation?.technique || 'per-command'} mono />
                   <DetailFact label="Last Activity" value={selectedSession.last_activity_at ? formatRelativeTime(selectedSession.last_activity_at) : '—'} />
                   <DetailFact label="Buffer" value={selectedSession.buffer_end_pos != null ? String(selectedSession.buffer_end_pos) : '—'} mono />
                 </div>

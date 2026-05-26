@@ -63,6 +63,8 @@ export interface PersistMetrics {
   totalWriteMs: number;
   coalescedCalls: number;  // persist() calls that were coalesced (didn't cause immediate write)
   lastFlushMs: number;
+  lastFlushAt?: string;
+  dirty: boolean;
 }
 
 export class StatePersistence {
@@ -81,6 +83,7 @@ export class StatePersistence {
     totalWriteMs: 0,
     coalescedCalls: 0,
     lastFlushMs: 0,
+    dirty: false,
   };
   private shutdownHandlers: (() => void)[] = [];
 
@@ -163,12 +166,12 @@ export class StatePersistence {
 
   /** Returns persistence performance metrics. */
   getMetrics(): Readonly<PersistMetrics> {
-    return { ...this.metrics };
+    return { ...this.metrics, dirty: this.dirty };
   }
 
   /** Reset metrics (e.g., for testing or retrospective boundary). */
   resetMetrics(): void {
-    this.metrics = { flushCount: 0, totalSerializeMs: 0, totalWriteMs: 0, coalescedCalls: 0, lastFlushMs: 0 };
+    this.metrics = { flushCount: 0, totalSerializeMs: 0, totalWriteMs: 0, coalescedCalls: 0, lastFlushMs: 0, dirty: this.dirty };
   }
 
   // --- Scheduling ---
@@ -334,6 +337,7 @@ export class StatePersistence {
     const writeEnd = Date.now();
     this.metrics.totalWriteMs += (writeEnd - writeStart);
     this.metrics.lastFlushMs = writeEnd - serializeStart;
+    this.metrics.lastFlushAt = new Date(writeEnd).toISOString();
     this.metrics.flushCount++;
   }
 

@@ -112,6 +112,14 @@ beforeAll(async () => {
   seedGraph(engine);
   // Ephemeral port; loopback => mutations don't require a token.
   dashboard = new DashboardServer(engine, 0, '127.0.0.1', undefined, undefined);
+  dashboard.attachMcpTools([
+    { name: 'get_state', description: 'state' },
+    { name: 'validate_action', description: 'validate' },
+    { name: 'run_bash', description: 'bash' },
+    { name: 'parse_output', description: 'parse' },
+    { name: 'report_finding', description: 'report' },
+    { name: 'get_system_prompt', description: 'prompt' },
+  ]);
   const result = await dashboard.start();
   if (!result.started) throw new Error(`dashboard failed to start: ${result.error}`);
   baseUrl = dashboard.address;
@@ -235,10 +243,40 @@ describe('GET /api/health', () => {
 });
 
 describe('GET /api/tools', () => {
-  it('returns tools[] (registered MCP tools — empty in this harness; surface is HTTP shape)', async () => {
-    const { status, body } = await getJson<{ tools: unknown[] }>('/api/tools');
+  it('returns host binary inventory with installed/missing counts', async () => {
+    const { status, body } = await getJson<{ installed_count: number; missing_count: number; tools: unknown[] }>('/api/tools');
     expect(status).toBe(200);
     expect(Array.isArray(body.tools)).toBe(true);
+    expect(typeof body.installed_count).toBe('number');
+    expect(typeof body.missing_count).toBe('number');
+    expect(body.installed_count + body.missing_count).toBe(body.tools.length);
+  });
+});
+
+describe('GET /api/mcp-tools', () => {
+  it('returns the registered MCP tool surface separately from host tools', async () => {
+    const { status, body } = await getJson<{ total: number; categories: Record<string, number>; tools: Array<{ name: string; category: string }> }>('/api/mcp-tools');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.tools)).toBe(true);
+    expect(body.total).toBe(body.tools.length);
+    expect(body.tools.map(tool => tool.name)).toContain('get_state');
+    expect(body.categories).toHaveProperty('state-readiness');
+  });
+});
+
+describe('GET /api/readiness', () => {
+  it('returns dashboard-ready health, tape, session, action, agent, and persistence summary', async () => {
+    const { status, body } = await getJson<Record<string, any>>('/api/readiness');
+    expect(status).toBe(200);
+    expect(['ready', 'warning', 'critical']).toContain(body.status);
+    expect(body).toHaveProperty('graph');
+    expect(body).toHaveProperty('api');
+    expect(body).toHaveProperty('tape');
+    expect(body).toHaveProperty('sessions');
+    expect(body).toHaveProperty('actions');
+    expect(body).toHaveProperty('agents');
+    expect(body).toHaveProperty('persistence');
+    expect(typeof body.api.mcp_tools_registered).toBe('number');
   });
 });
 
@@ -345,10 +383,11 @@ describe('GET /api/phases', () => {
 });
 
 describe('GET /api/actions/pending', () => {
-  it('returns pending[] (empty in this harness)', async () => {
-    const { status, body } = await getJson<{ pending: unknown[] }>('/api/actions/pending');
+  it('returns pending[] and count (empty in this harness)', async () => {
+    const { status, body } = await getJson<{ pending: unknown[]; count: number }>('/api/actions/pending');
     expect(status).toBe(200);
     expect(Array.isArray(body.pending)).toBe(true);
+    expect(body.count).toBe(body.pending.length);
   });
 });
 

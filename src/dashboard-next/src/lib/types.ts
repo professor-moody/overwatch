@@ -608,6 +608,71 @@ export interface ToolCheckResult {
   tools: ToolStatus[];
 }
 
+export interface McpToolInfo {
+  name: string;
+  title?: string;
+  description: string;
+  category: string;
+  read_only?: boolean;
+  destructive?: boolean;
+  idempotent?: boolean;
+  open_world?: boolean;
+}
+
+export interface McpToolRegistryResponse {
+  total: number;
+  categories: Record<string, number>;
+  tools: McpToolInfo[];
+}
+
+export interface DashboardReadinessSummary {
+  status: 'ready' | 'warning' | 'critical';
+  generated_at: string;
+  graph: {
+    status: 'healthy' | 'warning' | 'critical';
+    nodes: number;
+    edges: number;
+    counts_by_severity: Record<string, number>;
+    top_issues: Array<{ severity: string; check: string; message: string }>;
+  };
+  api: {
+    dashboard_running: boolean;
+    websocket_clients: number;
+    mcp_tools_registered: number;
+  };
+  tape: {
+    enabled?: boolean;
+    attached?: boolean;
+    active?: boolean;
+    started_by?: 'env' | 'config' | 'dashboard';
+    file?: string;
+    frame_count?: number;
+    age_ms?: number;
+    [key: string]: unknown;
+  };
+  sessions: {
+    total: number;
+    active: number;
+    closed: number;
+  };
+  actions: {
+    pending: number;
+  };
+  agents: {
+    total: number;
+    running: number;
+    failed: number;
+  };
+  persistence: {
+    dirty: boolean;
+    last_flush_at?: string;
+    flush_count?: number;
+    last_flush_ms?: number;
+  };
+  issues: string[];
+  dev?: Record<string, unknown>;
+}
+
 // --- Inference Rules ---
 
 export interface InferenceRuleProduction {

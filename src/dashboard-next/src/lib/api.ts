@@ -24,6 +24,8 @@ import type {
   EngagementTemplate,
   EngagementDetail,
   ToolCheckResult,
+  McpToolRegistryResponse,
+  DashboardReadinessSummary,
   InferenceRuleInfo,
   TelemetrySummary,
   InferenceRuleEffectiveness,
@@ -395,6 +397,14 @@ export async function getPaths(objectiveId: string, params?: {
 
 export async function getTools(): Promise<ToolCheckResult> {
   return fetchJson('/api/tools');
+}
+
+export async function getMcpTools(): Promise<McpToolRegistryResponse> {
+  return fetchJson('/api/mcp-tools');
+}
+
+export async function getReadiness(): Promise<DashboardReadinessSummary> {
+  return fetchJson('/api/readiness');
 }
 
 // --- Inference Rules ---

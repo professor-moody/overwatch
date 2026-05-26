@@ -12,16 +12,29 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWs } from '../../providers/ws-provider';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn } from '../../lib/utils';
+import { getReadiness } from '../../lib/api';
+import {
+  validateHostToolsSmoke,
+  validateMcpToolsSmoke,
+  validatePendingActionsSmoke,
+  topLevelKeys,
+  type SmokeValidationResult,
+} from '../../lib/smoke-checks';
+import type { DashboardReadinessSummary } from '../../lib/types';
 import type { PanelId } from '../layout/OperatorLayout';
 
 // ---- types ----
 
-type CheckStatus = 'pending' | 'running' | 'pass' | 'fail' | 'skip';
+type CheckStatus = 'pending' | 'running' | 'pass' | 'warn' | 'fail' | 'skip';
 
 interface CheckResult {
   status: CheckStatus;
   latencyMs?: number;
   detail?: string;
+  expected?: string;
+  actualKeys?: string[];
+  statusCode?: number;
+  action?: string;
   /** Panel to navigate to when clicking the row */
   panel?: PanelId;
 }
@@ -31,27 +44,53 @@ interface CheckDef {
   label: string;
   description: string;
   group: string;
+  severity: 'required' | 'optional' | 'profile';
   panel?: PanelId;
-  run: () => Promise<{ ok: boolean; detail?: string }>;
+  run: () => Promise<SmokeValidationResult & { statusCode?: number }>;
 }
 
 // ---- helpers ----
 
-async function probe(url: string): Promise<{ ok: boolean; detail?: string }> {
+async function probe(url: string): Promise<SmokeValidationResult & { statusCode?: number }> {
   const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
-  return { ok: true };
+  if (!res.ok) return { ok: false, status: 'fail', detail: `endpoint broken: HTTP ${res.status}`, statusCode: res.status };
+  return { ok: true, status: 'pass', statusCode: res.status };
+}
+
+async function probeOptional(url: string, action = 'Enable this surface only when the active workflow needs it.'): Promise<SmokeValidationResult & { statusCode?: number }> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  if (res.status === 503) {
+    return {
+      ok: false,
+      status: 'warn',
+      detail: 'optional surface unavailable',
+      statusCode: res.status,
+      action,
+    };
+  }
+  if (!res.ok) return { ok: false, status: 'fail', detail: `endpoint broken: HTTP ${res.status}`, statusCode: res.status };
+  return { ok: true, status: 'pass', statusCode: res.status };
 }
 
 async function probeJson<T>(
   url: string,
-  validate?: (data: T) => string | undefined,
-): Promise<{ ok: boolean; detail?: string }> {
+  validate?: (data: T) => SmokeValidationResult | string | undefined,
+): Promise<SmokeValidationResult & { statusCode?: number }> {
   const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
+  if (!res.ok) return { ok: false, status: 'fail', detail: `endpoint broken: HTTP ${res.status}`, statusCode: res.status };
   const data = (await res.json()) as T;
-  const msg = validate?.(data);
-  return msg ? { ok: false, detail: msg } : { ok: true };
+  const result = validate?.(data);
+  if (typeof result === 'string') {
+    return {
+      ok: false,
+      status: 'fail',
+      detail: `shape mismatch: ${result}`,
+      actualKeys: topLevelKeys(data),
+      statusCode: res.status,
+    };
+  }
+  if (result && !result.ok) return { ...result, statusCode: res.status };
+  return { ok: true, status: 'pass', statusCode: res.status };
 }
 
 // ---- check definitions ----
@@ -63,15 +102,28 @@ const CHECKS: CheckDef[] = [
     label: '/api/health',
     description: 'Graph engine health endpoint',
     group: 'Core API',
-    run: () => probeJson<{ status: string }>('/api/health', d =>
-      d.status === 'critical' ? 'status=critical' : undefined,
-    ),
+    severity: 'required',
+    run: () => probeJson<{ health_checks?: { status?: string } }>('/api/health', d => {
+      if (!d.health_checks) return 'health_checks field missing';
+      if (d.health_checks.status === 'critical') {
+        return {
+          ok: false,
+          status: 'warn',
+          detail: 'graph health critical',
+          expected: '{ graph_stats, ad_context, health_checks }',
+          actualKeys: topLevelKeys(d),
+          action: 'Review readiness details before trusting derived graph views.',
+        };
+      }
+      return undefined;
+    }),
   },
   {
     id: 'api_state',
     label: '/api/state',
     description: 'Engagement state + graph summary',
     group: 'Core API',
+    severity: 'required',
     panel: 'overview',
     run: () => probeJson<{ state: unknown }>('/api/state', d =>
       !d.state ? 'no state in response' : undefined,
@@ -82,6 +134,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/graph',
     description: 'Raw graph export (nodes + edges)',
     group: 'Core API',
+    severity: 'required',
     run: () => probeJson<{ nodes: unknown[] }>('/api/graph', d =>
       !Array.isArray(d.nodes) ? 'nodes field missing' : undefined,
     ),
@@ -91,8 +144,20 @@ const CHECKS: CheckDef[] = [
     label: '/api/config',
     description: 'Engagement config (scope, OPSEC)',
     group: 'Core API',
+    severity: 'required',
     panel: 'settings',
     run: () => probe('/api/config'),
+  },
+  {
+    id: 'api_readiness',
+    label: '/api/readiness',
+    description: 'Operator readiness summary',
+    group: 'Core API',
+    severity: 'required',
+    run: () => probeJson<{ status?: string; graph?: unknown; api?: unknown }>('/api/readiness', d => {
+      if (!d.status || !d.graph || !d.api) return 'readiness summary fields missing';
+      return undefined;
+    }),
   },
 
   // Subsystems
@@ -101,6 +166,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/agents',
     description: 'Agent manager — task list',
     group: 'Subsystems',
+    severity: 'required',
     panel: 'agents',
     run: () => probeJson<{ agents: unknown[] }>('/api/agents', d =>
       !Array.isArray(d.agents) ? 'agents field missing' : undefined,
@@ -111,6 +177,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/sessions',
     description: 'Session manager — active shells',
     group: 'Subsystems',
+    severity: 'required',
     panel: 'sessions',
     run: () => probeJson<{ sessions: unknown[] }>('/api/sessions', d =>
       !Array.isArray(d.sessions) ? 'sessions field missing' : undefined,
@@ -121,16 +188,16 @@ const CHECKS: CheckDef[] = [
     label: '/api/actions/pending',
     description: 'Approval queue — pending actions',
     group: 'Subsystems',
+    severity: 'required',
     panel: 'actions',
-    run: () => probeJson<{ actions: unknown[] }>('/api/actions/pending', d =>
-      !Array.isArray(d.actions) ? 'actions field missing' : undefined,
-    ),
+    run: () => probeJson('/api/actions/pending', validatePendingActionsSmoke),
   },
   {
     id: 'campaigns',
     label: '/api/campaigns',
     description: 'Campaign list',
     group: 'Subsystems',
+    severity: 'required',
     panel: 'campaigns',
     run: () => probeJson<{ campaigns: unknown[] }>('/api/campaigns', d =>
       !Array.isArray(d.campaigns) ? 'campaigns field missing' : undefined,
@@ -141,6 +208,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/opsec/budget',
     description: 'OPSEC noise budget and window',
     group: 'Subsystems',
+    severity: 'profile',
     run: () => probe('/api/opsec/budget'),
   },
 
@@ -150,6 +218,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/findings',
     description: 'Classified findings from current graph',
     group: 'Evidence & Reports',
+    severity: 'required',
     panel: 'findings',
     run: () => probeJson<{ findings: unknown[] }>('/api/findings', d =>
       !Array.isArray(d.findings) ? 'findings field missing' : undefined,
@@ -160,6 +229,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/reports',
     description: 'Report archive manifest',
     group: 'Evidence & Reports',
+    severity: 'required',
     panel: 'findings',
     run: () => probeJson<{ reports: unknown[] }>('/api/reports', d =>
       !Array.isArray(d.reports) ? 'reports field missing' : undefined,
@@ -168,21 +238,27 @@ const CHECKS: CheckDef[] = [
 
   // Tooling + Inference
   {
-    id: 'tools',
+    id: 'host_tools',
     label: '/api/tools',
-    description: 'Registered MCP tool list',
+    description: 'Host binary availability (nmap, certipy, nxc, etc.)',
     group: 'Tooling',
-    run: () => probeJson<{ tools: unknown[] }>('/api/tools', d => {
-      if (!Array.isArray(d.tools)) return 'tools field missing';
-      if (d.tools.length < 40) return `only ${d.tools.length} tools registered (expected 60+)`;
-      return undefined;
-    }),
+    severity: 'optional',
+    run: () => probeJson('/api/tools', validateHostToolsSmoke),
+  },
+  {
+    id: 'mcp_tools',
+    label: '/api/mcp-tools',
+    description: 'Registered MCP tool surface',
+    group: 'Tooling',
+    severity: 'required',
+    run: () => probeJson('/api/mcp-tools', validateMcpToolsSmoke),
   },
   {
     id: 'inference_rules',
     label: '/api/inference-rules',
     description: 'Loaded inference rule definitions',
     group: 'Tooling',
+    severity: 'required',
     run: () => probeJson<{ rules: unknown[] }>('/api/inference-rules', d => {
       if (!Array.isArray(d.rules)) return 'rules field missing';
       if (d.rules.length < 30) return `only ${d.rules.length} rules loaded (expected 60+)`;
@@ -194,6 +270,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/telemetry',
     description: 'Tool usage telemetry + graph health',
     group: 'Tooling',
+    severity: 'optional',
     run: () => probe('/api/telemetry'),
   },
   {
@@ -201,6 +278,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/frontier/weights',
     description: 'Frontier scoring weight config',
     group: 'Tooling',
+    severity: 'required',
     run: () => probe('/api/frontier/weights'),
   },
 
@@ -210,6 +288,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/engagements',
     description: 'Engagement registry list',
     group: 'Engagements',
+    severity: 'optional',
     panel: 'engagements',
     run: () => probeJson<{ engagements: unknown[] }>('/api/engagements', d =>
       !Array.isArray(d.engagements) ? 'engagements field missing' : undefined,
@@ -220,6 +299,7 @@ const CHECKS: CheckDef[] = [
     label: '/api/templates',
     description: 'Engagement template catalog',
     group: 'Engagements',
+    severity: 'optional',
     panel: 'engagements',
     run: () => probe('/api/templates'),
   },
@@ -230,7 +310,8 @@ const CHECKS: CheckDef[] = [
     label: '/api/tape',
     description: 'JSON-RPC tape recorder status',
     group: 'Tape & Audit',
-    run: () => probe('/api/tape'),
+    severity: 'optional',
+    run: () => probeOptional('/api/tape', 'Attach the tape controller through normal app bootstrap to toggle recording from the dashboard.'),
   },
 ];
 
@@ -245,6 +326,7 @@ export function SmokePanel() {
     Object.fromEntries(CHECKS.map(c => [c.id, { status: 'pending' as CheckStatus }])),
   );
   const [wsStatus, setWsStatus] = useState<CheckStatus>('pending');
+  const [readiness, setReadiness] = useState<DashboardReadinessSummary | null>(null);
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const runningRef = useRef(false);
 
@@ -258,11 +340,20 @@ export function SmokePanel() {
     setResults(prev => ({ ...prev, [check.id]: { status: 'running', panel: check.panel } }));
     const t0 = performance.now();
     try {
-      const { ok, detail } = await check.run();
+      const result = await check.run();
       const latencyMs = Math.round(performance.now() - t0);
       setResults(prev => ({
         ...prev,
-        [check.id]: { status: ok ? 'pass' : 'fail', latencyMs, detail, panel: check.panel },
+        [check.id]: {
+          status: result.ok ? 'pass' : result.status ?? 'fail',
+          latencyMs,
+          detail: result.detail,
+          expected: result.expected,
+          actualKeys: result.actualKeys,
+          statusCode: result.statusCode,
+          action: result.action,
+          panel: check.panel,
+        },
       }));
     } catch (err) {
       const latencyMs = Math.round(performance.now() - t0);
@@ -278,6 +369,7 @@ export function SmokePanel() {
     if (runningRef.current) return;
     runningRef.current = true;
     setWsStatus(connected ? 'pass' : 'fail');
+    getReadiness().then(setReadiness).catch(() => setReadiness(null));
     // Reset all to running first so the UI snaps immediately.
     setResults(Object.fromEntries(CHECKS.map(c => [c.id, { status: 'running', panel: c.panel }])));
     // Run in parallel within each group, groups sequentially to avoid thundering herd.
@@ -285,6 +377,7 @@ export function SmokePanel() {
       const groupChecks = CHECKS.filter(c => c.group === group);
       await Promise.all(groupChecks.map(c => runCheck(c)));
     }
+    getReadiness().then(setReadiness).catch(() => setReadiness(null));
     setLastRun(new Date());
     runningRef.current = false;
   }, [connected, runCheck]);
@@ -304,6 +397,7 @@ export function SmokePanel() {
 
   const allResults = Object.values(results);
   const passing = allResults.filter(r => r.status === 'pass').length + (wsStatus === 'pass' ? 1 : 0);
+  const warning = allResults.filter(r => r.status === 'warn').length + (wsStatus === 'warn' ? 1 : 0);
   const failing = allResults.filter(r => r.status === 'fail').length + (wsStatus === 'fail' ? 1 : 0);
   const running = allResults.filter(r => r.status === 'running').length;
   const totalCount = allResults.length + 1; // +1 for WebSocket
@@ -311,6 +405,7 @@ export function SmokePanel() {
   const overallStatus: CheckStatus =
     running > 0 ? 'running' :
     failing > 0 ? 'fail' :
+    warning > 0 ? 'warn' :
     passing === totalCount ? 'pass' : 'pending';
 
   return (
@@ -323,6 +418,7 @@ export function SmokePanel() {
           {overallStatus !== 'running' && (
             <span className="text-xs text-muted-foreground font-mono">
               {passing}/{totalCount} pass
+              {warning > 0 && <span className="text-warning ml-1">· {warning} warn</span>}
               {failing > 0 && <span className="text-destructive ml-1">· {failing} fail</span>}
             </span>
           )}
@@ -348,6 +444,8 @@ export function SmokePanel() {
         </div>
       </div>
 
+      <ReadinessStrip readiness={readiness} wsStatus={wsStatus} apiStatus={overallStatus} />
+
       {/* WebSocket row (special — live state, not a fetch) */}
       <div className="bg-surface border border-border rounded-lg overflow-hidden">
         <GroupHeader
@@ -360,6 +458,7 @@ export function SmokePanel() {
           <CheckRow
             label="WebSocket /ws"
             description="Live push connection for graph updates and agent events"
+            severity="required"
             result={{ status: wsStatus, panel: undefined }}
             onNavigate={undefined}
           />
@@ -384,6 +483,7 @@ export function SmokePanel() {
                   key={check.id}
                   label={check.label}
                   description={check.description}
+                  severity={check.severity}
                   result={results[check.id] ?? { status: 'pending' }}
                   onNavigate={check.panel ? () => navigateToPanel(check.panel!) : undefined}
                 />
@@ -398,6 +498,86 @@ export function SmokePanel() {
 
 // ---- sub-components ----
 
+function ReadinessStrip({
+  readiness,
+  wsStatus,
+  apiStatus,
+}: {
+  readiness: DashboardReadinessSummary | null;
+  wsStatus: CheckStatus;
+  apiStatus: CheckStatus;
+}) {
+  const cells = [
+    {
+      label: 'Graph',
+      value: readiness ? `${readiness.graph.nodes}N / ${readiness.graph.edges}E` : 'pending',
+      status: readiness?.graph.status === 'critical' ? 'fail' : readiness?.graph.status === 'warning' ? 'warn' : readiness ? 'pass' : 'pending',
+    },
+    {
+      label: 'API',
+      value: apiStatus === 'running' ? 'running' : apiStatus,
+      status: apiStatus,
+    },
+    {
+      label: 'Tape',
+      value: readiness?.tape?.enabled
+        ? `on${readiness.tape.started_by ? ` · ${readiness.tape.started_by}` : ''}`
+        : readiness ? 'off' : 'pending',
+      status: readiness?.tape?.enabled ? 'pass' : readiness ? 'warn' : 'pending',
+    },
+    {
+      label: 'Sessions',
+      value: readiness ? `${readiness.sessions.active}/${readiness.sessions.total} active` : 'pending',
+      status: 'pass',
+    },
+    {
+      label: 'Approvals',
+      value: readiness ? String(readiness.actions.pending) : 'pending',
+      status: readiness && readiness.actions.pending > 0 ? 'warn' : readiness ? 'pass' : 'pending',
+    },
+    {
+      label: 'Agents',
+      value: readiness ? `${readiness.agents.running} run / ${readiness.agents.failed} fail` : 'pending',
+      status: readiness && readiness.agents.failed > 0 ? 'warn' : readiness ? 'pass' : 'pending',
+    },
+    {
+      label: 'WS',
+      value: wsStatus,
+      status: wsStatus,
+    },
+  ] as const;
+
+  return (
+    <div className="bg-surface border border-border rounded-lg px-3 py-2">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-foreground">Readiness</span>
+          <StatusPill status={readiness?.status === 'critical' ? 'fail' : readiness?.status === 'warning' ? 'warn' : readiness ? 'pass' : 'pending'} />
+        </div>
+        {readiness?.persistence.dirty && (
+          <span className="text-[10px] text-warning font-mono">state dirty</span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2">
+        {cells.map(cell => (
+          <div key={cell.label} className="bg-elevated/50 border border-border rounded px-2 py-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <StatusDot status={cell.status} />
+              <span className="text-[9px] uppercase tracking-normal text-muted-foreground">{cell.label}</span>
+            </div>
+            <div className="text-[11px] font-mono text-foreground truncate mt-1">{cell.value}</div>
+          </div>
+        ))}
+      </div>
+      {readiness?.issues.length ? (
+        <div className="mt-2 text-[10px] text-warning truncate">
+          {readiness.issues[0]}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function GroupHeader({
   label,
   checks,
@@ -411,6 +591,7 @@ function GroupHeader({
 }) {
   const vals = Object.values(results);
   const passing = vals.filter(r => r.status === 'pass').length;
+  const warning = vals.filter(r => r.status === 'warn').length;
   const failing = vals.filter(r => r.status === 'fail').length;
   const running = vals.filter(r => r.status === 'running').length;
 
@@ -426,6 +607,7 @@ function GroupHeader({
               <>
                 <span className={failing > 0 ? 'text-destructive' : 'text-success'}>{passing}</span>
                 <span className="text-muted">/{checks.length}</span>
+                {warning > 0 && <span className="text-warning ml-1">{warning} warn</span>}
                 {failing > 0 && <span className="text-destructive ml-1">{failing} fail</span>}
               </>
             )}
@@ -445,25 +627,47 @@ function GroupHeader({
 function CheckRow({
   label,
   description,
+  severity,
   result,
   onNavigate,
 }: {
   label: string;
   description: string;
+  severity: CheckDef['severity'];
   result: CheckResult;
   onNavigate?: () => void;
 }) {
+  const showDetail = result.detail && (result.status === 'fail' || result.status === 'warn');
   return (
-    <div className="px-3 py-2 flex items-center gap-3 hover:bg-hover/40 transition-colors">
+    <div className="px-3 py-2 flex items-start gap-3 hover:bg-hover/40 transition-colors">
       <StatusDot status={result.status} />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-mono text-foreground">{label}</span>
-          {result.detail && result.status === 'fail' && (
-            <span className="text-[10px] text-destructive truncate max-w-48">{result.detail}</span>
+          <span className={cn(
+            'text-[9px] uppercase tracking-normal px-1.5 py-0.5 rounded border',
+            severity === 'required' && 'border-destructive/30 text-destructive',
+            severity === 'optional' && 'border-border text-muted-foreground',
+            severity === 'profile' && 'border-warning/30 text-warning',
+          )}>
+            {severity}
+          </span>
+          {showDetail && (
+            <span className={cn(
+              'text-[10px] truncate max-w-80',
+              result.status === 'warn' ? 'text-warning' : 'text-destructive',
+            )}>{result.detail}</span>
           )}
         </div>
         <div className="text-[10px] text-muted-foreground">{description}</div>
+        {showDetail && (
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted-foreground">
+            {result.expected && <span>expected: {result.expected}</span>}
+            {result.actualKeys && <span>keys: {result.actualKeys.length > 0 ? result.actualKeys.join(', ') : 'none'}</span>}
+            {result.statusCode !== undefined && <span>http: {result.statusCode}</span>}
+            {result.action && <span className="text-foreground">{result.action}</span>}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {result.latencyMs !== undefined && (
@@ -493,6 +697,7 @@ function StatusDot({ status }: { status: CheckStatus }) {
     <span className={cn(
       'w-2 h-2 rounded-full flex-shrink-0',
       status === 'pass' && 'bg-success',
+      status === 'warn' && 'bg-warning',
       status === 'fail' && 'bg-destructive',
       status === 'running' && 'bg-accent animate-pulse',
       status === 'pending' && 'bg-elevated border border-border',
@@ -504,6 +709,7 @@ function StatusDot({ status }: { status: CheckStatus }) {
 function StatusPill({ status }: { status: CheckStatus }) {
   const map: Record<CheckStatus, string> = {
     pass: 'bg-success/10 text-success',
+    warn: 'bg-warning/10 text-warning',
     fail: 'bg-destructive/10 text-destructive',
     running: 'bg-accent/10 text-accent',
     pending: 'bg-elevated text-muted-foreground',
@@ -511,6 +717,7 @@ function StatusPill({ status }: { status: CheckStatus }) {
   };
   const label: Record<CheckStatus, string> = {
     pass: 'all pass',
+    warn: 'warnings',
     fail: 'failures',
     running: 'running',
     pending: 'pending',

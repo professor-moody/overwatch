@@ -50,7 +50,13 @@ interface PrioritizedSection {
 
 export interface ToolEntry {
   name: string;
+  title?: string;
   description: string;
+  category?: string;
+  read_only?: boolean;
+  destructive?: boolean;
+  idempotent?: boolean;
+  open_world?: boolean;
 }
 
 export function generateSystemPrompt(
