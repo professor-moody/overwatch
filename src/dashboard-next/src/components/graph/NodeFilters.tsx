@@ -11,9 +11,10 @@ interface NodeFiltersProps {
   graph: Graph;
   activeFilters: Set<string>;
   onToggle: (type: string) => void;
+  className?: string;
 }
 
-export function NodeFilters({ graph, activeFilters, onToggle }: NodeFiltersProps) {
+export function NodeFilters({ graph, activeFilters, onToggle, className }: NodeFiltersProps) {
   // Collect types with counts
   const typeCounts = new Map<string, number>();
   graph.forEachNode((_id, attrs) => {
@@ -26,7 +27,7 @@ export function NodeFilters({ graph, activeFilters, onToggle }: NodeFiltersProps
   if (types.length === 0) return null;
 
   return (
-    <div className="absolute bottom-3 left-3 z-20 flex flex-wrap gap-1 max-w-[60%]">
+    <div className={cn('pointer-events-auto flex max-w-[min(44rem,calc(100vw-8rem))] flex-wrap gap-1', className)}>
       {types.map(([type, count]) => {
         const active = activeFilters.has(type);
         const color = NODE_COLORS[type] || '#888';

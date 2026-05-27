@@ -33,7 +33,7 @@ describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
 
       await page.evaluate(() => {
         const fit = [...document.querySelectorAll('button')]
-          .find(button => button.textContent?.trim() === 'Fit');
+          .find(button => button.title === 'Fit to screen' || button.textContent?.trim() === 'Fit');
         if (!(fit instanceof HTMLButtonElement)) throw new Error('Fit button missing');
         fit.click();
       });
@@ -84,6 +84,13 @@ describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
         return credentialFlow?.className.includes('text-accent');
       }, { timeout: 5_000 });
 
+      await page.evaluate(() => {
+        const more = [...document.querySelectorAll('button')]
+          .find(button => button.title === 'More graph controls');
+        if (!(more instanceof HTMLButtonElement)) throw new Error('More graph controls button missing');
+        more.click();
+      });
+      await page.waitForFunction(() => document.body.innerText.includes('Reset positions'), { timeout: 5_000 });
       await page.evaluate(() => {
         const reset = [...document.querySelectorAll('button')]
           .find(button => button.textContent?.includes('Reset positions'));

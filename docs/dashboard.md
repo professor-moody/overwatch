@@ -73,11 +73,11 @@ When new nodes arrive via WebSocket (from `report_finding` or `parse_output`), t
 
 ### Search
 
-The search box (top-right of the graph) matches against node labels, IPs, hostnames, and IDs. Matching nodes are highlighted; non-matching nodes dim.
+The search box in the graph overlay matches against node labels, IPs, hostnames, and IDs. Choosing a result opens the inspector and fits the node into the visible workspace.
 
 ### Node Detail Panel
 
-Click any node to open the detail panel (bottom-right). It shows:
+Click any node to open the right-side inspector. It shows:
 
 - Node type badge with color
 - All properties as key-value pairs
@@ -88,7 +88,7 @@ Click any node to open the detail panel (bottom-right). It shows:
 
 ### Frontier Item Navigation
 
-Click any frontier item in the sidebar to zoom the camera to its corresponding graph node.
+Click a graph action from Frontier, Credentials, Sessions, Activity, or an inspector relationship to open `/graph?node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the right drawer.
 
 ## Sidebar Panels
 
@@ -124,12 +124,13 @@ See [Tape Recording](tape-recording.md) for env vars, config, and the standalone
 | Button | Action |
 |--------|--------|
 | **+** / **−** | Zoom in / out |
-| **Fit** | Reset camera to fit all nodes |
+| **Fit icon** | Reset camera to fit all nodes |
 | **Layout** | Toggle ForceAtlas2 layout on/off |
 | **Reset** | Clear all filters, restore all node types |
-| **Export ▾** | Dropdown: **PNG** screenshot or **SVG** export of the current view |
-| **Layers ▾** | Dropdown: **Attack Path**, **Compare Shortest**, **Credential Flow** overlays |
-| **?** | Toggle keyboard shortcuts overlay |
+| **View** | Dropdown for graph mode, label density, and focus presets |
+| **Export** | Dropdown: **PNG** screenshot or **SVG** export of the current view |
+| **Layers** | Dropdown for attack-path, credential-flow, community, and decluttering overlays |
+| **More** | Reset saved node positions or open keyboard shortcuts |
 
 ### Layers
 
@@ -168,37 +169,35 @@ Activating Attack Path, Compare Shortest, or Credential Flow clears the others. 
 
 ## Minimap
 
-A 160×110px minimap in the bottom-right corner shows the full graph at a glance with a viewport rectangle indicating the current camera position. Click anywhere on the minimap to navigate.
+A compact minimap in the bottom-right overlay shows the full graph at a glance with a viewport rectangle indicating the current camera position.
 
 ## Architecture
 
 ![Dashboard Pipeline](assets/dashboard-pipeline-light.svg#only-light)
 ![Dashboard Pipeline](assets/dashboard-pipeline-dark.svg#only-dark)
 
-- **HTTP** serves static files from the `dashboard/` directory with MIME types and file caching
+- **HTTP** serves the Vite-built React dashboard from `dist/dashboard-next/`
 - **WebSocket** broadcasts graph deltas on every `persist()` call; full state on connect
 - **HTTP polling** fallback every 5 seconds if WebSocket disconnects
 - **Auto-reconnect** attempts every 3 seconds on WebSocket close
-- **Read-only** — no mutations from the browser
+- **Dashboard mutations** are limited to explicit operator actions such as tape toggles, approvals, corrections, and report generation; graph inspection remains read-mostly.
 
 ### File Structure
 
-| File | Purpose |
+| Area | Purpose |
 |------|---------|
-| `index.html` | Slim HTML shell (~180 lines) loading CDN deps + local scripts |
-| `styles.css` | All CSS (~580 lines) including dark theme, animations, and responsive elements |
-| `graph.js` | Sigma.js init, ForceAtlas2 layout, node drag, hover, path/neighborhood highlight, minimap |
-| `ui.js` | Sidebar panels, node detail, search, keyboard shortcuts, frontier click |
-| `ws.js` | WebSocket connection, reconnect logic, HTTP polling fallback |
-| `main.js` | Entry point wiring all modules together |
+| `src/dashboard-next/src/components/layout/` | Operator shell, top toolbar, sidebar, tape toggle |
+| `src/dashboard-next/src/components/panels/` | Overview, Frontier, Sessions, Actions, Activity, Evidence, Findings, Smoke, Settings |
+| `src/dashboard-next/src/components/graph/` | Sigma graph workspace, overlays, inspector, export controls |
+| `src/dashboard-next/src/hooks/` | Navigation, graph data, layout, Sigma lifecycle, keyboard shortcuts |
+| `src/dashboard-next/src/lib/` | API client, graph utilities, camera fitting, route smoke helpers |
 
 ## Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Dashboard SPA (index.html) |
-| `/styles.css` | GET | Dashboard stylesheet |
-| `/graph.js`, `/ui.js`, `/ws.js`, `/main.js` | GET | Dashboard scripts |
+| `/assets/...` | GET | Vite-built dashboard JavaScript and CSS assets |
 | `/api/state` | GET | Current engagement state (JSON), includes `history_count` |
 | `/api/graph` | GET | Full graph export (JSON) |
 | `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |

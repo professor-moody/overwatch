@@ -110,7 +110,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
   ];
 
   return (
-    <div className="fixed right-0 top-12 bottom-0 w-96 bg-surface border-l border-border z-40 flex flex-col shadow-2xl">
+    <div className="fixed right-0 top-12 bottom-0 w-[min(24rem,calc(100vw-3rem))] bg-surface border-l border-border z-40 flex flex-col shadow-2xl">
       <div className="px-4 py-3 border-b border-border flex-shrink-0">
         <div className="flex items-center justify-between mb-1">
           <span
@@ -126,7 +126,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           </button>
         </div>
         <h3 className="text-sm font-semibold truncate" title={label}>{label}</h3>
-        <div className="text-[10px] text-muted-foreground font-mono truncate mt-0.5">{nodeId}</div>
+        <div className="text-[10px] text-muted-foreground font-mono break-all mt-0.5">{nodeId}</div>
         <div className="mt-2 grid grid-cols-4 gap-1.5">
           {selectedFacts.map(fact => (
             <div key={fact.label} className="rounded border border-border bg-elevated/60 px-2 py-1">
@@ -137,11 +137,11 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 overscroll-contain">
         <InspectorSection title="Summary">
           <div className="space-y-1.5 text-xs">
-            {entries.slice(0, 5).map(entry => (
-              <div key={entry.key} className="flex items-start gap-2">
+            {entries.slice(0, 5).map((entry, index) => (
+              <div key={`${entry.key}-${index}`} className="flex items-start gap-2">
                 <span className="text-muted-foreground font-mono w-24 flex-shrink-0 truncate">{entry.key}</span>
                 <span className="text-foreground break-all">{String(entry.value)}</span>
               </div>
@@ -164,8 +164,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             <EmptyLine>No sessions tied to this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
-              {relationships.sessions.slice(0, 4).map(session => (
-                <div key={session.id} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+              {relationships.sessions.slice(0, 4).map((session, index) => (
+                <div key={`${session.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                   <div className="flex items-center gap-2">
                     <StatusPill className={session.state === 'connected' ? 'bg-success/10 text-success' : 'bg-elevated text-muted-foreground'}>{session.state}</StatusPill>
                     <span className="truncate text-foreground">{session.title || session.id.slice(0, 8)}</span>
@@ -187,10 +187,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             <EmptyLine>No queued approvals target this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
-              {relationships.pendingActions.slice(0, 4).map(action => {
+              {relationships.pendingActions.slice(0, 4).map((action, index) => {
                 const risk = computeActionRisk(action);
                 return (
-                  <div key={action.action_id} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <div key={`${action.action_id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                     <div className="flex items-center gap-2">
                       <StatusPill className={risk.cls}>{risk.label}</StatusPill>
                       <span className="truncate text-foreground">{action.technique}</span>
@@ -209,10 +209,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             <EmptyLine>No frontier items reference this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
-              {relationships.frontier.slice(0, 4).map(item => {
+              {relationships.frontier.slice(0, 4).map((item, index) => {
                 const primaryNode = getFrontierPrimaryNodeId(item);
                 return (
-                  <div key={item.frontier_item_id || item.id} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <div key={`${item.frontier_item_id || item.id || 'frontier'}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                     <div className="flex items-center gap-2">
                       <StatusPill className="bg-accent/10 text-accent">{item.type.replace(/_/g, ' ')}</StatusPill>
                       <span className="font-mono text-foreground ml-auto">{(item.priority ?? 0).toFixed(1)}</span>
@@ -231,8 +231,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           {(evidenceStatus === 'empty' || evidenceStatus === 'error') && <EmptyLine>No evidence chain loaded for this node.</EmptyLine>}
           {evidenceStatus === 'ready' && evidence && (
             <div className="space-y-1.5">
-              {evidence.chains.slice(0, 3).map(entry => (
-                <div key={entry.activity_id} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+              {evidence.chains.slice(0, 3).map((entry, index) => (
+                <div key={`${entry.activity_id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-mono text-muted-foreground">{formatRelativeTime(entry.timestamp)}</span>
                     <span className="truncate text-foreground">{entry.event_type}</span>
@@ -249,8 +249,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             <EmptyLine>No findings currently affect this node.</EmptyLine>
           ) : (
             <div className="space-y-1.5">
-              {relationships.findings.slice(0, 4).map(finding => (
-                <div key={finding.id} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+              {relationships.findings.slice(0, 4).map((finding, index) => (
+                <div key={`${finding.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                   <div className="flex items-center gap-2">
                     <StatusPill className={findingSeverityClass(finding.severity)}>{finding.severity}</StatusPill>
                     <span className="truncate text-foreground">{finding.title}</span>
@@ -278,8 +278,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
                     <span className="text-muted ml-auto">x{group.count}</span>
                   </div>
                   <div className="pl-3.5 space-y-0.5">
-                    {group.peers.map(peer => (
-                      <button key={peer.id} onClick={() => navigateToGraph(peer.id, 2)} className="w-full flex items-center gap-1.5 text-[11px] hover:text-accent">
+                    {group.peers.map((peer, index) => (
+                      <button key={`${peer.id}-${index}`} onClick={() => navigateToGraph(peer.id, 2)} className="w-full flex items-center gap-1.5 text-[11px] hover:text-accent">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: NODE_COLORS[peer.type] || '#888' }} />
                         <span className="truncate text-foreground">{peer.label}</span>
                       </button>
@@ -295,8 +295,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
         {entries.length > 5 && (
           <InspectorSection title="Properties" count={entries.length}>
             <div className="space-y-1">
-              {entries.slice(5).map(entry => (
-                <div key={entry.key} className="flex items-start gap-2 text-xs">
+              {entries.slice(5).map((entry, index) => (
+                <div key={`${entry.key}-${index + 5}`} className="flex items-start gap-2 text-xs">
                   <span className="text-muted-foreground font-mono w-24 flex-shrink-0 truncate">{entry.key}</span>
                   <span className="text-foreground break-all">{String(entry.value)}</span>
                 </div>
@@ -306,7 +306,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
         )}
       </div>
 
-      <div className="px-4 py-2 border-t border-border flex flex-col gap-2">
+      <div className="flex-shrink-0 px-4 py-2 border-t border-border bg-surface/95 flex flex-col gap-2">
         <div className="flex gap-2">
           <button
             onClick={() => onFocus?.(nodeId, 2)}

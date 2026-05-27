@@ -4,6 +4,22 @@
 
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  ChevronLeft,
+  Download,
+  HelpCircle,
+  Layers,
+  Maximize2,
+  Minus,
+  MoreHorizontal,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  RotateCcw,
+  SlidersHorizontal,
+  Undo2,
+} from 'lucide-react';
 import { FOCUS_PRESETS } from '../../lib/graph-constants';
 import { cn } from '../../lib/utils';
 import type { GraphLayerState } from '../../lib/graph-layers';
@@ -51,36 +67,65 @@ export function GraphToolbar({
 }: GraphToolbarProps) {
   const [showExport, setShowExport] = useState(false);
   const [showLayers, setShowLayers] = useState(false);
+  const [showView, setShowView] = useState(false);
+  const [showMore, setShowMore] = useState(false);
 
   return (
-    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-x-auto overflow-y-visible">
+    <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
       {/* Back */}
-      <Link to="/overview" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        Dashboard
+      <Link to="/overview" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
+        <ChevronLeft size={14} />
+        <span className="hidden sm:inline">Dashboard</span>
       </Link>
 
-      <span className="text-accent font-semibold">◆ OVERWATCH</span>
-      <span className="font-medium">Graph Explorer</span>
+      <span className="text-accent font-semibold whitespace-nowrap">◆ OVERWATCH</span>
+      <span className="font-medium text-muted-foreground whitespace-nowrap hidden md:inline">Graph</span>
 
       <div className="flex-1" />
 
       {/* Graph Controls */}
-      <div className="flex items-center gap-1">
-        <ToolBtn onClick={onZoomIn} title="Zoom in">+</ToolBtn>
-        <ToolBtn onClick={onZoomOut} title="Zoom out">−</ToolBtn>
-        <ToolBtn onClick={onFit} title="Fit to screen">Fit</ToolBtn>
+      <div className="flex items-center gap-1 min-w-0">
+        <ToolBtn onClick={onZoomIn} title="Zoom in"><Plus size={14} /></ToolBtn>
+        <ToolBtn onClick={onZoomOut} title="Zoom out"><Minus size={14} /></ToolBtn>
+        <ToolBtn onClick={onFit} title="Fit to screen"><Maximize2 size={14} /><span className="sr-only">Fit</span></ToolBtn>
         <Sep />
         <LayoutStatus mode={layoutMode} running={layoutRunning} />
-        {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout">Resume</ToolBtn>}
-        <ToolBtn onClick={onToggleLayout} title="Pause or resume layout" active={layoutRunning}>Layout</ToolBtn>
+        {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout"><Play size={14} /><span className="hidden lg:inline">Resume</span></ToolBtn>}
+        <ToolBtn onClick={onToggleLayout} title="Pause or resume layout" active={layoutRunning}>
+          {layoutRunning ? <Pause size={14} /> : <Play size={14} />}
+          <span className="hidden lg:inline">Layout</span>
+        </ToolBtn>
         <ToolBtn onClick={onReset} title="Reset filters and focus">Reset</ToolBtn>
-        <ToolBtn onClick={onResetPositions} title="Clear saved positions and relayout">Reset positions</ToolBtn>
         <Sep />
+
+        <div className="relative">
+          <ToolBtn onClick={() => { setShowView(!showView); setShowExport(false); setShowLayers(false); setShowMore(false); }} title="View controls">
+            <SlidersHorizontal size={14} />
+            <span className="hidden lg:inline">View</span>
+          </ToolBtn>
+          {showView && (
+            <Dropdown onClose={() => setShowView(false)} wide>
+              <div className="space-y-2 p-2">
+                <SelectGroup label="Mode" value={graphMode} onChange={onSetGraphMode} options={['overview', 'focused', 'raw']} />
+                <SelectGroup label="Labels" value={labelDensity} onChange={onSetLabelDensity} options={['minimal', 'balanced', 'verbose']} />
+                <SelectGroup
+                  label="Focus"
+                  value={activeFocusPreset || ''}
+                  onChange={onSetFocusPreset}
+                  options={['', ...Object.keys(FOCUS_PRESETS)]}
+                  optionLabels={['None', ...Object.keys(FOCUS_PRESETS)]}
+                />
+              </div>
+            </Dropdown>
+          )}
+        </div>
 
         {/* Export dropdown */}
         <div className="relative">
-          <ToolBtn onClick={() => { setShowExport(!showExport); setShowLayers(false); }} title="Export">Export ▾</ToolBtn>
+          <ToolBtn onClick={() => { setShowExport(!showExport); setShowLayers(false); setShowView(false); setShowMore(false); }} title="Export">
+            <Download size={14} />
+            <span className="hidden lg:inline">Export</span>
+          </ToolBtn>
           {showExport && (
             <Dropdown onClose={() => setShowExport(false)}>
               <DropBtn onClick={() => { onExportPNG(); setShowExport(false); }}>Export PNG</DropBtn>
@@ -91,7 +136,10 @@ export function GraphToolbar({
 
         {/* Layers dropdown */}
         <div className="relative">
-          <ToolBtn onClick={() => { setShowLayers(!showLayers); setShowExport(false); }} title="Layers">Layers ▾</ToolBtn>
+          <ToolBtn onClick={() => { setShowLayers(!showLayers); setShowExport(false); setShowView(false); setShowMore(false); }} title="Layers">
+            <Layers size={14} />
+            <span className="hidden lg:inline">Layers</span>
+          </ToolBtn>
           {showLayers && (
             <Dropdown onClose={() => setShowLayers(false)} wide>
               {layers.map(layer => (
@@ -101,39 +149,35 @@ export function GraphToolbar({
           )}
         </div>
 
-        <ToolBtn onClick={onToggleShortcuts} title="Keyboard shortcuts">?</ToolBtn>
         {onToggleEditMode && (
           <>
             <Sep />
-            <ToolBtn onClick={onToggleEditMode} title="Toggle edit mode" active={editMode}>Edit</ToolBtn>
+            <ToolBtn onClick={onToggleEditMode} title="Toggle edit mode" active={editMode}><Pencil size={14} /><span className="hidden lg:inline">Edit</span></ToolBtn>
             {editMode && onUndo && (undoCount ?? 0) > 0 && (
-              <ToolBtn onClick={onUndo} title="Undo last edit">Undo ({undoCount})</ToolBtn>
+              <ToolBtn onClick={onUndo} title="Undo last edit"><Undo2 size={14} /><span className="hidden xl:inline">Undo {undoCount}</span></ToolBtn>
             )}
           </>
         )}
-      </div>
-
-      <Sep />
-
-      {/* View controls */}
-      <div className="flex items-center gap-2">
-        <SelectGroup label="Mode" value={graphMode} onChange={onSetGraphMode} options={['overview', 'focused', 'raw']} />
-        <SelectGroup label="Labels" value={labelDensity} onChange={onSetLabelDensity} options={['minimal', 'balanced', 'verbose']} />
-        <SelectGroup
-          label="Focus"
-          value={activeFocusPreset || ''}
-          onChange={onSetFocusPreset}
-          options={['', ...Object.keys(FOCUS_PRESETS)]}
-          optionLabels={['None', ...Object.keys(FOCUS_PRESETS)]}
-        />
-      </div>
 
       <Sep />
 
       {/* Stats */}
-      <div className="flex items-center gap-3 text-muted-foreground">
+      <div className="hidden sm:flex items-center gap-3 text-muted-foreground">
         <Stat label="Nodes" value={nodeCount} />
         <Stat label="Edges" value={edgeCount} />
+      </div>
+
+        <div className="relative">
+          <ToolBtn onClick={() => { setShowMore(!showMore); setShowExport(false); setShowLayers(false); setShowView(false); }} title="More graph controls">
+            <MoreHorizontal size={14} />
+          </ToolBtn>
+          {showMore && (
+            <Dropdown onClose={() => setShowMore(false)}>
+              <DropBtn onClick={() => { onResetPositions(); setShowMore(false); }}><RotateCcw size={13} /> Reset positions</DropBtn>
+              <DropBtn onClick={() => { onToggleShortcuts(); setShowMore(false); }}><HelpCircle size={13} /> Shortcuts</DropBtn>
+            </Dropdown>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -151,7 +195,7 @@ function ToolBtn({ children, onClick, title, active }: {
       onClick={createToolbarActionHandler(onClick)}
       title={title}
       className={cn(
-        'px-2 py-1 rounded text-xs transition-colors whitespace-nowrap',
+        'inline-flex h-7 items-center justify-center gap-1 px-2 py-1 rounded text-xs transition-colors whitespace-nowrap',
         active ? 'bg-accent/20 text-accent' : 'text-muted-foreground hover:text-foreground hover:bg-hover',
       )}
     >
@@ -231,7 +275,7 @@ function DropBtn({ children, onClick }: { children: React.ReactNode; onClick: ()
   return (
     <button
       onClick={onClick}
-      className="w-full px-3 py-1.5 text-left text-xs hover:bg-hover transition-colors"
+      className="w-full px-3 py-1.5 text-left text-xs hover:bg-hover transition-colors flex items-center gap-2"
     >
       {children}
     </button>
@@ -246,12 +290,12 @@ function SelectGroup({ label, value, onChange, options, optionLabels }: {
   optionLabels?: string[];
 }) {
   return (
-    <label className="flex items-center gap-1 text-muted-foreground">
-      <span className="text-[10px]">{label}</span>
+    <label className="flex items-center justify-between gap-2 text-muted-foreground">
+      <span className="text-[10px] min-w-10">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="text-[11px] bg-elevated border border-border rounded px-1 py-0.5 text-foreground"
+        className="text-[11px] bg-elevated border border-border rounded px-1 py-0.5 text-foreground min-w-28"
       >
         {options.map((opt, i) => (
           <option key={opt} value={opt}>{optionLabels?.[i] || opt}</option>

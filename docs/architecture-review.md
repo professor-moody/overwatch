@@ -487,13 +487,12 @@ overwatch/
 │   │   ├── prompt-generator.ts     # Dynamic system prompt generation
 │   │   ├── report-generator.ts     # Per-finding sections, evidence chains, narrative, remediation
 │   │   └── report-html.ts          # Self-contained HTML report renderer
-│   ├── dashboard/                  # Browser SPA (6 files)
-│   │   ├── index.html              # Slim HTML shell loading CDN deps + local scripts
-│   │   ├── styles.css              # Dark theme, animations, responsive layout
-│   │   ├── graph.js                # Sigma.js, FA2, drag, hover, path/attack/credential overlays, community hulls
-│   │   ├── ui.js                   # Sidebar panels, node detail, search, keyboard shortcuts
-│   │   ├── ws.js                   # WebSocket + HTTP polling, reconnect
-│   │   └── main.js                 # Entry point wiring modules
+│   ├── dashboard-next/             # Active React/Vite dashboard
+│   │   ├── src/components/layout/  # Operator shell, toolbar, sidebar
+│   │   ├── src/components/panels/  # Overview, frontier, sessions, activity, smoke, etc.
+│   │   ├── src/components/graph/   # Sigma graph workspace, overlays, inspector
+│   │   ├── src/hooks/              # Navigation, layout, graph, Sigma lifecycle
+│   │   └── src/lib/                # API client and dashboard state helpers
 │   └── cli/                        # CLI tools
 │       ├── lab-smoke.ts            # Lab smoke test harness
 │       ├── lab-smoke-lib.ts        # Smoke test library

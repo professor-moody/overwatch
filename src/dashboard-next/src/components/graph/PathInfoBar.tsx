@@ -3,6 +3,7 @@
 // ============================================================
 
 import type Graph from 'graphology';
+import { cn } from '../../lib/utils';
 
 interface PathInfoBarProps {
   graph: Graph;
@@ -10,9 +11,10 @@ interface PathInfoBarProps {
   pathTarget: string | null;
   pathEdges: Set<string>;
   onClear: () => void;
+  className?: string;
 }
 
-export function PathInfoBar({ graph, pathSource, pathTarget, pathEdges, onClear }: PathInfoBarProps) {
+export function PathInfoBar({ graph, pathSource, pathTarget, pathEdges, onClear, className }: PathInfoBarProps) {
   if (!pathSource || !pathTarget || pathEdges.size === 0) return null;
 
   const srcLabel = graph.hasNode(pathSource) ? (graph.getNodeAttribute(pathSource, 'label') as string) || pathSource : pathSource;
@@ -26,7 +28,7 @@ export function PathInfoBar({ graph, pathSource, pathTarget, pathEdges, onClear 
   }
 
   return (
-    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-surface/95 backdrop-blur border border-border rounded-md px-4 py-2 flex items-center gap-3 text-xs shadow-lg">
+    <div className={cn('pointer-events-auto bg-surface/95 backdrop-blur border border-border rounded-md px-4 py-2 flex items-center gap-3 text-xs shadow-lg', className)}>
       <span className="text-foreground font-medium">{srcLabel} → {tgtLabel}</span>
       <span className="text-muted-foreground">({pathEdges.size} hops)</span>
       <span className="text-muted-foreground truncate max-w-60">{edgeTypes.join(' → ')}</span>

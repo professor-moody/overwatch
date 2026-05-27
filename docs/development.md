@@ -109,13 +109,12 @@ overwatch/
 │   ├── cli/                  # Command-line tools
 │   │   ├── retrospective.ts  # npm run retrospective
 │   │   └── lab-smoke.ts      # npm run lab:smoke
-│   ├── dashboard/            # Interactive graph visualization (6 files)
-│   │   ├── index.html        # Slim HTML shell (~180 lines)
-│   │   ├── styles.css        # Dark theme, animations (~580 lines)
-│   │   ├── graph.js          # Sigma.js, FA2, drag, hover, path highlight, minimap
-│   │   ├── ui.js             # Sidebar, detail panel, search, keyboard shortcuts
-│   │   ├── ws.js             # WebSocket + HTTP polling, reconnect
-│   │   └── main.js           # Entry point wiring modules
+│   ├── dashboard-next/       # Active React/Vite dashboard workspace
+│   │   ├── src/components/layout/ # Toolbar, sidebar, operator shell
+│   │   ├── src/components/panels/  # Overview, frontier, sessions, actions, smoke, etc.
+│   │   ├── src/components/graph/   # Sigma graph workspace and inspector
+│   │   ├── src/hooks/              # Graph, navigation, layout, and keyboard hooks
+│   │   └── src/lib/                # API client, graph utilities, dashboard state helpers
 │   └── __tests__/
 │       ├── app-bootstrap.test.ts
 │       ├── mcp-server.integration.test.ts
@@ -128,7 +127,7 @@ overwatch/
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). **1900+ tests across 73 source test files** are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). The source suite is now **2800+ tests across 140+ source test files**; use the Vitest summary for the exact current count. Tests are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
 npm test                        # Fast source tests (see Vitest summary for current count)
@@ -199,9 +198,18 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `ui.test.ts` | Dashboard UI: sidebar, detail panel, derivation chains |
 | `ws.test.ts` | Dashboard WebSocket client, reconnect logic |
 | `lab-smoke.test.ts` | Lab smoke test CLI harness |
-| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and tool registration (40 tools) |
+| `app-bootstrap.test.ts` | Transport-neutral app/bootstrap and MCP tool registration |
 | `mcp-server.integration.test.ts` | End-to-end MCP protocol via fresh-built stdio server |
 | `http-transport.integration.test.ts` | HTTP/SSE transport: tool listing, state, findings, concurrent sessions |
+
+### Dashboard Review Checklist
+
+Before merging dashboard UI changes, run a short operator pass:
+
+1. Open `/smoke`; API shape failures should be red, missing optional host binaries should be warnings.
+2. Open `/frontier`, click a graph link, and confirm `/graph?node=...&hops=2` centers the focused neighborhood with the inspector open.
+3. Check `/graph`, `/agents`, and `/activity` at desktop and narrow widths for clipped controls, horizontal page scroll, and mismatched button/status styles.
+4. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
 
 ## Adding a New Parser
 

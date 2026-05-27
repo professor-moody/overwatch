@@ -26,17 +26,23 @@ const EDGE_LEGEND_CATEGORIES: Category[] = [
   { label: 'Inferred',     types: ['_inferred_'] },
 ];
 
-export function EdgeLegend() {
-  const [collapsed, setCollapsed] = useState(false);
+export function EdgeLegend({
+  className,
+  defaultCollapsed = false,
+}: {
+  className?: string;
+  defaultCollapsed?: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   return (
-    <div className="absolute bottom-4 left-4 z-30 bg-surface/95 border border-border rounded-md shadow-md text-xs select-none">
+    <div className={cn('pointer-events-auto bg-surface/95 border border-border rounded-md shadow-md text-xs select-none', className)}>
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
         className="w-full flex items-center justify-between gap-3 px-2.5 py-1.5 text-foreground hover:bg-foreground/5 rounded-t-md"
       >
-        <span className="font-semibold">Edge Legend</span>
+        <span className="font-semibold">Legend</span>
         <span className={cn('transition-transform', collapsed && '-rotate-90')}>▾</span>
       </button>
       {!collapsed && (

@@ -2,17 +2,20 @@
 // FocusBanner — neighborhood focus exit banner
 // ============================================================
 
+import { cn } from '../../lib/utils';
+
 interface FocusBannerProps {
   focusNode: string | null;
   focusSize: number;
   onExit: () => void;
+  className?: string;
 }
 
-export function FocusBanner({ focusNode, focusSize, onExit }: FocusBannerProps) {
+export function FocusBanner({ focusNode, focusSize, onExit, className }: FocusBannerProps) {
   if (!focusNode) return null;
 
   return (
-    <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 z-30 max-w-[min(36rem,calc(100vw-20rem))] bg-accent/10 border border-accent/30 rounded-md px-4 py-1.5 flex items-center gap-3 text-xs shadow-lg">
+    <div className={cn('pointer-events-none max-w-[min(36rem,calc(100vw-20rem))] bg-accent/10 border border-accent/30 rounded-md px-4 py-1.5 flex items-center gap-3 text-xs shadow-lg', className)}>
       <span className="text-accent font-medium truncate">
         Focused on <span className="font-mono">{focusNode}</span>
       </span>

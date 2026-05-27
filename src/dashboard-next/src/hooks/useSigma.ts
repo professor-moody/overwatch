@@ -5,7 +5,7 @@
 import { useRef, useCallback, useEffect } from 'react';
 import Sigma from 'sigma';
 import type Graph from 'graphology';
-import { safeCameraDuration } from '../lib/graph-camera';
+import { computeGraphCameraFit, safeCameraDuration, type GraphFitPadding } from '../lib/graph-camera';
 
 export interface UseSigmaOptions {
   graph: Graph;
@@ -28,6 +28,7 @@ export interface UseSigmaReturn {
 
 interface ZoomToNodesOptions {
   paddingFactor?: number;
+  padding?: GraphFitPadding;
   minRatio?: number;
   maxRatio?: number;
   duration?: number;
@@ -118,48 +119,37 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
     const ids = nodeIds instanceof Set ? nodeIds : new Set(nodeIds);
     if (ids.size === 0) return;
 
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const positions: Array<{ x: number; y: number }> = [];
     for (const nodeId of ids) {
       if (!graph.hasNode(nodeId)) continue;
-      const attrs = graph.getNodeAttributes(nodeId);
+      const display = renderer.getNodeDisplayData(nodeId);
+      const attrs = display || graph.getNodeAttributes(nodeId);
       const x = attrs.x as number;
       const y = attrs.y as number;
       if (typeof x !== 'number' || typeof y !== 'number') continue;
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
+      positions.push({ x, y });
     }
 
-    if (!isFinite(minX)) return;
-
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const paddingFactor = opts.paddingFactor ?? 1.6;
-    const rangeX = (maxX - minX) * paddingFactor || 1;
-    const rangeY = (maxY - minY) * paddingFactor || 1;
-    const ratio = Math.max(rangeX, rangeY) / Math.min(renderer.getContainer().clientWidth, renderer.getContainer().clientHeight) * 200;
-
-    const clamped = Math.max(opts.minRatio ?? 0.02, Math.min(opts.maxRatio ?? 10, ratio));
+    const container = renderer.getContainer();
+    const fit = computeGraphCameraFit(positions, {
+      width: container.clientWidth,
+      height: container.clientHeight,
+    }, opts);
+    if (!fit) return;
 
     const camera = renderer.getCamera();
-    const viewportCenter = renderer.viewportToFramedGraph({
-      x: renderer.getContainer().clientWidth / 2,
-      y: renderer.getContainer().clientHeight / 2,
-    });
-
-    // Use sigma's animated camera
     camera.animate(
-      { x: cx - (viewportCenter.x - cx) * 0.001, y: cy - (viewportCenter.y - cy) * 0.001, ratio: clamped },
-      { duration: opts.duration ?? 300 },
+      fit,
+      { duration: safeCameraDuration(opts.duration) },
     );
   }, [graph]);
 
   const selectAndCenter = useCallback((nodeId: string) => {
     if (!graph.hasNode(nodeId)) return;
-    const attrs = graph.getNodeAttributes(nodeId);
     const renderer = rendererRef.current;
     if (!renderer) return;
+    const display = renderer.getNodeDisplayData(nodeId);
+    const attrs = display || graph.getNodeAttributes(nodeId);
 
     const camera = renderer.getCamera();
     camera.animate(

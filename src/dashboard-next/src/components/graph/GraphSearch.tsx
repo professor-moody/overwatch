@@ -11,6 +11,7 @@ import { cn } from '../../lib/utils';
 interface GraphSearchProps {
   graph: Graph;
   onSelect: (nodeId: string) => void;
+  className?: string;
 }
 
 interface SearchResult {
@@ -19,7 +20,7 @@ interface SearchResult {
   type: string;
 }
 
-export function GraphSearch({ graph, onSelect }: GraphSearchProps) {
+export function GraphSearch({ graph, onSelect, className }: GraphSearchProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -65,7 +66,7 @@ export function GraphSearch({ graph, onSelect }: GraphSearchProps) {
   };
 
   return (
-    <div className="absolute top-3 left-3 z-30">
+    <div className={cn('pointer-events-auto w-56', className)}>
       <div className="relative">
         <svg className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground pointer-events-none" viewBox="0 0 14 14" fill="none">
           <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3" />

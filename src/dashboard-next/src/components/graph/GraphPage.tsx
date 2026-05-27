@@ -29,6 +29,9 @@ import { useToastStore } from '../../stores/toast-store';
 import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 
+const GRAPH_DRAWER_WIDTH = 384;
+const GRAPH_OVERLAY_GUTTER = 12;
+
 export function GraphPage() {
   // ---- Graph data layer ----
   const { graph, loadGraphData, mergeGraphDelta, reachableOnlyCacheRef } = useGraph();
@@ -64,6 +67,12 @@ export function GraphPage() {
   const userPinnedLayoutRef = useRef(false);
   const engagementId = useEngagementStore(s => s.engagement?.id || 'default');
   const forceGraphUi = useCallback(() => setUiRevision(v => v + 1), []);
+  const graphFitPadding = useCallback((drawerOpen = !!selectedNodeId) => ({
+    top: 96,
+    right: drawerOpen ? GRAPH_DRAWER_WIDTH + 64 : 96,
+    bottom: 152,
+    left: 112,
+  }), [selectedNodeId]);
 
   // ---- Edit mode ----
   const [editMode, setEditMode] = useState(false);
@@ -115,7 +124,12 @@ export function GraphPage() {
       onNodeFocus: (nodeId, hops) => {
         // Zoom to the focus neighborhood
         const neighborhood = getNeighborhood(graph, nodeId, hops);
-        zoomToNodes(neighborhood, { paddingFactor: 1.9, minRatio: 0.08, maxRatio: 1.6 });
+        zoomToNodes(neighborhood, {
+          paddingFactor: 1.35,
+          padding: graphFitPadding(true),
+          minRatio: 0.05,
+          maxRatio: 1.6,
+        });
       },
     });
 
@@ -353,8 +367,13 @@ export function GraphPage() {
     }
     s.selectedNeighborhood = neighborhood;
     refresh();
-    zoomToNodes(neighborhood, { paddingFactor: 1.6 });
-  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset]);
+    zoomToNodes(neighborhood, {
+      paddingFactor: 1.35,
+      padding: graphFitPadding(false),
+      minRatio: 0.05,
+      maxRatio: 1.8,
+    });
+  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding]);
 
   const handleToggleFilter = useCallback((type: string) => {
     const s = stateRef.current;
@@ -451,8 +470,12 @@ export function GraphPage() {
 
   const handleSearchSelect = useCallback((nodeId: string) => {
     selectNode(nodeId);
-    selectAndCenter(nodeId);
-  }, [selectNode, selectAndCenter]);
+    zoomToNodes(new Set([nodeId]), {
+      padding: graphFitPadding(true),
+      minRatio: 0.08,
+      maxRatio: 0.22,
+    });
+  }, [selectNode, zoomToNodes, graphFitPadding]);
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
@@ -552,44 +575,59 @@ export function GraphPage() {
           </div>
         )}
 
-        {showManualHint && layoutMode === 'auto' && nodeCount > 0 && (
-          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 z-30 bg-surface/95 border border-border text-muted-foreground rounded px-3 py-1.5 text-xs shadow-lg">
-            Drag a node to pin the layout.
-          </div>
-        )}
-
-        {layoutMode === 'manual' && (
-          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 z-30 bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
-            Manual layout: positions are saved in this browser.
-          </div>
-        )}
-
         {/* Overlays */}
-        <GraphSearch graph={graph} onSelect={handleSearchSelect} />
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 z-30 grid grid-rows-[auto_1fr_auto] gap-3 p-3"
+          style={{ right: selectedNodeId ? GRAPH_DRAWER_WIDTH + GRAPH_OVERLAY_GUTTER : GRAPH_OVERLAY_GUTTER }}
+        >
+          <div className="grid grid-cols-[minmax(14rem,18rem)_minmax(16rem,1fr)_minmax(8rem,18rem)] items-start gap-3">
+            <GraphSearch graph={graph} onSelect={handleSearchSelect} />
+            <div className="flex min-w-0 flex-col items-center gap-2">
+              <PathInfoBar
+                graph={graph}
+                pathSource={s.pathSource}
+                pathTarget={s.pathTarget}
+                pathEdges={s.pathEdges}
+                onClear={clearPathHighlight}
+                className="max-w-full"
+              />
+              <FocusBanner
+                focusNode={s.focusNode}
+                focusSize={s.focusNeighborhood?.size || 0}
+                onExit={exitNeighborhoodFocus}
+                className="max-w-full"
+              />
+            </div>
+            <div />
+          </div>
 
-        <NodeFilters
-          graph={graph}
-          activeFilters={s.activeFilters}
-          onToggle={handleToggleFilter}
-        />
+          <div />
 
-        <PathInfoBar
-          graph={graph}
-          pathSource={s.pathSource}
-          pathTarget={s.pathTarget}
-          pathEdges={s.pathEdges}
-          onClear={clearPathHighlight}
-        />
+          <div className="grid grid-cols-[minmax(14rem,1fr)_auto_minmax(10rem,12rem)] items-end gap-3">
+            <div className="flex min-w-0 flex-col items-start gap-2">
+              <EdgeLegend defaultCollapsed={true} className="max-w-[14rem]" />
+              <NodeFilters
+                graph={graph}
+                activeFilters={s.activeFilters}
+                onToggle={handleToggleFilter}
+              />
+            </div>
+            <div className="flex justify-center">
+              {showManualHint && layoutMode === 'auto' && nodeCount > 0 && (
+                <div className="pointer-events-none bg-surface/95 border border-border text-muted-foreground rounded px-3 py-1.5 text-xs shadow-lg">
+                  Drag a node to pin the layout.
+                </div>
+              )}
 
-        <FocusBanner
-          focusNode={s.focusNode}
-          focusSize={s.focusNeighborhood?.size || 0}
-          onExit={exitNeighborhoodFocus}
-        />
-
-        <Minimap graph={graph} rendererRef={rendererRef} />
-
-        <EdgeLegend />
+              {layoutMode === 'manual' && (
+                <div className="pointer-events-none bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
+                  Manual layout: positions are saved in this browser.
+                </div>
+              )}
+            </div>
+            <Minimap graph={graph} rendererRef={rendererRef} />
+          </div>
+        </div>
 
         {/* Keyboard shortcuts overlay */}
         {showShortcuts && (

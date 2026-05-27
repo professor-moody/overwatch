@@ -6,16 +6,18 @@ import { useRef, useEffect, useCallback } from 'react';
 import type Graph from 'graphology';
 import type Sigma from 'sigma';
 import { NODE_COLORS } from '../../lib/graph-constants';
+import { cn } from '../../lib/utils';
 
 interface MinimapProps {
   graph: Graph;
   rendererRef: React.MutableRefObject<Sigma | null>;
+  className?: string;
 }
 
 const MINIMAP_W = 160;
 const MINIMAP_H = 120;
 
-export function Minimap({ graph, rendererRef }: MinimapProps) {
+export function Minimap({ graph, rendererRef, className }: MinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const draw = useCallback(() => {
@@ -86,7 +88,7 @@ export function Minimap({ graph, rendererRef }: MinimapProps) {
   }, [draw]);
 
   return (
-    <div className="absolute bottom-3 right-3 z-20 border border-border rounded overflow-hidden shadow-lg">
+    <div className={cn('pointer-events-auto border border-border rounded overflow-hidden shadow-lg', className)}>
       <canvas ref={canvasRef} width={MINIMAP_W} height={MINIMAP_H} className="block" />
     </div>
   );
