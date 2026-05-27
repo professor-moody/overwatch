@@ -14,6 +14,13 @@ type PathEdgeAttrs = { weight: number };
 
 export type PathOptimize = 'confidence' | 'stealth' | 'balanced';
 export type PathResult = { nodes: string[]; total_confidence: number; total_opsec_noise: number };
+export type PathAnalysisStatus = 'found' | 'no_path' | 'missing_endpoint' | 'analysis_failed';
+export type PathAnalysisResult = {
+  status: PathAnalysisStatus;
+  path: string[] | null;
+  missing_nodes?: string[];
+  error?: string;
+};
 
 export type QueryGraphFn = (query: GraphQuery) => GraphQueryResult;
 
@@ -58,13 +65,21 @@ export class PathAnalyzer {
 
       const fwdKey = `${source}--${attrs.type}--${target}`;
       if (!pg.hasEdge(fwdKey)) {
-        try { pg.addEdgeWithKey(fwdKey, source, target, { weight } as PathEdgeAttrs as unknown as EdgeProperties); } catch {}
+        try {
+          pg.addEdgeWithKey(fwdKey, source, target, { weight } as PathEdgeAttrs as unknown as EdgeProperties);
+        } catch (err) {
+          this.logProjectionFailure(fwdKey, source, target, err);
+        }
       }
 
       if (this.bidirectionalEdgeTypes.has(attrs.type)) {
         const revKey = `${target}--${attrs.type}--${source}-rev`;
         if (!pg.hasEdge(revKey)) {
-          try { pg.addEdgeWithKey(revKey, target, source, { weight } as PathEdgeAttrs as unknown as EdgeProperties); } catch {}
+          try {
+            pg.addEdgeWithKey(revKey, target, source, { weight } as PathEdgeAttrs as unknown as EdgeProperties);
+          } catch (err) {
+            this.logProjectionFailure(revKey, target, source, err);
+          }
         }
       }
     });
@@ -85,14 +100,63 @@ export class PathAnalyzer {
     }
   }
 
+  private logProjectionFailure(edgeKey: string, source: string, target: string, err: unknown): void {
+    this.ctx.logEvent({
+      description: `Path graph projection failed for edge ${edgeKey}`,
+      category: 'system',
+      event_type: 'instrumentation_warning',
+      result_classification: 'failure',
+      details: {
+        analysis_status: 'analysis_failed',
+        edge_key: edgeKey,
+        source,
+        target,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+  }
+
   findShortestPath(fromNode: string, toNode: string, optimize: PathOptimize = 'confidence'): string[] | null {
+    const result = this.findShortestPathDetailed(fromNode, toNode, optimize);
+    return result.status === 'found' ? result.path : null;
+  }
+
+  findShortestPathDetailed(fromNode: string, toNode: string, optimize: PathOptimize = 'confidence'): PathAnalysisResult {
     const pg = this.buildPathGraph(optimize);
-    if (!pg.hasNode(fromNode) || !pg.hasNode(toNode)) return null;
+    const missing = [fromNode, toNode].filter(nodeId => !pg.hasNode(nodeId));
+    if (missing.length > 0) return { status: 'missing_endpoint', path: null, missing_nodes: missing };
     try {
-      return dijkstra.bidirectional(pg, fromNode, toNode, 'weight');
-    } catch {
-      return null;
+      const path = dijkstra.bidirectional(pg, fromNode, toNode, 'weight');
+      return path ? { status: 'found', path } : { status: 'no_path', path: null };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.ctx.logEvent({
+        description: `Path analysis failed (${fromNode} → ${toNode})`,
+        category: 'system',
+        event_type: 'instrumentation_warning',
+        result_classification: 'failure',
+        details: { analysis_status: 'analysis_failed', from_node: fromNode, to_node: toNode, optimize, error },
+      });
+      return { status: 'analysis_failed', path: null, error };
     }
+  }
+
+  findPathsDetailed(fromNode: string, toNode: string, maxPaths: number = 5, optimize: PathOptimize = 'confidence'): { paths: Array<PathResult>; analysis_status: PathAnalysisStatus; warnings?: string[] } {
+    const result = this.findShortestPathDetailed(fromNode, toNode, optimize);
+    if (result.status !== 'found' || !result.path) {
+      const warnings = result.status === 'missing_endpoint'
+        ? [`Missing graph endpoint(s): ${(result.missing_nodes || []).join(', ')}`]
+        : result.status === 'analysis_failed'
+          ? [`Path analysis failed: ${result.error || 'unknown error'}`]
+          : undefined;
+      return { paths: [], analysis_status: result.status, warnings };
+    }
+
+    const { total_confidence, total_opsec_noise } = this.computePathConfidence(result.path);
+    return {
+      paths: [{ nodes: result.path, total_confidence, total_opsec_noise }].slice(0, maxPaths),
+      analysis_status: 'found',
+    };
   }
 
   hopsToNearestObjective(fromNodeId: string, optimize: PathOptimize = 'confidence'): number | null {
@@ -166,20 +230,7 @@ export class PathAnalyzer {
   }
 
   findPaths(fromNode: string, toNode: string, maxPaths: number = 5, optimize: PathOptimize = 'confidence'): Array<PathResult> {
-    if (!this.ctx.graph.hasNode(fromNode) || !this.ctx.graph.hasNode(toNode)) return [];
-
-    const paths: Array<PathResult> = [];
-    try {
-      const path = this.findShortestPath(fromNode, toNode, optimize);
-      if (path) {
-        const { total_confidence, total_opsec_noise } = this.computePathConfidence(path);
-        paths.push({ nodes: path, total_confidence, total_opsec_noise });
-      }
-    } catch (err) {
-      this.ctx.log(`Path analysis error (${fromNode} → ${toNode}): ${err instanceof Error ? err.message : String(err)}`, undefined, { category: 'system', outcome: 'failure' });
-    }
-
-    return paths.slice(0, maxPaths);
+    return this.findPathsDetailed(fromNode, toNode, maxPaths, optimize).paths;
   }
 
   private resolveObjectiveTargets(): string[] {

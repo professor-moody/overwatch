@@ -819,6 +819,10 @@ export class GraphEngine {
     return this.paths.findPaths(fromNode, toNode, maxPaths, optimize);
   }
 
+  findPathsDetailed(fromNode: string, toNode: string, maxPaths: number = 5, optimize?: PathOptimize) {
+    return this.paths.findPathsDetailed(fromNode, toNode, maxPaths, optimize);
+  }
+
   /**
    * Post-ingest enrichment: identify HVTs and pre-compute attack paths.
    * Called after BloodHound/AzureHound ingestion.

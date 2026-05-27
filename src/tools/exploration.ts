@@ -114,10 +114,15 @@ Returns paths with per-hop confidence scores and total path confidence.`,
     },
     withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths, optimize }) => {
       let paths;
+      let analysisStatus: string | undefined;
+      let analysisWarnings: string[] | undefined;
       if (objective_id) {
         paths = engine.findPathsToObjective(objective_id, max_paths, optimize);
       } else if (from_node && to_node) {
-        paths = engine.findPaths(from_node, to_node, max_paths, optimize);
+        const detailed = engine.findPathsDetailed(from_node, to_node, max_paths, optimize);
+        paths = detailed.paths;
+        analysisStatus = detailed.analysis_status;
+        analysisWarnings = detailed.warnings;
       } else if (from_node && !to_node) {
         const state = engine.getState();
         const unachieved = state.objectives.filter(o => !o.achieved);
@@ -147,7 +152,12 @@ Returns paths with per-hop confidence scores and total path confidence.`,
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ paths_found: paths.length, paths }, null, 2)
+          text: JSON.stringify({
+            paths_found: paths.length,
+            paths,
+            analysis_status: analysisStatus ?? (paths.length > 0 ? 'found' : 'no_path'),
+            warnings: analysisWarnings,
+          }, null, 2)
         }]
       };
     })

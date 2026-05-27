@@ -330,6 +330,11 @@ export function parseBloodHoundFile(
   const nodeType = document.nodeType;
   const metaType = (parsed.meta?.type || filename.replace(/\.json$/i, '')).toLowerCase();
 
+  if (!nodeType) {
+    errors.push(`${filename}: unknown_type '${metaType}' — no BloodHound nodes or edges were ingested`);
+    return { finding: null, errors, wasCE };
+  }
+
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const relationWarnings = new Set<string>();
@@ -343,40 +348,36 @@ export function parseBloodHoundFile(
     if (!sid) continue;
 
     const props = obj.Properties || {};
-    const nodeId = nodeType
-      ? resolveCanonicalId(sid, nodeType, props, metaType)
-      : makeNodeId(sid, 'user');
+    const nodeId = resolveCanonicalId(sid, nodeType, props, metaType);
 
     if (!sidMap.has(sid)) {
       sidMap.set(sid, nodeId);
     }
 
     // Create node
-    if (nodeType) {
-      const nodeProps = extractNodeProperties(props, nodeType, obj, metaType);
-      const label = (nodeProps.ca_name as string | undefined)
-        || (nodeProps.template_name as string | undefined)
-        || (props.name as string)
-        || (props.displayname as string)
-        || sid;
-      const identity = resolveNodeIdentity({
-        id: sidMap.get(sid)!,
-        type: nodeType,
-        label,
-        ...nodeProps,
-      });
-      nodes.push({
-        id: identity.id,
-        type: nodeType,
-        label,
-        bh_sid: sid,
-        identity_status: identity.status,
-        identity_family: identity.family,
-        canonical_id: identity.status === 'canonical' ? identity.id : undefined,
-        identity_markers: identity.markers,
-        ...nodeProps,
-      });
-    }
+    const nodeProps = extractNodeProperties(props, nodeType, obj, metaType);
+    const label = (nodeProps.ca_name as string | undefined)
+      || (nodeProps.template_name as string | undefined)
+      || (props.name as string)
+      || (props.displayname as string)
+      || sid;
+    const identity = resolveNodeIdentity({
+      id: sidMap.get(sid)!,
+      type: nodeType,
+      label,
+      ...nodeProps,
+    });
+    nodes.push({
+      id: identity.id,
+      type: nodeType,
+      label,
+      bh_sid: sid,
+      identity_status: identity.status,
+      identity_family: identity.family,
+      canonical_id: identity.status === 'canonical' ? identity.id : undefined,
+      identity_markers: identity.markers,
+      ...nodeProps,
+    });
   }
 
   // Helper: resolve SID to canonical ID if known, else fallback to SID-based
@@ -394,7 +395,7 @@ export function parseBloodHoundFile(
     const sid = obj.ObjectIdentifier;
     if (!sid) continue;
 
-    const nodeId = resolveSid(sid, nodeType || 'user');
+    const nodeId = resolveSid(sid, nodeType);
 
     // ACEs → edges
     if (obj.Aces) {
@@ -593,7 +594,7 @@ export function parseBloodHoundFile(
     }
 
     // MEMBER_OF_DOMAIN edges for nodes with an explicit domain property
-    if (nodeType && ['user', 'host', 'group'].includes(nodeType)) {
+    if (['user', 'host', 'group'].includes(nodeType)) {
       const props = obj.Properties || {};
       const domainName = props.domain as string | undefined;
       if (domainName) {

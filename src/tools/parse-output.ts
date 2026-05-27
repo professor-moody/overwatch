@@ -219,15 +219,17 @@ Pass either the raw output content or a local file path for large artifacts.`,
           frontier_item_id,
           frontier_type: frontierType,
           linked_finding_ids: [finding.id],
-          result_classification: 'neutral',
-          details: { parsed_nodes: 0, parsed_edges: 0, ingested: false },
+          result_classification: 'failure',
+          details: { parsed_nodes: 0, parsed_edges: 0, ingested: false, parse_status: 'no_data' },
         });
         engine.persist();
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              parsed: true,
+              parsed: false,
+              ingested: false,
+              parse_status: 'no_data',
               tool: tool_name,
               action_id: normalizedActionId,
               finding_id: finding.id,
@@ -237,7 +239,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
               warnings: warnings.length > 0 ? warnings : undefined,
               message: 'Output parsed but no data extracted. Check the output format.',
             }, null, 2)
-          }]
+          }],
+          isError: true,
         };
       }
 
@@ -262,10 +265,12 @@ Pass either the raw output content or a local file path for large artifacts.`,
             type: 'text',
             text: JSON.stringify({
               parsed: true,
+              parse_status: 'validation_failed',
               tool: tool_name,
               action_id: normalizedActionId,
               finding_id: finding.id,
               parsed_from: filePathProvided ? 'file_path' : 'output',
+              ingested: false,
               validation_errors: prepared.errors,
               warnings: warnings.length > 0 ? warnings : undefined,
             }, null, 2),
@@ -308,6 +313,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
           type: 'text',
           text: JSON.stringify({
             parsed: true,
+            parse_status: 'ok',
             tool: tool_name,
             action_id: normalizedActionId,
             finding_id: finding.id,

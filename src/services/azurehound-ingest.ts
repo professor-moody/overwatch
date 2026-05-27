@@ -36,20 +36,47 @@ function azureObjectNodeId(objectId: string): string {
 export interface AzureHoundParseResult {
   finding: Finding;
   warnings: string[];
+  ingest_summary: {
+    filename: string;
+    kind: string;
+    processed_records: number;
+    dropped_records: number;
+    dropped_by_reason: Record<string, number>;
+    warnings: string[];
+  };
 }
 
 export function parseAzureHoundFile(content: string, filename: string): AzureHoundParseResult {
   const nodes: Finding['nodes'] = [];
   const edges: Finding['edges'] = [];
   const warnings: string[] = [];
+  const droppedByReason: Record<string, number> = {};
   const now = new Date().toISOString();
   const seenNodes = new Set<string>();
+
+  const makeSummary = (kind: string, processedRecords: number) => ({
+    filename,
+    kind,
+    processed_records: processedRecords,
+    dropped_records: Object.values(droppedByReason).reduce((sum, count) => sum + count, 0),
+    dropped_by_reason: droppedByReason,
+    warnings,
+  });
+
+  const drop = (reason: string): void => {
+    droppedByReason[reason] = (droppedByReason[reason] || 0) + 1;
+  };
 
   let data: AzureHoundData;
   try {
     data = JSON.parse(content);
   } catch {
-    return { finding: { id: `azurehound-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] }, warnings: [`${filename}: failed to parse JSON`] };
+    warnings.push(`${filename}: failed to parse JSON`);
+    return {
+      finding: { id: `azurehound-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] },
+      warnings,
+      ingest_summary: makeSummary('unknown', 0),
+    };
   }
 
   const items = data.data || data.value || (Array.isArray(data) ? data : []);
@@ -62,10 +89,22 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
   ]);
   if (!SUPPORTED_KINDS.has(kind) && kind !== 'unknown') {
     warnings.push(`${filename}: unsupported AzureHound kind '${kind}', skipping ${items.length} item(s)`);
+    for (let i = 0; i < items.length; i++) drop('unsupported_kind');
+    return {
+      finding: { id: `azurehound-${normalizeKeyPart(filename)}-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] },
+      warnings,
+      ingest_summary: makeSummary(kind, items.length),
+    };
   }
   // Phase D: surface silent zero-result collapses when kind inference failed.
   if (kind === 'unknown' && items.length > 0) {
     warnings.push(`${filename}: could not infer AzureHound kind from filename or 'kind' field; skipping ${items.length} item(s)`);
+    for (let i = 0; i < items.length; i++) drop('unknown_kind');
+    return {
+      finding: { id: `azurehound-${normalizeKeyPart(filename)}-${Date.now()}`, agent_id: AGENT_ID, timestamp: now, nodes: [], edges: [] },
+      warnings,
+      ingest_summary: makeSummary(kind, items.length),
+    };
   }
 
   for (const item of items) {
@@ -75,7 +114,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'azusers':
       case 'users': {
         const objectId = props.id || props.objectId || item.ObjectIdentifier || '';
-        if (!objectId) break;
+        if (!objectId) { drop('azusers.missing_object_id'); break; }
         const upn = props.userPrincipalName || props.mail || '';
         const displayName = props.displayName || upn || objectId;
         const nodeId = azureObjectNodeId(objectId);
@@ -98,7 +137,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'azgroups':
       case 'groups': {
         const objectId = props.id || props.objectId || item.ObjectIdentifier || '';
-        if (!objectId) break;
+        if (!objectId) { drop('azgroups.missing_object_id'); break; }
         const displayName = props.displayName || objectId;
         const nodeId = azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
@@ -116,7 +155,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         for (const member of Array.isArray(members) ? members : []) {
           const memberId = member.ObjectIdentifier || member.id || member.objectId || '';
           const memberType = (member.ObjectType || member['@odata.type'] || '').toLowerCase();
-          if (!memberId) continue;
+          if (!memberId) { drop('azgroups.member_missing_object_id'); continue; }
 
           const memberNodeId = azureObjectNodeId(memberId);
 
@@ -145,7 +184,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'applications': {
         // Apps use appId (different from SP objectId), so keep a separate namespace
         const appId = props.appId || props.id || item.ObjectIdentifier || '';
-        if (!appId) break;
+        if (!appId) { drop('azapps.missing_app_id'); break; }
         const displayName = props.displayName || appId;
         const nodeId = cloudIdentityId(`azure:app:${appId}`);
         if (seenNodes.has(nodeId)) break;
@@ -164,7 +203,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'azserviceprincipals':
       case 'serviceprincipals': {
         const spId = props.id || props.objectId || item.ObjectIdentifier || '';
-        if (!spId) break;
+        if (!spId) { drop('azserviceprincipals.missing_object_id'); break; }
         const displayName = props.displayName || spId;
         const nodeId = azureObjectNodeId(spId);
         if (seenNodes.has(nodeId)) break;
@@ -214,7 +253,10 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         // Scope of the assignment (subscription / RG / single resource path).
         // Without this, Reader-on-one-RG looks identical to Owner-on-tenant.
         const scope = (props.scope || props.Scope || '') as string;
-        if (!principalId || !roleName) break;
+        if (!principalId || !roleName) {
+          drop(!principalId ? 'azroleassignments.missing_principal_id' : 'azroleassignments.missing_role');
+          break;
+        }
 
         // Per-assignment policy node: (principal, role, scope) is the natural
         // identity of an Azure RBAC assignment. Without this, two distinct
@@ -309,7 +351,10 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'approleassignments': {
         const principalId = props.principalId || props.PrincipalId || '';
         const resourceId = props.resourceId || props.ResourceId || '';
-        if (!principalId || !resourceId) break;
+        if (!principalId || !resourceId) {
+          drop(!principalId ? 'azapproleassignments.missing_principal_id' : 'azapproleassignments.missing_resource_id');
+          break;
+        }
 
         const srcId = azureObjectNodeId(principalId);
         const tgtId = azureObjectNodeId(resourceId);
@@ -341,8 +386,14 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       }
 
       default:
+        drop('unsupported_kind');
         break;
     }
+  }
+
+  const summary = makeSummary(kind, items.length);
+  if (summary.dropped_records > 0) {
+    warnings.push(`${filename}: dropped ${summary.dropped_records} AzureHound record(s): ${Object.entries(summary.dropped_by_reason).map(([reason, count]) => `${reason}=${count}`).join(', ')}`);
   }
 
   return {
@@ -354,6 +405,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       edges,
     },
     warnings,
+    ingest_summary: makeSummary(kind, items.length),
   };
 }
 

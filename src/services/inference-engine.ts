@@ -45,6 +45,8 @@ export class InferenceEngine {
 
   backfillRule(rule: InferenceRule): string[] {
     const inferred: string[] = [];
+    let candidateNodes = 0;
+    let filteredByRequiresEdge = 0;
     this.ctx.graph.forEachNode((nodeId: string, attrs) => {
       if (rule.trigger.node_type && attrs.type !== rule.trigger.node_type) return;
       if (rule.trigger.property_match) {
@@ -53,9 +55,27 @@ export class InferenceEngine {
         );
         if (!matches) return;
       }
-      if (rule.trigger.requires_edge && !this.hasMatchingEdge(nodeId, rule.trigger.requires_edge)) return;
+      candidateNodes++;
+      if (rule.trigger.requires_edge && !this.hasMatchingEdge(nodeId, rule.trigger.requires_edge)) {
+        filteredByRequiresEdge++;
+        return;
+      }
       inferred.push(...this.runRulesForRule(rule, nodeId));
     });
+    if (inferred.length === 0 && (candidateNodes > 0 || filteredByRequiresEdge > 0)) {
+      this.ctx.logEvent({
+        description: `Inference backfill produced no edges for rule ${rule.name}`,
+        category: 'inference',
+        event_type: 'inference_generated',
+        result_classification: 'neutral',
+        details: {
+          rule_id: rule.id,
+          inference_status: 'no_edges',
+          candidate_nodes: candidateNodes,
+          filtered_by_requires_edge: filteredByRequiresEdge,
+        },
+      });
+    }
     return inferred;
   }
 
@@ -482,7 +502,20 @@ export class InferenceEngine {
           // Global fanout: cap to prevent frontier explosion on large graphs
           const maxGlobalFanout = ((this.ctx.config as unknown as Record<string, unknown>).max_global_fanout as number | undefined) ?? 50;
           if (allCompat.length > maxGlobalFanout) {
-            console.error(`[inference] compatible_services_same_domain: capping global fanout from ${allCompat.length} to ${maxGlobalFanout} for credential ${triggerNodeId}`);
+            this.ctx.logEvent({
+              description: `Inference global fanout capped for credential ${triggerNodeId}`,
+              category: 'inference',
+              event_type: 'inference_generated',
+              result_classification: 'partial',
+              target_node_ids: [triggerNodeId],
+              details: {
+                rule_id: rule?.id,
+                selector: 'compatible_services_same_domain',
+                inference_status: 'fanout_capped',
+                original_count: allCompat.length,
+                returned_count: maxGlobalFanout,
+              },
+            });
             return allCompat.slice(0, maxGlobalFanout);
           }
           return allCompat;
