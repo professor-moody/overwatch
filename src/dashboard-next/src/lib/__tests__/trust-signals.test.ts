@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { extractActivityTrustSignals, extractFindingTrustSignals } from '../trust-signals';
-import type { FindingDto } from '../api';
+import { extractActivityTrustSignals, extractFindingTrustSignals, trustSignalsForNode } from '../trust-signals';
+import type { FindingDto, TrustSignalDto } from '../api';
 import type { ActivityEntry } from '../types';
 
 function activity(partial: Partial<ActivityEntry>): ActivityEntry {
@@ -40,8 +40,8 @@ describe('dashboard trust signals', () => {
     expect(signals).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
-        label: '1 dropped record',
-        detail: 'azusers.missing_object_id: 1',
+        label: 'Dropped records',
+        detail: '1 dropped record: azusers.missing_object_id: 1',
       }),
     ]));
   });
@@ -74,6 +74,24 @@ describe('dashboard trust signals', () => {
     ]));
   });
 
+  it('flags truncated output and partial parse summaries', () => {
+    const signals = extractActivityTrustSignals(activity({
+      event_type: 'action_completed',
+      details: {
+        stdout_truncated: true,
+        parse_summary: { partial: true, partial_reason: 'bounded_buffer_only' },
+      },
+    }));
+
+    expect(signals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'output-truncated',
+        severity: 'warning',
+        label: 'Output truncated',
+      }),
+    ]));
+  });
+
   it('marks estimated finding CVSS as advisory', () => {
     const finding: FindingDto = {
       id: 'finding-1',
@@ -96,5 +114,15 @@ describe('dashboard trust signals', () => {
         label: 'Estimated CVSS',
       }),
     ]);
+  });
+
+  it('filters backend trust signals for graph inspector nodes', () => {
+    const signals: TrustSignalDto[] = [
+      { id: 'node', source: 'activity', severity: 'warning', label: 'Dropped records', node_ids: ['host-1'] },
+      { id: 'finding', source: 'finding', severity: 'info', label: 'Estimated CVSS', finding_id: 'finding-1' },
+      { id: 'other', source: 'activity', severity: 'error', label: 'No parser data', node_ids: ['host-2'] },
+    ];
+
+    expect(trustSignalsForNode(signals, 'host-1', ['finding-1']).map(signal => signal.id)).toEqual(['node', 'finding']);
   });
 });

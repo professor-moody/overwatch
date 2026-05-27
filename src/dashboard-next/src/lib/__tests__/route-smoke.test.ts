@@ -5,8 +5,9 @@ const smokeUrl = process.env.OVERWATCH_DASHBOARD_SMOKE_URL || '';
 const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> = [
+  { path: '/overview', expects: ['Overview', 'Needs Verification'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed', 'Estimated CVSS'] },
   { path: '/actions', expects: ['Actions', 'terminal'] },
-  { path: '/activity', expects: ['Activity'] },
+  { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
   { path: '/campaigns', expects: ['Campaigns'] },
   { path: '/sessions', expects: ['Sessions'], expectsAny: ['Attach', 'open_session'] },
   { path: '/frontier', expects: ['Frontier'] },
@@ -17,7 +18,8 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
   { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
   { path: '/evidence', expects: ['Evidence'] },
-  { path: '/findings', expects: ['Findings'] },
+  { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
+  { path: '/smoke', expects: ['Smoke', '/api/trust-signals'] },
   { path: '/engagements', expects: ['Engagements'] },
 ];
 

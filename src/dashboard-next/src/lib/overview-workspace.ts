@@ -1,4 +1,5 @@
 import type { AccessSummary, ActivityEntry, FrontierItem, PendingAction, SessionInfo } from './types';
+import type { TrustSignalDto } from './api';
 
 export interface AttentionItem {
   id: string;
@@ -14,6 +15,15 @@ export interface AccessFacts {
   liveSessions: number;
   hosts: number;
   validCredentials: number;
+}
+
+export interface VerificationItem {
+  id: string;
+  label: string;
+  severity: TrustSignalDto['severity'];
+  route: 'activity' | 'findings' | 'graph';
+  nodeId?: string;
+  meta?: string;
 }
 
 export function deriveAttentionItems({
@@ -71,4 +81,24 @@ export function deriveRecentChanges(recentActivity: ActivityEntry[], limit = 5):
     .filter(e => e.description || e.event_type)
     .slice(-limit)
     .reverse();
+}
+
+export function deriveVerificationItems(signals: TrustSignalDto[], limit = 4): VerificationItem[] {
+  return [...signals]
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || (b.timestamp || '').localeCompare(a.timestamp || ''))
+    .slice(0, limit)
+    .map(signal => ({
+      id: signal.id,
+      label: signal.detail ? `${signal.label}: ${signal.detail}` : signal.label,
+      severity: signal.severity,
+      route: signal.node_ids?.[0] ? 'graph' : signal.finding_id ? 'findings' : 'activity',
+      nodeId: signal.node_ids?.[0],
+      meta: signal.timestamp ? signal.timestamp.slice(11, 16) : undefined,
+    }));
+}
+
+function severityRank(severity: TrustSignalDto['severity']): number {
+  if (severity === 'error') return 0;
+  if (severity === 'warning') return 1;
+  return 2;
 }

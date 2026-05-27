@@ -102,6 +102,8 @@ Activity and Findings surface compact trust signals for correctness-sensitive st
 
 These signals are operator-facing diagnostics. They do not mean the target is vulnerable by themselves; they tell you when absence of evidence, path output, or severity scoring needs verification before reporting.
 
+The dashboard derives the summary from `/api/trust-signals`. Activity and Findings show row-level context, Overview shows the newest verification queue, Graph inspectors show signals tied to the selected node, and Smoke checks the endpoint shape.
+
 ## Sidebar Panels
 
 The sidebar contains six collapsible panels:

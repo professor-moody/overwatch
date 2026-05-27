@@ -1,4 +1,4 @@
-import type { FindingDto } from './api';
+import type { FindingDto, TrustSignalDto } from './api';
 import type { ActivityEntry } from './types';
 
 export type TrustSignalSeverity = 'error' | 'warning' | 'info';
@@ -56,8 +56,8 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
       addSignal(signals, {
         id: `ingest-dropped-${signals.length}`,
         severity: 'warning',
-        label: `${dropped} dropped record${dropped === 1 ? '' : 's'}`,
-        detail: droppedReasonText(summary),
+        label: 'Dropped records',
+        detail: [`${dropped} dropped record${dropped === 1 ? '' : 's'}`, droppedReasonText(summary)].filter(Boolean).join(': '),
         action: 'Review ingest warnings before relying on absence of paths.',
       });
     }
@@ -75,7 +75,7 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
     addSignal(signals, {
       id: 'path-missing-endpoint',
       severity: 'warning',
-      label: 'Path endpoint missing',
+      label: 'Endpoint missing',
       detail: 'One or more requested path endpoints were not present in the current graph.',
     });
   } else if (analysisStatus === 'no_path') {
@@ -106,6 +106,21 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
     });
   }
 
+  const truncated = details.stdout_truncated === true
+    || details.stderr_truncated === true
+    || typeof details.stdout_dropped_bytes === 'number'
+    || typeof details.stderr_dropped_bytes === 'number'
+    || parseSummary?.partial === true;
+  if (truncated) {
+    addSignal(signals, {
+      id: 'output-truncated',
+      severity: 'warning',
+      label: 'Output truncated',
+      detail: stringValue(parseSummary?.partial_reason) || 'Captured output or parsed evidence was incomplete.',
+      action: 'Open the full evidence artifact before relying on parsed coverage.',
+    });
+  }
+
   for (const warning of [...stringArray(details.warnings), ...stringArray(parseSummary?.warnings)].slice(0, 3)) {
     addSignal(signals, {
       id: `warning-${warning}`,
@@ -116,6 +131,14 @@ export function extractActivityTrustSignals(entry: ActivityEntry): TrustSignal[]
   }
 
   return signals;
+}
+
+export function trustSignalsForNode(signals: TrustSignalDto[], nodeId: string, findingIds: string[] = []): TrustSignalDto[] {
+  const findingSet = new Set(findingIds);
+  return signals.filter(signal =>
+    signal.node_ids?.includes(nodeId)
+    || (!!signal.finding_id && findingSet.has(signal.finding_id)),
+  );
 }
 
 export function extractFindingTrustSignals(finding: FindingDto): TrustSignal[] {

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo } from 'react';
+import { useEffect, useCallback, useMemo, useState } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { NODE_COLORS } from '../../lib/graph-constants';
@@ -6,9 +6,10 @@ import { cn, formatTimestamp } from '../../lib/utils';
 import { SkeletonPanel } from '../shared/Skeleton';
 import { TelemetrySection } from './TelemetrySection';
 import * as api from '../../lib/api';
+import type { TrustSignalDto } from '../../lib/api';
 import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
 import { MetricTile, PageHeader, PanelSection } from '../shared/primitives';
-import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges, type AttentionItem } from '../../lib/overview-workspace';
+import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges, deriveVerificationItems, type AttentionItem } from '../../lib/overview-workspace';
 
 export function OverviewPanel() {
   const { navigateToGraph, navigateToGraphFilter, navigateToPanel, navigateToEvidence } = useNavigation();
@@ -28,8 +29,8 @@ export function OverviewPanel() {
 
   const initialized = useEngagementStore((s) => s.initialized);
   const achievedCount = objectives.filter((o) => o.achieved).length;
+  const [trustSignals, setTrustSignals] = useState<TrustSignalDto[]>([]);
 
-  // Poll OPSEC budget
   const fetchBudget = useCallback(async () => {
     try {
       const data = await api.getOpsecBudget();
@@ -43,7 +44,21 @@ export function OverviewPanel() {
     return () => clearInterval(timer);
   }, [fetchBudget]);
 
-  // Recent findings from activity
+  const fetchTrustSignals = useCallback(async () => {
+    try {
+      const data = await api.getTrustSignals({ limit: 8 });
+      setTrustSignals(data.signals || []);
+    } catch {
+      setTrustSignals([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTrustSignals();
+    const timer = setInterval(fetchTrustSignals, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchTrustSignals]);
+
   const recentFindings = useMemo(() => {
     return recentActivity
       .filter(e => e.event_type?.includes('finding') || e.description?.toLowerCase().includes('finding'))
@@ -51,7 +66,6 @@ export function OverviewPanel() {
       .reverse();
   }, [recentActivity]);
 
-  // Active campaigns
   const activeCampaigns = useMemo(() => {
     return campaigns.filter(c => c.status === 'active' || c.status === 'paused');
   }, [campaigns]);
@@ -64,6 +78,7 @@ export function OverviewPanel() {
 
   const accessFacts = useMemo(() => deriveAccessFacts(accessSummary, sessions), [accessSummary, sessions]);
   const recentChanges = useMemo(() => deriveRecentChanges(recentActivity), [recentActivity]);
+  const verificationItems = useMemo(() => deriveVerificationItems(trustSignals, 4), [trustSignals]);
 
   const engagement = useEngagementStore((s) => s.engagement);
 
@@ -88,7 +103,6 @@ export function OverviewPanel() {
     <div className="space-y-6">
       <PageHeader title="Overview" />
 
-      {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <MetricTile
           label="Nodes"
@@ -122,7 +136,7 @@ export function OverviewPanel() {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <PanelSection title="Needs Attention">
           <div className="space-y-2 text-xs">
             {attentionItems.map((item) => (
@@ -136,6 +150,23 @@ export function OverviewPanel() {
             ))}
             {attentionItems.length === 0 && (
               <p className="text-muted-foreground">No immediate operator action queued.</p>
+            )}
+          </div>
+        </PanelSection>
+
+        <PanelSection title="Needs Verification" meta={trustSignals.length > 0 ? `(${trustSignals.length})` : undefined}>
+          <div className="space-y-2 text-xs">
+            {verificationItems.map(item => (
+              <DecisionRow
+                key={item.id}
+                label={item.label}
+                meta={item.meta}
+                tone={item.severity === 'info' ? undefined : 'warning'}
+                onClick={() => navigateVerification(item, navigateToPanel, navigateToGraph)}
+              />
+            ))}
+            {verificationItems.length === 0 && (
+              <p className="text-muted-foreground">No parser, path, IAM, or scoring caveats queued.</p>
             )}
           </div>
         </PanelSection>
@@ -154,18 +185,16 @@ export function OverviewPanel() {
             <p className="text-xs text-muted-foreground">No recent activity yet.</p>
           ) : (
             <div className="space-y-1.5">
-              {recentChanges.map(entry => (
-                <FindingEntry key={entry.id} entry={entry} />
+              {recentChanges.map((entry, index) => (
+                <FindingEntry key={activityKey(entry, index)} entry={entry} />
               ))}
             </div>
           )}
         </PanelSection>
       </div>
 
-      {/* OPSEC Noise Gauge */}
       {opsecBudget && <OpsecGauge budget={opsecBudget} />}
 
-      {/* Phases */}
       {phases.length > 0 && (
         <PanelSection title="Engagement Phases">
           <div className="flex gap-2">
@@ -186,7 +215,6 @@ export function OverviewPanel() {
         </PanelSection>
       )}
 
-      {/* Active Campaigns */}
       {activeCampaigns.length > 0 && (
         <PanelSection title="Active Campaigns" meta={`(${activeCampaigns.length})`}>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -198,7 +226,6 @@ export function OverviewPanel() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Graph Summary */}
         <PanelSection title="Graph Summary">
           {graphSummary?.nodes_by_type && (
             <div className="space-y-1.5">
@@ -224,7 +251,6 @@ export function OverviewPanel() {
           )}
         </PanelSection>
 
-        {/* Objectives */}
         <PanelSection title="Objectives">
           {objectives.length === 0 ? (
             <p className="text-xs text-muted-foreground">No objectives defined</p>
@@ -254,18 +280,16 @@ export function OverviewPanel() {
         </PanelSection>
       </div>
 
-      {/* Recent Findings Feed */}
       {recentFindings.length > 0 && (
         <PanelSection title="Recent Findings" meta={`(${recentFindings.length})`}>
           <div className="space-y-1.5 max-h-48 overflow-y-auto">
-            {recentFindings.map((entry) => (
-              <FindingEntry key={entry.id} entry={entry} />
+            {recentFindings.map((entry, index) => (
+              <FindingEntry key={activityKey(entry, index)} entry={entry} />
             ))}
           </div>
         </PanelSection>
       )}
 
-      {/* Readiness */}
       {readiness && readiness.issues.length > 0 && (
         <PanelSection>
           <h3 className="text-sm font-medium mb-2 flex items-center gap-2">
@@ -288,10 +312,8 @@ export function OverviewPanel() {
         </PanelSection>
       )}
 
-      {/* Telemetry */}
       <TelemetrySection />
 
-      {/* Top Frontier */}
       <PanelSection title="Top Frontier Items" meta={`(${frontier.length})`}>
         {frontier.length === 0 ? (
           <p className="text-xs text-muted-foreground">No frontier items</p>
@@ -327,8 +349,6 @@ export function OverviewPanel() {
   );
 }
 
-// ---- OPSEC Noise Gauge ----
-
 function OpsecGauge({ budget }: { budget: OpsecBudget }) {
   const pct = budget.max_noise > 0
     ? Math.round((budget.global_noise_spent / budget.max_noise) * 100)
@@ -355,7 +375,6 @@ function OpsecGauge({ budget }: { budget: OpsecBudget }) {
           {budget.global_noise_spent.toFixed(2)} / {budget.max_noise}
         </span>
       </div>
-      {/* Progress bar */}
       <div className="h-2 bg-elevated rounded-full overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
       </div>
@@ -379,8 +398,6 @@ function OpsecGauge({ budget }: { budget: OpsecBudget }) {
   );
 }
 
-// ---- Campaign Card ----
-
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
   enumeration: '🔍',
@@ -402,7 +419,6 @@ function CampaignCard({ campaign, onClick }: { campaign: Campaign; onClick?: () 
           <span className="text-[10px] px-1 py-0.5 rounded bg-warning/10 text-warning">PAUSED</span>
         )}
       </div>
-      {/* Progress bar */}
       <div className="h-1.5 bg-surface rounded-full overflow-hidden mb-1.5">
         <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${pct}%` }} />
       </div>
@@ -414,8 +430,6 @@ function CampaignCard({ campaign, onClick }: { campaign: Campaign; onClick?: () 
   );
 }
 
-// ---- Finding Entry ----
-
 function FindingEntry({ entry }: { entry: ActivityEntry }) {
   return (
     <div className="flex items-center gap-3 text-xs">
@@ -426,8 +440,24 @@ function FindingEntry({ entry }: { entry: ActivityEntry }) {
   );
 }
 
+function activityKey(entry: ActivityEntry, index: number): string {
+  return entry.event_id || entry.id || `${entry.timestamp}-${entry.event_type}-${index}`;
+}
+
 function navigateAttention(
   item: AttentionItem,
+  navigateToPanel: ReturnType<typeof useNavigation>['navigateToPanel'],
+  navigateToGraph: ReturnType<typeof useNavigation>['navigateToGraph'],
+) {
+  if (item.nodeId) {
+    navigateToGraph(item.nodeId, 2);
+    return;
+  }
+  navigateToPanel(item.route);
+}
+
+function navigateVerification(
+  item: ReturnType<typeof deriveVerificationItems>[number],
   navigateToPanel: ReturnType<typeof useNavigation>['navigateToPanel'],
   navigateToGraph: ReturnType<typeof useNavigation>['navigateToGraph'],
 ) {

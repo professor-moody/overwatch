@@ -13,6 +13,8 @@ import { setTelemetry } from '../src/tools/error-boundary.js';
 import { ToolTelemetry } from '../src/services/tool-telemetry.js';
 
 const STATE_FILE = './state-demo-dashboard.json';
+const requestedDashboardPort = Number.parseInt(process.env.OVERWATCH_DEMO_DASHBOARD_PORT || process.env.OVERWATCH_DASHBOARD_PORT || '8384', 10);
+const DASHBOARD_PORT = Number.isFinite(requestedDashboardPort) ? requestedDashboardPort : 8384;
 const NOW = new Date('2026-05-15T18:23:34.963Z');
 const iso = (minutesAgo = 0) => new Date(NOW.getTime() - minutesAgo * 60_000).toISOString();
 
@@ -669,6 +671,68 @@ engine.logActionEvent({
   target_node_ids: [ids.ws01],
   details: { session_id: 'demo-live-ws01' },
 });
+engine.logActionEvent({
+  description: 'Demo parser caveat: malformed Nmap sample produced no graph data.',
+  event_type: 'parse_output',
+  category: 'finding',
+  agent_id: 'demo-trust',
+  action_id: 'trust-demo-parse-empty',
+  result_classification: 'failure',
+  target_node_ids: [ids.web01],
+  details: { parse_status: 'no_data', parsed_nodes: 0, parsed_edges: 0, ingested: false },
+});
+engine.logActionEvent({
+  description: 'Demo ingest caveat: AzureHound skipped records missing object IDs.',
+  event_type: 'parse_output',
+  category: 'finding',
+  agent_id: 'demo-trust',
+  action_id: 'trust-demo-dropped-records',
+  result_classification: 'partial',
+  target_node_ids: [ids.credGha, ids.deployRole],
+  details: {
+    ingest_summary: [{
+      processed_records: 4,
+      dropped_records: 2,
+      dropped_by_reason: { 'azroleassignments.missing_principal_id': 2 },
+    }],
+  },
+});
+engine.logActionEvent({
+  description: 'Demo path caveat: path projection failed while fitting a malformed edge.',
+  event_type: 'system',
+  category: 'system',
+  agent_id: 'demo-trust',
+  target_node_ids: [ids.credJdoe, ids.dc01],
+  details: { analysis_status: 'analysis_failed', from_node: ids.credJdoe, to_node: ids.dc01 },
+});
+engine.logActionEvent({
+  description: 'Demo path caveat: requested endpoint missing from graph.',
+  event_type: 'system',
+  category: 'system',
+  agent_id: 'demo-trust',
+  target_node_ids: [ids.adminRole],
+  details: { analysis_status: 'missing_endpoint', from_node: ids.deployRole, to_node: 'cloud-identity-missing' },
+});
+engine.logActionEvent({
+  description: 'Demo IAM caveat: role simulation indeterminate after depth cap.',
+  event_type: 'action_completed',
+  category: 'frontier',
+  agent_id: 'demo-trust',
+  action_id: 'trust-demo-iam',
+  result_classification: 'partial',
+  target_node_ids: [ids.deployRole, ids.adminRole],
+  details: { decision: 'indeterminate', depth_capped: true },
+});
+engine.logActionEvent({
+  description: 'Demo evidence caveat: command output exceeded inline buffer.',
+  event_type: 'action_completed',
+  category: 'frontier',
+  agent_id: 'demo-trust',
+  action_id: 'trust-demo-truncated',
+  result_classification: 'partial',
+  target_node_ids: [ids.db01],
+  details: { stdout_truncated: true, stdout_dropped_bytes: 16384, stdout_total_bytes: 32768 },
+});
 
 await sessionManager.create({
   kind: 'local_pty',
@@ -721,7 +785,7 @@ for (let i = 0; i < 20; i++) {
   telemetry.record('validate_action', 20, false);
 }
 
-const dashboard = new DashboardServer(engine, 8384, undefined, sessionManager);
+const dashboard = new DashboardServer(engine, DASHBOARD_PORT, undefined, sessionManager);
 dashboard.attachTape(new InProcessTapeController(engine));
 dashboard.attachMcpTools([
   { name: 'get_state', description: 'Full engagement briefing' },
@@ -734,7 +798,7 @@ dashboard.attachMcpTools([
 
 const result = await dashboard.start();
 if (result.started) {
-  console.log('\nDemo dashboard running at http://localhost:8384');
+  console.log(`\nDemo dashboard running at http://localhost:${DASHBOARD_PORT}`);
   console.log('   Vite dev server (with HMR) at http://localhost:5173');
   console.log(`   Graph: ${hosts.length} hosts, ${users.length} users, ${creds.length} creds, ${services.length} services`);
   console.log(`   Pending actions: ${queue.getPendingCount()}, sessions: ${sessionManager.list().length}, campaigns: ${engine.listCampaigns().length}`);

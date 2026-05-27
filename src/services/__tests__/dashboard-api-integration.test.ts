@@ -103,6 +103,19 @@ function seedGraph(eng: GraphEngine) {
     id: 'seed-trigger', agent_id: 'integration-seed', timestamp: NOW,
     nodes: [], edges: [],
   });
+  eng.logActionEvent({
+    description: 'AzureHound ingest dropped one malformed record',
+    event_type: 'parse_output',
+    result_classification: 'partial',
+    target_node_ids: ['cred-oidc'],
+    details: {
+      ingest_summary: [{
+        processed_records: 2,
+        dropped_records: 1,
+        dropped_by_reason: { 'azusers.missing_object_id': 1 },
+      }],
+    },
+  });
 }
 
 beforeAll(async () => {
@@ -278,6 +291,25 @@ describe('GET /api/readiness', () => {
     expect(body).toHaveProperty('agents');
     expect(body).toHaveProperty('persistence');
     expect(typeof body.api.mcp_tools_registered).toBe('number');
+  });
+});
+
+describe('GET /api/trust-signals', () => {
+  it('returns operator verification signals with counts and links', async () => {
+    const { status, body } = await getJson<Record<string, any>>('/api/trust-signals');
+    expect(status).toBe(200);
+    expect(body).toHaveProperty('generated_at');
+    expect(body).toHaveProperty('counts');
+    expect(Array.isArray(body.signals)).toBe(true);
+    expect(body.total).toBe(body.signals.length);
+    expect(body.signals.some((signal: any) => signal.label === 'Dropped records')).toBe(true);
+  });
+
+  it('can filter operator verification signals by node', async () => {
+    const { status, body } = await getJson<Record<string, any>>('/api/trust-signals?node_id=cred-oidc');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.signals)).toBe(true);
+    expect(body.signals.every((signal: any) => signal.node_ids?.includes('cred-oidc'))).toBe(true);
   });
 });
 

@@ -235,6 +235,19 @@ const CHECKS: CheckDef[] = [
       !Array.isArray(d.reports) ? 'reports field missing' : undefined,
     ),
   },
+  {
+    id: 'trust_signals',
+    label: '/api/trust-signals',
+    description: 'Operator verification signal summary',
+    group: 'Evidence & Reports',
+    severity: 'required',
+    panel: 'activity',
+    run: () => probeJson<{ signals: unknown[]; counts?: Record<string, number>; total?: number }>('/api/trust-signals', d => {
+      if (!Array.isArray(d.signals)) return 'signals field missing';
+      if (!d.counts || typeof d.total !== 'number') return 'summary fields missing';
+      return undefined;
+    }),
+  },
 
   // Tooling + Inference
   {

@@ -7,7 +7,7 @@ import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { correctGraph, getEvidenceChains, getFindings, type FindingDto, type GraphCorrectionOperation } from '../../lib/api';
+import { correctGraph, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -17,6 +17,8 @@ import { computeActionRisk } from '../../lib/action-queue';
 import { getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
+import { trustSignalsForNode } from '../../lib/trust-signals';
+import { TrustSignalList } from '../shared/TrustSignals';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -36,6 +38,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
   const pendingActions = useEngagementStore(s => s.pendingActions);
   const frontier = useEngagementStore(s => s.frontier);
   const [findings, setFindings] = useState<FindingDto[]>([]);
+  const [trustSignals, setTrustSignals] = useState<TrustSignalDto[]>([]);
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
 
@@ -46,6 +49,18 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
       .catch(() => { if (!cancelled) setFindings([]); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!nodeId) {
+      setTrustSignals([]);
+      return;
+    }
+    let cancelled = false;
+    getTrustSignals({ node_id: nodeId, limit: 25 })
+      .then(data => { if (!cancelled) setTrustSignals(data.signals || []); })
+      .catch(() => { if (!cancelled) setTrustSignals([]); });
+    return () => { cancelled = true; };
+  }, [nodeId]);
 
   useEffect(() => {
     if (!nodeId) {
@@ -84,6 +99,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
     frontier,
     findings,
   });
+  const nodeTrustSignals = trustSignalsForNode(trustSignals, nodeId, relationships.findings.map(finding => finding.id));
 
   const edgeGroups = new Map<string, { count: number; peers: { id: string; label: string; type: string }[] }>();
   graph.forEachEdge(nodeId, (_edgeId, edgeAttrs, source, target) => {
@@ -157,6 +173,14 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             <RelationshipLink label="Frontier" count={relationships.frontier.length} hot={relationships.frontier.length > 0} onClick={() => navigateToPanel('frontier', nodeId)} />
             <RelationshipLink label="Findings" count={relationships.findings.length} hot={relationships.findings.length > 0} onClick={() => navigateToPanel('findings')} />
           </div>
+        </InspectorSection>
+
+        <InspectorSection title="Trust Signals" count={nodeTrustSignals.length}>
+          {nodeTrustSignals.length === 0 ? (
+            <EmptyLine>No parser, path, IAM, or scoring caveats reference this node.</EmptyLine>
+          ) : (
+            <TrustSignalList signals={nodeTrustSignals.slice(0, 5)} />
+          )}
         </InspectorSection>
 
         <InspectorSection title="Sessions" count={relationships.sessions.length} actionLabel="Open" onAction={() => navigateToPanel('sessions')}>

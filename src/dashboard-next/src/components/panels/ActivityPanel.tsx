@@ -29,6 +29,7 @@ export function ActivityPanel() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [classFilter, setClassFilter] = useState<ActivityClass | ''>('');
   const [search, setSearch] = useState('');
+  const [trustOnly, setTrustOnly] = useState(false);
   const [selectedEntryOverride, setSelectedEntryOverride] = useState<ActivityEntry | null>(null);
   const [autoScroll] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
@@ -57,7 +58,10 @@ export function ActivityPanel() {
     return () => clearInterval(timer);
   }, [loadHistory, connected]);
 
-  const filtered = useMemo(() => filterActivity(entries, { classFilter, search }), [entries, classFilter, search]);
+  const filtered = useMemo(() => {
+    const base = filterActivity(entries, { classFilter, search });
+    return trustOnly ? base.filter(entry => extractActivityTrustSignals(entry).length > 0) : base;
+  }, [entries, classFilter, search, trustOnly]);
   const selectedEntry = selectedEntryOverride && filtered.includes(selectedEntryOverride)
     ? selectedEntryOverride
     : filtered[filtered.length - 1] || null;
@@ -94,6 +98,9 @@ export function ActivityPanel() {
               placeholder="Filter action, agent, node, text..."
               className="settings-input w-72"
             />
+            <ActionButton onClick={() => setTrustOnly(value => !value)} active={trustOnly} variant="secondary">
+              Trust
+            </ActionButton>
             <ActionButton onClick={loadHistory} variant="secondary">
               Refresh
             </ActionButton>

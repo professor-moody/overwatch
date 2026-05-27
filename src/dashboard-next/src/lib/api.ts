@@ -407,6 +407,50 @@ export async function getReadiness(): Promise<DashboardReadinessSummary> {
   return fetchJson('/api/readiness');
 }
 
+export type TrustSignalSeverity = 'error' | 'warning' | 'info';
+export type TrustSignalSource = 'activity' | 'finding';
+
+export interface TrustSignalDto {
+  id: string;
+  severity: TrustSignalSeverity;
+  label: string;
+  detail?: string;
+  action?: string;
+  timestamp?: string;
+  source: TrustSignalSource;
+  source_event?: {
+    event_id?: string;
+    event_type?: string;
+    description?: string;
+  };
+  action_id?: string;
+  frontier_item_id?: string;
+  finding_id?: string;
+  node_ids?: string[];
+}
+
+export interface TrustSignalsResponse {
+  generated_at: string;
+  total: number;
+  counts: Record<TrustSignalSeverity, number>;
+  signals: TrustSignalDto[];
+}
+
+export async function getTrustSignals(params?: {
+  limit?: number;
+  node_id?: string;
+  finding_id?: string;
+  severity?: TrustSignalSeverity;
+}): Promise<TrustSignalsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.node_id) qs.set('node_id', params.node_id);
+  if (params?.finding_id) qs.set('finding_id', params.finding_id);
+  if (params?.severity) qs.set('severity', params.severity);
+  const q = qs.toString();
+  return fetchJson(`/api/trust-signals${q ? `?${q}` : ''}`);
+}
+
 // --- Inference Rules ---
 
 export async function getInferenceRules(): Promise<{ rules: InferenceRuleInfo[]; total: number }> {

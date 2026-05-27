@@ -26,6 +26,7 @@ import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
 import { ScriptedAgentRunner } from './scripted-agent-runner.js';
 import type { ToolEntry } from './prompt-generator.js';
+import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -576,6 +577,8 @@ export class DashboardServer {
       this.serveMcpTools(res);
     } else if (pathname === '/api/readiness' && method === 'GET') {
       this.serveReadiness(res);
+    } else if (pathname === '/api/trust-signals' && method === 'GET') {
+      this.serveTrustSignals(url, res);
     } else if (pathname === '/api/inference-rules' && method === 'GET') {
       this.serveInferenceRules(res);
     } else if (pathname === '/api/telemetry' && method === 'GET') {
@@ -2273,6 +2276,39 @@ export class DashboardServer {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Readiness check failed: ' + (err as Error).message }));
+    }
+  }
+
+  private serveTrustSignals(url: string, res: ServerResponse): void {
+    try {
+      const params = new URL(url, 'http://localhost').searchParams;
+      const limitParam = params.get('limit');
+      const limit = limitParam ? parseInt(limitParam, 10) : 100;
+      const severityParam = params.get('severity') as TrustSignalSeverity | null;
+      const severity: TrustSignalSeverity | undefined = severityParam && ['error', 'warning', 'info'].includes(severityParam)
+        ? severityParam
+        : undefined;
+      const graph = this.engine.exportGraph();
+      const history = this.engine.getFullHistory();
+      const config = this.engine.getConfig();
+      const evidenceLoader = (id: string): string | null => {
+        try { return this.engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
+      };
+      const findings = buildFindings(graph, history, config, { evidenceLoader });
+      const payload = buildTrustSignalsResponse({
+        history,
+        findings,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : 100,
+        nodeId: params.get('node_id') || undefined,
+        findingId: params.get('finding_id') || undefined,
+        severity,
+        resolveAssetToNode: asset => this.resolveAssetToNode(asset, graph)?.id ?? null,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Trust signal summary failed: ' + (err as Error).message }));
     }
   }
 

@@ -7,6 +7,7 @@
 import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceChain } from './report-generator.js';
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
+import type { TrustSignalDto } from './trust-signal-summary.js';
 
 export interface HtmlDiscoveryStats {
   nodesByType: Record<string, number>;
@@ -49,6 +50,7 @@ export interface HtmlReportData {
   remediationRanking?: HtmlRemediationRanking[];
   complianceMapping?: HtmlComplianceMapping;
   attackTechniques?: HtmlAttackTechnique[];
+  trustSignals?: TrustSignalDto[];
 }
 
 export interface HtmlHeatmapData {
@@ -202,6 +204,8 @@ ${data.complianceMapping ? renderComplianceMappingHtml(data.complianceMapping) :
 
 ${data.attackTechniques && data.attackTechniques.length > 0 ? renderAttackTechniquesHtml(data.attackTechniques) : ''}
 
+${data.trustSignals && data.trustSignals.length > 0 ? renderTrustSignalsHtml(data.trustSignals) : ''}
+
 ${data.credentialChains && data.credentialChains.length > 0 ? renderCredentialChainsHtml(data.credentialChains) : ''}
 
 ${data.discoveryStats ? renderDiscoverySummaryHtml(data.discoveryStats) : ''}
@@ -254,6 +258,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       ${data.remediationRanking && data.remediationRanking.length > 0 ? '<li><a href="#remediation-ranking">Remediation Priority Ranking</a></li>' : ''}
       ${data.complianceMapping ? '<li><a href="#compliance-mapping">Compliance Mapping</a></li>' : ''}
       ${data.attackTechniques && data.attackTechniques.length > 0 ? '<li><a href="#attack-techniques">ATT&amp;CK Techniques</a></li>' : ''}
+      ${data.trustSignals && data.trustSignals.length > 0 ? '<li><a href="#operator-verification">Operator Verification</a></li>' : ''}
       ${data.credentialChains && data.credentialChains.length > 0 ? '<li><a href="#credential-chains">Credential Chains</a></li>' : ''}
       ${data.discoveryStats ? '<li><a href="#discovery-summary">Discovery Summary</a></li>' : ''}
       ${data.agents && data.agents.total > 0 ? '<li><a href="#agent-activity">Agent Activity</a></li>' : ''}
@@ -647,6 +652,31 @@ function renderAttackTechniquesHtml(techniques: HtmlAttackTechnique[]): string {
     <h2>MITRE ATT&amp;CK Techniques</h2>
     <table>
       <thead><tr><th>Technique</th><th>Name</th><th>Findings</th></tr></thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  </section>`;
+}
+
+function renderTrustSignalsHtml(signals: TrustSignalDto[]): string {
+  const rows = signals.slice(0, 20).map(signal => {
+    const context = [
+      signal.source_event?.event_type,
+      signal.action_id ? `action ${signal.action_id.slice(0, 8)}` : undefined,
+      signal.finding_id ? `finding ${signal.finding_id}` : undefined,
+      signal.node_ids?.length ? `nodes ${signal.node_ids.slice(0, 3).join(', ')}` : undefined,
+    ].filter(Boolean).join(' · ') || signal.source;
+    const detail = signal.detail ? `${signal.label}: ${signal.detail}` : signal.label;
+    return `<tr><td>${esc(signal.severity)}</td><td>${esc(detail)}</td><td>${esc(context)}</td></tr>`;
+  }).join('\n        ');
+
+  return `
+  <section id="operator-verification">
+    <h2>Operator Verification</h2>
+    <p>These notes identify parser, ingest, path-analysis, IAM, or scoring caveats present when the report was generated. They are verification prompts, not standalone findings.</p>
+    <table>
+      <thead><tr><th>Severity</th><th>Signal</th><th>Context</th></tr></thead>
       <tbody>
         ${rows}
       </tbody>

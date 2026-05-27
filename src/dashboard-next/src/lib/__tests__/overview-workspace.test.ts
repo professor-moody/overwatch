@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges } from '../overview-workspace';
+import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges, deriveVerificationItems } from '../overview-workspace';
 import type { AccessSummary, ActivityEntry, FrontierItem, PendingAction, SessionInfo } from '../types';
 
 describe('overview workspace helpers', () => {
@@ -48,5 +48,17 @@ describe('overview workspace helpers', () => {
     ] as ActivityEntry[];
 
     expect(deriveRecentChanges(entries).map(entry => entry.id)).toEqual(['new', 'old']);
+  });
+
+  it('prioritizes verification-needed trust signals without replacing attention items', () => {
+    const items = deriveVerificationItems([
+      { id: 'info', source: 'finding', severity: 'info', label: 'Estimated CVSS', finding_id: 'finding-1', timestamp: '2026-05-15T10:02:00Z' },
+      { id: 'error', source: 'activity', severity: 'error', label: 'No parser data', node_ids: ['host-1'], timestamp: '2026-05-15T10:01:00Z' },
+      { id: 'warn', source: 'activity', severity: 'warning', label: 'Dropped records', timestamp: '2026-05-15T10:03:00Z' },
+    ]);
+
+    expect(items.map(item => item.id)).toEqual(['error', 'warn', 'info']);
+    expect(items[0].route).toBe('graph');
+    expect(items[0].nodeId).toBe('host-1');
   });
 });

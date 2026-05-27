@@ -1228,6 +1228,12 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push(`### ${i + 1}. ${f.title}`);
     lines.push('');
     lines.push(`**Severity:** ${severityBadge(f.severity)} | **Risk Score:** ${f.risk_score.toFixed(1)} | **Category:** ${f.category}`);
+    if (f.cvss_score !== undefined) {
+      lines.push(`**CVSS:** ${f.cvss_score.toFixed(1)}${f.cvss_estimated ? ' (estimated)' : ''}${f.cvss_vector ? ` | \`${f.cvss_vector}\`` : ''}`);
+      if (f.cvss_estimated) {
+        lines.push('> Verification: CVSS was estimated from current graph evidence and should be corroborated before client reporting.');
+      }
+    }
     lines.push('');
     lines.push('#### Description');
     lines.push('');

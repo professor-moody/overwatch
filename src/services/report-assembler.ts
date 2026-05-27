@@ -23,6 +23,8 @@ import { runRetrospective, buildCredentialChains } from './retrospective.js';
 import type { RetrospectiveInput } from './retrospective.js';
 import { classifyAllFindings, generateNavigatorLayer } from './finding-classifier.js';
 import { redactReportText, redactSecretKeys } from './report-redaction.js';
+import { buildTrustSignalsResponse } from './trust-signal-summary.js';
+import type { TrustSignalDto } from './trust-signal-summary.js';
 
 export type ReportFormat = 'markdown' | 'html' | 'json';
 /** Format the dashboard / generate_report tool can request, including PDF (which is rendered from HTML by `renderReportPdf`). */
@@ -62,6 +64,38 @@ function scrubMarkdownForClient(md: string): string {
     (_m, k) => `${k}: <redacted>`,
   );
   return out;
+}
+
+function appendTrustSignalNotes(md: string, signals: TrustSignalDto[]): string {
+  if (signals.length === 0) return md;
+  const lines = [
+    '',
+    '## Operator Verification Notes',
+    '',
+    'The following tool-output or scoring caveats were present when this report was generated. They are not standalone findings; use them to verify parser coverage, path completeness, and estimated severity before treating absence of evidence as final.',
+    '',
+    '| Severity | Signal | Context |',
+    '|----------|--------|---------|',
+  ];
+  for (const signal of signals.slice(0, 20)) {
+    const context = [
+      signal.source_event?.event_type,
+      signal.action_id ? `action ${signal.action_id.slice(0, 8)}` : undefined,
+      signal.finding_id ? `finding ${signal.finding_id}` : undefined,
+      signal.node_ids?.length ? `nodes ${signal.node_ids.slice(0, 3).join(', ')}` : undefined,
+    ].filter(Boolean).join(' · ') || signal.source;
+    const detail = signal.detail ? `${signal.label}: ${signal.detail}` : signal.label;
+    lines.push(`| ${signal.severity} | ${escapeMarkdownTable(detail)} | ${escapeMarkdownTable(context)} |`);
+  }
+  if (signals.length > 20) {
+    lines.push(`| info | ${signals.length - 20} additional verification signal(s) omitted from this section | See dashboard Activity and Findings panels |`);
+  }
+  lines.push('');
+  return `${md.trimEnd()}\n${lines.join('\n')}`;
+}
+
+function escapeMarkdownTable(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
 /**
@@ -140,10 +174,10 @@ export function assembleReport(
     evidence_loader: evidenceLoader,
   };
 
-  const rawMarkdown = generateFullReport(reportInput, renderOptions);
-  const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
-
   const findings = buildFindings(graph, history, config, { evidenceLoader });
+  const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
+  const rawMarkdown = appendTrustSignalNotes(generateFullReport(reportInput, renderOptions), trustSignalSummary.signals);
+  const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
   const severitySummary = {
     critical: findings.filter(f => f.severity === 'critical').length,
     high: findings.filter(f => f.severity === 'high').length,
@@ -165,6 +199,7 @@ export function assembleReport(
         ...f,
         classification: classifications.get(f.id) ?? f.classification,
       })),
+      trust_signals: trustSignalSummary.signals,
       remediation_ranking: remRanking,
       attack_paths: attackPaths,
       ...(navigatorLayer ? { attack_navigator_layer: navigatorLayer } : {}),
@@ -224,6 +259,7 @@ export function assembleReport(
       agents: { total: agents.length, completed: completedAgents, failed: failedAgents },
       timeline: timelineEntries,
       recommendations: recs,
+      trustSignals: trustSignalSummary.signals,
     };
 
     if (findings.length > 0) {

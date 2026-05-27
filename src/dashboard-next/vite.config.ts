@@ -2,6 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+const apiPort = process.env.OVERWATCH_DASHBOARD_PORT || process.env.OVERWATCH_DEMO_DASHBOARD_PORT || '8384';
+const apiTarget = `http://localhost:${apiPort}`;
+const wsTarget = `ws://localhost:${apiPort}`;
+
 export default defineConfig({
   plugins: [react()],
   root: __dirname,
@@ -20,9 +24,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8384',
+      '/api': apiTarget,
       '/ws': {
-        target: 'ws://localhost:8384',
+        target: wsTarget,
         ws: true,
       },
     },

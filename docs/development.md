@@ -212,10 +212,20 @@ Before merging dashboard UI changes, run a short operator pass:
 2. Open `/frontier`, `/evidence`, `/credentials`, `/identity`, and `/paths`; every graph action should land on a contextual focused graph banner, not the undifferentiated full graph.
 3. Check top-level pages for a single visible page title. Breadcrumbs should appear only for nested item context.
 4. Check `/graph`, `/agents`, and `/activity` at desktop and narrow widths for clipped controls, horizontal page scroll, and mismatched button/status styles.
-5. Check `/activity` and `/findings`; parser no-data, ingest drops, path-analysis failures, IAM indeterminate decisions, and estimated CVSS should surface as compact trust signals rather than being buried in raw JSON.
+5. Check `/overview`, `/activity`, `/findings`, `/graph?node=...`, and `/smoke`; parser no-data, ingest drops, path-analysis failures, IAM indeterminate decisions, truncation, and estimated CVSS should surface as compact trust signals rather than being buried in raw JSON.
 6. Keep `Credentials` as the reveal/copy credential-material inventory and `Identity` as the IdP/app/principal/trust surface.
 7. Prefer shared primitives (`ActionButton`, `SegmentedControl`, `InspectorDrawer`, `EmptyPanelState`, `StatusPill`) before adding one-off button, drawer, empty-state, or chip styling.
 8. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
+
+For live route smoke, run the demo API and Vite dashboard against the same API port. If `8384` or `5173` is already occupied, use an alternate API port and let Vite choose the next free frontend port:
+
+```bash
+OVERWATCH_DEMO_DASHBOARD_PORT=8484 npm run demo:dashboard
+OVERWATCH_DASHBOARD_PORT=8484 npm run dev:dashboard-next -- --host 127.0.0.1
+OVERWATCH_DASHBOARD_SMOKE_URL=http://127.0.0.1:5174 npm test -- src/dashboard-next/src/lib/__tests__/route-smoke.test.ts
+```
+
+Replace `5174` with the frontend URL printed by Vite.
 
 ## Adding a New Parser
 
