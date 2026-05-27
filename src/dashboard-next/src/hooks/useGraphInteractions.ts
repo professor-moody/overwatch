@@ -117,6 +117,8 @@ export function useGraphInteractions({
   const enterNeighborhoodFocus = useCallback((node: string, hops = 2) => {
     const s = stateRef.current;
     s.focusNode = node;
+    s.focusLabel = null;
+    s.focusKind = null;
     s.focusNeighborhood = getNeighborhood(graph, node, hops);
     selectNode(node);
     onNodeFocusRef.current?.(node, hops);
@@ -124,9 +126,18 @@ export function useGraphInteractions({
 
   const exitNeighborhoodFocus = useCallback(() => {
     const s = stateRef.current;
+    s.graphMode = 'overview';
     s.focusNode = null;
     s.focusNeighborhood = null;
+    s.focusLabel = null;
+    s.focusKind = null;
+    s.selectedNode = null;
+    s.selectedNeighborhood = null;
+    s.inspectedEdgeIds.clear();
+    s.pathNodes.clear();
+    s.pathEdges.clear();
     refresh();
+    onNodeSelectRef.current?.(null);
   }, [stateRef, refresh]);
 
   // ---- Wire up sigma events ----

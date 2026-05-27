@@ -12,6 +12,8 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/frontier', expects: ['Frontier'] },
   { path: '/graph', expects: ['Graph'] },
   { path: '/graph?node=cred-jdoe-ntlm&hops=2', expects: ['Focused on', 'Show All'] },
+  { path: '/graph?context=evidence&node=cred-jdoe-ntlm', expects: ['Evidence for', 'Show All'] },
+  { path: '/graph?context=frontier&node=cred-jdoe-ntlm', expects: ['Frontier', 'Show All'] },
   { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
   { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
   { path: '/evidence', expects: ['Evidence'] },
@@ -41,7 +43,7 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
         await page.goto(`${smokeUrl}${route.path}`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
         await page.waitForSelector('body', { timeout: 5_000 });
         if (route.path.startsWith('/graph?')) {
-          await page.waitForFunction(() => document.body.innerText.includes('Focused on'), { timeout: 15_000 });
+          await page.waitForFunction(() => document.body.innerText.includes('Show All'), { timeout: 15_000 });
         }
         const text = await page.evaluate(() => document.body.innerText);
         expect(text.length, route.path).toBeGreaterThan(20);

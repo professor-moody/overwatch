@@ -225,7 +225,13 @@ function FindingRow({
               {f.affected_assets.slice(0, 6).map(asset => {
                 const nodeId = resolveAsset(asset);
                 return nodeId ? (
-                  <GraphNodeLinks key={asset} nodeId={nodeId} label={asset} className="rounded bg-accent/10 px-1 py-0.5 text-accent" />
+                  <GraphNodeLinks
+                    key={asset}
+                    nodeId={nodeId}
+                    label={asset}
+                    className="rounded bg-accent/10 px-1 py-0.5 text-accent"
+                    graphTarget={{ kind: 'finding', findingId: f.id, nodeIds: [nodeId], label: `Finding ${f.title}` }}
+                  />
                 ) : (
                   <span key={asset} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground font-mono">{asset}</span>
                 );
@@ -317,7 +323,17 @@ function FindingInspector({
           <div className="mb-1 text-xs font-medium text-muted-foreground">Affected Graph Nodes</div>
           <div className="flex flex-wrap gap-1">
             {context.affected_nodes.map(node => (
-              <GraphNodeLinks key={`${node.asset || ''}-${node.id}`} nodeId={node.id} label={(node.label as string) || node.asset} />
+              <GraphNodeLinks
+                key={`${node.asset || ''}-${node.id}`}
+                nodeId={node.id}
+                label={(node.label as string) || node.asset}
+                graphTarget={{
+                  kind: 'finding',
+                  findingId: context.finding.id,
+                  nodeIds: context.affected_nodes.map(affected => affected.id),
+                  label: `Finding ${context.finding.title}`,
+                }}
+              />
             ))}
           </div>
         </div>

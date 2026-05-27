@@ -5,6 +5,7 @@
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PanelId } from '../components/layout/OperatorLayout';
+import { buildGraphTargetPath, type GraphNavigationTarget } from '../lib/graph-target';
 
 export const PANEL_IDS = [
   'overview',
@@ -79,14 +80,16 @@ export function buildHash(target: NavigationTarget): string {
 export function useNavigation() {
   const navigate = useNavigate();
 
+  const navigateToGraphTarget = useCallback((target: GraphNavigationTarget) => {
+    navigate(buildGraphTargetPath(target));
+  }, [navigate]);
+
   const navigateToGraph = useCallback((nodeId?: string, hops?: number) => {
     if (!nodeId) {
       navigate('/graph');
       return;
     }
-    const params = new URLSearchParams({ node: nodeId });
-    if (hops) params.set('hops', String(hops));
-    navigate(`/graph?${params.toString()}`);
+    navigate(buildGraphTargetPath({ kind: 'node', nodeId, hops }));
   }, [navigate]);
 
   const navigateToGraphFilter = useCallback((filter: string) => {
@@ -119,6 +122,7 @@ export function useNavigation() {
   }, [navigateToPanel]);
 
   return {
+    navigateToGraphTarget,
     navigateToGraph,
     navigateToGraphFilter,
     navigateToPanel,

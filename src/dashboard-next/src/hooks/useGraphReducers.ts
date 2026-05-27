@@ -44,6 +44,8 @@ export interface GraphInteractionState {
   // Focus
   focusNode: string | null;
   focusNeighborhood: Set<string> | null;
+  focusLabel: string | null;
+  focusKind: string | null;
   emphasizedNodeTypes: Set<string>;
 
   // Filters
@@ -87,6 +89,8 @@ export function createInitialInteractionState(): GraphInteractionState {
     pathEdges: new Set(),
     focusNode: null,
     focusNeighborhood: null,
+    focusLabel: null,
+    focusKind: null,
     emphasizedNodeTypes: new Set(),
     activeFilters: new Set(Object.keys(NODE_COLORS)),
     edgeTypeFilter: null,

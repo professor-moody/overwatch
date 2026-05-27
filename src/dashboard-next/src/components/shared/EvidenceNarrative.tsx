@@ -18,7 +18,11 @@ export function EvidenceNarrative({
       {items.map(item => (
         <div key={item.id} className="rounded border border-border bg-elevated p-2">
           <div className="flex items-center justify-between gap-2">
-            <GraphNodeLinks nodeId={item.node_id} label={item.label} />
+            <GraphNodeLinks
+              nodeId={item.node_id}
+              label={item.label}
+              graphTarget={{ kind: 'evidence', nodeId: item.node_id, label: `Evidence for ${item.label || item.node_id}` }}
+            />
             <span className="text-[10px] text-muted-foreground">{item.count} event{item.count === 1 ? '' : 's'}</span>
           </div>
           {item.description && <div className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</div>}

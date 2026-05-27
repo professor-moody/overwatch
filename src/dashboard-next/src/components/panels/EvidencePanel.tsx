@@ -97,7 +97,10 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
         <div className="space-y-3">
           {/* Node header */}
           <div className="flex items-center gap-2 flex-wrap">
-            <GraphNodeLinks nodeId={data.node_id} />
+            <GraphNodeLinks
+              nodeId={data.node_id}
+              graphTarget={{ kind: 'evidence', nodeId: data.node_id, label: `Evidence for ${data.node_props?.label || data.node_id}` }}
+            />
             <span className="text-xs text-muted-foreground">{data.count} entries</span>
           </div>
 
@@ -207,7 +210,7 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
   const [optimize, setOptimize] = useState<'confidence' | 'stealth' | 'balanced'>('confidence');
   const [paths, setPaths] = useState<AttackPath[]>([]);
   const [loading, setLoading] = useState(false);
-  const { navigateToGraph } = useNavigation();
+  const { navigateToGraphTarget } = useNavigation();
 
   // Auto-search if initialObjective provided
   useEffect(() => {
@@ -270,7 +273,7 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
                       <span
                         onClick={() => {
                           const nodeId = typeof n === 'object' ? n.id : String(n);
-                          navigateToGraph(nodeId, 2);
+                          navigateToGraphTarget({ kind: 'path', nodeIds: path.nodes.map(item => typeof item === 'object' ? item.id : String(item)), label: 'Attack path' });
                         }}
                         className="px-1.5 py-0.5 rounded bg-background text-foreground font-mono cursor-pointer hover:text-accent transition-colors"
                         title={typeof n === 'object' ? n.id : String(n)}>

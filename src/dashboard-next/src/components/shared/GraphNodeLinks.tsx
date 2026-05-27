@@ -1,17 +1,21 @@
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn } from '../../lib/utils';
 import { FileText, Network } from 'lucide-react';
+import type { GraphNavigationTarget } from '../../lib/graph-target';
 
 export function GraphNodeLinks({
   nodeId,
   label,
   className,
+  graphTarget,
 }: {
   nodeId: string;
   label?: string;
   className?: string;
+  graphTarget?: GraphNavigationTarget;
 }) {
-  const { navigateToGraph, navigateToEvidence } = useNavigation();
+  const { navigateToGraphTarget, navigateToEvidence } = useNavigation();
+  const target = graphTarget || { kind: 'node' as const, nodeId, hops: 2 };
 
   return (
     <span className={cn('inline-flex min-w-0 items-center gap-1 rounded border border-border bg-background/45 px-1.5 py-0.5 text-[10px] font-mono', className)}>
@@ -22,7 +26,7 @@ export function GraphNodeLinks({
         title={`Open ${nodeId} in graph`}
         onClick={(event) => {
           event.stopPropagation();
-          navigateToGraph(nodeId, 2);
+          navigateToGraphTarget(target);
         }}
         className="inline-flex h-5 w-5 items-center justify-center rounded text-accent hover:bg-accent/10"
       >

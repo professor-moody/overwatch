@@ -214,7 +214,7 @@ function tierBadgeClass(t: Tier): string {
 export function AttackPathsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const initialized = useEngagementStore((s) => s.initialized);
-  const { navigateToGraph, navigateToFrontier } = useNavigation();
+  const { navigateToGraphTarget, navigateToFrontier } = useNavigation();
 
   const [tierFilter, setTierFilter] = useState<TierFilter>('cross_tier');
   const [maxHops, setMaxHops] = useState<number>(6);
@@ -306,7 +306,7 @@ export function AttackPathsPanel() {
       ) : (
         <div className="space-y-2">
           {visiblePaths.slice(0, 100).map((p, idx) => (
-            <PathRow key={idx} path={p} byId={byId} onNavigate={(id) => navigateToGraph?.(id)} onFrontier={(id) => navigateToFrontier?.(id)} />
+            <PathRow key={idx} path={p} byId={byId} onNavigate={() => navigateToGraphTarget({ kind: 'path', nodeIds: p.nodes, label: 'Attack Path' })} onFrontier={(id) => navigateToFrontier?.(id)} />
           ))}
           {visiblePaths.length > 100 ? (
             <p className="text-xs text-muted-foreground">+ {visiblePaths.length - 100} more not shown — narrow the filter to focus.</p>

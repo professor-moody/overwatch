@@ -28,6 +28,7 @@ import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
+import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
@@ -45,7 +46,7 @@ export function GraphPage() {
   }, [stateRef]);
 
   // ---- Sigma renderer ----
-  const { rendererRef, mount, refresh, zoomToFit, zoomIn, zoomOut, zoomToNodes, selectAndCenter } =
+  const { rendererRef, mount, refresh, zoomToFit, zoomIn, zoomOut, zoomToNodes } =
     useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate });
 
   // ---- Layout ----
@@ -66,6 +67,7 @@ export function GraphPage() {
   const [uiRevision, setUiRevision] = useState(0);
   const userPinnedLayoutRef = useRef(false);
   const engagementId = useEngagementStore(s => s.engagement?.id || 'default');
+  const frontier = useEngagementStore(s => s.frontier);
   const forceGraphUi = useCallback(() => setUiRevision(v => v + 1), []);
   const graphFitPadding = useCallback((drawerOpen = !!selectedNodeId) => ({
     top: 96,
@@ -206,56 +208,93 @@ export function GraphPage() {
     return () => clearTimeout(timer);
   }, [graph, graphVersion, refresh, rendererRef, storeGraph?.nodes?.length]);
 
-  // Track layout running state; detect running→stopped transitions so the
-  // zoom-to-node effect can wait until FA2 has positioned nodes.
-  const [layoutCompletedCount, setLayoutCompletedCount] = useState(0);
-  const prevLayoutRunningRef = useRef(false);
+  // Track layout running state for toolbar feedback.
   useEffect(() => {
     const interval = setInterval(() => {
       const running = layout.running;
       setLayoutRunning(running);
       setNodeCount(graph.order);
       setEdgeCount(graph.size);
-      // Detect running→stopped transition
-      if (prevLayoutRunningRef.current && !running) {
-        setLayoutCompletedCount(c => c + 1);
-      }
-      prevLayoutRunningRef.current = running;
     }, 200);
     return () => clearInterval(interval);
   }, [layout, graph]);
 
   // ---- Query param navigation (from frontier/overview/agents) ----
   const [searchParams, setSearchParams] = useSearchParams();
-  const appliedParamsRef = useRef(false);
+  const appliedParamsRef = useRef<string | null>(null);
+
+  const applyGraphFocusTarget = useCallback((resolved: ResolvedGraphTarget) => {
+    if (resolved.filter) {
+      const s = stateRef.current;
+      s.activeFilters = new Set([resolved.filter]);
+      s.graphMode = 'focused';
+      s.emphasizedNodeTypes = new Set([resolved.filter]);
+      s.focusLabel = resolved.label;
+      s.focusKind = resolved.kind;
+      refresh();
+      forceGraphUi();
+      return true;
+    }
+
+    if (!resolved.primaryNode || resolved.nodes.size === 0) return false;
+
+    const s = stateRef.current;
+    const focusNodes = resolved.hops > 0 && resolved.kind === 'node'
+      ? getNeighborhood(graph, resolved.primaryNode, resolved.hops)
+      : new Set(resolved.nodes);
+    s.graphMode = 'focused';
+    s.focusNode = resolved.primaryNode;
+    s.focusNeighborhood = focusNodes;
+    s.focusLabel = resolved.label;
+    s.focusKind = resolved.kind;
+    s.selectedNode = resolved.primaryNode;
+    s.selectedNeighborhood = focusNodes;
+    s.inspectedEdgeIds.clear();
+    s.pathNodes.clear();
+    s.pathEdges.clear();
+
+    if (resolved.edges.size > 0) {
+      for (const edge of resolved.edges) {
+        s.inspectedEdgeIds.add(edge);
+        s.pathEdges.add(edge);
+      }
+      for (const node of focusNodes) s.pathNodes.add(node);
+    } else {
+      graph.edges(resolved.primaryNode).forEach(eid => s.inspectedEdgeIds.add(eid));
+    }
+
+    setSelectedNodeId(resolved.primaryNode);
+    refresh();
+    zoomToNodes(focusNodes, {
+      paddingFactor: resolved.kind === 'node' ? 1.35 : 1.2,
+      padding: graphFitPadding(true),
+      minRatio: resolved.kind === 'node' ? 0.05 : 0.04,
+      maxRatio: resolved.kind === 'node' ? 1.6 : 1.8,
+    });
+    forceGraphUi();
+    return true;
+  }, [forceGraphUi, graph, graphFitPadding, refresh, stateRef, zoomToNodes]);
 
   useEffect(() => {
-    if (appliedParamsRef.current || graph.order === 0) return;
-    const nodeParam = searchParams.get('node');
-    const filterParam = searchParams.get('filter');
-    const hopsParam = parseInt(searchParams.get('hops') || '0', 10);
+    const key = searchParams.toString();
+    if (!key || appliedParamsRef.current === key || graph.order === 0 || !rendererRef.current) return;
 
-    if (nodeParam && graph.hasNode(nodeParam)) {
-      // Wait until FA2 has run at least once so node positions are non-zero.
-      if (layoutCompletedCount === 0) return;
-      appliedParamsRef.current = true;
-      if (hopsParam > 0) {
-        enterNeighborhoodFocus(nodeParam, hopsParam);
-      } else {
-        selectNode(nodeParam);
-        selectAndCenter(nodeParam);
-      }
+    const target = parseGraphTargetParams(searchParams);
+    if (!target) return;
+
+    const resolved = resolveGraphTarget(graph, target, { frontier });
+    if (resolved.missingReason) {
+      appliedParamsRef.current = key;
+      toast({ type: 'warning', title: 'Graph target not found', message: resolved.missingReason });
       setSearchParams({}, { replace: true });
-    } else if (filterParam) {
-      appliedParamsRef.current = true;
-      const s = stateRef.current;
-      s.activeFilters = new Set([filterParam]);
-      s.graphMode = 'focused';
-      s.emphasizedNodeTypes = new Set([filterParam]);
-      refresh();
+      return;
+    }
+
+    if (applyGraphFocusTarget(resolved)) {
+      appliedParamsRef.current = key;
       setSearchParams({}, { replace: true });
     }
-  }, [graph, searchParams, setSearchParams, stateRef, refresh, selectNode, selectAndCenter, enterNeighborhoodFocus, layoutCompletedCount]);
+  }, [applyGraphFocusTarget, frontier, graph, refresh, rendererRef, searchParams, setSearchParams, toast]);
 
   // ---- Toolbar callbacks ----
   const handleReset = useCallback(() => {
@@ -344,6 +383,8 @@ export function GraphPage() {
     clearPathHighlight();
     s.focusNode = null;
     s.focusNeighborhood = null;
+    s.focusLabel = null;
+    s.focusKind = null;
     s.selectedNode = null;
     s.inspectedEdgeIds.clear();
     s.graphMode = 'focused';
@@ -594,6 +635,8 @@ export function GraphPage() {
               <FocusBanner
                 focusNode={s.focusNode}
                 focusSize={s.focusNeighborhood?.size || 0}
+                label={s.focusLabel}
+                kind={s.focusKind}
                 onExit={exitNeighborhoodFocus}
                 className="max-w-full"
               />

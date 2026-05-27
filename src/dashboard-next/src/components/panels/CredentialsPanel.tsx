@@ -21,7 +21,7 @@ export function CredentialsPanel() {
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const { navigateToGraph } = useNavigation();
+  const { navigateToGraphTarget } = useNavigation();
 
   const creds = useMemo(() => {
     return graph.nodes.filter(n => n.type === 'credential');
@@ -239,7 +239,7 @@ export function CredentialsPanel() {
                     <DetailRow label="Node ID">
                       <span className="font-mono text-accent">{cred.id}</span>
                       <ActionButton
-                        onClick={() => navigateToGraph(cred.id, 2)}
+                        onClick={() => navigateToGraphTarget({ kind: 'node', nodeId: cred.id, hops: 2, label: `Credential ${cred.label || cred.id}` })}
                         variant="ghost"
                         size="xs"
                         className="ml-2 text-accent"

@@ -8,6 +8,7 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import {
   buildFrontierSections,
   filterFrontierItems,
+  getFrontierKey,
   getFrontierPrimaryNodeId,
   getFrontierNodeIds,
 } from '../../lib/frontier-workspace';
@@ -207,6 +208,7 @@ function FrontierItemCard({
   if (related?.pendingActions.length) chips.push({ text: `${related.pendingActions.length} action`, cls: 'bg-warning/10 text-warning' });
   if (related?.findings.length) chips.push({ text: `${related.findings.length} finding`, cls: 'bg-destructive/10 text-destructive' });
   const nodeIds = getFrontierNodeIds(item);
+  const frontierKey = getFrontierKey(item);
 
   return (
     <div className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
@@ -229,7 +231,12 @@ function FrontierItemCard({
       {nodeIds.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-1.5">
           {nodeIds.slice(0, 3).map((nodeId, index) => (
-            <GraphNodeLinks key={`${nodeId}-${index}`} nodeId={nodeId} className="rounded bg-background/60 px-1 py-0.5" />
+            <GraphNodeLinks
+              key={`${nodeId}-${index}`}
+              nodeId={nodeId}
+              className="rounded bg-background/60 px-1 py-0.5"
+              graphTarget={{ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' }}
+            />
           ))}
           {nodeIds.length > 3 && <span className="text-[10px] text-muted-foreground">+{nodeIds.length - 3} nodes</span>}
         </div>
