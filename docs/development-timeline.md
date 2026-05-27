@@ -28,6 +28,8 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 
 | Commit | Date | Area | Work Step | Operator-Visible Result |
 |--------|------|------|-----------|-------------------------|
+| `b16514f` | 2026-05-27 | Operator trust surfaces | Added `/api/trust-signals`, dashboard trust summaries, graph inspector signals, report verification notes, and route-smoke/demo coverage. | Operators can see when a no-finding, no-path, IAM decision, parser output, or CVSS score needs verification across Overview, Activity, Findings, Graph, Smoke, and reports. |
+| `29c7e34` | 2026-05-27 | Dashboard trust signals | Surfaced correctness caveats from parser, ingest, path, IAM, and CVSS work in dashboard panels and deferred Bedrock integration to a separate plan. | Activity and Findings now show compact trust labels instead of burying uncertainty in raw JSON. |
 | `837d4d2` | 2026-05-27 | Durability/testing | Added regression coverage for state persistence, parsers, process edge cases, and correctness fixes. | The reliability sprint has tests around crash-safe persistence, parser edge cases, and subprocess failure modes. |
 | `8efe5f8` | 2026-05-27 | Correctness reliability | Made IAM simulator and CVSS estimates expose uncertainty instead of overconfident denial/severity assumptions. | Unmapped Azure roles and capped assume chains now surface as indeterminate; CVSS estimates stop treating every credential as scope-changing/public-network critical. |
 | `c653f1b` | 2026-05-27 | Parser/replay correctness | Fixed LDAP, NXC, Rubeus, and Okta token replay edge cases. | Lockout policy, plaintext credentials with spaces, SPN-derived Kerberos domains, and Okta OIDC Bearer replays behave closer to real tool output. |
@@ -81,6 +83,10 @@ Commits `bdd5ae2` through `5af8937` aligned docs, generated prompts, AGENTS/CLAU
 ### Tape Attribution And Dashboard Readiness
 
 Commits `19ab38e`, `78f9b6e`, and `726cb4e` tightened runtime confidence. Tape now records why it started, hooks can be smoke-tested, and the dashboard separates API health, MCP registration, and host binary availability instead of mixing them into one noisy health signal.
+
+### Correctness Signals Become Operator Surfaces
+
+Commits `799316e` through `b16514f` converted several silent-failure classes into visible operator signals. Parsers, ingests, path analysis, IAM simulation, CVSS scoring, Activity, Findings, Overview, Graph inspector, Smoke, and reports now share the same "needs verification" vocabulary.
 
 ## Evidence Checklist
 

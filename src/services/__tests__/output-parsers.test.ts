@@ -787,6 +787,27 @@ describe('Output Parsers', () => {
       expect(enrollEdges.length).toBe(1);
     });
 
+    it('does NOT emit ESC1 when enrollee_supplies_subject is false, even with client auth EKU', () => {
+      const data = {
+        'Certificate Templates': {
+          'NonVulnTemplate': {
+            'Enrollee Supplies Subject': false,
+            'Extended Key Usage': ['Client Authentication'],
+            'Enrollment Permissions': {
+              'Enrollment Rights': ['ACME\\Domain Users'],
+            },
+            '[!] Vulnerabilities': {},
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const esc1Edges = finding.edges.filter(e => e.properties.type === 'ESC1');
+      expect(esc1Edges).toHaveLength(0);
+      // CAN_ENROLL should still be created — the template is enrollable, just not ESC1
+      const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
+      expect(enrollEdges.length).toBeGreaterThan(0);
+    });
+
     it('creates ISSUED_BY edges from templates to their CA', () => {
       const data = {
         'Certificate Authorities': {

@@ -186,7 +186,14 @@ export class GraphEngine {
           this.log('Recovered engagement from snapshot after corrupted state file', undefined, { category: 'system', event_type: 'system' });
         } else {
           console.error('No valid snapshot found, re-seeding from config');
-          this.seedFromConfig();
+          try {
+            this.seedFromConfig();
+          } catch (seedErr) {
+            throw new Error(
+              `State recovery failed for engagement ${this.ctx.config.id} ` +
+              `(state: ${this.ctx.stateFilePath}): ${seedErr instanceof Error ? seedErr.message : String(seedErr)}`
+            );
+          }
           this.log('Engagement re-initialized from config after corrupted state', undefined, { category: 'system', event_type: 'system' });
         }
       }

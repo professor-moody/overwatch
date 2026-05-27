@@ -7,6 +7,7 @@ const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Googl
 const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> = [
   { path: '/overview', expects: ['Overview', 'Needs Verification'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed', 'Estimated CVSS'] },
   { path: '/actions', expects: ['Actions', 'terminal'] },
+  { path: '/agents', expects: ['Agents'] },
   { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
   { path: '/campaigns', expects: ['Campaigns'] },
   { path: '/sessions', expects: ['Sessions'], expectsAny: ['Attach', 'open_session'] },
@@ -16,10 +17,12 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/graph?context=evidence&node=cred-jdoe-ntlm', expects: ['Evidence for', 'Show All'] },
   { path: '/graph?context=frontier&node=cred-jdoe-ntlm', expects: ['Frontier', 'Show All'] },
   { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
+  { path: '/credentials', expects: ['Credentials', 'Expansion candidates'] },
   { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
   { path: '/evidence', expects: ['Evidence'] },
   { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
   { path: '/smoke', expects: ['Smoke', '/api/trust-signals'] },
+  { path: '/settings', expects: ['Settings'] },
   { path: '/engagements', expects: ['Engagements'] },
 ];
 

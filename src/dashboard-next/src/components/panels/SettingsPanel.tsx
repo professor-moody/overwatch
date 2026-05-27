@@ -26,6 +26,7 @@ import type {
   InferenceRuleInfo,
   EngagementTemplate,
 } from '../../lib/types';
+import { ActionButton, PageHeader, PanelSection } from '../shared/primitives';
 
 export function SettingsPanel() {
   const [config, setConfig] = useState<EngagementConfig | null>(null);
@@ -63,19 +64,21 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Settings</h2>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="Settings"
+        actions={
+          <>
           {saveStatus && (
             <span className={cn('text-xs', saveStatus.includes('Error') ? 'text-destructive' : 'text-success')}>
               {saveStatus}
             </span>
           )}
-          <button onClick={load} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors">
+          <ActionButton onClick={load} variant="secondary">
             Refresh
-          </button>
-        </div>
-      </div>
+          </ActionButton>
+          </>
+        }
+      />
 
       {config && <IdentitySection config={config} onSave={async (body) => {
         try { await updateConfig(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
@@ -758,10 +761,9 @@ function BundleSection() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
-      <h3 className="text-sm font-medium">{title}</h3>
+    <PanelSection title={title} className="space-y-3">
       {children}
-    </section>
+    </PanelSection>
   );
 }
 

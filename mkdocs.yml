@@ -158,6 +158,7 @@ nav:
     - Retrospectives: playbook/retrospective.md
   - FAQ: faq.md
   - Development:
+    - Roadmap: roadmap.md
     - development.md
     - Development Timeline: development-timeline.md
     - Bedrock Integration Plan: bedrock-integration-plan.md

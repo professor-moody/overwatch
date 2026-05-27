@@ -1,6 +1,6 @@
 # Development
 
-For a commit-by-commit narrative of recent work, see [Development Timeline](development-timeline.md). That page is intended for demos, retrospectives, and showing how dashboard, reliability, tape, hook, and documentation work landed over time.
+For current development direction, see the [Roadmap](roadmap.md). For a commit-by-commit narrative of recent work, see [Development Timeline](development-timeline.md). The timeline is intended for demos, retrospectives, and showing how dashboard, reliability, tape, hook, and documentation work landed over time.
 
 ## Build & Run
 

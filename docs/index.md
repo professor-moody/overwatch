@@ -32,7 +32,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 |---|---|
 | **60+** MCP tools | **34** offensive skills |
 | **50** output parsers (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu, prowler, sqlmap, wpscan, and more) | **61** built-in inference rules |
-| **2775+** tests across **127** files | **23** node types, **73** edge types |
+| **2900+** tests across **150+** files | **23** node types, **73** edge types |
 
 ## Quick Start
 
@@ -62,5 +62,5 @@ Learn more in [Architecture](architecture.md), explore [Key Concepts](concepts.m
 - **First time here?** → [Getting Started](getting-started.md) for the 5-minute install + first engagement.
 - **Want to understand the design?** → [Architecture](architecture.md) covers the system diagram, components, and design decisions. Then [Key Concepts](concepts.md) for the engagement-graph vocabulary (frontier, inference, OPSEC, audit trail).
 - **Auditing or threat-modeling?** → [Threat Model](threat-model.md) states explicitly what the system trusts, what it defends against, and what residual risks remain.
-- **Building or extending?** → [Tool Reference](tools/index.md) for every MCP tool. [Development](development.md) for project structure and testing.
+- **Building or extending?** → [Roadmap](roadmap.md) for current tracks, [Tool Reference](tools/index.md) for every MCP tool, and [Development](development.md) for project structure and testing.
 - **Running an actual engagement?** → [Operator Playbook](playbook/index.md) walks through GOAD AD labs, HTB single-host, network engagements.

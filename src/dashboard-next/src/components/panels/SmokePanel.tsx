@@ -22,6 +22,7 @@ import {
 } from '../../lib/smoke-checks';
 import type { DashboardReadinessSummary } from '../../lib/types';
 import type { PanelId } from '../layout/OperatorLayout';
+import { ActionButton, PageHeader } from '../shared/primitives';
 
 // ---- types ----
 
@@ -423,10 +424,10 @@ export function SmokePanel() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold">Smoke</h2>
+      <PageHeader
+        title="Smoke"
+        meta={
+          <span className="inline-flex items-center gap-3">
           <StatusPill status={overallStatus} />
           {overallStatus !== 'running' && (
             <span className="text-xs text-muted-foreground font-mono">
@@ -435,27 +436,25 @@ export function SmokePanel() {
               {failing > 0 && <span className="text-destructive ml-1">· {failing} fail</span>}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
+          </span>
+        }
+        actions={
+          <>
           {lastRun && (
             <span className="text-[10px] text-muted-foreground font-mono">
               last run {lastRun.toLocaleTimeString()}
             </span>
           )}
-          <button
+          <ActionButton
             onClick={() => void runAll()}
             disabled={overallStatus === 'running'}
-            className={cn(
-              'text-xs px-3 py-1 rounded border transition-colors',
-              overallStatus === 'running'
-                ? 'border-border text-muted-foreground cursor-not-allowed'
-                : 'border-border hover:border-accent text-muted-foreground hover:text-foreground',
-            )}
+            variant="secondary"
           >
             {overallStatus === 'running' ? 'Running…' : 'Re-run all'}
-          </button>
-        </div>
-      </div>
+          </ActionButton>
+          </>
+        }
+      />
 
       <ReadinessStrip readiness={readiness} wsStatus={wsStatus} apiStatus={overallStatus} />
 

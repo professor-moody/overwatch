@@ -89,6 +89,8 @@ export function CredentialsPanel() {
 
   const activeCreds = creds.filter(c => (c.credential_status as string | undefined) === 'active').length;
   const reachableCreds = creds.filter(c => isCredentialReachable(c, graph.edges)).length;
+  const unverifiedCreds = creds.filter(c => (c.credential_status as string | undefined) !== 'expired' && !isCredentialReachable(c, graph.edges)).length;
+  const expansionCandidates = creds.filter(isExpansionCandidate).length;
 
   const now = Date.now();
   const expiredTokenCreds = useMemo(() => creds.filter(c => {
@@ -107,6 +109,19 @@ export function CredentialsPanel() {
 
   return (
     <div className="space-y-4">
+      <PageHeader
+        title="Credentials"
+        meta={`(${creds.length} total · ${activeCreds} active · ${reachableCreds} reachable)`}
+      />
+
+      <div className="flex flex-wrap gap-2 text-xs">
+        <CredentialQueueChip label="Active" value={activeCreds} tone="success" />
+        <CredentialQueueChip label="Reachable" value={reachableCreds} tone="warning" />
+        <CredentialQueueChip label="Unverified" value={unverifiedCreds} tone={unverifiedCreds > 0 ? 'accent' : 'muted'} />
+        <CredentialQueueChip label="Expansion candidates" value={expansionCandidates} tone={expansionCandidates > 0 ? 'accent' : 'muted'} />
+        <CredentialQueueChip label="Expired tokens" value={expiredTokenCreds.length} tone={expiredTokenCreds.length > 0 ? 'warning' : 'muted'} />
+      </div>
+
       {/* Expired token warning banner */}
       {expiredTokenCreds.length > 0 && (
         <div className="px-3 py-2 bg-warning/5 border border-warning/20 rounded text-xs text-warning flex items-center gap-2">
@@ -116,12 +131,6 @@ export function CredentialsPanel() {
           {expiredTokenCreds.length > 3 && ` and ${expiredTokenCreds.length - 3} more`}
         </div>
       )}
-
-      {/* Header + summary bar */}
-      <PageHeader
-        title="Credentials"
-        meta={`(${creds.length} total · ${activeCreds} active · ${reachableCreds} reachable)`}
-      />
 
       {/* Kind breakdown chips */}
       {kindCounts.length > 0 && (
@@ -362,4 +371,35 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <div className="flex-1 min-w-0 text-foreground">{children}</div>
     </div>
   );
+}
+
+function CredentialQueueChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'success' | 'warning' | 'accent' | 'muted';
+}) {
+  const toneClass: Record<typeof tone, string> = {
+    success: 'border-success/20 bg-success/5 text-success',
+    warning: 'border-warning/20 bg-warning/5 text-warning',
+    accent: 'border-accent/20 bg-accent/5 text-accent',
+    muted: 'border-border bg-elevated/40 text-muted-foreground',
+  };
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded border px-2 py-1', toneClass[tone])}>
+      <span className="font-medium">{label}</span>
+      <span className="font-mono">{value}</span>
+    </span>
+  );
+}
+
+function isExpansionCandidate(cred: Record<string, unknown>): boolean {
+  if (cred.recon_playbook_invoked_at) return false;
+  if ((cred.credential_status as string | undefined) === 'expired') return false;
+  const material = String(cred.cred_material_kind || cred.cred_type || '').toLowerCase();
+  const tokenLike = ['oidc', 'oauth', 'saml', 'pat', 'session', 'aws', 'github', 'entra'].some(marker => material.includes(marker));
+  return tokenLike && !!cred.cred_value;
 }
