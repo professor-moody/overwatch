@@ -16,11 +16,12 @@ export function parseRubeus(output: string, agentId: string = 'rubeus-parser'): 
 
   // Detect subcommand from content patterns
   const hasKerberoastHash = /\$krb5tgs\$/i.test(output);
+  const hasKerberoastStanza = /SamAccountName\s*:/i.test(output) && /ServicePrincipalName\s*:/i.test(output);
   const hasAsrepHash = /\$krb5asrep\$/i.test(output);
   const hasBase64Ticket = /Base64EncodedTicket/i.test(output);
 
   // Parse stanza-based output: blocks delimited by [*] lines
-  if (hasKerberoastHash) {
+  if (hasKerberoastHash || hasKerberoastStanza) {
     parseRubeusKerberoast(output, nodes, edges, seenNodes, now, agentId);
   }
   if (hasAsrepHash) {
@@ -61,7 +62,7 @@ function parseRubeusKerberoast(
     const domainFromHash = hash?.match(/\$krb5tgs\$\d+\$\*[^$]+\$([^$*]+)\$/);
     if (domainFromHash) domain = domainFromHash[1];
     if (!domain) {
-      const spnMatch = block.match(/SPN\s*:\s*(\S+)/i);
+      const spnMatch = block.match(/(?:SPN|ServicePrincipalName)\s*:\s*(\S+)/i);
       domain = spnMatch ? domainFromSpn(spnMatch[1]) : undefined;
     }
 

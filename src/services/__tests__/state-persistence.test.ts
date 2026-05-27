@@ -458,6 +458,36 @@ describe('StatePersistence', () => {
       expect(persistence.isDirty()).toBe(false);
     });
 
+    it('scheduled flush recreates a missing parent directory before writing state', async () => {
+      const nestedState = join(tempDir, 'missing-parent', 'state.json');
+      const { ctx, persistence, graph } = buildPersistence(nestedState);
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+
+      expect(existsSync(ctx.stateFilePath)).toBe(true);
+      expect(persistence.isDirty()).toBe(false);
+    });
+
+    it('scheduled flush errors are logged rather than escaping the timer', async () => {
+      const parentFile = join(tempDir, 'not-a-directory');
+      writeFileSync(parentFile, 'occupied');
+      const { ctx, persistence, graph } = buildPersistence(join(parentFile, 'state.json'));
+      graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
+
+      persistence.persist();
+      await new Promise(resolve => setTimeout(resolve, FLUSH_DEBOUNCE_MS + 50));
+
+      const failure = ctx.activityLog.find(entry =>
+        entry.event_type === 'system' &&
+        entry.description.includes('Scheduled state persistence flush failed')
+      );
+      expect(failure).toBeDefined();
+      expect(failure?.result_classification).toBe('failure');
+      expect(failure?.details?.timer_kind).toBe('debounce');
+    });
+
     it('cancelPendingFlush() prevents debounced write', async () => {
       const { ctx, persistence, graph } = buildPersistence();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);

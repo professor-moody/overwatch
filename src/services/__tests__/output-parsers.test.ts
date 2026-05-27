@@ -247,6 +247,17 @@ describe('Output Parsers', () => {
       expect(finding.edges.filter(e => e.properties.type === 'VALID_ON').length).toBeGreaterThanOrEqual(2);
     });
 
+    it('captures plaintext passwords with internal spaces before status suffixes', () => {
+      const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\scanner:my password 2024 (Pwn3d!)`;
+      const finding = parseNxc(output);
+
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_value).toBe('my password 2024');
+      expect(creds[0].cred_material_kind).toBe('plaintext_password');
+      expect(creds[0].cred_usable_for_auth).toBe(true);
+    });
+
     it('captures NTLM hash from + status', () => {
       const output = `SMB  10.10.10.5  445  DC01  [+] ACME\\admin:aad3b435b51404eeaad3b435b51404ee (Pwn3d!)`;
       const finding = parseNxc(output);
@@ -1723,6 +1734,25 @@ describe('Output Parsers', () => {
       expect(hosts[0].hostname).toBe('web01.acme.local');
     });
 
+    it('parses lockout observation window from LDIF policy attributes', () => {
+      const policyLdif = [
+        'dn: DC=acme,DC=local',
+        'objectClass: domainDNS',
+        'lockoutThreshold: 5',
+        'lockoutDuration: -18000000000',
+        'lockoutObservationWindow: -9000000000',
+        '',
+      ].join('\n');
+
+      const finding = parseLdapsearch(policyLdif);
+      const domain = finding.nodes.find(n => n.type === 'domain');
+      expect(domain?.lockout_policy).toEqual({
+        lockout_threshold: 5,
+        lockout_duration: 1800,
+        lockout_observation_window: 900,
+      });
+    });
+
     it('handles empty/malformed input', () => {
       expect(parseLdapsearch('').nodes.length).toBe(0);
       expect(parseLdapsearch('random garbage\nno ldap here').nodes.length).toBe(0);
@@ -1961,6 +1991,22 @@ describe('Output Parsers', () => {
       const users = finding.nodes.filter(n => n.type === 'user');
       expect(users.length).toBe(2);
       expect(users.every(u => u.has_spn === true)).toBe(true);
+    });
+
+    it('derives the Kerberoast user domain from SPN when no TGS hash is present', () => {
+      const output = [
+        '[*] Action: Kerberoasting',
+        '',
+        '[*] SamAccountName         : svc_http',
+        '[*] ServicePrincipalName   : HTTP/web01.acme.local',
+      ].join('\n');
+      const finding = parseRubeus(output);
+
+      const user = finding.nodes.find(n => n.type === 'user' && n.username === 'svc_http');
+      expect(user).toBeDefined();
+      expect(user!.domain_name).toBe('acme.local');
+      expect(user!.id).toBe('user-acme-local-svc-http');
+      expect(finding.nodes.filter(n => n.type === 'credential')).toHaveLength(0);
     });
 
     it('extracts AS-REP hashes as credential nodes', () => {

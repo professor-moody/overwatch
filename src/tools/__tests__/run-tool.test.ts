@@ -96,6 +96,24 @@ describe('run_tool', () => {
     expect(types).not.toContain('action_completed');
   });
 
+  it('reports signal-only exits without losing terminal lifecycle metadata', async () => {
+    const result = await handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "process.kill(process.pid, 'SIGTERM')"],
+      validate: false,
+    });
+    const payload = parseTextResult(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.executed).toBe(true);
+    expect(payload.exit_code).toBeNull();
+    expect(payload.signal).toBe('SIGTERM');
+
+    const failed = engine.getFullHistory().find(e => e.action_id === payload.action_id && e.event_type === 'action_failed');
+    expect(failed).toBeDefined();
+    expect(failed?.details?.signal).toBe('SIGTERM');
+  });
+
   it('does not invoke the shell — special characters are literal', async () => {
     // Using `;` and `$()` as a literal arg must NOT execute additional commands.
     const result = await handlers.run_tool({
@@ -122,6 +140,24 @@ describe('run_tool', () => {
     expect(payload.executed).toBe(true);
     expect(payload.timed_out).toBe(true);
     expect(elapsed).toBeLessThan(7000);
+  });
+
+  it('marks oversized stdout as truncated while preserving evidence linkage', async () => {
+    const result = await handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', "process.stdout.write('A'.repeat(300 * 1024))"],
+      validate: false,
+    });
+    const payload = parseTextResult(result);
+
+    expect(payload.executed).toBe(true);
+    expect(payload.stdout_truncated).toBe(true);
+    expect(payload.stdout_total_bytes).toBe(300 * 1024);
+    expect(payload.stdout_evidence_id).toBeTruthy();
+
+    const completed = engine.getFullHistory().find(e => e.action_id === payload.action_id && e.event_type === 'action_completed');
+    expect(completed?.details?.stdout_truncated).toBe(true);
+    expect(completed?.details?.stdout_evidence_id).toBe(payload.stdout_evidence_id);
   });
 
   it('blocks execution when validation fails', async () => {

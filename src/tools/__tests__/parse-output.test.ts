@@ -75,4 +75,38 @@ describe('parse_output tool', () => {
     expect(engine.persist).toHaveBeenCalled();
     expect(engine.logActionEvent).toHaveBeenCalled();
   });
+
+  it('treats zero-artifact parses as explicit no_data errors', async () => {
+    const finding = {
+      id: 'finding-empty',
+      agent_id: 'mock-agent',
+      timestamp: new Date().toISOString(),
+      nodes: [],
+      edges: [],
+    };
+    vi.mocked(parseOutput).mockReturnValue(finding as any);
+
+    const { handlers, engine } = buildHandlers();
+    const result = await handlers.parse_output({
+      tool_name: 'mocked-tool',
+      output: 'valid tool banner but no recognized records',
+      action_id: 'act-empty-parse',
+      ingest: true,
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.parsed).toBe(false);
+    expect(payload.ingested).toBe(false);
+    expect(payload.parse_status).toBe('no_data');
+    expect(payload.nodes_parsed).toBe(0);
+    expect(payload.edges_parsed).toBe(0);
+    expect(engine.ingestFinding).not.toHaveBeenCalled();
+    expect(engine.logActionEvent).toHaveBeenCalledWith(expect.objectContaining({
+      action_id: 'act-empty-parse',
+      event_type: 'parse_output',
+      result_classification: 'failure',
+      details: expect.objectContaining({ parse_status: 'no_data' }),
+    }));
+  });
 });

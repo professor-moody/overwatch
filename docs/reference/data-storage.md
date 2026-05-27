@@ -4,6 +4,14 @@ This page describes exactly what Overwatch writes to disk, where each file lives
 
 ---
 
+## Confidentiality boundary
+
+Overwatch state and audit artifacts are **operator-confidential by design**. The active state file, evidence blobs, JSON-RPC tapes, dashboard graph/API responses, and engagement bundles may contain live credential material, raw tool output, target paths, operator paths, and full request/response frames. This is intentional for an engagement orchestrator: operators often need full-fidelity data to reproduce a path, replay reasoning, or validate a finding.
+
+Do not treat these files as client deliverables. Use `generate_report({ client_safe: true })` or a purpose-built sanitization pass when preparing material for a client or external system.
+
+---
+
 ## Config file
 
 Overwatch reads its active engagement config from the path set by the `OVERWATCH_CONFIG` environment variable. If that variable is unset, it falls back to `./engagement.json` relative to the working directory you start the server from.
@@ -29,6 +37,7 @@ This single JSON file contains:
 
 - **Engagement metadata** — id, name, scope, phases, campaigns, objectives, opsec profile
 - **Knowledge graph** — all nodes and edges with their properties
+- **Credential material** — `cred_value` and related fields when a parser/tool captured reusable material
 - **Activity log** — up to 5,000 most-recent entries (tiered truncation preserves milestones)
 - **Agent registry** — registered agents and their status
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
@@ -92,6 +101,8 @@ Full-fidelity stdout/stderr from every subprocess is streamed to blobs in:
 Evidence records are referenced by ID (`stdout_evidence_id`, `stderr_evidence_id`) in the activity log and report evidence chains. Retrieve them with `get_evidence(evidence_id)`.
 
 Evidence files are named by content SHA-256 so identical outputs deduplicate automatically.
+
+Evidence is raw by default. Client-safe report generation redacts sensitive values in the rendered output; it does not rewrite the underlying evidence store.
 
 ---
 
@@ -168,6 +179,8 @@ The state file is self-contained — it includes the full graph, activity log, a
 
 **To export only the graph:** use `export_graph`. It returns a JSON graph dump for external analysis, custom reporting, or visualization; it is not a full evidence/report bundle.
 
+Bundles and graph exports inherit the same operator-confidential boundary as the source state. If you need a client-safe artifact, generate a client-safe report rather than sharing raw bundles or graph JSON.
+
 ---
 
 ## What is NOT stored on disk
@@ -175,4 +188,4 @@ The state file is self-contained — it includes the full graph, activity log, a
 - **MCP session state** — in-memory only, lost on restart. Agents re-register on reconnect.
 - **Pending action queue** — reconstructed from the activity log on startup.
 - **Cache** — path-graph projections and community detection caches are rebuilt on demand.
-- **Credentials in plaintext** — `cred_value` stores only the redacted form or a reference. Raw secrets are never written.
+- **Runtime-only external connectors** — for example, a live PostgreSQL connection handle is session-scoped; only the redacted display DSN survives reload.

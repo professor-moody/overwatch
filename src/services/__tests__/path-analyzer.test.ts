@@ -109,6 +109,42 @@ describe('PathAnalyzer', () => {
       expect(analyzer.findShortestPath('nonexistent', 'host-a')).toBeNull();
     });
 
+    it('surfaces detailed missing_endpoint and no_path statuses', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'host-b', { type: 'host' });
+
+      const analyzer = buildAnalyzer(graph);
+      const noPath = analyzer.findShortestPathDetailed('host-a', 'host-b');
+      expect(noPath.status).toBe('no_path');
+      expect(noPath.path).toBeNull();
+
+      const missing = analyzer.findShortestPathDetailed('host-a', 'ghost-node');
+      expect(missing.status).toBe('missing_endpoint');
+      expect(missing.path).toBeNull();
+      expect(missing.missing_nodes).toEqual(['ghost-node']);
+    });
+
+    it('logs projection failures instead of swallowing malformed duplicate path edges', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-a', { type: 'host' });
+      addNode(graph, 'host-b', { type: 'host' });
+      addEdge(graph, 'host-a', 'host-b', 'REACHABLE');
+      addEdge(graph, 'host-a', 'host-b', 'ADMIN_TO');
+
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const analyzer = new PathAnalyzer(ctx, BIDIR, () => ({ nodes: [], edges: [] }));
+      const result = analyzer.findShortestPathDetailed('host-a', 'host-b');
+
+      expect(result.status).toBe('found');
+      const warning = ctx.activityLog.find(entry =>
+        entry.event_type === 'instrumentation_warning' &&
+        entry.description.includes('Path graph projection failed')
+      );
+      expect(warning).toBeDefined();
+      expect(warning?.details?.analysis_status).toBe('analysis_failed');
+    });
+
     it('traverses bidirectional edges in reverse', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user' });

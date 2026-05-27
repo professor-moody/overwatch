@@ -221,6 +221,67 @@ describe('estimateCvssFromContext', () => {
     expect(result.vector.scope).toBe('C');
   });
 
+  it('does not mark generic credential findings as scope changed without cross-boundary evidence', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'cred-guest', properties: { type: 'credential', label: 'guest password', cred_user: 'guest' } as NodeProperties },
+    ];
+    const finding = makeFinding({
+      category: 'credential',
+      affected_assets: ['cred-guest'],
+      description: 'Low privilege guest credential captured',
+    });
+
+    const result = estimateCvssFromContext(finding, makeGraph(nodes), makeNodeMap(nodes));
+
+    expect(result.vector.scope).toBe('U');
+    expect(result.vector.privilegesRequired).toBe('L');
+  });
+
+  it('derives high PR for privileged credential owners', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'cred-admin', properties: { type: 'credential', label: 'Domain Admin NTLM', cred_user: 'domain_admin', privileged: true } as NodeProperties },
+    ];
+    const finding = makeFinding({
+      category: 'credential',
+      affected_assets: ['cred-admin'],
+      description: 'Credential material captured from LSASS',
+    });
+
+    const result = estimateCvssFromContext(finding, makeGraph(nodes), makeNodeMap(nodes));
+
+    expect(result.vector.privilegesRequired).toBe('H');
+  });
+
+  it('treats internal services as adjacent rather than network exposed without public evidence', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'svc-smb', properties: { id: 'svc-smb', type: 'service', label: 'SMB', port: 445 } as NodeProperties },
+    ];
+    const finding = makeFinding({
+      category: 'vulnerability',
+      affected_assets: ['svc-smb'],
+      description: 'SMB signing disabled on internal host',
+    });
+
+    const result = estimateCvssFromContext(finding, makeGraph(nodes), makeNodeMap(nodes));
+
+    expect(result.vector.attackVector).toBe('A');
+  });
+
+  it('keeps network AV for explicitly exposed services', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'svc-web', properties: { id: 'svc-web', type: 'service', label: 'HTTPS', port: 443, exposed_to_internet: true, discovered_at: new Date().toISOString(), confidence: 1 } as NodeProperties },
+    ];
+    const finding = makeFinding({
+      category: 'vulnerability',
+      affected_assets: ['svc-web'],
+      description: 'Public web service vulnerability',
+    });
+
+    const result = estimateCvssFromContext(finding, makeGraph(nodes), makeNodeMap(nodes));
+
+    expect(result.vector.attackVector).toBe('N');
+  });
+
   it('returns a valid score in 0-10 range', () => {
     const finding = makeFinding();
     const result = estimateCvssFromContext(finding, makeGraph(), new Map());

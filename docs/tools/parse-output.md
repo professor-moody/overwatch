@@ -59,24 +59,35 @@ The `context` parameter provides ambient information that parsers use as fallbac
 
 ## Returns
 
-All successful responses share a stable schema, including zero-artifact parses:
+Successful responses share a stable schema when the parser extracts at least one graph artifact:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `parsed` | `boolean` | Whether parsing succeeded |
+| `parse_status` | `string` | `"ok"` for successful extraction |
 | `tool` | `string` | Tool name |
 | `action_id` | `string` | Action ID |
 | `finding_id` | `string` | Finding identifier |
 | `parsed_from` | `string` | `"output"` or `"file_path"` |
-| `nodes_parsed` | `number` | Nodes extracted (0 if nothing found) |
-| `edges_parsed` | `number` | Edges extracted (0 if nothing found) |
+| `nodes_parsed` | `number` | Nodes extracted |
+| `edges_parsed` | `number` | Edges extracted |
 | `ingested` | `object?` | Ingestion results (present only when `ingest: true` and nodes > 0) |
 | `warnings` | `string[]?` | Instrumentation warnings (e.g. missing action context) |
 | `message` | `string` | Summary |
 
+If a parser runs but extracts zero nodes and zero edges, `parse_output` now returns an MCP error because silent success is worse than an explicit "nothing was recognized" signal during an engagement. The response uses:
+
+| Field | Value |
+|-------|-------|
+| `isError` | `true` |
+| `parsed` | `false` |
+| `ingested` | `false` |
+| `parse_status` | `"no_data"` |
+
 ## Usage Notes
 
 - Prefer this over `report_finding` when you have raw output from a supported tool
+- Treat `parse_status: "no_data"` as an operator-visible parser failure or empty-output condition; verify the command output before reporting "nothing found"
 - Set `ingest: false` to preview what would be parsed without modifying the graph
 - Set `list_parsers: true` to get the current list of supported parser names (50 aliases across 28 parsers)
 - Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance

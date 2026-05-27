@@ -179,6 +179,23 @@ describe('IAM Simulator', () => {
       expect(result.evaluated_principals).toEqual(['role-a', 'role-b']);
     });
 
+    it('returns indeterminate when assume-role traversal hits the configured depth cap', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
+      addNode(graph, 'role-admin', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:role/Admin' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'AdminPolicy', effect: 'allow', actions: ['*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'role-admin', 'ASSUMES_ROLE', { tested: true, test_result: 'success' });
+      addEdge(graph, 'role-admin', 'policy-1', 'HAS_POLICY');
+
+      const ctx = new EngineContext(graph, { ...makeConfig(), iam_assume_depth: 0 }, './test.json');
+      const result = evaluateIAM('user-1', 'iam:CreateUser', 'arn:aws:iam::123:user/new', ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.decision).toBe('indeterminate');
+      expect(result.depth_capped).toBe(true);
+      expect(result.warnings?.[0]).toContain('depth cap (0)');
+      expect(result.evaluated_principals).toEqual(['user-1']);
+    });
+
     it('explicit deny on an assumed role overrides allow', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'cloud_identity', provider: 'aws', arn: 'arn:aws:iam::123:user/dev' });
@@ -222,6 +239,29 @@ describe('IAM Simulator', () => {
       const result = evaluateIAM('user-1', 'Microsoft.Compute/virtualMachines/read', '/subscriptions/abc/resourceGroups/rg1', ctx);
       expect(result.allowed).toBe(true);
       expect(result.provider).toBe('azure');
+    });
+
+    it('returns indeterminate for assigned Azure roles that cannot be permission-expanded', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: '/subscriptions/123', principal_type: 'managed_identity' });
+      addNode(graph, 'role-unknown', {
+        type: 'cloud_policy',
+        policy_name: 'Custom Mystery Operator',
+        role_definition_name: 'Custom Mystery Operator',
+        resources: ['/subscriptions/123'],
+        permission_expansion: 'enumerated_only',
+      });
+      addEdge(graph, 'user-1', 'role-unknown', 'HAS_POLICY', {
+        scope: '/subscriptions/123',
+        role_definition_name: 'Custom Mystery Operator',
+      });
+
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      const result = evaluateIAM('user-1', 'Microsoft.Compute/virtualMachines/start', '/subscriptions/123/resourceGroups/rg1/vm/1', ctx);
+      expect(result.allowed).toBe(false);
+      expect(result.decision).toBe('indeterminate');
+      expect(result.enumerated_only_policies).toEqual(['Custom Mystery Operator']);
+      expect(result.reason).toContain('not permission-expanded');
     });
   });
 

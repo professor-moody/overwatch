@@ -351,6 +351,24 @@ describe('AzureHound Ingest', () => {
       expect(result.warnings.length).toBe(0);
     });
 
+    it('counts supported-kind records dropped because required IDs are missing', () => {
+      const data = {
+        kind: 'azusers',
+        data: [
+          { Properties: { displayName: 'Missing object id' } },
+          { Properties: { id: 'u1', displayName: 'Valid User' } },
+        ],
+      };
+
+      const result = parseAzureHoundFile(JSON.stringify(data), 'users.json');
+      expect(result.ingest_summary.processed_records).toBe(2);
+      expect(result.ingest_summary.dropped_records).toBe(1);
+      expect(result.ingest_summary.dropped_by_reason['azusers.missing_object_id']).toBe(1);
+      expect(result.warnings.some(w => w.includes('dropped 1 AzureHound record'))).toBe(true);
+      expect(result.finding.nodes.some(n => n.id === 'azure-u1')).toBe(true);
+      expect(result.finding.nodes.every(n => n.label !== 'Missing object id')).toBe(true);
+    });
+
     it('returns a warning for malformed JSON', () => {
       const result = parseAzureHoundFile('not json', 'bad.json');
       expect(result.warnings.length).toBeGreaterThan(0);

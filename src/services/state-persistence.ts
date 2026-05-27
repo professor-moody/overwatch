@@ -185,15 +185,33 @@ export class StatePersistence {
     }
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.flushNow();
+      this.flushFromTimer('debounce');
     }, FLUSH_DEBOUNCE_MS);
 
     // Max-delay timer ensures we don't wait forever under continuous load
     if (this.maxDelayTimer === null) {
       this.maxDelayTimer = setTimeout(() => {
         this.maxDelayTimer = null;
-        this.flushNow();
+        this.flushFromTimer('max_delay');
       }, FLUSH_MAX_DELAY_MS);
+    }
+  }
+
+  private flushFromTimer(timerKind: 'debounce' | 'max_delay'): void {
+    try {
+      this.flushNow();
+    } catch (err) {
+      this.ctx.logEvent({
+        description: `Scheduled state persistence flush failed (${timerKind})`,
+        category: 'system',
+        event_type: 'system',
+        result_classification: 'failure',
+        details: {
+          timer_kind: timerKind,
+          state_file: this.ctx.stateFilePath,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
     }
   }
 
@@ -309,6 +327,7 @@ export class StatePersistence {
     const writeStart = Date.now();
 
     // Atomic write: write to temp, fsync, then rename (atomic on POSIX)
+    mkdirSync(dirname(this.ctx.stateFilePath), { recursive: true });
     const tmpPath = this.ctx.stateFilePath + '.tmp';
     writeFileSync(tmpPath, json);
     const fd = openSync(tmpPath, 'r');
