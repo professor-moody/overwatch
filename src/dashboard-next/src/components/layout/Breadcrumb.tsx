@@ -28,6 +28,8 @@ interface BreadcrumbProps {
 }
 
 export function Breadcrumb({ panel, item }: BreadcrumbProps) {
+  if (!item) return null;
+
   return (
     <nav className="px-6 pt-3 pb-0 text-[11px] text-muted-foreground flex items-center gap-1">
       <span className="text-foreground font-medium">{PANEL_LABELS[panel]}</span>

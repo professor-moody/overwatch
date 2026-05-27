@@ -5,7 +5,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { getEvidenceChains, getFindings, getPaths, type FindingDto } from '../../lib/api';
 import type { EvidenceChainResponse, AttackPath, Objective } from '../../lib/types';
-import { PageHeader, PanelSection } from '../shared/primitives';
+import { ActionButton, EmptyPanelState, PageHeader, PanelSection } from '../shared/primitives';
 import { deriveNodeRelationships } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
@@ -80,14 +80,11 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
 
   return (
     <PanelSection title="Evidence Chain" className="space-y-3">
-      <p className="text-xs text-muted-foreground">
-        Search a graph node ID (e.g. <span className="font-mono">cred-aws-power</span>, <span className="font-mono">host-jumpbox</span>) to see the actions that produced or touched it — the tool name, command, output preview, and timestamp for each step. Useful for "how did we end up with this credential?" or "what did we run against this host?".
-      </p>
       <div className="flex gap-2">
         <input value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
           placeholder="Node ID or label…" className="settings-input flex-1" />
-        <button onClick={search} className="settings-save-btn">Search</button>
+        <ActionButton onClick={search} variant="primary">Search</ActionButton>
       </div>
 
       {loading && <p className="text-xs text-muted-foreground">Searching…</p>}
@@ -183,7 +180,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
             </div>
           )}
 
-          {data.chains.length === 0 && <p className="text-xs text-muted-foreground">No evidence chain entries</p>}
+          {data.chains.length === 0 && <EmptyPanelState message="No evidence chain entries." />}
         </div>
       )}
     </PanelSection>
@@ -231,8 +228,7 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
   }, [selectedObjective, optimize]);
 
   return (
-    <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
-      <h3 className="text-sm font-medium">Attack Paths</h3>
+    <PanelSection title="Attack Paths" className="space-y-3">
       <div className="flex gap-2">
         <select value={selectedObjective} onChange={e => setSelectedObjective(e.target.value)} className="settings-input flex-1">
           <option value="">Select objective…</option>
@@ -245,7 +241,7 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
           <option value="stealth">Stealth</option>
           <option value="balanced">Balanced</option>
         </select>
-        <button onClick={search} className="settings-save-btn">Find Paths</button>
+        <ActionButton onClick={search} variant="primary">Find Paths</ActionButton>
       </div>
 
       {loading && <p className="text-xs text-muted-foreground">Finding paths…</p>}
@@ -294,9 +290,9 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
       )}
 
       {!loading && paths.length === 0 && selectedObjective && (
-        <p className="text-xs text-muted-foreground">No attack paths found. Select an objective and search.</p>
+        <EmptyPanelState message="No attack paths found. Select an objective and search." />
       )}
-    </section>
+    </PanelSection>
   );
 }
 

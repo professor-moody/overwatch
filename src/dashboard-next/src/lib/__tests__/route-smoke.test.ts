@@ -54,6 +54,17 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
           expect(route.expectsAny.some(expected => text.includes(expected)), route.path).toBe(true);
         }
         expect(text, route.path).not.toContain('Graph renderer is not mounted.');
+        const pageTitle = route.path.split('?')[0].slice(1);
+        const expectedTitle = pageTitle === 'paths'
+          ? 'Attack Paths'
+          : pageTitle.charAt(0).toUpperCase() + pageTitle.slice(1);
+        if (!route.path.startsWith('/graph') && expectedTitle) {
+          const titleCount = await page.evaluate((title) => (
+            [...document.querySelectorAll('main h2')]
+              .filter(heading => heading.textContent?.trim().startsWith(title)).length
+          ), expectedTitle);
+          expect(titleCount, `${route.path} duplicate page title`).toBeLessThanOrEqual(1);
+        }
       }
 
       expect(errors.filter(error =>
@@ -64,4 +75,30 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
       await browser.close();
     }
   }, 60_000);
+
+  it('carries contextual graph links through evidence click-through', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1280, height: 800 });
+      await page.goto(`${smokeUrl}/evidence?node=cred-jdoe-ntlm`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForFunction(() => document.body.innerText.includes('cred-jdoe-ntlm'), { timeout: 10_000 });
+      await page.evaluate(() => {
+        const button = [...document.querySelectorAll('button')]
+          .find(candidate => candidate.title?.includes('Open cred-jdoe-ntlm in graph'));
+        if (!(button instanceof HTMLButtonElement)) throw new Error('credential graph button missing');
+        button.click();
+      });
+      await page.waitForFunction(() => location.pathname.endsWith('/graph') && document.body.innerText.includes('Evidence for'), { timeout: 15_000 });
+      const text = await page.evaluate(() => document.body.innerText);
+      expect(text).toContain('Show All');
+      expect(text).not.toContain('Graph renderer is not mounted.');
+    } finally {
+      await browser.close();
+    }
+  }, 40_000);
 });

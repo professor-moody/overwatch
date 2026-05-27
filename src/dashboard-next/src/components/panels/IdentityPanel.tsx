@@ -1,26 +1,29 @@
-// ============================================================
-// Identity Panel (Phase 4 enterprise readiness).
-//
-// Renders the SSO / IdP layer of the engagement graph in a dedicated
-// surface so the identity tier doesn't get lost inside the giant graph
-// view. Sources data from the existing engagement store — no new API
-// endpoint — by filtering nodes/edges to identity types and rendering:
-//   - IdPs (Okta orgs, Entra tenants, …) with federation_mode + tenant
-//   - Apps registered with each IdP
-//   - Federated principals with MFA factor counts
-//   - Captured token credentials (audience, scopes, expiry, MFA flags)
-// ============================================================
-
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useNavigation } from '../../hooks/useNavigation';
 import type { ExportedNode, ExportedEdge } from '../../lib/types';
-import { EmptyState } from '../shared';
+import { ActionButton, DataRow, EmptyPanelState, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { GraphNodeLinks } from '../shared/GraphNodeLinks';
+import { cn } from '../../lib/utils';
 
 interface IdpGroup {
   idp: ExportedNode;
   apps: ExportedNode[];
   principals: ExportedNode[];
   federatedDomains: string[];
+}
+
+export interface IdentityTokenSummary {
+  id: string;
+  label: string;
+  kind: string;
+  user?: string;
+  audience?: string;
+  scopes: string[];
+  expires?: string;
+  status: 'usable' | 'MFA satisfied' | 'MFA blocked';
+  tone: 'success' | 'warning' | 'muted';
 }
 
 function asString(v: unknown): string | undefined {
@@ -38,22 +41,16 @@ export function groupByIdp(nodes: ExportedNode[], edges: ExportedEdge[]): IdpGro
     const idpAppIds = new Set(
       trustEdges
         .filter(e => e.target === idp.id)
-        .map(e => e.source)
+        .map(e => e.source),
     );
-    const groupApps = apps.filter(a =>
-      idpAppIds.has(a.id) ||
-      asString(a.idp_id) === idp.id
-    );
+    const groupApps = apps.filter(a => idpAppIds.has(a.id) || asString(a.idp_id) === idp.id);
     const appIdSet = new Set(groupApps.map(a => a.id));
     const idpKind = asString(idp.idp_kind);
     const idpTenant = asString(idp.tenant_id);
     const principalsForIdp = principals.filter(p => {
       if (asString(p.idp_id) === idp.id) return true;
-      const assigned = trustEdges.some(e => e.source === p.id && appIdSet.has(e.target));
-      if (assigned) return true;
-      // Heuristic fallback: principal id encodes the same IdP kind/tenant.
-      if (idpKind && idpTenant && p.id.includes(`${idpKind}-${idpTenant}`)) return true;
-      return false;
+      if (trustEdges.some(e => e.source === p.id && appIdSet.has(e.target))) return true;
+      return !!(idpKind && idpTenant && p.id.includes(`${idpKind}-${idpTenant}`));
     });
     const federatedDomains = fedEdges
       .filter(e => e.source === idp.id || e.target === idp.id)
@@ -80,223 +77,187 @@ export function tokenCredentials(nodes: ExportedNode[]): ExportedNode[] {
   });
 }
 
-function tokenStatusLabel(node: ExportedNode): string {
-  if (node.cred_mfa_satisfied === true) return 'MFA satisfied';
-  if (node.cred_mfa_required === true) return 'MFA blocked';
-  return 'usable';
-}
-
-function tokenStatusClass(node: ExportedNode): string {
-  const label = tokenStatusLabel(node);
-  if (label === 'MFA blocked') return 'text-warning';
-  if (label === 'MFA satisfied') return 'text-success';
-  return 'text-muted-foreground';
+export function identityTokenSummaries(nodes: ExportedNode[]): IdentityTokenSummary[] {
+  return tokenCredentials(nodes).map(node => {
+    const scopes = Array.isArray(node.cred_scopes) ? (node.cred_scopes as string[]) : [];
+    let status: IdentityTokenSummary['status'] = 'usable';
+    let tone: IdentityTokenSummary['tone'] = 'muted';
+    if (node.cred_mfa_satisfied === true) {
+      status = 'MFA satisfied';
+      tone = 'success';
+    } else if (node.cred_mfa_required === true) {
+      status = 'MFA blocked';
+      tone = 'warning';
+    }
+    return {
+      id: node.id,
+      label: node.label || node.id,
+      kind: asString(node.cred_material_kind) || 'token',
+      user: asString(node.cred_user),
+      audience: asString(node.cred_audience),
+      scopes,
+      expires: asString(node.cred_token_expires_at),
+      status,
+      tone,
+    };
+  });
 }
 
 export function IdentityPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const initialized = useEngagementStore((s) => s.initialized);
+  const [searchParams] = useSearchParams();
+  const selectedItem = searchParams.get('item');
+  const { navigateToPanel } = useNavigation();
 
   const groups = useMemo(() => groupByIdp(graph.nodes, graph.edges), [graph.nodes, graph.edges]);
-  const tokens = useMemo(() => tokenCredentials(graph.nodes), [graph.nodes]);
+  const tokens = useMemo(() => identityTokenSummaries(graph.nodes), [graph.nodes]);
+  const appCount = groups.reduce((sum, group) => sum + group.apps.length, 0);
+  const principalCount = groups.reduce((sum, group) => sum + group.principals.length, 0);
 
   if (!initialized) {
-    return <EmptyState title="Loading" description="Waiting for engagement state…" />;
+    return <EmptyPanelState message="Waiting for engagement state..." />;
   }
 
   if (groups.length === 0 && tokens.length === 0) {
-    return (
-      <EmptyState
-        title="No identity-tier data yet"
-        description="Run an SSO/cloud-identity parser (roadrecon, okta-cli, jwt-tool, microburst, aadinternals, evilginx) or ingest_azurehound to populate this panel."
-      />
-    );
+    return <EmptyPanelState message="No identity-tier data yet." />;
   }
 
   return (
-    <div className="space-y-6 p-4">
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Identity Providers</h2>
-        {groups.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No IdP nodes in the graph yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {groups.map(({ idp, apps, principals, federatedDomains }) => {
-              return (
-                <div key={idp.id} className="rounded border border-elevated bg-card p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <span className="font-mono text-xs uppercase rounded bg-elevated px-1.5 py-0.5 mr-2">
-                        {asString(idp.idp_kind) ?? 'idp'}
-                      </span>
-                      <span className="font-medium">{idp.label}</span>
-                      {asString(idp.tenant_id) ? (
-                        <span className="ml-2 text-xs text-muted-foreground font-mono">{asString(idp.tenant_id)}</span>
-                      ) : null}
-                    </div>
-                    {asString(idp.federation_mode) ? (
-                      <span className="text-xs text-muted-foreground">
-                        federation: {asString(idp.federation_mode)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 text-sm">
-                    <div>
-                      <div className="text-xs text-muted-foreground">Apps</div>
-                      <div className="font-mono">{apps.length}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Principals</div>
-                      <div className="font-mono">{principals.length}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Federates with</div>
-                      <div className="font-mono text-xs">
-                        {federatedDomains.length > 0 ? federatedDomains.join(', ') : '—'}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
-                    <div>
-                      Apps:{' '}
-                      <span className="font-mono text-foreground">
-                        {apps.length > 0 ? apps.slice(0, 3).map(a => asString(a.app_name) ?? a.label).join(', ') : 'none'}
-                      </span>
-                    </div>
-                    <div>
-                      Principals:{' '}
-                      <span className="font-mono text-foreground">
-                        {principals.length > 0 ? principals.slice(0, 3).map(p => asString(p.username) ?? p.label).join(', ') : 'none'}
-                      </span>
-                    </div>
-                  </div>
-                  {apps.length > 0 ? (
-                    <details className="mt-2">
-                      <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                        Show apps
-                      </summary>
-                      <ul className="mt-2 space-y-1 text-xs font-mono">
-                        {apps.slice(0, 20).map(a => (
-                          <li key={a.id} className="flex justify-between">
-                            <span>{asString(a.app_name) ?? a.label}</span>
-                            <span className="text-muted-foreground">
-                              {a.app_mfa_required ? 'MFA req' : ''}
-                              {asString(a.audience) ? ` · aud:${asString(a.audience)!.slice(0, 30)}` : ''}
-                            </span>
-                          </li>
-                        ))}
-                        {apps.length > 20 ? <li className="text-muted-foreground">+ {apps.length - 20} more</li> : null}
-                      </ul>
-                    </details>
-                  ) : null}
-                  {principals.length > 0 ? (
-                    <details className="mt-2">
-                      <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                        Show principals
-                      </summary>
-                      <ul className="mt-2 space-y-1 text-xs font-mono">
-                        {principals.slice(0, 20).map(p => {
-                          const factors = Array.isArray(p.mfa_factors) ? (p.mfa_factors as string[]) : [];
-                          return (
-                            <li key={p.id} className="flex justify-between gap-3">
-                              <span className="truncate">{asString(p.username) ?? p.label}</span>
-                              <span className="text-muted-foreground shrink-0">
-                                {factors.length > 0 ? `MFA: ${factors.slice(0, 2).join(', ')}` : 'MFA: unknown'}
-                              </span>
-                            </li>
-                          );
-                        })}
-                        {principals.length > 20 ? <li className="text-muted-foreground">+ {principals.length - 20} more</li> : null}
-                      </ul>
-                    </details>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+    <div className="space-y-4">
+      <PageHeader
+        title="Identity"
+        meta={`(${groups.length} IdPs · ${appCount} apps · ${principalCount} principals · ${tokens.length} token refs)`}
+      />
 
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Captured Tokens</h2>
-        {tokens.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No token credentials captured yet.</p>
+      <PanelSection title="Identity Providers" meta={groups.length}>
+        {groups.length === 0 ? (
+          <EmptyPanelState message="No IdP nodes in the graph yet." />
         ) : (
           <div className="space-y-2">
-            {tokens.slice(0, 50).map(t => {
-              const expiry = asString(t.cred_token_expires_at);
-              const scopes = Array.isArray(t.cred_scopes) ? (t.cred_scopes as string[]) : [];
-              return (
-                <div key={t.id} className="rounded border border-elevated bg-card p-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs">{asString(t.cred_material_kind) ?? 'token'}</span>
-                    <span className={`text-xs ${tokenStatusClass(t)}`}>{tokenStatusLabel(t)}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {asString(t.cred_user) ? <>user: <span className="font-mono">{asString(t.cred_user)}</span> · </> : null}
-                    {asString(t.cred_audience) ? <>aud: <span className="font-mono">{asString(t.cred_audience)!.slice(0, 60)}</span></> : null}
-                  </div>
-                  {scopes.length > 0 ? (
-                    <div className="text-xs text-muted-foreground mt-1">
-                      scopes: <span className="font-mono">{scopes.slice(0, 6).join(' ')}</span>
-                    </div>
-                  ) : null}
-                  {expiry ? (
-                    <div className="text-xs text-muted-foreground mt-1">
-                      expires: <span className="font-mono">{expiry}</span>
-                    </div>
-                  ) : null}
-                  <CredValueRow value={asString(t.cred_value)} />
-                </div>
-              );
-            })}
-            {tokens.length > 50 ? (
-              <p className="text-xs text-muted-foreground">+ {tokens.length - 50} more not shown</p>
-            ) : null}
+            {groups.map(group => <IdpRow key={group.idp.id} group={group} selectedItem={selectedItem} />)}
           </div>
         )}
-      </section>
+      </PanelSection>
+
+      <PanelSection title="Token Relationships" meta={tokens.length}>
+        {tokens.length === 0 ? (
+          <EmptyPanelState message="No token credentials reference identity providers yet." />
+        ) : (
+          <div className="space-y-2">
+            {tokens.slice(0, 50).map(token => (
+              <DataRow key={token.id} className={cn(selectedItem === token.id && 'border-accent/60 bg-accent/5')}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <StatusPill tone="accent">{token.kind}</StatusPill>
+                      <StatusPill tone={token.tone}>{token.status}</StatusPill>
+                      <span className="text-sm font-medium truncate">{token.label}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {token.user && <span>User <span className="font-mono text-foreground">{token.user}</span></span>}
+                      {token.audience && <span>Aud <span className="font-mono text-foreground">{token.audience}</span></span>}
+                      {token.expires && <span>Expires <span className="font-mono text-foreground">{token.expires}</span></span>}
+                    </div>
+                    {token.scopes.length > 0 && (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Scopes <span className="font-mono text-foreground">{token.scopes.slice(0, 6).join(' ')}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <GraphNodeLinks
+                      nodeId={token.id}
+                      graphTarget={{ kind: 'evidence', nodeId: token.id, label: `Identity token ${token.label}` }}
+                    />
+                    <ActionButton onClick={() => navigateToPanel('credentials', token.id)} variant="secondary" size="xs">
+                      Credential
+                    </ActionButton>
+                  </div>
+                </div>
+              </DataRow>
+            ))}
+          </div>
+        )}
+      </PanelSection>
     </div>
   );
 }
 
-/**
- * Reveal-on-click cred_value display with copy-to-clipboard. Operators
- * need to be able to use captured credentials themselves; the dashboard
- * is the natural surface to retrieve them. Hidden by default so a
- * shoulder-surfer or screen-share doesn't leak the value casually.
- */
-function CredValueRow({ value }: { value: string | undefined }) {
-  const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  if (!value) return null;
-
-  const display = revealed ? value : '••••••••••••••••';
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard blocked — operator can still reveal + select */ }
-  };
-
+function IdpRow({ group, selectedItem }: { group: IdpGroup; selectedItem: string | null }) {
+  const { idp, apps, principals, federatedDomains } = group;
+  const idpKind = asString(idp.idp_kind) || 'idp';
   return (
-    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
-      <span>value:</span>
-      <span className="font-mono bg-elevated px-1.5 py-0.5 rounded text-foreground select-all">{display}</span>
-      <button
-        onClick={() => setRevealed(v => !v)}
-        className="text-accent hover:underline text-[10px]"
-      >
-        {revealed ? 'hide' : 'reveal'}
-      </button>
-      <button
-        onClick={copy}
-        className="text-accent hover:underline text-[10px]"
-      >
-        {copied ? 'copied!' : 'copy'}
-      </button>
+    <DataRow className={cn(selectedItem === idp.id && 'border-accent/60 bg-accent/5')}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <StatusPill tone="muted">{idpKind}</StatusPill>
+            <span className="text-sm font-medium truncate">{idp.label}</span>
+            {asString(idp.tenant_id) && <span className="font-mono text-xs text-muted-foreground">{asString(idp.tenant_id)}</span>}
+            {asString(idp.federation_mode) && <StatusPill tone="purple">{asString(idp.federation_mode)}</StatusPill>}
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+            <Fact label="Apps" value={String(apps.length)} />
+            <Fact label="Principals" value={String(principals.length)} />
+            <Fact label="Federates With" value={federatedDomains.length > 0 ? federatedDomains.join(', ') : '-'} />
+          </div>
+          <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+            <div>
+              Apps{' '}
+              <span className="font-mono text-foreground">
+                {apps.length > 0 ? apps.slice(0, 3).map(app => asString(app.app_name) || app.label).join(', ') : 'none'}
+              </span>
+            </div>
+            <div>
+              Principals{' '}
+              <span className="font-mono text-foreground">
+                {principals.length > 0 ? principals.slice(0, 3).map(principal => asString(principal.username) || principal.label).join(', ') : 'none'}
+              </span>
+            </div>
+          </div>
+          <EntityList title="Apps" items={apps} labelFor={node => asString(node.app_name) || node.label} />
+          <EntityList title="Principals" items={principals} labelFor={node => asString(node.username) || node.label} />
+        </div>
+        <GraphNodeLinks nodeId={idp.id} graphTarget={{ kind: 'node', nodeId: idp.id, hops: 2, label: `Identity provider ${idp.label}` }} />
+      </div>
+    </DataRow>
+  );
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded border border-border bg-background/45 px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="truncate font-mono text-xs text-foreground">{value}</div>
     </div>
+  );
+}
+
+function EntityList({
+  title,
+  items,
+  labelFor,
+}: {
+  title: string;
+  items: ExportedNode[];
+  labelFor: (node: ExportedNode) => string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <details className="mt-2">
+      <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{title}</summary>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {items.slice(0, 20).map(node => (
+          <GraphNodeLinks
+            key={node.id}
+            nodeId={node.id}
+            label={labelFor(node)}
+            graphTarget={{ kind: 'node', nodeId: node.id, hops: 2, label: `${title.slice(0, -1)} ${labelFor(node)}` }}
+          />
+        ))}
+        {items.length > 20 && <span className="text-[10px] text-muted-foreground">+{items.length - 20} more</span>}
+      </div>
+    </details>
   );
 }

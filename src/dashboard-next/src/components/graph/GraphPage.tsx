@@ -26,6 +26,7 @@ import { exportScreenshot, exportSVG } from './GraphExport';
 import { NodeContextMenu, type ContextMenuState } from './NodeContextMenu';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
+import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
@@ -54,6 +55,7 @@ export function GraphPage() {
 
   // ---- UI state ----
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const setGraphInspectorOpen = useDashboardUiStore(s => s.setGraphInspectorOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [layoutRunning, setLayoutRunning] = useState(false);
   const [communityHullsActive, setCommunityHullsActive] = useState(true);
@@ -81,6 +83,11 @@ export function GraphPage() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const undoStackRef = useRef<Array<{ reason: string; reverse: GraphCorrectionOperation[] }>>([]);
   const toast = useToastStore((s) => s.addToast);
+
+  useEffect(() => {
+    setGraphInspectorOpen(!!selectedNodeId);
+    return () => setGraphInspectorOpen(false);
+  }, [selectedNodeId, setGraphInspectorOpen]);
 
   const handleUndoPush = useCallback((op: { reason: string; reverse: GraphCorrectionOperation[] }) => {
     undoStackRef.current = [...undoStackRef.current.slice(-19), op];

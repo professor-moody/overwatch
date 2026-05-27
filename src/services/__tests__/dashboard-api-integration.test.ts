@@ -127,6 +127,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await dashboard.stop().catch(() => {});
+  engine.dispose();
   if (existsSync(stateFile)) try { unlinkSync(stateFile); } catch { /* */ }
   if (tempDir && existsSync(tempDir)) try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* */ }
 });

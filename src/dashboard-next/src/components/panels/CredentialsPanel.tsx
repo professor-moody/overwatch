@@ -1,4 +1,6 @@
 import { useState, useMemo } from 'react';
+import { useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { cn, formatRelativeTime } from '../../lib/utils';
@@ -21,11 +23,17 @@ export function CredentialsPanel() {
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const { navigateToGraphTarget } = useNavigation();
+  const [searchParams] = useSearchParams();
+  const { navigateToGraphTarget, navigateToPanel } = useNavigation();
 
   const creds = useMemo(() => {
     return graph.nodes.filter(n => n.type === 'credential');
   }, [graph.nodes]);
+
+  useEffect(() => {
+    const item = searchParams.get('item');
+    if (item) setExpandedId(item);
+  }, [searchParams]);
 
   const filtered = useMemo(() => {
     let list = creds;
@@ -179,6 +187,13 @@ export function CredentialsPanel() {
             const isExpanded = expandedId === cred.id;
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;
+            const hasIdentityContext = !!(
+              cred.cred_audience ||
+              cred.cred_mfa_required != null ||
+              String(cred.cred_material_kind || '').includes('oidc') ||
+              String(cred.cred_material_kind || '').includes('saml') ||
+              String(cred.cred_material_kind || '').includes('session')
+            );
 
             return (
               <DataRow
@@ -246,6 +261,16 @@ export function CredentialsPanel() {
                       >
                         View in Graph
                       </ActionButton>
+                      {hasIdentityContext && (
+                        <ActionButton
+                          onClick={() => navigateToPanel('identity', cred.id)}
+                          variant="ghost"
+                          size="xs"
+                          className="text-accent"
+                        >
+                          Identity
+                        </ActionButton>
+                      )}
                     </DetailRow>
 
                     {/* Confidence */}

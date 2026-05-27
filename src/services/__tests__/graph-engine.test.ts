@@ -1,10 +1,19 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { GraphEngine } from '../graph-engine.js';
 import { parseHashcat, parseNxc, parseResponder, parseSecretsdump } from '../parsers/index.js';
-import { unlinkSync, existsSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { unlinkSync, existsSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { EngagementConfig, Finding, NodeType, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-eng.json';
+const tempDirs: string[] = [];
+
+function makeTempStateFile(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'overwatch-graph-engine-'));
+  tempDirs.push(dir);
+  return join(dir, 'state-test-eng.json');
+}
 
 function makeConfig(overrides: Partial<EngagementConfig> = {}): EngagementConfig {
   return {
@@ -65,6 +74,9 @@ describe('GraphEngine', () => {
     for (const e of engines) e.dispose();
     engines.length = 0;
     cleanup();
+    for (const dir of tempDirs.splice(0)) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
   });
 
   // =============================================
@@ -1800,6 +1812,7 @@ describe('GraphEngine', () => {
     });
 
     it('rollback restores tracked processes from snapshot', () => {
+      const stateFile = makeTempStateFile();
       const procA = {
         id: 'proc-a',
         pid: 1001,
@@ -1818,12 +1831,12 @@ describe('GraphEngine', () => {
         completed_at: '2026-03-21T00:10:00.000Z',
       };
 
-      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), stateFile);
       engine1.setTrackedProcesses([procA]);
       engine1.persist();
       engine1.flushNow();
 
-      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), stateFile);
       engine2.setTrackedProcesses([procB]);
       engine2.persist();
       engine2.flushNow();
@@ -1832,7 +1845,7 @@ describe('GraphEngine', () => {
       expect(snapshots.length).toBeGreaterThan(0);
       expect(engine2.rollbackToSnapshot(snapshots[snapshots.length - 1])).toBe(true);
 
-      const engine3 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine3 = trackedEngine(makeConfig(), stateFile);
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
       expect(engine3.getTrackedProcesses()[0].id).toBe('proc-a');
     });
@@ -1850,7 +1863,8 @@ describe('GraphEngine', () => {
     });
 
     it('rollback restores inference rules from snapshot', () => {
-      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const stateFile = makeTempStateFile();
+      const engine = trackedEngine(makeConfig(), stateFile);
 
       // Add first custom rule and persist (creates a snapshot)
       engine.addInferenceRule({
@@ -1884,7 +1898,7 @@ describe('GraphEngine', () => {
       engine.flushNow();
 
       // After rollback, reload engine from persisted state
-      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), stateFile);
       // The first snapshot had rule-custom-1 but NOT rule-custom-2
       // However the very first snapshot is before any custom rules were added
       // So we just verify the rollback didn't keep rules from after the snapshot
@@ -2249,6 +2263,7 @@ describe('GraphEngine', () => {
     });
 
     it('recovers tracked processes from snapshot after state corruption', () => {
+      const stateFile = makeTempStateFile();
       const procA = {
         id: 'proc-recover-a',
         pid: 2001,
@@ -2266,20 +2281,20 @@ describe('GraphEngine', () => {
         status: 'running' as const,
       };
 
-      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine1 = trackedEngine(makeConfig(), stateFile);
       engine1.setTrackedProcesses([procA]);
       engine1.persist();
       engine1.flushNow();
 
-      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine2 = trackedEngine(makeConfig(), stateFile);
       engine2.setTrackedProcesses([procB]);
       engine2.persist();
       engine2.flushNow();
 
       const { writeFileSync: wfs } = require('fs');
-      wfs(TEST_STATE_FILE, '{ corrupted json!!!');
+      wfs(stateFile, '{ corrupted json!!!');
 
-      const engine3 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const engine3 = trackedEngine(makeConfig(), stateFile);
       expect(engine3.getTrackedProcesses()).toHaveLength(1);
       expect(engine3.getTrackedProcesses()[0].id).toBe('proc-recover-a');
     });

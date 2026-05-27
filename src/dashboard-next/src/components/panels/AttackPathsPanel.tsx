@@ -21,8 +21,8 @@ import { useNavigation } from '../../hooks/useNavigation';
 
 import type { ExportedEdge, ExportedNode } from '../../lib/types';
 import { isCrossTierPath, tierForNode, tiersForPath, type Tier } from '../../lib/tier';
-import { EmptyState } from '../shared';
 import { cn } from '../../lib/utils';
+import { EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 
 export type Optimize = 'confidence' | 'stealth';
 type TierFilter = 'any' | 'cross_tier' | Tier;
@@ -238,48 +238,27 @@ export function AttackPathsPanel() {
   }, [allPaths, tierFilter]);
 
   if (!initialized) {
-    return <EmptyState title="Loading" description="Waiting for engagement state…" />;
+    return <EmptyPanelState message="Waiting for engagement state..." />;
   }
   if (graph.nodes.length === 0) {
-    return <EmptyState title="No graph yet" description="Run a scan or ingest a finding to populate the engagement graph." />;
+    return <EmptyPanelState message="Run a scan or ingest a finding to populate the engagement graph." />;
   }
   if (allPaths.length === 0) {
-    return (
-      <EmptyState
-        title="No attack paths reachable from current sources"
-        description="A path requires a live session on a host (HAS_SESSION) plus a target node (objective, HVT, cloud_resource, or idp_principal). Open a session or capture a credential to populate sources."
-      />
-    );
+    return <EmptyPanelState message="No attack paths reachable from current sources." />;
   }
 
   return (
-    <div className="space-y-4 p-4">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
-        <div>
-          <h2 className="text-lg font-semibold">Attack Paths</h2>
-          <p className="text-xs text-muted-foreground">
-            Live session sources to domain, identity, cloud, and high-value targets.
-          </p>
-        </div>
-        <div className="text-xs text-muted-foreground font-mono">
-          {allPaths.length} computed · {visiblePaths.length} visible
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex gap-1">
-          {(['cross_tier', 'any', 'network', 'app', 'cloud', 'identity'] as TierFilter[]).map(t => (
-            <button
-              key={t}
-              onClick={() => setTierFilter(t)}
-              className={cn(
-                'px-2 py-1 text-xs rounded border',
-                tierFilter === t ? 'bg-accent text-accent-foreground border-accent' : 'border-border bg-card hover:bg-elevated',
-              )}
-            >
-              {t === 'cross_tier' ? 'cross-tier' : t}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-4">
+      <PageHeader title="Attack Paths" meta={`(${allPaths.length} computed · ${visiblePaths.length} visible)`} />
+      <FilterBar>
+        <SegmentedControl
+          value={tierFilter}
+          onChange={setTierFilter}
+          options={(['cross_tier', 'any', 'network', 'app', 'cloud', 'identity'] as TierFilter[]).map(value => ({
+            value,
+            label: value === 'cross_tier' ? 'cross-tier' : value,
+          }))}
+        />
         <label className="text-xs text-muted-foreground flex items-center gap-2">
           max hops:
           <input
@@ -296,13 +275,10 @@ export function AttackPathsPanel() {
             <option value="stealth">stealth</option>
           </select>
         </label>
-        <span className="text-xs text-muted-foreground ml-auto">
-          {visiblePaths.length} of {allPaths.length} paths
-        </span>
-      </div>
+      </FilterBar>
 
       {visiblePaths.length === 0 ? (
-        <EmptyState title="No paths match the current filter" description="Loosen the tier filter or increase max hops." />
+        <EmptyPanelState message="No paths match the current filter." />
       ) : (
         <div className="space-y-2">
           {visiblePaths.slice(0, 100).map((p, idx) => (
@@ -330,11 +306,11 @@ function PathRow({ path, byId, onNavigate, onFrontier }: {
       <div className="flex items-center justify-between mb-2">
         <div className="flex flex-wrap gap-1">
           {[...path.tiers].map(t => (
-            <span key={t} className={cn('px-1.5 py-0.5 text-[10px] rounded border font-mono uppercase', tierBadgeClass(t))}>
+            <StatusPill key={t} className={cn('border font-mono uppercase', tierBadgeClass(t))}>
               {t}
-            </span>
+            </StatusPill>
           ))}
-          {isCross ? <span className="px-1.5 py-0.5 text-[10px] rounded border bg-yellow-500/20 text-yellow-300 border-yellow-500/40 font-mono uppercase">cross-tier</span> : null}
+          {isCross ? <StatusPill className="border bg-yellow-500/20 text-yellow-300 border-yellow-500/40 font-mono uppercase">cross-tier</StatusPill> : null}
         </div>
         <div className="flex items-center gap-2">
           <div className="text-xs text-muted-foreground font-mono">

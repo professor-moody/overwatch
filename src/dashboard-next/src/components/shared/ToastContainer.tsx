@@ -6,6 +6,8 @@ import { useToastStore, type Toast } from '../../stores/toast-store';
 import { cn } from '../../lib/utils';
 import { useNavigation } from '../../hooks/useNavigation';
 import type { PanelId } from '../layout/OperatorLayout';
+import { useLocation } from 'react-router-dom';
+import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 
 const TYPE_STYLES: Record<string, string> = {
   info: 'border-accent/40 bg-accent/5',
@@ -25,6 +27,8 @@ export function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
   const removeToast = useToastStore((s) => s.removeToast);
   const { navigateToPanel } = useNavigation();
+  const location = useLocation();
+  const graphInspectorOpen = useDashboardUiStore(s => s.graphInspectorOpen);
 
   if (toasts.length === 0) return null;
 
@@ -35,8 +39,17 @@ export function ToastContainer() {
     removeToast(toast.id);
   };
 
+  const isGraph = location.pathname === '/graph';
+
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 max-w-sm pointer-events-none">
+    <div
+      className={cn(
+        'fixed z-[60] flex max-w-sm flex-col gap-2 pointer-events-none',
+        isGraph
+          ? cn('bottom-24 right-4', graphInspectorOpen && 'lg:right-[25rem]')
+          : 'bottom-4 right-4',
+      )}
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}

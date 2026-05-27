@@ -12,7 +12,6 @@ import { useEffect, useState, useCallback } from 'react';
 import * as api from '../../lib/api';
 import type { FindingDto, ReportRecord } from '../../lib/api';
 import type { FindingContextResponse } from '../../lib/types';
-import { EmptyState } from '../shared';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { RenderReportModal } from './RenderReportModal';
 import { ReportsList } from './ReportsList';
@@ -21,6 +20,7 @@ import { resolveAssetToNodeId } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
 import { narrativeItemsFromFindingContext } from '../../lib/evidence-narrative';
+import { ActionButton, EmptyPanelState, PageHeader } from '../shared/primitives';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -97,11 +97,11 @@ export function FindingsPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          Findings <span className="text-muted-foreground font-normal text-sm">({findings.length})</span>
-        </h2>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="Findings"
+        meta={`(${findings.length})`}
+        actions={(
+        <>
           <div className="flex gap-2 text-xs">
             {summary.critical > 0 && <span className="text-destructive">{summary.critical} critical</span>}
             {summary.high > 0 && <span className="text-warning">{summary.high} high</span>}
@@ -110,7 +110,7 @@ export function FindingsPanel() {
               <span className="text-muted-foreground">{summary.low + summary.info} info/low</span>
             )}
           </div>
-          <button
+          <ActionButton
             onClick={() => {
               const blob = new Blob([JSON.stringify(findings, null, 2)], { type: 'application/json' });
               const url = URL.createObjectURL(blob);
@@ -120,19 +120,20 @@ export function FindingsPanel() {
               a.click();
               URL.revokeObjectURL(url);
             }}
-            className="text-xs px-2.5 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors"
+            variant="secondary"
             title="Export findings as JSON"
           >
             Export JSON
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             onClick={() => setShowRender(true)}
-            className="text-xs px-2.5 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+            variant="primary"
           >
             Generate Report
-          </button>
-        </div>
-      </div>
+          </ActionButton>
+        </>
+        )}
+      />
 
       {/* Reports archive (past renders) */}
       {reports.length > 0 && (
@@ -151,10 +152,7 @@ export function FindingsPanel() {
       {loading ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       ) : findings.length === 0 ? (
-        <EmptyState
-          title="No findings yet"
-          description="Findings populate as agents discover compromised hosts, credentials, vulnerabilities, and access paths."
-        />
+        <EmptyPanelState message="No findings yet." />
       ) : (
         <div className="space-y-2">
           {SEVERITY_ORDER.map(sev => {
