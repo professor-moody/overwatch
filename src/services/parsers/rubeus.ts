@@ -60,6 +60,10 @@ function parseRubeusKerberoast(
     let domain: string | undefined;
     const domainFromHash = hash?.match(/\$krb5tgs\$\d+\$\*[^$]+\$([^$*]+)\$/);
     if (domainFromHash) domain = domainFromHash[1];
+    if (!domain) {
+      const spnMatch = block.match(/SPN\s*:\s*(\S+)/i);
+      domain = spnMatch ? domainFromSpn(spnMatch[1]) : undefined;
+    }
 
     // User node with has_spn
     const resolvedUserId = userId(username, domain);
@@ -100,6 +104,12 @@ function parseRubeusKerberoast(
       });
     }
   }
+}
+
+function domainFromSpn(spn: string): string | undefined {
+  const hostPart = spn.split('/')[1]?.split(':')[0];
+  if (!hostPart || !hostPart.includes('.')) return undefined;
+  return hostPart.split('.').slice(1).join('.').toLowerCase();
 }
 
 function parseRubeusAsreproast(

@@ -157,7 +157,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
           const minPwdLen = parseInt((entry['minpwdlength'] || [''])[0], 10);
           const lockoutThreshold = parseInt((entry['lockoutthreshold'] || [''])[0], 10);
           const lockoutDuration = parseADTimeInterval(entry['lockoutduration']);
-          const lockoutWindow = parseADTimeInterval(entry['lockoutobservationwindow'] || entry['lockoutobservationwindow']);
+          const lockoutWindow = parseADTimeInterval(entry['lockoutobservationwindow']);
 
           if (maxPwdAge !== undefined || minPwdAge !== undefined || !isNaN(pwdHistLen) || !isNaN(minPwdLen)) {
             domainNode.password_policy = {

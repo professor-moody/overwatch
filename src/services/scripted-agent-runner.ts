@@ -243,7 +243,8 @@ export class ScriptedAgentRunner {
     let parser: string;
 
     if (audience && /\.okta\.com/i.test(audience)) {
-      authHeader = `SSWS ${token}`;
+      const isOidc = kind === 'oidc_access_token' || kind === 'oidc_id_token' || this.looksLikeJwt(token);
+      authHeader = `${isOidc ? 'Bearer' : 'SSWS'} ${token}`;
       parser = 'token_replay_okta';
     } else if ((audience && audience.includes('api.github.com')) || kind === 'pat') {
       authHeader = `Bearer ${token}`;
@@ -265,5 +266,11 @@ export class ScriptedAgentRunner {
       ],
       parser,
     };
+  }
+
+  private looksLikeJwt(value: string): boolean {
+    const token = value.replace(/^Bearer\s+/i, '').trim();
+    const parts = token.split('.');
+    return parts.length === 3 && parts.every(part => part.length > 0);
   }
 }

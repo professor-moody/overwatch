@@ -96,6 +96,24 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     return resolvedUserId;
   }
 
+  function parseDomainUserSecret(message: string): { rawDomain: string; username: string; secret?: string } | null {
+    const match = message.match(/([^\\\s]+)\\([^:\s)]+)/);
+    if (!match) return null;
+    const afterUser = message.slice((match.index ?? 0) + match[0].length);
+    let secret: string | undefined;
+    if (afterUser.startsWith(':')) {
+      secret = afterUser
+        .slice(1)
+        .replace(/\s+\([^)]*\)\s*$/, '')
+        .trim();
+    }
+    return {
+      rawDomain: match[1],
+      username: match[2],
+      secret: secret && secret.length > 0 ? secret : undefined,
+    };
+  }
+
   // Broad prefix regex for all SMB lines: SMB  IP/IPv6/hostname  PORT  HOSTNAME  <rest>
   const smbLineRe = /^SMB\s+((?:\d+\.){3}\d+|\[?[a-fA-F0-9:]+\]?|[\w.-]+)\s+(\d+)\s+(\S+)\s+(.*)/i;
 
@@ -187,10 +205,10 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
 
       // Check for Pwn3d! (admin access)
       if (message.includes('Pwn3d!')) {
-        const credMatch = message.match(/([^\\]+)\\([^\s]+)/);
-        if (credMatch) {
-          const [, rawCredDomain, username] = credMatch;
-          const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
+        const parsedCred = parseDomainUserSecret(message);
+        if (parsedCred) {
+          const credDomain = resolveDomainName(parsedCred.rawDomain, context?.domain_aliases);
+          const username = parsedCred.username;
           const resolvedUserId = addUserNode(username, credDomain);
           // Upgrade to privileged
           const userNode = nodes.find(n => n.id === resolvedUserId);
@@ -211,12 +229,12 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       // without lying about reusability.
       if (status === '+') {
         // Capture optional secret after the user (`user:secret`). The secret
-        // may contain shell-unfriendly chars; we stop at the first whitespace
-        // or trailing parenthetical (e.g. " (Pwn3d!)").
-        const credMatch = message.match(/([^\\]+)\\([^\s:]+)(?::([^\s)]+))?/);
-        if (credMatch) {
-          const [, rawCredDomain, username, secret] = credMatch;
-          const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
+        // may contain shell-unfriendly chars and spaces; we stop only before
+        // a trailing status parenthetical (e.g. " (Pwn3d!)").
+        const parsedCred = parseDomainUserSecret(message);
+        if (parsedCred) {
+          const { username, secret } = parsedCred;
+          const credDomain = resolveDomainName(parsedCred.rawDomain, context?.domain_aliases);
           if (username && username !== '') {
             addUserNode(username, credDomain);
             const resolvedUserId = userId(username, credDomain);

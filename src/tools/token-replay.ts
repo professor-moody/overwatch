@@ -40,7 +40,7 @@ interface ProviderConfig {
   /** Audience-shape sanity check; the operator can bypass with allow_audience_mismatch=true. */
   audienceMatches: (credAud: string | undefined, endpoint: string) => boolean;
   /** Build curl args for this provider given the credential and endpoint. */
-  buildCurl: (credValue: string, endpoint: string, extraArgs?: string[]) => string[];
+  buildCurl: (credValue: string, endpoint: string, extraArgs?: string[], credNode?: Record<string, unknown>) => string[];
 }
 
 const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
@@ -70,14 +70,20 @@ const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
     defaultEndpoint: 'https://example.okta.com/api/v1/users/me',
     parser: 'token_replay_okta',
     audienceMatches: (_a, ep) => /\.okta\.com\b/i.test(ep) || /\.oktapreview\.com\b/i.test(ep),
-    buildCurl: (token, endpoint, extra) => [
-      '-sS', '--max-time', '15',
-      '-w', '\n[STATUS:%{http_code}]',
-      '-H', `Authorization: SSWS ${token}`,
-      '-H', 'Accept: application/json',
-      ...(extra ?? []),
-      endpoint,
-    ],
+    buildCurl: (token, endpoint, extra, credNode) => {
+      const kind = typeof credNode?.cred_material_kind === 'string' ? credNode.cred_material_kind : undefined;
+      const scheme = isJwt(token) || kind === 'oidc_access_token' || kind === 'oidc_id_token'
+        ? 'Bearer'
+        : 'SSWS';
+      return [
+        '-sS', '--max-time', '15',
+        '-w', '\n[STATUS:%{http_code}]',
+        '-H', `Authorization: ${scheme} ${token}`,
+        '-H', 'Accept: application/json',
+        ...(extra ?? []),
+        endpoint,
+      ];
+    },
   },
   github: {
     defaultEndpoint: 'https://api.github.com/user',
@@ -114,6 +120,12 @@ interface TokenReplayParams {
 
 function fingerprint(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function isJwt(value: string): boolean {
+  const token = value.replace(/^Bearer\s+/i, '').trim();
+  const parts = token.split('.');
+  return parts.length === 3 && parts.every(part => part.length > 0);
 }
 
 export function registerTokenReplayTool(server: McpServer, engine: GraphEngine): void {
@@ -244,7 +256,7 @@ Sensitive token values are NEVER logged in plain text — the action description
         });
       }
 
-      const curlArgs = cfg.buildCurl(tokenValue, endpoint, params.extra_args);
+      const curlArgs = cfg.buildCurl(tokenValue, endpoint, params.extra_args, credNode as Record<string, unknown>);
       // command_repr replaces the bearer with the redacted label so the
       // activity log description doesn't carry the raw token.
       const commandRepr = `curl ${curlArgs.map(a => a === tokenValue ? tokenLabel : a.includes(`Bearer ${tokenValue}`) ? a.replace(tokenValue, tokenLabel) : a.includes(`SSWS ${tokenValue}`) ? a.replace(tokenValue, tokenLabel) : /[\s'"]/.test(a) ? `'${a.replace(/'/g, "'\\''").replace(tokenValue, tokenLabel)}'` : a).join(' ')}`;
