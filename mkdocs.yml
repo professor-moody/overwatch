@@ -160,5 +160,6 @@ nav:
   - Development:
     - development.md
     - Development Timeline: development-timeline.md
+    - Bedrock Integration Plan: bedrock-integration-plan.md
     - Contributing: contributing.md
     - Architecture Review: architecture-review.md

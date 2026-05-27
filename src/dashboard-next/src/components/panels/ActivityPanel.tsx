@@ -8,6 +8,8 @@ import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, St
 import { classifyActivity, extractActivityLinks, filterActivity, type ActivityClass } from '../../lib/activity-console';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
+import { extractActivityTrustSignals } from '../../lib/trust-signals';
+import { TrustSignalList, TrustSignalPills } from '../shared/TrustSignals';
 
 const CLASS_OPTIONS: { value: ActivityClass | ''; label: string }[] = [
   { value: '', label: 'All' },
@@ -150,6 +152,7 @@ function activityKey(entry: ActivityEntry, index: number): string {
 function ActivityRow({ entry, selected, onSelect }: { entry: ActivityEntry; selected: boolean; onSelect: () => void }) {
   const cls = classifyActivity(entry);
   const links = extractActivityLinks(entry);
+  const trustSignals = extractActivityTrustSignals(entry);
 
   return (
     <button
@@ -167,6 +170,7 @@ function ActivityRow({ entry, selected, onSelect }: { entry: ActivityEntry; sele
         <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(entry.timestamp)}</span>
       </div>
       <div className="mt-1 text-muted-foreground line-clamp-2">{entry.description}</div>
+      <TrustSignalPills signals={trustSignals} className="mt-1" />
       {(links.actionId || links.agentId || links.nodeIds.length > 0) && (
         <div className="mt-1 flex flex-wrap gap-1">
           {links.actionId && <span className="text-[10px] font-mono text-accent">action {links.actionId.slice(0, 10)}</span>}
@@ -216,6 +220,7 @@ function ActivityDetail({ entry, decisions, timeline }: {
 
   const cls = classifyActivity(entry);
   const eventLinks = links || extractActivityLinks(entry);
+  const trustSignals = extractActivityTrustSignals(entry);
   const matchingDecision = decisions.find(decision =>
     (!!eventLinks.actionId && decision.action_id === eventLinks.actionId)
     || (!!eventLinks.frontierItemId && decision.frontier_item_id === eventLinks.frontierItemId),
@@ -240,6 +245,13 @@ function ActivityDetail({ entry, decisions, timeline }: {
           <DetailFact label="Frontier" value={eventLinks.frontierItemId || '—'} onClick={eventLinks.frontierItemId ? () => navigateToPanel('frontier') : undefined} />
           <DetailFact label="Age" value={formatRelativeTime(entry.timestamp)} />
         </div>
+
+        {trustSignals.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Trust Signals</div>
+            <TrustSignalList signals={trustSignals} />
+          </div>
+        )}
 
         {eventLinks.nodeIds.length > 0 && (
           <div>

@@ -521,6 +521,8 @@ export interface FindingDto {
   remediation: string;
   risk_score: number;
   cvss_score?: number;
+  cvss_vector?: string;
+  cvss_estimated?: boolean;
   classification?: FindingClassificationLite;
 }
 

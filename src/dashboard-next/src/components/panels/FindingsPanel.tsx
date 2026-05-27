@@ -21,6 +21,8 @@ import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
 import { narrativeItemsFromFindingContext } from '../../lib/evidence-narrative';
 import { ActionButton, EmptyPanelState, PageHeader } from '../shared/primitives';
+import { extractFindingTrustSignals } from '../../lib/trust-signals';
+import { TrustSignalList, TrustSignalPills } from '../shared/TrustSignals';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -212,12 +214,14 @@ function FindingRow({
   onInspect: () => void;
 }) {
   const cls = f.classification;
+  const trustSignals = extractFindingTrustSignals(f);
   return (
     <div className={cn('px-3 py-2 hover:bg-hover transition-colors', selected && 'bg-accent/5')}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-foreground">{f.title}</div>
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{f.description}</div>
+          <TrustSignalPills signals={trustSignals} className="mt-1.5" />
           {f.affected_assets.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">
               {f.affected_assets.slice(0, 6).map(asset => {
@@ -254,7 +258,9 @@ function FindingRow({
         <div className="text-right flex-shrink-0">
           <div className="text-xs text-muted-foreground">risk {f.risk_score.toFixed(1)}</div>
           {f.cvss_score !== undefined && (
-            <div className="text-[10px] text-muted-foreground">CVSS {f.cvss_score.toFixed(1)}</div>
+            <div className={cn('text-[10px]', f.cvss_estimated ? 'text-accent' : 'text-muted-foreground')} title={f.cvss_vector}>
+              CVSS {f.cvss_score.toFixed(1)}{f.cvss_estimated ? ' est.' : ''}
+            </div>
           )}
           <button onClick={onInspect} className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20">
             Inspect
@@ -291,6 +297,7 @@ function FindingInspector({
   }
 
   const f = context.finding;
+  const trustSignals = extractFindingTrustSignals(f);
   return (
     <div className="rounded-lg border border-border bg-surface p-3 space-y-3">
       <div className="flex items-start justify-between gap-3">
@@ -300,6 +307,20 @@ function FindingInspector({
         </div>
         <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
       </div>
+
+      {(f.cvss_score !== undefined || trustSignals.length > 0) && (
+        <div className="rounded border border-border bg-elevated p-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            {f.cvss_score !== undefined && (
+              <span className="text-muted-foreground">
+                CVSS <span className="font-mono text-foreground">{f.cvss_score.toFixed(1)}</span>{f.cvss_estimated ? ' estimated' : ''}
+              </span>
+            )}
+            {f.cvss_vector && <span className="font-mono text-[10px] text-muted-foreground break-all">{f.cvss_vector}</span>}
+          </div>
+          <TrustSignalList signals={trustSignals} className="mt-2" />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3">
         <div className="space-y-2">

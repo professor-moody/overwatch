@@ -200,13 +200,14 @@ export function StatusPill({
   children,
   className,
   tone,
-}: {
+  ...props
+}: React.HTMLAttributes<HTMLSpanElement> & {
   children: React.ReactNode;
   className?: string;
   tone?: StatusTone;
 }) {
   return (
-    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', tone && STATUS_TONES[tone], className)}>
+    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', tone && STATUS_TONES[tone], className)} {...props}>
       {children}
     </span>
   );

@@ -28,6 +28,7 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 
 | Commit | Date | Area | Work Step | Operator-Visible Result |
 |--------|------|------|-----------|-------------------------|
+| `837d4d2` | 2026-05-27 | Durability/testing | Added regression coverage for state persistence, parsers, process edge cases, and correctness fixes. | The reliability sprint has tests around crash-safe persistence, parser edge cases, and subprocess failure modes. |
 | `8efe5f8` | 2026-05-27 | Correctness reliability | Made IAM simulator and CVSS estimates expose uncertainty instead of overconfident denial/severity assumptions. | Unmapped Azure roles and capped assume chains now surface as indeterminate; CVSS estimates stop treating every credential as scope-changing/public-network critical. |
 | `c653f1b` | 2026-05-27 | Parser/replay correctness | Fixed LDAP, NXC, Rubeus, and Okta token replay edge cases. | Lockout policy, plaintext credentials with spaces, SPN-derived Kerberos domains, and Okta OIDC Bearer replays behave closer to real tool output. |
 | `799316e` | 2026-05-27 | Ingest/path reliability | Surfaced empty parse results, BloodHound unknown types, AzureHound dropped records, path projection failures, and inference fanout caps. | Operators can distinguish "no finding/no path" from "the parser or analyzer could not safely complete." |

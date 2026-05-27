@@ -212,9 +212,10 @@ Before merging dashboard UI changes, run a short operator pass:
 2. Open `/frontier`, `/evidence`, `/credentials`, `/identity`, and `/paths`; every graph action should land on a contextual focused graph banner, not the undifferentiated full graph.
 3. Check top-level pages for a single visible page title. Breadcrumbs should appear only for nested item context.
 4. Check `/graph`, `/agents`, and `/activity` at desktop and narrow widths for clipped controls, horizontal page scroll, and mismatched button/status styles.
-5. Keep `Credentials` as the reveal/copy credential-material inventory and `Identity` as the IdP/app/principal/trust surface.
-6. Prefer shared primitives (`ActionButton`, `SegmentedControl`, `InspectorDrawer`, `EmptyPanelState`, `StatusPill`) before adding one-off button, drawer, empty-state, or chip styling.
-7. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
+5. Check `/activity` and `/findings`; parser no-data, ingest drops, path-analysis failures, IAM indeterminate decisions, and estimated CVSS should surface as compact trust signals rather than being buried in raw JSON.
+6. Keep `Credentials` as the reveal/copy credential-material inventory and `Identity` as the IdP/app/principal/trust surface.
+7. Prefer shared primitives (`ActionButton`, `SegmentedControl`, `InspectorDrawer`, `EmptyPanelState`, `StatusPill`) before adding one-off button, drawer, empty-state, or chip styling.
+8. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
 
 ## Adding a New Parser
 

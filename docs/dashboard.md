@@ -90,6 +90,18 @@ Click any node to open the right-side inspector. It shows:
 
 Click a graph action from Frontier, Credentials, Sessions, Activity, or an inspector relationship to open `/graph?node=...&hops=...`. The graph enters neighborhood focus, opens the inspector, and fits the visible neighborhood while reserving space for graph chrome and the right drawer.
 
+### Trust Signals
+
+Activity and Findings surface compact trust signals for correctness-sensitive states:
+
+- parser output that extracted no graph data;
+- ingest summaries with dropped records;
+- path analysis failures or missing endpoints;
+- IAM simulator `indeterminate` decisions and assume-depth caps;
+- estimated CVSS scores.
+
+These signals are operator-facing diagnostics. They do not mean the target is vulnerable by themselves; they tell you when absence of evidence, path output, or severity scoring needs verification before reporting.
+
 ## Sidebar Panels
 
 The sidebar contains six collapsible panels:
