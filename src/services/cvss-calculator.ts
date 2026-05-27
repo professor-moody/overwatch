@@ -131,26 +131,29 @@ export function estimateCvssFromContext(
   graph: ExportedGraph,
   nodeMap: Map<string, NodeProperties>,
 ): { vector: CvssVector; score: number; estimated: true } {
+  const affectedNodes = finding.affected_assets
+    .map(assetId => nodeMap.get(assetId))
+    .filter((node): node is NodeProperties => !!node);
+  const descLower = finding.description.toLowerCase();
+
   // --- Attack Vector ---
-  // Network if any affected asset is reachable from the network (has service with port, webapp, or cloud resource)
-  // Adjacent if only local network visible; Local/Physical as fallback
+  // Network only when the affected asset has an explicit public/external
+  // exposure signal. Internal services with open ports are Adjacent, not
+  // internet-reachable by default.
   let attackVector: CvssVector['attackVector'] = 'L';
-  for (const assetId of finding.affected_assets) {
-    const node = nodeMap.get(assetId);
-    if (!node) continue;
-    if (node.type === 'webapp' || node.type === 'cloud_resource' || node.type === 'cloud_identity') {
+  for (const node of affectedNodes) {
+    if (isPubliclyExposed(node, graph) || finding.category === 'cloud_exposure') {
       attackVector = 'N'; break;
     }
     if (node.type === 'service' && node.port) {
-      attackVector = 'N'; break;
+      attackVector = 'A';
     }
     if (node.type === 'host') {
-      // Check if host has inbound edges from network services
       const hasNetworkService = graph.edges.some(e =>
-        (e.source === assetId && e.properties.type === 'RUNS') ||
-        (e.target === assetId && e.properties.type === 'REACHABLE')
+        (e.source === node.id && e.properties.type === 'RUNS') ||
+        (e.target === node.id && e.properties.type === 'REACHABLE')
       );
-      if (hasNetworkService) attackVector = 'N';
+      if (hasNetworkService && attackVector === 'L') attackVector = 'A';
     }
   }
 
@@ -164,9 +167,11 @@ export function estimateCvssFromContext(
   if (finding.category === 'credential') {
     // Credential findings imply we already had some access
     privilegesRequired = 'L';
+    if (affectedNodes.some(isPrivilegedCredentialOrOwner)) {
+      privilegesRequired = 'H';
+    }
   }
   // Check if finding involves authenticated access
-  const descLower = finding.description.toLowerCase();
   if (descLower.includes('authenticated') || descLower.includes('session')) {
     privilegesRequired = 'L';
   }
@@ -183,11 +188,15 @@ export function estimateCvssFromContext(
   // --- Scope ---
   // Changed if exploitation leads to access beyond the vulnerability's scope
   let scope: CvssVector['scope'] = 'U';
-  if (finding.category === 'compromised_host' || finding.category === 'credential') {
-    // Compromised host or captured credential affects other components
+  if (finding.category === 'compromised_host') {
     scope = 'C';
   }
-  if (descLower.includes('lateral') || descLower.includes('pivot')) {
+  if (
+    descLower.includes('lateral') ||
+    descLower.includes('pivot') ||
+    descLower.includes('cross-tier') ||
+    hasCrossBoundaryEvidence(finding.affected_assets, graph)
+  ) {
     scope = 'C';
   }
 
@@ -263,4 +272,53 @@ export function estimateCvssFromContext(
 function roundUp(x: number): number {
   const rounded = Math.ceil(x * 10) / 10;
   return rounded;
+}
+
+function isPubliclyExposed(node: NodeProperties, graph: ExportedGraph): boolean {
+  if (node.type === 'webapp') return true;
+  if (node.public === true || node.publicly_accessible === true || node.exposed_to_internet === true || node.public_exposure === true) {
+    return true;
+  }
+  return graph.edges.some(e => {
+    if (e.source !== node.id && e.target !== node.id) return false;
+    if (e.properties.type === 'EXPOSED_TO') return true;
+    const exposure = String(e.properties.exposure || e.properties.scope || '').toLowerCase();
+    return exposure.includes('public') || exposure.includes('internet') || exposure.includes('external');
+  });
+}
+
+function isPrivilegedCredentialOrOwner(node: NodeProperties): boolean {
+  return node.privileged === true ||
+    node.domain_admin === true ||
+    node.local_admin === true ||
+    node.admin === true ||
+    /admin|privileged|root/i.test(String(node.cred_user || node.username || node.label || ''));
+}
+
+function hasCrossBoundaryEvidence(assetIds: string[], graph: ExportedGraph): boolean {
+  const ids = new Set(assetIds);
+  const lateralEdges = new Set([
+    'ADMIN_TO',
+    'ASSUMES_ROLE',
+    'POTENTIAL_AUTH',
+    'VALID_FOR_APP',
+    'TRUSTS',
+    'CAN_DCSYNC',
+    'ESC1',
+    'ESC2',
+    'ESC3',
+    'ESC4',
+    'ESC5',
+    'ESC6',
+    'ESC7',
+    'ESC8',
+    'ESC9',
+    'ESC10',
+    'ESC11',
+    'ESC13',
+  ]);
+  return graph.edges.some(e =>
+    (ids.has(e.source) || ids.has(e.target)) &&
+    lateralEdges.has(String(e.properties.type))
+  );
 }

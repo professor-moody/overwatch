@@ -491,6 +491,7 @@ export interface EngagementConfig {
   failure_patterns?: { technique: string; target_pattern?: string; warning: string }[];  // Retrospective feedback for validation
   phases?: EngagementPhase[];     // ordered engagement phases with entry/exit criteria
   max_prompt_tokens?: number;     // Token budget for system prompt generation (default 8000)
+  iam_assume_depth?: number;      // Max ASSUMES_ROLE hops for IAM simulation (default 5)
   hash_chain_enabled?: boolean;   // Enable tamper-evident hash chain over agent/system events (default TRUE for new engagements; legacy engagements without the flag set keep their original behavior)
   /** Optional signing key identifier used to sign chain checkpoints. Implementation stub today. */
   engagement_signing_key_id?: string;
@@ -631,6 +632,7 @@ export const engagementConfigSchema = z.object({
   opsec: opsecProfileSchema,
   phases: z.array(engagementPhaseSchema).optional(),
   max_prompt_tokens: z.number().int().min(1000).max(100000).optional(),
+  iam_assume_depth: z.number().int().min(0).max(20).optional(),
   // P0.2: hash chain default-on for newly-parsed engagement configs. Legacy
   // engagements that were already serialized with the field omitted keep
   // their old behavior; the runtime distinguishes "explicit false" from

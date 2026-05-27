@@ -25,6 +25,7 @@ type AttachedPolicy = {
 
 export interface IAMEvalResult {
   allowed: boolean;
+  decision: 'allowed' | 'denied' | 'indeterminate';
   reason: string;
   matching_policies: string[];
   deny_policies?: string[];
@@ -35,6 +36,8 @@ export interface IAMEvalResult {
    * Azure built-in roles not yet in our mapping table). Caller should
    * treat these as "unknown — could be allow OR deny". */
   enumerated_only_policies?: string[];
+  depth_capped?: boolean;
+  warnings?: string[];
 }
 
 /**
@@ -85,7 +88,7 @@ export function evaluateIAM(
   ctx: EngineContext,
 ): IAMEvalResult {
   if (!ctx.graph.hasNode(principalId)) {
-    return { allowed: false, reason: 'Principal not found in graph', matching_policies: [] };
+    return { allowed: false, decision: 'denied', reason: 'Principal not found in graph', matching_policies: [] };
   }
 
   const principal = ctx.graph.getNodeAttributes(principalId) as NodeProperties;
@@ -98,7 +101,8 @@ export function evaluateIAM(
   const assumptionPaths: string[][] = [];
   const queue: Array<{ id: string; path: string[] }> = [{ id: principalId, path: [principalId] }];
   const visited = new Set<string>();
-  const maxAssumeDepth = 5;
+  const maxAssumeDepth = ctx.config.iam_assume_depth ?? 5;
+  let depthCapped = false;
 
   function addPolicy(policy: AttachedPolicy): void {
     // Same policy node may be attached at multiple scopes / via group +
@@ -119,7 +123,11 @@ export function evaluateIAM(
     ctx.graph.forEachOutEdge(current.id, (_edge, attrs, _src, target) => {
       if (attrs.type === 'HAS_POLICY' || attrs.type === 'MEMBER_OF') return;
 
-      if (attrs.type === 'ASSUMES_ROLE' && current.path.length <= maxAssumeDepth && ctx.graph.hasNode(target)) {
+      if (attrs.type === 'ASSUMES_ROLE' && ctx.graph.hasNode(target)) {
+        if (current.path.length - 1 >= maxAssumeDepth) {
+          depthCapped = true;
+          return;
+        }
         const targetNode = ctx.graph.getNodeAttributes(target) as NodeProperties;
         if (
           targetNode.type === 'cloud_identity'
@@ -139,11 +147,14 @@ export function evaluateIAM(
   if (policyNodes.length === 0) {
     return {
       allowed: false,
+      decision: depthCapped ? 'indeterminate' : 'denied',
       reason: 'No policies attached to principal or assumable roles',
       matching_policies: [],
       provider,
       evaluated_principals: evaluatedPrincipals,
       assumption_paths: assumptionPaths,
+      depth_capped: depthCapped || undefined,
+      warnings: depthCapped ? [`IAM assume-role traversal hit configured depth cap (${maxAssumeDepth})`] : undefined,
     };
   }
 
@@ -162,7 +173,22 @@ export function evaluateIAM(
       result = evaluateAWS(policyNodes, action, resource); // default to AWS semantics
       break;
   }
-  return { ...result, evaluated_principals: evaluatedPrincipals, assumption_paths: assumptionPaths };
+  if (depthCapped && result.decision === 'denied' && result.matching_policies.length === 0 && !result.deny_policies?.length) {
+    result = {
+      ...result,
+      decision: 'indeterminate',
+      reason: `${result.reason}; IAM assume-role traversal hit configured depth cap (${maxAssumeDepth})`,
+    };
+  }
+  return {
+    ...result,
+    evaluated_principals: evaluatedPrincipals,
+    assumption_paths: assumptionPaths,
+    depth_capped: depthCapped || undefined,
+    warnings: depthCapped
+      ? [...(result.warnings ?? []), `IAM assume-role traversal hit configured depth cap (${maxAssumeDepth})`]
+      : result.warnings,
+  };
 }
 
 function detectProvider(node: NodeProperties): 'aws' | 'azure' | 'gcp' | undefined {
@@ -264,6 +290,7 @@ function evaluateAWS(
   if (denyPolicies.length > 0) {
     return {
       allowed: false,
+      decision: 'denied',
       reason: `Explicitly denied by: ${denyPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       deny_policies: denyPolicies,
@@ -274,6 +301,7 @@ function evaluateAWS(
   if (allowPolicies.length > 0) {
     return {
       allowed: true,
+      decision: 'allowed',
       reason: `Allowed by: ${allowPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       provider: 'aws',
@@ -282,6 +310,7 @@ function evaluateAWS(
 
   return {
     allowed: false,
+    decision: 'denied',
     reason: 'Implicitly denied — no matching allow policies',
     matching_policies: [],
     provider: 'aws',
@@ -364,6 +393,7 @@ function evaluateAzure(
   if (denyPolicies.length > 0) {
     return {
       allowed: false,
+      decision: 'denied',
       reason: `Denied by Azure deny assignment: ${denyPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       deny_policies: denyPolicies,
@@ -375,6 +405,7 @@ function evaluateAzure(
   if (allowPolicies.length > 0) {
     return {
       allowed: true,
+      decision: 'allowed',
       reason: `Allowed by RBAC: ${allowPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       provider: 'azure',
@@ -387,6 +418,7 @@ function evaluateAzure(
     // this as “unknown” rather than “denied”.
     return {
       allowed: false,
+      decision: 'indeterminate',
       reason: `Indeterminate — ${enumeratedOnly.length} role assignment(s) enumerated but not permission-expanded: ${enumeratedOnly.join(', ')}`,
       matching_policies: [],
       provider: 'azure',
@@ -396,6 +428,7 @@ function evaluateAzure(
 
   return {
     allowed: false,
+    decision: 'denied',
     reason: 'No matching RBAC role assignments',
     matching_policies: [],
     provider: 'azure',
@@ -437,6 +470,7 @@ function evaluateGCP(
   if (denyPolicies.length > 0) {
     return {
       allowed: false,
+      decision: 'denied',
       reason: `Denied by GCP deny policy: ${denyPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       deny_policies: denyPolicies,
@@ -447,6 +481,7 @@ function evaluateGCP(
   if (allowPolicies.length > 0) {
     return {
       allowed: true,
+      decision: 'allowed',
       reason: `Allowed by GCP IAM binding: ${allowPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       provider: 'gcp',
@@ -455,6 +490,7 @@ function evaluateGCP(
 
   return {
     allowed: false,
+    decision: 'denied',
     reason: 'No matching GCP IAM bindings',
     matching_policies: [],
     provider: 'gcp',
