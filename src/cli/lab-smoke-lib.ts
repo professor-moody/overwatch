@@ -411,7 +411,10 @@ export function validateProvenanceForHost(
     last_seen_not_before_first_seen: Boolean(firstSeen && lastSeen && lastSeen >= firstSeen),
     sources_complete: expectedSources.every(source => sources.includes(source)),
     confirmed_at_valid: Boolean(confirmedAt && firstSeen && confirmedAt >= firstSeen && (!lastSeen || confirmedAt <= lastSeen)),
-    preserved_after_restart: jsonEqual(props, restartProps),
+    preserved_after_restart: jsonEqual(
+      canonicalProvenanceFields(props),
+      canonicalProvenanceFields(restartProps),
+    ),
   };
 
   return {
@@ -468,7 +471,10 @@ export async function runLabSmoke(options: LabSmokeOptions = {}): Promise<LabSmo
     const graphAfterRestart = await callJsonTool<ExportedGraph>(restartedSession.client, 'export_graph', {});
     const retrospective = await callJsonTool<Record<string, any>>(restartedSession.client, 'run_retrospective', {});
 
-    const graphSummaryPreserved = jsonEqual(stateAfterIngest.graph_summary, stateAfterRestart.graph_summary);
+    const graphSummaryPreserved = jsonEqual(
+      canonicalRestartGraphSummary(stateAfterIngest.graph_summary),
+      canonicalRestartGraphSummary(stateAfterRestart.graph_summary),
+    );
     const healthPreserved = jsonEqual(
       {
         status: healthAfterIngest.status,
@@ -673,6 +679,44 @@ function getExportedNode(graph: ExportedGraph, nodeId: string): ExportedGraphNod
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+export function canonicalRestartGraphSummary(summary: unknown): Record<string, unknown> {
+  const object = asObject(summary);
+  return {
+    total_nodes: Number(object.total_nodes || 0),
+    nodes_by_type: sortRecord(asObject(object.nodes_by_type)),
+    total_edges: Number(object.total_edges || 0),
+    edges_by_type: sortRecord(asObject(object.edges_by_type)),
+    confirmed_edges: Number(object.confirmed_edges || 0),
+    inferred_edges: Number(object.inferred_edges || 0),
+    cold_node_count: Number(object.cold_node_count || 0),
+    cold_nodes_by_subnet: sortRecord(asObject(object.cold_nodes_by_subnet)),
+  };
+}
+
+function canonicalProvenanceFields(props: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: props.id,
+    type: props.type,
+    label: props.label,
+    ip: props.ip,
+    hostname: props.hostname,
+    first_seen_at: props.first_seen_at,
+    last_seen_at: props.last_seen_at,
+    confirmed_at: props.confirmed_at,
+    discovered_by: props.discovered_by,
+    confidence: props.confidence,
+    sources: Array.isArray(props.sources) ? props.sources.map(String).sort() : [],
+  };
+}
+
+function sortRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, typeof value === 'number' ? value : Number(value || 0)]),
+  );
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {

@@ -125,6 +125,8 @@ overwatch/
 └── docs/                     # Documentation source
 ```
 
+Generated local operator output such as `reports/` and `tapes/` is intentionally ignored. Keep reusable fixtures, documentation assets, and checked-in examples outside those local output directories unless they are explicitly part of a test fixture.
+
 ## Testing
 
 Tests use [Vitest](https://vitest.dev/). The source suite is now **2800+ tests across 140+ source test files**; use the Vitest summary for the exact current count. Tests are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
@@ -209,7 +211,8 @@ Before merging dashboard UI changes, run a short operator pass:
 1. Open `/smoke`; API shape failures should be red, missing optional host binaries should be warnings.
 2. Open `/frontier`, click a graph link, and confirm `/graph?node=...&hops=2` centers the focused neighborhood with the inspector open.
 3. Check `/graph`, `/agents`, and `/activity` at desktop and narrow widths for clipped controls, horizontal page scroll, and mismatched button/status styles.
-4. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
+4. Prefer shared primitives (`ActionButton`, `SegmentedControl`, `InspectorDrawer`, `EmptyPanelState`, `StatusPill`) before adding one-off button, drawer, empty-state, or chip styling.
+5. Run `npm run build:dashboard-next` and `mkdocs build --strict` when docs or dashboard surfaces change.
 
 ## Adding a New Parser
 

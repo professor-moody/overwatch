@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseLabSmokeArgs, validateProvenanceForHost } from '../lab-smoke-lib.js';
+import { canonicalRestartGraphSummary, parseLabSmokeArgs, validateProvenanceForHost } from '../lab-smoke-lib.js';
 import type { ExportedGraph } from '../../types.js';
 
 describe('lab smoke harness helpers', () => {
@@ -59,5 +59,73 @@ describe('lab smoke harness helpers', () => {
     expect(result.sources).toContain('bloodhound-ingest');
     expect(result.sources).toContain('nmap-parser');
     expect(result.sources).toContain('nxc-parser');
+  });
+
+  it('treats reload-only community changes as non-material for provenance', () => {
+    const afterIngest: ExportedGraph = {
+      nodes: [
+        {
+          id: 'host-10-10-10-20',
+          properties: {
+            id: 'host-10-10-10-20',
+            type: 'host',
+            label: 'srv01.acme.local',
+            discovered_at: '2026-03-22T00:00:00.000Z',
+            first_seen_at: '2026-03-22T00:00:00.000Z',
+            last_seen_at: '2026-03-22T00:00:02.000Z',
+            confirmed_at: '2026-03-22T00:00:00.000Z',
+            confidence: 1.0,
+            sources: ['nxc-parser', 'bloodhound-ingest', 'nmap-parser'],
+            ip: '10.10.10.20',
+            community_id: 1,
+          },
+        },
+      ],
+      edges: [],
+    };
+    const afterRestart: ExportedGraph = {
+      nodes: [
+        {
+          id: 'host-10-10-10-20',
+          properties: {
+            ...afterIngest.nodes[0].properties,
+            sources: ['bloodhound-ingest', 'nmap-parser', 'nxc-parser'],
+            community_id: 4,
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateProvenanceForHost(afterIngest, afterRestart, 'host-10-10-20', []);
+    expect(result.passed).toBe(false);
+    const validResult = validateProvenanceForHost(afterIngest, afterRestart, 'host-10-10-10-20', ['bloodhound-ingest', 'nmap-parser', 'nxc-parser']);
+    expect(validResult.checks.preserved_after_restart).toBe(true);
+    expect(validResult.passed).toBe(true);
+  });
+
+  it('canonicalizes restart graph summaries to stable material counts', () => {
+    const before = canonicalRestartGraphSummary({
+      total_nodes: 2,
+      nodes_by_type: { host: 1, domain: 1 },
+      total_edges: 1,
+      edges_by_type: { REACHABLE: 1 },
+      confirmed_edges: 1,
+      inferred_edges: 0,
+      community_count: 2,
+      largest_community_size: 1,
+    });
+    const after = canonicalRestartGraphSummary({
+      largest_community_size: 2,
+      community_count: 1,
+      edges_by_type: { REACHABLE: 1 },
+      total_edges: 1,
+      total_nodes: 2,
+      inferred_edges: 0,
+      confirmed_edges: 1,
+      nodes_by_type: { domain: 1, host: 1 },
+    });
+
+    expect(before).toEqual(after);
   });
 });

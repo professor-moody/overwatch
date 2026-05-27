@@ -4,7 +4,7 @@ import { cn, formatRelativeTime } from '../../lib/utils';
 import { CountdownTimer, EmptyState } from '../shared';
 import { explainAction, getPendingActions } from '../../lib/api';
 import type { ActionExplanation, PendingAction } from '../../lib/types';
-import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import {
   actionNodeId,
@@ -88,9 +88,9 @@ export function ActionsPanel() {
               <option value="noise-desc">Noise</option>
               <option value="timeout-asc">Timeout</option>
             </select>
-            <button onClick={refresh} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground">
+            <ActionButton onClick={refresh} variant="secondary">
               Refresh
-            </button>
+            </ActionButton>
           </FilterBar>
         )}
       />
@@ -125,7 +125,7 @@ export function ActionsPanel() {
                   ))}
                 </div>
               ))}
-              {sorted.length === 0 && <div className="px-2 py-6 text-center text-sm text-muted-foreground">No actions match the filter.</div>}
+              {sorted.length === 0 && <EmptyPanelState message="No actions match the filter." className="m-2" />}
             </div>
           </PanelSection>
 
@@ -288,8 +288,8 @@ function ActionDetail({
             UI approval controls are intentionally staged but disabled. Terminal approval remains canonical until operator flow and audit semantics are finalized.
           </div>
           <div className="flex gap-2">
-            <button disabled className="text-xs px-3 py-1 rounded bg-success/10 text-success border border-success/20 opacity-50 cursor-not-allowed">Approve in dashboard</button>
-            <button disabled className="text-xs px-3 py-1 rounded bg-destructive/10 text-destructive border border-destructive/20 opacity-50 cursor-not-allowed">Deny in dashboard</button>
+            <ActionButton disabled variant="success">Approve in dashboard</ActionButton>
+            <ActionButton disabled variant="danger">Deny in dashboard</ActionButton>
           </div>
         </div>
       </PanelSection>
@@ -335,9 +335,9 @@ function CommandCopy({ label, value, copied, onCopy }: { label: string; value: s
     <div className="mt-1 flex items-center gap-2">
       <span className="w-14 text-[10px] uppercase text-muted-foreground">{label}</span>
       <code className="flex-1 rounded bg-background px-2 py-1 text-[11px] text-foreground overflow-x-auto">{value}</code>
-      <button onClick={onCopy} className="text-[10px] px-2 py-1 rounded bg-elevated text-muted-foreground hover:text-foreground">
+      <ActionButton onClick={onCopy} variant="secondary" size="xs">
         {copied ? 'Copied' : 'Copy'}
-      </button>
+      </ActionButton>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
-import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
 import { deriveNodeRelationships } from '../../lib/relationships';
 import {
   buildFrontierSections,
@@ -26,13 +26,14 @@ const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 const TYPE_FILTER_OPTIONS = [
-  { value: null, label: 'All' },
+  { value: 'all', label: 'All' },
   { value: 'incomplete_node', label: 'Nodes' },
   { value: 'untested_edge', label: 'Edges' },
   { value: 'inferred_edge', label: 'Inferred' },
   { value: 'network_discovery', label: 'Network' },
   { value: 'credential_test', label: 'Creds' },
 ] as const;
+type TypeFilterValue = typeof TYPE_FILTER_OPTIONS[number]['value'];
 
 function getNoiseColor(noise: number): string {
   if (noise <= 0.3) return '#3ecf8e';
@@ -54,9 +55,10 @@ export function FrontierPanel() {
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [typeFilterValue, setTypeFilterValue] = useState<TypeFilterValue>('all');
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
   const [findings, setFindings] = useState<FindingDto[]>([]);
+  const typeFilter = typeFilterValue === 'all' ? null : typeFilterValue;
 
   // Read node filter from route query (node= param set by navigateToFrontier).
   useEffect(() => {
@@ -104,24 +106,15 @@ export function FrontierPanel() {
         meta={(typeFilter || nodeFilter) ? `(${totalVisible}/${frontier.length})` : `(${frontier.length})`}
         actions={(
           <FilterBar>
-            {TYPE_FILTER_OPTIONS.map(opt => (
-              <button
-                key={String(opt.value)}
-                onClick={() => setTypeFilter(opt.value)}
-                className={cn(
-                  'text-[10px] px-2 py-0.5 rounded border transition-colors',
-                  typeFilter === opt.value
-                    ? 'bg-accent text-accent-foreground border-accent'
-                    : 'border-border bg-surface text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
+            <SegmentedControl
+              value={typeFilterValue}
+              onChange={setTypeFilterValue}
+              options={TYPE_FILTER_OPTIONS.map(opt => ({ value: opt.value, label: opt.label }))}
+            />
             {nodeFilter && (
               <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/30">
                 <span className="font-mono truncate max-w-32">{nodeFilter}</span>
-                <button onClick={clearNodeFilter} className="text-accent hover:text-foreground ml-1">✕</button>
+                <ActionButton onClick={clearNodeFilter} variant="ghost" size="xs" className="h-4 min-w-4 px-0 text-accent hover:text-foreground">✕</ActionButton>
               </div>
             )}
           </FilterBar>
@@ -129,13 +122,9 @@ export function FrontierPanel() {
       />
 
       {frontier.length === 0 ? (
-        <div className="bg-surface border border-border rounded-lg p-8 text-center text-sm text-muted-foreground">
-          Frontier empty — ingest data to generate candidates
-        </div>
+        <EmptyPanelState message="Frontier empty. Ingest data to generate candidates." />
       ) : totalVisible === 0 ? (
-        <div className="bg-surface border border-border rounded-lg p-8 text-center text-sm text-muted-foreground">
-          No frontier items match the current filter.
-        </div>
+        <EmptyPanelState message="No frontier items match the current filter." />
       ) : (
         <div className="space-y-3">
           {sections.map(section => {

@@ -4,7 +4,7 @@ import * as api from '../../lib/api';
 import type { ActionExplanation, ActivityEntry, DecisionLogEntry, TimelineEntry } from '../../lib/types';
 import { formatRelativeTime, formatTimestamp, cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
-import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
 import { classifyActivity, extractActivityLinks, filterActivity, type ActivityClass } from '../../lib/activity-console';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
@@ -92,9 +92,9 @@ export function ActivityPanel() {
               placeholder="Filter action, agent, node, text..."
               className="settings-input w-72"
             />
-            <button onClick={loadHistory} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground">
+            <ActionButton onClick={loadHistory} variant="secondary">
               Refresh
-            </button>
+            </ActionButton>
           </FilterBar>
         )}
       />
@@ -102,21 +102,15 @@ export function ActivityPanel() {
       <div className="grid grid-cols-[minmax(420px,1fr)_minmax(360px,440px)] gap-4 flex-1 min-h-0">
         <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
           <div className="border-b border-border p-2">
-            <div className="flex gap-1 flex-wrap">
-              {CLASS_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={() => setClassFilter(opt.value)}
-                  className={cn(
-                    'text-[10px] px-2 py-0.5 rounded border transition-colors',
-                    classFilter === opt.value ? 'bg-accent text-accent-foreground border-accent' : 'border-border text-muted-foreground hover:text-foreground hover:bg-hover',
-                  )}
-                >
-                  {opt.label}
-                  {opt.value && <span className="ml-1 opacity-70">{classCounts[opt.value]}</span>}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              value={classFilter}
+              onChange={setClassFilter}
+              options={CLASS_OPTIONS.map(opt => ({
+                value: opt.value,
+                label: opt.label,
+                count: opt.value ? classCounts[opt.value] : undefined,
+              }))}
+            />
           </div>
 
           {!initialized && !hasLoaded.current ? (

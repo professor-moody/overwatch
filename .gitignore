@@ -11,6 +11,8 @@ tmp-review-*.json
 tmp-bh-review-*.json
 test-debug.json
 evidence/
+reports/
+tapes/
 AGENTS.md
 CLAUDE.md
 HANDOFF.md

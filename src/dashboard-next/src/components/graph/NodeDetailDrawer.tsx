@@ -11,7 +11,7 @@ import { correctGraph, getEvidenceChains, getFindings, type FindingDto, type Gra
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { deriveNodeRelationships } from '../../lib/relationships';
-import { StatusPill } from '../shared/primitives';
+import { ActionButton, StatusPill } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { computeActionRisk } from '../../lib/action-queue';
 import { getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
@@ -308,24 +308,27 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
 
       <div className="flex-shrink-0 px-4 py-2 border-t border-border bg-surface/95 flex flex-col gap-2">
         <div className="flex gap-2">
-          <button
+          <ActionButton
             onClick={() => onFocus?.(nodeId, 2)}
-            className="flex-1 text-xs py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+            variant="ghost"
+            className="flex-1 text-accent"
           >
             Focus
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             onClick={() => navigateToEvidence(nodeId)}
-            className="flex-1 text-xs py-1.5 rounded bg-elevated text-foreground hover:bg-hover transition-colors"
+            variant="secondary"
+            className="flex-1"
           >
             Evidence
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             onClick={() => navigateToPanel('frontier', nodeId)}
-            className="flex-1 text-xs py-1.5 rounded bg-elevated text-foreground hover:bg-hover transition-colors"
+            variant="secondary"
+            className="flex-1"
           >
             Frontier
-          </button>
+          </ActionButton>
         </div>
         {editMode && <AddEdgeInline graph={graph} sourceId={nodeId} onUndoPush={onUndoPush} />}
       </div>

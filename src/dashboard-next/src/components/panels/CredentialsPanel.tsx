@@ -9,7 +9,7 @@ import {
   getCredentialStatusClass,
   isCredentialReachable,
 } from '../../lib/credential-display';
-import { DataRow, FilterBar, PageHeader, StatusPill } from '../shared/primitives';
+import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 
 type SortMode = 'recent' | 'kind' | 'status';
 type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
@@ -142,16 +142,16 @@ export function CredentialsPanel() {
           placeholder="Filter by label, kind, user, audience…"
           className="settings-input flex-1 min-w-40"
         />
-        <select
+        <SegmentedControl
           value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-          className="settings-input w-auto text-xs"
-        >
-          <option value="all">All statuses</option>
-          <option value="active">Active</option>
-          <option value="stale">Stale</option>
-          <option value="expired">Expired</option>
-        </select>
+          onChange={setStatusFilter}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'active', label: 'Active' },
+            { value: 'stale', label: 'Stale' },
+            { value: 'expired', label: 'Expired' },
+          ]}
+        />
         <select
           value={sortMode}
           onChange={e => setSortMode(e.target.value as SortMode)}
@@ -165,11 +165,11 @@ export function CredentialsPanel() {
 
       {/* List */}
       {filtered.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground text-sm">
-          {creds.length === 0
+        <EmptyPanelState
+          message={creds.length === 0
             ? 'No credentials captured yet. They appear here when agents report credential nodes via findings.'
             : 'No credentials match the current filter.'}
-        </div>
+        />
       ) : (
         <div className="space-y-2">
           {filtered.map(cred => {
@@ -212,12 +212,12 @@ export function CredentialsPanel() {
                   </span>
 
                   {/* Expand toggle */}
-                  <button
+                  <ActionButton
                     onClick={() => setExpandedId(isExpanded ? null : cred.id)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                    variant="ghost"
                   >
                     {isExpanded ? 'less' : 'more'}
-                  </button>
+                  </ActionButton>
                 </div>
 
                 {/* Inline meta: user + audience on same line */}
@@ -238,12 +238,14 @@ export function CredentialsPanel() {
                     {/* Node ID */}
                     <DetailRow label="Node ID">
                       <span className="font-mono text-accent">{cred.id}</span>
-                      <button
+                      <ActionButton
                         onClick={() => navigateToGraph(cred.id, 2)}
-                        className="ml-2 px-1.5 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors"
+                        variant="ghost"
+                        size="xs"
+                        className="ml-2 text-accent"
                       >
                         View in Graph
-                      </button>
+                      </ActionButton>
                     </DetailRow>
 
                     {/* Confidence */}
@@ -298,19 +300,21 @@ export function CredentialsPanel() {
                           ) : (
                             <span className="text-muted-foreground">••••••••</span>
                           )}
-                          <button
+                          <ActionButton
                             onClick={() => toggleReveal(cred.id)}
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-elevated hover:bg-border transition-colors flex-shrink-0"
+                            variant="secondary"
+                            size="xs"
                           >
                             {isRevealed ? 'hide' : 'reveal'}
-                          </button>
+                          </ActionButton>
                           {isRevealed && (
-                            <button
+                            <ActionButton
                               onClick={() => navigator.clipboard.writeText(credValue)}
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-elevated hover:bg-border transition-colors flex-shrink-0"
+                              variant="secondary"
+                              size="xs"
                             >
                               copy
-                            </button>
+                            </ActionButton>
                           )}
                         </div>
                       </div>

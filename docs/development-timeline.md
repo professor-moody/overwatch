@@ -28,6 +28,7 @@ git log --date=short --pretty=format:'| `%h` | %ad | AREA | %s | RESULT |' --max
 
 | Commit | Date | Area | Work Step | Operator-Visible Result |
 |--------|------|------|-----------|-------------------------|
+| `b9f7783` | 2026-05-26 | Dashboard graph UX | Polished focused graph navigation, graph overlays, toolbar density, inspector layout, and dashboard graph docs/tests. | Frontier-to-graph links now open a focused, centered neighborhood with less overlay crowding and stronger route-smoke coverage. |
 | `726cb4e` | 2026-05-26 | Dashboard reliability | Split host-tool health from MCP tool registration, added `/api/mcp-tools` and `/api/readiness`, corrected SmokePanel response checks, and added smoke/API contract tests. | Smoke now reports stale API shapes as failures, optional missing local binaries as warnings, and dashboard readiness as a compact summary. |
 | `78f9b6e` | 2026-05-26 | Tape/runtime cleanup | Cleaned up tape shutdown behavior and dependency audit state after tape attribution work. | CI returned green after tape shutdown changes; runtime cleanup no longer leaves the server in a noisy state. |
 | `19ab38e` | 2026-05-26 | Tape attribution + hooks | Added tape start attribution across env/config/dashboard paths, HTTP startup parity, hook smoke script, and docs updates. | Operators can tell whether tape started from env, config, or dashboard, and can smoke-test Claude hooks locally. |
@@ -88,4 +89,3 @@ For a commit-level walkthrough, collect these items:
 | CI status | `gh run list --branch main --limit 10` |
 | CI details | `gh run view <run-id> --json status,conclusion,jobs` |
 | Docs build | `npm run build:pages` |
-

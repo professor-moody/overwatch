@@ -4,7 +4,7 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { EmptyState } from '../shared';
-import { FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { useNavigation } from '../../hooks/useNavigation';
 import type { SessionInfo } from '../../lib/types';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -311,9 +311,9 @@ export function SessionsPanel() {
               placeholder="Filter sessions..."
               className="settings-input w-72"
             />
-            <button onClick={refresh} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground transition-colors">
+            <ActionButton onClick={refresh} variant="secondary">
               Refresh
-            </button>
+            </ActionButton>
           </FilterBar>
         )}
       />
@@ -378,25 +378,25 @@ export function SessionsPanel() {
                   <div className="flex flex-wrap gap-1 justify-end max-w-sm">
                     {selectedSession.state === 'connected' && (
                       attachedIds.includes(selectedSession.id) ? (
-                        <button onClick={() => detach(selectedSession.id)} className="text-xs px-2 py-1 rounded bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20">Detach</button>
+                        <ActionButton onClick={() => detach(selectedSession.id)} variant="danger">Detach</ActionButton>
                       ) : (
-                        <button onClick={() => attach(selectedSession.id)} className="text-xs px-2 py-1 rounded bg-success/10 text-success border border-success/20 hover:bg-success/20">Attach</button>
+                        <ActionButton onClick={() => attach(selectedSession.id)} variant="success">Attach</ActionButton>
                       )
                     )}
-                    {selectedSession.target_node && <button onClick={() => navigateToGraph(selectedSession.target_node, 2)} className="text-xs px-2 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20">Graph</button>}
-                    {selectedSession.target_node && <button onClick={() => navigateToEvidence(selectedSession.target_node!)} className="text-xs px-2 py-1 rounded bg-elevated text-foreground hover:bg-hover">Evidence</button>}
+                    {selectedSession.target_node && <ActionButton onClick={() => navigateToGraph(selectedSession.target_node, 2)} variant="ghost" className="text-accent">Graph</ActionButton>}
+                    {selectedSession.target_node && <ActionButton onClick={() => navigateToEvidence(selectedSession.target_node!)} variant="secondary">Evidence</ActionButton>}
                     {editing ? (
                       <>
-                        <button onClick={saveEdit} disabled={saving} className="text-xs px-2 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
-                        <button onClick={() => setEditing(false)} className="text-xs px-2 py-1 rounded bg-elevated text-muted-foreground hover:text-foreground">Cancel</button>
+                        <ActionButton onClick={saveEdit} disabled={saving} variant="ghost" className="text-accent">{saving ? 'Saving...' : 'Save'}</ActionButton>
+                        <ActionButton onClick={() => setEditing(false)} variant="secondary">Cancel</ActionButton>
                       </>
                     ) : (
-                      <button onClick={() => startEdit(selectedSession)} className="text-xs px-2 py-1 rounded bg-elevated text-muted-foreground hover:text-foreground">Edit</button>
+                      <ActionButton onClick={() => startEdit(selectedSession)} variant="secondary">Edit</ActionButton>
                     )}
                     {selectedSession.state !== 'closed' && (
-                      <button onClick={() => handleCloseSession(selectedSession.id)} disabled={closingId === selectedSession.id} className="text-xs px-2 py-1 rounded bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 disabled:opacity-50">
+                      <ActionButton onClick={() => handleCloseSession(selectedSession.id)} disabled={closingId === selectedSession.id} variant="danger">
                         {closingId === selectedSession.id ? 'Closing...' : 'Close'}
-                      </button>
+                      </ActionButton>
                     )}
                   </div>
                 </div>
@@ -545,7 +545,7 @@ export function SessionsPanel() {
                 </>
               ) : (
                 <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                  Attach a connected session to open a terminal.
+                  <EmptyPanelState message="Attach a connected session to open a terminal." className="border-0 bg-transparent" />
                 </div>
               )}
             </PanelSection>

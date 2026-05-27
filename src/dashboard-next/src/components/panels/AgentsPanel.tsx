@@ -4,7 +4,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, ActivityEntry } from '../../lib/types';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
-import { EmptyState } from '../shared';
+import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, StatusPill } from '../shared/primitives';
 
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
@@ -112,48 +112,50 @@ export function AgentsPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          Agents <span className="text-muted-foreground font-normal text-sm">({agents.length})</span>
-        </h2>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="Agents"
+        meta={`(${agents.length})`}
+        actions={(
+          <FilterBar>
           <div className="flex gap-2 text-xs">
             <span className="text-success">{running.length} running</span>
             <span className="text-muted-foreground">{completed.length} done</span>
             {failed.length > 0 && <span className="text-destructive">{failed.length} failed</span>}
           </div>
-          <button
+          <ActionButton
             onClick={() => setShowDispatch(true)}
-            className="text-xs px-2.5 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+            variant="ghost"
+            className="text-accent"
           >
             Deploy Agent
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             onClick={() => setShowBulkDispatch(true)}
-            className="text-xs px-2.5 py-1 rounded bg-purple-dim text-purple hover:bg-purple/20 transition-colors"
+            variant="purple"
           >
             Bulk from Frontier
-          </button>
-        </div>
-      </div>
+          </ActionButton>
+          </FilterBar>
+        )}
+      />
 
       {/* Batch bar */}
       {selectedIds.size > 0 && (
         <div className="bg-accent-dim border border-accent/30 rounded-md px-3 py-2 flex items-center gap-3 text-xs">
           <span className="text-accent font-medium">{selectedIds.size} selected</span>
-          <button onClick={batchCancel} className="px-2 py-0.5 rounded bg-destructive/10 text-destructive hover:bg-destructive/20">
+          <ActionButton onClick={batchCancel} variant="danger" size="xs">
             Cancel Selected
-          </button>
-          <button onClick={() => setSelectedIds(new Set())} className="px-2 py-0.5 rounded text-muted-foreground hover:text-foreground">
+          </ActionButton>
+          <ActionButton onClick={() => setSelectedIds(new Set())} variant="ghost" size="xs">
             Deselect
-          </button>
+          </ActionButton>
         </div>
       )}
 
       {!initialized ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       ) : agents.length === 0 ? (
-        <EmptyState message="No agents dispatched yet." />
+        <EmptyPanelState message="No agents dispatched yet." />
       ) : (
         <div className="space-y-2">
           {/* Select all */}
@@ -388,26 +390,36 @@ function AgentDetailDrawer({
   }, [agent.id]);
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/30" />
-      <div
-        className="relative w-80 bg-surface border-l border-border h-full overflow-y-auto shadow-2xl"
-        onClick={e => e.stopPropagation()}
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <InspectorDrawer
+        title={agent.agent_id || agent.id}
+        subtitle={agent.id}
+        onClose={onClose}
+        className="z-50"
+        footer={cancellable && (
+          <ActionButton
+            onClick={onCancel}
+            variant="danger"
+            className="w-full"
+          >
+            Cancel Agent
+          </ActionButton>
+        )}
       >
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="mb-3 flex items-center gap-2">
             <span className={cn(
               'w-2 h-2 rounded-full',
               agent.status === 'running' && 'bg-success',
               agent.status === 'completed' && 'bg-accent',
               agent.status === 'failed' && 'bg-destructive',
             )} />
-            <span className="text-sm font-semibold font-mono">{agent.agent_id || agent.id}</span>
-          </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1">✕</button>
+            <StatusPill className={agent.status === 'completed' ? 'bg-accent/10 text-accent' : agent.status === 'running' ? 'bg-success/10 text-success' : agent.status === 'failed' ? 'bg-destructive/10 text-destructive' : 'bg-elevated text-muted-foreground'}>
+              {agent.status}
+            </StatusPill>
         </div>
 
-        <div className="px-4 py-3 space-y-3">
+        <div className="space-y-3">
           <DetailRow label="Status" value={agent.status} />
           <DetailRow label="Task ID" value={agent.id} mono />
           {agent.assigned_at && <DetailRow label="Assigned" value={new Date(agent.assigned_at).toLocaleString()} />}
@@ -475,19 +487,8 @@ function AgentDetailDrawer({
             </div>
           )}
         </div>
-
-        {cancellable && (
-          <div className="px-4 py-3 border-t border-border">
-            <button
-              onClick={onCancel}
-              className="w-full text-xs py-1.5 rounded bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
-            >
-              Cancel Agent
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+      </InspectorDrawer>
+    </>
   );
 }
 
