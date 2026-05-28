@@ -14,6 +14,7 @@ export interface UseGraphInteractionsOptions {
   stateRef: React.MutableRefObject<GraphInteractionState>;
   refresh: () => void;
   onNodeSelect?: (nodeId: string | null) => void;
+  onEdgeSelect?: (edgeId: string | null) => void;
   onNodeFocus?: (nodeId: string, hops: number) => void;
   onUserLayoutChange?: () => void;
   onNodePositionCommit?: (nodeId: string, position: { x: number; y: number }) => void;
@@ -25,12 +26,14 @@ export function useGraphInteractions({
   stateRef,
   refresh,
   onNodeSelect,
+  onEdgeSelect,
   onNodeFocus,
   onUserLayoutChange,
   onNodePositionCommit,
 }: UseGraphInteractionsOptions) {
   const suppressNextClickRef = useRef(false);
   const onNodeSelectRef = useRef(onNodeSelect);
+  const onEdgeSelectRef = useRef(onEdgeSelect);
   const onNodeFocusRef = useRef(onNodeFocus);
   const onUserLayoutChangeRef = useRef(onUserLayoutChange);
   const onNodePositionCommitRef = useRef(onNodePositionCommit);
@@ -38,6 +41,10 @@ export function useGraphInteractions({
   useEffect(() => {
     onNodeSelectRef.current = onNodeSelect;
   }, [onNodeSelect]);
+
+  useEffect(() => {
+    onEdgeSelectRef.current = onEdgeSelect;
+  }, [onEdgeSelect]);
 
   useEffect(() => {
     onNodeFocusRef.current = onNodeFocus;
@@ -62,6 +69,7 @@ export function useGraphInteractions({
     const s = stateRef.current;
     s.selectedNode = node;
     s.inspectedEdgeIds.clear();
+    onEdgeSelectRef.current?.(null);
     if (!node || !graph.hasNode(node)) {
       s.selectedNeighborhood = null;
       refresh();
@@ -74,6 +82,19 @@ export function useGraphInteractions({
     onNodeSelectRef.current?.(node);
   }, [graph, stateRef, refresh]);
 
+  const selectEdge = useCallback((edgeId: string | null) => {
+    const s = stateRef.current;
+    s.selectedNode = null;
+    s.selectedNeighborhood = null;
+    s.inspectedEdgeIds.clear();
+    if (edgeId && graph.hasEdge(edgeId)) {
+      s.inspectedEdgeIds.add(edgeId);
+    }
+    refresh();
+    onNodeSelectRef.current?.(null);
+    onEdgeSelectRef.current?.(edgeId);
+  }, [graph, stateRef, refresh]);
+
   const clearSelection = useCallback(() => {
     const s = stateRef.current;
     s.selectedNode = null;
@@ -81,6 +102,7 @@ export function useGraphInteractions({
     s.inspectedEdgeIds.clear();
     refresh();
     onNodeSelectRef.current?.(null);
+    onEdgeSelectRef.current?.(null);
   }, [stateRef, refresh]);
 
   const clearPathHighlight = useCallback(() => {
@@ -291,6 +313,10 @@ export function useGraphInteractions({
       enterNeighborhoodFocus(node, 2);
     };
 
+    const onClickEdge = ({ edge }: { edge: string }) => {
+      selectEdge(edge);
+    };
+
     const onClickStage = () => {
       clearSelection();
     };
@@ -312,6 +338,7 @@ export function useGraphInteractions({
     renderer.on('enterEdge', onEnterEdge as never);
     renderer.on('leaveEdge', onLeaveEdge as never);
     renderer.on('clickNode', onClickNode as never);
+    renderer.on('clickEdge', onClickEdge as never);
     renderer.on('doubleClickNode', onDoubleClickNode as never);
     renderer.on('clickStage', onClickStage as never);
     renderer.on('doubleClickStage', onDoubleClickStage as never);
@@ -334,14 +361,16 @@ export function useGraphInteractions({
       renderer.off('enterEdge', onEnterEdge as never);
       renderer.off('leaveEdge', onLeaveEdge as never);
       renderer.off('clickNode', onClickNode as never);
+      renderer.off('clickEdge', onClickEdge as never);
       renderer.off('doubleClickNode', onDoubleClickNode as never);
       renderer.off('clickStage', onClickStage as never);
       renderer.off('doubleClickStage', onDoubleClickStage as never);
     };
-  }, [graph, rendererRef, stateRef, selectNode, clearSelection, handlePathClick, enterNeighborhoodFocus]);
+  }, [graph, rendererRef, stateRef, selectNode, selectEdge, clearSelection, handlePathClick, enterNeighborhoodFocus]);
 
   return {
     selectNode,
+    selectEdge,
     clearSelection,
     clearPathHighlight,
     enterNeighborhoodFocus,

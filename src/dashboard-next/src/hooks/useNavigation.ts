@@ -121,6 +121,14 @@ export function useNavigation() {
     navigateToPanel('frontier', nodeId);
   }, [navigateToPanel]);
 
+  const navigateToFinding = useCallback((findingId: string) => {
+    navigateToPanel('findings', findingId);
+  }, [navigateToPanel]);
+
+  const navigateToSession = useCallback((sessionId: string) => {
+    navigateToPanel('sessions', sessionId);
+  }, [navigateToPanel]);
+
   return {
     navigateToGraphTarget,
     navigateToGraph,
@@ -131,5 +139,7 @@ export function useNavigation() {
     navigateToCampaign,
     navigateToAgent,
     navigateToFrontier,
+    navigateToFinding,
+    navigateToSession,
   };
 }

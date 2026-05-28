@@ -9,6 +9,7 @@
 // ============================================================
 
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import * as api from '../../lib/api';
 import type { FindingDto, ReportRecord } from '../../lib/api';
 import type { FindingContextResponse } from '../../lib/types';
@@ -45,6 +46,7 @@ export function FindingsPanel() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [expandedSeverity, setExpandedSeverity] = useState<Set<FindingDto['severity']>>(new Set(['critical', 'high']));
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
   const [findingContext, setFindingContext] = useState<FindingContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
 
@@ -71,6 +73,14 @@ export function FindingsPanel() {
     const id = setInterval(() => { refreshFindings(); refreshReports(); }, 8000);
     return () => clearInterval(id);
   }, [refreshFindings, refreshReports]);
+
+  useEffect(() => {
+    const item = searchParams.get('item');
+    if (!item || findings.length === 0) return;
+    setSelectedFindingId(item);
+    const match = findings.find(f => f.id === item);
+    if (match) setExpandedSeverity(prev => new Set([...prev, match.severity]));
+  }, [searchParams, findings]);
 
   const toggleSeverity = (s: FindingDto['severity']) => {
     setExpandedSeverity(prev => {

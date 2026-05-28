@@ -189,7 +189,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           ) : (
             <div className="space-y-1.5">
               {relationships.sessions.slice(0, 4).map((session, index) => (
-                <div key={`${session.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                <button key={`${session.id}-${index}`} onClick={() => navigateToPanel('sessions', session.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={session.state === 'connected' ? 'bg-success/10 text-success' : 'bg-elevated text-muted-foreground'}>{session.state}</StatusPill>
                     <span className="truncate text-foreground">{session.title || session.id.slice(0, 8)}</span>
@@ -200,7 +200,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
                     {session.owner && <span>{session.owner}</span>}
                     <span>{formatRelativeTime(session.last_activity_at || session.started_at || session.created_at)}</span>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -274,13 +274,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           ) : (
             <div className="space-y-1.5">
               {relationships.findings.slice(0, 4).map((finding, index) => (
-                <div key={`${finding.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                <button key={`${finding.id}-${index}`} onClick={() => navigateToPanel('findings', finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={findingSeverityClass(finding.severity)}>{finding.severity}</StatusPill>
                     <span className="truncate text-foreground">{finding.title}</span>
                   </div>
                   <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{finding.description}</div>
-                </div>
+                </button>
               ))}
             </div>
           )}

@@ -24,6 +24,7 @@ import { Minimap } from './Minimap';
 import { EdgeLegend } from './EdgeLegend';
 import { exportScreenshot, exportSVG } from './GraphExport';
 import { NodeContextMenu, type ContextMenuState } from './NodeContextMenu';
+import { EdgeDetailPanel } from './EdgeDetailPanel';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
@@ -55,6 +56,7 @@ export function GraphPage() {
 
   // ---- UI state ----
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const setGraphInspectorOpen = useDashboardUiStore(s => s.setGraphInspectorOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [layoutRunning, setLayoutRunning] = useState(false);
@@ -129,7 +131,8 @@ export function GraphPage() {
       onNodePositionCommit: (nodeId, position) => {
         saveGraphNodePosition(engagementId, nodeId, position);
       },
-      onNodeSelect: setSelectedNodeId,
+      onNodeSelect: (nodeId) => { setSelectedNodeId(nodeId); if (nodeId) setSelectedEdgeId(null); },
+      onEdgeSelect: (edgeId) => { setSelectedEdgeId(edgeId); if (edgeId) setSelectedNodeId(null); },
       onNodeFocus: (nodeId, hops) => {
         // Zoom to the focus neighborhood
         const neighborhood = getNeighborhood(graph, nodeId, hops);
@@ -537,6 +540,7 @@ export function GraphPage() {
         case 'Escape':
           e.preventDefault();
           setShowShortcuts(false);
+          setSelectedEdgeId(null);
           clearSelection();
           clearPathHighlight();
           break;
@@ -675,9 +679,19 @@ export function GraphPage() {
                 </div>
               )}
             </div>
-            <Minimap graph={graph} rendererRef={rendererRef} />
+            <div className="hidden sm:block">
+              <Minimap graph={graph} rendererRef={rendererRef} />
+            </div>
           </div>
         </div>
+
+        {/* Edge detail panel */}
+        <EdgeDetailPanel
+          graph={graph}
+          edgeId={selectedEdgeId}
+          onClose={() => { setSelectedEdgeId(null); stateRef.current.inspectedEdgeIds.clear(); refresh(); }}
+          onFocusNode={enterNeighborhoodFocus}
+        />
 
         {/* Keyboard shortcuts overlay */}
         {showShortcuts && (

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import * as api from '../../lib/api';
 import { cn, formatRelativeTime } from '../../lib/utils';
@@ -49,6 +50,7 @@ export function SessionsPanel() {
   const frontier = useEngagementStore((s) => s.frontier);
   const recentActivity = useEngagementStore((s) => s.recentActivity);
   const { navigateToEvidence, navigateToGraph, navigateToPanel } = useNavigation();
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [attachedIds, setAttachedIds] = useState<string[]>([]);
@@ -95,6 +97,11 @@ export function SessionsPanel() {
   const selectedSession = useMemo(() => {
     return sessions.find(s => s.id === selectedSessionId) || sessions.find(s => s.id === activeTab) || sessions[0] || null;
   }, [sessions, selectedSessionId, activeTab]);
+
+  useEffect(() => {
+    const item = searchParams.get('item');
+    if (item) setSelectedSessionId(item);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!selectedSessionId && sessions.length > 0) setSelectedSessionId(sessions[0].id);
