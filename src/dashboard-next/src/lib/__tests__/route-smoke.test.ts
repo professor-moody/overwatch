@@ -21,6 +21,8 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
   { path: '/evidence', expects: ['Evidence'] },
   { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
+  { path: '/findings?item=nonexistent-id', expects: ['Findings'] },
+  { path: '/sessions?item=nonexistent-id', expects: ['Sessions'] },
   { path: '/smoke', expects: ['Smoke', '/api/trust-signals'] },
   { path: '/settings', expects: ['Settings'] },
   { path: '/engagements', expects: ['Engagements'] },

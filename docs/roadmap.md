@@ -4,25 +4,12 @@ This page is the canonical development roadmap for Overwatch. The
 [Development Timeline](development-timeline.md) explains what already landed;
 this page explains what the project is building toward next.
 
-The current product priority is **graph and evidence context**: now that the
-dashboard primitive layer is stable, the focus shifts to making every graph
-link, evidence surface, and inspector panel land operators on the right context.
+The current product priority is **credentials, identity, and operations depth**:
+every panel that shows agents, sessions, actions, credentials, or identities
+should give operators distinct, actionable state language and clear lifecycle
+visibility.
 
-## Now: Graph And Evidence Context
-
-The active track is to make every operator click in the graph and evidence
-surfaces land on actionable context.
-
-- Make every graph link land on the intended context: node, edge, evidence,
-  finding, frontier item, or attack path.
-- Tighten graph inspector sections for trust signals, evidence, findings,
-  relationships, and actions.
-- Keep Graph full-bleed while making overlays, toasts, minimap, and drawer
-  spacing deliberate at desktop and narrow widths.
-- Tie finding inspector, activity detail, and action approval context back to
-  graph nodes and evidence items.
-
-## Next: Credentials, Identity, And Operations Depth
+## Now: Credentials, Identity, And Operations Depth
 
 These tracks should follow after the graph-context pass is stable.
 
@@ -52,6 +39,15 @@ These tracks should follow after the graph-context pass is stable.
 - Expand route smoke around operator workflows, not only page load.
 - Keep the dashboard review checklist current for desktop layout, narrow-width
   layout, graph focus, trust signals, and duplicate-title regressions.
+
+## Completed: Graph And Evidence Context
+
+Every operator click in the graph and evidence surfaces now lands on actionable
+context: NodeDetailDrawer rows deep-link to specific findings and sessions;
+clicking an edge opens a compact EdgeDetailPanel with source → target navigation;
+the graph overlay and PathInfoBar handle narrow widths cleanly; OverviewPanel
+frontier items, objectives, and recent finding events are all interactive.
+Route smoke tests cover the `?item=` deep-link routes.
 
 ## Completed: Dashboard Command Center
 

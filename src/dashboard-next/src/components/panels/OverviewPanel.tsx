@@ -186,7 +186,14 @@ export function OverviewPanel() {
           ) : (
             <div className="space-y-1.5">
               {recentChanges.map((entry, index) => (
-                <FindingEntry key={activityKey(entry, index)} entry={entry} />
+                <FindingEntry
+                  key={activityKey(entry, index)}
+                  entry={entry}
+                  onClick={() => {
+                    const nodeId = entry.target_node_ids?.[0];
+                    nodeId ? navigateToGraph(nodeId, 2) : navigateToPanel('activity');
+                  }}
+                />
               ))}
             </div>
           )}
@@ -284,7 +291,14 @@ export function OverviewPanel() {
         <PanelSection title="Recent Findings" meta={`(${recentFindings.length})`}>
           <div className="space-y-1.5 max-h-48 overflow-y-auto">
             {recentFindings.map((entry, index) => (
-              <FindingEntry key={activityKey(entry, index)} entry={entry} />
+              <FindingEntry
+                key={activityKey(entry, index)}
+                entry={entry}
+                onClick={() => {
+                  const nodeId = entry.target_node_ids?.[0];
+                  nodeId ? navigateToGraph(nodeId, 2) : navigateToPanel('findings');
+                }}
+              />
             ))}
           </div>
         </PanelSection>
@@ -430,13 +444,16 @@ function CampaignCard({ campaign, onClick }: { campaign: Campaign; onClick?: () 
   );
 }
 
-function FindingEntry({ entry }: { entry: ActivityEntry }) {
+function FindingEntry({ entry, onClick }: { entry: ActivityEntry; onClick: () => void }) {
   return (
-    <div className="flex items-center gap-3 text-xs">
+    <button
+      onClick={onClick}
+      className="w-full text-left flex items-center gap-3 text-xs hover:bg-hover rounded px-1 py-0.5 -mx-1 transition-colors"
+    >
       <span className="text-muted-foreground font-mono flex-shrink-0 w-14">{formatTimestamp(entry.timestamp)}</span>
       <span className="w-1.5 h-1.5 rounded-full bg-warning flex-shrink-0" />
       <span className="text-muted-foreground flex-1 truncate">{entry.description}</span>
-    </div>
+    </button>
   );
 }
 
