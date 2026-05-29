@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler, parseBurp, parseZap, parseSqlmap, parseWpscan, parseScoutSuite, parseCloudFox, parseTerraformState, parseEnumerateIam } from '../parsers/index.js';
+import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler, parseBurp, parseZap, parseSqlmap, parseWpscan, parseScoutSuite, parseCloudFox, parseTerraformState, parseEnumerateIam, __registerParserForTest, isParserError, PARSE_ERROR_RAW_PREFIX } from '../parsers/index.js';
 import { prepareFindingForIngest } from '../finding-validation.js';
 
 describe('Output Parsers', () => {
@@ -1046,6 +1046,40 @@ describe('Output Parsers', () => {
       expect(parseOutput('netexec', '')).not.toBeNull();
       expect(parseOutput('nmap-xml', '<nmaprun></nmaprun>')).not.toBeNull();
       expect(parseOutput('impacket-secretsdump', '')).not.toBeNull();
+    });
+
+    // F0-1: parser dispatch exception boundary
+    describe('exception boundary', () => {
+      it('returns a Finding with PARSER_ERROR raw_output instead of throwing', () => {
+        const dispose = __registerParserForTest('___throwing_parser___', () => {
+          throw new Error('synthetic parser failure');
+        });
+        try {
+          const finding = parseOutput('___throwing_parser___', 'arbitrary input');
+          expect(finding).not.toBeNull();
+          expect(finding!.nodes).toEqual([]);
+          expect(finding!.edges).toEqual([]);
+          expect(finding!.tool_name).toBe('___throwing_parser___');
+          expect(finding!.raw_output).toBeDefined();
+          expect(finding!.raw_output!.startsWith(PARSE_ERROR_RAW_PREFIX)).toBe(true);
+          expect(finding!.raw_output).toContain('synthetic parser failure');
+          expect(finding!.raw_output).toContain('arbitrary input');
+          expect(isParserError(finding)).toBe(true);
+        } finally {
+          dispose();
+        }
+      });
+
+      it('still returns null for unknown tool names (distinct from parser error)', () => {
+        const finding = parseOutput('unknown-tool-name-that-cannot-exist', 'x');
+        expect(finding).toBeNull();
+      });
+
+      it('isParserError returns false for normal parse results', () => {
+        const finding = parseOutput('nmap', '<nmaprun></nmaprun>');
+        expect(finding).not.toBeNull();
+        expect(isParserError(finding)).toBe(false);
+      });
     });
   });
 

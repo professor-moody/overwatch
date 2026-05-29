@@ -259,8 +259,58 @@ export function isAcceptableParserExit(toolName: string, exitCode: number | null
   return allowed.has(exitCode);
 }
 
+/**
+ * Sentinel prefix on Finding.raw_output indicating the dispatched parser
+ * threw an uncaught exception. Callers should check `isParserError(finding)`
+ * before treating the empty nodes/edges as "no data" so the operator's LLM
+ * sees an explicit parser failure rather than a misleading "no data" reply.
+ */
+export const PARSE_ERROR_RAW_PREFIX = 'PARSER_ERROR:';
+
+/**
+ * Test-only: register a parser implementation under a name. Returns a
+ * disposer that removes the registration. Use only in tests — production
+ * code should not mutate the PARSERS registry at runtime.
+ */
+export function __registerParserForTest(
+  name: string,
+  fn: (output: string, agentId?: string, context?: ParseContext) => Finding,
+): () => void {
+  const key = name.toLowerCase();
+  const previous = PARSERS[key];
+  PARSERS[key] = fn;
+  return () => {
+    if (previous) PARSERS[key] = previous; else delete PARSERS[key];
+  };
+}
+
+export function isParserError(finding: Finding | null | undefined): boolean {
+  return !!finding && typeof finding.raw_output === 'string'
+    && finding.raw_output.startsWith(PARSE_ERROR_RAW_PREFIX);
+}
+
 export function parseOutput(toolName: string, output: string, agentId?: string, context?: ParseContext): Finding | null {
   const parser = PARSERS[toolName.toLowerCase()];
   if (!parser) return null;
-  return parser(stripAnsi(output), agentId, context);
+  try {
+    return parser(stripAnsi(output), agentId, context);
+  } catch (err) {
+    // Fail-loud: surface the parser crash as a Finding with no nodes/edges
+    // but with raw_output describing the failure so the operator's LLM sees
+    // explicitly which parser threw and can route around it. Returning null
+    // here would conflate "parser threw" with "no parser registered", which
+    // are different operational signals.
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? err.stack.split('\n').slice(0, 5).join('\n') : '';
+    const inputPrefix = output.slice(0, 200);
+    return {
+      id: `parse-error-${toolName}-${Date.now()}`,
+      agent_id: agentId || 'unknown',
+      timestamp: new Date().toISOString(),
+      tool_name: toolName,
+      nodes: [],
+      edges: [],
+      raw_output: `${PARSE_ERROR_RAW_PREFIX} ${toolName} threw: ${message}\n${stack}\n--- input prefix (200 bytes) ---\n${inputPrefix}`,
+    };
+  }
 }

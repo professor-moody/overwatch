@@ -13,7 +13,7 @@
 
 import { spawn } from 'child_process';
 import type { GraphEngine } from '../services/graph-engine.js';
-import { parseOutput, getSupportedParsers, isAcceptableParserExit } from '../services/parsers/index.js';
+import { parseOutput, getSupportedParsers, isAcceptableParserExit, isParserError } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { actionIdOrUuid } from '../services/deterministic-id.js';
 import type { ParseContext } from '../types.js';
@@ -1138,6 +1138,22 @@ export async function runInstrumentedProcess(
           frontier_item_id,
           frontier_type: frontierType,
           result_classification: 'failure',
+        });
+      } else if (isParserError(finding)) {
+        // F0-1: parser threw — surface the exception so the operator's LLM
+        // does not mistake it for a clean parse with no results.
+        parse_summary = { error: `Parser '${parse_with}' threw`, parser_exception: finding.raw_output };
+        engine.logActionEvent({
+          description: `Parser '${parse_with}' threw an exception`,
+          agent_id,
+          action_id: normalizedActionId,
+          event_type: 'parse_output',
+          category: 'finding',
+          tool_name: parse_with,
+          frontier_item_id,
+          frontier_type: frontierType,
+          result_classification: 'failure',
+          details: { parse_status: 'parser_exception' },
         });
       } else {
         finding.action_id = normalizedActionId;

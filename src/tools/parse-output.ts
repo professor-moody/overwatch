@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { ParseContext } from '../types.js';
-import { parseOutput, getSupportedParsers } from '../services/parsers/index.js';
+import { parseOutput, getSupportedParsers, isParserError } from '../services/parsers/index.js';
 import { prepareFindingForIngest } from '../services/finding-validation.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
@@ -185,6 +185,39 @@ Pass either the raw output content or a local file path for large artifacts.`,
       finding.action_id = normalizedActionId;
       finding.tool_name = tool_name;
       finding.frontier_item_id = frontier_item_id;
+
+      // F0-1: surface parser exceptions as a distinct error so the operator's
+      // LLM sees what crashed instead of a misleading "no data" reply.
+      if (isParserError(finding)) {
+        engine.logActionEvent({
+          description: `Parser '${tool_name}' threw an exception`,
+          agent_id: finding.agent_id,
+          action_id: normalizedActionId,
+          event_type: 'parse_output',
+          category: 'finding',
+          tool_name,
+          frontier_item_id,
+          frontier_type: frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined,
+          result_classification: 'failure',
+          details: { parse_status: 'parser_exception' },
+        });
+        engine.persist();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              parsed: false,
+              parse_status: 'parser_exception',
+              tool: tool_name,
+              action_id: normalizedActionId,
+              finding_id: finding.id,
+              error: finding.raw_output,
+              message: `Parser '${tool_name}' threw — see error field for the exception and input prefix.`,
+            }, null, 2)
+          }],
+          isError: true,
+        };
+      }
 
       // F06: Warn when certipy text fallback produced nodes but no ESC/CA edges
       if (tool_name === 'certipy' && finding.nodes.length > 0 && finding.edges.length === 0) {
