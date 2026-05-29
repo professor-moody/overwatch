@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 vi.mock('../../services/parsers/index.js', () => ({
   parseOutput: vi.fn(),
   getSupportedParsers: vi.fn(() => ['mocked-tool']),
+  isParserError: vi.fn(() => false),
 }));
 
 vi.mock('../../services/finding-validation.js', () => ({
