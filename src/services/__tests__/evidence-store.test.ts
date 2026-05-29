@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, rmSync } from 'fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { EvidenceStore } from '../evidence-store.js';
 
 const TEST_STATE = '/tmp/overwatch-ev-test/state.json';
@@ -222,6 +223,61 @@ describe('EvidenceStore', () => {
       expect(store.resolveKey(hash)).toBe(id);
       expect(store.resolveKey(id)).toBe(id);
       expect(store.resolveKey('not-a-key-or-hash')).toBeNull();
+    });
+
+    // F1-15: manifest corruption recovery
+    describe('manifest corruption recovery', () => {
+      it('preserves the corrupt manifest, logs a warning, and rebuilds from on-disk blobs', () => {
+        // First instantiation: store two evidence items so blob files exist on disk.
+        {
+          const store = new EvidenceStore(TEST_STATE);
+          store.store({ evidence_type: 'command_output', content: 'first', action_id: 'act-a' });
+          store.store({ evidence_type: 'command_output', raw_output: 'second raw', action_id: 'act-b' });
+        }
+        // Corrupt the manifest before next load.
+        const manifestPath = join(EVIDENCE_DIR, 'manifest.json');
+        writeFileSync(manifestPath, '{not valid json');
+
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const store = new EvidenceStore(TEST_STATE);
+          // Corrupt file preserved as manifest.json.corrupt-<ts>.json
+          const evidenceFiles = readdirSync(EVIDENCE_DIR);
+          const preserved = evidenceFiles.find(name => name.startsWith('manifest.json.corrupt-'));
+          expect(preserved).toBeDefined();
+          expect(readFileSync(join(EVIDENCE_DIR, preserved!), 'utf-8')).toBe('{not valid json');
+          // Structured warning surfaced once.
+          expect(warn).toHaveBeenCalled();
+          const warnArgs = warn.mock.calls.flat().join(' ');
+          expect(warnArgs).toContain('manifest.json');
+          expect(warnArgs).toContain('Rebuilding');
+          // Manifest rebuilt with one record per uuid (the .content and .raw belong to distinct uuids here).
+          const list = store.list();
+          expect(list.length).toBeGreaterThan(0);
+          expect(list.every(r => r.recovered === true)).toBe(true);
+          // Rebuilt manifest is persisted to disk.
+          const rewritten = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+          expect(Array.isArray(rewritten)).toBe(true);
+          expect(rewritten.every((r: { recovered?: boolean }) => r.recovered === true)).toBe(true);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('handles a missing evidence directory during rebuild without throwing', () => {
+        // Set up an empty evidence dir then corrupt the manifest.
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        writeFileSync(join(EVIDENCE_DIR, 'manifest.json'), 'garbage');
+
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const store = new EvidenceStore(TEST_STATE);
+          expect(store.list()).toEqual([]);
+          expect(warn).toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
+      });
     });
 
     it('streamed evidence carries a content_hash equal to the streamed bytes', async () => {

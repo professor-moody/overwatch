@@ -5,7 +5,7 @@
 // this store holds the full-fidelity payloads.
 // ============================================================
 
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync, type WriteStream } from 'fs';
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync, type WriteStream } from 'fs';
 import { join, dirname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, type Hash } from 'crypto';
@@ -39,6 +39,13 @@ export interface EvidenceRecord {
    * still exist on disk but the byte counts represent only what was
    * confirmed durable. */
   capture_error?: string;
+  /**
+   * F1-15: set when the record was reconstructed from on-disk blob files
+   * after the manifest was found corrupted. Recovered records lack the
+   * original (action_id, finding_id) attribution and content_hash; consumers
+   * should treat them as best-effort rather than authoritative.
+   */
+  recovered?: boolean;
 }
 
 function computeContentHash(content?: string, raw_output?: string): string {
@@ -71,13 +78,85 @@ export class EvidenceStore {
   }
 
   private loadManifest(): void {
-    if (existsSync(this.manifestPath)) {
+    if (!existsSync(this.manifestPath)) return;
+    try {
+      this.manifest = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
+      return;
+    } catch (err) {
+      // F1-15: silent reset → loud recovery. Preserve the corrupted manifest
+      // for forensic investigation, log a warning, and rebuild a best-effort
+      // manifest by scanning the evidence directory so existing findings that
+      // reference evidence_ids still resolve.
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const preservedPath = `${this.manifestPath}.corrupt-${timestamp}.json`;
       try {
-        this.manifest = JSON.parse(readFileSync(this.manifestPath, 'utf-8'));
+        renameSync(this.manifestPath, preservedPath);
       } catch {
-        this.manifest = [];
+        // If rename fails (permission, missing), continue — the rebuild is
+        // still worth attempting and the warning will surface the failure.
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[evidence-store] manifest.json at ${this.manifestPath} failed to parse (${message}). ` +
+        `Preserved as ${preservedPath}. Rebuilding from on-disk blobs; rebuilt records will be marked recovered=true.`
+      );
+      this.manifest = this.rebuildManifestFromBlobs();
+      try {
+        this.saveManifest();
+      } catch {
+        // Non-fatal — the in-memory manifest still serves this process.
       }
     }
+  }
+
+  /**
+   * F1-15: scan `this.dir` for `<uuid>.content` and `<uuid>.raw` blob files
+   * and synthesize a minimal EvidenceRecord per uuid. Used when the on-disk
+   * manifest is unreadable. Records lack the original attribution and
+   * content_hash; flagged `recovered: true` so downstream code can warn.
+   */
+  private rebuildManifestFromBlobs(): EvidenceRecord[] {
+    let entries: string[];
+    try {
+      entries = readdirSync(this.dir);
+    } catch {
+      return [];
+    }
+    const byId = new Map<string, { contentSize: number; rawSize: number; mtimeMs: number; type: 'content' | 'raw' | 'both' }>();
+    for (const name of entries) {
+      const match = name.match(/^([0-9a-f-]{36})\.(content|raw)$/i);
+      if (!match) continue;
+      const [, evidenceId, ext] = match;
+      let size = 0;
+      let mtimeMs = 0;
+      try {
+        const stat = statSync(join(this.dir, name));
+        size = stat.size;
+        mtimeMs = stat.mtimeMs;
+      } catch {
+        continue;
+      }
+      const existing = byId.get(evidenceId) || { contentSize: 0, rawSize: 0, mtimeMs: 0, type: ext as 'content' | 'raw' };
+      if (ext === 'content') existing.contentSize = size;
+      else existing.rawSize = size;
+      existing.type = existing.contentSize > 0 && existing.rawSize > 0
+        ? 'both'
+        : existing.contentSize > 0 ? 'content' : 'raw';
+      existing.mtimeMs = Math.max(existing.mtimeMs, mtimeMs);
+      byId.set(evidenceId, existing);
+    }
+    const rebuilt: EvidenceRecord[] = [];
+    for (const [evidenceId, info] of byId) {
+      rebuilt.push({
+        evidence_id: evidenceId,
+        timestamp: new Date(info.mtimeMs).toISOString(),
+        evidence_type: 'command_output',
+        content_length: info.contentSize,
+        raw_output_length: info.rawSize,
+        recovered: true,
+      });
+    }
+    return rebuilt;
   }
 
   private saveManifest(): void {
