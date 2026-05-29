@@ -600,6 +600,47 @@ describe('Output Parsers', () => {
       expect(backupShare!.spider_files).toBeDefined();
       expect((backupShare!.spider_files as string[]).length).toBeGreaterThanOrEqual(2);
     });
+
+    // F0-2: NTDS dump detection
+    it('stamps the host with ntds_dumped, count, dump path, and dc_compromised on "Dumped N NTDS hashes to PATH"', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [+] Dumped 7 NTDS hashes to /tmp/nxc/ntds.dump',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect(host).toBeDefined();
+      expect((host as Record<string, unknown>).ntds_dumped).toBe(true);
+      expect((host as Record<string, unknown>).ntds_hash_count).toBe(7);
+      expect((host as Record<string, unknown>).ntds_dump_path).toBe('/tmp/nxc/ntds.dump');
+      expect((host as Record<string, unknown>).dc_compromised).toBe(true);
+    });
+
+    it('stamps ntds_dumped without dump path on "Dumped N NTDS hashes from the domain"', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [+] Dumped 7000 NTDS hashes from the domain',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect(host).toBeDefined();
+      expect((host as Record<string, unknown>).ntds_dumped).toBe(true);
+      expect((host as Record<string, unknown>).ntds_hash_count).toBe(7000);
+      expect((host as Record<string, unknown>).ntds_dump_path).toBeUndefined();
+      expect((host as Record<string, unknown>).dc_compromised).toBe(true);
+    });
+
+    it('does not stamp ntds_dumped when no Dumped-NTDS line is present', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [+] north.sevenkingdoms.local\\jdoe:Password123!',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect(host).toBeDefined();
+      expect((host as Record<string, unknown>).ntds_dumped).toBeUndefined();
+      expect((host as Record<string, unknown>).dc_compromised).toBeUndefined();
+    });
   });
 
   describe('parseCertipy', () => {

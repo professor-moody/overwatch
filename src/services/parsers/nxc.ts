@@ -217,6 +217,32 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
         }
       }
 
+      // F0-2: NTDS dump detection.
+      //
+      // NXC `--ntds` produces a notification line of the form
+      //   [+] Dumped 7 NTDS hashes to /tmp/nxc/ntds.dump
+      //   [+] Dumped 7000 NTDS hashes from the domain
+      // Full NTDS extraction implies domain-level compromise of the DC. We
+      // stamp the host node so downstream surfaces (dashboard, inference
+      // rules, report generator) can treat the host as a domain-compromise
+      // source. The individual hash rows are emitted by the SAM branch
+      // below; this block surfaces the headline event the operator must
+      // not miss.
+      const ntdsMatch = message.match(/Dumped\s+(\d+)\s+NTDS\s+hashes?(?:\s+to\s+(\S+))?/i);
+      if (ntdsMatch) {
+        const hashCount = parseInt(ntdsMatch[1], 10);
+        const dumpPath = ntdsMatch[2];
+        const hostNode = nodes.find(n => n.id === resolvedHostId);
+        if (hostNode) {
+          (hostNode as Record<string, unknown>).ntds_dumped = true;
+          (hostNode as Record<string, unknown>).ntds_hash_count = hashCount;
+          if (dumpPath) (hostNode as Record<string, unknown>).ntds_dump_path = dumpPath;
+          // Mark the DC as a domain-compromise pivot — downstream inference
+          // rules can chain this to PATH_TO_OBJECTIVE on the domain.
+          (hostNode as Record<string, unknown>).dc_compromised = true;
+        }
+      }
+
       // Valid auth (+ status) with domain\user pattern.
       // 1.2: also capture the credential material when it's printed alongside.
       // NXC commonly emits `DOMAIN\user:password` or `DOMAIN\user:NTHASH` on
