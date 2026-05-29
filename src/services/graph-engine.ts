@@ -1544,7 +1544,13 @@ export class GraphEngine {
             edge_id: existingEdgeId,
           });
           if (!validation.valid) {
-            throw new Error(`Replacement edge ${newType} cannot connect ${sourceNode.type} to ${targetNode.type}.`);
+            // F0-6: surface the same suggested_fix text the report_finding
+            // ingestion path produces so operators get actionable guidance
+            // regardless of which mutation entrypoint they used.
+            const suggestion = validation.suggested_fix?.message
+              ? ` Suggested fix: ${validation.suggested_fix.message}`
+              : '';
+            throw new Error(`Replacement edge ${newType} cannot connect ${sourceNode.type} to ${targetNode.type}.${suggestion}`);
           }
         }
       }

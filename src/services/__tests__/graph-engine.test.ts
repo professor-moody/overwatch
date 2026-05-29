@@ -1737,6 +1737,40 @@ describe('GraphEngine', () => {
       expect(engine.findEdgeId('host-10-10-10-1', 'share-all', 'RUNS')).toBeTruthy();
       expect(engine.findEdgeId('host-10-10-10-1', 'share-all', 'RELATED')).toBeNull();
     });
+
+    // F0-6: pre-flight edge constraint validation + actionable suggestion
+    it('rejects replace_edge that violates an edge-type endpoint constraint and surfaces the suggested fix', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'share-bad', type: 'share', label: 'bad' },
+        ],
+        edges: [{ source: 'host-10-10-10-1', target: 'share-bad', properties: { type: 'RELATED', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+
+      // Attempt to replace a RELATED edge with RUNS — RUNS cannot connect host -> share.
+      let caught: Error | null = null;
+      try {
+        engine.correctGraph('invalid replacement', [
+          {
+            kind: 'replace_edge',
+            source_id: 'host-10-10-10-1',
+            edge_type: 'RELATED',
+            target_id: 'share-bad',
+            new_edge_type: 'RUNS',
+          },
+        ]);
+      } catch (err) {
+        caught = err instanceof Error ? err : new Error(String(err));
+      }
+      expect(caught).not.toBeNull();
+      expect(caught!.message).toContain('Replacement edge RUNS cannot connect host to share');
+      expect(caught!.message).toContain('Suggested fix:');
+      // Original edge must be intact — atomicity preserved.
+      expect(engine.findEdgeId('host-10-10-10-1', 'share-bad', 'RELATED')).toBeTruthy();
+      expect(engine.findEdgeId('host-10-10-10-1', 'share-bad', 'RUNS')).toBeNull();
+    });
   });
 
   // =============================================
