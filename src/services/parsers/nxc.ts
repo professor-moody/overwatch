@@ -299,14 +299,38 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       // tracking. F2: stamp `tested_service` on the edge so credential
       // coverage can attribute the test to the SMB service rather than
       // marking the entire host covered for SSH/RDP/WinRM/etc.
+      //
+      // F0-3: differentiate NT status codes — STATUS_ACCOUNT_LOCKED_OUT,
+      // STATUS_PASSWORD_EXPIRED, STATUS_ACCOUNT_RESTRICTION must surface as
+      // distinct operator signals so the LLM does not keep spraying into a
+      // lockout or treat an expired-but-real account as unknown.
       if (status === '-') {
         const credMatch = message.match(/([^\\]+)\\([^\s:]+)/);
         if (credMatch) {
           const [, rawCredDomain, username] = credMatch;
           const credDomain = resolveDomainName(rawCredDomain, context?.domain_aliases);
           if (username && username !== '') {
-            addUserNode(username, credDomain);
-            addEdgeOnce(userId(username, credDomain), resolvedHostId, 'TESTED_CRED', 0.0, { tested_service: 'smb' });
+            const resolvedUserId = addUserNode(username, credDomain);
+            addEdgeOnce(resolvedUserId, resolvedHostId, 'TESTED_CRED', 0.0, { tested_service: 'smb' });
+            const userNode = nodes.find(n => n.id === resolvedUserId);
+
+            if (/STATUS_ACCOUNT_LOCKED_OUT/i.test(message)) {
+              // Spray hit lockout — stamp the host so downstream rules can
+              // halt further auth attempts against this target, and the user
+              // so the operator knows which account triggered it.
+              const hostNode = nodes.find(n => n.id === resolvedHostId);
+              if (hostNode) {
+                (hostNode as Record<string, unknown>).lockout_observed = true;
+                const victims = ((hostNode as Record<string, unknown>).lockout_victims as string[] | undefined) || [];
+                if (!victims.includes(username)) victims.push(username);
+                (hostNode as Record<string, unknown>).lockout_victims = victims;
+              }
+              if (userNode) (userNode as Record<string, unknown>).locked_out = true;
+            } else if (/STATUS_PASSWORD_EXPIRED/i.test(message)) {
+              if (userNode) (userNode as Record<string, unknown>).password_expired = true;
+            } else if (/STATUS_ACCOUNT_RESTRICTION/i.test(message) || /STATUS_LOGON_TYPE_NOT_GRANTED/i.test(message)) {
+              if (userNode) (userNode as Record<string, unknown>).account_restricted = true;
+            }
           }
         }
       }

@@ -9,8 +9,19 @@ export function parseKerbrute(output: string, agentId: string = 'kerbrute-parser
   const edges: Finding['edges'] = [];
   const seenNodes = new Set<string>();
   const now = new Date().toISOString();
+  // F0-3: kerbrute's spray rate-limiter emits a single global warning when it
+  // detects lockout risk. Collect the flag here and stamp every domain node
+  // we end up creating during the parse so downstream surfaces (dashboard,
+  // inference rules) can halt further sprays against the affected realm.
+  let lockoutObserved = false;
+  let lockoutMessage: string | undefined;
 
   for (const line of output.split('\n')) {
+    if (/\bAccount\s+lockout\s+threshold\s+hit\b/i.test(line) || /\blockout\b.*\bdetected\b/i.test(line)) {
+      lockoutObserved = true;
+      lockoutMessage = line.trim();
+      continue;
+    }
     // Valid username: [+] VALID USERNAME:\tuser@domain
     const enumMatch = line.match(/\[\+\]\s*VALID USERNAME:\s*(\S+)/i);
     if (enumMatch) {
@@ -80,6 +91,18 @@ export function parseKerbrute(output: string, agentId: string = 'kerbrute-parser
         target: resolvedCredId,
         properties: { type: 'OWNS_CRED', confidence: 1.0, discovered_at: now, discovered_by: agentId },
       });
+    }
+  }
+
+  // F0-3: post-pass stamp every domain we touched with the lockout signal so
+  // the spray as a whole is flagged regardless of which domain its
+  // successes were attributed to.
+  if (lockoutObserved) {
+    for (const node of nodes) {
+      if (node.type === 'domain') {
+        (node as Record<string, unknown>).spray_lockout_observed = true;
+        if (lockoutMessage) (node as Record<string, unknown>).spray_lockout_message = lockoutMessage;
+      }
     }
   }
 

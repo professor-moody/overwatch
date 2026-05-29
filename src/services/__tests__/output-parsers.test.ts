@@ -641,6 +641,61 @@ describe('Output Parsers', () => {
       expect((host as Record<string, unknown>).ntds_dumped).toBeUndefined();
       expect((host as Record<string, unknown>).dc_compromised).toBeUndefined();
     });
+
+    // F0-3: lockout / password-expired / account-restricted differentiation
+    it('stamps lockout_observed on host and locked_out on user for STATUS_ACCOUNT_LOCKED_OUT', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [-] north.sevenkingdoms.local\\jdoe:Password1 STATUS_ACCOUNT_LOCKED_OUT',
+        'SMB         10.3.10.11      445    DC01             [-] north.sevenkingdoms.local\\admin:Password1 STATUS_ACCOUNT_LOCKED_OUT',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect(host).toBeDefined();
+      expect((host as Record<string, unknown>).lockout_observed).toBe(true);
+      const victims = (host as Record<string, unknown>).lockout_victims as string[];
+      expect(victims).toContain('jdoe');
+      expect(victims).toContain('admin');
+      const userJdoe = finding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      expect((userJdoe as Record<string, unknown>).locked_out).toBe(true);
+    });
+
+    it('stamps password_expired for STATUS_PASSWORD_EXPIRED', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [-] north.sevenkingdoms.local\\stale:Password1 STATUS_PASSWORD_EXPIRED',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const user = finding.nodes.find(n => n.type === 'user' && n.username === 'stale');
+      expect((user as Record<string, unknown>).password_expired).toBe(true);
+      // No lockout — host should not be stamped.
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect((host as Record<string, unknown>).lockout_observed).toBeUndefined();
+    });
+
+    it('stamps account_restricted for STATUS_ACCOUNT_RESTRICTION', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [-] north.sevenkingdoms.local\\svc:Password1 STATUS_ACCOUNT_RESTRICTION',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const user = finding.nodes.find(n => n.type === 'user' && n.username === 'svc');
+      expect((user as Record<string, unknown>).account_restricted).toBe(true);
+    });
+
+    it('plain STATUS_LOGON_FAILURE does not stamp lockout/expired/restricted', () => {
+      const output = [
+        'SMB         10.3.10.11      445    DC01             [*] Windows Server 2019 (name:DC01) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
+        'SMB         10.3.10.11      445    DC01             [-] north.sevenkingdoms.local\\jdoe:wrongpw STATUS_LOGON_FAILURE',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const user = finding.nodes.find(n => n.type === 'user' && n.username === 'jdoe');
+      const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.11');
+      expect((user as Record<string, unknown>).locked_out).toBeUndefined();
+      expect((user as Record<string, unknown>).password_expired).toBeUndefined();
+      expect((user as Record<string, unknown>).account_restricted).toBeUndefined();
+      expect((host as Record<string, unknown>).lockout_observed).toBeUndefined();
+    });
   });
 
   describe('parseCertipy', () => {
@@ -1421,6 +1476,32 @@ describe('Output Parsers', () => {
       // Should produce a user but no credential (empty password)
       const creds = finding.nodes.filter(n => n.type === 'credential');
       expect(creds.length).toBe(0);
+    });
+
+    // F0-3: lockout-threshold detection
+    it('stamps spray_lockout_observed on every parsed domain when the lockout threshold warning fires', () => {
+      const lockoutSpray = [
+        '2026/03/21 10:00:00 >  Using KDC(s):',
+        '2026/03/21 10:00:00 >   dc01.acme.local:88',
+        '2026/03/21 10:00:01 >  [+] VALID LOGIN:\tjdoe@acme.local:Summer2026!',
+        '2026/03/21 10:00:02 >  [*] Account lockout threshold hit! Stopping spray.',
+      ].join('\n');
+      const finding = parseKerbrute(lockoutSpray);
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains.length).toBeGreaterThan(0);
+      for (const d of domains) {
+        expect((d as Record<string, unknown>).spray_lockout_observed).toBe(true);
+        expect((d as Record<string, unknown>).spray_lockout_message).toBeDefined();
+      }
+    });
+
+    it('does not stamp spray_lockout_observed when no lockout warning is present', () => {
+      const finding = parseKerbrute(sampleSpray);
+      const domains = finding.nodes.filter(n => n.type === 'domain');
+      expect(domains.length).toBeGreaterThan(0);
+      for (const d of domains) {
+        expect((d as Record<string, unknown>).spray_lockout_observed).toBeUndefined();
+      }
     });
   });
 
