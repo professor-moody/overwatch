@@ -4,13 +4,17 @@ export const BUILTIN_RULES: InferenceRule[] = [
   {
     id: 'rule-kerberos-domain',
     name: 'Kerberos implies domain membership',
+    // Heuristic: KDC on port 88 + hostname-suffix match to a known domain.
+    // Not authoritative — a rogue or unrelated Kerberos service can match.
+    // Confidence is bumped when LDAP or other authoritative enumeration later
+    // confirms the same host.
     description: 'Host running Kerberos (port 88) is likely a domain controller — matched by hostname suffix',
     trigger: { node_type: 'service', property_match: { service_name: 'kerberos' } },
     produces: [{
       edge_type: 'MEMBER_OF_DOMAIN',
       source_selector: 'parent_host',
       target_selector: 'matching_domain',
-      confidence: 0.95
+      confidence: 0.75
     }],
     self_confirming: true
   },
