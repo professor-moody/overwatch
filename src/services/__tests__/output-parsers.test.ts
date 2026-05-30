@@ -1976,6 +1976,134 @@ describe('Output Parsers', () => {
       expect(hosts[0].hostname).toBe('dc01.acme.local');
       expect(users.length).toBe(0);
     });
+
+    // S2-2: AD delegation detection — UAC bits + msDS-AllowedToDelegateTo + RBCD
+    describe('delegation detection', () => {
+      it('LDIF: stamps unconstrained_delegation on a computer with UAC bit 0x80000 set', () => {
+        const ldif = [
+          'dn: CN=SQL01,OU=Servers,DC=acme,DC=local',
+          'objectClass: top',
+          'objectClass: computer',
+          'sAMAccountName: SQL01$',
+          'dNSHostName: sql01.acme.local',
+          // 0x80000 (TRUSTED_FOR_DELEGATION) + 0x1000 (WORKSTATION_TRUST_ACCOUNT) = 528384
+          'userAccountControl: 528384',
+          '',
+        ].join('\n');
+        const finding = parseLdapsearch(ldif);
+        const host = finding.nodes.find(n => n.type === 'host');
+        expect(host?.unconstrained_delegation).toBe(true);
+        expect(host?.trusted_to_auth_for_delegation).toBeUndefined();
+      });
+
+      it('LDIF: stamps trusted_to_auth_for_delegation on a user with UAC bit 0x1000000 set', () => {
+        const ldif = [
+          'dn: CN=svc_web,CN=Users,DC=acme,DC=local',
+          'objectClass: top',
+          'objectClass: person',
+          'objectClass: user',
+          'sAMAccountName: svc_web',
+          // 0x1000000 + 0x200 (NORMAL_ACCOUNT) = 16777728
+          'userAccountControl: 16777728',
+          '',
+        ].join('\n');
+        const finding = parseLdapsearch(ldif);
+        const user = finding.nodes.find(n => n.type === 'user');
+        expect(user?.trusted_to_auth_for_delegation).toBe(true);
+        expect(user?.unconstrained_delegation).toBeUndefined();
+      });
+
+      it('LDIF: emits CAN_DELEGATE_TO edges per SPN in msDS-AllowedToDelegateTo and creates placeholder host nodes', () => {
+        const ldif = [
+          'dn: CN=svc_proxy,CN=Users,DC=acme,DC=local',
+          'objectClass: top',
+          'objectClass: person',
+          'objectClass: user',
+          'sAMAccountName: svc_proxy',
+          'userAccountControl: 512',
+          'msDS-AllowedToDelegateTo: cifs/dc01.acme.local',
+          'msDS-AllowedToDelegateTo: MSSQLSvc/sql.acme.local:1433',
+          '',
+        ].join('\n');
+        const finding = parseLdapsearch(ldif);
+        const delegEdges = finding.edges.filter(e => e.properties.type === 'CAN_DELEGATE_TO');
+        expect(delegEdges.length).toBe(2);
+        const spns = delegEdges.map(e => (e.properties as Record<string, unknown>).spn).sort();
+        expect(spns).toEqual(['MSSQLSvc/sql.acme.local:1433', 'cifs/dc01.acme.local']);
+        const hosts = finding.nodes.filter(n => n.type === 'host');
+        const hostnames = hosts.map(h => h.hostname).sort();
+        expect(hostnames).toContain('dc01.acme.local');
+        expect(hostnames).toContain('sql.acme.local');
+      });
+
+      it('LDIF: stamps rbcd_target when msDS-AllowedToActOnBehalfOfOtherIdentity is present', () => {
+        const ldif = [
+          'dn: CN=WS01,OU=Servers,DC=acme,DC=local',
+          'objectClass: top',
+          'objectClass: computer',
+          'sAMAccountName: WS01$',
+          'dNSHostName: ws01.acme.local',
+          'userAccountControl: 4096',
+          'msDS-AllowedToActOnBehalfOfOtherIdentity:: BAEEgAAAAAAAAAAA',
+          '',
+        ].join('\n');
+        const finding = parseLdapsearch(ldif);
+        const host = finding.nodes.find(n => n.type === 'host');
+        expect(host?.rbcd_target).toBe(true);
+      });
+
+      it('LDIF: no delegation flags when UAC has none of the delegation bits set', () => {
+        const ldif = [
+          'dn: CN=normal,CN=Users,DC=acme,DC=local',
+          'objectClass: top',
+          'objectClass: person',
+          'objectClass: user',
+          'sAMAccountName: normal',
+          'userAccountControl: 512',
+          '',
+        ].join('\n');
+        const finding = parseLdapsearch(ldif);
+        const user = finding.nodes.find(n => n.type === 'user');
+        expect(user?.unconstrained_delegation).toBeUndefined();
+        expect(user?.trusted_to_auth_for_delegation).toBeUndefined();
+        expect(user?.rbcd_target).toBeUndefined();
+      });
+
+      it('JSON: stamps unconstrained_delegation + emits CAN_DELEGATE_TO from a computer', () => {
+        const data = JSON.stringify([{
+          attributes: {
+            objectClass: ['top', 'computer'],
+            sAMAccountName: 'WEB01$',
+            distinguishedName: 'CN=WEB01,OU=Servers,DC=acme,DC=local',
+            dNSHostName: 'web01.acme.local',
+            userAccountControl: '528384',
+            'msDS-AllowedToDelegateTo': ['HTTP/api.acme.local'],
+          },
+        }]);
+        const finding = parseLdapsearch(data);
+        const web01 = finding.nodes.find(n => n.type === 'host' && n.hostname === 'web01.acme.local');
+        expect(web01?.unconstrained_delegation).toBe(true);
+        const delegEdge = finding.edges.find(e => e.properties.type === 'CAN_DELEGATE_TO');
+        expect(delegEdge).toBeDefined();
+        expect((delegEdge!.properties as Record<string, unknown>).spn).toBe('HTTP/api.acme.local');
+      });
+
+      it('JSON: stamps rbcd_target when msDS-AllowedToActOnBehalfOfOtherIdentity is present', () => {
+        const data = JSON.stringify([{
+          attributes: {
+            objectClass: ['top', 'computer'],
+            sAMAccountName: 'WS01$',
+            distinguishedName: 'CN=WS01,OU=Servers,DC=acme,DC=local',
+            dNSHostName: 'ws01.acme.local',
+            userAccountControl: '4096',
+            'msDS-AllowedToActOnBehalfOfOtherIdentity': 'BAEEgAAAAAAAAAAA',
+          },
+        }]);
+        const finding = parseLdapsearch(data);
+        const host = finding.nodes.find(n => n.type === 'host');
+        expect(host?.rbcd_target).toBe(true);
+      });
+    });
   });
 
   // =============================================

@@ -8,6 +8,42 @@ import { domainId, groupId, hostId, normalizeKeyPart, userId } from '../parser-u
 const UAC_DONT_REQUIRE_PREAUTH = 0x400000;
 // UAC bit for disabled account
 const UAC_ACCOUNTDISABLE = 0x0002;
+// S2-2: delegation UAC bits. Unconstrained delegation lets the principal
+// forward any TGT it receives; trusted-to-auth-for-delegation flags accounts
+// that participate in S4U2Self/S4U2Proxy flows (protocol transition).
+const UAC_TRUSTED_FOR_DELEGATION = 0x80000;
+const UAC_TRUSTED_TO_AUTH_FOR_DELEGATION = 0x1000000;
+
+interface DelegationProps {
+  unconstrained_delegation?: true;
+  trusted_to_auth_for_delegation?: true;
+  rbcd_target?: true;
+}
+
+function delegationPropsFromUac(uac: number, hasRbcdAttr: boolean): DelegationProps {
+  const out: DelegationProps = {};
+  if (uac & UAC_TRUSTED_FOR_DELEGATION) out.unconstrained_delegation = true;
+  if (uac & UAC_TRUSTED_TO_AUTH_FOR_DELEGATION) out.trusted_to_auth_for_delegation = true;
+  if (hasRbcdAttr) out.rbcd_target = true;
+  return out;
+}
+
+/**
+ * Extract the host portion of an SPN. e.g.:
+ *   "cifs/dc01.lab.local"            -> "dc01.lab.local"
+ *   "MSSQLSvc/sql.lab.local:1433"    -> "sql.lab.local"
+ *   "HOST/WS01"                      -> "ws01"
+ * Returns lowercase. Returns undefined for shapes we don't recognize.
+ */
+function hostFromSpn(spn: string): string | undefined {
+  if (typeof spn !== 'string') return undefined;
+  const slashIdx = spn.indexOf('/');
+  if (slashIdx < 0) return undefined;
+  const after = spn.slice(slashIdx + 1);
+  const colonIdx = after.indexOf(':');
+  const host = (colonIdx < 0 ? after : after.slice(0, colonIdx)).trim().toLowerCase();
+  return host.length > 0 ? host : undefined;
+}
 
 function domainFromDn(dn: string): string | undefined {
   const dcParts: string[] = [];
@@ -117,10 +153,10 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
   const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
-  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number, extra?: Record<string, unknown>): void {
     const key = `${source}--${type}--${target}`;
     if (seenEdges.has(key)) return;
-    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId, ...(extra ?? {}) } });
     seenEdges.add(key);
   }
 
@@ -191,6 +227,12 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
       const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : hostId(ip);
       if (seenNodes.has(resolvedHostId)) continue;
 
+      // S2-2: delegation attributes on computer accounts.
+      const compUac = parseInt((entry['useraccountcontrol'] || ['0'])[0], 10) || 0;
+      const compDelegateTo = entry['msds-allowedtodelegateto'] || [];
+      const compRbcd = (entry['msds-allowedtoactonbehalfofotheridentity'] || []).length > 0;
+      const delegationProps = delegationPropsFromUac(compUac, compRbcd);
+
       nodes.push({
         id: resolvedHostId,
         type: 'host',
@@ -199,6 +241,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
         os: osVal,
         domain_joined: true,
         alive: true,
+        ...delegationProps,
       });
       seenNodes.add(resolvedHostId);
 
@@ -209,6 +252,20 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
           seenNodes.add(resolvedDomainId);
         }
         addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+
+      // S2-2: constrained delegation targets — emit CAN_DELEGATE_TO per SPN
+      // whose host suffix we can resolve. We create placeholder host nodes
+      // for unresolved SPNs so the edge is always anchored.
+      for (const spn of compDelegateTo) {
+        const targetHost = hostFromSpn(spn);
+        if (!targetHost) continue;
+        const targetHostId = `host-${normalizeKeyPart(targetHost)}`;
+        if (!seenNodes.has(targetHostId)) {
+          nodes.push({ id: targetHostId, type: 'host', label: targetHost, hostname: targetHost });
+          seenNodes.add(targetHostId);
+        }
+        addEdgeOnce(resolvedHostId, targetHostId, 'CAN_DELEGATE_TO', 0.9, { spn });
       }
       continue;
     }
@@ -225,6 +282,11 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
       const sidVal = (entry['objectsid'] || [''])[0] || undefined;
       const enabled = !(uacRaw & UAC_ACCOUNTDISABLE);
       const pwdLastSet = adFileTimeToISO(entry['pwdlastset']);
+      // S2-2: delegation attributes on user accounts (service accounts
+      // typically carry constrained delegation here, not on computers).
+      const userDelegateTo = entry['msds-allowedtodelegateto'] || [];
+      const userRbcd = (entry['msds-allowedtoactonbehalfofotheridentity'] || []).length > 0;
+      const userDelegationProps = delegationPropsFromUac(uacRaw, userRbcd);
 
       nodes.push({
         id: resolvedUserId,
@@ -239,6 +301,7 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
         privileged: adminCount === '1' || undefined,
         sid: sidVal,
         pwd_last_set: pwdLastSet,
+        ...userDelegationProps,
       });
       seenNodes.add(resolvedUserId);
 
@@ -263,6 +326,18 @@ export function parseLdapsearch(output: string, agentId: string = 'ldapsearch-pa
           }
           addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
         }
+      }
+
+      // S2-2: constrained delegation targets from user/service accounts.
+      for (const spn of userDelegateTo) {
+        const targetHost = hostFromSpn(spn);
+        if (!targetHost) continue;
+        const targetHostId = `host-${normalizeKeyPart(targetHost)}`;
+        if (!seenNodes.has(targetHostId)) {
+          nodes.push({ id: targetHostId, type: 'host', label: targetHost, hostname: targetHost });
+          seenNodes.add(targetHostId);
+        }
+        addEdgeOnce(resolvedUserId, targetHostId, 'CAN_DELEGATE_TO', 0.9, { spn });
       }
       continue;
     }
@@ -297,10 +372,10 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
   const seenEdges = new Set<string>();
   const now = new Date().toISOString();
 
-  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number): void {
+  function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number, extra?: Record<string, unknown>): void {
     const key = `${source}--${type}--${target}`;
     if (seenEdges.has(key)) return;
-    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId } });
+    edges.push({ source, target, properties: { type, confidence, discovered_at: now, discovered_by: agentId, ...(extra ?? {}) } });
     seenEdges.add(key);
   }
 
@@ -375,6 +450,17 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
       const resolvedHostId = dnsHostname ? `host-${normalizeKeyPart(dnsHostname)}` : `host-${normalizeKeyPart(sam)}`;
       if (seenNodes.has(resolvedHostId)) continue;
 
+      // S2-2: delegation attributes on computer accounts.
+      const compUac = parseInt(String(attrs.userAccountControl || '0'), 10) || 0;
+      const compDelegateToRaw = attrs['msDS-AllowedToDelegateTo'] ?? attrs['msds-allowedtodelegateto'];
+      const compDelegateTo: string[] = Array.isArray(compDelegateToRaw)
+        ? compDelegateToRaw.filter((v): v is string => typeof v === 'string')
+        : typeof compDelegateToRaw === 'string' ? [compDelegateToRaw] : [];
+      const compRbcdRaw = attrs['msDS-AllowedToActOnBehalfOfOtherIdentity'] ?? attrs['msds-allowedtoactonbehalfofotheridentity'];
+      const compHasRbcd = compRbcdRaw !== undefined && compRbcdRaw !== null
+        && !(Array.isArray(compRbcdRaw) && compRbcdRaw.length === 0);
+      const delegationProps = delegationPropsFromUac(compUac, compHasRbcd);
+
       nodes.push({
         id: resolvedHostId,
         type: 'host',
@@ -383,6 +469,7 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
         os: osVal,
         domain_joined: true,
         alive: true,
+        ...delegationProps,
       });
       seenNodes.add(resolvedHostId);
 
@@ -393,6 +480,19 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
           seenNodes.add(resolvedDomainId);
         }
         addEdgeOnce(resolvedHostId, resolvedDomainId, 'MEMBER_OF_DOMAIN', 1.0);
+      }
+
+      // S2-2: constrained delegation targets — placeholder host nodes for
+      // unresolved SPNs so the edge is always anchored.
+      for (const spn of compDelegateTo) {
+        const targetHost = hostFromSpn(spn);
+        if (!targetHost) continue;
+        const targetHostId = `host-${normalizeKeyPart(targetHost)}`;
+        if (!seenNodes.has(targetHostId)) {
+          nodes.push({ id: targetHostId, type: 'host', label: targetHost, hostname: targetHost });
+          seenNodes.add(targetHostId);
+        }
+        addEdgeOnce(resolvedHostId, targetHostId, 'CAN_DELEGATE_TO', 0.9, { spn });
       }
       continue;
     }
@@ -406,6 +506,15 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
       const adminCount = String(attrs.adminCount || '0');
       const pwdLastSetRaw = String(attrs.pwdLastSet || '');
       const pwdLastSet = adFileTimeToISO([pwdLastSetRaw]);
+      // S2-2: delegation attributes on user/service accounts.
+      const userDelegateToRaw = attrs['msDS-AllowedToDelegateTo'] ?? attrs['msds-allowedtodelegateto'];
+      const userDelegateTo: string[] = Array.isArray(userDelegateToRaw)
+        ? userDelegateToRaw.filter((v): v is string => typeof v === 'string')
+        : typeof userDelegateToRaw === 'string' ? [userDelegateToRaw] : [];
+      const userRbcdRaw = attrs['msDS-AllowedToActOnBehalfOfOtherIdentity'] ?? attrs['msds-allowedtoactonbehalfofotheridentity'];
+      const userHasRbcd = userRbcdRaw !== undefined && userRbcdRaw !== null
+        && !(Array.isArray(userRbcdRaw) && userRbcdRaw.length === 0);
+      const userDelegationProps = delegationPropsFromUac(uac, userHasRbcd);
 
       nodes.push({
         id: resolvedUserId,
@@ -420,6 +529,7 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
         privileged: adminCount === '1' || undefined,
         sid: (attrs.objectSid as string) || undefined,
         pwd_last_set: pwdLastSet,
+        ...userDelegationProps,
       });
       seenNodes.add(resolvedUserId);
 
@@ -442,6 +552,18 @@ function parseLdapdomaindumpJson(data: Record<string, unknown>[], agentId: strin
           }
           addEdgeOnce(resolvedUserId, resolvedGroupId, 'MEMBER_OF', 1.0);
         }
+      }
+
+      // S2-2: constrained delegation targets from user/service accounts.
+      for (const spn of userDelegateTo) {
+        const targetHost = hostFromSpn(spn);
+        if (!targetHost) continue;
+        const targetHostId = `host-${normalizeKeyPart(targetHost)}`;
+        if (!seenNodes.has(targetHostId)) {
+          nodes.push({ id: targetHostId, type: 'host', label: targetHost, hostname: targetHost });
+          seenNodes.add(targetHostId);
+        }
+        addEdgeOnce(resolvedUserId, targetHostId, 'CAN_DELEGATE_TO', 0.9, { spn });
       }
       continue;
     }
