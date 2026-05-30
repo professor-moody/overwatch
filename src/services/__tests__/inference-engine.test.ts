@@ -751,6 +751,51 @@ describe('InferenceEngine', () => {
   });
 
   // =============================================
+  // S2-1: NTDS dump implies domain compromise
+  // =============================================
+  describe('rule-ntds-dump-implies-domain-compromise', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-ntds-dump-implies-domain-compromise',
+      name: 'NTDS dump implies effective domain admin',
+      description: '',
+      trigger: { node_type: 'host', property_match: { ntds_dumped: true } },
+      produces: [{
+        edge_type: 'PATH_TO_OBJECTIVE',
+        source_selector: 'trigger_node',
+        target_selector: 'nearest_objective',
+        confidence: 1.0,
+      }],
+      self_confirming: true,
+    };
+
+    it('emits PATH_TO_OBJECTIVE host -> objective when ntds_dumped is true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-dc01', { type: 'host', ip: '10.0.0.5', hostname: 'dc01', ntds_dumped: true });
+      addNode(graph, 'obj-da', { type: 'objective', objective_description: 'Domain compromise' });
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('host-dc01');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('PATH_TO_OBJECTIVE');
+      expect(attrs.confidence).toBe(1.0);
+      expect(graph.source(inferred[0])).toBe('host-dc01');
+      expect(graph.target(inferred[0])).toBe('obj-da');
+    });
+
+    it('does NOT fire when ntds_dumped is absent', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-dc01', { type: 'host', ip: '10.0.0.5', hostname: 'dc01' });
+      addNode(graph, 'obj-da', { type: 'objective', objective_description: 'Domain compromise' });
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('host-dc01');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
   // ACL chain escalation rules
   // =============================================
   describe('ACL chain rules', () => {

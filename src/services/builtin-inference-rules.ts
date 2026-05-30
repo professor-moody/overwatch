@@ -83,6 +83,23 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    // S2-1 (F0-2 follow-up): a host with ntds_dumped=true has had the full
+    // AD database extracted — the operator effectively has hashes for every
+    // domain principal. Treat this as immediate engagement-objective progress
+    // so frontier scoring and path analysis surface it.
+    id: 'rule-ntds-dump-implies-domain-compromise',
+    name: 'NTDS dump implies effective domain admin',
+    description: 'A host with ntds_dumped=true has had the entire AD database extracted; emit PATH_TO_OBJECTIVE so engagement-objective surfaces react.',
+    trigger: { node_type: 'host', property_match: { ntds_dumped: true } },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node',
+      target_selector: 'nearest_objective',
+      confidence: 1.0
+    }],
+    self_confirming: true
+  },
+  {
     id: 'rule-asrep-roastable',
     name: 'AS-REP Roastable user',
     description: 'User with Kerberos pre-auth disabled is AS-REP roastable in its domain',
