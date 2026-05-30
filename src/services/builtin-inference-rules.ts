@@ -71,14 +71,20 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    // S2-3: previous shape emitted DELEGATES_TO from domain-admins to the
+    // unconstrained host, which inverts the attack. An unconstrained host
+    // captures forwarded TGTs from any principal that authenticates against
+    // it; the captured identity is the principal, not the host. New edge
+    // direction: host -> principal, using the new CAN_CAPTURE_TGT_FROM edge
+    // type that matches the attack semantics.
     id: 'rule-unconstrained-delegation',
-    name: 'Unconstrained delegation target',
-    description: 'Hosts with unconstrained delegation can capture TGTs from authenticating principals',
+    name: 'Unconstrained delegation TGT capture',
+    description: 'Hosts with unconstrained delegation can capture TGTs from any principal that authenticates to them. Edge flows host -> captured principal.',
     trigger: { node_type: 'host', property_match: { unconstrained_delegation: true } },
     produces: [{
-      edge_type: 'DELEGATES_TO',
-      source_selector: 'domain_admins_and_session_holders',
-      target_selector: 'trigger_node',
+      edge_type: 'CAN_CAPTURE_TGT_FROM',
+      source_selector: 'trigger_node',
+      target_selector: 'domain_admins_and_session_holders',
       confidence: 0.7
     }]
   },

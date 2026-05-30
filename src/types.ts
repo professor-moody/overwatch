@@ -343,7 +343,7 @@ export const EDGE_TYPES = [
   // Roasting
   'AS_REP_ROASTABLE', 'KERBEROASTABLE',
   // Delegation
-  'CAN_DELEGATE_TO',
+  'CAN_DELEGATE_TO', 'CAN_CAPTURE_TGT_FROM',
   // ACL-derived
   'CAN_READ_LAPS', 'CAN_READ_GMSA', 'RBCD_TARGET',
   // Credential reuse

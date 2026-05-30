@@ -125,10 +125,11 @@ const RULE_KERBEROASTABLE: InferenceRule = {
 
 const RULE_UNCONSTRAINED_DELEGATION: InferenceRule = {
   id: 'rule-unconstrained-delegation',
-  name: 'Unconstrained delegation target',
+  name: 'Unconstrained delegation TGT capture',
   description: '',
   trigger: { node_type: 'host', property_match: { unconstrained_delegation: true } },
-  produces: [{ edge_type: 'DELEGATES_TO', source_selector: 'domain_admins_and_session_holders', target_selector: 'trigger_node', confidence: 0.7 }],
+  // S2-3: direction flipped — host captures from principal, not vice versa.
+  produces: [{ edge_type: 'CAN_CAPTURE_TGT_FROM', source_selector: 'trigger_node', target_selector: 'domain_admins_and_session_holders', confidence: 0.7 }],
 };
 
 const RULE_DCSYNC: InferenceRule = {
@@ -681,9 +682,13 @@ describe('InferenceEngine', () => {
 
   // =============================================
   // domain_admins_and_session_holders selector
+  //
+  // S2-3: with the unconstrained-delegation rule direction flipped, the
+  // unconstrained host is the SOURCE of CAN_CAPTURE_TGT_FROM and the
+  // selector resolves the TARGETS (captured principals).
   // =============================================
   describe('domain_admins_and_session_holders selector', () => {
-    it('returns session holders and admin group members', () => {
+    it('returns session holders and admin group members as edge targets', () => {
       const graph = makeGraph();
       addNode(graph, 'host-uc', { type: 'host', ip: '10.10.10.5', unconstrained_delegation: true });
       addNode(graph, 'user-session', { type: 'user', username: 'session_user', domain_joined: true });
@@ -696,11 +701,17 @@ describe('InferenceEngine', () => {
       const engine = buildEngine(graph, [RULE_UNCONSTRAINED_DELEGATION]);
       const inferred = engine.runRules('host-uc');
 
-      const sources = inferred.map(e => graph.source(e));
-      expect(sources).toContain('user-session');
-      expect(sources).toContain('user-da-member');
-      expect(sources).toContain('group-da');
-      expect(sources).not.toContain('user-nobody');
+      // Every emitted edge must originate at the unconstrained host and use
+      // the new CAN_CAPTURE_TGT_FROM edge type.
+      for (const e of inferred) {
+        expect(graph.source(e)).toBe('host-uc');
+        expect(graph.getEdgeAttributes(e).type).toBe('CAN_CAPTURE_TGT_FROM');
+      }
+      const targets = inferred.map(e => graph.target(e));
+      expect(targets).toContain('user-session');
+      expect(targets).toContain('user-da-member');
+      expect(targets).toContain('group-da');
+      expect(targets).not.toContain('user-nobody');
     });
 
     it('F27: returns empty when no session holders or admin groups exist (no unsafe fallback)', () => {

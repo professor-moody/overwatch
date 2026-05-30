@@ -79,6 +79,10 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   KERBEROASTABLE: { source: ['user'], target: ['domain'] },
   // Delegation
   CAN_DELEGATE_TO: { source: ['host', 'user'], target: ['host', 'service'] },
+  // S2-3: an unconstrained-delegation host captures the forwarded TGT of
+  // any principal that authenticates to it. Direction is host -> principal
+  // (the captured identity), opposite to CAN_DELEGATE_TO.
+  CAN_CAPTURE_TGT_FROM: { source: ['host'], target: ['user', 'group', 'credential'] },
   // ACL-derived
   CAN_READ_LAPS: { source: ['user', 'group'], target: ['host'] },
   CAN_READ_GMSA: { source: ['user', 'group'], target: ['user'] },
