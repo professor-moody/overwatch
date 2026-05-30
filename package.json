@@ -2,6 +2,7 @@
   "name": "overwatch-mcp-server",
   "version": "0.1.0",
   "description": "Offensive security engagement orchestrator - MCP server with graph-based state management",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
