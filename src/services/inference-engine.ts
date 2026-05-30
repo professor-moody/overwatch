@@ -600,6 +600,12 @@ export class InferenceEngine {
           || e.toLowerCase().includes('any purpose')
         );
         if (!hasClientAuth) return [];
+        // S2-4 (F1-4): templates requiring manager approval are NOT exploitable
+        // via ESC1/ESC2/ESC3 — the abuse depends on automatic issuance. When
+        // certipy reports the property as true we suppress the rule emit; when
+        // the property is missing or false we proceed (parser convention is to
+        // omit when absent rather than emit false).
+        if (node.manager_approval_required === true) return [];
         return this.resolveEnrollablePrincipals(triggerNodeId);
       }
 

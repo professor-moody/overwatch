@@ -1011,6 +1011,49 @@ describe('InferenceEngine', () => {
       const inferred = engine.runRules('tmpl-1');
       expect(inferred.length).toBe(0);
     });
+
+    // S2-4: manager-approval gate (shared selector with rule-adcs-esc1)
+    it('does NOT infer ESC2 when template requires manager approval', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', any_purpose: true, ekus: ['1.3.6.1.5.5.7.3.2'], manager_approval_required: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // S2-4: ESC1 manager-approval gate — same selector as ESC2 above; this
+  // describe block exercises the rule shape ESC1 itself uses to keep the
+  // gating visible alongside the rule definition.
+  describe('rule-adcs-esc1', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-adcs-esc1', name: 'ADCS ESC1', description: '',
+      trigger: { node_type: 'cert_template', property_match: { enrollee_supplies_subject: true } },
+      produces: [{ edge_type: 'ESC1', source_selector: 'enrollable_users_if_client_auth', target_selector: 'trigger_node', confidence: 0.75 }],
+    };
+
+    it('infers ESC1 on an enrollee-supplies-subject template with client-auth EKU and no manager approval', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', enrollee_supplies_subject: true, ekus: ['1.3.6.1.5.5.7.3.2'] });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBeGreaterThan(0);
+      expect(graph.getEdgeAttributes(inferred[0]).type).toBe('ESC1');
+    });
+
+    it('does NOT infer ESC1 when the template requires manager approval', () => {
+      const graph = makeGraph();
+      addNode(graph, 'tmpl-1', { type: 'cert_template', enrollee_supplies_subject: true, ekus: ['1.3.6.1.5.5.7.3.2'], manager_approval_required: true });
+      addNode(graph, 'user-a', { type: 'user' });
+      addEdge(graph, 'user-a', 'tmpl-1', 'CAN_ENROLL');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('tmpl-1');
+      expect(inferred.length).toBe(0);
+    });
   });
 
   describe('rule-adcs-esc3', () => {
