@@ -75,6 +75,20 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
   try {
     const data = JSON.parse(output);
 
+    // S3-A3: shape sanity check. Certipy 4.x/5.x both produce JSON with
+    // top-level "Certificate Authorities" and/or "Certificate Templates"
+    // keys. If neither is present in non-trivial output the JSON likely
+    // belongs to a different Certipy command or a future schema we have
+    // not handled — log so the operator's LLM (and the maintainer) can
+    // notice rather than silently extracting nothing.
+    if (output.trim().length > 50 && typeof data === 'object' && data !== null) {
+      const recognized = ('Certificate Authorities' in data) || ('Certificate Templates' in data);
+      if (!recognized) {
+        const topKeys = Object.keys(data).slice(0, 5).join(', ');
+        console.error(`[certipy] JSON parsed but top-level keys (${topKeys || '<empty>'}) do not match expected Certipy schema. ESC findings will be empty.`);
+      }
+    }
+
     // Build CA → templates mapping from CA data
     const caTemplateMap = new Map<string, string[]>();
 
@@ -297,7 +311,7 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
               const vulns = tmpl['[!] Vulnerabilities'] as Record<string, unknown>;
               for (const [escName] of Object.entries(vulns)) {
                 const escType = escName.toUpperCase().replace(/[^A-Z0-9]/g, '') as EdgeType;
-                if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13'].includes(escType)) {
+                if (['ESC1', 'ESC2', 'ESC3', 'ESC4', 'ESC5', 'ESC6', 'ESC7', 'ESC8', 'ESC9', 'ESC10', 'ESC11', 'ESC12', 'ESC13', 'ESC15'].includes(escType)) {
                   addEdge(resolvedPrincipalId, tmplId, escType, 0.9);
                 }
               }

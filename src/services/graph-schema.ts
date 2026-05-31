@@ -71,6 +71,8 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   ESC11: { source: ['user', 'group'], target: ['ca'] },
   ESC12: { source: ['user', 'group'], target: ['ca'] },
   ESC13: { source: ['user', 'group'], target: ['cert_template'] },
+  // S3-A3: ESC15 (CVE-2024-49019) — enrollee-supplies-subject + schema v1.
+  ESC15: { source: ['user', 'group'], target: ['cert_template'] },
   // Trust
   TRUSTS: { source: ['domain'], target: ['domain'] },
   SAME_DOMAIN: { source: ['host', 'user', 'group'], target: ['host', 'user', 'group'] },

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseNmapXml, parseNxc, parseCertipy, parseSecretsdump, parseKerbrute, parseHashcat, parseResponder, parseLdapsearch, parseEnum4linux, parseRubeus, parseWebDirEnum, parseOutput, getSupportedParsers, parseTestssl, parseNuclei, parseLinpeas, parseNikto, parsePacu, parseProwler, parseBurp, parseZap, parseSqlmap, parseWpscan, parseScoutSuite, parseCloudFox, parseTerraformState, parseEnumerateIam, __registerParserForTest, isParserError, PARSE_ERROR_RAW_PREFIX } from '../parsers/index.js';
 import { prepareFindingForIngest } from '../finding-validation.js';
 
@@ -881,6 +881,56 @@ describe('Output Parsers', () => {
       expect(esc13Edges[0].target).toBe('cert-template-misconfigtemplate');
       const enrollEdges = finding.edges.filter(e => e.properties.type === 'CAN_ENROLL');
       expect(enrollEdges.length).toBe(1);
+    });
+
+    // S3-A3: ESC15 (CVE-2024-49019)
+    it('emits ESC15 edge when Certipy reports ESC15 vulnerability', () => {
+      const data = {
+        'Certificate Templates': {
+          'V1Template': {
+            'Enrollee Supplies Subject': true,
+            'Schema Version': 1,
+            '[!] Vulnerabilities': {
+              'ESC15': { 'Description': 'CVE-2024-49019: schema v1 + enrollee supplies subject' },
+            },
+            'Enrollment Permissions': {
+              'Enrollment Rights': ['ACME\\Domain Users'],
+            },
+          },
+        },
+      };
+      const finding = parseCertipy(JSON.stringify(data));
+      const esc15Edges = finding.edges.filter(e => e.properties.type === 'ESC15');
+      expect(esc15Edges.length).toBe(1);
+      expect(esc15Edges[0].target).toBe('cert-template-v1template');
+    });
+
+    // S3-A3: shape sanity check
+    it('warns to stderr when JSON parsed but top-level keys do not match Certipy schema', () => {
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        // Non-empty JSON but with unrecognized top-level keys.
+        const garbage = JSON.stringify({ Hosts: [{ ip: '10.0.0.1' }], Services: [{ port: 88 }] });
+        const finding = parseCertipy(garbage);
+        expect(finding.nodes.length).toBe(0);
+        expect(warn).toHaveBeenCalled();
+        const msg = warn.mock.calls.flat().join(' ');
+        expect(msg).toContain('[certipy]');
+        expect(msg).toContain('Hosts');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does NOT warn for recognized Certipy JSON shape', () => {
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const data = { 'Certificate Templates': {} };
+        parseCertipy(JSON.stringify(data));
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('does NOT emit ESC1 when enrollee_supplies_subject is false, even with client auth EKU', () => {
