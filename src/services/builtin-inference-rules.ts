@@ -325,9 +325,16 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    // S3-A1 (F1-13): the rule's trigger matches every MSSQL service node,
+    // but the `linked_server_hosts` selector returns [] when the service
+    // node has no populated `linked_servers` property — so no REACHABLE
+    // edges are produced unless linked servers were observed. The
+    // property_match engine only supports strict equality so the gate
+    // can't live on the trigger; the selector-side guard is the
+    // authoritative one. Regression test covers both directions.
     id: 'rule-mssql-linked-server',
     name: 'MSSQL linked server implies host reachability',
-    description: 'MSSQL service with linked servers implies network reachability to the linked host',
+    description: 'MSSQL service with linked_servers populated implies network reachability to each linked host',
     trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
     produces: [{
       edge_type: 'REACHABLE',

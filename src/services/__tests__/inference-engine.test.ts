@@ -762,6 +762,64 @@ describe('InferenceEngine', () => {
   });
 
   // =============================================
+  // S3-A1: MSSQL linked-server rule selector-side gate
+  // =============================================
+  describe('rule-mssql-linked-server', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-mssql-linked-server',
+      name: 'MSSQL linked server implies host reachability',
+      description: '',
+      trigger: { node_type: 'service', property_match: { service_name: 'mssql' } },
+      produces: [{
+        edge_type: 'REACHABLE',
+        source_selector: 'parent_host',
+        target_selector: 'linked_server_hosts',
+        confidence: 0.8,
+      }],
+    };
+
+    it('emits REACHABLE to every linked host when linked_servers is populated', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-sql01', { type: 'host', ip: '10.0.0.5', hostname: 'sql01' });
+      addNode(graph, 'host-sql02', { type: 'host', ip: '10.0.0.6', hostname: 'sql02' });
+      addNode(graph, 'svc-mssql', { type: 'service', service_name: 'mssql', port: 1433, linked_servers: ['sql02'] });
+      addEdge(graph, 'host-sql01', 'svc-mssql', 'RUNS');
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('svc-mssql');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('REACHABLE');
+      expect(graph.source(inferred[0])).toBe('host-sql01');
+      expect(graph.target(inferred[0])).toBe('host-sql02');
+    });
+
+    it('emits no edges when linked_servers is absent (selector returns empty)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-sql01', { type: 'host', ip: '10.0.0.5', hostname: 'sql01' });
+      addNode(graph, 'host-sql02', { type: 'host', ip: '10.0.0.6', hostname: 'sql02' });
+      addNode(graph, 'svc-mssql', { type: 'service', service_name: 'mssql', port: 1433 });
+      addEdge(graph, 'host-sql01', 'svc-mssql', 'RUNS');
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('svc-mssql');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('emits no edges when linked_servers is an empty array', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-sql01', { type: 'host', ip: '10.0.0.5', hostname: 'sql01' });
+      addNode(graph, 'svc-mssql', { type: 'service', service_name: 'mssql', port: 1433, linked_servers: [] });
+      addEdge(graph, 'host-sql01', 'svc-mssql', 'RUNS');
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('svc-mssql');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
   // S2-1: NTDS dump implies domain compromise
   // =============================================
   describe('rule-ntds-dump-implies-domain-compromise', () => {
