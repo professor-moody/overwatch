@@ -3663,6 +3663,98 @@ sqlmap identified the following injection point(s) with a total of 42 HTTP(s) re
       expect(creds.length).toBe(0);
     });
 
+    // S3-B2: --dump table-row extraction
+    it('extracts plaintext credentials from a credential-shaped dump table', () => {
+      const output = `
+[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[INFO] the back-end DBMS is MySQL
+[INFO] Parameter: id (GET) is vulnerable
+Database: app
+Table: users
+[3 entries]
++----+----------+----------+
+| id | username | password |
++----+----------+----------+
+| 1  | alice    | hunter2  |
+| 2  | bob      | letmein  |
++----+----------+----------+
+`;
+      const finding = parseSqlmap(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      const labels = creds.map(c => c.label).sort();
+      expect(labels).toEqual(['alice:password', 'bob:password']);
+      const alice = creds.find(c => (c as Record<string, unknown>).cred_user === 'alice') as Record<string, unknown>;
+      expect(alice.cred_material_kind).toBe('plaintext_password');
+      expect(alice.cred_usable_for_auth).toBe(true);
+      expect(alice.cred_value).toBe('hunter2');
+    });
+
+    it('extracts hash credentials from a dump table and marks them not-usable-for-auth', () => {
+      const output = `
+[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[INFO] the back-end DBMS is MySQL
+[INFO] Parameter: id (GET) is vulnerable
+Database: app
+Table: users
++----+----------+-----------------------------------------------------------+
+| id | username | password_hash                                             |
++----+----------+-----------------------------------------------------------+
+| 1  | alice    | $2a$10$abcdefghijklmnopqrstuabcdefghijklmnopqrstuabcdefgh |
+| 2  | bob      | 5f4dcc3b5aa765d61d8327deb882cf99                          |
++----+----------+-----------------------------------------------------------+
+`;
+      const finding = parseSqlmap(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(2);
+      const alice = creds.find(c => (c as Record<string, unknown>).cred_user === 'alice') as Record<string, unknown>;
+      expect(alice.cred_material_kind).toBe('bcrypt_hash');
+      expect(alice.cred_type).toBe('hash');
+      expect(alice.cred_usable_for_auth).toBe(false);
+      const bob = creds.find(c => (c as Record<string, unknown>).cred_user === 'bob') as Record<string, unknown>;
+      expect(bob.cred_material_kind).toBe('unknown_hash');
+      expect(bob.cred_usable_for_auth).toBe(false);
+    });
+
+    it('does NOT extract rows from a non-credential dump table', () => {
+      const output = `
+[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[INFO] the back-end DBMS is MySQL
+[INFO] Parameter: id (GET) is vulnerable
+Database: app
+Table: products
++----+--------+-------+
+| id | name   | price |
++----+--------+-------+
+| 1  | widget | 9.99  |
+| 2  | gadget | 19.99 |
++----+--------+-------+
+`;
+      const finding = parseSqlmap(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(0);
+    });
+
+    it('handles alternate column names (login + secret)', () => {
+      const output = `
+[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'
+[INFO] the back-end DBMS is MySQL
+[INFO] Parameter: id (GET) is vulnerable
+Database: app
+Table: accounts
++----+--------+---------+
+| id | login  | secret  |
++----+--------+---------+
+| 1  | admin  | s3cr3t  |
++----+--------+---------+
+`;
+      const finding = parseSqlmap(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1);
+      expect((creds[0] as Record<string, unknown>).cred_user).toBe('admin');
+      expect((creds[0] as Record<string, unknown>).cred_value).toBe('s3cr3t');
+    });
+
     it('creates EXPLOITS edges from vulnerability to credentials', () => {
       const finding = parseSqlmap(sampleSqlmapText);
       const exploits = finding.edges.filter(e => e.properties.type === 'EXPLOITS');

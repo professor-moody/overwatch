@@ -50,11 +50,81 @@ function parseSqlmapText(
   let dbms = '';
   const injections: Array<{ parameter: string; type: string; technique: string }> = [];
   const dbUsers: string[] = [];
-  const crackedCreds: Array<{ username: string; password: string }> = [];
+  const crackedCreds: Array<{ username: string; password: string; kind?: string }> = [];
+
+  // S3-B2: --dump table-row extraction. Detect credential-shaped tables
+  // (a user-like column + a password/hash column) and promote each row to
+  // a credential node. Non-credential dumps (e.g. product tables, audit
+  // logs) are left alone — only tables whose headers indicate credentials
+  // are extracted, matching the existing design caution that dumped
+  // arbitrary rows are not reusable authentication material.
+  //
+  // Sqlmap dump format:
+  //   Database: app
+  //   Table: users
+  //   +----+----------+-----------+
+  //   | id | username | password  |
+  //   +----+----------+-----------+
+  //   | 1  | alice    | hunter2   |
+  //   ...
+  //   +----+----------+-----------+
+  type DumpPhase = 'idle' | 'awaiting-border' | 'awaiting-header' | 'header-seen' | 'reading-rows';
+  type DumpState = { phase: DumpPhase; table: string | null; userIdx: number; pwdIdx: number };
+  let dump: DumpState = { phase: 'idle', table: null, userIdx: -1, pwdIdx: -1 };
+  const isBorder = (s: string) => /^\+[-+]+\+$/.test(s);
+  const splitRow = (s: string): string[] => s.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+  const USER_COL_RE = /^(user(name)?|login|email|account|mail)$/i;
+  const PWD_COL_RE = /^(password|passwd|pass|pwd|secret|hash|password_hash|pw)$/i;
 
   for (const rawLine of output.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
+
+    // --- dump table state machine ---
+    // Sqlmap dump shape:
+    //   Table: <name>            -> phase: awaiting-border
+    //   +----+...+               -> phase: awaiting-header
+    //   | id | username | ... |  -> phase: header-seen (record column indices)
+    //   +----+...+               -> phase: reading-rows
+    //   | 1  | alice    | ... |  -> emit credential per row (if user+pwd cols)
+    //   +----+...+               -> phase: idle (end of table)
+    const tableMatch = line.match(/^Table:\s*(\S+)/i);
+    if (tableMatch) {
+      dump = { phase: 'awaiting-border', table: tableMatch[1], userIdx: -1, pwdIdx: -1 };
+      continue;
+    }
+    if (dump.phase !== 'idle' && isBorder(line)) {
+      if (dump.phase === 'awaiting-border') dump.phase = 'awaiting-header';
+      else if (dump.phase === 'header-seen') dump.phase = 'reading-rows';
+      else if (dump.phase === 'reading-rows') dump = { phase: 'idle', table: null, userIdx: -1, pwdIdx: -1 };
+      continue;
+    }
+    if (dump.phase === 'awaiting-header' && line.startsWith('|')) {
+      const cols = splitRow(line).map(c => c.toLowerCase());
+      dump.userIdx = cols.findIndex(c => USER_COL_RE.test(c));
+      dump.pwdIdx = cols.findIndex(c => PWD_COL_RE.test(c));
+      dump.phase = 'header-seen';
+      continue;
+    }
+    if (dump.phase === 'reading-rows' && dump.userIdx >= 0 && dump.pwdIdx >= 0 && line.startsWith('|')) {
+      const cells = splitRow(line);
+      const username = cells[dump.userIdx];
+      const secret = cells[dump.pwdIdx];
+      if (username && secret && username !== 'NULL' && secret !== 'NULL') {
+        // Determine credential material kind from the secret's shape.
+        const isMd5 = /^[a-f0-9]{32}$/i.test(secret);
+        const isSha1 = /^[a-f0-9]{40}$/i.test(secret);
+        const isSha256 = /^[a-f0-9]{64}$/i.test(secret);
+        const isBcrypt = /^\$2[aby]\$\d{2}\$/.test(secret);
+        const isShaCrypt = /^\$[156]\$/.test(secret);
+        const isHash = isMd5 || isSha1 || isSha256 || isBcrypt || isShaCrypt;
+        const matKind = isHash
+          ? (isBcrypt ? 'bcrypt_hash' : isShaCrypt ? 'crypt_hash' : 'unknown_hash')
+          : 'plaintext_password';
+        crackedCreds.push({ username, password: secret, ...(isHash ? { kind: matKind } : {}) });
+      }
+      continue;
+    }
 
     // Target URL: [INFO] testing URL 'http://...' or from --url
     const urlMatch = line.match(/testing URL ['"]([^'"]+)['"]/i)
@@ -199,7 +269,7 @@ function buildSqlmapNodes(
   dbms: string,
   injections: Array<{ parameter: string; type: string; technique: string }>,
   dbUsers: string[],
-  crackedCreds: Array<{ username: string; password: string }>,
+  crackedCreds: Array<{ username: string; password: string; kind?: string }>,
   nodes: Finding['nodes'],
   edges: Finding['edges'],
   seenNodes: Set<string>,
@@ -317,20 +387,24 @@ function buildSqlmapNodes(
 
   // Cracked credential nodes
   for (const cred of crackedCreds) {
-    const cId = credentialId('password', cred.password, cred.username);
+    // S3-B2: --dump may yield hash values rather than plaintext. Honor the
+    // optional kind so the credential node carries the right material kind
+    // and is marked not-usable-for-auth until cracked.
+    const isHash = !!cred.kind && cred.kind !== 'plaintext_password';
+    const cId = credentialId(isHash ? cred.kind! : 'password', cred.password, cred.username);
 
     if (!seenNodes.has(cId)) {
       seenNodes.add(cId);
       nodes.push({
         id: cId,
         type: 'credential',
-        label: `${cred.username}:password`,
+        label: `${cred.username}:${isHash ? cred.kind : 'password'}`,
         discovered_at: now,
         confidence: 0.9,
-        cred_material_kind: 'plaintext_password',
-        cred_type: 'plaintext',
+        cred_material_kind: isHash ? cred.kind : 'plaintext_password',
+        cred_type: isHash ? 'hash' : 'plaintext',
         cred_user: cred.username,
-        cred_usable_for_auth: true,
+        cred_usable_for_auth: !isHash,
         cred_value: cred.password,
       } as Finding['nodes'][0]);
     }
