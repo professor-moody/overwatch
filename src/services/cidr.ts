@@ -187,35 +187,102 @@ export function inferCidrFromIps(ips: string[]): string[] {
 // --- URL scope matching (glob-like patterns) ---
 
 /**
- * Convert a glob-like URL pattern to a RegExp.
- * Supports: `*` (any non-/ chars), `**` (anything), literal `.` escaped.
- * Examples: "*.example.com" matches "app.example.com"
- *           "app.corp.io/api/*" matches "app.corp.io/api/v1"
+ * Host-glob: `*` matches one-or-more non-dot, non-slash characters. Tighter
+ * than the old behavior where `*` was `[^/]*` and could span dots, which
+ * let `*.example.com` accidentally match `aaa.bbbexample.com`. Use `**`
+ * to match anything including dots (matches the old `*` behavior).
  */
-function globToRegex(pattern: string): RegExp {
-  // Escape regex-special chars except * which we handle
-  let re = pattern
-    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')  // escape specials (. becomes \.)
-    .replace(/\*\*/g, '\0GLOBSTAR\0')            // protect ** before * replacement
-    .replace(/\*/g, '[^/]*')                      // * → match non-slash
-    .replace(/\0GLOBSTAR\0/g, '.*');              // restore ** → match anything
+function hostGlobToRegex(pattern: string): RegExp {
+  // The escape pass does NOT cover `*` (we handle that ourselves), so the
+  // post-escape string still contains bare `*` characters that we then
+  // turn into the glob expansions below. Two-star protected first so it
+  // does not get consumed by the single-star pass.
+  const re = pattern
+    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')
+    .replace(/\*\*/g, '\0G\0')
+    .replace(/\*/g, '[^./]+')
+    .replace(/\0G\0/g, '.*');
   return new RegExp(`^${re}$`, 'i');
 }
 
-export function isUrlInScope(url: string, patterns: string[], exclusions: string[] = []): boolean {
-  try {
-    const parsed = new URL(url);
-    if (isHostExcluded(parsed.hostname, exclusions)) return false;
-  } catch {
-    const host = url.replace(/^https?:\/\//, '').split('/')[0]?.split(':')[0] || '';
-    if (host && isHostExcluded(host, exclusions)) return false;
-  }
+/**
+ * Path-glob: original glob semantics. `*` is non-slash; `**` is anything.
+ * Patterns are anchored at both ends so an explicit path scope (e.g.
+ * `/api`) does not accidentally match `/api/v1` — operators add `/api/*`
+ * if they want subpath coverage.
+ */
+function pathGlobToRegex(pattern: string): RegExp {
+  const re = pattern
+    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')
+    .replace(/\*\*/g, '\0G\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\0G\0/g, '.*');
+  return new RegExp(`^${re}$`, 'i');
+}
 
-  // Strip protocol for matching — patterns are host/path only
-  const normalized = url.replace(/^https?:\/\//, '');
+interface ParsedScopePattern {
+  host: string;
+  port: string; // '' = any port, otherwise exact match required (digits) or '*' wildcard
+  path: string; // '' = match any path
+}
+
+function parseScopePattern(raw: string): ParsedScopePattern {
+  // Strip leading protocol so callers can write either form.
+  let p = raw.replace(/^https?:\/\//i, '');
+  // Split off path on first slash.
+  const slashIdx = p.indexOf('/');
+  const hostPort = slashIdx < 0 ? p : p.slice(0, slashIdx);
+  const path = slashIdx < 0 ? '' : p.slice(slashIdx);
+  // Host and optional :port — handle bracketed IPv6 first so the colons
+  // inside ::1 don't get mistaken for the port separator.
+  let host = hostPort;
+  let port = '';
+  if (hostPort.startsWith('[')) {
+    const close = hostPort.indexOf(']');
+    if (close > 0) {
+      host = hostPort.slice(1, close);
+      const tail = hostPort.slice(close + 1);
+      if (tail.startsWith(':')) port = tail.slice(1);
+    }
+  } else {
+    const colonIdx = hostPort.lastIndexOf(':');
+    // Only treat as host:port if the colon is followed by digits or `*`.
+    if (colonIdx > 0 && /^(\d+|\*)$/.test(hostPort.slice(colonIdx + 1))) {
+      host = hostPort.slice(0, colonIdx);
+      port = hostPort.slice(colonIdx + 1);
+    }
+  }
+  return { host: host.toLowerCase(), port, path };
+}
+
+export function isUrlInScope(url: string, patterns: string[], exclusions: string[] = []): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Malformed URL — fail closed.
+    return false;
+  }
+  // Normalize host: lowercase, strip IPv6 brackets if URL kept them (Node
+  // returns hostname WITH brackets for IPv6, while parseScopePattern
+  // strips them; normalize both sides so the comparison is symmetric).
+  const urlHost = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isHostExcluded(urlHost, exclusions)) return false;
+  const urlPort = parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+  const urlPath = parsed.pathname || '/';
+
   for (const pattern of patterns) {
-    const normalizedPattern = pattern.replace(/^https?:\/\//, '');
-    if (globToRegex(normalizedPattern).test(normalized)) return true;
+    const { host: pHost, port: pPort, path: pPath } = parseScopePattern(pattern);
+
+    // Port: empty pattern port = any; '*' = any; otherwise exact.
+    if (pPort && pPort !== '*' && pPort !== urlPort) continue;
+
+    if (!hostGlobToRegex(pHost).test(urlHost)) continue;
+
+    // Path: empty pattern path matches any URL path.
+    if (pPath && !pathGlobToRegex(pPath).test(urlPath)) continue;
+
+    return true;
   }
   return false;
 }

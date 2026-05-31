@@ -37,10 +37,19 @@ function cleanup() {
 // 8.4: URL scope matching (glob-like)
 // ============================================================
 describe('isUrlInScope', () => {
-  it('matches wildcard subdomain pattern', () => {
+  it('matches wildcard subdomain pattern (single * does not cross dots)', () => {
+    // S3-B1: tightened — single `*` matches one host label only (non-dot,
+    // non-slash). Use `**` to traverse dots in the hostname.
     expect(isUrlInScope('https://app.example.com', ['*.example.com'])).toBe(true);
-    expect(isUrlInScope('https://deep.sub.example.com', ['*.example.com'])).toBe(true); // single * matches any non-slash chars including dots
+    expect(isUrlInScope('https://deep.sub.example.com', ['*.example.com'])).toBe(false);
+    expect(isUrlInScope('https://deep.sub.example.com', ['**.example.com'])).toBe(true);
     expect(isUrlInScope('https://other.com', ['*.example.com'])).toBe(false);
+  });
+
+  it('S3-B1: single * does not match like-suffix domains', () => {
+    // Audit-flagged regression: `*.example.com` used to accidentally match
+    // `aaa.bbbexample.com` because `*` spanned dots.
+    expect(isUrlInScope('https://aaa.bbbexample.com', ['*.example.com'])).toBe(false);
   });
 
   it('single * does not match path separators', () => {
@@ -75,7 +84,43 @@ describe('isUrlInScope', () => {
   });
 
   it('hostname exclusions override URL patterns', () => {
-    expect(isUrlInScope('https://blocked.example.com/admin', ['*.example.com/**'], ['blocked.example.com'])).toBe(false);
+    expect(isUrlInScope('https://blocked.example.com/admin', ['**.example.com/**'], ['blocked.example.com'])).toBe(false);
+  });
+
+  // S3-B1: port handling
+  it('pattern without port matches any port on the host', () => {
+    expect(isUrlInScope('https://app.example.com:8443/api', ['app.example.com'])).toBe(true);
+    expect(isUrlInScope('https://app.example.com/api', ['app.example.com'])).toBe(true);
+  });
+
+  it('pattern with explicit port requires exact port match', () => {
+    expect(isUrlInScope('https://app.example.com:8443', ['app.example.com:443'])).toBe(false);
+    expect(isUrlInScope('https://app.example.com:443', ['app.example.com:443'])).toBe(true);
+    expect(isUrlInScope('https://app.example.com', ['app.example.com:443'])).toBe(true); // default https port
+  });
+
+  it('pattern with :* matches any port', () => {
+    expect(isUrlInScope('https://app.example.com:8443', ['app.example.com:*'])).toBe(true);
+    expect(isUrlInScope('https://app.example.com:1234', ['app.example.com:*'])).toBe(true);
+  });
+
+  // S3-B1: query strings and fragments stripped before matching
+  it('strips query string and fragment before matching path', () => {
+    expect(isUrlInScope('https://app.example.com/api?key=value', ['app.example.com/api'])).toBe(true);
+    expect(isUrlInScope('https://app.example.com/api#section', ['app.example.com/api'])).toBe(true);
+  });
+
+  // S3-B1: IPv6
+  it('handles IPv6 URLs with bracketed host syntax', () => {
+    expect(isUrlInScope('http://[::1]:8080/', ['[::1]'])).toBe(true);
+    expect(isUrlInScope('http://[::1]:8080/', ['[::1]:8080'])).toBe(true);
+    expect(isUrlInScope('http://[::1]:8080/', ['[::2]'])).toBe(false);
+  });
+
+  // S3-B1: malformed URL fails closed
+  it('returns false for malformed URLs (fail closed)', () => {
+    expect(isUrlInScope('not a url', ['*.example.com'])).toBe(false);
+    expect(isUrlInScope('', ['*.example.com'])).toBe(false);
   });
 });
 
