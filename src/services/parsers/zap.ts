@@ -244,7 +244,10 @@ export function parseZap(output: string, agentId: string = 'zap-parser', _contex
     }
   }
 
-  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  // S3-B3: preserve scanner evidence so testers can correlate findings
+  // back to the source XML without re-running the scan. Truncated to 2KB.
+  const rawTrunc = output.length > 2048 ? `${output.slice(0, 2048)}\n... [truncated, ${output.length} bytes total]` : output;
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges, raw_output: rawTrunc };
 }
 
 // --- Helpers ---

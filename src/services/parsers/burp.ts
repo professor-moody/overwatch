@@ -165,7 +165,14 @@ export function parseBurp(output: string, agentId: string = 'burp-parser', _cont
 
     // Vulnerability node
     const issueName = issue.name || `Burp-${issue.type || 'unknown'}`;
-    const path = issue.path || issue.location || '';
+    // S3-B3: decode URL-encoded paths so `/admin panel` and `/admin%20panel`
+    // hash to the same dedup key. Malformed % sequences stay raw to avoid
+    // throwing.
+    const rawPath = issue.path || issue.location || '';
+    let path = rawPath;
+    try {
+      path = decodeURIComponent(rawPath);
+    } catch { /* keep raw on malformed encoding */ }
     const pathSuffix = path ? `-${normalizeKeyPart(path)}` : '';
     const typeId = String(issue.type || issueName);
     const vulnId = vulnerabilityId(typeId + pathSuffix, waId);
@@ -206,7 +213,10 @@ export function parseBurp(output: string, agentId: string = 'burp-parser', _cont
     }
   }
 
-  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+  // S3-B3: preserve scanner evidence so testers can correlate findings
+  // back to the source XML without re-running the scan. Truncated to 2KB.
+  const rawTrunc = output.length > 2048 ? `${output.slice(0, 2048)}\n... [truncated, ${output.length} bytes total]` : output;
+  return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges, raw_output: rawTrunc };
 }
 
 // --- Helpers ---

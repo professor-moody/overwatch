@@ -3428,6 +3428,41 @@ describe('Output Parsers', () => {
       expect(finding).not.toBeNull();
       expect(finding!.nodes.length).toBeGreaterThan(0);
     });
+
+    // S3-B3: path normalization + raw_output preservation
+    it('deduplicates URL-encoded and decoded forms of the same path', () => {
+      const xml = `<?xml version="1.0"?>
+<issues>
+  <issue>
+    <serialNumber>1</serialNumber>
+    <type>1</type>
+    <name>SQL injection</name>
+    <host ip="10.0.0.5">http://10.0.0.5</host>
+    <path>/admin panel</path>
+    <severity>High</severity>
+    <confidence>Certain</confidence>
+  </issue>
+  <issue>
+    <serialNumber>2</serialNumber>
+    <type>1</type>
+    <name>SQL injection</name>
+    <host ip="10.0.0.5">http://10.0.0.5</host>
+    <path>/admin%20panel</path>
+    <severity>High</severity>
+    <confidence>Certain</confidence>
+  </issue>
+</issues>`;
+      const finding = parseBurp(xml);
+      const vulns = finding.nodes.filter(n => n.type === 'vulnerability');
+      expect(vulns.length).toBe(1);
+      expect((vulns[0] as Record<string, unknown>).affected_path).toBe('/admin panel');
+    });
+
+    it('emits raw_output with the source XML truncated', () => {
+      const finding = parseBurp(sampleBurpXml);
+      expect(finding.raw_output).toBeDefined();
+      expect(finding.raw_output).toContain('<?xml');
+    });
   });
 
   // ===========================================================================
@@ -3575,6 +3610,13 @@ describe('Output Parsers', () => {
       const finding = parseOutput('owasp-zap', sampleZapXml);
       expect(finding).not.toBeNull();
       expect(finding!.nodes.length).toBeGreaterThan(0);
+    });
+
+    // S3-B3: raw_output preservation
+    it('emits raw_output with the source XML', () => {
+      const finding = parseZap(sampleZapXml);
+      expect(finding.raw_output).toBeDefined();
+      expect(finding.raw_output).toContain('<?xml');
     });
   });
 
