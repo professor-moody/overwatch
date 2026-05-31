@@ -313,13 +313,21 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    // S3-A2 (F1-11): the rule used to fire on ANY SQLi vuln, producing
+    // an EXPLOITS edge to the parent host regardless of whether the
+    // back-end DBMS even supports an OS-RCE primitive. SQLite or MS Access
+    // SQLi cannot promote to RCE through standard SQLi techniques; the
+    // false-positive path wastes operator time. Source selector now gates
+    // on a recognised capable DBMS (or an explicit rce_capable=true stamp
+    // a future parser can set); when neither is observed the rule emits
+    // no edges.
     id: 'rule-sqli-to-rce',
     name: 'SQL injection on capable DBMS may enable RCE',
-    description: 'SQLi on MySQL (INTO OUTFILE), MSSQL (xp_cmdshell), or PostgreSQL (COPY TO) can lead to OS command execution',
+    description: 'SQLi on MySQL (INTO OUTFILE), MSSQL (xp_cmdshell), or PostgreSQL (COPY TO PROGRAM) can lead to OS command execution. Other backends (SQLite, MS Access) do not have the same primitives.',
     trigger: { node_type: 'vulnerability', property_match: { vuln_type: 'sqli' } },
     produces: [{
       edge_type: 'EXPLOITS',
-      source_selector: 'trigger_node',
+      source_selector: 'trigger_node_if_rce_capable_dbms',
       target_selector: 'parent_host',
       confidence: 0.4
     }]

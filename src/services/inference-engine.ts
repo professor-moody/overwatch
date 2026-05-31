@@ -408,12 +408,51 @@ export class InferenceEngine {
       case 'trigger_service':
         return [triggerNodeId];
 
+      case 'trigger_node_if_rce_capable_dbms': {
+        // S3-A2: SQLi -> RCE requires a DBMS that exposes a command/file
+        // primitive (MySQL INTO OUTFILE, MSSQL xp_cmdshell, PostgreSQL COPY
+        // TO PROGRAM). Other backends (SQLite, MS Access, etc.) can still
+        // be SQLi-vulnerable but cannot promote to OS RCE through standard
+        // SQLi techniques. If the parser stamped a recognised dbms or set
+        // rce_capable=true, the trigger node propagates as the source;
+        // otherwise the rule emits nothing.
+        const dbmsRaw = node.dbms ?? node.dbms_type;
+        const dbms = typeof dbmsRaw === 'string' ? dbmsRaw.toLowerCase() : '';
+        const rceCapable = node.rce_capable === true;
+        const knownCapable = /\b(mysql|mssql|microsoft sql server|postgres|postgresql)\b/.test(dbms);
+        return (rceCapable || knownCapable) ? [triggerNodeId] : [];
+      }
+
       case 'parent_host': {
         const hosts: string[] = [];
         this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
           if (attrs.type === 'RUNS') hosts.push(src);
         });
         if (node.type === 'host') hosts.push(triggerNodeId);
+        // S3-A2: for vulnerability triggers, the host is two hops away
+        // (vuln <- VULNERABLE_TO - webapp <- HOSTS - service <- RUNS - host).
+        // Previously this selector fell through to [triggerNodeId] for
+        // vulnerabilities, producing nonsensical vuln->vuln self-edges
+        // that the schema later rejected. Now we walk the chain when the
+        // trigger is a vulnerability, which also fixes
+        // rule-sqli-credential-extraction as a side effect.
+        if (hosts.length === 0 && node.type === 'vulnerability') {
+          const webapps = new Set<string>();
+          this.ctx.graph.forEachInEdge(triggerNodeId, (_edge: string, attrs, src: string) => {
+            if (attrs.type === 'VULNERABLE_TO') webapps.add(src);
+          });
+          const services = new Set<string>();
+          for (const webappId of webapps) {
+            this.ctx.graph.forEachInEdge(webappId, (_edge: string, attrs, src: string) => {
+              if (attrs.type === 'HOSTS') services.add(src);
+            });
+          }
+          for (const serviceId of services) {
+            this.ctx.graph.forEachInEdge(serviceId, (_edge: string, attrs, src: string) => {
+              if (attrs.type === 'RUNS') hosts.push(src);
+            });
+          }
+        }
         return hosts.length > 0 ? hosts : [triggerNodeId];
       }
 

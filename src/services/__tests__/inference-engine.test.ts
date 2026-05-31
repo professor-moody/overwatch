@@ -865,6 +865,82 @@ describe('InferenceEngine', () => {
   });
 
   // =============================================
+  // S3-A2: rule-sqli-to-rce DBMS capability gate
+  // =============================================
+  describe('rule-sqli-to-rce', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-sqli-to-rce',
+      name: 'SQL injection on capable DBMS may enable RCE',
+      description: '',
+      trigger: { node_type: 'vulnerability', property_match: { vuln_type: 'sqli' } },
+      produces: [{
+        edge_type: 'EXPLOITS',
+        source_selector: 'trigger_node_if_rce_capable_dbms',
+        target_selector: 'parent_host',
+        confidence: 0.4,
+      }],
+    };
+
+    const seed = (dbms: string | undefined, rceCapable?: boolean) => {
+      const graph = makeGraph();
+      addNode(graph, 'host-web', { type: 'host', ip: '10.0.0.50', hostname: 'web01' });
+      addNode(graph, 'svc-http', { type: 'service', service_name: 'http', port: 80 });
+      addEdge(graph, 'host-web', 'svc-http', 'RUNS');
+      addNode(graph, 'webapp-app', { type: 'webapp', url: 'http://web01/app' });
+      addEdge(graph, 'svc-http', 'webapp-app', 'HOSTS');
+      const vulnAttrs: Record<string, unknown> = { type: 'vulnerability', vuln_type: 'sqli' };
+      if (dbms !== undefined) vulnAttrs.dbms = dbms;
+      if (rceCapable !== undefined) vulnAttrs.rce_capable = rceCapable;
+      addNode(graph, 'vuln-sqli', vulnAttrs);
+      addEdge(graph, 'webapp-app', 'vuln-sqli', 'VULNERABLE_TO');
+      return graph;
+    };
+
+    it('fires when dbms is MySQL', () => {
+      const graph = seed('MySQL 5.7');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(1);
+      expect(graph.getEdgeAttributes(inferred[0]).type).toBe('EXPLOITS');
+    });
+
+    it('fires when dbms is MSSQL (Microsoft SQL Server variant)', () => {
+      const graph = seed('Microsoft SQL Server 2019');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(1);
+    });
+
+    it('fires when dbms is PostgreSQL', () => {
+      const graph = seed('PostgreSQL 14');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(1);
+    });
+
+    it('does NOT fire when dbms is SQLite', () => {
+      const graph = seed('SQLite 3.40');
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT fire when dbms is unknown / absent', () => {
+      const graph = seed(undefined);
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('fires when rce_capable=true even if dbms is unknown', () => {
+      const graph = seed(undefined, true);
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('vuln-sqli');
+      expect(inferred.length).toBe(1);
+    });
+  });
+
+  // =============================================
   // ACL chain escalation rules
   // =============================================
   describe('ACL chain rules', () => {
