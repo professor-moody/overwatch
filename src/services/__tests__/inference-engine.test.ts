@@ -941,6 +941,83 @@ describe('InferenceEngine', () => {
   });
 
   // =============================================
+  // S3-B4: admin-panel + default-credentials chain rule
+  // =============================================
+  describe('rule-admin-panel-default-creds', () => {
+    const RULE: InferenceRule = {
+      id: 'rule-admin-panel-default-creds',
+      name: 'Admin panel + default credentials available is an objective path',
+      description: '',
+      trigger: { node_type: 'webapp' },
+      produces: [{
+        edge_type: 'PATH_TO_OBJECTIVE',
+        source_selector: 'trigger_node_if_admin_panel_with_default_creds',
+        target_selector: 'nearest_objective',
+        confidence: 0.7,
+      }],
+    };
+
+    const seed = (webappAttrs: Record<string, unknown>, credAttrs: Record<string, unknown> | null) => {
+      const graph = makeGraph();
+      addNode(graph, 'obj', { type: 'objective', objective_description: 'Get admin' });
+      addNode(graph, 'webapp-1', { type: 'webapp', ...webappAttrs });
+      if (credAttrs) addNode(graph, 'cred-1', { type: 'credential', ...credAttrs });
+      return graph;
+    };
+
+    it('fires when URL contains /wp-admin and a usable default-guess cred exists', () => {
+      const graph = seed(
+        { url: 'http://target.local/wp-admin', cms_type: 'wordpress' },
+        { cred_is_default_guess: true, cred_material_kind: 'plaintext_password', cred_usable_for_auth: true, cms_type: 'wordpress' },
+      );
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('webapp-1');
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('PATH_TO_OBJECTIVE');
+      expect(graph.source(inferred[0])).toBe('webapp-1');
+      expect(graph.target(inferred[0])).toBe('obj');
+    });
+
+    it('fires when admin_interface=true flag is set even without admin URL marker', () => {
+      const graph = seed(
+        { url: 'http://target.local/somepath', admin_interface: true },
+        { cred_is_default_guess: true, cred_material_kind: 'plaintext_password', cred_usable_for_auth: true },
+      );
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('webapp-1');
+      expect(inferred.length).toBe(1);
+    });
+
+    it('does NOT fire when URL has admin marker but no default-cred candidate exists', () => {
+      const graph = seed({ url: 'http://target.local/admin' }, null);
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('webapp-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT fire when default-cred exists but URL has no admin marker', () => {
+      const graph = seed(
+        { url: 'http://target.local/products' },
+        { cred_is_default_guess: true, cred_material_kind: 'plaintext_password', cred_usable_for_auth: true },
+      );
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('webapp-1');
+      expect(inferred.length).toBe(0);
+    });
+
+    it('does NOT fire when webapp advertises a cms_type but no cred matches that cms', () => {
+      const graph = seed(
+        { url: 'http://target.local/admin', cms_type: 'wordpress' },
+        { cred_is_default_guess: true, cred_material_kind: 'plaintext_password', cred_usable_for_auth: true, cms_type: 'joomla' },
+      );
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('webapp-1');
+      expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
   // ACL chain escalation rules
   // =============================================
   describe('ACL chain rules', () => {

@@ -135,7 +135,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   VALID_FOR_APP: { source: ['credential'], target: ['idp_application'] },
   VALID_FOR_IDP_PRINCIPAL: { source: ['credential'], target: ['idp_principal'] },
   // Objective
-  PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource'], target: ['objective'] },
+  PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource', 'webapp'], target: ['objective'] },
   // RELATED is intentionally unconstrained
 };
 

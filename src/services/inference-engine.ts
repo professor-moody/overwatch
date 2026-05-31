@@ -408,6 +408,36 @@ export class InferenceEngine {
       case 'trigger_service':
         return [triggerNodeId];
 
+      case 'trigger_node_if_admin_panel_with_default_creds': {
+        // S3-B4: gate for rule-admin-panel-default-creds. The webapp is the
+        // SOURCE of a PATH_TO_OBJECTIVE edge only when:
+        //   1. its URL or label contains an admin-panel-style path marker
+        //      (/admin, /wp-admin, /manage, /console, /administrator), OR
+        //      the webapp itself carries admin_interface=true, AND
+        //   2. there is at least one usable default-credential candidate
+        //      in the graph (either a generic default-guess or one keyed
+        //      to a CMS type the webapp actually advertises).
+        const url = String(node.url || node.label || '').toLowerCase();
+        const adminMarker = /\/(?:admin(?:istrator)?|wp-admin|wp-login|manage|console|phpmyadmin|webmail|panel)(?:[\/?#]|$)/.test(url);
+        const flagged = node.admin_interface === true;
+        if (!adminMarker && !flagged) return [];
+        // Verify a default-cred candidate exists. cms_type match is preferred
+        // when the webapp advertises one; otherwise any default-guess cred
+        // counts.
+        const webappCms = typeof node.cms_type === 'string' ? node.cms_type.toLowerCase() : '';
+        const creds = this.getNodesByType('credential')
+          .filter(c => c.cred_is_default_guess === true && isCredentialUsableForAuth(c));
+        if (creds.length === 0) return [];
+        if (webappCms) {
+          const matchesCms = creds.some(c => {
+            const credCms = typeof c.cms_type === 'string' ? c.cms_type.toLowerCase() : '';
+            return credCms === webappCms;
+          });
+          if (!matchesCms) return [];
+        }
+        return [triggerNodeId];
+      }
+
       case 'trigger_node_if_rce_capable_dbms': {
         // S3-A2: SQLi -> RCE requires a DBMS that exposes a command/file
         // primitive (MySQL INTO OUTFILE, MSSQL xp_cmdshell, PostgreSQL COPY

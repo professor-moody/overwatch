@@ -313,6 +313,26 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }]
   },
   {
+    // S3-B4: chain rule. rule-default-credentials and rule-cms-exploitation
+    // surface candidate creds, but neither escalates the combination
+    // "admin panel discovered AND default creds known for this stack" into
+    // a PATH_TO_OBJECTIVE the frontier can score. This rule fires only when
+    // the webapp's URL or admin_interface flag indicates an admin surface
+    // AND a default-cred candidate exists in the graph (CMS-matched when
+    // the webapp advertises a cms_type, else any usable default-guess
+    // credential). The combination is high-value for web engagements.
+    id: 'rule-admin-panel-default-creds',
+    name: 'Admin panel + default credentials available is an objective path',
+    description: 'A web application with an admin-style URL or admin_interface=true and at least one usable default credential candidate is a likely path to objective.',
+    trigger: { node_type: 'webapp' },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node_if_admin_panel_with_default_creds',
+      target_selector: 'nearest_objective',
+      confidence: 0.7
+    }]
+  },
+  {
     // S3-A2 (F1-11): the rule used to fire on ANY SQLi vuln, producing
     // an EXPLOITS edge to the parent host regardless of whether the
     // back-end DBMS even supports an OS-RCE primitive. SQLite or MS Access
