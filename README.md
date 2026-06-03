@@ -13,6 +13,13 @@ npm run build
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
+Pick an engagement template (`ctf.json` is the friendliest first run — no
+OPSEC constraints, auto-approves everything):
+
+```bash
+cp engagement-templates/ctf.json engagement.json
+```
+
 Create local Claude config files from the examples:
 
 ```bash
@@ -46,3 +53,7 @@ Then run `claude`. `.mcp.json` starts Overwatch; `.claude/settings.json` enables
 ## Disclaimer
 
 This tool is designed for authorized security testing only. Do not run against production systems without explicit written authorization.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

@@ -43,10 +43,15 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install && npm run build
-cp engagement-templates/internal-pentest.json engagement.json
+cp engagement-templates/ctf.json engagement.json
 # edit scope.cidrs and scope.domains, then add to ~/.claude/settings.json
 claude
 ```
+
+`ctf.json` is the friendliest first-run template — no OPSEC constraints,
+auto-approves everything. For real engagements switch to
+`internal-pentest.json` or `external-pentest.json` — see
+[Configuration](configuration.md).
 
 Full walk-through with template list, dashboard tour, and "what to say to the AI first" prompts: [Getting Started](getting-started.md). Or jump straight to a [lab workflow](playbook/index.md).
 

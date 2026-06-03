@@ -73,3 +73,8 @@ Use conventional commits:
 - Include a clear description of what changed and why
 - Reference any related issues
 - Ensure CI passes (tests + build)
+
+## License
+
+Overwatch is licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+Submitted contributions are accepted under the same license unless explicitly noted otherwise (see the Contribution clause in the LICENSE file).

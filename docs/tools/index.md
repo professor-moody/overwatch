@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 65 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -70,7 +70,6 @@ Overwatch exposes 60+ MCP tools organized by function. Each tool uses Zod schema
 | [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | No |
 | [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | No |
 | [`generate_report`](generate-report.md) | Full pentest report with findings, narrative, evidence, remediation | Yes |
-| [`ingest_azurehound`](ingest-azurehound.md) | Import AzureHound / ROADtools JSON collections | No |
 | [`register_mock_service`](register-mock-service.md) | Register an operator-controlled decoy / listener / relay as a graph node | No |
 
 ## Tool Categories
