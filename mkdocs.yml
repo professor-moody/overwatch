@@ -62,6 +62,7 @@ nav:
   - Home: index.md
   - Getting Started:
     - Installation: getting-started.md
+    - Prerequisites: prerequisites.md
     - Claude Code Hooks: claude-hooks.md
     - Configuration: configuration.md
     - Dashboard: dashboard.md

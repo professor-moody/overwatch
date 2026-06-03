@@ -20,6 +20,11 @@ npm run build
 
 Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
 
+You will also need the offensive tools you plan to use (nmap, nxc, certipy,
+sqlmap, etc.) installed on PATH. See [Prerequisites](prerequisites.md) for
+grouped install commands by engagement type — install only the group(s) you
+need, then use the `check_tools` MCP tool as a preflight.
+
 ### 2. Pick a template
 
 Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
