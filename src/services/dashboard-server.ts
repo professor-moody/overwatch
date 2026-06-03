@@ -458,18 +458,26 @@ export class DashboardServer {
   private resolveDashboardDir(): string {
     if (this.dashboardDir) return this.dashboardDir;
 
-    // dashboard-next (React + Vite build) is the only dashboard.
-    // dist/services/ → dist/dashboard-next/
-    const nextDistPath = join(__dirname, '..', 'dashboard-next');
-    if (existsSync(join(nextDistPath, 'index.html'))) {
-      this.dashboardDir = nextDistPath;
-      return nextDistPath;
-    }
-    // Fallback: top-level dist output (e.g. when running tsc only)
-    const nextSrcPath = join(__dirname, '..', '..', 'dist', 'dashboard-next');
-    if (existsSync(join(nextSrcPath, 'index.html'))) {
-      this.dashboardDir = nextSrcPath;
-      return nextSrcPath;
+    // The dashboard-next (React + Vite) BUILD always has an `assets/`
+    // subdirectory; the source tree does not. We use that as the
+    // "is-this-a-built-bundle" marker so that demos running via
+    // `npx tsx` (where __dirname is src/services/) don't accidentally
+    // serve the source `src/dashboard-next/index.html` — which references
+    // `/src/main.tsx` and renders blank because no Vite is serving it.
+
+    const candidates = [
+      // tsx / source-execution case: __dirname is src/services/, so
+      // src/services/../../dist/dashboard-next is the project's built bundle.
+      join(__dirname, '..', '..', 'dist', 'dashboard-next'),
+      // Compiled-services case: __dirname is dist/services/, sibling dir
+      // is dist/dashboard-next/.
+      join(__dirname, '..', 'dashboard-next'),
+    ];
+    for (const dir of candidates) {
+      if (existsSync(join(dir, 'index.html')) && existsSync(join(dir, 'assets'))) {
+        this.dashboardDir = dir;
+        return dir;
+      }
     }
 
     throw new Error(
