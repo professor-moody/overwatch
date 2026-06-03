@@ -129,6 +129,40 @@ function ssrfReachesImds(host: CrossTierInferenceHost, agentId: string): number 
 // OIDC_FEDERATION_PIVOT
 // =============================================
 
+/**
+ * S4-A2: match a captured token's `sub` claim against an idp_application's
+ * `sub_claim_pattern`. Pattern semantics:
+ *   - Literal `*` matches one or more characters (greedy `.+`).
+ *   - All other regex metacharacters in the pattern are escaped.
+ *   - Anchored at both ends.
+ *
+ * Examples:
+ *   pattern `repo:acme/webapp:ref:refs/heads/main` + subject same → true
+ *   pattern `repo:acme/*` + subject `repo:acme/api`              → true
+ *   pattern `repo:acme/*` + subject `repo:other/api`             → false
+ *   pattern `repo:*`      + any non-empty subject                → true
+ *                          (ci_trust_wildcard flags this app separately)
+ *
+ * Callers should treat an undefined pattern as "no constraint" and skip
+ * the check entirely (GitLab and CircleCI idp_application nodes lack a
+ * stored sub_claim_pattern because those providers do not expose it in
+ * the trust policy the way GitHub Actions does).
+ *
+ * Exported for unit testing.
+ */
+export function matchesSubjectPattern(credSubject: string | undefined, pattern: string | undefined): boolean {
+  if (!pattern) return true;
+  if (!credSubject) return false;
+  const escaped = pattern
+    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')
+    .replace(/\*/g, '.+');
+  try {
+    return new RegExp(`^${escaped}$`).test(credSubject);
+  } catch {
+    return false;
+  }
+}
+
 function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): number {
   const now = new Date().toISOString();
   let added = 0;
@@ -143,6 +177,11 @@ function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): num
     const aud = app.attrs.audience as string | undefined;
     const clientId = app.attrs.client_id as string | undefined;
     if (!aud && !clientId) continue;
+    // S4-A2: subject pattern stamped on the idp_application by parsers
+    // that read it from the cloud trust policy (today: github-actions-oidc).
+    // Undefined means the rule does not enforce a subject constraint —
+    // matches the case where the provider does not expose a pattern.
+    const subPattern = app.attrs.sub_claim_pattern as string | undefined;
     for (const cred of nodesByType(host.ctx, 'credential')) {
       const credAud = cred.attrs.cred_audience as string | undefined;
       if (!credAud) continue;
@@ -162,6 +201,13 @@ function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): num
       if (isCredentialStaleOrExpired(cred.attrs)) continue;
       if (isCredentialMfaBlocked(cred.attrs)) continue;
       if (!isCredentialUsableForAuth(cred.attrs)) continue;
+      // S4-A2: subject-claim validation. Previously the rule fired for any
+      // audience-matching captured token, so a GHA OIDC app with
+      // sub_claim_pattern: "repo:*" emitted ASSUMES_ROLE for tokens from
+      // ANY repo. Now we require the captured sub claim to match the
+      // pattern (when the app has one stamped).
+      const credSubject = cred.attrs.cred_subject as string | undefined;
+      if (subPattern && !matchesSubjectPattern(credSubject, subPattern)) continue;
       // Emit credential → ASSUMES_ROLE → cloud_identity for each token target.
       for (const t of tokenTargets) {
         const result = host.addEdge(cred.id, t.id, {

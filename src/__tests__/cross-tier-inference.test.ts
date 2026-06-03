@@ -179,6 +179,87 @@ describe('OIDC_FEDERATION_PIVOT', () => {
     const r = runCrossTierInference(host);
     expect(r.oidc_federation_pivot).toBe(0);
   });
+
+  // S4-A2: subject-pattern validation
+  const seedSubjectFixture = (subPattern: string | undefined, credSubject: string | undefined) => {
+    const graph = makeGraph();
+    addNode(graph, 'idp-app', {
+      type: 'idp_application',
+      client_id: 'app-1',
+      audience: 'arn:aws:iam::123:role/PowerUser',
+      ...(subPattern !== undefined ? { sub_claim_pattern: subPattern } : {}),
+    });
+    addNode(graph, 'cloud-id', { type: 'cloud_identity', principal_type: 'role', arn: 'arn:aws:iam::123:role/PowerUser' });
+    addEdge(graph, 'idp-app', 'cloud-id', 'ISSUES_TOKENS_FOR');
+    addNode(graph, 'cred-token', {
+      type: 'credential',
+      cred_material_kind: 'oidc_access_token',
+      cred_audience: 'arn:aws:iam::123:role/PowerUser',
+      ...(credSubject !== undefined ? { cred_subject: credSubject } : {}),
+    });
+    return graph;
+  };
+
+  it('S4-A2 fires when token subject matches the exact sub_claim_pattern', () => {
+    const graph = seedSubjectFixture('repo:acme/webapp:ref:refs/heads/main', 'repo:acme/webapp:ref:refs/heads/main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(1);
+  });
+
+  it('S4-A2 fires when token subject matches a `repo:owner/*` wildcard pattern', () => {
+    const graph = seedSubjectFixture('repo:acme/*', 'repo:acme/webapp:ref:refs/heads/main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(1);
+  });
+
+  it('S4-A2 fires when token subject matches a `repo:owner/repo:*` per-repo wildcard pattern', () => {
+    const graph = seedSubjectFixture('repo:acme/webapp:*', 'repo:acme/webapp:ref:refs/heads/main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(1);
+  });
+
+  it('S4-A2 does NOT fire when token subject mismatches the pattern', () => {
+    const graph = seedSubjectFixture('repo:acme/api:*', 'repo:acme/webapp:ref:refs/heads/main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(0);
+  });
+
+  it('S4-A2 still fires when no sub_claim_pattern is stamped (GitLab/CircleCI case)', () => {
+    const graph = seedSubjectFixture(undefined, 'project_path:acme/webapp:ref_type:branch:ref:main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(1);
+  });
+
+  it('S4-A2 fires for any non-empty subject under `repo:*` (intentional; ci_trust_wildcard separately flags the over-broad trust)', () => {
+    const graph = seedSubjectFixture('repo:*', 'repo:random/repo:ref:refs/heads/main');
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(1);
+  });
+
+  it('S4-A2 does NOT fire when pattern is stamped but token has no cred_subject', () => {
+    const graph = seedSubjectFixture('repo:acme/webapp:*', undefined);
+    const host = buildHost(graph, makeConfig());
+    expect(runCrossTierInference(host).oidc_federation_pivot).toBe(0);
+  });
+});
+
+describe('matchesSubjectPattern (S4-A2 helper unit test)', () => {
+  // Exported helper unit-tested directly so the regex semantics stay pinned.
+  it('treats undefined pattern as no constraint', async () => {
+    const { matchesSubjectPattern } = await import('../services/cross-tier-inference.js');
+    expect(matchesSubjectPattern('anything', undefined)).toBe(true);
+    expect(matchesSubjectPattern(undefined, undefined)).toBe(true);
+  });
+  it('returns false when pattern is set and subject is missing', async () => {
+    const { matchesSubjectPattern } = await import('../services/cross-tier-inference.js');
+    expect(matchesSubjectPattern(undefined, 'repo:acme/webapp:*')).toBe(false);
+  });
+  it('escapes regex metacharacters in the pattern body', async () => {
+    const { matchesSubjectPattern } = await import('../services/cross-tier-inference.js');
+    // `.` is a regex metachar — must be escaped so it does not match arbitrary chars.
+    expect(matchesSubjectPattern('repoXacme/webapp:ref:x', 'repo.acme/webapp:*')).toBe(false);
+    expect(matchesSubjectPattern('repo.acme/webapp:ref:x', 'repo.acme/webapp:*')).toBe(true);
+  });
 });
 
 // =============================================

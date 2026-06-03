@@ -251,6 +251,12 @@ export function parseJwtTool(output: string, agentId: string = 'jwt-tool-parser'
       cred_token_expires_at: exp,
       cred_evidence_kind: 'capture',
       cred_usable_for_auth: true,
+      // S4-A2: surface the captured `sub` claim on the credential so the
+      // OIDC federation pivot rule in cross-tier-inference can validate it
+      // against the idp_application's sub_claim_pattern. Without this the
+      // pivot fired on audience match alone and a wildcard pattern like
+      // `repo:*` produced ASSUMES_ROLE for any token.
+      ...(subject ? { cred_subject: subject } : {}),
       discovered_at: now,
       confidence: 1.0,
     });
