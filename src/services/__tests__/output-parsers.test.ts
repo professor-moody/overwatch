@@ -696,6 +696,96 @@ describe('Output Parsers', () => {
       expect((user as Record<string, unknown>).account_restricted).toBeUndefined();
       expect((host as Record<string, unknown>).lockout_observed).toBeUndefined();
     });
+
+    // S4-A1: non-SMB protocol dispatch
+    describe('multi-protocol dispatch', () => {
+      it('parses WINRM success with Pwn3d! as ADMIN_TO + protocol-tagged VALID_ON', () => {
+        const output = [
+          'WINRM       10.3.10.20      5985   WS01             [*] Windows Server 2019 (name:WS01) (domain:north.local)',
+          'WINRM       10.3.10.20      5985   WS01             [+] north.local\\admin:P@ssw0rd! (Pwn3d!)',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.20')!;
+        const service = finding.nodes.find(n => n.type === 'service' && (n as Record<string, unknown>).service_name === 'winrm');
+        expect(service).toBeDefined();
+        expect((service as Record<string, unknown>).port).toBe(5985);
+        const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO' && e.target === host.id);
+        expect(adminEdges.length).toBe(1);
+        const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON' && (e.properties as Record<string, unknown>).tested_service === 'winrm');
+        expect(validOnEdges.length).toBeGreaterThanOrEqual(1);
+        const cred = finding.nodes.find(n => n.type === 'credential' && (n as Record<string, unknown>).cred_user === 'admin')!;
+        expect((cred as Record<string, unknown>).cred_material_kind).toBe('plaintext_password');
+        expect((cred as Record<string, unknown>).cred_value).toBe('P@ssw0rd!');
+      });
+
+      it('parses LDAP success without Pwn3d! as VALID_ON (no ADMIN_TO)', () => {
+        const output = [
+          'LDAP        10.3.10.5       389    DC01             [*] (name:DC01) (domain:north.local)',
+          'LDAP        10.3.10.5       389    DC01             [+] north.local\\jdoe:Welcome1',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.5')!;
+        const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON' && (e.properties as Record<string, unknown>).tested_service === 'ldap');
+        expect(validOnEdges.length).toBeGreaterThanOrEqual(1);
+        const adminEdges = finding.edges.filter(e => e.properties.type === 'ADMIN_TO' && e.target === host.id);
+        expect(adminEdges.length).toBe(0);
+      });
+
+      it('parses SSH success with user@host:pass shape and no domain prefix', () => {
+        const output = [
+          'SSH         10.3.10.30      22     LINUX01          [*] SSH-2.0-OpenSSH_8.4',
+          'SSH         10.3.10.30      22     LINUX01          [+] root@10.3.10.30:toor',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const cred = finding.nodes.find(n => n.type === 'credential' && (n as Record<string, unknown>).cred_user === 'root');
+        expect(cred).toBeDefined();
+        expect((cred as Record<string, unknown>).cred_value).toBe('toor');
+        const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON' && (e.properties as Record<string, unknown>).tested_service === 'ssh');
+        expect(validOnEdges.length).toBeGreaterThanOrEqual(1);
+      });
+
+      it('parses RDP success as VALID_ON', () => {
+        const output = [
+          'RDP         10.3.10.40      3389   WS02             [+] north.local\\bob:Summer2026!',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const validOnEdges = finding.edges.filter(e => e.properties.type === 'VALID_ON' && (e.properties as Record<string, unknown>).tested_service === 'rdp');
+        expect(validOnEdges.length).toBeGreaterThanOrEqual(1);
+      });
+
+      it('extends lockout differentiation to WINRM failures', () => {
+        const output = [
+          'WINRM       10.3.10.20      5985   WS01             [-] north.local\\jdoe:wrongpw STATUS_ACCOUNT_LOCKED_OUT',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.20')!;
+        expect((host as Record<string, unknown>).lockout_observed).toBe(true);
+        const victims = (host as Record<string, unknown>).lockout_victims as string[];
+        expect(victims).toContain('jdoe');
+        const user = finding.nodes.find(n => n.type === 'user' && (n as Record<string, unknown>).username === 'jdoe')!;
+        expect((user as Record<string, unknown>).locked_out).toBe(true);
+      });
+
+      it('extends password_expired differentiation to LDAP failures', () => {
+        const output = [
+          'LDAP        10.3.10.5       389    DC01             [-] north.local\\stale:Welcome1 STATUS_PASSWORD_EXPIRED',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const user = finding.nodes.find(n => n.type === 'user' && (n as Record<string, unknown>).username === 'stale')!;
+        expect((user as Record<string, unknown>).password_expired).toBe(true);
+      });
+
+      it('does not stamp lockout on plain STATUS_LOGON_FAILURE for non-SMB protocols', () => {
+        const output = [
+          'WINRM       10.3.10.20      5985   WS01             [-] north.local\\jdoe:wrongpw STATUS_LOGON_FAILURE',
+        ].join('\n');
+        const finding = parseNxc(output);
+        const host = finding.nodes.find(n => n.type === 'host' && n.ip === '10.3.10.20')!;
+        expect((host as Record<string, unknown>).lockout_observed).toBeUndefined();
+        const user = finding.nodes.find(n => n.type === 'user' && (n as Record<string, unknown>).username === 'jdoe')!;
+        expect((user as Record<string, unknown>).locked_out).toBeUndefined();
+      });
+    });
   });
 
   describe('parseCertipy', () => {

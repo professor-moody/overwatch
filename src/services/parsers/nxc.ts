@@ -116,8 +116,182 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
 
   // Broad prefix regex for all SMB lines: SMB  IP/IPv6/hostname  PORT  HOSTNAME  <rest>
   const smbLineRe = /^SMB\s+((?:\d+\.){3}\d+|\[?[a-fA-F0-9:]+\]?|[\w.-]+)\s+(\d+)\s+(\S+)\s+(.*)/i;
+  // S4-A1: multi-protocol dispatch. Same line shape as SMB; handles the
+  // auth-success / auth-failure / lockout paths only — the SMB-specific
+  // module behaviors (shares, spider, SAM/LSA dumps, NTDS, signing) are
+  // not portable to non-SMB protocols and stay in the SMB block.
+  const multiProtoLineRe = /^(WINRM|LDAP|RDP|SSH|FTP|VNC|MSSQL)\s+((?:\d+\.){3}\d+|\[?[a-fA-F0-9:]+\]?|[\w.-]+)\s+(\d+)\s+(\S+)\s+(.*)/i;
+
+  function ensureServiceContext(ip: string, port: number, protocol: string): { hostNodeId: string; serviceNodeId: string } {
+    const resolvedHostId = hostId(ip);
+    const serviceNodeId = serviceId(ip, port);
+    if (!seenNodes.has(resolvedHostId)) {
+      const meta = hostMeta.get(ip);
+      nodes.push({
+        id: resolvedHostId,
+        type: 'host',
+        label: meta?.hostname || ip,
+        ip,
+        alive: true,
+        hostname: meta?.hostname,
+        domain_name: meta?.domain,
+        os: meta?.os,
+      });
+      seenNodes.add(resolvedHostId);
+    }
+    if (!seenNodes.has(serviceNodeId)) {
+      nodes.push({
+        id: serviceNodeId,
+        type: 'service',
+        label: `${protocol}/${port}`,
+        port,
+        protocol: 'tcp',
+        service_name: protocol,
+      });
+      seenNodes.add(serviceNodeId);
+    }
+    addEdgeOnce(resolvedHostId, serviceNodeId, 'RUNS', 1.0);
+    return { hostNodeId: resolvedHostId, serviceNodeId };
+  }
+
+  /**
+   * SSH and FTP often emit `user@host:pass` or `user:pass` without a
+   * domain prefix. parseDomainUserSecret requires a backslash. This
+   * helper accepts either shape and returns a normalized result.
+   */
+  function parseProtoUserSecret(message: string, protocol: string): { rawDomain: string | undefined; username: string; secret?: string } | null {
+    const withDomain = parseDomainUserSecret(message);
+    if (withDomain) return withDomain;
+    if (protocol === 'ssh' || protocol === 'ftp' || protocol === 'vnc' || protocol === 'mssql') {
+      // user@host:secret OR user:secret
+      const atForm = message.match(/^\s*([^@\s:()]+)@[^\s:]+:([^\s)]+)/);
+      if (atForm) return { rawDomain: undefined, username: atForm[1], secret: atForm[2] };
+      const plain = message.match(/^\s*([^@\s:()\\]+):([^\s)]+)/);
+      if (plain) return { rawDomain: undefined, username: plain[1], secret: plain[2] };
+    }
+    return null;
+  }
 
   for (const line of lines) {
+    // --- S4-A1: non-SMB protocol dispatch ---
+    const protoLine = line.match(multiProtoLineRe);
+    if (protoLine) {
+      const [, rawProto, ip, portStr, _hostname, rest] = protoLine;
+      const protocol = rawProto.toLowerCase();
+      const port = parseInt(portStr, 10);
+      // MSSQL has its own bespoke linked-server branch later in the file;
+      // skip it here so we don't double-handle.
+      if (protocol === 'mssql') {
+        // Let the MSSQL-specific block below own this line.
+      } else {
+        const { hostNodeId } = ensureServiceContext(ip, port, protocol);
+
+        // [*] info line — capture hostname/domain when present, same as SMB.
+        const protoInfo = rest.match(/^\[\*\]\s*(.*)/);
+        if (protoInfo) {
+          const infoMsg = protoInfo[1];
+          if (!hostMeta.has(ip)) hostMeta.set(ip, {});
+          const meta = hostMeta.get(ip)!;
+          const nameMatch = infoMsg.match(/\(name:([^)]+)\)/i);
+          if (nameMatch) meta.hostname = nameMatch[1].trim();
+          const domainMatch = infoMsg.match(/\(domain:([^)]+)\)/i);
+          if (domainMatch) meta.domain = resolveDomainName(domainMatch[1].trim(), context?.domain_aliases);
+          // Refresh node display from new metadata.
+          const hostNode = nodes.find(n => n.id === hostNodeId);
+          if (hostNode) {
+            if (meta.hostname) { (hostNode as Record<string, unknown>).hostname = meta.hostname; hostNode.label = meta.hostname; }
+            if (meta.domain) (hostNode as Record<string, unknown>).domain_name = meta.domain;
+          }
+          continue;
+        }
+
+        // [+] / [-] auth outcome lines.
+        const status = rest.match(/^\[([+-])\]\s*(.*)/);
+        if (status) {
+          const [, sign, message] = status;
+          if (sign === '+') {
+            const parsed = parseProtoUserSecret(message, protocol);
+            if (parsed) {
+              const credDomain = parsed.rawDomain
+                ? resolveDomainName(parsed.rawDomain, context?.domain_aliases)
+                : hostMeta.get(ip)?.domain;
+              const username = parsed.username;
+              const secret = parsed.secret;
+              const resolvedUserId = addUserNode(username, credDomain);
+
+              addEdgeOnce(resolvedUserId, hostNodeId, 'VALID_ON', secret ? 1.0 : 0.7, { tested_service: protocol });
+
+              // (Pwn3d!) marker — present on WINRM and RDP per NetExec; absent on SSH/FTP/LDAP.
+              if (message.includes('Pwn3d!')) {
+                const userNode = nodes.find(n => n.id === resolvedUserId);
+                if (userNode) (userNode as Record<string, unknown>).privileged = true;
+                addEdgeOnce(resolvedUserId, hostNodeId, 'ADMIN_TO', 1.0);
+              }
+
+              if (secret) {
+                const isNtlm = /^[a-fA-F0-9]{32}$/.test(secret);
+                const credKind = isNtlm ? 'ntlm_hash' : 'plaintext_password';
+                const credNodeId = credentialId(credKind, secret, username, credDomain);
+                if (!seenNodes.has(credNodeId)) {
+                  nodes.push({
+                    id: credNodeId,
+                    type: 'credential',
+                    label: isNtlm ? `NTLM:${username}` : `pw:${username}`,
+                    cred_type: isNtlm ? 'ntlm' : 'plaintext',
+                    cred_material_kind: credKind,
+                    cred_usable_for_auth: true,
+                    cred_evidence_kind: 'spray_success',
+                    cred_value: secret,
+                    cred_user: username,
+                    cred_domain: credDomain,
+                  });
+                  seenNodes.add(credNodeId);
+                }
+                addEdgeOnce(resolvedUserId, credNodeId, 'OWNS_CRED', 1.0);
+                addEdgeOnce(credNodeId, hostNodeId, 'VALID_ON', 1.0, { tested_service: protocol });
+              }
+            }
+          } else {
+            // [-] failure path — extend Sprint 1 F0-3 status-code differentiation
+            // to all protocols, not just SMB.
+            const credMatch = message.match(/([^\\]+)\\([^\s:]+)/) || message.match(/^([^\s@:]+)[@: ]/);
+            if (credMatch) {
+              const rawCredDomain = credMatch.length === 3 ? credMatch[1] : undefined;
+              const username = credMatch.length === 3 ? credMatch[2] : credMatch[1];
+              const credDomain = rawCredDomain
+                ? resolveDomainName(rawCredDomain, context?.domain_aliases)
+                : hostMeta.get(ip)?.domain;
+              if (username && username !== '') {
+                const resolvedUserId = addUserNode(username, credDomain);
+                addEdgeOnce(resolvedUserId, hostNodeId, 'TESTED_CRED', 0.0, { tested_service: protocol });
+                const userNode = nodes.find(n => n.id === resolvedUserId);
+
+                if (/STATUS_ACCOUNT_LOCKED_OUT/i.test(message)) {
+                  const hostNode = nodes.find(n => n.id === hostNodeId);
+                  if (hostNode) {
+                    (hostNode as Record<string, unknown>).lockout_observed = true;
+                    const victims = ((hostNode as Record<string, unknown>).lockout_victims as string[] | undefined) || [];
+                    if (!victims.includes(username)) victims.push(username);
+                    (hostNode as Record<string, unknown>).lockout_victims = victims;
+                  }
+                  if (userNode) (userNode as Record<string, unknown>).locked_out = true;
+                } else if (/STATUS_PASSWORD_EXPIRED/i.test(message)) {
+                  if (userNode) (userNode as Record<string, unknown>).password_expired = true;
+                } else if (/STATUS_ACCOUNT_RESTRICTION/i.test(message) || /STATUS_LOGON_TYPE_NOT_GRANTED/i.test(message)) {
+                  if (userNode) (userNode as Record<string, unknown>).account_restricted = true;
+                }
+              }
+            }
+          }
+          continue;
+        }
+
+        // Unrecognized non-SMB line under a recognized protocol; skip rather
+        // than fall through into the SMB-specific code path below.
+        continue;
+      }
+    }
+
     const smbLine = line.match(smbLineRe);
     if (!smbLine) {
       userTableIp = undefined;
