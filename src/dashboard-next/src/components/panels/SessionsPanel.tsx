@@ -63,6 +63,7 @@ export function SessionsPanel() {
   const [copied, setCopied] = useState<string | null>(null);
   const [buffer, setBuffer] = useState<SessionBufferResponse | null>(null);
   const [bufferQuery, setBufferQuery] = useState('');
+  const [attachError, setAttachError] = useState<string | null>(null);
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
   const autoAttachAttemptedRef = useRef<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,6 +113,7 @@ export function SessionsPanel() {
     if (terminalsRef.current.has(sessionId)) {
       setActiveTab(sessionId);
       setSelectedSessionId(sessionId);
+      setAttachError(null);
       return;
     }
 
@@ -159,6 +161,7 @@ export function SessionsPanel() {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      setAttachError(null);
       term.write('\r\n\x1b[32mConnected to session ' + sessionId.slice(0, 8) + '\x1b[0m\r\n');
     };
 
@@ -187,6 +190,7 @@ export function SessionsPanel() {
     };
 
     ws.onerror = () => {
+      setAttachError(`Terminal WebSocket failed for ${sessionId.slice(0, 8)}.`);
       term.write('\r\n\x1b[31mWebSocket error\x1b[0m\r\n');
     };
 
@@ -208,6 +212,12 @@ export function SessionsPanel() {
     setActiveTab(sessionId);
     setSelectedSessionId(sessionId);
   }, [refresh]);
+
+  const attachSession = useCallback((sessionId: string) => {
+    attach(sessionId).catch(error => {
+      setAttachError(error instanceof Error ? error.message : String(error));
+    });
+  }, [attach]);
 
   const detach = useCallback((sessionId: string) => {
     const entry = terminalsRef.current.get(sessionId);
@@ -266,8 +276,9 @@ export function SessionsPanel() {
     if (autoAttachAttemptedRef.current.has(selectedSession.id)) return;
 
     autoAttachAttemptedRef.current.add(selectedSession.id);
-    attach(selectedSession.id).catch(() => {
+    attach(selectedSession.id).catch(error => {
       autoAttachAttemptedRef.current.delete(selectedSession.id);
+      setAttachError(error instanceof Error ? error.message : String(error));
     });
   }, [attach, attachedIds, selectedSession?.id, selectedSession?.state]);
 
@@ -340,7 +351,7 @@ export function SessionsPanel() {
       {sessions.length === 0 ? (
         <EmptyState message="No sessions. Use open_session to create one." />
       ) : (
-        <div className="grid grid-cols-[minmax(320px,380px)_1fr] gap-4 flex-1 min-h-0">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(300px,340px)_minmax(420px,1fr)_minmax(320px,380px)] gap-4 flex-1 min-h-0">
           <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
             <div className="grid grid-cols-3 border-b border-border text-center text-xs">
               <SessionStat label="Live" value={connected.length} tone="success" />
@@ -361,7 +372,7 @@ export function SessionsPanel() {
                       selected={selectedSession?.id === session.id}
                       attached={attachedIds.includes(session.id)}
                       onSelect={() => setSelectedSessionId(session.id)}
-                      onAttach={() => attach(session.id)}
+                      onAttach={() => attachSession(session.id)}
                       onDetach={() => detach(session.id)}
                     />
                   ))}
@@ -371,9 +382,55 @@ export function SessionsPanel() {
             </div>
           </PanelSection>
 
-          <div className="min-w-0 min-h-0 flex flex-col gap-3">
-            {selectedSession && (
-              <PanelSection className="p-3">
+          <PanelSection className="p-0 min-h-[420px] xl:min-h-0 overflow-hidden flex flex-col">
+            <div className="flex-shrink-0 flex items-center justify-between border-b border-border px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-foreground">Terminal</div>
+                <div className="text-[10px] text-muted-foreground truncate">
+                  {activeTab ? sessionTitle(sessions.find(s => s.id === activeTab) || selectedSession || sessions[0]) : 'No terminal attached'}
+                </div>
+              </div>
+              {selectedSession?.state === 'connected' && (
+                attachedIds.includes(selectedSession.id) ? (
+                  <ActionButton onClick={() => detach(selectedSession.id)} variant="danger" size="xs">Detach</ActionButton>
+                ) : (
+                  <ActionButton onClick={() => attachSession(selectedSession.id)} variant="success" size="xs">Attach</ActionButton>
+                )
+              )}
+            </div>
+            {attachedIds.length > 0 ? (
+              <>
+                <div className="flex-shrink-0 flex gap-0.5 border-b border-border px-2 pt-2 overflow-x-auto">
+                  {attachedIds.map(id => {
+                    const sess = sessions.find(s => s.id === id);
+                    return (
+                      <button key={id} onClick={() => { setActiveTab(id); setSelectedSessionId(id); }}
+                        className={cn('text-[11px] px-2 py-1 rounded-t transition-colors border border-b-0 whitespace-nowrap',
+                          activeTab === id ? 'bg-background text-foreground border-border' : 'border-transparent text-muted-foreground hover:text-foreground')}>
+                        {sess ? sessionTitle(sess) : id.slice(0, 8)}
+                        <span onClick={(e) => { e.stopPropagation(); detach(id); }}
+                          className="ml-1.5 text-muted-foreground hover:text-destructive">&times;</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div ref={containerRef} className="flex-1 min-h-0 bg-background" />
+              </>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <EmptyPanelState message="Attach a connected session to open a terminal." className="border-0 bg-transparent" />
+                {attachError && <div className="max-w-sm text-center text-xs text-destructive">{attachError}</div>}
+                {selectedSession?.state === 'connected' && (
+                  <ActionButton onClick={() => attachSession(selectedSession.id)} variant="success">
+                    Attach Terminal
+                  </ActionButton>
+                )}
+              </div>
+            )}
+          </PanelSection>
+
+          {selectedSession ? (
+            <PanelSection className="p-3 min-h-0 overflow-y-auto">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-1">
@@ -399,7 +456,7 @@ export function SessionsPanel() {
                       attachedIds.includes(selectedSession.id) ? (
                         <ActionButton onClick={() => detach(selectedSession.id)} variant="danger">Detach</ActionButton>
                       ) : (
-                        <ActionButton onClick={() => attach(selectedSession.id)} variant="success">Attach</ActionButton>
+                        <ActionButton onClick={() => attachSession(selectedSession.id)} variant="success">Attach</ActionButton>
                       )
                     )}
                     {selectedSession.target_node && <ActionButton onClick={() => navigateToGraph(selectedSession.target_node, 2)} variant="ghost" className="text-accent">Graph</ActionButton>}
@@ -420,7 +477,7 @@ export function SessionsPanel() {
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <DetailFact label="Target" value={selectedTargetLabel || '—'} mono />
                   <DetailFact label="Owner" value={selectedSession.claimed_by || selectedSession.owner || selectedSession.agent_id || 'dashboard'} mono />
                   <DetailFact label="Validation" value={selectedSession.default_validation?.technique || 'per-command'} mono />
@@ -442,7 +499,7 @@ export function SessionsPanel() {
                   </div>
                 )}
 
-                <div className="mt-3 grid grid-cols-1 xl:grid-cols-3 gap-2">
+                <div className="mt-3 grid grid-cols-1 gap-2">
                   <SessionContextBlock title="Copy Context">
                     <div className="flex flex-wrap gap-1">
                       {selectedCopyFields.map(field => (
@@ -481,7 +538,7 @@ export function SessionsPanel() {
                   </SessionContextBlock>
                 </div>
 
-                <div className="mt-3 grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-2">
+                <div className="mt-3 grid grid-cols-1 gap-2">
                   <SessionContextBlock title="Buffer Tail">
                     <div className="flex items-center gap-2 mb-2">
                       <input
@@ -541,39 +598,11 @@ export function SessionsPanel() {
                   </SessionContextBlock>
                 </div>
               </PanelSection>
-            )}
-
-            <PanelSection className="p-0 flex-1 min-h-0 overflow-hidden flex flex-col">
-              {attachedIds.length > 0 ? (
-                <>
-                  <div className="flex-shrink-0 flex gap-0.5 border-b border-border px-2 pt-2">
-                    {attachedIds.map(id => {
-                      const sess = sessions.find(s => s.id === id);
-                      return (
-                        <button key={id} onClick={() => { setActiveTab(id); setSelectedSessionId(id); }}
-                          className={cn('text-[11px] px-2 py-1 rounded-t transition-colors border border-b-0',
-                            activeTab === id ? 'bg-background text-foreground border-border' : 'border-transparent text-muted-foreground hover:text-foreground')}>
-                          {sess ? sessionTitle(sess) : id.slice(0, 8)}
-                          <span onClick={(e) => { e.stopPropagation(); detach(id); }}
-                            className="ml-1.5 text-muted-foreground hover:text-destructive">&times;</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div ref={containerRef} className="flex-1 min-h-0 bg-background" />
-                </>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-                  <EmptyPanelState message="Attach a connected session to open a terminal." className="border-0 bg-transparent" />
-                  {selectedSession?.state === 'connected' && (
-                    <ActionButton onClick={() => attach(selectedSession.id)} variant="success">
-                      Attach Terminal
-                    </ActionButton>
-                  )}
-                </div>
-              )}
+          ) : (
+            <PanelSection className="p-3">
+              <EmptyPanelState message="Select a session to inspect metadata and buffer context." />
             </PanelSection>
-          </div>
+          )}
         </div>
       )}
     </div>

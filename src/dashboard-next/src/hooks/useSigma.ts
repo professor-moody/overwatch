@@ -19,11 +19,11 @@ export interface UseSigmaReturn {
   mount: (container: HTMLElement) => void;
   unmount: () => void;
   refresh: () => void;
-  zoomToFit: (duration?: number | unknown, opts?: ZoomToNodesOptions) => void;
+  zoomToFit: (duration?: number | unknown, opts?: ZoomToNodesOptions) => boolean;
   zoomIn: () => void;
   zoomOut: () => void;
-  zoomToNodes: (nodeIds: Set<string> | string[], opts?: ZoomToNodesOptions) => void;
-  selectAndCenter: (nodeId: string) => void;
+  zoomToNodes: (nodeIds: Set<string> | string[], opts?: ZoomToNodesOptions) => boolean;
+  selectAndCenter: (nodeId: string) => boolean;
 }
 
 interface ZoomToNodesOptions {
@@ -213,7 +213,7 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
 
   const zoomToFit = useCallback((duration: number | unknown = 300, opts: ZoomToNodesOptions = {}) => {
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    if (!renderer) return false;
 
     const positions: Array<{ x: number; y: number }> = [];
     graph.forEachNode((nodeId, attrs) => {
@@ -221,22 +221,20 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
       if (reduced.hidden) return;
       const x = attrs.x as number;
       const y = attrs.y as number;
-      if (typeof x === 'number' && typeof y === 'number') positions.push({ x, y });
+      if (Number.isFinite(x) && Number.isFinite(y)) positions.push({ x, y });
     });
 
-    if (positions.length === 0) {
-      renderer.getCamera().animatedReset({ duration: safeCameraDuration(duration) });
-      return;
-    }
+    if (positions.length === 0) return false;
 
     const fit = computeSigmaCameraFit(renderer, positions, opts);
-    if (!fit) return;
+    if (!fit) return false;
 
     const camera = renderer.getCamera();
     camera.animate(
       fit,
       { duration: safeCameraDuration(duration) },
     );
+    return true;
   }, [graph, nodeReducer]);
 
   const zoomIn = useCallback(() => {
@@ -260,46 +258,52 @@ export function useSigma({ graph, nodeReducer, edgeReducer, onCameraUpdate }: Us
     opts: ZoomToNodesOptions = {},
   ) => {
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    if (!renderer) return false;
 
     const ids = nodeIds instanceof Set ? nodeIds : new Set(nodeIds);
-    if (ids.size === 0) return;
+    if (ids.size === 0) return false;
 
     const positions: Array<{ x: number; y: number }> = [];
     for (const nodeId of ids) {
       if (!graph.hasNode(nodeId)) continue;
       const attrs = graph.getNodeAttributes(nodeId);
+      const reduced = nodeReducer(nodeId, attrs as Record<string, unknown>);
+      if (reduced.hidden) continue;
       const x = attrs.x as number;
       const y = attrs.y as number;
-      if (typeof x !== 'number' || typeof y !== 'number') continue;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       positions.push({ x, y });
     }
 
     const fit = computeSigmaCameraFit(renderer, positions, opts);
-    if (!fit) return;
+    if (!fit) return false;
 
     const camera = renderer.getCamera();
     camera.animate(
       fit,
       { duration: safeCameraDuration(opts.duration) },
     );
-  }, [graph]);
+    return true;
+  }, [graph, nodeReducer]);
 
   const selectAndCenter = useCallback((nodeId: string) => {
-    if (!graph.hasNode(nodeId)) return;
+    if (!graph.hasNode(nodeId)) return false;
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    if (!renderer) return false;
     const attrs = graph.getNodeAttributes(nodeId);
+    const reduced = nodeReducer(nodeId, attrs as Record<string, unknown>);
+    if (reduced.hidden) return false;
 
     const fit = computeSigmaCameraFit(
       renderer,
       [{ x: attrs.x as number, y: attrs.y as number }],
       { minRatio: 0.15, maxRatio: 0.15 },
     );
-    if (!fit) return;
+    if (!fit) return false;
 
     renderer.getCamera().animate(fit, { duration: 300 });
-  }, [graph]);
+    return true;
+  }, [graph, nodeReducer]);
 
   return { rendererRef, mount, unmount, refresh, zoomToFit, zoomIn, zoomOut, zoomToNodes, selectAndCenter };
 }

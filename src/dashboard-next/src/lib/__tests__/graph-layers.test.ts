@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildGraphLayerStates,
   edgeMatchesSemanticType,
-  hasCommunityHulls,
   isCredentialFlowEdge,
   isReachableOnlyEdge,
 } from '../graph-layers';
@@ -34,17 +33,14 @@ describe('graph layer helpers', () => {
     expect(edgeMatchesSemanticType({ edgeType: 'RUNS', type: 'ADMIN_TO' }, highlighted)).toBe(false);
   });
 
-  it('disables community hulls when no community ids are present', () => {
+  it('does not expose community regions as a graph layer', () => {
     const graph = new Graph();
     graph.addNode('a', { nodeType: 'host' });
     graph.addNode('b', { nodeType: 'host' });
 
-    expect(hasCommunityHulls(graph)).toBe(false);
-
     const layers = buildGraphLayerStates({
       graph,
       edgeLabels: true,
-      communityHulls: true,
       credentialFlow: false,
       attackPath: false,
       hideOrphans: false,
@@ -52,55 +48,7 @@ describe('graph layer helpers', () => {
       pathEdgeCount: 0,
     });
 
-    expect(layers.find(l => l.id === 'communityHulls')).toMatchObject({
-      available: false,
-      enabled: false,
-    });
-  });
-
-  it('only offers community regions for substantial overview groups', () => {
-    const graph = new Graph();
-    graph.addNode('a', { nodeType: 'host', community: 'one' });
-    graph.addNode('b', { nodeType: 'host', community: 'one' });
-    graph.addNode('c', { nodeType: 'host', community: 'one' });
-
-    expect(hasCommunityHulls(graph)).toBe(false);
-
-    graph.addNode('d', { nodeType: 'host', community: 'one' });
-    expect(hasCommunityHulls(graph)).toBe(true);
-
-    const focusedLayers = buildGraphLayerStates({
-      graph,
-      edgeLabels: true,
-      communityHulls: true,
-      credentialFlow: false,
-      attackPath: false,
-      hideOrphans: false,
-      hideReachableOnly: false,
-      pathEdgeCount: 0,
-      graphMode: 'focused',
-    });
-    expect(focusedLayers.find(l => l.id === 'communityHulls')).toMatchObject({
-      available: false,
-      enabled: false,
-    });
-
-    const overviewLayers = buildGraphLayerStates({
-      graph,
-      edgeLabels: true,
-      communityHulls: true,
-      credentialFlow: false,
-      attackPath: false,
-      hideOrphans: false,
-      hideReachableOnly: false,
-      pathEdgeCount: 0,
-      graphMode: 'overview',
-    });
-    expect(overviewLayers.find(l => l.id === 'communityHulls')).toMatchObject({
-      available: true,
-      enabled: true,
-      label: 'Community regions',
-    });
+    expect(layers.some(l => l.label === 'Community regions')).toBe(false);
   });
 
   it('enables attack path only when a path exists or the layer is already active', () => {
@@ -108,7 +56,6 @@ describe('graph layer helpers', () => {
     const withoutPath = buildGraphLayerStates({
       graph,
       edgeLabels: true,
-      communityHulls: false,
       credentialFlow: false,
       attackPath: false,
       hideOrphans: false,
@@ -118,7 +65,6 @@ describe('graph layer helpers', () => {
     const withPath = buildGraphLayerStates({
       graph,
       edgeLabels: true,
-      communityHulls: false,
       credentialFlow: false,
       attackPath: false,
       hideOrphans: false,

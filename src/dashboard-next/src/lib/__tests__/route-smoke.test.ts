@@ -5,17 +5,18 @@ const smokeUrl = process.env.OVERWATCH_DASHBOARD_SMOKE_URL || '';
 const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> = [
-  { path: '/overview', expects: ['Overview', 'Needs Verification'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed', 'Estimated CVSS'] },
+  { path: '/overview', expects: ['Overview', 'Now', 'Next', 'Changed', 'Current Access'] },
   { path: '/actions', expects: ['Actions', 'terminal'] },
   { path: '/agents', expects: ['Agents'] },
   { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
   { path: '/campaigns', expects: ['Campaigns'] },
-  { path: '/sessions', expects: ['Sessions'], expectsAny: ['Attach', 'Detach', 'open_session'] },
+  { path: '/sessions', expects: ['Sessions', 'Terminal'], expectsAny: ['Attach', 'Detach', 'open_session'] },
   { path: '/frontier', expects: ['Frontier'] },
   { path: '/graph', expects: ['Graph'] },
-  { path: '/graph?node=cred-jdoe-ntlm&hops=2', expects: ['Focused on', 'Show All'] },
-  { path: '/graph?context=evidence&node=cred-jdoe-ntlm', expects: ['Evidence for', 'Show All'] },
-  { path: '/graph?context=frontier&node=cred-jdoe-ntlm', expects: ['Frontier', 'Show All'] },
+  { path: '/graph?node=cred-jdoe-ntlm&hops=2', expects: ['Focused on', 'Fit', 'Show All'] },
+  { path: '/graph?context=evidence&node=cred-jdoe-ntlm', expects: ['Evidence for', 'Fit', 'Show All'] },
+  { path: '/graph?context=frontier&node=cred-jdoe-ntlm', expects: ['Frontier', 'Fit', 'Show All'] },
+  { path: '/graph?filter=host', expects: ['host nodes', 'Fit', 'Show All'] },
   { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
   { path: '/credentials', expects: ['Credentials', 'Expansion candidates'] },
   { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
@@ -86,6 +87,37 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
       await browser.close();
     }
   }, 60_000);
+
+  it('keeps desktop navigation expanded with visible labels by default', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1280, height: 800 });
+      await page.evaluateOnNewDocument(() => {
+        window.localStorage.setItem('overwatch-sidebar-expanded', 'true');
+      });
+      await page.goto(`${smokeUrl}/overview`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForFunction(() => document.body.innerText.includes('Current Access'), { timeout: 10_000 });
+      const nav = await page.evaluate(() => {
+        const el = document.querySelector('nav');
+        const rect = el?.getBoundingClientRect();
+        return {
+          width: rect?.width || 0,
+          text: el?.textContent || '',
+        };
+      });
+      expect(nav.width).toBeGreaterThanOrEqual(200);
+      expect(nav.text).toContain('Overview');
+      expect(nav.text).toContain('Frontier');
+      expect(nav.text).toContain('Settings');
+    } finally {
+      await browser.close();
+    }
+  }, 30_000);
 
   it('carries contextual graph links through evidence click-through', async () => {
     const browser = await puppeteer.launch({

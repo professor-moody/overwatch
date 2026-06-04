@@ -65,12 +65,12 @@ describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
         return {
           credentialDisabled: find('Credential flow')?.disabled ?? true,
           attackPathDisabled: find('Attack path')?.disabled ?? false,
-          communityDisabled: find('Community regions')?.disabled ?? false,
+          hasCommunityRegions: Boolean(find('Community regions')),
         };
       });
       expect(layerState.credentialDisabled).toBe(false);
       expect(layerState.attackPathDisabled).toBe(true);
-      expect(typeof layerState.communityDisabled).toBe('boolean');
+      expect(layerState.hasCommunityRegions).toBe(false);
 
       await page.evaluate(() => {
         const credentialFlow = [...document.querySelectorAll('button')]

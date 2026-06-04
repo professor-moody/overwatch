@@ -1,11 +1,13 @@
-import type { AccessSummary, ActivityEntry, FrontierItem, PendingAction, SessionInfo } from './types';
+import type { AccessSummary, ActivityEntry, Campaign, ExportedNode, FrontierItem, PendingAction, SessionInfo } from './types';
 import type { TrustSignalDto } from './api';
+import { getEffectiveCredentialStatus } from './credential-display';
+import { getFrontierKey, getFrontierNodeIds } from './frontier-workspace';
 
 export interface AttentionItem {
   id: string;
   label: string;
   tone: 'warning' | 'default';
-  route: 'actions' | 'frontier' | 'settings';
+  route: 'actions' | 'credentials' | 'frontier' | 'sessions' | 'settings';
   nodeId?: string;
   meta?: string;
 }
@@ -15,6 +17,8 @@ export interface AccessFacts {
   liveSessions: number;
   hosts: number;
   validCredentials: number;
+  activeCampaigns: number;
+  pausedCampaigns: number;
 }
 
 export interface VerificationItem {
@@ -26,14 +30,41 @@ export interface VerificationItem {
   meta?: string;
 }
 
-export function deriveAttentionItems({
+export interface NextActionItem {
+  id: string;
+  label: string;
+  type: FrontierItem['type'];
+  priority: number;
+  reason: string;
+  context: string;
+  nodeIds: string[];
+  primaryNode?: string;
+  frontierItemId?: string;
+}
+
+export interface ChangedItem {
+  id: string;
+  label: string;
+  source: 'activity' | 'trust';
+  route: 'activity' | 'findings' | 'graph';
+  tone: 'default' | 'warning';
+  timestamp?: string;
+  nodeId?: string;
+  meta?: string;
+}
+
+export function deriveNowItems({
   pendingActions,
   readinessIssues,
-  frontier,
+  credentialNodes = [],
+  sessions = [],
+  nowMs = Date.now(),
 }: {
   pendingActions: PendingAction[];
   readinessIssues: string[];
-  frontier: FrontierItem[];
+  credentialNodes?: ExportedNode[];
+  sessions?: SessionInfo[];
+  nowMs?: number;
 }): AttentionItem[] {
   const items: AttentionItem[] = [];
   if (pendingActions.length > 0) {
@@ -52,27 +83,72 @@ export function deriveAttentionItems({
       route: 'settings',
     });
   }
-  return items.concat(
-    [...frontier]
-      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.frontier_item_id || a.id).localeCompare(b.frontier_item_id || b.id))
-      .slice(0, 3)
-      .map(item => ({
-        id: item.frontier_item_id || item.id,
-        label: item.description || item.id,
-        tone: 'default' as const,
-        route: 'frontier' as const,
-        nodeId: item.target_node || item.node_id || item.edge_target,
-        meta: (item.priority ?? 0).toFixed(1),
-      })),
+  const expiredCredentials = credentialNodes.filter(node =>
+    node.type === 'credential' && getEffectiveCredentialStatus(node, nowMs) === 'expired',
   );
+  if (expiredCredentials.length > 0) {
+    items.push({
+      id: 'expired-credentials',
+      label: `${expiredCredentials.length} expired credential${expiredCredentials.length === 1 ? '' : 's'}`,
+      tone: 'warning',
+      route: 'credentials',
+      nodeId: expiredCredentials[0]?.id,
+    });
+  }
+  const erroredSessions = sessions.filter(session => session.state === 'error');
+  if (erroredSessions.length > 0) {
+    items.push({
+      id: 'session-errors',
+      label: `${erroredSessions.length} session error${erroredSessions.length === 1 ? '' : 's'}`,
+      tone: 'warning',
+      route: 'sessions',
+      nodeId: erroredSessions[0]?.target_node,
+    });
+  }
+  return items;
 }
 
-export function deriveAccessFacts(accessSummary: AccessSummary, sessions: SessionInfo[]): AccessFacts {
+export function deriveAttentionItems(args: Parameters<typeof deriveNowItems>[0] & { frontier?: FrontierItem[] }): AttentionItem[] {
+  const nowItems = deriveNowItems(args);
+  const frontierItems = deriveNextActionItems(args.frontier || [], 3).map(item => ({
+    id: item.id,
+    label: item.label,
+    tone: 'default' as const,
+    route: 'frontier' as const,
+    nodeId: item.primaryNode,
+    meta: item.priority.toFixed(1),
+  }));
+  return nowItems.concat(frontierItems);
+}
+
+export function deriveNextActionItems(frontier: FrontierItem[], limit = 5): NextActionItem[] {
+  return [...frontier]
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || getFrontierKey(a).localeCompare(getFrontierKey(b)))
+    .slice(0, limit)
+    .map(item => {
+      const nodeIds = getFrontierNodeIds(item);
+      return {
+        id: getFrontierKey(item),
+        label: item.description || item.id,
+        type: item.type,
+        priority: item.priority ?? 0,
+        reason: rankReason(item),
+        context: actionContext(item),
+        nodeIds,
+        primaryNode: nodeIds[0] || item.target_node || item.node_id || item.edge_target,
+        frontierItemId: item.frontier_item_id || item.id,
+      };
+    });
+}
+
+export function deriveAccessFacts(accessSummary: AccessSummary, sessions: SessionInfo[], campaigns: Campaign[] = []): AccessFacts {
   return {
     level: accessSummary.current_access_level,
     liveSessions: sessions.filter(s => s.state === 'connected').length,
     hosts: accessSummary.compromised_hosts.length,
     validCredentials: accessSummary.valid_credentials.length,
+    activeCampaigns: campaigns.filter(c => c.status === 'active').length,
+    pausedCampaigns: campaigns.filter(c => c.status === 'paused').length,
   };
 }
 
@@ -97,8 +173,72 @@ export function deriveVerificationItems(signals: TrustSignalDto[], limit = 4): V
     }));
 }
 
+export function deriveChangedItems(
+  recentActivity: ActivityEntry[],
+  trustSignals: TrustSignalDto[],
+  limit = 6,
+): ChangedItem[] {
+  const items: ChangedItem[] = [];
+  for (const entry of recentActivity) {
+    const label = entry.description || entry.event_type;
+    if (!label) continue;
+    items.push({
+      id: entry.event_id || entry.id,
+      label,
+      source: 'activity',
+      route: entry.target_node_ids?.[0] ? 'graph' : entry.event_type?.includes('finding') ? 'findings' : 'activity',
+      tone: entry.result_classification === 'failure' ? 'warning' : 'default',
+      timestamp: entry.timestamp,
+      nodeId: entry.target_node_ids?.[0],
+      meta: entry.timestamp ? entry.timestamp.slice(11, 16) : undefined,
+    });
+  }
+  for (const signal of trustSignals) {
+    items.push({
+      id: signal.id,
+      label: signal.detail ? `${signal.label}: ${signal.detail}` : signal.label,
+      source: 'trust',
+      route: signal.node_ids?.[0] ? 'graph' : signal.finding_id ? 'findings' : 'activity',
+      tone: signal.severity === 'info' ? 'default' : 'warning',
+      timestamp: signal.timestamp,
+      nodeId: signal.node_ids?.[0],
+      meta: signal.timestamp ? signal.timestamp.slice(11, 16) : undefined,
+    });
+  }
+
+  const deduped = new Map<string, ChangedItem>();
+  for (const item of items.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))) {
+    const key = `${item.route}:${item.nodeId || ''}:${item.label}`;
+    if (!deduped.has(key)) deduped.set(key, item);
+  }
+  return [...deduped.values()].slice(0, limit);
+}
+
 function severityRank(severity: TrustSignalDto['severity']): number {
   if (severity === 'error') return 0;
   if (severity === 'warning') return 1;
   return 2;
+}
+
+function rankReason(item: FrontierItem): string {
+  const parts: string[] = [];
+  const hops = item.graph_metrics?.hops_to_objective;
+  const fanOut = item.graph_metrics?.fan_out_estimate;
+  const confidence = item.graph_metrics?.confidence;
+
+  if (typeof hops === 'number') parts.push(hops <= 1 ? 'near objective' : `${hops} hops to objective`);
+  if (typeof fanOut === 'number' && fanOut > 0) parts.push(`${fanOut} follow-up${fanOut === 1 ? '' : 's'}`);
+  if (typeof confidence === 'number' && confidence > 1) parts.push('planner boost');
+  if (item.chain_id) parts.push('chain item');
+  if (item.opsec_noise != null && item.opsec_noise <= 0.3) parts.push('low noise');
+  return parts.length > 0 ? parts.join(' · ') : 'ranked by priority and graph context';
+}
+
+function actionContext(item: FrontierItem): string {
+  if (item.edge_source && item.edge_target) return `${item.edge_source} -> ${item.edge_target}`;
+  if (item.node_id) return item.node_id;
+  if (item.target_node) return item.target_node;
+  if (item.source_node) return item.source_node;
+  if (item.chain_id) return item.chain_id;
+  return item.type.replace(/_/g, ' ');
 }

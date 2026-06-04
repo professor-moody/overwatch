@@ -12,7 +12,6 @@ import { useSigma } from '../../hooks/useSigma';
 import { useGraphReducers } from '../../hooks/useGraphReducers';
 import { useGraphInteractions } from '../../hooks/useGraphInteractions';
 import { useLayout } from '../../hooks/useLayout';
-import { useCommunityHulls } from '../../hooks/useCommunityHulls';
 import { GraphContainer } from './GraphContainer';
 import { GraphToolbar } from './GraphToolbar';
 import { GraphSearch } from './GraphSearch';
@@ -31,6 +30,7 @@ import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
 import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
+import { buildGraphFocusApplication } from '../../lib/graph-focus';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
@@ -62,8 +62,6 @@ export function GraphPage() {
   const setGraphInspectorOpen = useDashboardUiStore(s => s.setGraphInspectorOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [layoutRunning, setLayoutRunning] = useState(false);
-  const [communityHullsActive, setCommunityHullsActive] = useState(false);
-  useCommunityHulls(rendererRef, graph, communityHullsActive && stateRef.current.graphMode === 'overview', nodeReducer);
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
@@ -82,7 +80,7 @@ export function GraphPage() {
     left: 112,
   }), [selectedNodeId]);
   const fitVisibleGraph = useCallback((duration: number | unknown = 300, drawerOpen = !!selectedNodeId) => {
-    zoomToFit(duration, {
+    return zoomToFit(duration, {
       paddingFactor: 0.45,
       padding: graphFitPadding(drawerOpen),
       minRatio: 0.035,
@@ -105,14 +103,13 @@ export function GraphPage() {
     }
 
     if (focusedNodes?.size) {
-      zoomToNodes(focusedNodes, {
+      return zoomToNodes(focusedNodes, {
         ...focusedFitOptions(s.focusKind),
         duration: typeof duration === 'number' && Number.isFinite(duration) ? duration : undefined,
       });
-      return;
     }
 
-    fitVisibleGraph(duration, drawerOpen);
+    return fitVisibleGraph(duration, drawerOpen);
   }, [fitVisibleGraph, focusedFitOptions, selectedNodeId, stateRef, zoomToNodes]);
   const normalizeAutoLayout = useCallback(() => {
     if (graph.order === 0) return false;
@@ -203,10 +200,17 @@ export function GraphPage() {
       onNodeFocus: (nodeId, hops) => {
         // Zoom to the focus neighborhood
         const neighborhood = getNeighborhood(graph, nodeId, hops);
-        zoomToNodes(neighborhood, {
+        const moved = zoomToNodes(neighborhood, {
           ...focusedFitOptions('node'),
           duration: 300,
         });
+        if (!moved) {
+          toast({
+            type: 'warning',
+            title: 'Graph focus unavailable',
+            message: 'The focused nodes are not renderable yet.',
+          });
+        }
       },
     });
 
@@ -318,56 +322,77 @@ export function GraphPage() {
   const applyGraphFocusTarget = useCallback((resolved: ResolvedGraphTarget) => {
     if (resolved.filter) {
       const s = stateRef.current;
+      const focusNodes = new Set<string>();
+      graph.forEachNode((nodeId, attrs) => {
+        if (attrs.nodeType === resolved.filter) focusNodes.add(nodeId);
+      });
+      if (focusNodes.size === 0) {
+        setRenderIssue(`No graph nodes match filter: ${resolved.filter}`);
+        return false;
+      }
       s.activeFilters = new Set([resolved.filter]);
       s.graphMode = 'focused';
       s.emphasizedNodeTypes = new Set([resolved.filter]);
+      s.focusNode = null;
+      s.focusNeighborhood = focusNodes;
       s.focusLabel = resolved.label;
       s.focusKind = resolved.kind;
+      s.selectedNode = null;
+      s.selectedNeighborhood = focusNodes;
+      s.inspectedEdgeIds.clear();
+      s.pathNodes.clear();
+      s.pathEdges.clear();
+      setSelectedNodeId(null);
       refresh();
-      fitVisibleGraph(300, false);
+      const moved = zoomToNodes(focusNodes, {
+        ...focusedFitOptions('filter'),
+        padding: graphFitPadding(false),
+        duration: 300,
+      });
+      if (!moved) {
+        setRenderIssue(`Graph filter has no renderable node positions: ${resolved.label}`);
+        return false;
+      }
+      setRenderIssue(null);
       forceGraphUi();
       return true;
     }
 
-    if (!resolved.primaryNode || resolved.nodes.size === 0) return false;
+    const focus = buildGraphFocusApplication(graph, resolved);
+    if (!focus) return false;
+    if (focus.noRenderableReason) {
+      setRenderIssue(focus.noRenderableReason);
+      return false;
+    }
 
     const s = stateRef.current;
-    const shouldExpandSingleContext =
-      resolved.nodes.size === 1 &&
-      (resolved.kind === 'evidence' || resolved.kind === 'finding' || resolved.kind === 'frontier');
-    const focusNodes = (resolved.hops > 0 && resolved.kind === 'node') || shouldExpandSingleContext
-      ? getNeighborhood(graph, resolved.primaryNode, resolved.kind === 'node' ? resolved.hops : 1)
-      : new Set(resolved.nodes);
     s.graphMode = 'focused';
-    s.focusNode = resolved.primaryNode;
-    s.focusNeighborhood = focusNodes;
-    s.focusLabel = resolved.label;
-    s.focusKind = resolved.kind;
-    s.selectedNode = resolved.primaryNode;
-    s.selectedNeighborhood = focusNodes;
+    s.focusNode = focus.primaryNode;
+    s.focusNeighborhood = focus.focusNodes;
+    s.focusLabel = focus.label;
+    s.focusKind = focus.kind;
+    s.selectedNode = focus.primaryNode;
+    s.selectedNeighborhood = focus.focusNodes;
     s.inspectedEdgeIds.clear();
     s.pathNodes.clear();
     s.pathEdges.clear();
-
-    if (resolved.edges.size > 0) {
-      for (const edge of resolved.edges) {
-        s.inspectedEdgeIds.add(edge);
-        s.pathEdges.add(edge);
-      }
-      for (const node of focusNodes) s.pathNodes.add(node);
-    } else {
-      graph.edges(resolved.primaryNode).forEach(eid => s.inspectedEdgeIds.add(eid));
-    }
-
-    setSelectedNodeId(resolved.primaryNode);
+    for (const edge of focus.inspectedEdges) s.inspectedEdgeIds.add(edge);
+    for (const edge of focus.pathEdges) s.pathEdges.add(edge);
+    for (const node of focus.pathNodes) s.pathNodes.add(node);
+    setSelectedNodeId(focus.primaryNode);
     refresh();
-    zoomToNodes(focusNodes, {
-      ...focusedFitOptions(resolved.kind),
+    const moved = zoomToNodes(focus.focusNodes, {
+      ...focusedFitOptions(focus.kind),
       duration: 300,
     });
+    if (!moved) {
+      setRenderIssue(`Graph target is not visible yet: ${focus.label}`);
+      return false;
+    }
+    setRenderIssue(null);
     forceGraphUi();
     return true;
-  }, [fitVisibleGraph, forceGraphUi, graph, focusedFitOptions, refresh, stateRef, zoomToNodes]);
+  }, [forceGraphUi, graph, focusedFitOptions, graphFitPadding, refresh, stateRef, toast, zoomToNodes]);
 
   useEffect(() => {
     const key = searchParams.toString();
@@ -388,7 +413,7 @@ export function GraphPage() {
       appliedParamsRef.current = key;
       setSearchParams({}, { replace: true });
     }
-  }, [applyGraphFocusTarget, frontier, graph, refresh, rendererRef, searchParams, setSearchParams, toast]);
+  }, [applyGraphFocusTarget, frontier, graph, graphVersion, layoutRunning, nodeCount, rendererRef, searchParams, setSearchParams, toast]);
 
   // ---- Toolbar callbacks ----
   const handleReset = useCallback(() => {
@@ -406,9 +431,11 @@ export function GraphPage() {
     clearPathHighlight();
     exitNeighborhoodFocus();
     refresh();
-    fitVisibleGraph();
+    if (!fitVisibleGraph()) {
+      toast({ type: 'warning', title: 'Graph fit unavailable', message: 'No visible graph nodes can be framed yet.' });
+    }
     forceGraphUi();
-  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, refresh, fitVisibleGraph, forceGraphUi]);
+  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, refresh, fitVisibleGraph, forceGraphUi, toast]);
 
   const handleToggleLayout = useCallback(() => {
     if (layout.running) {
@@ -502,12 +529,15 @@ export function GraphPage() {
     }
     s.selectedNeighborhood = neighborhood;
     refresh();
-    zoomToNodes(neighborhood, {
+    const moved = zoomToNodes(neighborhood, {
       ...focusedFitOptions('preset'),
       padding: graphFitPadding(false),
       duration: 300,
     });
-  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding, focusedFitOptions]);
+    if (!moved) {
+      toast({ type: 'warning', title: 'Graph focus unavailable', message: 'No preset nodes can be framed yet.' });
+    }
+  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding, focusedFitOptions, toast]);
 
   const handleToggleFilter = useCallback((type: string) => {
     const s = stateRef.current;
@@ -568,11 +598,6 @@ export function GraphPage() {
       forceGraphUi();
       return;
     }
-    if (id === 'communityHulls') {
-      setCommunityHullsActive(v => !v);
-      forceGraphUi();
-      return;
-    }
     if (id === 'credentialFlow') {
       handleToggleCredFlow();
       return;
@@ -604,12 +629,21 @@ export function GraphPage() {
 
   const handleSearchSelect = useCallback((nodeId: string) => {
     selectNode(nodeId);
-    zoomToNodes(new Set([nodeId]), {
+    const moved = zoomToNodes(new Set([nodeId]), {
       padding: graphFitPadding(true),
       minRatio: 0.08,
       maxRatio: 0.22,
     });
-  }, [selectNode, zoomToNodes, graphFitPadding]);
+    if (!moved) {
+      toast({ type: 'warning', title: 'Graph focus unavailable', message: `${nodeId} is not renderable yet.` });
+    }
+  }, [selectNode, zoomToNodes, graphFitPadding, toast]);
+
+  const handleFitCurrentContext = useCallback(() => {
+    if (!fitCurrentGraphContext()) {
+      toast({ type: 'warning', title: 'Graph fit unavailable', message: 'No visible graph nodes can be framed yet.' });
+    }
+  }, [fitCurrentGraphContext, toast]);
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
@@ -618,7 +652,7 @@ export function GraphPage() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       switch (e.key) {
-        case 'f': case 'F': e.preventDefault(); fitVisibleGraph(); break;
+        case 'f': case 'F': e.preventDefault(); handleFitCurrentContext(); break;
         case ' ': e.preventDefault(); handleToggleLayout(); break;
         case 'Escape':
           e.preventDefault();
@@ -635,20 +669,18 @@ export function GraphPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [fitVisibleGraph, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
+  }, [handleFitCurrentContext, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
 
   const s = stateRef.current;
   const layers = useMemo(() => buildGraphLayerStates({
     graph,
     edgeLabels: showEdgeLabels,
-    communityHulls: communityHullsActive,
-    credentialFlow: s.credentialFlowMode,
+        credentialFlow: s.credentialFlowMode,
     attackPath: !!s.attackPathOverlay,
     hideOrphans: s.hideOrphans,
     hideReachableOnly: s.hideReachableOnly,
     pathEdgeCount: s.pathEdges.size,
-    graphMode: s.graphMode,
-  }), [graph, showEdgeLabels, communityHullsActive, s, graphVersion, nodeCount, edgeCount, uiRevision]);
+  }), [graph, showEdgeLabels, s, graphVersion, nodeCount, edgeCount, uiRevision]);
 
   // ---- Right-click context menu ----
   useEffect(() => {
@@ -675,7 +707,7 @@ export function GraphPage() {
         layers={layers}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
-        onFit={fitVisibleGraph}
+        onFit={handleFitCurrentContext}
         onToggleLayout={handleToggleLayout}
         onResumeLayout={handleResumeLayout}
         onReset={handleReset}
@@ -732,6 +764,7 @@ export function GraphPage() {
                 focusSize={s.focusNeighborhood?.size || 0}
                 label={s.focusLabel}
                 kind={s.focusKind}
+                onFit={handleFitCurrentContext}
                 onExit={exitNeighborhoodFocus}
                 className="max-w-full"
               />

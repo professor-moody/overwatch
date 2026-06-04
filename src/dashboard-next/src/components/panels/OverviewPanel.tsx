@@ -9,11 +9,20 @@ import * as api from '../../lib/api';
 import type { TrustSignalDto } from '../../lib/api';
 import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
 import { MetricTile, PageHeader, PanelSection } from '../shared/primitives';
-import { deriveAccessFacts, deriveAttentionItems, deriveRecentChanges, deriveVerificationItems, type AttentionItem } from '../../lib/overview-workspace';
+import {
+  deriveAccessFacts,
+  deriveChangedItems,
+  deriveNextActionItems,
+  deriveNowItems,
+  type AttentionItem,
+  type ChangedItem,
+  type NextActionItem,
+} from '../../lib/overview-workspace';
 
 export function OverviewPanel() {
-  const { navigateToGraph, navigateToGraphFilter, navigateToPanel, navigateToEvidence } = useNavigation();
+  const { navigateToGraph, navigateToGraphFilter, navigateToGraphTarget, navigateToPanel, navigateToEvidence } = useNavigation();
   const graphSummary = useEngagementStore((s) => s.graphSummary);
+  const graph = useEngagementStore((s) => s.graph);
   const objectives = useEngagementStore((s) => s.objectives);
   const frontier = useEngagementStore((s) => s.frontier);
   const agents = useEngagementStore((s) => s.agents);
@@ -70,15 +79,16 @@ export function OverviewPanel() {
     return campaigns.filter(c => c.status === 'active' || c.status === 'paused');
   }, [campaigns]);
 
-  const attentionItems = useMemo(() => deriveAttentionItems({
+  const nowItems = useMemo(() => deriveNowItems({
     pendingActions,
     readinessIssues: readiness?.issues || [],
-    frontier,
-  }), [frontier, pendingActions, readiness]);
+    credentialNodes: graph.nodes,
+    sessions,
+  }), [graph.nodes, pendingActions, readiness, sessions]);
 
-  const accessFacts = useMemo(() => deriveAccessFacts(accessSummary, sessions), [accessSummary, sessions]);
-  const recentChanges = useMemo(() => deriveRecentChanges(recentActivity), [recentActivity]);
-  const verificationItems = useMemo(() => deriveVerificationItems(trustSignals, 4), [trustSignals]);
+  const nextItems = useMemo(() => deriveNextActionItems(frontier, 5), [frontier]);
+  const accessFacts = useMemo(() => deriveAccessFacts(accessSummary, sessions, campaigns), [accessSummary, campaigns, sessions]);
+  const changedItems = useMemo(() => deriveChangedItems(recentActivity, trustSignals, 6), [recentActivity, trustSignals]);
 
   const engagement = useEngagementStore((s) => s.engagement);
 
@@ -103,39 +113,65 @@ export function OverviewPanel() {
     <div className="space-y-6">
       <PageHeader title="Overview" />
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_1.2fr_.8fr_.8fr] gap-4">
-        <PanelSection title="Needs Attention">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_1.35fr_1.15fr_.9fr] gap-4">
+        <PanelSection title="Now" meta={nowItems.length > 0 ? `(${nowItems.length})` : undefined}>
           <div className="space-y-2 text-xs">
-            {attentionItems.map((item) => (
+            {nowItems.map((item) => (
               <DecisionRow
                 key={item.id}
                 label={item.label}
                 meta={item.meta}
                 tone={item.tone === 'warning' ? 'warning' : undefined}
-                onClick={() => navigateAttention(item, navigateToPanel, navigateToGraph)}
+                onClick={() => navigateAttention(item, navigateToPanel)}
               />
             ))}
-            {attentionItems.length === 0 && (
-              <p className="text-muted-foreground">No immediate operator action queued.</p>
+            {nowItems.length === 0 && (
+              <p className="text-muted-foreground">No blocking operator action queued.</p>
             )}
           </div>
         </PanelSection>
 
-        <PanelSection title="Needs Verification" meta={trustSignals.length > 0 ? `(${trustSignals.length})` : undefined}>
-          <div className="space-y-2 text-xs">
-            {verificationItems.map(item => (
-              <DecisionRow
-                key={item.id}
-                label={item.label}
-                meta={item.meta}
-                tone={item.severity === 'info' ? undefined : 'warning'}
-                onClick={() => navigateVerification(item, navigateToPanel, navigateToGraph)}
-              />
-            ))}
-            {verificationItems.length === 0 && (
-              <p className="text-muted-foreground">No parser, path, IAM, or scoring caveats queued.</p>
-            )}
-          </div>
+        <PanelSection title="Next" meta={`(${frontier.length})`}>
+          {nextItems.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No frontier items ready.</p>
+          ) : (
+            <div className="space-y-2">
+              {nextItems.map(item => (
+                <NextActionRow
+                  key={item.id}
+                  item={item}
+                  onInspect={() => {
+                    if (item.nodeIds.length > 0) {
+                      navigateToGraphTarget({
+                        kind: 'frontier',
+                        frontierItemId: item.frontierItemId,
+                        nodeIds: item.nodeIds,
+                        label: item.label,
+                      });
+                    } else {
+                      navigateToPanel('frontier');
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </PanelSection>
+
+        <PanelSection title="Changed" meta={changedItems.length > 0 ? `(${changedItems.length})` : undefined}>
+          {changedItems.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No recent activity yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {changedItems.map(item => (
+                <ChangedRow
+                  key={item.id}
+                  item={item}
+                  onClick={() => navigateChanged(item, navigateToPanel, navigateToGraphTarget)}
+                />
+              ))}
+            </div>
+          )}
         </PanelSection>
 
         <PanelSection title="Current Access">
@@ -144,26 +180,12 @@ export function OverviewPanel() {
             <AccessFact label="Sessions" value={accessFacts.liveSessions} onClick={() => navigateToPanel('sessions')} />
             <AccessFact label="Hosts" value={accessFacts.hosts} onClick={() => navigateToGraphFilter('host')} />
             <AccessFact label="Valid creds" value={accessFacts.validCredentials} onClick={() => navigateToPanel('credentials')} />
+            <AccessFact
+              label="Campaigns"
+              value={accessFacts.pausedCampaigns > 0 ? `${accessFacts.activeCampaigns}/${accessFacts.pausedCampaigns}` : accessFacts.activeCampaigns}
+              onClick={() => navigateToPanel('campaigns')}
+            />
           </div>
-        </PanelSection>
-
-        <PanelSection title="Recent Change">
-          {recentChanges.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No recent activity yet.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {recentChanges.map((entry, index) => (
-                <FindingEntry
-                  key={activityKey(entry, index)}
-                  entry={entry}
-                  onClick={() => {
-                    const nodeId = entry.target_node_ids?.[0];
-                    nodeId ? navigateToGraph(nodeId, 2) : navigateToPanel('activity');
-                  }}
-                />
-              ))}
-            </div>
-          )}
         </PanelSection>
       </div>
 
@@ -327,38 +349,6 @@ export function OverviewPanel() {
       )}
 
       <TelemetrySection />
-
-      <PanelSection title="Top Frontier Items" meta={`(${frontier.length})`}>
-        {frontier.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No frontier items</p>
-        ) : (
-          <div className="space-y-1.5">
-            {frontier.slice(0, 15).map((item, i) => {
-              const targetNode = item.target_node || item.node_id || item.edge_target;
-              return (
-                <button
-                  key={item.frontier_item_id || item.id || i}
-                  onClick={() => targetNode && navigateToGraph(targetNode, 2)}
-                  className="w-full flex items-center gap-3 text-xs hover:bg-hover rounded px-1 py-0.5 -mx-1 transition-colors text-left"
-                >
-                  <span className="text-muted font-mono w-5 text-right">{i + 1}</span>
-                  <span className={cn(
-                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                    item.type === 'inferred_edge' ? 'bg-purple-dim text-purple' :
-                    item.type === 'untested_edge' ? 'bg-warning/10 text-warning' :
-                    item.type === 'network_discovery' ? 'bg-accent-dim text-accent' :
-                    'bg-elevated text-muted-foreground',
-                  )}>
-                    {item.type.replace(/_/g, ' ')}
-                  </span>
-                  <span className="text-muted-foreground flex-1 truncate">{item.description}</span>
-                  <span className="font-mono text-foreground">{(item.priority ?? 0).toFixed(1)}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </PanelSection>
     </div>
   );
 }
@@ -461,28 +451,83 @@ function activityKey(entry: ActivityEntry, index: number): string {
   return entry.event_id || entry.id || `${entry.timestamp}-${entry.event_type}-${index}`;
 }
 
+function NextActionRow({ item, onInspect }: { item: NextActionItem; onInspect: () => void }) {
+  return (
+    <div className="rounded border border-border bg-background/35 px-2.5 py-2 text-xs">
+      <div className="flex items-start gap-2">
+        <span className={cn('mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium', frontierTypeClass(item.type))}>
+          {item.type.replace(/_/g, ' ')}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-foreground leading-snug whitespace-normal break-words">{item.label}</div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+            <span>{item.reason}</span>
+            <span className="font-mono text-foreground/80 truncate max-w-full">{item.context}</span>
+          </div>
+        </div>
+        <button
+          onClick={onInspect}
+          className="flex-shrink-0 rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
+        >
+          Inspect
+        </button>
+        <span className="flex-shrink-0 font-mono text-foreground">{item.priority.toFixed(1)}</span>
+      </div>
+    </div>
+  );
+}
+
+function ChangedRow({ item, onClick }: { item: ChangedItem; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-hover transition-colors"
+    >
+      <span className={cn('h-1.5 w-1.5 rounded-full flex-shrink-0', item.tone === 'warning' ? 'bg-warning' : 'bg-accent')} />
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{item.label}</span>
+      {item.source === 'trust' && <span className="text-[10px] text-warning">verify</span>}
+      {item.meta && <span className="font-mono text-foreground">{item.meta}</span>}
+    </button>
+  );
+}
+
 function navigateAttention(
   item: AttentionItem,
   navigateToPanel: ReturnType<typeof useNavigation>['navigateToPanel'],
-  navigateToGraph: ReturnType<typeof useNavigation>['navigateToGraph'],
 ) {
-  if (item.nodeId) {
-    navigateToGraph(item.nodeId, 2);
+  if (item.route === 'credentials' && item.nodeId) {
+    navigateToPanel('credentials', item.nodeId);
+    return;
+  }
+  if (item.route === 'sessions') {
+    navigateToPanel('sessions');
     return;
   }
   navigateToPanel(item.route);
 }
 
-function navigateVerification(
-  item: ReturnType<typeof deriveVerificationItems>[number],
+function navigateChanged(
+  item: ChangedItem,
   navigateToPanel: ReturnType<typeof useNavigation>['navigateToPanel'],
-  navigateToGraph: ReturnType<typeof useNavigation>['navigateToGraph'],
+  navigateToGraphTarget: ReturnType<typeof useNavigation>['navigateToGraphTarget'],
 ) {
-  if (item.nodeId) {
-    navigateToGraph(item.nodeId, 2);
+  if (item.route === 'graph' && item.nodeId) {
+    navigateToGraphTarget({ kind: 'node', nodeId: item.nodeId, hops: 2, label: item.label });
+    return;
+  }
+  if (item.route === 'graph') {
+    navigateToPanel('activity');
     return;
   }
   navigateToPanel(item.route);
+}
+
+function frontierTypeClass(type: NextActionItem['type']): string {
+  if (type === 'inferred_edge') return 'bg-purple-dim text-purple';
+  if (type === 'untested_edge') return 'bg-warning/10 text-warning';
+  if (type === 'network_discovery') return 'bg-accent-dim text-accent';
+  if (type === 'credential_test') return 'bg-success/10 text-success';
+  return 'bg-elevated text-muted-foreground';
 }
 
 function DecisionRow({
