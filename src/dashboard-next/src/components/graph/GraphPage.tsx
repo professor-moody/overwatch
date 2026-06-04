@@ -34,6 +34,8 @@ import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } 
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
+const MAX_AUTO_LAYOUT_SPAN = 160;
+const TARGET_AUTO_LAYOUT_SPAN = 90;
 
 export function GraphPage() {
   // ---- Graph data layer ----
@@ -60,8 +62,8 @@ export function GraphPage() {
   const setGraphInspectorOpen = useDashboardUiStore(s => s.setGraphInspectorOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [layoutRunning, setLayoutRunning] = useState(false);
-  const [communityHullsActive, setCommunityHullsActive] = useState(true);
-  useCommunityHulls(rendererRef, graph, communityHullsActive);
+  const [communityHullsActive, setCommunityHullsActive] = useState(false);
+  useCommunityHulls(rendererRef, graph, communityHullsActive && stateRef.current.graphMode === 'overview', nodeReducer);
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
@@ -79,6 +81,71 @@ export function GraphPage() {
     bottom: 152,
     left: 112,
   }), [selectedNodeId]);
+  const fitVisibleGraph = useCallback((duration: number | unknown = 300, drawerOpen = !!selectedNodeId) => {
+    zoomToFit(duration, {
+      paddingFactor: 0.45,
+      padding: graphFitPadding(drawerOpen),
+      minRatio: 0.035,
+      maxRatio: 500,
+    });
+  }, [graphFitPadding, selectedNodeId, zoomToFit]);
+  const focusedFitOptions = useCallback((kind?: string | null) => ({
+    paddingFactor: kind === 'node' ? 1.05 : 1.25,
+    padding: graphFitPadding(true),
+    minRatio: kind === 'node' ? 0.05 : 0.04,
+    maxRatio: 500,
+  }), [graphFitPadding]);
+  const fitCurrentGraphContext = useCallback((duration: number | unknown = 300, drawerOpen = !!selectedNodeId) => {
+    const s = stateRef.current;
+    let focusedNodes: Set<string> | null = null;
+    if (s.graphMode === 'focused' && s.selectedNeighborhood?.size) {
+      focusedNodes = s.selectedNeighborhood;
+    } else if (s.focusNeighborhood?.size) {
+      focusedNodes = s.focusNeighborhood;
+    }
+
+    if (focusedNodes?.size) {
+      zoomToNodes(focusedNodes, {
+        ...focusedFitOptions(s.focusKind),
+        duration: typeof duration === 'number' && Number.isFinite(duration) ? duration : undefined,
+      });
+      return;
+    }
+
+    fitVisibleGraph(duration, drawerOpen);
+  }, [fitVisibleGraph, focusedFitOptions, selectedNodeId, stateRef, zoomToNodes]);
+  const normalizeAutoLayout = useCallback(() => {
+    if (graph.order === 0) return false;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    graph.forEachNode((_nodeId, attrs) => {
+      const x = attrs.x as number;
+      const y = attrs.y as number;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    });
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) return false;
+
+    const span = Math.max(maxX - minX, maxY - minY);
+    if (span <= MAX_AUTO_LAYOUT_SPAN) return false;
+
+    const scale = TARGET_AUTO_LAYOUT_SPAN / span;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    graph.forEachNode((nodeId, attrs) => {
+      const x = attrs.x as number;
+      const y = attrs.y as number;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      graph.setNodeAttribute(nodeId, 'x', (x - cx) * scale);
+      graph.setNodeAttribute(nodeId, 'y', (y - cy) * scale);
+    });
+    return true;
+  }, [graph]);
 
   // ---- Edit mode ----
   const [editMode, setEditMode] = useState(false);
@@ -137,10 +204,8 @@ export function GraphPage() {
         // Zoom to the focus neighborhood
         const neighborhood = getNeighborhood(graph, nodeId, hops);
         zoomToNodes(neighborhood, {
-          paddingFactor: 1.35,
-          padding: graphFitPadding(true),
-          minRatio: 0.05,
-          maxRatio: 1.6,
+          ...focusedFitOptions('node'),
+          duration: 300,
         });
       },
     });
@@ -168,7 +233,15 @@ export function GraphPage() {
           layout.start();
           setLayoutRunning(true);
         }
-        setTimeout(() => { layout.stop(); setLayoutRunning(false); }, 1500);
+        setTimeout(() => {
+          layout.stop();
+          setLayoutRunning(false);
+          if (!userPinnedLayoutRef.current) {
+            normalizeAutoLayout();
+            refresh();
+            fitCurrentGraphContext(250, !!selectedNodeId);
+          }
+        }, 1500);
       }
       refresh();
     } else if (storeGraph && storeGraph.nodes && storeGraph.nodes.length > 0) {
@@ -187,13 +260,22 @@ export function GraphPage() {
       setTimeout(() => {
         refresh();
         if (!userPinnedLayoutRef.current) {
-          zoomToFit();
+          fitCurrentGraphContext(250, false);
           layout.start();
           setLayoutRunning(true);
+          setTimeout(() => {
+            layout.stop();
+            setLayoutRunning(false);
+            if (!userPinnedLayoutRef.current) {
+              normalizeAutoLayout();
+              refresh();
+              fitCurrentGraphContext(300, false);
+            }
+          }, 1500);
         }
       }, 50);
     }
-  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh, zoomToFit, engagementId]);
+  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh, fitCurrentGraphContext, normalizeAutoLayout, engagementId, selectedNodeId]);
 
   useEffect(() => {
     if (!storeGraph?.nodes?.length) {
@@ -242,6 +324,7 @@ export function GraphPage() {
       s.focusLabel = resolved.label;
       s.focusKind = resolved.kind;
       refresh();
+      fitVisibleGraph(300, false);
       forceGraphUi();
       return true;
     }
@@ -249,8 +332,11 @@ export function GraphPage() {
     if (!resolved.primaryNode || resolved.nodes.size === 0) return false;
 
     const s = stateRef.current;
-    const focusNodes = resolved.hops > 0 && resolved.kind === 'node'
-      ? getNeighborhood(graph, resolved.primaryNode, resolved.hops)
+    const shouldExpandSingleContext =
+      resolved.nodes.size === 1 &&
+      (resolved.kind === 'evidence' || resolved.kind === 'finding' || resolved.kind === 'frontier');
+    const focusNodes = (resolved.hops > 0 && resolved.kind === 'node') || shouldExpandSingleContext
+      ? getNeighborhood(graph, resolved.primaryNode, resolved.kind === 'node' ? resolved.hops : 1)
       : new Set(resolved.nodes);
     s.graphMode = 'focused';
     s.focusNode = resolved.primaryNode;
@@ -276,14 +362,12 @@ export function GraphPage() {
     setSelectedNodeId(resolved.primaryNode);
     refresh();
     zoomToNodes(focusNodes, {
-      paddingFactor: resolved.kind === 'node' ? 1.35 : 1.2,
-      padding: graphFitPadding(true),
-      minRatio: resolved.kind === 'node' ? 0.05 : 0.04,
-      maxRatio: resolved.kind === 'node' ? 1.6 : 1.8,
+      ...focusedFitOptions(resolved.kind),
+      duration: 300,
     });
     forceGraphUi();
     return true;
-  }, [forceGraphUi, graph, graphFitPadding, refresh, stateRef, zoomToNodes]);
+  }, [fitVisibleGraph, forceGraphUi, graph, focusedFitOptions, refresh, stateRef, zoomToNodes]);
 
   useEffect(() => {
     const key = searchParams.toString();
@@ -322,9 +406,9 @@ export function GraphPage() {
     clearPathHighlight();
     exitNeighborhoodFocus();
     refresh();
-    zoomToFit();
+    fitVisibleGraph();
     forceGraphUi();
-  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, refresh, zoomToFit, forceGraphUi]);
+  }, [stateRef, clearSelection, clearPathHighlight, exitNeighborhoodFocus, refresh, fitVisibleGraph, forceGraphUi]);
 
   const handleToggleLayout = useCallback(() => {
     if (layout.running) {
@@ -359,13 +443,13 @@ export function GraphPage() {
     }
     setTimeout(() => {
       refresh();
-      zoomToFit();
+      fitVisibleGraph();
       layout.start();
       setLayoutRunning(true);
     }, 50);
     toast({ type: 'info', title: 'Positions reset', message: 'Auto layout is running again.' });
     forceGraphUi();
-  }, [engagementId, storeGraph, loadGraphData, refresh, zoomToFit, layout, toast, forceGraphUi]);
+  }, [engagementId, storeGraph, loadGraphData, refresh, fitVisibleGraph, layout, toast, forceGraphUi]);
 
   const handleSetGraphMode = useCallback((mode: string) => {
     stateRef.current.graphMode = mode as 'overview' | 'focused' | 'raw';
@@ -419,12 +503,11 @@ export function GraphPage() {
     s.selectedNeighborhood = neighborhood;
     refresh();
     zoomToNodes(neighborhood, {
-      paddingFactor: 1.35,
+      ...focusedFitOptions('preset'),
       padding: graphFitPadding(false),
-      minRatio: 0.05,
-      maxRatio: 1.8,
+      duration: 300,
     });
-  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding]);
+  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding, focusedFitOptions]);
 
   const handleToggleFilter = useCallback((type: string) => {
     const s = stateRef.current;
@@ -535,7 +618,7 @@ export function GraphPage() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       switch (e.key) {
-        case 'f': case 'F': e.preventDefault(); zoomToFit(); break;
+        case 'f': case 'F': e.preventDefault(); fitVisibleGraph(); break;
         case ' ': e.preventDefault(); handleToggleLayout(); break;
         case 'Escape':
           e.preventDefault();
@@ -552,7 +635,7 @@ export function GraphPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [zoomToFit, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
+  }, [fitVisibleGraph, zoomIn, zoomOut, handleToggleLayout, clearSelection, clearPathHighlight, handleReset]);
 
   const s = stateRef.current;
   const layers = useMemo(() => buildGraphLayerStates({
@@ -564,6 +647,7 @@ export function GraphPage() {
     hideOrphans: s.hideOrphans,
     hideReachableOnly: s.hideReachableOnly,
     pathEdgeCount: s.pathEdges.size,
+    graphMode: s.graphMode,
   }), [graph, showEdgeLabels, communityHullsActive, s, graphVersion, nodeCount, edgeCount, uiRevision]);
 
   // ---- Right-click context menu ----
@@ -591,7 +675,7 @@ export function GraphPage() {
         layers={layers}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
-        onFit={zoomToFit}
+        onFit={fitVisibleGraph}
         onToggleLayout={handleToggleLayout}
         onResumeLayout={handleResumeLayout}
         onReset={handleReset}

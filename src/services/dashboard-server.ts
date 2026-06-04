@@ -5,7 +5,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { join, dirname, extname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -15,7 +15,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { opsecPartialUpdateSchema } from '../types.js';
+import { opsecPartialUpdateSchema, type Campaign } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
@@ -25,6 +25,7 @@ import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
 import { ScriptedAgentRunner } from './scripted-agent-runner.js';
+import type { PendingAction } from './pending-action-queue.js';
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 
@@ -77,11 +78,26 @@ export interface DashboardStartResult {
   error?: string;
 }
 
+interface CachedStaticAsset {
+  content: string | Buffer;
+  mtimeMs: number;
+  size: number;
+}
+
 export interface DashboardEvent {
   type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved';
   timestamp: string;
   data: any;
 }
+
+type DashboardCampaign = Campaign & {
+  agent_count: number;
+  running_agents: number;
+  agents_total: number;
+  agents_active: number;
+  completion_pct: number;
+  findings_count: number;
+};
 
 export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
@@ -449,7 +465,7 @@ export class DashboardServer {
   };
 
   private dashboardDir: string | null = null;
-  private fileCache: Map<string, string | Buffer> = new Map();
+  private fileCache: Map<string, CachedStaticAsset> = new Map();
 
   private isTextAsset(ext: string): boolean {
     return ['.html', '.css', '.js', '.json', '.svg'].includes(ext);
@@ -740,13 +756,6 @@ export class DashboardServer {
     const ext = extname(cleanPath);
     const mime = DashboardServer.MIME_TYPES[ext] || 'application/octet-stream';
 
-    // Check cache
-    if (this.fileCache.has(cleanPath)) {
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-      res.end(this.fileCache.get(cleanPath));
-      return;
-    }
-
     try {
       const dashDir = this.resolveDashboardDir();
       const fullPath = join(dashDir, cleanPath);
@@ -759,10 +768,22 @@ export class DashboardServer {
         return;
       }
 
+      const stat = statSync(fullPath);
+      const cached = this.fileCache.get(cleanPath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+        res.end(cached.content);
+        return;
+      }
+
       const content = this.isTextAsset(ext)
         ? readFileSync(fullPath, 'utf-8')
         : readFileSync(fullPath);
-      this.fileCache.set(cleanPath, content);
+      this.fileCache.set(cleanPath, {
+        content,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      });
       res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
       res.end(content);
     } catch {
@@ -1233,10 +1254,36 @@ export class DashboardServer {
    * this helper rather than calling engine.getState() directly so the
    * payload stays consistent.
    */
-  private buildFrontendState(): ReturnType<GraphEngine['getState']> & { sessions: ReturnType<NonNullable<SessionManager>['list']> } {
+  private enrichCampaigns(campaigns: Campaign[] = this.engine.listCampaigns()): DashboardCampaign[] {
+    const allAgents = this.engine.getAllAgents();
+    return campaigns.map(c => {
+      const agents = allAgents.filter(a => a.campaign_id === c.id);
+      const completed = c.progress?.completed ?? 0;
+      const total = c.progress?.total ?? c.items.length;
+      const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+      const runningAgents = agents.filter(a => a.status === 'running').length;
+      return {
+        ...c,
+        agent_count: agents.length,
+        running_agents: runningAgents,
+        agents_total: agents.length,
+        agents_active: runningAgents,
+        completion_pct: completionPct,
+        findings_count: c.findings?.length ?? 0,
+      };
+    });
+  }
+
+  private buildFrontendState(): ReturnType<GraphEngine['getState']> & {
+    sessions: ReturnType<NonNullable<SessionManager>['list']>;
+    pending_actions: PendingAction[];
+    campaigns: DashboardCampaign[];
+  } {
     const state = this.engine.getState();
     const sessions = this.sessionManager?.list() ?? [];
-    return { ...state, sessions };
+    const pending_actions = this.engine.getPendingActionQueue().getPending();
+    const campaigns = this.enrichCampaigns();
+    return { ...state, sessions, pending_actions, campaigns };
   }
 
   private serveState(res: ServerResponse): void {
@@ -1530,16 +1577,7 @@ export class DashboardServer {
   }
 
   private serveCampaigns(res: ServerResponse): void {
-    const campaigns = this.engine.listCampaigns();
-    const allAgents = this.engine.getAllAgents();
-    const enriched = campaigns.map(c => {
-      const agents = allAgents.filter(a => a.campaign_id === c.id);
-      return {
-        ...c,
-        agent_count: agents.length,
-        running_agents: agents.filter(a => a.status === 'running').length,
-      };
-    });
+    const enriched = this.enrichCampaigns();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ campaigns: enriched, total: enriched.length }));
   }

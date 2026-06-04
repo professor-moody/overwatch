@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyActivity, extractActivityLinks, filterActivity } from '../activity-console';
+import { classifyActivity, extractActivityLinks, filterActivity, selectDefaultActivityEntry } from '../activity-console';
 import type { ActivityEntry } from '../types';
 
 function entry(partial: Partial<ActivityEntry>): ActivityEntry {
@@ -45,5 +45,15 @@ describe('activity console helpers', () => {
 
     expect(filterActivity(entries, { classFilter: 'failed' }).map(e => e.id)).toEqual(['b']);
     expect(filterActivity(entries, { search: 'host-1' }).map(e => e.id)).toEqual(['a']);
+  });
+
+  it('selects the newest visible entry from newest-first history', () => {
+    const entries = [
+      entry({ id: 'new', timestamp: '2026-05-15T10:02:00Z' }),
+      entry({ id: 'old', timestamp: '2026-05-15T10:00:00Z' }),
+    ];
+
+    expect(selectDefaultActivityEntry(entries)?.id).toBe('new');
+    expect(selectDefaultActivityEntry([])).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { Breadcrumb } from './Breadcrumb';
 import { useWs } from '../../providers/ws-provider';
 import { useKeyboardShortcuts, SHORTCUT_HELP } from '../../hooks/useKeyboardShortcuts';
 import { buildPanelPath, isPanelId, parseHash } from '../../hooks/useNavigation';
+import { cn } from '../../lib/utils';
 import { OverviewPanel } from '../panels/OverviewPanel';
 import { CampaignsPanel } from '../panels/CampaignsPanel';
 import { AgentsPanel } from '../panels/AgentsPanel';
@@ -63,6 +64,10 @@ export function OperatorLayout() {
   const activePanel: PanelId = isPanelId(panelId) ? panelId : 'overview';
   const [selectedItem, setSelectedItem] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem('overwatch-sidebar-expanded') !== 'false';
+  });
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -103,6 +108,10 @@ export function OperatorLayout() {
     };
   }, []);
 
+  useEffect(() => {
+    window.localStorage.setItem('overwatch-sidebar-expanded', String(sidebarExpanded));
+  }, [sidebarExpanded]);
+
   const ActiveComponent = PANEL_COMPONENTS[activePanel];
   const { connected } = useWs();
 
@@ -112,10 +121,18 @@ export function OperatorLayout() {
       <Toolbar />
 
       {/* Sidebar Nav */}
-      <Sidebar activePanel={activePanel} onPanelChange={handlePanelChange} />
+      <Sidebar
+        activePanel={activePanel}
+        onPanelChange={handlePanelChange}
+        expanded={sidebarExpanded}
+        onExpandedChange={setSidebarExpanded}
+      />
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto pt-12 pl-16">
+      <main className={cn(
+        'flex-1 overflow-y-auto pt-12 transition-[padding-left] duration-200',
+        sidebarExpanded ? 'pl-16 md:pl-56' : 'pl-16',
+      )}>
         {!connected && (
           <div className="mx-6 mt-2 mb-0 px-3 py-1.5 bg-destructive/5 border border-destructive/20 rounded text-xs text-destructive flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />

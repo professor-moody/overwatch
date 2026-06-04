@@ -353,10 +353,10 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
       {/* Identity */}
       <div className="grid grid-cols-2 gap-3">
         <Field label="Name *">
-          <input value={name} onChange={e => setName(e.target.value)} className="settings-input" placeholder="Engagement name" autoFocus />
+          <input value={name} onChange={e => setName(e.target.value)} className="settings-input w-full" placeholder="Engagement name" autoFocus />
         </Field>
         <Field label="Template">
-          <select value={templateId} onChange={e => applyTemplate(e.target.value)} className="settings-input">
+          <select value={templateId} onChange={e => applyTemplate(e.target.value)} className="settings-input w-full">
             <option value="">None</option>
             {templates.map(t => (
               <option key={t.id} value={t.id}>{t.name}{t.description ? ` — ${t.description.slice(0, 50)}` : ''}</option>
@@ -366,7 +366,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
       </div>
 
       <Field label="Profile">
-        <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input">
+        <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
           {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
       </Field>
@@ -399,7 +399,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Approval Mode">
-            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input">
+            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input w-full">
               {APPROVAL_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </Field>
@@ -409,11 +409,11 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Time Window Start (hour)">
-            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="—" />
+            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input w-full" placeholder="—" />
           </Field>
           <Field label="Time Window End (hour)">
             <div className="flex gap-2">
-              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1" placeholder="—" />
+              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1 min-w-0" placeholder="—" />
               <button onClick={() => { setTwStart(''); setTwEnd(''); }} className="text-xs text-muted-foreground hover:text-foreground">Clear</button>
             </div>
           </Field>
@@ -453,7 +453,7 @@ function ObjectivesEditor({ objectives, onChange }: { objectives: string[]; onCh
       {objectives.map((desc, i) => (
         <div key={i} className="flex gap-2">
           <input value={desc} onChange={e => update(i, e.target.value)}
-            className="settings-input flex-1" placeholder="e.g. Compromise Domain Controller" />
+            className="settings-input flex-1 min-w-0" placeholder="e.g. Compromise Domain Controller" />
           <button onClick={() => remove(i)} className="text-muted-foreground hover:text-destructive text-xs">&times;</button>
         </div>
       ))}
@@ -487,9 +487,9 @@ function FailurePatternsEditor({ patterns, onChange }: { patterns: FailurePatter
         </div>
       ))}
       <div className="grid grid-cols-3 gap-2">
-        <input value={technique} onChange={e => setTechnique(e.target.value)} placeholder="Technique" className="settings-input text-xs" />
-        <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target pattern (opt)" className="settings-input text-xs" />
-        <input value={warning} onChange={e => setWarning(e.target.value)} placeholder="Warning message" className="settings-input text-xs" />
+        <input value={technique} onChange={e => setTechnique(e.target.value)} placeholder="Technique" className="settings-input w-full text-xs" />
+        <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target pattern (opt)" className="settings-input w-full text-xs" />
+        <input value={warning} onChange={e => setWarning(e.target.value)} placeholder="Warning message" className="settings-input w-full text-xs" />
       </div>
       <button onClick={add} className="text-xs text-accent hover:underline">+ Add pattern</button>
     </div>
@@ -615,7 +615,7 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
             </select>
 
             {c.type === 'phase_completed' && (
-              <select value={c.phase_id} onChange={e => patchCriterion(i, { phase_id: e.target.value })} className="settings-input flex-1">
+              <select value={c.phase_id} onChange={e => patchCriterion(i, { phase_id: e.target.value })} className="settings-input flex-1 min-w-0">
                 {phases.filter((_, pi) => pi !== currentPhaseIdx).map(p => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
@@ -623,7 +623,7 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
             )}
 
             {c.type === 'objective_achieved' && (
-              <select value={c.objective_id} onChange={e => patchCriterion(i, { objective_id: e.target.value })} className="settings-input flex-1">
+              <select value={c.objective_id} onChange={e => patchCriterion(i, { objective_id: e.target.value })} className="settings-input flex-1 min-w-0">
                 {objectives.filter(o => o.trim()).map((o, oi) => (
                   <option key={oi} value={`obj-${oi + 1}`}>{o.slice(0, 60)}</option>
                 ))}
@@ -640,7 +640,7 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
             )}
 
             {c.type === 'access_level' && (
-              <select value={c.min_level} onChange={e => patchCriterion(i, { min_level: e.target.value })} className="settings-input flex-1">
+              <select value={c.min_level} onChange={e => patchCriterion(i, { min_level: e.target.value })} className="settings-input flex-1 min-w-0">
                 {ACCESS_LEVELS.map(l => <option key={l} value={l}>{l.replace(/_/g, ' ')}</option>)}
               </select>
             )}
@@ -813,9 +813,9 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
       <Section title="Identity">
         {editing ? (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Name"><input value={name} onChange={e => setName(e.target.value)} className="settings-input" /></Field>
+            <Field label="Name"><input value={name} onChange={e => setName(e.target.value)} className="settings-input w-full" /></Field>
             <Field label="Profile">
-              <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input">
+              <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
                 {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </Field>
@@ -877,7 +877,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Approval Mode">
-                <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input">
+                <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input w-full">
                   {APPROVAL_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </Field>
@@ -887,10 +887,10 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Time Window Start">
-                <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="—" />
+                <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input w-full" placeholder="—" />
               </Field>
               <Field label="Time Window End">
-                <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input" placeholder="—" />
+                <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input w-full" placeholder="—" />
               </Field>
             </div>
             <Field label="Blacklisted Techniques">

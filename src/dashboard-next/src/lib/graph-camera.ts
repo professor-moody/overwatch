@@ -61,9 +61,10 @@ export function computeGraphCameraFit(
   const paddingFactor = opts.paddingFactor ?? 1.45;
   const rangeX = Math.max(maxX - minX, 0.01) * paddingFactor;
   const rangeY = Math.max(maxY - minY, 0.01) * paddingFactor;
-  const rawRatio = Math.max(rangeX / availableWidth, rangeY / availableHeight) * 200;
+  const graphUnitPixels = Math.min(viewport.width, viewport.height);
+  const rawRatio = Math.max(rangeX / availableWidth, rangeY / availableHeight) * graphUnitPixels;
   const ratio = clamp(rawRatio, opts.minRatio ?? 0.035, opts.maxRatio ?? 2.4);
-  const pxToGraph = ratio / 200;
+  const pxToGraph = ratio / graphUnitPixels;
 
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;

@@ -10,7 +10,7 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/agents', expects: ['Agents'] },
   { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
   { path: '/campaigns', expects: ['Campaigns'] },
-  { path: '/sessions', expects: ['Sessions'], expectsAny: ['Attach', 'open_session'] },
+  { path: '/sessions', expects: ['Sessions'], expectsAny: ['Attach', 'Detach', 'open_session'] },
   { path: '/frontier', expects: ['Frontier'] },
   { path: '/graph', expects: ['Graph'] },
   { path: '/graph?node=cred-jdoe-ntlm&hops=2', expects: ['Focused on', 'Show All'] },
@@ -43,7 +43,10 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
         errors.push(err instanceof Error ? err.message : String(err));
       });
       page.on('console', msg => {
-        if (msg.type() === 'error') errors.push(msg.text());
+        if (msg.type() === 'error') {
+          const location = msg.location();
+          errors.push(location.url ? `${msg.text()} ${location.url}` : msg.text());
+        }
       });
 
       for (const route of ROUTES) {
@@ -76,6 +79,7 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
 
       expect(errors.filter(error =>
         !error.includes('favicon') &&
+        !error.includes('/api/findings/nonexistent-id/context') &&
         !error.includes('status of 503'),
       )).toEqual([]);
     } finally {

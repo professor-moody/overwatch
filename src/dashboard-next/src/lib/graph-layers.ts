@@ -29,6 +29,8 @@ export interface GraphLayerState {
   disabledReason?: string;
 }
 
+const MIN_COMMUNITY_REGION_SIZE = 4;
+
 export function isCredentialFlowEdge(edgeType: unknown): boolean {
   return typeof edgeType === 'string' && CREDENTIAL_FLOW_EDGE_TYPES.has(edgeType);
 }
@@ -60,7 +62,7 @@ export function hasCommunityHulls(graph: Graph): boolean {
     const key = String(cid);
     counts.set(key, (counts.get(key) || 0) + 1);
   });
-  return [...counts.values()].some(count => count >= 2);
+  return [...counts.values()].some(count => count >= MIN_COMMUNITY_REGION_SIZE);
 }
 
 export function buildGraphLayerStates({
@@ -72,6 +74,7 @@ export function buildGraphLayerStates({
   hideOrphans,
   hideReachableOnly,
   pathEdgeCount,
+  graphMode,
 }: {
   graph: Graph;
   edgeLabels: boolean;
@@ -81,8 +84,11 @@ export function buildGraphLayerStates({
   hideOrphans: boolean;
   hideReachableOnly: boolean;
   pathEdgeCount: number;
+  graphMode?: 'overview' | 'focused' | 'raw' | string;
 }): GraphLayerState[] {
-  const communityAvailable = hasCommunityHulls(graph);
+  const communityPresent = hasCommunityHulls(graph);
+  const communityModeAvailable = !graphMode || graphMode === 'overview';
+  const communityAvailable = communityPresent && communityModeAvailable;
   const credentialAvailable = hasCredentialFlowEdges(graph);
   const attackPathAvailable = attackPath || pathEdgeCount > 0;
 
@@ -96,11 +102,13 @@ export function buildGraphLayerStates({
     },
     {
       id: 'communityHulls',
-      label: 'Community hulls',
+      label: 'Community regions',
       enabled: communityHulls && communityAvailable,
       available: communityAvailable,
-      description: 'Draw soft regions around graph communities.',
-      disabledReason: 'No community groups are present.',
+      description: 'Opt-in compact regions for dense overview clusters.',
+      disabledReason: communityPresent
+        ? 'Community regions are hidden while the graph is focused.'
+        : `No community groups with ${MIN_COMMUNITY_REGION_SIZE}+ nodes are present.`,
     },
     {
       id: 'credentialFlow',

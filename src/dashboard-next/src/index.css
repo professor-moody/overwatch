@@ -112,7 +112,6 @@ body {
   padding: 4px 8px;
   font-size: 12px;
   color: var(--color-foreground);
-  width: 100%;
   outline: none;
   transition: border-color 0.15s;
 }

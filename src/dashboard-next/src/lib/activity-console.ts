@@ -72,6 +72,10 @@ export function filterActivity(entries: ActivityEntry[], filters: ActivityFilter
   });
 }
 
+export function selectDefaultActivityEntry(entries: ActivityEntry[]): ActivityEntry | null {
+  return entries[0] || null;
+}
+
 function stringDetail(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

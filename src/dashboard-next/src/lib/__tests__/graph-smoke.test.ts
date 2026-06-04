@@ -65,7 +65,7 @@ describe.skipIf(!smokeUrl)('dashboard graph smoke', () => {
         return {
           credentialDisabled: find('Credential flow')?.disabled ?? true,
           attackPathDisabled: find('Attack path')?.disabled ?? false,
-          communityDisabled: find('Community hulls')?.disabled ?? false,
+          communityDisabled: find('Community regions')?.disabled ?? false,
         };
       });
       expect(layerState.credentialDisabled).toBe(false);

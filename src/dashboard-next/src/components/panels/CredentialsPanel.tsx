@@ -8,6 +8,7 @@ import {
   getCredentialKindBadgeClass,
   getCredentialKindLabel,
   getCredentialMaterialKind,
+  getEffectiveCredentialStatus,
   getCredentialStatusClass,
   isCredentialReachable,
 } from '../../lib/credential-display';
@@ -25,6 +26,7 @@ export function CredentialsPanel() {
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [searchParams] = useSearchParams();
   const { navigateToGraphTarget, navigateToPanel } = useNavigation();
+  const nowMs = Date.now();
 
   const creds = useMemo(() => {
     return graph.nodes.filter(n => n.type === 'credential');
@@ -39,7 +41,7 @@ export function CredentialsPanel() {
     let list = creds;
 
     if (statusFilter !== 'all') {
-      list = list.filter(c => (c.credential_status as string | undefined) === statusFilter);
+      list = list.filter(c => getEffectiveCredentialStatus(c, nowMs) === statusFilter);
     }
 
     if (search.trim()) {
@@ -69,13 +71,13 @@ export function CredentialsPanel() {
     } else if (sortMode === 'status') {
       const rank: Record<string, number> = { active: 0, stale: 1, expired: 2, rotated: 3 };
       sorted.sort((a, b) => {
-        const ra = rank[(a.credential_status as string) ?? ''] ?? 4;
-        const rb = rank[(b.credential_status as string) ?? ''] ?? 4;
+        const ra = rank[getEffectiveCredentialStatus(a, nowMs) ?? ''] ?? 4;
+        const rb = rank[getEffectiveCredentialStatus(b, nowMs) ?? ''] ?? 4;
         return ra - rb;
       });
     }
     return sorted;
-  }, [creds, sortMode, statusFilter, search]);
+  }, [creds, sortMode, statusFilter, search, nowMs]);
 
   // Kind → count breakdown
   const kindCounts = useMemo(() => {
@@ -87,17 +89,15 @@ export function CredentialsPanel() {
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [creds]);
 
-  const activeCreds = creds.filter(c => (c.credential_status as string | undefined) === 'active').length;
-  const reachableCreds = creds.filter(c => isCredentialReachable(c, graph.edges)).length;
-  const unverifiedCreds = creds.filter(c => (c.credential_status as string | undefined) !== 'expired' && !isCredentialReachable(c, graph.edges)).length;
+  const activeCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) === 'active').length;
+  const reachableCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && isCredentialReachable(c, graph.edges)).length;
+  const unverifiedCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && !isCredentialReachable(c, graph.edges)).length;
   const expansionCandidates = creds.filter(isExpansionCandidate).length;
 
-  const now = Date.now();
-  const expiredTokenCreds = useMemo(() => creds.filter(c => {
-    const exp = c.cred_token_expires_at as string | undefined;
-    if (!exp) return false;
-    return new Date(exp).getTime() < now;
-  }), [creds, now]);
+  const expiredTokenCreds = useMemo(
+    () => creds.filter(c => !!c.cred_token_expires_at && getEffectiveCredentialStatus(c, nowMs) === 'expired'),
+    [creds, nowMs],
+  );
 
   const toggleReveal = (id: string) => {
     setRevealed(prev => {
@@ -191,8 +191,8 @@ export function CredentialsPanel() {
         <div className="space-y-2">
           {filtered.map(cred => {
             const kind = getCredentialMaterialKind(cred);
-            const status = cred.credential_status as string | undefined;
-            const reachable = isCredentialReachable(cred, graph.edges);
+            const status = getEffectiveCredentialStatus(cred, nowMs);
+            const reachable = status !== 'expired' && isCredentialReachable(cred, graph.edges);
             const isExpanded = expandedId === cred.id;
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;

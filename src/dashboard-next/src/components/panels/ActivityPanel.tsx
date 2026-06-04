@@ -5,7 +5,7 @@ import type { ActionExplanation, ActivityEntry, DecisionLogEntry, TimelineEntry 
 import { formatRelativeTime, formatTimestamp, cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
 import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
-import { classifyActivity, extractActivityLinks, filterActivity, type ActivityClass } from '../../lib/activity-console';
+import { classifyActivity, extractActivityLinks, filterActivity, selectDefaultActivityEntry, type ActivityClass } from '../../lib/activity-console';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
 import { extractActivityTrustSignals } from '../../lib/trust-signals';
@@ -31,9 +31,6 @@ export function ActivityPanel() {
   const [search, setSearch] = useState('');
   const [trustOnly, setTrustOnly] = useState(false);
   const [selectedEntryOverride, setSelectedEntryOverride] = useState<ActivityEntry | null>(null);
-  const [autoScroll] = useState(true);
-  const listRef = useRef<HTMLDivElement>(null);
-  const hoverRef = useRef(false);
   const hasLoaded = useRef(false);
 
   const loadHistory = useCallback(async () => {
@@ -64,7 +61,7 @@ export function ActivityPanel() {
   }, [entries, classFilter, search, trustOnly]);
   const selectedEntry = selectedEntryOverride && filtered.includes(selectedEntryOverride)
     ? selectedEntryOverride
-    : filtered[filtered.length - 1] || null;
+    : selectDefaultActivityEntry(filtered);
   const classCounts = useMemo(() => {
     const counts: Record<ActivityClass, number> = {
       approval: 0,
@@ -78,12 +75,6 @@ export function ActivityPanel() {
     for (const entry of entries) counts[classifyActivity(entry)]++;
     return counts;
   }, [entries]);
-
-  useEffect(() => {
-    if (autoScroll && !hoverRef.current && listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
-  }, [filtered, autoScroll]);
 
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
@@ -127,12 +118,7 @@ export function ActivityPanel() {
           ) : filtered.length === 0 ? (
             <EmptyState message={entries.length === 0 ? 'No activity yet.' : 'No matches.'} className="m-3" />
           ) : (
-            <div
-              ref={listRef}
-              className="overflow-y-auto p-2 space-y-1"
-              onMouseEnter={() => { hoverRef.current = true; }}
-              onMouseLeave={() => { hoverRef.current = false; }}
-            >
+            <div className="overflow-y-auto p-2 space-y-1">
               {filtered.map((entry, index) => (
                 <ActivityRow
                   key={activityKey(entry, index)}

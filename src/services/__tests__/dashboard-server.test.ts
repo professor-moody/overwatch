@@ -630,9 +630,43 @@ describe('DashboardServer', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('revalidates cached static files after a dashboard rebuild', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-dashboard-cache-'));
+    const indexPath = join(tempDir, 'index.html');
+    writeFileSync(indexPath, '<html>old</html>', 'utf-8');
+
+    const res = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: undefined as string | Buffer | undefined,
+      writeHead(statusCode: number, headers: Record<string, string>) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body?: string | Buffer) {
+        this.body = body;
+      },
+      setHeader() {},
+    };
+
+    (dashboard as any).dashboardDir = tempDir;
+    (dashboard as any).serveStaticFile('/index.html', res);
+    expect(res.body).toBe('<html>old</html>');
+
+    writeFileSync(indexPath, '<html>new dashboard bundle</html>', 'utf-8');
+    res.statusCode = 0;
+    res.body = undefined;
+    (dashboard as any).serveStaticFile('/index.html', res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('<html>new dashboard bundle</html>');
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it('stop() clears fileCache', async () => {
     // Populate cache by accessing it directly
-    (dashboard as any).fileCache.set('test.html', '<html></html>');
+    (dashboard as any).fileCache.set('test.html', { content: '<html></html>', mtimeMs: 1, size: 13 });
     expect((dashboard as any).fileCache.size).toBe(1);
 
     await dashboard.stop();

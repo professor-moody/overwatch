@@ -15,6 +15,8 @@ import {
   Key,
   FlaskConical,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../../lib/utils';
@@ -24,6 +26,8 @@ import type { PanelId } from './OperatorLayout';
 interface SidebarProps {
   activePanel: PanelId;
   onPanelChange: (panel: PanelId) => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }
 
 type SidebarItem = {
@@ -67,7 +71,7 @@ const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
   },
 ];
 
-export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
+export function Sidebar({ activePanel, onPanelChange, expanded, onExpandedChange }: SidebarProps) {
   const navigate = useNavigate();
   const runningAgents = useEngagementStore((s) => s.agents.filter(a => a.status === 'running').length);
   const pendingActions = useEngagementStore((s) => s.pendingActions.length);
@@ -90,11 +94,23 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
   };
 
   return (
-    <nav className="fixed left-0 top-12 bottom-0 w-16 bg-surface border-r border-border flex flex-col items-center py-2 z-40">
-      <div className="flex flex-col gap-2 flex-1">
+    <nav
+      className={cn(
+        'fixed left-0 top-12 bottom-0 bg-surface border-r border-border flex flex-col py-2 z-40 transition-[width] duration-200',
+        expanded ? 'w-16 md:w-56' : 'w-16',
+      )}
+    >
+      <div className="flex flex-col gap-2 flex-1 px-2">
         {NAV_GROUPS.map((group) => (
-          <div key={group.label} className="flex flex-col items-center gap-1">
-            <div className="text-[8px] uppercase tracking-[0.12em] text-muted h-3">{group.label.slice(0, 3)}</div>
+          <div key={group.label} className="flex flex-col gap-1">
+            <div className={cn(
+              'h-4 uppercase text-muted',
+              expanded
+                ? 'hidden md:block px-2 text-[10px] tracking-[0.16em]'
+                : 'text-center text-[8px] tracking-[0.12em]',
+            )}>
+              {expanded ? group.label : group.label.slice(0, 3)}
+            </div>
             {group.items.map((item) => {
               const active = item.id ? activePanel === item.id : false;
               return (
@@ -102,6 +118,7 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
                   key={item.id || item.path}
                   item={item}
                   active={active}
+                  expanded={expanded}
                   badge={item.id ? badges[item.id] || 0 : 0}
                   onClick={() => {
                     if (item.path) navigate(item.path);
@@ -113,6 +130,17 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
           </div>
         ))}
       </div>
+      <button
+        className={cn(
+          'mx-2 mt-2 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-hover transition-colors flex items-center justify-center',
+          expanded && 'md:justify-start md:gap-3 md:px-3',
+        )}
+        onClick={() => onExpandedChange(!expanded)}
+        title={expanded ? 'Collapse navigation' : 'Expand navigation'}
+      >
+        {expanded ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+        {expanded && <span className="hidden md:inline text-xs">Collapse</span>}
+      </button>
     </nav>
   );
 }
@@ -120,11 +148,13 @@ export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
 function SidebarButton({
   item,
   active,
+  expanded,
   badge,
   onClick,
 }: {
   item: SidebarItem;
   active: boolean;
+  expanded: boolean;
   badge?: number;
   onClick: () => void;
 }) {
@@ -132,8 +162,9 @@ function SidebarButton({
   return (
     <button
       className={cn(
-        'group w-10 h-9 flex items-center justify-center rounded-md text-muted-foreground transition-colors relative',
+        'group h-9 flex items-center rounded-md text-muted-foreground transition-colors relative',
         'hover:text-foreground hover:bg-hover',
+        expanded ? 'w-10 justify-center md:w-full md:justify-start md:gap-3 md:px-3' : 'w-10 justify-center',
         active && 'text-accent bg-accent-dim',
       )}
       onClick={onClick}
@@ -141,11 +172,18 @@ function SidebarButton({
     >
       <Icon className="w-4 h-4" />
       {active && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-accent" />}
-      <span className="pointer-events-none absolute left-12 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-elevated border border-border px-2 py-1 text-[11px] text-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+      {expanded && <span className="hidden md:inline truncate text-xs font-medium">{item.label}</span>}
+      <span className={cn(
+        'pointer-events-none absolute left-12 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-elevated border border-border px-2 py-1 text-[11px] text-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100',
+        expanded && 'md:hidden',
+      )}>
         {item.label}
       </span>
       {badge != null && badge > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] flex items-center justify-center rounded-full bg-accent text-background text-[8px] font-bold leading-none px-0.5">
+        <span className={cn(
+          'absolute min-w-[14px] h-[14px] flex items-center justify-center rounded-full bg-accent text-background text-[8px] font-bold leading-none px-0.5',
+          expanded ? '-top-0.5 -right-0.5 md:top-1/2 md:right-2 md:-translate-y-1/2' : '-top-0.5 -right-0.5',
+        )}>
           {badge > 99 ? '99+' : badge}
         </span>
       )}

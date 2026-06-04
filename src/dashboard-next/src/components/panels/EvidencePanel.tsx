@@ -83,7 +83,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
       <div className="flex gap-2">
         <input value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
-          placeholder="Node ID or label…" className="settings-input flex-1" />
+          placeholder="Node ID or label…" className="settings-input flex-1 min-w-0" />
         <ActionButton onClick={search} variant="primary">Search</ActionButton>
       </div>
 
@@ -230,13 +230,13 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
   return (
     <PanelSection title="Attack Paths" className="space-y-3">
       <div className="flex gap-2">
-        <select value={selectedObjective} onChange={e => setSelectedObjective(e.target.value)} className="settings-input flex-1">
+        <select value={selectedObjective} onChange={e => setSelectedObjective(e.target.value)} className="settings-input flex-1 min-w-0">
           <option value="">Select objective…</option>
           {objectives.map(obj => (
             <option key={obj.id} value={obj.id}>{obj.description}{obj.achieved ? ' ✓' : ''}</option>
           ))}
         </select>
-        <select value={optimize} onChange={e => setOptimize(e.target.value as typeof optimize)} className="settings-input w-auto">
+        <select value={optimize} onChange={e => setOptimize(e.target.value as typeof optimize)} className="settings-input w-36 flex-none">
           <option value="confidence">Confidence</option>
           <option value="stealth">Stealth</option>
           <option value="balanced">Balanced</option>

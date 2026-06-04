@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useNavigation } from '../../hooks/useNavigation';
 import type { FrontierItem } from '../../lib/types';
 import { cn } from '../../lib/utils';
 import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
@@ -45,6 +46,29 @@ function getNoiseColor(noise: number): string {
 function metric(item: FrontierItem, key: string): string {
   const v = item.graph_metrics?.[key];
   return v !== undefined && v !== null ? String(v) : '—';
+}
+
+function rankReason(item: FrontierItem): string {
+  const parts: string[] = [];
+  const hops = item.graph_metrics?.hops_to_objective;
+  const fanOut = item.graph_metrics?.fan_out_estimate;
+  const confidence = item.graph_metrics?.confidence;
+
+  if (typeof hops === 'number') parts.push(hops <= 1 ? 'near objective' : `${hops} hops to objective`);
+  if (typeof fanOut === 'number' && fanOut > 0) parts.push(`${fanOut} follow-up${fanOut === 1 ? '' : 's'}`);
+  if (typeof confidence === 'number' && confidence > 1) parts.push('planner boost');
+  if (item.chain_id) parts.push('chain item');
+  if (item.opsec_noise != null && item.opsec_noise <= 0.3) parts.push('low noise');
+  return parts.length > 0 ? parts.join(' · ') : 'ranked by priority and graph context';
+}
+
+function actionContext(item: FrontierItem): string {
+  if (item.edge_source && item.edge_target) return `${item.edge_source} → ${item.edge_target}`;
+  if (item.node_id) return item.node_id;
+  if (item.target_node) return item.target_node;
+  if (item.source_node) return item.source_node;
+  if (item.chain_id) return item.chain_id;
+  return item.type.replace(/_/g, ' ');
 }
 
 export function FrontierPanel() {
@@ -186,6 +210,7 @@ function FrontierItemCard({
   item: FrontierItem;
   related?: ReturnType<typeof deriveNodeRelationships> | null;
 }) {
+  const { navigateToGraphTarget } = useNavigation();
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
   const noise = item.opsec_noise ?? 0;
   const noisePercent = Math.round(noise * 100);
@@ -211,13 +236,28 @@ function FrontierItemCard({
   const frontierKey = getFrontierKey(item);
 
   return (
-    <div className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
-      <div className="flex items-center gap-2 mb-1">
+    <div className="px-3 py-3 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
+      <div className="flex items-start gap-2 mb-1.5">
         <StatusPill className={badge.cls}>{badge.label}</StatusPill>
-        <span className="text-xs text-foreground flex-1 truncate" title={item.description}>
+        <span className="text-xs text-foreground flex-1 min-w-0 leading-snug whitespace-normal break-words" title={item.description}>
           {label}
         </span>
+        {nodeIds.length > 0 && (
+          <ActionButton
+            onClick={() => navigateToGraphTarget({ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' })}
+            variant="secondary"
+            size="xs"
+            className="flex-shrink-0"
+          >
+            Inspect
+          </ActionButton>
+        )}
         <span className="text-xs font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
+      </div>
+
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        <span>{rankReason(item)}</span>
+        <span className="font-mono text-foreground/80 truncate max-w-full">{actionContext(item)}</span>
       </div>
 
       {chips.length > 0 && (

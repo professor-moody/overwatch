@@ -114,6 +114,13 @@ export interface Campaign {
   status: 'draft' | 'active' | 'paused' | 'completed' | 'aborted';
   items: Array<FrontierItem | string>;
   abort_conditions?: AbortCondition[];
+  progress?: {
+    total: number;
+    completed: number;
+    succeeded: number;
+    failed: number;
+    consecutive_failures: number;
+  };
   created_at: string;
   started_at?: string;
   completed_at?: string;
@@ -121,6 +128,8 @@ export interface Campaign {
   findings_count?: number;
   agents_active?: number;
   agents_total?: number;
+  agent_count?: number;
+  running_agents?: number;
   parent_id?: string;
 }
 

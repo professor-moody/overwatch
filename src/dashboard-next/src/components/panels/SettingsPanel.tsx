@@ -126,10 +126,10 @@ function IdentitySection({ config, onSave }: { config: EngagementConfig; onSave:
     <Section title="Identity">
       <div className="grid grid-cols-2 gap-4">
         <Field label="Name">
-          <input value={name} onChange={e => setName(e.target.value)} className="settings-input" />
+          <input value={name} onChange={e => setName(e.target.value)} className="settings-input w-full" />
         </Field>
         <Field label="Profile">
-          <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input">
+          <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
             <option value="">—</option>
             <option value="network">network</option>
             <option value="ad">ad</option>
@@ -212,8 +212,8 @@ function ObjectivesSection({ objectives, onReload }: { objectives: Objective[]; 
         <div className="space-y-2 p-3 rounded border border-border bg-elevated mt-2">
           <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="Objective description" className="settings-input w-full" />
           <div className="grid grid-cols-2 gap-2">
-            <input value={nodeType} onChange={e => setNodeType(e.target.value)} placeholder="Target node type (optional)" className="settings-input" />
-            <input value={edgeTypes} onChange={e => setEdgeTypes(e.target.value)} placeholder="Edge types, comma-sep (optional)" className="settings-input" />
+            <input value={nodeType} onChange={e => setNodeType(e.target.value)} placeholder="Target node type (optional)" className="settings-input w-full" />
+            <input value={edgeTypes} onChange={e => setEdgeTypes(e.target.value)} placeholder="Edge types, comma-sep (optional)" className="settings-input w-full" />
           </div>
           <div className="flex gap-2">
             <button onClick={submit} className="settings-save-btn">Add</button>
@@ -356,7 +356,7 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Approval Mode">
-            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input">
+            <select value={approvalMode} onChange={e => setApprovalMode(e.target.value)} className="settings-input w-full">
               <option value="auto-approve">Auto Approve</option>
               <option value="approve-critical">Approve Critical</option>
               <option value="approve-all">Approve All</option>
@@ -370,11 +370,11 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Time Window Start (hour)">
-            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input" placeholder="—" />
+            <input type="number" min="0" max="23" value={twStart} onChange={e => setTwStart(e.target.value)} className="settings-input w-full" placeholder="—" />
           </Field>
           <Field label="Time Window End (hour)">
             <div className="flex gap-2">
-              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1" placeholder="—" />
+              <input type="number" min="0" max="23" value={twEnd} onChange={e => setTwEnd(e.target.value)} className="settings-input flex-1 min-w-0" placeholder="—" />
               <button onClick={() => { setTwStart(''); setTwEnd(''); }} className="text-xs text-muted-foreground hover:text-foreground">Clear</button>
             </div>
           </Field>

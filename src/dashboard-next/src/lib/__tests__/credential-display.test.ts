@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getCredentialKindLabel,
   getCredentialMaterialKind,
+  getEffectiveCredentialStatus,
   isCredentialReachable,
 } from '../credential-display';
 import type { ExportedEdge, ExportedNode } from '../types';
@@ -40,5 +41,29 @@ describe('credential display helpers', () => {
     ];
     expect(isCredentialReachable(cred({}), edges)).toBe(true);
     expect(isCredentialReachable(cred({ id: 'cred-2' }), edges)).toBe(false);
+  });
+
+  it('preserves non-active credential status values', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    expect(getEffectiveCredentialStatus(cred({ credential_status: 'stale' }), now)).toBe('stale');
+    expect(getEffectiveCredentialStatus(cred({ credential_status: 'rotated' }), now)).toBe('rotated');
+    expect(getEffectiveCredentialStatus(cred({ credential_status: 'expired' }), now)).toBe('expired');
+  });
+
+  it('keeps active non-token and unexpired token credentials active', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    expect(getEffectiveCredentialStatus(cred({ credential_status: 'active' }), now)).toBe('active');
+    expect(getEffectiveCredentialStatus(cred({
+      credential_status: 'active',
+      cred_token_expires_at: '2026-05-15T01:00:00Z',
+    }), now)).toBe('active');
+  });
+
+  it('treats active tokens past cred_token_expires_at as expired', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    expect(getEffectiveCredentialStatus(cred({
+      credential_status: 'active',
+      cred_token_expires_at: '2026-05-14T23:59:59Z',
+    }), now)).toBe('expired');
   });
 });

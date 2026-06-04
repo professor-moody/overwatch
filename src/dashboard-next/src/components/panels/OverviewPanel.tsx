@@ -103,40 +103,7 @@ export function OverviewPanel() {
     <div className="space-y-6">
       <PageHeader title="Overview" />
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <MetricTile
-          label="Nodes"
-          value={graphSummary?.total_nodes ?? 0}
-          sub={`${graphSummary?.confirmed_edges ?? 0} confirmed · ${graphSummary?.inferred_edges ?? 0} inferred`}
-          onClick={() => navigateToGraph()}
-        />
-        <MetricTile
-          label="Objectives"
-          value={`${achievedCount}/${objectives.length}`}
-          sub={achievedCount === objectives.length && objectives.length > 0 ? 'All achieved' : 'In progress'}
-          accent={achievedCount === objectives.length && objectives.length > 0}
-        />
-        <MetricTile
-          label="Frontier"
-          value={frontier.length}
-          sub="actionable items"
-          onClick={() => navigateToPanel('frontier')}
-        />
-        <MetricTile
-          label="Agents"
-          value={agents.filter((a) => a.status === 'running').length}
-          sub={`${agents.length} total`}
-          onClick={() => navigateToPanel('agents')}
-        />
-        <MetricTile
-          label="Access"
-          value={accessSummary.current_access_level}
-          sub={`${accessSummary.compromised_hosts.length} hosts · ${accessSummary.valid_credentials.length} creds`}
-          accent={accessSummary.current_access_level === 'domain_admin'}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_1.2fr_.8fr_.8fr] gap-4">
         <PanelSection title="Needs Attention">
           <div className="space-y-2 text-xs">
             {attentionItems.map((item) => (
@@ -198,6 +165,39 @@ export function OverviewPanel() {
             </div>
           )}
         </PanelSection>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <MetricTile
+          label="Nodes"
+          value={graphSummary?.total_nodes ?? 0}
+          sub={`${graphSummary?.confirmed_edges ?? 0} confirmed · ${graphSummary?.inferred_edges ?? 0} inferred`}
+          onClick={() => navigateToGraph()}
+        />
+        <MetricTile
+          label="Objectives"
+          value={`${achievedCount}/${objectives.length}`}
+          sub={achievedCount === objectives.length && objectives.length > 0 ? 'All achieved' : 'In progress'}
+          accent={achievedCount === objectives.length && objectives.length > 0}
+        />
+        <MetricTile
+          label="Frontier"
+          value={frontier.length}
+          sub="actionable items"
+          onClick={() => navigateToPanel('frontier')}
+        />
+        <MetricTile
+          label="Agents"
+          value={agents.filter((a) => a.status === 'running').length}
+          sub={`${agents.length} total`}
+          onClick={() => navigateToPanel('agents')}
+        />
+        <MetricTile
+          label="Access"
+          value={accessSummary.current_access_level}
+          sub={`${accessSummary.compromised_hosts.length} hosts · ${accessSummary.valid_credentials.length} creds`}
+          accent={accessSummary.current_access_level === 'domain_admin'}
+        />
       </div>
 
       {opsecBudget && <OpsecGauge budget={opsecBudget} />}

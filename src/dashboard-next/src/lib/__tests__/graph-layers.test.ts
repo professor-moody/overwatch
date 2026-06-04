@@ -58,6 +58,51 @@ describe('graph layer helpers', () => {
     });
   });
 
+  it('only offers community regions for substantial overview groups', () => {
+    const graph = new Graph();
+    graph.addNode('a', { nodeType: 'host', community: 'one' });
+    graph.addNode('b', { nodeType: 'host', community: 'one' });
+    graph.addNode('c', { nodeType: 'host', community: 'one' });
+
+    expect(hasCommunityHulls(graph)).toBe(false);
+
+    graph.addNode('d', { nodeType: 'host', community: 'one' });
+    expect(hasCommunityHulls(graph)).toBe(true);
+
+    const focusedLayers = buildGraphLayerStates({
+      graph,
+      edgeLabels: true,
+      communityHulls: true,
+      credentialFlow: false,
+      attackPath: false,
+      hideOrphans: false,
+      hideReachableOnly: false,
+      pathEdgeCount: 0,
+      graphMode: 'focused',
+    });
+    expect(focusedLayers.find(l => l.id === 'communityHulls')).toMatchObject({
+      available: false,
+      enabled: false,
+    });
+
+    const overviewLayers = buildGraphLayerStates({
+      graph,
+      edgeLabels: true,
+      communityHulls: true,
+      credentialFlow: false,
+      attackPath: false,
+      hideOrphans: false,
+      hideReachableOnly: false,
+      pathEdgeCount: 0,
+      graphMode: 'overview',
+    });
+    expect(overviewLayers.find(l => l.id === 'communityHulls')).toMatchObject({
+      available: true,
+      enabled: true,
+      label: 'Community regions',
+    });
+  });
+
   it('enables attack path only when a path exists or the layer is already active', () => {
     const graph = new Graph();
     const withoutPath = buildGraphLayerStates({

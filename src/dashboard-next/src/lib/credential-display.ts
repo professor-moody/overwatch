@@ -3,6 +3,8 @@ import type { ExportedEdge, ExportedNode } from './types';
 export interface CredentialKindSource {
   cred_material_kind?: unknown;
   cred_type?: unknown;
+  credential_status?: unknown;
+  cred_token_expires_at?: unknown;
   [key: string]: unknown;
 }
 
@@ -67,6 +69,21 @@ export function getCredentialStatusClass(status: string | undefined): string {
     case 'rotated': return 'text-destructive bg-destructive/10';
     default: return 'text-muted-foreground bg-elevated';
   }
+}
+
+export function getEffectiveCredentialStatus(
+  cred: CredentialKindSource,
+  nowMs: number = Date.now(),
+): string | undefined {
+  const rawStatus = typeof cred.credential_status === 'string' ? cred.credential_status : undefined;
+  if (rawStatus && rawStatus !== 'active') return rawStatus;
+
+  if (typeof cred.cred_token_expires_at === 'string' && cred.cred_token_expires_at.trim()) {
+    const expiresAt = new Date(cred.cred_token_expires_at).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt < nowMs) return 'expired';
+  }
+
+  return rawStatus;
 }
 
 export function isCredentialReachable(cred: ExportedNode, edges: Pick<ExportedEdge, 'source' | 'type'>[]): boolean {

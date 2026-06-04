@@ -64,6 +64,7 @@ export function SessionsPanel() {
   const [buffer, setBuffer] = useState<SessionBufferResponse | null>(null);
   const [bufferQuery, setBufferQuery] = useState('');
   const terminalsRef = useRef<Map<string, TerminalEntry>>(new Map());
+  const autoAttachAttemptedRef = useRef<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -258,6 +259,17 @@ export function SessionsPanel() {
       setCopied(null);
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedSession || selectedSession.state !== 'connected') return;
+    if (attachedIds.includes(selectedSession.id)) return;
+    if (autoAttachAttemptedRef.current.has(selectedSession.id)) return;
+
+    autoAttachAttemptedRef.current.add(selectedSession.id);
+    attach(selectedSession.id).catch(() => {
+      autoAttachAttemptedRef.current.delete(selectedSession.id);
+    });
+  }, [attach, attachedIds, selectedSession?.id, selectedSession?.state]);
 
   useEffect(() => {
     if (!activeTab || !containerRef.current) return;
@@ -476,7 +488,7 @@ export function SessionsPanel() {
                         value={bufferQuery}
                         onChange={e => setBufferQuery(e.target.value)}
                         placeholder="Search buffer"
-                        className="settings-input h-7 text-xs flex-1"
+                        className="settings-input h-7 text-xs flex-1 min-w-0"
                       />
                       <button
                         onClick={() => selectedSession && api.getSessionBuffer(selectedSession.id, { tailBytes: 12000 }).then(setBuffer).catch(() => setBuffer(null))}
@@ -551,8 +563,13 @@ export function SessionsPanel() {
                   <div ref={containerRef} className="flex-1 min-h-0 bg-background" />
                 </>
               ) : (
-                <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                   <EmptyPanelState message="Attach a connected session to open a terminal." className="border-0 bg-transparent" />
+                  {selectedSession?.state === 'connected' && (
+                    <ActionButton onClick={() => attach(selectedSession.id)} variant="success">
+                      Attach Terminal
+                    </ActionButton>
+                  )}
                 </div>
               )}
             </PanelSection>
