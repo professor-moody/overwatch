@@ -14,8 +14,9 @@ import type { SkillIndex } from './skill-index.js';
 import {
   generateFullReport, buildFindings, buildAttackNarrative, buildRemediationRanking,
   buildAttackPaths,
+  buildReportEvidenceModel,
 } from './report-generator.js';
-import type { ReportInput, AttackPath } from './report-generator.js';
+import type { ReportInput, AttackPath, ReportProfile, EvidenceStyle, ReportOptions } from './report-generator.js';
 import type { HtmlReportData, HtmlTimelineEntry } from './report-html.js';
 import type { HtmlComplianceMapping } from './report-html.js';
 import { renderReportHtml } from './report-html.js';
@@ -42,6 +43,8 @@ export interface AssembleOptions {
   max_paths_per_objective?: number;
   theme?: 'light' | 'dark';
   client_safe?: boolean;
+  profile?: ReportProfile;
+  evidence_style?: EvidenceStyle;
 }
 
 export interface AssembledReport {
@@ -50,6 +53,10 @@ export interface AssembledReport {
   content: string;
   /** Findings count (after build, pre-redaction filtering — these are the same set the renderer used). */
   findings_count: number;
+  evidence_count: number;
+  profile: ReportProfile;
+  redaction_mode: 'operator' | 'client_safe';
+  navigator_layer?: unknown;
   severity_summary: { critical: number; high: number; medium: number; low: number; info: number };
 }
 
@@ -119,9 +126,12 @@ export function assembleReport(
     max_paths_per_objective = 3,
     theme = 'light',
     client_safe = false,
+    evidence_style = 'proof_cards',
   } = opts;
 
-  const redactionOpts = { client_safe };
+  const profile: ReportProfile = opts.profile ?? (client_safe ? 'client' : 'operator');
+  const effectiveClientSafe = client_safe || profile === 'client';
+  const redactionOpts = { client_safe: effectiveClientSafe };
   const config = engine.getConfig();
   const graph = engine.exportGraph();
   const history = engine.getFullHistory();
@@ -167,14 +177,22 @@ export function assembleReport(
   const evidenceLoader = (id: string): string | null => {
     try { return engine.getEvidenceStore().getRawOutput(id); } catch { return null; }
   };
+  const evidenceRecordLoader: NonNullable<ReportOptions['evidence_record_loader']> = (id: string) => {
+    try { return engine.getEvidenceStore().getRecord(id); } catch { return undefined; }
+  };
 
   const renderOptions = {
     include_evidence, include_narrative, include_retrospective,
     include_compliance, include_attack_navigator, include_gap_analysis,
     evidence_loader: evidenceLoader,
+    evidence_record_loader: evidenceRecordLoader,
+    report_profile: profile,
+    evidence_style,
   };
 
-  const findings = buildFindings(graph, history, config, { evidenceLoader });
+  const baseFindings = buildFindings(graph, history, config, { evidenceLoader, evidenceRecordLoader });
+  const proofModel = buildReportEvidenceModel(baseFindings, { profile, includeEvidence: include_evidence });
+  const findings = proofModel.findings;
   const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
   const rawMarkdown = appendTrustSignalNotes(generateFullReport(reportInput, renderOptions), trustSignalSummary.signals);
   const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
@@ -187,11 +205,11 @@ export function assembleReport(
   };
 
   let content: string;
+  const navigatorLayer = include_attack_navigator
+    ? generateNavigatorLayer(findings, graph, config.name)
+    : undefined;
   if (format === 'json') {
     const classifications = classifyAllFindings(findings, graph);
-    const navigatorLayer = include_attack_navigator
-      ? generateNavigatorLayer(findings, graph, config.name)
-      : undefined;
     const remRanking = buildRemediationRanking(findings, graph);
     const jsonPayload = {
       engagement: { id: config.id, name: config.name },
@@ -199,6 +217,9 @@ export function assembleReport(
         ...f,
         classification: classifications.get(f.id) ?? f.classification,
       })),
+      report_profile: profile,
+      evidence_style,
+      evidence_appendix: proofModel.appendix,
       trust_signals: trustSignalSummary.signals,
       remediation_ranking: remRanking,
       attack_paths: attackPaths,
@@ -260,6 +281,9 @@ export function assembleReport(
       timeline: timelineEntries,
       recommendations: recs,
       trustSignals: trustSignalSummary.signals,
+      evidenceAppendix: proofModel.appendix,
+      reportProfile: profile,
+      evidenceStyle: evidence_style,
     };
 
     if (findings.length > 0) {
@@ -380,6 +404,10 @@ export function assembleReport(
     format,
     content,
     findings_count: findings.length,
+    evidence_count: proofModel.evidenceCount,
+    profile,
+    redaction_mode: effectiveClientSafe ? 'client_safe' : 'operator',
+    navigator_layer: navigatorLayer,
     severity_summary: severitySummary,
   };
 }

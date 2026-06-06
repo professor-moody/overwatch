@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createToolbarActionHandler } from '../../components/graph/GraphToolbar';
+import { createToolbarActionHandler, getLayoutToolbarAction } from '../../components/graph/GraphToolbar';
 import { computeGraphCameraFit, safeCameraDuration } from '../graph-camera';
 
 describe('graph controls', () => {
@@ -11,6 +11,33 @@ describe('graph controls', () => {
 
     expect(action).toHaveBeenCalledOnce();
     expect(action).toHaveBeenCalledWith();
+  });
+
+  it('maps graph layout state to one primary toolbar action', () => {
+    expect(getLayoutToolbarAction({ layoutMode: 'auto', layoutRunning: true })).toMatchObject({
+      intent: 'pause',
+      label: 'Pause',
+      title: 'Pause layout',
+      active: true,
+    });
+    expect(getLayoutToolbarAction({ layoutMode: 'paused', layoutRunning: false })).toMatchObject({
+      intent: 'resume',
+      label: 'Resume',
+      title: 'Resume layout',
+      active: false,
+    });
+    expect(getLayoutToolbarAction({ layoutMode: 'manual', layoutRunning: false })).toMatchObject({
+      intent: 'resume',
+      label: 'Resume auto',
+      title: 'Resume auto layout',
+      active: false,
+    });
+    expect(getLayoutToolbarAction({ layoutMode: 'auto', layoutRunning: false })).toMatchObject({
+      intent: 'resume',
+      label: 'Resume',
+      title: 'Resume layout',
+      active: false,
+    });
   });
 
   it('guards camera animation duration against DOM events and invalid values', () => {

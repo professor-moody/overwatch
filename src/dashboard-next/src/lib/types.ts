@@ -521,12 +521,13 @@ export interface AttackPathNode {
 }
 
 export interface AttackPath {
-  nodes: AttackPathNode[];
-  edges: string[];
+  nodes: Array<AttackPathNode | string>;
+  edges?: string[];
   confidence?: number;
   opsec_noise?: number;
-  total_confidence: number;
-  hop_count: number;
+  total_confidence?: number;
+  total_opsec_noise?: number;
+  hop_count?: number;
 }
 
 // --- Health ---

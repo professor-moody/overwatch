@@ -27,6 +27,17 @@ function formatBytes(b: number): string {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function profileLabel(r: ReportRecord): string {
+  if (r.profile === 'client' || r.redaction_mode === 'client_safe') return 'client';
+  return 'operator';
+}
+
+function evidenceLabel(style?: ReportRecord['evidence_style']): string {
+  if (style === 'appendix') return 'appendix';
+  if (style === 'full_inline') return 'full inline';
+  return 'proof cards';
+}
+
 export function ReportsList({ reports, onRefresh }: Props) {
   if (reports.length === 0) return null;
 
@@ -52,8 +63,16 @@ export function ReportsList({ reports, onRefresh }: Props) {
                 client-safe
               </span>
             )}
+            <span className="px-1.5 py-0.5 rounded border border-border bg-elevated text-muted-foreground text-[10px] uppercase font-semibold">
+              {profileLabel(r)}
+            </span>
             <span className="text-muted-foreground flex-1">
               {formatTimestamp(r.generated_at)} — {formatBytes(r.size_bytes)}
+              {(r.findings_count !== undefined || r.evidence_count !== undefined) && (
+                <span className="ml-2">
+                  {r.findings_count ?? '—'} findings · {r.evidence_count ?? '—'} evidence · {evidenceLabel(r.evidence_style)}
+                </span>
+              )}
             </span>
             <a
               href={api.reportDownloadUrl(r.id)}

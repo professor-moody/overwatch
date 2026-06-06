@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
@@ -10,6 +10,11 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
 import { narrativeItemsFromChains, resolveEvidenceQuery } from '../../lib/evidence-narrative';
+import {
+  normalizeApiAttackPath,
+  type DisplayAttackPath,
+} from '../../lib/attack-path-workspace';
+import { AttackPathRouteRow } from '../shared/AttackPathRouteRow';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
@@ -207,7 +212,15 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
   const [optimize, setOptimize] = useState<'confidence' | 'stealth' | 'balanced'>('confidence');
   const [paths, setPaths] = useState<AttackPath[]>([]);
   const [loading, setLoading] = useState(false);
-  const { navigateToGraphTarget } = useNavigation();
+  const { navigateToGraphTarget, navigateToFrontier } = useNavigation();
+  const graph = useEngagementStore(s => s.graph);
+  const byId = useMemo(() => new Map(graph.nodes.map(node => [node.id, node])), [graph.nodes]);
+  const displayPaths = useMemo(
+    () => paths
+      .map(path => normalizeApiAttackPath(path, byId))
+      .filter((path): path is DisplayAttackPath => !!path),
+    [paths, byId],
+  );
 
   // Auto-search if initialObjective provided
   useEffect(() => {
@@ -226,6 +239,15 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
     } catch { /* silent */ }
     finally { setLoading(false); }
   }, [selectedObjective, optimize]);
+
+  const inspectPath = (path: DisplayAttackPath) => {
+    navigateToGraphTarget({
+      kind: 'path',
+      nodeIds: path.nodeIds,
+      edgeIds: path.edgeIds,
+      label: path.headline,
+    });
+  };
 
   return (
     <PanelSection title="Attack Paths" className="space-y-3">
@@ -246,64 +268,24 @@ function AttackPathViewer({ objectives, initialObjective }: { objectives: Object
 
       {loading && <p className="text-xs text-muted-foreground">Finding paths…</p>}
 
-      {paths.length > 0 && (
-        <div className="space-y-3">
-          {paths.map((path, i) => {
-            const conf = path.confidence != null ? Math.round(path.confidence * 100) : null;
-            const noise = path.opsec_noise != null ? Math.round(path.opsec_noise * 100) : null;
-
-            return (
-              <div key={i} className="p-3 rounded border border-border bg-elevated space-y-2">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-muted-foreground font-medium">#{i + 1}</span>
-                  {conf !== null && <span className="text-success">{conf}% conf</span>}
-                  {noise !== null && <span className="text-warning">{noise}% noise</span>}
-                </div>
-                <div className="flex items-center gap-1 flex-wrap text-xs">
-                  {path.nodes.map((n, j) => (
-                    <span key={j} className="contents">
-                      {j > 0 && typeof n === 'object' && n.edge_type && (
-                        <span className="text-[10px] text-muted-foreground">{n.edge_type}</span>
-                      )}
-                      {j > 0 && <span className="text-muted">{'\u2192'}</span>}
-                      <span
-                        onClick={() => {
-                          const nodeId = typeof n === 'object' ? n.id : String(n);
-                          navigateToGraphTarget({ kind: 'path', nodeIds: path.nodes.map(item => typeof item === 'object' ? item.id : String(item)), label: 'Attack path' });
-                        }}
-                        className="px-1.5 py-0.5 rounded bg-background text-foreground font-mono cursor-pointer hover:text-accent transition-colors"
-                        title={typeof n === 'object' ? n.id : String(n)}>
-                        {typeof n === 'object' ? (n.label || n.id) : String(n)}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-                {/* Metric bars */}
-                <div className="space-y-1">
-                  {conf !== null && <MetricBar label="confidence" value={conf} color="bg-success" />}
-                  {noise !== null && <MetricBar label="noise" value={noise} color="bg-warning" />}
-                </div>
-              </div>
-            );
-          })}
+      {displayPaths.length > 0 && (
+        <div className="space-y-2">
+          {displayPaths.map((path, i) => (
+            <AttackPathRouteRow
+              key={path.id}
+              path={path}
+              index={i}
+              compact
+              onInspect={inspectPath}
+              onFrontier={(nodeId) => navigateToFrontier(nodeId)}
+            />
+          ))}
         </div>
       )}
 
-      {!loading && paths.length === 0 && selectedObjective && (
+      {!loading && displayPaths.length === 0 && selectedObjective && (
         <EmptyPanelState message="No attack paths found. Select an objective and search." />
       )}
     </PanelSection>
-  );
-}
-
-function MetricBar({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div className="flex items-center gap-2 text-[10px]">
-      <span className="text-muted-foreground w-16">{label}</span>
-      <div className="flex-1 h-1 bg-background rounded-full overflow-hidden">
-        <div className={cn('h-full rounded-full', color)} style={{ width: `${value}%` }} />
-      </div>
-      <span className="text-muted-foreground font-mono w-8 text-right">{value}%</span>
-    </div>
   );
 }

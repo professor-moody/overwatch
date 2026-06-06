@@ -3,7 +3,7 @@
 //
 // Operator-facing modal that POSTs /api/reports/render with the
 // chosen options. Mirrors the generate_report MCP tool's option
-// surface; PDF format is reserved for B.4 and shown disabled.
+// surface, including report profile and evidence presentation.
 // ============================================================
 
 import { useState } from 'react';
@@ -16,9 +16,11 @@ interface Props {
 }
 
 export function RenderReportModal({ onClose, onRendered }: Props) {
-  const [format, setFormat] = useState<'markdown' | 'html' | 'json' | 'pdf'>('markdown');
+  const [profile, setProfile] = useState<'client' | 'operator'>('client');
+  const [format, setFormat] = useState<'markdown' | 'html' | 'json' | 'pdf'>('html');
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [clientSafe, setClientSafe] = useState(false);
+  const [clientSafe, setClientSafe] = useState(true);
+  const [evidenceStyle, setEvidenceStyle] = useState<'proof_cards' | 'appendix' | 'full_inline'>('proof_cards');
   const [includeAttackPaths, setIncludeAttackPaths] = useState(true);
   const [includeRetrospective, setIncludeRetrospective] = useState(false);
   const [includeCompliance, setIncludeCompliance] = useState(true);
@@ -33,6 +35,8 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
         format,
         theme: format === 'html' || format === 'pdf' ? theme : undefined,
         client_safe: clientSafe,
+        profile,
+        evidence_style: evidenceStyle,
         include_attack_paths: includeAttackPaths,
         include_retrospective: includeRetrospective,
         include_compliance: includeCompliance,
@@ -45,6 +49,20 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
     }
   };
 
+  const chooseProfile = (nextProfile: 'client' | 'operator') => {
+    setProfile(nextProfile);
+    if (nextProfile === 'client') {
+      setClientSafe(true);
+      setEvidenceStyle('proof_cards');
+      setTheme('light');
+      setFormat(prev => (prev === 'pdf' ? 'pdf' : 'html'));
+    } else {
+      setClientSafe(false);
+      setEvidenceStyle('proof_cards');
+      setFormat(prev => (prev === 'html' || prev === 'pdf' ? prev : 'markdown'));
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
       <div className="bg-surface border border-border rounded-lg shadow-xl w-full max-w-md p-5">
@@ -54,6 +72,24 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
         </div>
 
         <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">Profile</label>
+            <div className="grid grid-cols-2 gap-2">
+              <ProfileButton
+                active={profile === 'client'}
+                title="Client deliverable"
+                description="Polished, client-safe proof summaries."
+                onClick={() => chooseProfile('client')}
+              />
+              <ProfileButton
+                active={profile === 'operator'}
+                title="Operator binder"
+                description="Full internal evidence metadata."
+                onClick={() => chooseProfile('operator')}
+              />
+            </div>
+          </div>
+
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Format</label>
             <div className="flex gap-1">
@@ -103,6 +139,18 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
             label="Client-safe redaction"
             hint="Strips cred values, raw output, and operator paths."
           />
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">Evidence</label>
+            <select
+              value={evidenceStyle}
+              onChange={e => setEvidenceStyle(e.target.value as typeof evidenceStyle)}
+              className="settings-input w-full text-xs"
+            >
+              <option value="proof_cards">Proof cards</option>
+              <option value="appendix">Appendix first</option>
+              <option value="full_inline">Full inline previews</option>
+            </select>
+          </div>
           <ToggleRow
             checked={includeAttackPaths}
             onChange={setIncludeAttackPaths}
@@ -146,6 +194,29 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function ProfileButton({ active, title, description, onClick }: {
+  active: boolean;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded border p-2 text-left transition-colors',
+        active
+          ? 'border-accent/50 bg-accent/10 text-foreground'
+          : 'border-border bg-elevated text-muted-foreground hover:text-foreground',
+      )}
+    >
+      <div className="text-xs font-medium">{title}</div>
+      <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{description}</div>
+    </button>
   );
 }
 

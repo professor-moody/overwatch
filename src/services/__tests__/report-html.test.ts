@@ -151,15 +151,15 @@ describe('severity rendering', () => {
   });
 });
 
-describe('evidence toggle', () => {
-  it('includes evidence toggle script', () => {
+describe('proof card evidence rendering', () => {
+  it('does not render app-style evidence toggle controls', () => {
     const html = renderReportHtml(makeReportData());
-    expect(html).toContain('evidence-toggle');
-    expect(html).toContain('addEventListener');
-    expect(html).toContain('Show Evidence');
+    expect(html).not.toContain('evidence-toggle');
+    expect(html).not.toContain('addEventListener');
+    expect(html).not.toContain('Show Evidence');
   });
 
-  it('renders evidence button when finding has evidence', () => {
+  it('renders proof cards when finding has evidence', () => {
     const findings = [
       makeFinding({
         evidence: [
@@ -168,16 +168,16 @@ describe('evidence toggle', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    expect(html).toContain('<button class="evidence-toggle">Show Evidence</button>');
+    expect(html).toContain('class="proof-card"');
     expect(html).toContain('Port 22 open');
-    expect(html).toContain('(nmap)');
+    expect(html).toContain('nmap');
   });
 
   it('omits evidence section when finding has no evidence', () => {
     const findings = [makeFinding({ evidence: [] })];
     const html = renderReportHtml(makeReportData({ findings }));
     const findingSection = html.split('id="finding-0"')[1]?.split('</div>\n    </div>')[0] ?? '';
-    expect(findingSection).not.toContain('<button class="evidence-toggle">');
+    expect(findingSection).not.toContain('class="proof-card"');
   });
 });
 
@@ -210,7 +210,7 @@ describe('evidence content rendering', () => {
     };
   }
 
-  it('renders evidence_content in a pre block when present', () => {
+  it('renders evidence_content as a raw preview inside a proof card', () => {
     const findings = [
       makeFinding({
         evidence: [makeEvidenceChain({
@@ -220,11 +220,12 @@ describe('evidence content rendering', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    expect(html).toContain('<pre class="evidence-content">');
+    expect(html).toContain('class="proof-card"');
+    expect(html).toContain('<summary>Raw preview</summary>');
     expect(html).toContain('uid=0(root)');
   });
 
-  it('renders raw_output in a collapsible details block', () => {
+  it('renders raw_output in a collapsible raw preview block', () => {
     const findings = [
       makeFinding({
         evidence: [makeEvidenceChain({
@@ -234,12 +235,11 @@ describe('evidence content rendering', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    expect(html).toContain('<details>');
-    expect(html).toContain('<summary>Raw Output</summary>');
+    expect(html).toContain('<summary>Raw preview</summary>');
     expect(html).toContain('root@target:~# id');
   });
 
-  it('renders evidence_filename as a label', () => {
+  it('renders evidence_filename as proof metadata', () => {
     const findings = [
       makeFinding({
         evidence: [makeEvidenceChain({
@@ -249,10 +249,10 @@ describe('evidence content rendering', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    expect(html).toContain('<div class="evidence-file">File: id-output.txt</div>');
+    expect(html).toContain('id-output.txt');
   });
 
-  it('truncates evidence_content beyond 2048 chars', () => {
+  it('truncates evidence_content beyond the proof-card preview budget', () => {
     const longContent = 'A'.repeat(3000);
     const findings = [
       makeFinding({
@@ -260,12 +260,12 @@ describe('evidence content rendering', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    const preMatch = html.match(/<pre class="evidence-content">([\s\S]*?)<\/pre>/);
+    const preMatch = html.match(/<summary>Raw preview<\/summary><pre>([\s\S]*?)<\/pre>/);
     expect(preMatch).toBeDefined();
-    expect(preMatch![1].length).toBeLessThanOrEqual(2048 + 50);
+    expect(preMatch![1].length).toBeLessThanOrEqual(4096 + 50);
   });
 
-  it('truncates evidence_content beyond 30 lines', () => {
+  it('truncates evidence_content beyond 80 preview lines', () => {
     const manyLines = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
     const findings = [
       makeFinding({
@@ -273,10 +273,10 @@ describe('evidence content rendering', () => {
       }),
     ];
     const html = renderReportHtml(makeReportData({ findings }));
-    const preMatch = html.match(/<pre class="evidence-content">([\s\S]*?)<\/pre>/);
+    const preMatch = html.match(/<summary>Raw preview<\/summary><pre>([\s\S]*?)<\/pre>/);
     expect(preMatch).toBeDefined();
     const renderedLines = preMatch![1].split('\n');
-    expect(renderedLines.length).toBeLessThanOrEqual(30);
+    expect(renderedLines.length).toBeLessThanOrEqual(81);
   });
 
   it('escapes HTML in evidence_content', () => {
@@ -407,6 +407,34 @@ describe('discovery summary section', () => {
   it('omits discovery summary when not provided', () => {
     const html = renderReportHtml(makeReportData());
     expect(html).not.toContain('id="discovery-summary"');
+  });
+});
+
+describe('evidence appendix section', () => {
+  it('renders stable appendix anchors for cited evidence', () => {
+    const html = renderReportHtml(makeReportData({
+      evidenceAppendix: [{
+        id: 'ev-deadbeef',
+        title: 'Evidence deadbeef',
+        claim: 'Command proved access',
+        source_kind: 'direct_output',
+        evidence_id: 'deadbeef-0000',
+        content_hash: 'a'.repeat(64),
+        action_id: 'act-1',
+        tool: 'ssh',
+        command: 'id',
+        timestamp: '2026-03-20T08:00:00Z',
+        size_bytes: 128,
+        redaction_mode: 'operator',
+        finding_ids: ['f-1'],
+        finding_titles: ['Test Finding'],
+      }],
+    }));
+
+    expect(html).toContain('id="evidence-appendix"');
+    expect(html).toContain('id="ev-deadbeef"');
+    expect(html).toContain('deadbeef-0000');
+    expect(html).toContain('Command proved access');
   });
 });
 

@@ -4,6 +4,7 @@ import {
   buildEvidenceChainsForNode,
   buildAllEvidenceChains,
   buildAttackNarrative,
+  buildReportEvidenceModel,
   generateFullReport,
   buildRemediationRanking,
 } from '../report-generator.js';
@@ -277,6 +278,43 @@ describe('buildAllEvidenceChains', () => {
   });
 });
 
+describe('buildReportEvidenceModel', () => {
+  it('ranks direct proof first and deduplicates appendix artifacts', () => {
+    const findings = [{
+      id: 'finding-a',
+      title: 'A',
+      severity: 'high',
+      category: 'compromised_host',
+      description: 'A',
+      affected_assets: ['host-1'],
+      remediation: 'Fix',
+      risk_score: 7,
+      evidence: [
+        { claim: 'Routine activity', source_nodes: [], target_nodes: ['host-1'], timestamp: '2026-01-01T00:00:00Z' },
+        { claim: 'Command proved access', action_id: 'act-1', command: 'id', stdout_evidence_id: 'ev-1', stdout_content_hash: 'abc123', source_nodes: [], target_nodes: ['host-1'], timestamp: '2026-01-01T00:01:00Z' },
+      ],
+    }, {
+      id: 'finding-b',
+      title: 'B',
+      severity: 'medium',
+      category: 'access_path',
+      description: 'B',
+      affected_assets: ['host-1'],
+      remediation: 'Fix',
+      risk_score: 5,
+      evidence: [
+        { claim: 'Same command proved related access', action_id: 'act-1', command: 'id', stdout_evidence_id: 'ev-1', stdout_content_hash: 'abc123', source_nodes: [], target_nodes: ['host-1'], timestamp: '2026-01-01T00:01:00Z' },
+      ],
+    }] as any;
+
+    const model = buildReportEvidenceModel(findings, { profile: 'operator' });
+
+    expect(model.findings[0].proof_cards?.[0].source_kind).toBe('direct_output');
+    expect(model.appendix.filter(entry => entry.evidence_id === 'ev-1')).toHaveLength(1);
+    expect(model.appendix.find(entry => entry.evidence_id === 'ev-1')?.finding_ids).toEqual(['finding-a', 'finding-b']);
+  });
+});
+
 // ============================================================
 // buildAttackNarrative
 // ============================================================
@@ -323,6 +361,23 @@ describe('buildAttackNarrative', () => {
     const narrative = buildAttackNarrative(makeGraph(), history, makeConfig());
     const lateralPhase = narrative.find(p => p.name.includes('Lateral'));
     expect(lateralPhase).toBeDefined();
+  });
+
+  it('deduplicates routine discovery events and keeps caveats out of phase prose', () => {
+    const history = makeHistory([
+      { description: 'New host discovered: DC01.corp.local' },
+      { description: 'New host discovered: WEB01.corp.local' },
+      { description: 'New service discovered: SMB (445)' },
+      { description: 'Demo parser caveat: malformed sample produced no graph data' },
+      { description: 'Nmap scan completed', action_id: 'act-nmap', event_type: 'action_completed' as any, tool_name: 'nmap', result_classification: 'success', target_ips: ['10.10.10.0/24'] },
+    ]);
+    const narrative = buildAttackNarrative(makeGraph(), history, makeConfig());
+    const text = narrative.flatMap(phase => phase.paragraphs).join(' ');
+
+    expect(text).toContain('Inventory expanded by 2 hosts and 1 service');
+    expect(text).toContain('Used nmap');
+    expect(text).not.toContain('New host discovered');
+    expect(text).not.toContain('parser caveat');
   });
 });
 
@@ -559,7 +614,7 @@ describe('renderReportHtml', () => {
     expect(html).toContain('severity-high');
   });
 
-  it('includes finding details with evidence toggle', () => {
+  it('includes finding details with proof card evidence', () => {
     const findings = buildFindings(makeGraph(), makeHistory(), makeConfig());
     const html = renderReportHtml({
       config: makeConfig(),
@@ -568,7 +623,7 @@ describe('renderReportHtml', () => {
       narrative: [],
     });
 
-    expect(html).toContain('evidence-toggle');
+    expect(html).toContain('proof-card');
     expect(html).toContain('finding-header');
     expect(html).toContain('remediation');
   });
@@ -880,7 +935,9 @@ describe('generateFullReport — evidence content rendering', () => {
     const report = generateFullReport(input, { include_evidence: true });
     expect(report).toContain('uid=0(root)');
     expect(report).toContain('id-output.txt');
-    expect(report).toContain('Raw output (truncated)');
+    expect(report).toContain('Command output');
+    expect(report).toContain('Raw preview');
+    expect(report).toContain('Evidence Appendix');
   });
 });
 

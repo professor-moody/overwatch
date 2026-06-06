@@ -2612,6 +2612,11 @@ export class DashboardServer {
       const skills = this.skills ?? ({ listSkills: () => [] } as unknown as import('./skill-index.js').SkillIndex);
       // For PDF, assemble HTML internally then pipe through puppeteer.
       const assembleFormat: ReportFormat = format === 'pdf' ? 'html' : format;
+      const profile = (body as Record<string, unknown>).profile === 'client' ? 'client' : (body as Record<string, unknown>).profile === 'operator' ? 'operator' : undefined;
+      const evidenceStyleRaw = (body as Record<string, unknown>).evidence_style;
+      const evidenceStyle = evidenceStyleRaw === 'appendix' || evidenceStyleRaw === 'full_inline' || evidenceStyleRaw === 'proof_cards'
+        ? evidenceStyleRaw
+        : undefined;
       const assembled = assembleReport(this.engine, skills, {
         format: assembleFormat,
         include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,
@@ -2624,6 +2629,8 @@ export class DashboardServer {
         max_paths_per_objective: (body as Record<string, unknown>).max_paths_per_objective as number | undefined,
         theme: ((body as Record<string, unknown>).theme as 'light' | 'dark' | undefined),
         client_safe: (body as Record<string, unknown>).client_safe === true,
+        profile,
+        evidence_style: evidenceStyle,
       });
 
       let stored: Buffer | string = assembled.content;
@@ -2642,13 +2649,19 @@ export class DashboardServer {
       const record: ReportRecord = archive.add(stored, {
         generated_at: new Date().toISOString(),
         format,
-        redaction_mode: (body as Record<string, unknown>).client_safe === true ? 'client_safe' : 'operator',
+        redaction_mode: assembled.redaction_mode,
+        profile: assembled.profile,
+        evidence_style: evidenceStyle ?? 'proof_cards',
+        findings_count: assembled.findings_count,
+        evidence_count: assembled.evidence_count,
         options: {
           include_evidence: (body as Record<string, unknown>).include_evidence as boolean | undefined,
           include_narrative: (body as Record<string, unknown>).include_narrative as boolean | undefined,
           include_retrospective: includeRetrospective,
           include_compliance: (body as Record<string, unknown>).include_compliance as boolean | undefined,
           include_attack_paths: (body as Record<string, unknown>).include_attack_paths as boolean | undefined,
+          profile: assembled.profile,
+          evidence_style: evidenceStyle ?? 'proof_cards',
           theme: format === 'html' ? ((body as Record<string, unknown>).theme as 'light' | 'dark' | undefined) : undefined,
         },
       });
@@ -2657,6 +2670,7 @@ export class DashboardServer {
       res.end(JSON.stringify({
         report: record,
         findings_count: assembled.findings_count,
+        evidence_count: assembled.evidence_count,
         severity_summary: assembled.severity_summary,
       }));
     } catch (err) {

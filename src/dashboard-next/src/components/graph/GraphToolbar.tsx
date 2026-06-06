@@ -55,6 +55,36 @@ interface GraphToolbarProps {
   undoCount?: number;
 }
 
+export interface LayoutToolbarState {
+  layoutMode: GraphToolbarProps['layoutMode'];
+  layoutRunning: boolean;
+}
+
+export interface LayoutToolbarAction {
+  intent: 'pause' | 'resume';
+  label: string;
+  title: string;
+  active: boolean;
+}
+
+export function getLayoutToolbarAction({ layoutMode, layoutRunning }: LayoutToolbarState): LayoutToolbarAction {
+  if (layoutRunning) {
+    return {
+      intent: 'pause',
+      label: 'Pause',
+      title: 'Pause layout',
+      active: true,
+    };
+  }
+
+  return {
+    intent: 'resume',
+    label: layoutMode === 'manual' ? 'Resume auto' : 'Resume',
+    title: layoutMode === 'manual' ? 'Resume auto layout' : 'Resume layout',
+    active: false,
+  };
+}
+
 export function GraphToolbar({
   nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, activeFocusPreset,
   layers,
@@ -69,6 +99,7 @@ export function GraphToolbar({
   const [showLayers, setShowLayers] = useState(false);
   const [showView, setShowView] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const layoutAction = getLayoutToolbarAction({ layoutMode, layoutRunning });
 
   return (
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
@@ -90,12 +121,15 @@ export function GraphToolbar({
         <ToolBtn onClick={onFit} title="Fit to screen"><Maximize2 size={14} /><span className="sr-only">Fit</span></ToolBtn>
         <Sep />
         <LayoutStatus mode={layoutMode} running={layoutRunning} />
-        {layoutMode !== 'auto' && <ToolBtn onClick={onResumeLayout} title="Resume auto layout"><Play size={14} /><span className="hidden lg:inline">Resume</span></ToolBtn>}
-        <ToolBtn onClick={onToggleLayout} title="Pause or resume layout" active={layoutRunning}>
-          {layoutRunning ? <Pause size={14} /> : <Play size={14} />}
-          <span className="hidden lg:inline">Layout</span>
+        <ToolBtn
+          onClick={layoutAction.intent === 'pause' ? onToggleLayout : onResumeLayout}
+          title={layoutAction.title}
+          active={layoutAction.active}
+        >
+          {layoutAction.intent === 'pause' ? <Pause size={14} /> : <Play size={14} />}
+          <span className="hidden lg:inline">{layoutAction.label}</span>
         </ToolBtn>
-        <ToolBtn onClick={onReset} title="Reset filters and focus">Reset</ToolBtn>
+        <ToolBtn onClick={onReset} title="Clear graph focus and filters">Clear view</ToolBtn>
         <Sep />
 
         <div className="relative">

@@ -589,6 +589,10 @@ export interface ReportRecord {
   generated_at: string;
   format: 'markdown' | 'html' | 'json' | 'pdf';
   redaction_mode: 'operator' | 'client_safe';
+  profile?: 'operator' | 'client';
+  evidence_style?: 'proof_cards' | 'appendix' | 'full_inline';
+  findings_count?: number;
+  evidence_count?: number;
   filename: string;
   size_bytes: number;
   content_sha256: string;
@@ -613,6 +617,8 @@ export interface RenderReportBody {
   include_compliance?: boolean;
   include_attack_paths?: boolean;
   client_safe?: boolean;
+  profile?: 'operator' | 'client';
+  evidence_style?: 'proof_cards' | 'appendix' | 'full_inline';
   theme?: 'light' | 'dark';
   max_paths_per_objective?: number;
 }

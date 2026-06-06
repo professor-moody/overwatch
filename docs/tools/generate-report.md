@@ -14,6 +14,8 @@ Generate a comprehensive penetration test report from the engagement graph and a
 | `output_dir` | string | `"./reports/"` | Directory for output files |
 | `theme` | `"light"` \| `"dark"` | `"light"` | Theme for HTML output |
 | `client_safe` | boolean | `false` | **Phase I**: produce a client-deliverable variant. Strips `cred_value`, `raw_output`, stdout/stderr previews, and operator-machine paths. Disk artifacts get a `.client-safe.<ext>` suffix. See [Client-safe exports](#client-safe-exports). |
+| `profile` | `"operator"` \| `"client"` | inferred | Report profile. `operator` keeps full internal proof metadata; `client` produces a polished client-safe deliverable. `client_safe: true` maps to `client`. |
+| `evidence_style` | `"proof_cards"` \| `"appendix"` \| `"full_inline"` | `"proof_cards"` | Evidence presentation style. Proof cards are the default; appendix mode keeps findings concise; full inline is intended for operator binders. |
 
 ## Output
 
@@ -42,28 +44,30 @@ When `write_to_disk` is true, writes:
 6. **Detailed Findings** — per-finding sections:
    - Description
    - Affected Assets
-   - Evidence (command → tool → graph mutation linkage)
+   - Evidence proof cards (claim, proof, command/tool, action/evidence IDs, hash, raw preview link)
    - Auto-generated Remediation
-7. **Attack Narrative** — chronological prose by phase:
+7. **Evidence Appendix** — deduplicated evidence/action/hash references for cited proof
+8. **Attack Narrative** — chronological prose by phase:
    - Reconnaissance
    - Initial Access & Credential Acquisition
    - Lateral Movement
    - Privilege Escalation
    - Objective Achievement
-8. **Credential Chains** — derivation paths
-9. **Objectives** — status table
-10. **Discovery Summary** — nodes/edges by type
-11. **Agent Activity** — dispatch/completion stats
-12. **Retrospective Findings** (optional) — inference gaps, skill gaps
-13. **Activity Timeline** — last N events
-14. **Recommendations** — auto-generated from critical/high findings
+9. **Credential Chains** — derivation paths
+10. **Objectives** — status table
+11. **Discovery Summary** — nodes/edges by type
+12. **Agent Activity** — dispatch/completion stats
+13. **Retrospective Findings** (optional) — inference gaps, skill gaps
+14. **Activity Timeline** — last N events
+15. **Recommendations** — auto-generated from critical/high findings
 
 ### HTML Report
 
 Self-contained single-file HTML with:
 - Light/dark theme support
 - Severity cards with color coding
-- Collapsible evidence sections
+- Visible proof cards and native collapsible raw previews
+- Evidence appendix anchors for stable cross-reference
 - Table of contents with anchor links
 - Print CSS for paper output
 - XSS-safe HTML escaping
@@ -99,11 +103,11 @@ Generated per finding type:
 
 ## Evidence
 
-When operators supply `evidence` or `raw_output` via `report_finding`, the content is persisted in the activity log and rendered in the report:
+When operators supply `evidence` or `raw_output` via `report_finding`, or when terminal execution stores stdout/stderr evidence IDs, the report renders proof cards:
 
-- **evidence_content** — inline code block in the finding's Evidence section (truncated to 2 KB / 30 lines)
-- **evidence_filename** — shown as attachment metadata
-- **raw_output** — rendered in a collapsible `<details>` block (truncated to 2 KB / 30 lines)
+- **Proof cards** — concise claim, why it proves the finding, tool/command, timestamp, action ID, evidence ID, and hash when available.
+- **Raw previews** — collapsed by default; redacted in client profile and available in operator profile.
+- **Evidence appendix** — deduplicated index of cited action/evidence artifacts with integrity metadata.
 
 ## Client-safe exports
 

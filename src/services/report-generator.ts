@@ -16,12 +16,15 @@ import { buildCredentialChains } from './retrospective.js';
 import { classifyFinding, computeGapAnalysis } from './finding-classifier.js';
 import type { FindingClassification } from './finding-classifier.js';
 import { estimateCvssFromContext, vectorToString } from './cvss-calculator.js';
+import { createHash } from 'crypto';
 
 // ============================================================
 // Types
 // ============================================================
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type ReportProfile = 'operator' | 'client';
+export type EvidenceStyle = 'proof_cards' | 'appendix' | 'full_inline';
 
 export interface ReportFinding {
   id: string;
@@ -41,12 +44,55 @@ export interface ReportFinding {
   description: string;
   affected_assets: string[];
   evidence: EvidenceChain[];
+  proof_cards?: EvidenceProofCard[];
   remediation: string;
   risk_score: number; // 0-10
   classification?: FindingClassification;
   cvss_vector?: string;
   cvss_score?: number;
   cvss_estimated?: boolean;
+}
+
+export interface EvidenceProofCard {
+  id: string;
+  appendix_ref: string;
+  claim: string;
+  proof: string;
+  source_kind: 'direct_output' | 'parsed_result' | 'provenance' | 'activity';
+  tool?: string;
+  technique?: string;
+  command?: string;
+  timestamp?: string;
+  action_id?: string;
+  evidence_id?: string;
+  content_hash?: string;
+  evidence_bytes?: number;
+  evidence_type?: string;
+  filename?: string;
+  parsed_summary?: string;
+  raw_preview?: string;
+  raw_preview_redacted?: boolean;
+}
+
+export interface EvidenceAppendixEntry {
+  id: string;
+  title: string;
+  claim: string;
+  source_kind: EvidenceProofCard['source_kind'];
+  evidence_id?: string;
+  content_hash?: string;
+  action_id?: string;
+  tool?: string;
+  command?: string;
+  timestamp?: string;
+  evidence_type?: string;
+  filename?: string;
+  size_bytes?: number;
+  redaction_mode: ReportProfile;
+  finding_ids: string[];
+  finding_titles: string[];
+  raw_preview?: string;
+  raw_preview_redacted?: boolean;
 }
 
 export interface EvidenceChain {
@@ -63,11 +109,17 @@ export interface EvidenceChain {
   evidence_content?: string;
   evidence_filename?: string;
   raw_output?: string;
+  source_event_type?: string;
+  result_classification?: string;
   /** Evidence-store IDs for full-fidelity stdout/stderr capture from
    * the terminal action that produced this finding. Reports cite these
    * IDs and inline a head/tail snippet of the content. */
   stdout_evidence_id?: string;
   stderr_evidence_id?: string;
+  stdout_content_hash?: string;
+  stderr_content_hash?: string;
+  stdout_bytes?: number;
+  stderr_bytes?: number;
   /** Truncation / capture diagnostics from the streamed evidence sink. */
   stdout_truncated?: boolean;
   stdout_dropped_bytes?: number;
@@ -127,8 +179,18 @@ export interface ReportOptions {
    * evidence chains will include a head/tail preview of stdout for
    * findings whose action recorded a `stdout_evidence_id`. */
   evidence_loader?: (evidenceId: string) => string | null;
+  evidence_record_loader?: (evidenceId: string) => {
+    evidence_id: string;
+    content_hash?: string;
+    evidence_type?: string;
+    filename?: string;
+    content_length?: number;
+    raw_output_length?: number;
+  } | undefined;
   /** Bytes of head + tail to show in the inline preview (default 8 KiB). */
   evidence_preview_bytes?: number;
+  report_profile?: ReportProfile;
+  evidence_style?: EvidenceStyle;
 }
 
 export interface ReportInput {
@@ -157,7 +219,13 @@ export interface ReportInput {
 // Per-Finding Sections
 // ============================================================
 
-export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[], config: EngagementConfig, opts?: { evidenceLoader?: (id: string) => string | null; previewBytes?: number }): ReportFinding[] {
+type EvidenceBuildOptions = {
+  evidenceLoader?: (id: string) => string | null;
+  evidenceRecordLoader?: ReportOptions['evidence_record_loader'];
+  previewBytes?: number;
+};
+
+export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[], config: EngagementConfig, opts?: EvidenceBuildOptions): ReportFinding[] {
   const findings: ReportFinding[] = [];
   const nodeMap = new Map<string, NodeProperties>();
   for (const n of graph.nodes) nodeMap.set(n.id, n.properties);
@@ -191,7 +259,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
 
     const accessMethods = accessEdges.map(e => {
       const src = nodeMap.get(e.source);
-      return `${e.properties.type} from ${src?.label || e.source}`;
+      return describeAccessMethod(e, src);
     });
     const evidence = buildEvidenceChainsForNode(n.id, graph, history, opts);
     const hopsToObj = computeHopsToObjective(n.id, graph, config);
@@ -201,7 +269,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       title: `Compromised Host: ${n.properties.label || n.properties.ip || n.id}`,
       severity: adminEdges.length > 0 ? 'critical' : 'high',
       category: 'compromised_host',
-      description: `Host ${n.properties.label || n.id} has confirmed access via: ${accessMethods.join('; ')}. ` +
+      description: `Host ${n.properties.label || n.id} was confirmed accessible through ${accessMethods.join('; ')}. ` +
         `OS: ${n.properties.os || 'unknown'}. ` +
         (n.properties.domain_joined ? 'Domain-joined.' : ''),
       affected_assets: [n.properties.label || n.id],
@@ -562,11 +630,12 @@ export function buildEvidenceChainsForNode(
   nodeId: string,
   graph: ExportedGraph,
   history: ActivityLogEntry[],
-  opts?: { evidenceLoader?: (evidenceId: string) => string | null; previewBytes?: number },
+  opts?: EvidenceBuildOptions,
 ): EvidenceChain[] {
   const chains: EvidenceChain[] = [];
   const previewBytes = opts?.previewBytes ?? 8 * 1024;
   const loader = opts?.evidenceLoader;
+  const recordLoader = opts?.evidenceRecordLoader;
 
   // 1. Find activity log entries that reference this node
   const relatedEntries = history.filter(entry => {
@@ -675,6 +744,8 @@ export function buildEvidenceChainsForNode(
       technique: first.technique,
       command: commandRepr,
       timestamp: first.timestamp,
+      source_event_type: first.event_type,
+      result_classification: first.result_classification || first.outcome,
       source_nodes: entries.flatMap(e => e.target_node_ids || []).filter(id => id !== nodeId),
       target_nodes: [nodeId],
       linked_findings: entries.flatMap(e => e.linked_finding_ids || []),
@@ -691,6 +762,17 @@ export function buildEvidenceChainsForNode(
     if (evidenceCaptureError) chain.evidence_capture_error = evidenceCaptureError;
     if (partial !== undefined) chain.partial = partial;
     if (partialReason) chain.partial_reason = partialReason;
+
+    if (recordLoader && stdoutEvidenceId) {
+      const record = recordLoader(stdoutEvidenceId);
+      if (record?.content_hash) chain.stdout_content_hash = record.content_hash;
+      if (record) chain.stdout_bytes = (record.raw_output_length ?? 0) + (record.content_length ?? 0);
+    }
+    if (recordLoader && stderrEvidenceId) {
+      const record = recordLoader(stderrEvidenceId);
+      if (record?.content_hash) chain.stderr_content_hash = record.content_hash;
+      if (record) chain.stderr_bytes = (record.raw_output_length ?? 0) + (record.content_length ?? 0);
+    }
 
     // Lazily resolve a head/tail preview of stdout from the evidence store
     // so reports show what the parser actually saw without bloating output.
@@ -715,6 +797,8 @@ export function buildEvidenceChainsForNode(
       timestamp: entry.timestamp,
       tool: entry.tool_name,
       technique: entry.technique,
+      source_event_type: entry.event_type,
+      result_classification: entry.result_classification || entry.outcome,
       source_nodes: [],
       target_nodes: [nodeId],
     });
@@ -733,6 +817,7 @@ export function buildEvidenceChainsForNode(
       claim: `${edge.properties.type}: ${sourceLabel} → ${targetLabel}` +
         (edge.properties.derivation_method ? ` (method: ${edge.properties.derivation_method})` : ''),
       timestamp: edge.properties.discovered_at,
+      source_event_type: 'graph_provenance',
       source_nodes: [edge.source],
       target_nodes: [edge.target],
     });
@@ -744,7 +829,7 @@ export function buildEvidenceChainsForNode(
 export function buildAllEvidenceChains(
   graph: ExportedGraph,
   history: ActivityLogEntry[],
-  opts?: { evidenceLoader?: (id: string) => string | null; previewBytes?: number },
+  opts?: EvidenceBuildOptions,
 ): Map<string, EvidenceChain[]> {
   const result = new Map<string, EvidenceChain[]>();
 
@@ -771,6 +856,176 @@ function formatPreview(text: string, budget: number): string {
   const tail = text.slice(-budget);
   const elided = text.length - head.length - tail.length;
   return `${head}\n\n[… ${elided.toLocaleString()} bytes elided — fetch full content via evidence ID …]\n\n${tail}`;
+}
+
+function stableProofId(prefix: string, value: string): string {
+  return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
+}
+
+function sourceKindForEvidence(ev: EvidenceChain): EvidenceProofCard['source_kind'] {
+  if (ev.stdout_evidence_id || ev.stderr_evidence_id || ev.raw_output || ev.evidence_content || ev.command) {
+    return 'direct_output';
+  }
+  if (ev.source_event_type === 'finding_ingested' || /ingest|parsed|parser/i.test(ev.claim)) {
+    return 'parsed_result';
+  }
+  if (ev.source_event_type === 'graph_provenance' || /^(DERIVED_FROM|DUMPED_FROM):/.test(ev.claim)) {
+    return 'provenance';
+  }
+  return 'activity';
+}
+
+function evidenceRank(kind: EvidenceProofCard['source_kind']): number {
+  switch (kind) {
+    case 'direct_output': return 0;
+    case 'parsed_result': return 1;
+    case 'provenance': return 2;
+    case 'activity': return 3;
+  }
+}
+
+function proofTextForEvidence(ev: EvidenceChain, kind: EvidenceProofCard['source_kind']): string {
+  if (kind === 'direct_output') {
+    if (ev.result_classification === 'failure') {
+      return 'Captured command output records the attempted validation and its failed result.';
+    }
+    return 'Captured command output is linked to this finding and supports the claimed state change.';
+  }
+  if (kind === 'parsed_result') {
+    return 'Parser or ingest output added graph artifacts that support this finding.';
+  }
+  if (kind === 'provenance') {
+    return 'Graph provenance links this asset to the source artifact or derived credential chain.';
+  }
+  return 'The activity log references the affected asset during the engagement timeline.';
+}
+
+function parsedSummaryForEvidence(ev: EvidenceChain): string | undefined {
+  const parts = [
+    ev.source_event_type,
+    ev.result_classification,
+    ev.partial ? 'partial parser output' : undefined,
+    ev.stdout_truncated ? 'stdout truncated' : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function evidenceKey(ev: EvidenceChain): string {
+  return ev.stdout_evidence_id
+    || ev.stderr_evidence_id
+    || ev.action_id
+    || ev.evidence_filename
+    || stableProofId('activity', `${ev.timestamp || ''}|${ev.claim}`);
+}
+
+function evidenceBytes(ev: EvidenceChain): number | undefined {
+  const total = (ev.stdout_bytes ?? 0) + (ev.stderr_bytes ?? 0);
+  if (total > 0) return total;
+  if (ev.stdout_total_bytes && ev.stdout_total_bytes > 0) return ev.stdout_total_bytes;
+  return undefined;
+}
+
+function rawPreviewForEvidence(ev: EvidenceChain, profile: ReportProfile): { preview?: string; redacted?: boolean } {
+  if (profile === 'client') {
+    if (ev.stdout_preview || ev.raw_output || ev.evidence_content) return { redacted: true };
+    return {};
+  }
+  const preview = ev.stdout_preview || ev.raw_output || ev.evidence_content;
+  return preview ? { preview } : {};
+}
+
+function proofCardForEvidence(ev: EvidenceChain, profile: ReportProfile): EvidenceProofCard {
+  const key = evidenceKey(ev);
+  const kind = sourceKindForEvidence(ev);
+  const raw = rawPreviewForEvidence(ev, profile);
+  return {
+    id: stableProofId('proof', `${key}|${ev.claim}`),
+    appendix_ref: stableProofId('ev', key),
+    claim: ev.claim,
+    proof: proofTextForEvidence(ev, kind),
+    source_kind: kind,
+    tool: ev.tool,
+    technique: ev.technique,
+    command: ev.command,
+    timestamp: ev.timestamp,
+    action_id: ev.action_id,
+    evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id,
+    content_hash: ev.stdout_content_hash || ev.stderr_content_hash,
+    evidence_bytes: evidenceBytes(ev),
+    evidence_type: ev.evidence_type,
+    filename: ev.evidence_filename,
+    parsed_summary: parsedSummaryForEvidence(ev),
+    raw_preview: raw.preview,
+    raw_preview_redacted: raw.redacted,
+  };
+}
+
+export function buildProofCardsForFinding(finding: ReportFinding, profile: ReportProfile = 'operator'): EvidenceProofCard[] {
+  const seen = new Set<string>();
+  return finding.evidence
+    .map(ev => proofCardForEvidence(ev, profile))
+    .sort((a, b) => evidenceRank(a.source_kind) - evidenceRank(b.source_kind) || (a.timestamp || '').localeCompare(b.timestamp || ''))
+    .filter(card => {
+      const key = card.evidence_id || card.action_id || card.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function buildReportEvidenceModel(
+  findings: ReportFinding[],
+  opts: { profile?: ReportProfile; includeEvidence?: boolean } = {},
+): { findings: ReportFinding[]; appendix: EvidenceAppendixEntry[]; evidenceCount: number } {
+  const profile = opts.profile ?? 'operator';
+  if (opts.includeEvidence === false) {
+    return {
+      findings: findings.map(f => ({ ...f, evidence: [], proof_cards: [] })),
+      appendix: [],
+      evidenceCount: 0,
+    };
+  }
+
+  const appendix = new Map<string, EvidenceAppendixEntry>();
+  const enriched = findings.map(finding => {
+    const proofCards = buildProofCardsForFinding(finding, profile);
+    for (const card of proofCards) {
+      const key = card.appendix_ref;
+      const existing = appendix.get(key);
+      if (existing) {
+        if (!existing.finding_ids.includes(finding.id)) existing.finding_ids.push(finding.id);
+        if (!existing.finding_titles.includes(finding.title)) existing.finding_titles.push(finding.title);
+        continue;
+      }
+      appendix.set(key, {
+        id: key,
+        title: card.evidence_id ? `Evidence ${card.evidence_id.slice(0, 8)}` : card.action_id ? `Action ${card.action_id.slice(0, 8)}` : 'Activity evidence',
+        claim: card.claim,
+        source_kind: card.source_kind,
+        evidence_id: card.evidence_id,
+        content_hash: card.content_hash,
+        action_id: card.action_id,
+        tool: card.tool,
+        command: card.command,
+        timestamp: card.timestamp,
+        evidence_type: card.evidence_type,
+        filename: card.filename,
+        size_bytes: card.evidence_bytes,
+        redaction_mode: profile,
+        finding_ids: [finding.id],
+        finding_titles: [finding.title],
+        raw_preview: card.raw_preview,
+        raw_preview_redacted: card.raw_preview_redacted,
+      });
+    }
+    return { ...finding, proof_cards: proofCards };
+  });
+
+  return {
+    findings: enriched,
+    appendix: [...appendix.values()].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || '')),
+    evidenceCount: appendix.size,
+  };
 }
 
 // ============================================================
@@ -885,55 +1140,129 @@ function buildPhaseNarrative(
   _config: EngagementConfig,
   phase: string,
 ): string[] {
-  const paragraphs: string[] = [];
-
-  // Group by action_id for structured narrative
   const grouped = groupByActionId(entries);
-  const ungrouped = entries.filter(e => !e.action_id);
+  const inventory = summarizeInventory(entries);
+  const actionSummaries = [...grouped.values()]
+    .map(cluster => summarizeActionCluster(cluster, nodeMap))
+    .filter((value): value is string => !!value)
+    .slice(0, 4);
+  const accessChanges = summarizeAccessChanges(entries, nodeMap);
+  const objectiveEvents = entries
+    .filter(entry => entry.event_type === 'objective_achieved' || /objective achieved/i.test(entry.description || ''))
+    .map(entry => humanizeActivityDescription(entry.description))
+    .slice(0, 2);
 
-  // Build sentences from action clusters
-  const sentences: string[] = [];
-  for (const [_actionId, cluster] of grouped) {
-    const first = cluster[0];
-    const tool = first.tool_name;
-    const targets = first.target_node_ids?.map(id => nodeMap.get(id)?.label || id) || [];
-    const targetIps = first.target_ips || [];
-    const allTargets = [...new Set([...targets, ...targetIps])];
-    const result = cluster.find(e => e.event_type === 'action_completed' || e.event_type === 'action_failed');
-    const outcome = result?.result_classification || result?.outcome;
-
-    let sentence = '';
-    if (tool) {
-      sentence = `Used ${tool}`;
-      if (first.technique) sentence += ` (${first.technique})`;
-      if (allTargets.length > 0) sentence += ` against ${allTargets.slice(0, 3).join(', ')}`;
-      if (outcome === 'success') sentence += ' — successful';
-      else if (outcome === 'failure') sentence += ' — failed';
-      sentence += '.';
-    } else {
-      sentence = first.description;
-      if (!sentence.endsWith('.')) sentence += '.';
-    }
-    sentences.push(sentence);
+  const paragraphs: string[] = [];
+  const phaseIntent = phaseIntentLabel(phase);
+  const inventorySentence = inventory ? ` ${inventory}` : '';
+  if (actionSummaries.length > 0) {
+    paragraphs.push(`${phaseIntent}${inventorySentence} ${actionSummaries.join(' ')}`.trim());
+  } else if (inventory) {
+    paragraphs.push(`${phaseIntent} ${inventory}`.trim());
   }
 
-  // Add ungrouped entries as simple sentences
-  for (const entry of ungrouped.slice(0, 10)) {
-    let desc = entry.description;
-    if (!desc.endsWith('.')) desc += '.';
-    sentences.push(desc);
-  }
-
-  // Group sentences into paragraphs (max ~5 sentences each)
-  for (let i = 0; i < sentences.length; i += 5) {
-    paragraphs.push(sentences.slice(i, i + 5).join(' '));
+  const resultFacts = [...accessChanges, ...objectiveEvents];
+  if (resultFacts.length > 0) {
+    paragraphs.push(`Result: ${resultFacts.join(' ')}`);
   }
 
   if (paragraphs.length === 0) {
-    paragraphs.push(`${capitalize(phase)} phase: ${entries.length} activities recorded.`);
+    paragraphs.push(`${capitalize(phase)} activity was recorded, but no reportable phase milestone was identified from the structured activity log.`);
   }
 
   return paragraphs;
+}
+
+function phaseIntentLabel(phase: string): string {
+  switch (phase) {
+    case 'reconnaissance': return 'Reconnaissance focused on mapping reachable assets and service exposure.';
+    case 'access': return 'Initial access focused on validating credential material and authentication paths.';
+    case 'lateral': return 'Lateral movement focused on turning confirmed access into host or application reach.';
+    case 'privesc': return 'Privilege escalation focused on identifying administrative control paths.';
+    case 'objective': return 'Objective work focused on validating engagement goals with the access already obtained.';
+    default: return `${capitalize(phase)} focused on material engagement progress.`;
+  }
+}
+
+function summarizeInventory(entries: ActivityLogEntry[]): string | null {
+  const hosts = new Set<string>();
+  const services = new Set<string>();
+  for (const entry of entries) {
+    const desc = entry.description || '';
+    const host = desc.match(/New host discovered:\s*([^.;]+)/i)?.[1]?.trim();
+    if (host) hosts.add(host);
+    const service = desc.match(/New service discovered:\s*([^.;]+)/i)?.[1]?.trim();
+    if (service) services.add(service);
+  }
+  const parts: string[] = [];
+  if (hosts.size > 0) parts.push(`${hosts.size} host${hosts.size === 1 ? '' : 's'}`);
+  if (services.size > 0) parts.push(`${services.size} service${services.size === 1 ? '' : 's'}`);
+  return parts.length > 0 ? `Inventory expanded by ${parts.join(' and ')}.` : null;
+}
+
+function summarizeActionCluster(cluster: ActivityLogEntry[], nodeMap: Map<string, NodeProperties>): string | null {
+  const first = cluster.find(entry => entry.tool_name || entry.command_repr) || cluster[0];
+  const desc = first.description || '';
+  if (isNarrativeNoise(desc)) return null;
+  const tool = first.tool_name;
+  const targets = [
+    ...(first.target_node_ids?.map(id => nodeMap.get(id)?.label || id) || []),
+    ...(first.target_ips || []),
+  ];
+  const allTargets = [...new Set(targets)].slice(0, 3);
+  const result = cluster.find(e => e.event_type === 'action_completed' || e.event_type === 'action_failed');
+  const outcome = result?.result_classification || result?.outcome;
+
+  if (tool) {
+    const action = [
+      `Used ${tool}`,
+      first.technique ? `for ${first.technique}` : undefined,
+      allTargets.length > 0 ? `against ${allTargets.join(', ')}` : undefined,
+    ].filter(Boolean).join(' ');
+    const suffix = outcome === 'success' ? ' and confirmed useful results'
+      : outcome === 'failure' ? ' but did not validate the attempted path'
+        : '';
+    return `${action}${suffix}.`;
+  }
+
+  return `${humanizeActivityDescription(desc)}.`;
+}
+
+function summarizeAccessChanges(entries: ActivityLogEntry[], nodeMap: Map<string, NodeProperties>): string[] {
+  const facts: string[] = [];
+  for (const entry of entries) {
+    const desc = entry.description || '';
+    if (isNarrativeNoise(desc)) continue;
+    if (/session/i.test(desc) || /HAS_SESSION/.test(desc)) {
+      const targets = entry.target_node_ids?.map(id => nodeMap.get(id)?.label || id).filter(Boolean) || [];
+      facts.push(targets.length > 0
+        ? `Session evidence changed access on ${targets.slice(0, 3).join(', ')}.`
+        : `${humanizeActivityDescription(desc)}.`);
+    } else if (/credential|cred|ntlm|hash|token/i.test(desc)) {
+      facts.push(`${humanizeActivityDescription(desc)}.`);
+    } else if (/admin_to|administrative|domain admin/i.test(desc)) {
+      facts.push(`${humanizeActivityDescription(desc)}.`);
+    }
+    if (facts.length >= 3) break;
+  }
+  return [...new Set(facts)];
+}
+
+function isNarrativeNoise(desc: string): boolean {
+  return /caveat|warning|malformed|skipped|indeterminate|truncated|exceeded inline buffer/i.test(desc)
+    || /^New (host|service) discovered:/i.test(desc)
+    || /Engagement initialized/i.test(desc);
+}
+
+function humanizeActivityDescription(desc: string): string {
+  return desc
+    .replace(/\bHAS_SESSION from ([\w@.:-]+)/g, 'an active session for `$1` confirmed access')
+    .replace(/\bHAS_SESSION\b/g, 'active session')
+    .replace(/\bADMIN_TO\b/g, 'administrative access')
+    .replace(/\bOWNS_CRED\b/g, 'credential ownership')
+    .replace(/\bVALID_FOR_IDP_PRINCIPAL\b/g, 'valid identity-provider access')
+    .replace(/\s+/g, ' ')
+    .replace(/[.]+$/, '');
 }
 
 // ============================================================
@@ -966,14 +1295,14 @@ export function buildAttackPaths(
   // candidates; the picker chooses confirmed first, then highest conf.
   const edgesBetween = new Map<string, ExportedGraphEdge[]>();
   for (const e of graph.edges) {
-    const k = `${e.source} ${e.target}`;
+    const k = `${e.source}\u0000${e.target}`;
     const arr = edgesBetween.get(k);
     if (arr) arr.push(e);
     else edgesBetween.set(k, [e]);
   }
 
   const pickEdge = (src: string, tgt: string): ExportedGraphEdge | null => {
-    const candidates = edgesBetween.get(`${src} ${tgt}`) ?? edgesBetween.get(`${tgt} ${src}`) ?? [];
+    const candidates = edgesBetween.get(`${src}\u0000${tgt}`) ?? edgesBetween.get(`${tgt}\u0000${src}`) ?? [];
     if (candidates.length === 0) return null;
     // Confirmed first — anything without `inferred_by_rule` OR with `confirmed_at`.
     const confirmed = candidates.find(e => !e.properties.inferred_by_rule || e.properties.confirmed_at);
@@ -1091,6 +1420,123 @@ export function renderAttackPathsSection(paths: AttackPath[]): string {
   return lines.join('\n');
 }
 
+function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceStyle): string[] {
+  const lines: string[] = [];
+  if (cards.length === 0) return lines;
+  if (style === 'appendix') {
+    for (const card of cards.slice(0, 5)) {
+      lines.push(`- ${card.claim} (see [${card.appendix_ref}](#${card.appendix_ref}))`);
+    }
+    return lines;
+  }
+
+  for (const card of cards.slice(0, 5)) {
+    lines.push(`- **${sourceKindLabel(card.source_kind)}:** ${card.claim}`);
+    lines.push(`  - Proof: ${card.proof}`);
+    const meta = [
+      card.tool ? `tool: ${card.tool}` : undefined,
+      card.timestamp ? `time: ${formatTimestamp(card.timestamp)}` : undefined,
+      card.action_id ? `action: ${card.action_id.slice(0, 8)}` : undefined,
+      card.evidence_id ? `evidence: ${card.evidence_id}` : undefined,
+      card.filename ? `file: ${card.filename}` : undefined,
+      card.content_hash ? `sha256: ${card.content_hash.slice(0, 16)}...` : undefined,
+    ].filter(Boolean);
+    if (meta.length > 0) lines.push(`  - ${meta.join(' | ')}`);
+    if (card.parsed_summary) lines.push(`  - Result: ${card.parsed_summary}`);
+    if (card.command) {
+      lines.push('  ```bash');
+      lines.push(`  ${card.command}`);
+      lines.push('  ```');
+    }
+    if (card.raw_preview_redacted) {
+      lines.push('  - Raw preview redacted in client profile; full evidence is tracked in the appendix.');
+    } else if (style === 'full_inline' && card.raw_preview) {
+      lines.push('  ```');
+      for (const pl of card.raw_preview.split('\n').slice(0, 80)) lines.push(`  ${pl}`);
+      lines.push('  ```');
+    } else if (card.raw_preview) {
+      lines.push('  <details><summary>Raw preview</summary>');
+      lines.push('');
+      lines.push('  ```');
+      for (const pl of card.raw_preview.split('\n').slice(0, 80)) lines.push(`  ${pl}`);
+      lines.push('  ```');
+      lines.push('  </details>');
+    }
+    lines.push(`  - Appendix: [${card.appendix_ref}](#${card.appendix_ref})`);
+  }
+  if (cards.length > 5) {
+    lines.push(`- ... and ${cards.length - 5} more proof card(s) in the evidence appendix`);
+  }
+  return lines;
+}
+
+function renderEvidenceAppendixMarkdown(appendix: EvidenceAppendixEntry[]): string[] {
+  const lines: string[] = [];
+  if (appendix.length === 0) return lines;
+  lines.push('## Evidence Appendix');
+  lines.push('');
+  lines.push('Each cited artifact is indexed once. Client reports preserve IDs and hashes for verification while redacting sensitive raw output.');
+  lines.push('');
+  for (const entry of appendix) {
+    lines.push(`### ${entry.id}`);
+    lines.push('');
+    lines.push(`**${entry.title}**`);
+    lines.push('');
+    lines.push(`- Claim: ${entry.claim}`);
+    lines.push(`- Source: ${sourceKindLabel(entry.source_kind)}`);
+    if (entry.tool) lines.push(`- Tool: ${entry.tool}`);
+    if (entry.timestamp) lines.push(`- Time: ${formatTimestamp(entry.timestamp)}`);
+    if (entry.action_id) lines.push(`- Action ID: \`${entry.action_id}\``);
+    if (entry.evidence_id) lines.push(`- Evidence ID: \`${entry.evidence_id}\``);
+    if (entry.content_hash) lines.push(`- SHA-256: \`${entry.content_hash}\``);
+    if (entry.size_bytes !== undefined) lines.push(`- Size: ${entry.size_bytes.toLocaleString()} bytes`);
+    lines.push(`- Referenced by: ${entry.finding_titles.join('; ')}`);
+    if (entry.command) {
+      lines.push('');
+      lines.push('```bash');
+      lines.push(entry.command);
+      lines.push('```');
+    }
+    if (entry.raw_preview_redacted) {
+      lines.push('');
+      lines.push('Raw output preview redacted in client profile.');
+    } else if (entry.raw_preview) {
+      lines.push('');
+      lines.push('<details><summary>Raw preview</summary>');
+      lines.push('');
+      lines.push('```');
+      lines.push(entry.raw_preview.split('\n').slice(0, 120).join('\n'));
+      lines.push('```');
+      lines.push('</details>');
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function sourceKindLabel(kind: EvidenceProofCard['source_kind']): string {
+  switch (kind) {
+    case 'direct_output': return 'Command output';
+    case 'parsed_result': return 'Parsed result';
+    case 'provenance': return 'Graph provenance';
+    case 'activity': return 'Activity record';
+  }
+}
+
+function describeAccessMethod(edge: ExportedGraphEdge, source?: NodeProperties): string {
+  const actor = source?.label || source?.username || source?.id || edge.source;
+  switch (edge.properties.type) {
+    case 'HAS_SESSION':
+      return `an active session for ${actor}`;
+    case 'ADMIN_TO':
+      return `administrative rights held by ${actor}`;
+    case 'EXPLOITS':
+      return `validated exploitation from ${actor}`;
+    default:
+      return `${String(edge.properties.type).toLowerCase().replace(/_/g, ' ')} from ${actor}`;
+  }
+}
+
 export function generateFullReport(input: ReportInput, options: ReportOptions = {}): string {
   const {
     include_evidence = true,
@@ -1099,16 +1545,27 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     include_compliance = true,
     include_gap_analysis = false,
     max_timeline_entries = 50,
+    report_profile = 'operator',
+    evidence_style = 'proof_cards',
   } = options;
 
   const config = input.config;
   const graph = input.graph;
   const history = input.history;
 
-  const evidenceOpts = options.evidence_loader
-    ? { evidenceLoader: options.evidence_loader, previewBytes: options.evidence_preview_bytes }
+  const evidenceOpts: EvidenceBuildOptions | undefined = options.evidence_loader || options.evidence_record_loader
+    ? {
+      evidenceLoader: options.evidence_loader,
+      evidenceRecordLoader: options.evidence_record_loader,
+      previewBytes: options.evidence_preview_bytes,
+    }
     : undefined;
-  const findings = buildFindings(graph, history, config, evidenceOpts);
+  const baseFindings = buildFindings(graph, history, config, evidenceOpts);
+  const proofModel = buildReportEvidenceModel(baseFindings, {
+    profile: report_profile,
+    includeEvidence: include_evidence,
+  });
+  const findings = proofModel.findings;
   const narrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
   const credChains = buildCredentialChains(graph);
 
@@ -1249,72 +1706,10 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     }
     lines.push('');
 
-    if (include_evidence && f.evidence.length > 0) {
+    if (include_evidence && (f.proof_cards?.length || f.evidence.length > 0)) {
       lines.push('#### Evidence');
       lines.push('');
-      for (const ev of f.evidence.slice(0, 5)) {
-        let evLine = `- ${ev.claim}`;
-        if (ev.tool) evLine += ` (tool: ${ev.tool})`;
-        if (ev.timestamp) evLine += ` — ${formatTimestamp(ev.timestamp)}`;
-        if (ev.action_id) evLine += ` [action: ${ev.action_id.slice(0, 8)}]`;
-        lines.push(evLine);
-        if (ev.command) {
-          lines.push('  ```bash');
-          lines.push(`  ${ev.command}`);
-          lines.push('  ```');
-        }
-        if (ev.evidence_filename) {
-          lines.push(`  - Attachment: ${ev.evidence_filename} (${ev.evidence_type})`);
-        }
-        if (ev.evidence_content) {
-          lines.push('  ```');
-          for (const cl of ev.evidence_content.slice(0, 2048).split('\n').slice(0, 30)) {
-            lines.push(`  ${cl}`);
-          }
-          lines.push('  ```');
-        }
-        if (ev.raw_output) {
-          lines.push('  <details><summary>Raw output (truncated)</summary>');
-          lines.push('');
-          lines.push('  ```');
-          for (const rl of ev.raw_output.slice(0, 2048).split('\n').slice(0, 30)) {
-            lines.push(`  ${rl}`);
-          }
-          lines.push('  ```');
-          lines.push('  </details>');
-        }
-        // Streamed-evidence diagnostics (round-3 fields).
-        if (ev.partial) {
-          lines.push(`  - ⚠️ Parser saw partial output${ev.partial_reason ? ` (${ev.partial_reason})` : ''}`);
-        }
-        if (ev.stdout_truncated) {
-          const dropped = ev.stdout_dropped_bytes ? ` — ${ev.stdout_dropped_bytes.toLocaleString()} bytes dropped` : '';
-          const total = ev.stdout_total_bytes ? ` of ${ev.stdout_total_bytes.toLocaleString()} bytes total` : '';
-          lines.push(`  - ⚠️ stdout truncated${dropped}${total}`);
-        }
-        if (ev.evidence_capture_error) {
-          lines.push(`  - ❌ Evidence capture error: ${ev.evidence_capture_error}`);
-        }
-        if (ev.stdout_evidence_id) {
-          lines.push(`  - Full stdout evidence ID: \`${ev.stdout_evidence_id}\``);
-        }
-        if (ev.stderr_evidence_id) {
-          lines.push(`  - Full stderr evidence ID: \`${ev.stderr_evidence_id}\``);
-        }
-        if (ev.stdout_preview) {
-          lines.push('  <details><summary>stdout preview (head + tail)</summary>');
-          lines.push('');
-          lines.push('  ```');
-          for (const pl of ev.stdout_preview.split('\n').slice(0, 80)) {
-            lines.push(`  ${pl}`);
-          }
-          lines.push('  ```');
-          lines.push('  </details>');
-        }
-      }
-      if (f.evidence.length > 5) {
-        lines.push(`- ... and ${f.evidence.length - 5} more evidence entries`);
-      }
+      lines.push(...renderProofCardsMarkdown(f.proof_cards ?? buildProofCardsForFinding(f, report_profile), evidence_style));
       lines.push('');
     }
 
@@ -1356,6 +1751,10 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       lines.push(`- ${parts.join('')}`);
     }
     lines.push('');
+  }
+
+  if (include_evidence && proofModel.appendix.length > 0) {
+    lines.push(...renderEvidenceAppendixMarkdown(proofModel.appendix));
   }
 
   // === Objectives ===

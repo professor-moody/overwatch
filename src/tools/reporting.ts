@@ -2,44 +2,11 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { SkillIndex } from '../services/skill-index.js';
-import { generateFullReport, buildFindings, buildAttackNarrative, buildRemediationRanking, buildAttackPaths } from '../services/report-generator.js';
-import type { ReportInput, AttackPath } from '../services/report-generator.js';
-import { renderReportHtml } from '../services/report-html.js';
-import type { HtmlReportData, HtmlTimelineEntry, HtmlComplianceMapping } from '../services/report-html.js';
-import { runRetrospective, buildCredentialChains } from '../services/retrospective.js';
-import type { RetrospectiveInput } from '../services/retrospective.js';
-import { classifyAllFindings, generateNavigatorLayer } from '../services/finding-classifier.js';
+import { assembleReport, type ReportFormat } from '../services/report-assembler.js';
 import { validateFilePath } from '../utils/path-validation.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { withErrorBoundary } from './error-boundary.js';
-import { redactReportText, redactSecretKeys } from '../services/report-redaction.js';
-
-/**
- * Phase I: scrub a fully-rendered markdown report for client delivery.
- * Strips operator-machine paths and replaces fenced evidence/raw-output
- * blocks with redaction placeholders. The structured json/html paths use
- * `redactSecretKeys` for deeper redaction; markdown gets this practical
- * regex pass so the operator-default rendering remains untouched and the
- * client variant still tells the story without leaking secrets.
- */
-function scrubMarkdownForClient(md: string): string {
-  let out = redactReportText(md, { client_safe: true }) ?? md;
-  // Replace ``` ... ``` blocks that follow an "Output:" / "raw_output" /
-  // "stdout"-style header line with a placeholder. The original block
-  // content is dropped; the surrounding narrative stays.
-  out = out.replace(
-    /(\*\*?(?:Raw Output|Stdout(?: Preview)?|Evidence Content|Output)\*\*?:?\s*\n)```[\s\S]*?```/gi,
-    '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
-  );
-  // Inline credential disclosures: `cred_value: ...`, `password: ...`,
-  // common hash field names. We keep the key for readability.
-  out = out.replace(
-    /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
-    (_m, k) => `${k}: <redacted>`,
-  );
-  return out;
-}
 
 export function registerReportingTools(server: McpServer, engine: GraphEngine, skills: SkillIndex): void {
 
@@ -89,6 +56,10 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           .describe('Theme for HTML output'),
         client_safe: z.boolean().default(false)
           .describe('Phase I: produce a client-deliverable variant. Strips cred_value, raw_output, stdout/stderr previews, and operator-machine paths from the rendered report. Output files get a `.client-safe.<ext>` suffix when written to disk. Defaults to false so the operator-internal report is unchanged.'),
+        profile: z.enum(['operator', 'client']).optional()
+          .describe('Report profile. operator keeps full proof metadata; client defaults to client-safe deliverable language and redaction. client_safe:true maps to profile=client for backward compatibility.'),
+        evidence_style: z.enum(['proof_cards', 'appendix', 'full_inline']).default('proof_cards')
+          .describe('Evidence presentation style: proof_cards in findings, appendix-first references, or full_inline raw previews for operator binders.'),
         include_attack_paths: z.boolean().default(true)
           .describe('Include synthesized attack-path chains from current access to each engagement objective. Decorated with per-edge confidence and inferred-vs-confirmed flags.'),
         max_paths_per_objective: z.number().int().min(1).max(20).default(3)
@@ -107,297 +78,34 @@ Use this at the end of an engagement to produce the final deliverable report.`,
       format: rawFormat, include_evidence, include_narrative,
       include_retrospective, include_compliance, include_attack_navigator,
       include_gap_analysis, write_to_disk, output_dir, theme, client_safe,
+      profile, evidence_style,
       include_attack_paths, max_paths_per_objective, persist_to_archive,
     }) => {
-      const format = rawFormat === 'md' ? 'markdown' : rawFormat;
-      // B.4: pdf format renders HTML first then pipes through headless
-      // Chromium. Force HTML rendering on the way through so the
-      // existing pipeline (theme, redaction, compliance) all applies.
-      const renderHtmlForPdf = format === 'pdf';
-      const redactionOpts = { client_safe: client_safe === true };
       const config = engine.getConfig();
-      const graph = engine.exportGraph();
-      const history = engine.getFullHistory();
-      const agents = engine.getAllAgents();
+      const format = (rawFormat === 'md' ? 'markdown' : rawFormat) as ReportFormat | 'pdf';
+      const assembleFormat: ReportFormat = format === 'pdf' ? 'html' : format;
+      const evidenceStyle = evidence_style ?? 'proof_cards';
+      const assembled = assembleReport(engine, skills, {
+        format: assembleFormat,
+        include_evidence,
+        include_narrative,
+        include_retrospective,
+        include_compliance,
+        include_attack_navigator,
+        include_gap_analysis,
+        include_attack_paths,
+        max_paths_per_objective,
+        theme,
+        client_safe: client_safe === true,
+        profile,
+        evidence_style: evidenceStyle,
+      });
 
-      let retrospective: ReportInput['retrospective'];
-      if (include_retrospective) {
-        const inferenceRules = engine.getInferenceRules();
-        const allSkills = skills.listSkills();
-        const retroInput: RetrospectiveInput = {
-          config, graph, history, inferenceRules, agents,
-          skillNames: allSkills.map(s => s.name),
-          skillTags: allSkills.flatMap(s => s.tags),
-        };
-        const result = runRetrospective(retroInput);
-        retrospective = {
-          inference_suggestions: result.inference_suggestions,
-          skill_gaps: result.skill_gaps,
-          context_improvements: result.context_improvements,
-          trace_quality: result.trace_quality,
-        };
-      }
-
-      // B.1: synthesize attack paths from current access to each
-      // objective. The path analyzer takes the objective id and walks
-      // from any host with live access to any node matching the
-      // objective's target_node_type + target_criteria; we decorate the
-      // result with edge metadata so the report can render confirmed vs
-      // inferred hops with per-edge confidence.
-      let attackPaths: AttackPath[] | undefined;
-      if (include_attack_paths) {
-        const all: AttackPath[] = [];
-        for (const obj of config.objectives) {
-          const raw = engine.findPathsToObjective(obj.id, max_paths_per_objective);
-          if (raw.length === 0) continue;
-          all.push(...buildAttackPaths(raw, graph, {
-            objective_id: obj.id,
-            objective_label: obj.description,
-          }));
-        }
-        if (all.length > 0) attackPaths = all;
-      }
-
-      const reportInput: ReportInput = {
-        config, graph, history, agents, retrospective,
-        attack_paths: attackPaths,
-      };
-
-      // F9: wire the evidence store loader so markdown/html previews can
-      // include head/tail snippets of captured stdout for findings whose
-      // action recorded a `stdout_evidence_id`. Without this, reports cite
-      // evidence IDs but never inline the proof preview.
-      const evidenceLoader = (id: string): string | null => {
-        try {
-          return engine.getEvidenceStore().getRawOutput(id);
-        } catch {
-          return null;
-        }
-      };
-
-      const options = {
-        include_evidence, include_narrative, include_retrospective,
-        include_compliance, include_attack_navigator, include_gap_analysis,
-        evidence_loader: evidenceLoader,
-      };
-      const rawMarkdown = generateFullReport(reportInput, options);
-      // Phase I: redact operator paths post-generation. Evidence-blob redaction
-      // for client_safe=true happens via redactSecretKeys on the structured
-      // findings (json/html paths) and via a markdown-targeted regex pass.
-      const markdown = redactionOpts.client_safe
-        ? scrubMarkdownForClient(rawMarkdown)
-        : rawMarkdown;
-
-      // Build JSON structured output for 'json' format
-      let jsonOutput: string | undefined;
-      if (format === 'json') {
-        const rawFindings = buildFindings(graph, history, config, { evidenceLoader });
-        const classifications = classifyAllFindings(rawFindings, graph);
-        const navigatorLayer = include_attack_navigator
-          ? generateNavigatorLayer(rawFindings, graph, config.name)
-          : undefined;
-        const remRanking = buildRemediationRanking(rawFindings, graph);
-
-        const jsonPayload = {
-          engagement: { id: config.id, name: config.name },
-          findings: rawFindings.map(f => ({
-            ...f,
-            classification: classifications.get(f.id) ?? f.classification,
-          })),
-          remediation_ranking: remRanking,
-          ...(navigatorLayer ? { attack_navigator_layer: navigatorLayer } : {}),
-        };
-        const finalJson = redactionOpts.client_safe ? redactSecretKeys(jsonPayload, redactionOpts) : jsonPayload;
-        jsonOutput = JSON.stringify(finalJson, null, 2);
-      }
-
-      let html: string | undefined;
-      if (format === 'html' || renderHtmlForPdf) {
-        // R2-7: thread the same evidenceLoader used for markdown so HTML
-        // findings include head/tail stdout previews and streamed-evidence
-        // diagnostics. Without this, the HTML deliverable cited
-        // stdout_evidence_id but never inlined the proof preview.
-        const htmlFindings = buildFindings(graph, history, config, { evidenceLoader });
-        const htmlNarrative = include_narrative ? buildAttackNarrative(graph, history, config) : [];
-        const credentialChains = buildCredentialChains(graph);
-
-        const nodesByType: Record<string, number> = {};
-        for (const n of graph.nodes) {
-          nodesByType[n.properties.type] = (nodesByType[n.properties.type] || 0) + 1;
-        }
-        const edgesByType: Record<string, number> = {};
-        let confirmed = 0;
-        let inferred = 0;
-        for (const e of graph.edges) {
-          edgesByType[e.properties.type] = (edgesByType[e.properties.type] || 0) + 1;
-          if (e.properties.confidence >= 1.0) confirmed++;
-          else inferred++;
-        }
-
-        const completedAgents = agents.filter(a => a.status === 'completed').length;
-        const failedAgents = agents.filter(a => a.status === 'failed').length;
-
-        const maxTimeline = 50;
-        const timelineEntries: HtmlTimelineEntry[] = history.slice(-maxTimeline).map(entry => ({
-          timestamp: entry.timestamp,
-          description: entry.description,
-          agent_id: entry.agent_id,
-        }));
-
-        const recs: string[] = [];
-        const highPriority = htmlFindings
-          .filter(f => f.severity === 'critical' || f.severity === 'high')
-          .slice(0, 10);
-        for (const f of highPriority) {
-          recs.push(`**${f.title}:** ${f.remediation.split('\n')[0]}`);
-        }
-        const untestedInferred = graph.edges.filter(e => e.properties.confidence < 1.0 && !e.properties.tested);
-        if (untestedInferred.length > 0) {
-          recs.push(`**${untestedInferred.length} inferred edge(s) remain untested** — these represent potential attack paths not validated during the engagement.`);
-        }
-        const pendingObjectives = config.objectives.filter(o => !o.achieved);
-        if (pendingObjectives.length > 0) {
-          recs.push(`**${pendingObjectives.length} objective(s) not achieved** — ${pendingObjectives.map(o => o.description).join(', ')}.`);
-        }
-
-        const htmlData: HtmlReportData = {
-          config, graph,
-          findings: htmlFindings,
-          narrative: htmlNarrative,
-          credentialChains,
-          discoveryStats: { nodesByType, edgesByType, confirmed, inferred },
-          agents: { total: agents.length, completed: completedAgents, failed: failedAgents },
-          timeline: timelineEntries,
-          recommendations: recs,
-        };
-
-        // Build heatmap data
-        if (htmlFindings.length > 0) {
-          const categories = [...new Set(htmlFindings.map(f => f.category))];
-          const severities = ['critical', 'high', 'medium', 'low', 'info'] as const;
-          const matrix = categories.map(cat =>
-            severities.map(s => htmlFindings.filter(f => f.category === cat && f.severity === s).length)
-          );
-          htmlData.heatmap = { categories, severities: [...severities], matrix };
-        }
-
-        // Build remediation ranking
-        const remRanking = buildRemediationRanking(htmlFindings, graph);
-        if (remRanking.length > 0) {
-          htmlData.remediationRanking = remRanking;
-        }
-
-        // Build compliance mapping
-        if (include_compliance && htmlFindings.some(f => f.classification)) {
-          const compliance: HtmlComplianceMapping = {};
-
-          const cweFindngs = htmlFindings.filter(f => f.classification?.cwe);
-          if (cweFindngs.length > 0) {
-            compliance.cwe_findings = cweFindngs.map(f => ({
-              title: f.title,
-              cwe: f.classification!.cwe!,
-              cwe_name: f.classification!.cwe_name || '',
-            }));
-          }
-
-          const owaspMap = new Map<string, number>();
-          for (const f of htmlFindings) {
-            if (f.classification?.owasp_category) {
-              owaspMap.set(f.classification.owasp_category, (owaspMap.get(f.classification.owasp_category) || 0) + 1);
-            }
-          }
-          if (owaspMap.size > 0) {
-            compliance.owasp_groups = [...owaspMap.entries()].map(([category, count]) => ({ category, count }));
-          }
-
-          const nistMap = new Map<string, number>();
-          for (const f of htmlFindings) {
-            if (f.classification) {
-              for (const ctrl of f.classification.nist_controls) {
-                nistMap.set(ctrl, (nistMap.get(ctrl) || 0) + 1);
-              }
-            }
-          }
-          if (nistMap.size > 0) {
-            compliance.nist_controls = [...nistMap.entries()]
-              .sort((a, b) => b[1] - a[1]).slice(0, 20)
-              .map(([control, count]) => ({ control, count }));
-          }
-
-          const pciMap = new Map<string, number>();
-          for (const f of htmlFindings) {
-            if (f.classification) {
-              for (const req of f.classification.pci_requirements) {
-                pciMap.set(req, (pciMap.get(req) || 0) + 1);
-              }
-            }
-          }
-          if (pciMap.size > 0) {
-            compliance.pci_requirements = [...pciMap.entries()]
-              .sort((a, b) => b[1] - a[1]).slice(0, 20)
-              .map(([requirement, count]) => ({ requirement, count }));
-          }
-
-          htmlData.complianceMapping = compliance;
-        }
-
-        // Build ATT&CK techniques
-        if (include_compliance) {
-          const techMap = new Map<string, { name: string; count: number }>();
-          for (const f of htmlFindings) {
-            if (!f.classification) continue;
-            for (const t of f.classification.attack_techniques) {
-              const existing = techMap.get(t.id);
-              if (existing) existing.count++;
-              else techMap.set(t.id, { name: t.name, count: 1 });
-            }
-          }
-          if (techMap.size > 0) {
-            htmlData.attackTechniques = [...techMap.entries()]
-              .sort((a, b) => b[1].count - a[1].count)
-              .map(([id, { name, count }]) => ({ id, name, count }));
-          }
-        }
-        if (retrospective) {
-          htmlData.retrospective = {
-            context_improvements: retrospective.context_improvements ? {
-              frontier_observations: retrospective.context_improvements.frontier_observations.map(o => ({
-                area: o.area, observation: o.observation, confidence: o.confidence,
-              })),
-              context_gaps: retrospective.context_improvements.context_gaps.map(g => ({
-                area: g.area, gap: g.gap, recommendation: g.recommendation,
-              })),
-            } : undefined,
-            inference_suggestions: retrospective.inference_suggestions?.map(s => ({
-              rule: { name: s.rule.name }, evidence: s.evidence,
-            })),
-            skill_gaps: retrospective.skill_gaps ? {
-              missing_skills: retrospective.skill_gaps.missing_skills,
-              failed_techniques: retrospective.skill_gaps.failed_techniques,
-            } : undefined,
-            trace_quality: retrospective.trace_quality ? {
-              total_actions: retrospective.trace_quality.total_actions,
-              with_frontier_id: retrospective.trace_quality.structured_count,
-              with_action_id: retrospective.trace_quality.structured_count + retrospective.trace_quality.mixed_count,
-              coverage_pct: retrospective.trace_quality.total_actions > 0
-                ? Math.round(((retrospective.trace_quality.structured_count + retrospective.trace_quality.mixed_count) / retrospective.trace_quality.total_actions) * 100)
-                : 0,
-            } : undefined,
-          };
-        }
-        const renderData = redactionOpts.client_safe ? redactSecretKeys(htmlData, redactionOpts) : htmlData;
-        html = renderReportHtml(renderData, { theme, include_toc: true, include_compliance });
-      }
-
-      // B.4: when format=pdf, render HTML through puppeteer-core and
-      // store the resulting buffer. All other formats are stringly-
-      // typed; only the archive add() and write_to_disk path care
-      // about the binary case.
       let pdfBuffer: Buffer | undefined;
       if (format === 'pdf') {
         try {
           const { renderReportPdf } = await import('../services/report-pdf.js');
-          pdfBuffer = await renderReportPdf(html!, { format: 'A4', printBackground: true });
+          pdfBuffer = await renderReportPdf(assembled.content, { format: 'A4', printBackground: true });
         } catch (err) {
           return {
             content: [{ type: 'text', text: JSON.stringify({ error: `PDF rendering failed: ${err instanceof Error ? err.message : String(err)}` }, null, 2) }],
@@ -406,10 +114,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         }
       }
 
-      const output: string = format === 'html' ? html!
-        : format === 'json' ? jsonOutput!
-        : format === 'pdf' ? '' // unused for pdf — see pdfBuffer below
-        : markdown;
+      const output = assembled.content;
+      const stored: string | Buffer = format === 'pdf' ? pdfBuffer! : output;
 
       if (write_to_disk) {
         let validatedDir: string;
@@ -424,42 +130,25 @@ Use this at the end of an engagement to produce the final deliverable report.`,
         if (!existsSync(validatedDir)) {
           mkdirSync(validatedDir, { recursive: true });
         }
-        // Phase I: client-safe variants get a `.client-safe.<ext>` suffix so
-        // the operator-internal and client-deliverable versions are visually
-        // distinct on disk.
-        const suffix = redactionOpts.client_safe ? '.client-safe' : '';
-        writeFileSync(join(validatedDir, `report${suffix}.md`), markdown);
-        if (html) {
-          writeFileSync(join(validatedDir, `report${suffix}.html`), html);
-        }
-        if (jsonOutput) {
-          writeFileSync(join(validatedDir, `report${suffix}.json`), jsonOutput);
-        }
-        if (pdfBuffer) {
-          writeFileSync(join(validatedDir, `report${suffix}.pdf`), pdfBuffer);
-        }
-        if (include_attack_navigator) {
-          const navFindings = buildFindings(graph, history, config);
-          const navLayer = generateNavigatorLayer(navFindings, graph, config.name);
-          writeFileSync(join(validatedDir, 'attack-navigator.json'), JSON.stringify(navLayer, null, 2));
+        const suffix = assembled.redaction_mode === 'client_safe' ? '.client-safe' : '';
+        const ext = format === 'markdown' ? 'md' : format;
+        writeFileSync(join(validatedDir, `report${suffix}.${ext}`), stored);
+        if (include_attack_navigator && assembled.navigator_layer) {
+          writeFileSync(join(validatedDir, 'attack-navigator.json'), JSON.stringify(assembled.navigator_layer, null, 2));
         }
       }
 
-      const findings = buildFindings(graph, history, config);
-      const criticalCount = findings.filter(f => f.severity === 'critical').length;
-      const highCount = findings.filter(f => f.severity === 'high').length;
-
-      // B.2: persist to per-engagement archive so the dashboard can list
-      // historical renders. Skipped on client_safe redactions of HTML
-      // when the archive already holds the operator variant — the
-      // dashboard distinguishes via redaction_mode.
       let archivedReportId: string | undefined;
       if (persist_to_archive) {
         const archive = engine.getReportArchive();
-        const record = archive.add(format === 'pdf' ? pdfBuffer! : output, {
+        const record = archive.add(stored, {
           generated_at: new Date().toISOString(),
           format,
-          redaction_mode: redactionOpts.client_safe ? 'client_safe' : 'operator',
+          redaction_mode: assembled.redaction_mode,
+          profile: assembled.profile,
+          evidence_style: evidenceStyle,
+          findings_count: assembled.findings_count,
+          evidence_count: assembled.evidence_count,
           options: {
             include_evidence,
             include_narrative,
@@ -468,6 +157,8 @@ Use this at the end of an engagement to produce the final deliverable report.`,
             include_attack_paths,
             include_attack_navigator,
             include_gap_analysis,
+            profile: assembled.profile,
+            evidence_style: evidenceStyle,
             theme: format === 'html' || format === 'pdf' ? theme : undefined,
           },
         });
@@ -479,16 +170,13 @@ Use this at the end of an engagement to produce the final deliverable report.`,
           type: 'text',
           text: JSON.stringify({
             format,
-            findings_count: findings.length,
-            severity_summary: {
-              critical: criticalCount,
-              high: highCount,
-              medium: findings.filter(f => f.severity === 'medium').length,
-              low: findings.filter(f => f.severity === 'low').length,
-              info: findings.filter(f => f.severity === 'info').length,
-            },
+            profile: assembled.profile,
+            redaction_mode: assembled.redaction_mode,
+            findings_count: assembled.findings_count,
+            evidence_count: assembled.evidence_count,
+            severity_summary: assembled.severity_summary,
             report_preview: output.slice(0, 800) + (output.length > 800 ? '...' : ''),
-            report_length: output.length,
+            report_length: Buffer.isBuffer(stored) ? stored.byteLength : stored.length,
             ...(archivedReportId ? { report_id: archivedReportId } : {}),
             ...(write_to_disk ? { output_dir: join(output_dir, config.id) } : {}),
           }, null, 2),

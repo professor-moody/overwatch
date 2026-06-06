@@ -14,12 +14,18 @@ import { createHash, randomUUID } from 'crypto';
 
 export type ReportFormat = 'markdown' | 'html' | 'json' | 'pdf';
 export type ReportRedactionMode = 'operator' | 'client_safe';
+export type ReportProfile = 'operator' | 'client';
+export type ReportEvidenceStyle = 'proof_cards' | 'appendix' | 'full_inline';
 
 export interface ReportRecord {
   id: string;
   generated_at: string;
   format: ReportFormat;
   redaction_mode: ReportRedactionMode;
+  profile?: ReportProfile;
+  evidence_style?: ReportEvidenceStyle;
+  findings_count?: number;
+  evidence_count?: number;
   filename: string;
   size_bytes: number;
   content_sha256: string;
@@ -32,6 +38,8 @@ export interface ReportRecord {
     include_attack_navigator?: boolean;
     include_gap_analysis?: boolean;
     theme?: 'light' | 'dark';
+    profile?: ReportProfile;
+    evidence_style?: ReportEvidenceStyle;
   };
 }
 
@@ -109,6 +117,10 @@ export class ReportArchive {
       generated_at: meta.generated_at,
       format: meta.format,
       redaction_mode: meta.redaction_mode,
+      profile: meta.profile,
+      evidence_style: meta.evidence_style,
+      findings_count: meta.findings_count,
+      evidence_count: meta.evidence_count,
       filename,
       size_bytes: buf.byteLength,
       content_sha256: sha,

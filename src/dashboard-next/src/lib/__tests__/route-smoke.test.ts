@@ -19,7 +19,7 @@ const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> 
   { path: '/graph?filter=host', expects: ['host nodes', 'Fit', 'Show All'] },
   { path: '/identity', expects: ['Identity Providers', 'Okta', 'GitHub Actions', 'Benefits Portal', 'MFA'] },
   { path: '/credentials', expects: ['Credentials', 'Expansion candidates'] },
-  { path: '/paths', expects: ['Attack Paths'], expectsAny: ['WS01', 'Benefits Portal', 'AWS BackupRole', 'corp-payroll-archive'] },
+  { path: '/paths', expects: ['Attack Paths', 'Inspect Path'], expectsAny: ['Fast wins', 'Cloud reach', 'Identity pivots', 'Higher risk'] },
   { path: '/evidence', expects: ['Evidence'] },
   { path: '/findings', expects: ['Findings'], expectsAny: ['Estimated CVSS', 'CVSS'] },
   { path: '/findings?item=nonexistent-id', expects: ['Findings'] },
@@ -139,6 +139,47 @@ describe.skipIf(!smokeUrl)('dashboard route smoke', () => {
       await page.waitForFunction(() => location.pathname.endsWith('/graph') && document.body.innerText.includes('Evidence for'), { timeout: 15_000 });
       const text = await page.evaluate(() => document.body.innerText);
       expect(text).toContain('Show All');
+      expect(text).not.toContain('Graph renderer is not mounted.');
+    } finally {
+      await browser.close();
+    }
+  }, 40_000);
+
+  it('presents attack paths as decision rows and inspects them in graph context', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1280, height: 800 });
+      await page.goto(`${smokeUrl}/paths`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForFunction(() => document.body.innerText.includes('Inspect Path'), { timeout: 10_000 });
+      let text = await page.evaluate(() => document.body.innerText);
+      expect(text).toContain('can reach');
+      expect(text).not.toContain('HAS_SESSION -> OWNS_CRED');
+      expect(text).not.toContain('network\napp\ncloud\nidentity');
+      expect(text).toContain('All');
+
+      await page.evaluate(() => {
+        const summary = [...document.querySelectorAll('summary')]
+          .find(candidate => candidate.textContent?.includes('Raw graph details'));
+        if (!(summary instanceof HTMLElement)) throw new Error('raw path details missing');
+        summary.click();
+      });
+      text = await page.evaluate(() => document.body.innerText);
+      expect(['CAN_REACH', 'HAS_SESSION', 'OWNS_CRED'].some(raw => text.includes(raw))).toBe(true);
+
+      await page.evaluate(() => {
+        const button = [...document.querySelectorAll('button')]
+          .find(candidate => candidate.textContent?.includes('Inspect Path'));
+        if (!(button instanceof HTMLButtonElement)) throw new Error('inspect path button missing');
+        button.click();
+      });
+      await page.waitForFunction(() => location.pathname.endsWith('/graph') && document.body.innerText.includes('Show All'), { timeout: 15_000 });
+      text = await page.evaluate(() => document.body.innerText);
+      expect(text).toContain('Fit');
       expect(text).not.toContain('Graph renderer is not mounted.');
     } finally {
       await browser.close();

@@ -1,9 +1,9 @@
 // ============================================================
 // Attack Paths Panel.
 //
-// Surfaces multi-hop attack chains in the engagement graph with a
-// tier filter so cross-tier paths (network → cloud → identity, etc.)
-// are easy to find without mining the giant graph view.
+// Surfaces multi-hop attack chains in the engagement graph as an
+// operator route queue. Lane filters match the row grouping so the
+// operator can move from "what matters" to graph context quickly.
 //
 // Computes paths client-side with a small Dijkstra over the exported
 // graph. The optimization modes mirror server-side path-analyzer.ts:
@@ -20,16 +20,25 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 
 import type { ExportedEdge, ExportedNode } from '../../lib/types';
-import { isCrossTierPath, tierForNode, tiersForPath, type Tier } from '../../lib/tier';
-import { cn } from '../../lib/utils';
-import { EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
+import { tiersForPath, type Tier } from '../../lib/tier';
+import {
+  ATTACK_PATH_GROUPS,
+  attackPathLaneCounts,
+  filterDisplayAttackPaths,
+  groupDisplayAttackPaths,
+  normalizeComputedAttackPath,
+  type AttackPathLaneFilter,
+  type DisplayAttackPath,
+} from '../../lib/attack-path-workspace';
+import { AttackPathRouteRow } from '../shared/AttackPathRouteRow';
+import { EmptyPanelState, FilterBar, PageHeader, SegmentedControl } from '../shared/primitives';
 
 export type Optimize = 'confidence' | 'stealth';
-type TierFilter = 'any' | 'cross_tier' | Tier;
 
 export interface ComputedPath {
   nodes: string[];
   edge_types: string[];
+  edge_ids: string[];
   weight: number;
   total_confidence: number;
   total_opsec_noise: number;
@@ -56,7 +65,11 @@ interface Adj {
   to: string;
   weight: number;
   edge_type: string;
-  via_edge_id: string | undefined;
+  via_edge_id: string;
+}
+
+function edgeKeyForExport(edge: ExportedEdge): string {
+  return edge.id || `${edge.source}--${edge.type || ''}--${edge.target}`;
 }
 
 function buildAdjacency(nodes: ExportedNode[], edges: ExportedEdge[], mode: Optimize): Map<string, Adj[]> {
@@ -66,19 +79,20 @@ function buildAdjacency(nodes: ExportedNode[], edges: ExportedEdge[], mode: Opti
     // Skip dead session edges (matches server-side path graph).
     if (e.type === 'HAS_SESSION' && e.session_live === false) continue;
     const w = edgeWeight(e, mode);
-    adj.get(e.source)?.push({ to: e.target, weight: w, edge_type: e.type, via_edge_id: e.id });
+    const edgeId = edgeKeyForExport(e);
+    adj.get(e.source)?.push({ to: e.target, weight: w, edge_type: e.type, via_edge_id: edgeId });
     if (BIDIRECTIONAL.has(e.type)) {
-      adj.get(e.target)?.push({ to: e.source, weight: w, edge_type: e.type, via_edge_id: e.id });
+      adj.get(e.target)?.push({ to: e.source, weight: w, edge_type: e.type, via_edge_id: edgeId });
     }
   }
   return adj;
 }
 
 /** Dijkstra returning shortest-paths from one source to every node. */
-function dijkstra(adj: Map<string, Adj[]>, source: string): Map<string, { dist: number; prev: string | undefined; via: string | undefined }> {
-  const dist = new Map<string, { dist: number; prev: string | undefined; via: string | undefined }>();
-  for (const id of adj.keys()) dist.set(id, { dist: Infinity, prev: undefined, via: undefined });
-  dist.set(source, { dist: 0, prev: undefined, via: undefined });
+function dijkstra(adj: Map<string, Adj[]>, source: string): Map<string, { dist: number; prev: string | undefined; via: string | undefined; viaEdgeId: string | undefined }> {
+  const dist = new Map<string, { dist: number; prev: string | undefined; via: string | undefined; viaEdgeId: string | undefined }>();
+  for (const id of adj.keys()) dist.set(id, { dist: Infinity, prev: undefined, via: undefined, viaEdgeId: undefined });
+  dist.set(source, { dist: 0, prev: undefined, via: undefined, viaEdgeId: undefined });
 
   // Tiny binary-heap stand-in: array + sort. Graph sizes here are
   // typically <2k nodes; correctness > micro-perf.
@@ -96,7 +110,7 @@ function dijkstra(adj: Map<string, Adj[]>, source: string): Map<string, { dist: 
       const nextDist = cur.d + n.weight;
       const known = dist.get(n.to);
       if (!known || nextDist < known.dist) {
-        dist.set(n.to, { dist: nextDist, prev: cur.id, via: n.edge_type });
+        dist.set(n.to, { dist: nextDist, prev: cur.id, via: n.edge_type, viaEdgeId: n.via_edge_id });
         queue.push({ id: n.to, d: nextDist });
       }
     }
@@ -104,19 +118,21 @@ function dijkstra(adj: Map<string, Adj[]>, source: string): Map<string, { dist: 
   return dist;
 }
 
-function reconstructPath(target: string, dijkstraResult: ReturnType<typeof dijkstra>): { nodes: string[]; edge_types: string[] } | null {
+function reconstructPath(target: string, dijkstraResult: ReturnType<typeof dijkstra>): { nodes: string[]; edge_types: string[]; edge_ids: string[] } | null {
   const nodes: string[] = [];
   const edge_types: string[] = [];
+  const edge_ids: string[] = [];
   let cursor: string | undefined = target;
   while (cursor) {
     nodes.unshift(cursor);
     const entry = dijkstraResult.get(cursor);
     if (!entry || !entry.prev) break;
     if (entry.via) edge_types.unshift(entry.via);
+    if (entry.viaEdgeId) edge_ids.unshift(entry.viaEdgeId);
     cursor = entry.prev;
   }
   if (!Number.isFinite(dijkstraResult.get(target)?.dist ?? Infinity)) return null;
-  return { nodes, edge_types };
+  return { nodes, edge_types, edge_ids };
 }
 
 export function computePaths(
@@ -184,6 +200,7 @@ export function computePaths(
       out.push({
         nodes: recon.nodes,
         edge_types: recon.edge_types,
+        edge_ids: recon.edge_ids,
         weight: result.get(tgt)!.dist,
         total_confidence,
         total_opsec_noise,
@@ -201,22 +218,12 @@ export function computePaths(
   return out;
 }
 
-function tierBadgeClass(t: Tier): string {
-  switch (t) {
-    case 'network': return 'bg-blue-500/20 text-blue-300 border-blue-500/40';
-    case 'app': return 'bg-purple-500/20 text-purple-300 border-purple-500/40';
-    case 'cloud': return 'bg-orange-500/20 text-orange-300 border-orange-500/40';
-    case 'identity': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
-    default: return 'bg-muted text-muted-foreground border-border';
-  }
-}
-
 export function AttackPathsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const initialized = useEngagementStore((s) => s.initialized);
   const { navigateToGraphTarget, navigateToFrontier } = useNavigation();
 
-  const [tierFilter, setTierFilter] = useState<TierFilter>('cross_tier');
+  const [laneFilter, setLaneFilter] = useState<AttackPathLaneFilter>('all');
   const [maxHops, setMaxHops] = useState<number>(6);
   const [optimize, setOptimize] = useState<Optimize>('confidence');
 
@@ -231,11 +238,27 @@ export function AttackPathsPanel() {
     [graph.nodes, graph.edges, optimize, maxHops, byId],
   );
 
-  const visiblePaths = useMemo(() => {
-    if (tierFilter === 'any') return allPaths;
-    if (tierFilter === 'cross_tier') return allPaths.filter(p => p.tiers.size >= 2);
-    return allPaths.filter(p => p.tiers.has(tierFilter));
-  }, [allPaths, tierFilter]);
+  const displayPaths = useMemo(
+    () => allPaths
+      .map(path => normalizeComputedAttackPath(path, byId))
+      .filter((path): path is DisplayAttackPath => !!path),
+    [allPaths, byId],
+  );
+
+  const laneCounts = useMemo(() => attackPathLaneCounts(displayPaths), [displayPaths]);
+  const visiblePaths = useMemo(() => filterDisplayAttackPaths(displayPaths, laneFilter), [displayPaths, laneFilter]);
+
+  const limitedPaths = useMemo(() => visiblePaths.slice(0, 100), [visiblePaths]);
+  const groupedPaths = useMemo(() => groupDisplayAttackPaths(limitedPaths), [limitedPaths]);
+
+  const inspectPath = (path: DisplayAttackPath) => {
+    navigateToGraphTarget({
+      kind: 'path',
+      nodeIds: path.nodeIds,
+      edgeIds: path.edgeIds,
+      label: path.headline,
+    });
+  };
 
   if (!initialized) {
     return <EmptyPanelState message="Waiting for engagement state..." />;
@@ -252,12 +275,16 @@ export function AttackPathsPanel() {
       <PageHeader title="Attack Paths" meta={`(${allPaths.length} computed · ${visiblePaths.length} visible)`} />
       <FilterBar>
         <SegmentedControl
-          value={tierFilter}
-          onChange={setTierFilter}
-          options={(['cross_tier', 'any', 'network', 'app', 'cloud', 'identity'] as TierFilter[]).map(value => ({
-            value,
-            label: value === 'cross_tier' ? 'cross-tier' : value,
-          }))}
+          value={laneFilter}
+          onChange={setLaneFilter}
+          options={[
+            { value: 'all' as const, label: 'All', count: laneCounts.all },
+            ...ATTACK_PATH_GROUPS.map(group => ({
+              value: group.key,
+              label: group.label,
+              count: laneCounts[group.key],
+            })),
+          ]}
         />
         <label className="text-xs text-muted-foreground flex items-center gap-2">
           max hops:
@@ -271,8 +298,8 @@ export function AttackPathsPanel() {
         <label className="text-xs text-muted-foreground flex items-center gap-1">
           optimize:
           <select value={optimize} onChange={e => setOptimize(e.target.value as Optimize)} className="bg-card border border-border rounded px-1 py-0.5 text-xs">
-            <option value="confidence">confidence</option>
-            <option value="stealth">stealth</option>
+            <option value="confidence">Highest confidence</option>
+            <option value="stealth">Lowest noise</option>
           </select>
         </label>
       </FilterBar>
@@ -280,73 +307,36 @@ export function AttackPathsPanel() {
       {visiblePaths.length === 0 ? (
         <EmptyPanelState message="No paths match the current filter." />
       ) : (
-        <div className="space-y-2">
-          {visiblePaths.slice(0, 100).map((p, idx) => (
-            <PathRow key={idx} path={p} byId={byId} onNavigate={() => navigateToGraphTarget({ kind: 'path', nodeIds: p.nodes, label: 'Attack Path' })} onFrontier={(id) => navigateToFrontier?.(id)} />
+        <div className="space-y-5">
+          {groupedPaths.map(group => (
+            <section key={group.key} className="space-y-2">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground">
+                    {group.label}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">({group.paths.length})</span>
+                  </h3>
+                  <p className="text-xs text-muted-foreground">{group.description}</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {group.paths.map((path, idx) => (
+                  <AttackPathRouteRow
+                    key={path.id}
+                    path={path}
+                    index={idx}
+                    onInspect={inspectPath}
+                    onFrontier={(id) => navigateToFrontier?.(id)}
+                  />
+                ))}
+              </div>
+            </section>
           ))}
           {visiblePaths.length > 100 ? (
             <p className="text-xs text-muted-foreground">+ {visiblePaths.length - 100} more not shown — narrow the filter to focus.</p>
           ) : null}
         </div>
       )}
-    </div>
-  );
-}
-
-function PathRow({ path, byId, onNavigate, onFrontier }: {
-  path: ComputedPath;
-  byId: Map<string, ExportedNode>;
-  onNavigate?: (id: string) => void;
-  onFrontier?: (id: string) => void;
-}) {
-  const isCross = isCrossTierPath(path.nodes, byId);
-  const targetId = path.nodes[path.nodes.length - 1];
-  return (
-    <div className="rounded border border-border bg-card p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex flex-wrap gap-1">
-          {[...path.tiers].map(t => (
-            <StatusPill key={t} className={cn('border font-mono uppercase', tierBadgeClass(t))}>
-              {t}
-            </StatusPill>
-          ))}
-          {isCross ? <StatusPill className="border bg-yellow-500/20 text-yellow-300 border-yellow-500/40 font-mono uppercase">cross-tier</StatusPill> : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="text-xs text-muted-foreground font-mono">
-            {path.nodes.length - 1} hop{path.nodes.length === 2 ? '' : 's'} · conf {path.total_confidence.toFixed(2)} · noise {path.total_opsec_noise.toFixed(2)}
-          </div>
-          {onFrontier && targetId && (
-            <button
-              onClick={() => onFrontier(targetId)}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground hover:border-accent/50 transition-colors"
-              title="Show frontier items for target node"
-            >
-              Frontier →
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-1 text-xs font-mono">
-        {path.nodes.map((id, i) => {
-          const node = byId.get(id);
-          const tier = tierForNode(node);
-          return (
-            <span key={`${id}-${i}`} className="flex items-center gap-1">
-              <button
-                onClick={() => onNavigate?.(id)}
-                className={cn('px-1.5 py-0.5 rounded border hover:bg-elevated', tierBadgeClass(tier))}
-                title={`${node?.type ?? 'unknown'} · ${id}`}
-              >
-                {node?.label ?? id}
-              </button>
-              {i < path.nodes.length - 1 ? (
-                <span className="text-muted-foreground">→ {path.edge_types[i] ?? '?'} →</span>
-              ) : null}
-            </span>
-          );
-        })}
-      </div>
     </div>
   );
 }

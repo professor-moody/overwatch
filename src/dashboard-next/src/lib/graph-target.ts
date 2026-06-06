@@ -269,7 +269,12 @@ export function resolveGraphTarget(
         const source = ordered[i];
         const dest = ordered[i + 1];
         graph.forEachEdge((edge, _attrs, edgeSource, edgeTarget) => {
-          if (edgeSource === source && edgeTarget === dest) edges.add(edge);
+          if (
+            (edgeSource === source && edgeTarget === dest) ||
+            (edgeSource === dest && edgeTarget === source)
+          ) {
+            edges.add(edge);
+          }
         });
       }
     }

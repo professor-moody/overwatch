@@ -69,10 +69,19 @@ describe('identity and attack path demo helpers', () => {
       ],
     };
     const byId = new Map(graph.nodes.map(n => [n.id, n]));
-    const paths = computePaths(graph.nodes, graph.edges, 'confidence', 6, byId).map(path => path.nodes.join('>'));
+    const computed = computePaths(graph.nodes, graph.edges, 'confidence', 6, byId);
+    const paths = computed.map(path => path.nodes.join('>'));
 
     expect(paths).toContain('ws01>jdoe>domain-admins>dc01');
     expect(paths).toContain('ws01>jdoe>cred-okta>benefits-app>backup-role>backup-policy>payroll');
     expect(paths).toContain('ws01>jdoe>cred-gha>gha-app>deploy-role>admin-role');
+    expect(computed.find(path => path.nodes.join('>') === 'ws01>jdoe>cred-gha>gha-app>deploy-role>admin-role')?.edge_ids)
+      .toEqual([
+        'jdoe--HAS_SESSION--ws01',
+        'jdoe--OWNS_CRED--cred-gha',
+        'cred-gha--VALID_FOR_APP--gha-app',
+        'gha-app--ISSUES_TOKENS_FOR--deploy-role',
+        'deploy-role--ASSUMES_ROLE--admin-role',
+      ]);
   });
 });

@@ -1,34 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-vi.mock('../../services/report-generator.js', () => ({
-  generateFullReport: vi.fn(() => '# Test Report\n\nExecutive summary here.'),
-  buildFindings: vi.fn(() => [
-    { severity: 'critical', risk_score: 9.5, title: 'Critical Finding', remediation: 'Fix immediately\nDetails here', affected_assets: [], evidence: [], category: 'compromised_host' },
-    { severity: 'high', risk_score: 7.0, title: 'High Finding', remediation: 'Patch system\nMore info', affected_assets: [], evidence: [], category: 'credential' },
-    { severity: 'medium', risk_score: 4.5, title: 'Medium Finding', remediation: 'Review config', affected_assets: [], evidence: [], category: 'vulnerability' },
-  ]),
-  buildAttackNarrative: vi.fn(() => []),
-  buildRemediationRanking: vi.fn(() => []),
-}));
-
-vi.mock('../../services/report-html.js', () => ({
-  renderReportHtml: vi.fn(() => '<html><body><h1>Report</h1></body></html>'),
-}));
-
-vi.mock('../../services/finding-classifier.js', () => ({
-  classifyAllFindings: vi.fn(() => new Map()),
-  generateNavigatorLayer: vi.fn(() => ({})),
-}));
-
-vi.mock('../../services/retrospective.js', () => ({
-  runRetrospective: vi.fn(() => ({
-    inference_suggestions: [],
-    skill_gaps: [],
-    context_improvements: [],
-    trace_quality: { total_actions: 0, traced_actions: 0, ratio: 0 },
+vi.mock('../../services/report-assembler.js', () => ({
+  assembleReport: vi.fn((_engine, _skills, opts) => ({
+    format: opts.format,
+    content: opts.format === 'html' ? '<html><body><h1>Report</h1></body></html>' : '# Test Report\n\nExecutive summary here.',
+    findings_count: 3,
+    evidence_count: 2,
+    profile: opts.profile ?? (opts.client_safe ? 'client' : 'operator'),
+    redaction_mode: opts.client_safe || opts.profile === 'client' ? 'client_safe' : 'operator',
+    severity_summary: { critical: 1, high: 1, medium: 1, low: 0, info: 0 },
+    navigator_layer: opts.include_attack_navigator ? { name: 'Navigator' } : undefined,
   })),
-  buildCredentialChains: vi.fn(() => []),
 }));
 
 vi.mock('fs', () => ({
@@ -38,8 +21,7 @@ vi.mock('fs', () => ({
 }));
 
 import { registerReportingTools } from '../reporting.js';
-import { generateFullReport } from '../../services/report-generator.js';
-import { renderReportHtml } from '../../services/report-html.js';
+import { assembleReport } from '../../services/report-assembler.js';
 
 function buildHandlers() {
   const handlers: Record<string, (args: any) => Promise<any>> = {};
@@ -97,11 +79,11 @@ describe('generate_report tool', () => {
     expect(payload.severity_summary.high).toBe(1);
     expect(payload.severity_summary.medium).toBe(1);
     expect(payload.report_preview).toContain('# Test Report');
-    expect(generateFullReport).toHaveBeenCalledTimes(1);
-    expect(renderReportHtml).not.toHaveBeenCalled();
+    expect(assembleReport).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(assembleReport).mock.calls[0][2]).toEqual(expect.objectContaining({ format: 'markdown' }));
   });
 
-  it('returns HTML format and calls renderReportHtml', async () => {
+  it('returns HTML format through the shared assembler', async () => {
     const { handlers } = buildHandlers();
 
     const result = await handlers.generate_report({
@@ -118,13 +100,13 @@ describe('generate_report tool', () => {
     const payload = JSON.parse(result.content[0].text);
     expect(payload.format).toBe('html');
     expect(payload.report_preview).toContain('<html>');
-    expect(renderReportHtml).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(renderReportHtml).mock.calls[0][1]).toEqual(
-      expect.objectContaining({ theme: 'dark' }),
+    expect(assembleReport).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(assembleReport).mock.calls[0][2]).toEqual(
+      expect.objectContaining({ format: 'html', theme: 'dark' }),
     );
   });
 
-  it('calls engine methods to gather graph data', async () => {
+  it('passes render options to the shared assembler', async () => {
     const { handlers, engine } = buildHandlers();
 
     await handlers.generate_report({
@@ -135,11 +117,20 @@ describe('generate_report tool', () => {
       write_to_disk: false,
       output_dir: './reports/',
       theme: 'light',
+      profile: 'client',
+      evidence_style: 'proof_cards',
     });
 
     expect(engine.getConfig).toHaveBeenCalled();
-    expect(engine.exportGraph).toHaveBeenCalled();
-    expect(engine.getFullHistory).toHaveBeenCalled();
-    expect(engine.getAllAgents).toHaveBeenCalled();
+    expect(assembleReport).toHaveBeenCalledWith(
+      engine,
+      expect.anything(),
+      expect.objectContaining({
+        format: 'markdown',
+        profile: 'client',
+        evidence_style: 'proof_cards',
+        include_narrative: false,
+      }),
+    );
   });
 });

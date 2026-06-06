@@ -17,8 +17,10 @@ function sampleGraph(): Graph {
   graph.addNode('cred-jdoe-ntlm');
   graph.addNode('host-ws01');
   graph.addNode('svc-rdp-ws01');
+  graph.addNode('user-jdoe');
   graph.addEdgeWithKey('edge-tested', 'cred-jdoe-ntlm', 'svc-rdp-ws01', { edgeType: 'TESTED_CRED' });
   graph.addEdgeWithKey('edge-hosts', 'host-ws01', 'svc-rdp-ws01', { edgeType: 'RUNS' });
+  graph.addEdgeWithKey('edge-session', 'user-jdoe', 'host-ws01', { edgeType: 'HAS_SESSION' });
   return graph;
 }
 
@@ -79,6 +81,15 @@ describe('graph target navigation', () => {
       kind: 'path',
       nodeIds: ['cred-jdoe-ntlm', 'svc-rdp-ws01'],
     }).nodes).toEqual(new Set(['cred-jdoe-ntlm', 'svc-rdp-ws01']));
+  });
+
+  it('infers path edges in either direction when edge ids are not provided', () => {
+    const resolved = resolveGraphTarget(sampleGraph(), {
+      kind: 'path',
+      nodeIds: ['host-ws01', 'user-jdoe'],
+    });
+
+    expect(resolved.edges.has('edge-session')).toBe(true);
   });
 
   it('returns a missing reason instead of silently falling back', () => {
