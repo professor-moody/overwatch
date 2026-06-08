@@ -179,6 +179,64 @@ describe('proof card evidence rendering', () => {
     const findingSection = html.split('id="finding-0"')[1]?.split('</div>\n    </div>')[0] ?? '';
     expect(findingSection).not.toContain('class="proof-card"');
   });
+
+  it('renders markdown-style description bullets as a list', () => {
+    const findings = [
+      makeFinding({
+        description: '**1 with confirmed authentication path:**\n- jdoe → RDP (3389)',
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({ findings }));
+    expect(html).toContain('<strong>1 with confirmed authentication path:</strong>');
+    expect(html).toContain('<li>jdoe → RDP (3389)</li>');
+  });
+
+  it('links proof cards to evidence appendix anchors', () => {
+    const findings = [
+      makeFinding({
+        proof_cards: [{
+          id: 'proof-long-command',
+          appendix_ref: 'ev-long-command',
+          claim: 'A long command proved access to WS01.corp.local',
+          proof: 'Captured command output supports the claim.',
+          source_kind: 'direct_output',
+          action_id: 'act-long-command',
+          evidence_id: 'evidence-long-command',
+          content_hash: 'a'.repeat(64),
+          command: `python3 -c "print('${'hostname-'.repeat(20)}')"`,
+        }],
+      }),
+    ];
+    const html = renderReportHtml(makeReportData({
+      findings,
+      evidenceAppendix: [{
+        id: 'ev-long-command',
+        title: 'Evidence evidence-long-command',
+        claim: 'A long command proved access to WS01.corp.local',
+        source_kind: 'direct_output',
+        action_id: 'act-long-command',
+        evidence_id: 'evidence-long-command',
+        content_hash: 'a'.repeat(64),
+        command: `python3 -c "print('${'hostname-'.repeat(20)}')"`,
+        redaction_mode: 'operator',
+        finding_ids: ['f-1'],
+        finding_titles: ['Test Finding'],
+      }],
+    }));
+    expect(html).toContain('href="#ev-long-command"');
+    expect(html).toContain('id="ev-long-command"');
+    expect(html).toContain('evidence-long-command');
+    expect(html).toContain('a'.repeat(64));
+  });
+
+  it('includes wrapping and print-safe CSS for long commands, hashes, and proof cards', () => {
+    const html = renderReportHtml(makeReportData());
+    expect(html).toContain('table-layout: fixed');
+    expect(html).toContain('overflow-wrap: anywhere');
+    expect(html).toContain('word-break: break-word');
+    expect(html).toContain('page-break-inside: avoid');
+    expect(html).toContain('.finding, .proof-card, .appendix-entry, .remediation');
+  });
 });
 
 describe('narrative rendering', () => {

@@ -4,6 +4,7 @@
 // HTML document suitable for client delivery.
 // ============================================================
 
+import { createHash } from 'crypto';
 import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard, EvidenceAppendixEntry } from './report-generator.js';
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
@@ -300,7 +301,7 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
       </div>
       <div class="finding-body">
         <h4>Description</h4>
-        <p>${inlineMarkdownToHtml(finding.description)}</p>
+        <div class="finding-description">${blockMarkdownToHtml(finding.description)}</div>
         <h4>Affected Assets</h4>
         <ul>${finding.affected_assets.slice(0, 10).map(a => `<li>${esc(a)}</li>`).join('')}${finding.affected_assets.length > 10 ? `<li>... and ${finding.affected_assets.length - 10} more</li>` : ''}</ul>
         ${proofCards.length > 0 ? `
@@ -316,33 +317,44 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
 
 function proofCardsForRender(finding: ReportFinding): EvidenceProofCard[] {
   if (finding.proof_cards && finding.proof_cards.length > 0) return finding.proof_cards;
-  return finding.evidence.map((ev, index) => ({
-    id: `proof-render-${index}`,
-    appendix_ref: ev.stdout_evidence_id || ev.action_id || `proof-render-${index}`,
-    claim: ev.claim,
-    proof: ev.stdout_evidence_id || ev.raw_output || ev.evidence_content
-      ? 'Captured command output is linked to this finding and supports the claimed state change.'
-      : 'The activity log references the affected asset during the engagement timeline.',
-    source_kind: ev.stdout_evidence_id || ev.raw_output || ev.evidence_content ? 'direct_output' : 'activity',
-    tool: ev.tool,
-    technique: ev.technique,
-    command: ev.command,
-    timestamp: ev.timestamp,
-    action_id: ev.action_id,
-    evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id,
-    content_hash: ev.stdout_content_hash || ev.stderr_content_hash,
-    filename: ev.evidence_filename,
-    evidence_type: ev.evidence_type,
-    raw_preview: ev.stdout_preview || ev.raw_output || ev.evidence_content,
-    raw_preview_redacted: false,
-  }));
+  return finding.evidence.map((ev) => {
+    const key = ev.stdout_evidence_id
+      || ev.stderr_evidence_id
+      || ev.action_id
+      || ev.evidence_filename
+      || `${ev.timestamp || ''}|${ev.claim}`;
+    return {
+      id: stableRenderId('proof', `${key}|${ev.claim}`),
+      appendix_ref: stableRenderId('ev', key),
+      claim: ev.claim,
+      proof: ev.stdout_evidence_id || ev.raw_output || ev.evidence_content
+        ? 'Captured command output is linked to this finding and supports the claimed state change.'
+        : 'The activity log references the affected asset during the engagement timeline.',
+      source_kind: ev.stdout_evidence_id || ev.raw_output || ev.evidence_content ? 'direct_output' : 'activity',
+      tool: ev.tool,
+      technique: ev.technique,
+      command: ev.command,
+      timestamp: ev.timestamp,
+      action_id: ev.action_id,
+      evidence_id: ev.stdout_evidence_id || ev.stderr_evidence_id,
+      content_hash: ev.stdout_content_hash || ev.stderr_content_hash,
+      filename: ev.evidence_filename,
+      evidence_type: ev.evidence_type,
+      raw_preview: ev.stdout_preview || ev.raw_output || ev.evidence_content,
+      raw_preview_redacted: false,
+    };
+  });
+}
+
+function stableRenderId(prefix: string, value: string): string {
+  return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
 }
 
 function renderProofCardHtml(card: EvidenceProofCard): string {
   const meta = [
     card.tool ? `<span>${esc(card.tool)}</span>` : '',
     card.timestamp ? `<span>${formatTs(card.timestamp)}</span>` : '',
-    card.action_id ? `<code>${esc(card.action_id.slice(0, 8))}</code>` : '',
+    card.action_id ? `<code>${esc(card.action_id)}</code>` : '',
     card.evidence_id ? `<code>${esc(card.evidence_id.slice(0, 12))}</code>` : '',
     card.filename ? `<span>${esc(card.filename)}</span>` : '',
   ].filter(Boolean).join('');
@@ -772,6 +784,29 @@ export function inlineMarkdownToHtml(text: string): string {
   return result;
 }
 
+function blockMarkdownToHtml(text: string): string {
+  const lines = text.split(/\n+/).map(line => line.trim()).filter(Boolean);
+  if (lines.length === 0) return '';
+  const parts: string[] = [];
+  let bullets: string[] = [];
+  const flushBullets = () => {
+    if (bullets.length === 0) return;
+    parts.push(`<ul>${bullets.map(item => `<li>${inlineMarkdownToHtml(item)}</li>`).join('')}</ul>`);
+    bullets = [];
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('- ')) {
+      bullets.push(line.slice(2));
+      continue;
+    }
+    flushBullets();
+    parts.push(`<p>${inlineMarkdownToHtml(line)}</p>`);
+  }
+  flushBullets();
+  return parts.join('');
+}
+
 function limitPreview(text: string, maxChars: number, maxLines: number): string {
   const charSlice = text.length > maxChars ? `${text.slice(0, maxChars)}\n[preview truncated]` : text;
   const lines = charSlice.split('\n');
@@ -802,13 +837,14 @@ const CSS_STYLES = `
     --accent: #58a6ff; --header-bg: #010409; --header-fg: #f0f6fc;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; overflow-wrap: break-word; }
   h1, h2, h3, h4 { margin-top: 1.5rem; margin-bottom: 0.5rem; }
   h1 { font-size: 1.8rem; } h2 { font-size: 1.4rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; } h3 { font-size: 1.15rem; }
   p { margin-bottom: 0.75rem; }
   a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
-  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
-  th, td { padding: 0.5rem 0.75rem; border: 1px solid var(--border); text-align: left; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; table-layout: fixed; }
+  th, td { padding: 0.5rem 0.75rem; border: 1px solid var(--border); text-align: left; overflow-wrap: anywhere; }
+  code, pre, .meta-value { overflow-wrap: anywhere; word-break: break-word; }
   th { background: var(--card-bg); font-weight: 600; }
   .report-header { background: var(--header-bg); color: var(--header-fg); padding: 2rem; border-radius: 8px; margin-bottom: 2rem; }
   .report-header h1 { margin-top: 0; color: var(--header-fg); border: none; }
@@ -838,9 +874,11 @@ const CSS_STYLES = `
   .finding-body { padding: 1.25rem; }
   .finding-body h4 { margin-top: 1rem; margin-bottom: 0.3rem; font-size: 0.95rem; }
   .finding-body ul { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  .finding-description p { margin-bottom: 0.45rem; }
+  .finding-description ul { margin-top: 0.25rem; }
   .risk-score { font-weight: 600; font-size: 0.85rem; }
   .proof-grid { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; }
-  .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; }
+  .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
   .proof-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .proof-kind { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); }
   .proof-ref { font-family: monospace; font-size: 0.75rem; overflow-wrap: anywhere; }
@@ -851,7 +889,7 @@ const CSS_STYLES = `
   .proof-hash, .proof-summary { font-size: 0.78rem; color: var(--info); margin-top: 0.35rem; overflow-wrap: anywhere; }
   .proof-raw { margin-top: 0.45rem; }
   .proof-raw summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; }
-  .proof-raw pre, .evidence-command { background: var(--card-bg); border: 1px solid var(--border); padding: 0.7rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 0.4rem; }
+  .proof-raw pre, .evidence-command { background: var(--card-bg); border: 1px solid var(--border); padding: 0.7rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 0.4rem; }
   .evidence-tool { color: var(--accent); font-size: 0.85rem; } .evidence-time { color: var(--info); font-size: 0.85rem; }
   .evidence-action { background: var(--card-bg); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem; }
   .evidence-file { font-size: 0.85rem; color: var(--accent); margin-top: 0.25rem; }
@@ -861,7 +899,7 @@ const CSS_STYLES = `
   .evidence-warning { color: #8a5a00; background: rgba(255,193,7,0.16); border: 1px solid rgba(255,193,7,0.35); border-radius: 4px; padding: 0.4rem 0.55rem; font-size: 0.8rem; margin-top: 0.45rem; }
   .evidence-error { color: var(--critical); background: rgba(220,53,69,0.12); border: 1px solid rgba(220,53,69,0.3); border-radius: 4px; padding: 0.4rem 0.55rem; font-size: 0.8rem; margin-top: 0.45rem; }
   .evidence-meta { font-size: 0.78rem; color: var(--info); margin-top: 0.3rem; overflow-wrap: anywhere; }
-  .appendix-entry { border-top: 1px solid var(--border); padding: 1rem 0; break-inside: avoid; }
+  .appendix-entry { border-top: 1px solid var(--border); padding: 1rem 0; break-inside: avoid; page-break-inside: avoid; }
   .appendix-entry h3 { overflow-wrap: anywhere; }
   .appendix-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem 0.75rem; margin: 0.75rem 0; }
   .appendix-meta div { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.45rem; min-width: 0; }
@@ -881,7 +919,7 @@ const CSS_STYLES = `
     details.proof-raw[open], details.proof-raw { break-inside: avoid; }
     .report-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .severity-card, .badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .finding, .proof-card, .appendix-entry, .remediation { break-inside: avoid; }
+    .finding, .proof-card, .appendix-entry, .remediation { break-inside: avoid; page-break-inside: avoid; }
   }
   .cvss-score { font-weight: 700; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
   .cvss-critical { background: var(--critical); color: #fff; }
