@@ -14,8 +14,10 @@ import {
   displayFindingImpact,
   displayFindingRemediation,
   displayFindingSummary,
+  displayFindingShortTitle,
   displayFindingTitle,
 } from './finding-presentation.js';
+import type { ReportActionPlanItem, ReportExecutiveSummary } from './report-deliverable.js';
 
 export interface HtmlDiscoveryStats {
   nodesByType: Record<string, number>;
@@ -54,6 +56,8 @@ export interface HtmlReportData {
   retrospective?: HtmlRetrospective;
   timeline?: HtmlTimelineEntry[];
   recommendations?: string[];
+  executiveSummary?: ReportExecutiveSummary;
+  actionPlan?: ReportActionPlanItem[];
   heatmap?: HtmlHeatmapData;
   remediationRanking?: HtmlRemediationRanking[];
   complianceMapping?: HtmlComplianceMapping;
@@ -139,20 +143,13 @@ export function renderReportHtml(data: HtmlReportData, options: HtmlReportOption
 
 ${include_toc ? renderToc(findings, narrative, data) : ''}
 
-  <section id="executive-summary">
-    <h2>Executive Summary</h2>
-    <p>This penetration test targeted ${config.scope.cidrs.length} CIDR range(s)${config.scope.domains.length > 0 ? ` and ${config.scope.domains.length} domain(s)` : ''}.
-    The assessment identified <strong>${findings.length} finding(s)</strong> across the target environment.</p>
-    <div class="severity-grid">
-      <div class="severity-card severity-critical"><span class="sev-count">${criticalCount}</span><span class="sev-label">Critical</span></div>
-      <div class="severity-card severity-high"><span class="sev-count">${highCount}</span><span class="sev-label">High</span></div>
-      <div class="severity-card severity-medium"><span class="sev-count">${mediumCount}</span><span class="sev-label">Medium</span></div>
-      <div class="severity-card severity-low"><span class="sev-count">${lowCount}</span><span class="sev-label">Low</span></div>
-      <div class="severity-card severity-info"><span class="sev-count">${infoCount}</span><span class="sev-label">Info</span></div>
-    </div>
-    <p>${objectivesAchieved} of ${config.objectives.length} objective(s) were achieved.
-    Graph: ${data.graph.nodes.length} nodes, ${data.graph.edges.length} edges.</p>
-  </section>
+${renderExecutiveSummaryHtml(data, {
+  critical: criticalCount,
+  high: highCount,
+  medium: mediumCount,
+  low: lowCount,
+  info: infoCount,
+}, objectivesAchieved)}
 
   <section id="scope">
     <h2>Scope</h2>
@@ -176,10 +173,12 @@ ${include_toc ? renderToc(findings, narrative, data) : ''}
     <table>
       <thead><tr><th>#</th><th>Severity</th><th>Title</th><th>Risk</th></tr></thead>
       <tbody>
-        ${findings.map((f, i) => `<tr><td>${i + 1}</td><td>${severityHtml(f.severity)}</td><td><a href="#finding-${i}">${esc(displayFindingTitle(f))}</a></td><td>${f.risk_score.toFixed(1)}</td></tr>`).join('\n        ')}
+        ${findings.map((f, i) => `<tr><td>${i + 1}</td><td>${severityHtml(f.severity)}</td><td><a href="#finding-${i}">${esc(displayFindingShortTitle(f))}</a></td><td>${f.risk_score.toFixed(1)}</td></tr>`).join('\n        ')}
       </tbody>
     </table>`}
   </section>
+
+${data.actionPlan && data.actionPlan.length > 0 ? renderActionPlanHtml(data.actionPlan) : ''}
 
   <section id="detailed-findings">
     <h2>Detailed Findings</h2>
@@ -250,8 +249,9 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       <li><a href="#executive-summary">Executive Summary</a></li>
       <li><a href="#scope">Scope</a></li>
       <li><a href="#findings-summary">Findings Summary</a></li>
+      ${data.actionPlan && data.actionPlan.length > 0 ? '<li><a href="#action-plan">Action Plan</a></li>' : ''}
       <li><a href="#detailed-findings">Detailed Findings</a>
-        <ol>${findings.map((f, i) => `<li><a href="#finding-${i}">${esc(displayFindingTitle(f))}</a></li>`).join('')}</ol>
+        <ol>${findings.map((f, i) => `<li><a href="#finding-${i}">${esc(displayFindingShortTitle(f))}</a></li>`).join('')}</ol>
       </li>
       ${narrative.length > 0 ? '<li><a href="#attack-narrative">Attack Narrative</a></li>' : ''}
       ${data.evidenceAppendix && data.evidenceAppendix.length > 0 ? '<li><a href="#evidence-appendix">Evidence Appendix</a></li>' : ''}
@@ -271,7 +271,96 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
   </nav>`;
 }
 
+function renderExecutiveSummaryHtml(
+  data: HtmlReportData,
+  counts: Record<FindingSeverity, number>,
+  objectivesAchieved: number,
+): string {
+  const summary = data.executiveSummary;
+  const fallbackScope = `Testing covered ${data.config.scope.cidrs.length} CIDR range(s)${data.config.scope.domains.length > 0 ? ` and ${data.config.scope.domains.length} domain(s)` : ''}.`;
+  const fallbackObjective = `${objectivesAchieved} of ${data.config.objectives.length} objective(s) were achieved.`;
+  const fallbackFinding = `${data.findings.length} finding(s) were identified across the target environment.`;
+  const fallbackEvidence = `Graph contains ${data.graph.nodes.length} nodes and ${data.graph.edges.length} edges.`;
+  return `
+  <section id="executive-summary">
+    <h2>Executive Summary</h2>
+    <p class="executive-headline">${esc(summary?.headline ?? fallbackFinding)}</p>
+    <div class="summary-facts">
+      <div><span>Risk posture</span><strong>${esc(summary ? riskPostureLabel(summary.risk_posture) : fallbackRiskPosture(counts))}</strong></div>
+      <div><span>Objectives</span><strong>${objectivesAchieved}/${data.config.objectives.length}</strong></div>
+      <div><span>Findings</span><strong>${data.findings.length}</strong></div>
+      <div><span>Evidence</span><strong>${data.evidenceAppendix?.length ?? data.findings.reduce((n, finding) => n + (finding.proof_cards?.length ?? finding.evidence.length), 0)}</strong></div>
+    </div>
+    <div class="executive-copy">
+      <p><strong>Scope:</strong> ${esc(summary?.scope_summary ?? fallbackScope)}</p>
+      <p><strong>Objectives:</strong> ${esc(summary?.objective_summary ?? fallbackObjective)}</p>
+      <p><strong>Findings:</strong> ${esc(summary?.finding_summary ?? fallbackFinding)}</p>
+      <p><strong>Evidence confidence:</strong> ${esc(summary?.evidence_summary ?? fallbackEvidence)}</p>
+      <p><strong>Verification notes:</strong> ${esc(summary?.verification_summary ?? 'No material parser, scoring, or inferred-path caveats were identified for this report.')}</p>
+    </div>
+    ${summary?.top_risk_themes.length ? `
+    <div class="risk-themes">
+      <h3>Top Risk Themes</h3>
+      <ul>${summary.top_risk_themes.map(theme => `<li>${esc(theme)}</li>`).join('')}</ul>
+    </div>` : ''}
+    <div class="severity-grid">
+      <div class="severity-card severity-critical"><span class="sev-count">${counts.critical}</span><span class="sev-label">Critical</span></div>
+      <div class="severity-card severity-high"><span class="sev-count">${counts.high}</span><span class="sev-label">High</span></div>
+      <div class="severity-card severity-medium"><span class="sev-count">${counts.medium}</span><span class="sev-label">Medium</span></div>
+      <div class="severity-card severity-low"><span class="sev-count">${counts.low}</span><span class="sev-label">Low</span></div>
+      <div class="severity-card severity-info"><span class="sev-count">${counts.info}</span><span class="sev-label">Info</span></div>
+    </div>
+  </section>`;
+}
+
+function renderActionPlanHtml(items: ReportActionPlanItem[]): string {
+  if (items.length === 0) return '';
+  return `
+  <section id="action-plan">
+    <h2>Action Plan</h2>
+    <p>These actions consolidate repeated remediation work across findings so remediation can be tracked as a practical program.</p>
+    <div class="action-plan-list">
+      ${items.map(item => `
+      <article class="action-item action-${esc(item.priority)}">
+        <div class="action-head">
+          <span class="action-priority">${esc(actionPriorityLabel(item.priority))}</span>
+          <h3>${esc(item.title)}</h3>
+        </div>
+        <p><strong>Action:</strong> ${esc(item.action)}</p>
+        <p><strong>Why it matters:</strong> ${esc(item.rationale)}</p>
+        <p><strong>Verification:</strong> ${esc(item.verification)}</p>
+        ${item.related_findings.length > 0 ? `<p class="action-related"><strong>Related findings:</strong> ${item.related_findings.map(finding => esc(finding)).join('; ')}</p>` : ''}
+      </article>`).join('\n      ')}
+    </div>
+  </section>`;
+}
+
+function riskPostureLabel(posture: ReportExecutiveSummary['risk_posture']): string {
+  switch (posture) {
+    case 'critical': return 'Critical';
+    case 'elevated': return 'Elevated';
+    case 'moderate': return 'Moderate';
+    case 'low': return 'Low';
+  }
+}
+
+function fallbackRiskPosture(counts: Record<FindingSeverity, number>): string {
+  if (counts.critical > 0) return 'Critical';
+  if (counts.high >= 3) return 'Elevated';
+  if (counts.high > 0 || counts.medium > 0) return 'Moderate';
+  return 'Low';
+}
+
+function actionPriorityLabel(priority: ReportActionPlanItem['priority']): string {
+  switch (priority) {
+    case 'immediate': return 'Immediate';
+    case 'near_term': return 'Near term';
+    case 'validation': return 'Validation';
+  }
+}
+
 function renderFindingHtml(finding: ReportFinding, index: number, profile: 'operator' | 'client'): string {
+  const title = profile === 'client' ? displayFindingShortTitle(finding) : displayFindingTitle(finding);
   const cvssDisplay = finding.cvss_score !== undefined
     ? `<span class="cvss-score cvss-${cvssColorClass(finding.cvss_score)}">${finding.cvss_score.toFixed(1)}${finding.cvss_estimated ? '†' : ''}</span>`
     : '';
@@ -295,7 +384,7 @@ function renderFindingHtml(finding: ReportFinding, index: number, profile: 'oper
   return `
     <div class="finding" id="finding-${index}">
       <div class="finding-header">
-        <h3>${index + 1}. ${esc(displayFindingTitle(finding))}</h3>
+        <h3>${index + 1}. ${esc(title)}</h3>
         <div class="finding-meta">
           ${severityHtml(finding.severity)}
           ${cvssDisplay}
@@ -873,6 +962,25 @@ const CSS_STYLES = `
   .severity-medium { background: var(--medium); color: #000; } .severity-low { background: var(--low); }
   .severity-info { background: var(--info); }
   .sev-count { display: block; font-size: 1.8rem; font-weight: 700; } .sev-label { font-size: 0.8rem; text-transform: uppercase; }
+  .executive-headline { font-size: 1.05rem; font-weight: 600; margin-bottom: 1rem; }
+  .summary-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.6rem; margin: 1rem 0; }
+  .summary-facts div { border: 1px solid var(--border); background: var(--card-bg); border-radius: 6px; padding: 0.65rem 0.75rem; min-width: 0; }
+  .summary-facts span { display: block; color: var(--info); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  .summary-facts strong { display: block; margin-top: 0.15rem; font-size: 1rem; overflow-wrap: anywhere; }
+  .executive-copy { margin: 1rem 0; }
+  .executive-copy p { margin-bottom: 0.45rem; }
+  .risk-themes { border-left: 3px solid var(--accent); padding-left: 0.9rem; margin: 1rem 0; }
+  .risk-themes h3 { font-size: 1rem; margin-top: 0; }
+  .risk-themes ul { padding-left: 1.2rem; }
+  .action-plan-list { display: grid; gap: 0.85rem; margin-top: 1rem; }
+  .action-item { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; padding: 0.95rem 1rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
+  .action-head { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+  .action-head h3 { margin: 0; font-size: 1.05rem; }
+  .action-priority { color: var(--accent); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+  .action-item p { margin-bottom: 0.45rem; }
+  .action-related { color: var(--info); font-size: 0.88rem; overflow-wrap: anywhere; }
+  .action-immediate { border-left-color: var(--high); }
+  .action-validation { border-left-color: var(--info); }
   .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
   .severity-badge.severity-critical { background: var(--critical); color: #fff; }
   .severity-badge.severity-high { background: var(--high); color: #fff; }
@@ -935,7 +1043,7 @@ const CSS_STYLES = `
     details.proof-raw[open], details.proof-raw { break-inside: avoid; }
     .report-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .severity-card, .badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .finding, .proof-card, .appendix-entry, .remediation { break-inside: avoid; page-break-inside: avoid; }
+    .summary-facts, .action-item, .finding, .proof-card, .appendix-entry, .remediation { break-inside: avoid; page-break-inside: avoid; }
   }
   .cvss-score { font-weight: 700; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
   .cvss-critical { background: var(--critical); color: #fff; }

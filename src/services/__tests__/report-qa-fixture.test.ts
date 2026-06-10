@@ -31,10 +31,12 @@ describe('report QA fixture outputs', () => {
     }).content;
 
     expect(clientHtml).toContain('class="proof-card"');
+    expect(clientHtml).toContain('Action Plan');
     expect(clientHtml).toContain('Evidence Appendix');
     expect(clientHtml).toContain('Raw output preview redacted');
     expect(clientHtml).toContain('Administrative cloud role is reachable');
     expect(clientHtml).toContain('Captured credential material');
+    expect(clientHtml).not.toContain('<h2>Recommendations</h2>');
     expect(clientHtml).not.toContain('Cloud Identity:');
     expect(clientHtml).not.toContain('Cloud Resource:');
     expect(clientHtml).not.toContain('Credential Obtained:');
@@ -81,6 +83,8 @@ describe('report QA fixture outputs', () => {
       include_attack_paths: true,
     }).content) as {
       report_profile: string;
+      executive_summary?: { risk_posture?: string; headline?: string };
+      action_plan?: Array<{ id: string; related_findings?: string[] }>;
       evidence_appendix: Array<{ evidence_id?: string; finding_ids?: string[] }>;
       trust_signals: unknown[];
       attack_paths?: unknown[];
@@ -94,11 +98,15 @@ describe('report QA fixture outputs', () => {
     }).content;
     const clientJson = JSON.parse(clientJsonText) as {
       report_profile: string;
+      executive_summary?: { risk_posture?: string; headline?: string };
+      action_plan?: Array<{ id: string; related_findings?: string[] }>;
       evidence_appendix: unknown[];
       findings: Array<{ title: string; presentation?: { title?: string; summary?: string; impact?: string } }>;
     };
 
     expect(operatorJson.report_profile).toBe('operator');
+    expect(operatorJson.executive_summary?.headline).toMatch(/assessment identified/i);
+    expect(operatorJson.action_plan?.some(item => item.id === 'credential-rotation')).toBe(true);
     expect(operatorJson.evidence_appendix.length).toBeGreaterThan(0);
     expect(operatorJson.trust_signals.length).toBeGreaterThan(0);
     expect(operatorJson.attack_paths?.length ?? 0).toBeGreaterThan(0);
@@ -106,6 +114,8 @@ describe('report QA fixture outputs', () => {
     expect(shared?.finding_ids?.length).toBeGreaterThanOrEqual(2);
 
     expect(clientJson.report_profile).toBe('client');
+    expect(clientJson.executive_summary?.risk_posture).toBeTruthy();
+    expect(clientJson.action_plan?.some(item => item.id === 'application-authorization')).toBe(true);
     expect(clientJson.evidence_appendix.length).toBeGreaterThan(0);
     expect(clientJson.findings.some(f => f.presentation?.title?.includes('Administrative cloud role is reachable'))).toBe(true);
     expect(clientJson.findings.every(f => f.presentation?.title && f.presentation.summary && f.presentation.impact)).toBe(true);

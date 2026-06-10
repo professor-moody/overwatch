@@ -7,6 +7,7 @@
 
 import * as api from '../../lib/api';
 import type { ReportRecord } from '../../lib/api';
+import { formatReportBytes, reportEvidenceLabel, reportPrimaryActionLabel, reportProfileLabel } from '../../lib/report-display';
 import { cn, formatTimestamp } from '../../lib/utils';
 
 interface Props {
@@ -20,23 +21,6 @@ const FORMAT_BADGE: Record<ReportRecord['format'], string> = {
   json: 'bg-accent/15 text-accent border-accent/30',
   pdf: 'bg-warning/15 text-warning border-warning/30',
 };
-
-function formatBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function profileLabel(r: ReportRecord): string {
-  if (r.profile === 'client' || r.redaction_mode === 'client_safe') return 'client';
-  return 'operator';
-}
-
-function evidenceLabel(style?: ReportRecord['evidence_style']): string {
-  if (style === 'appendix') return 'appendix';
-  if (style === 'full_inline') return 'full inline';
-  return 'proof cards';
-}
 
 export function ReportsList({ reports, onRefresh }: Props) {
   if (reports.length === 0) return null;
@@ -64,23 +48,23 @@ export function ReportsList({ reports, onRefresh }: Props) {
               </span>
             )}
             <span className="px-1.5 py-0.5 rounded border border-border bg-elevated text-muted-foreground text-[10px] uppercase font-semibold">
-              {profileLabel(r)}
+              {reportProfileLabel(r)}
             </span>
             <span className="text-muted-foreground flex-1">
-              {formatTimestamp(r.generated_at)} — {formatBytes(r.size_bytes)}
+              {formatTimestamp(r.generated_at)} — {formatReportBytes(r.size_bytes)}
               {(r.findings_count !== undefined || r.evidence_count !== undefined) && (
                 <span className="ml-2">
-                  {r.findings_count ?? '—'} findings · {r.evidence_count ?? '—'} evidence · {evidenceLabel(r.evidence_style)}
+                  {r.findings_count ?? '—'} findings · {r.evidence_count ?? '—'} evidence · {reportEvidenceLabel(r.evidence_style)}
                 </span>
               )}
             </span>
             <a
-              href={api.reportDownloadUrl(r.id)}
+              href={reportPrimaryActionLabel(r.format) === 'Open' ? api.reportOpenUrl(r.id) : api.reportDownloadUrl(r.id)}
               target="_blank"
               rel="noopener noreferrer"
               className="px-2 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20"
             >
-              Download
+              {reportPrimaryActionLabel(r.format)}
             </a>
             <button
               onClick={() => handleDelete(r.id)}

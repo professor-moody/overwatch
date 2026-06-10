@@ -556,6 +556,7 @@ export interface FindingClassificationLite {
 
 export interface FindingPresentationDto {
   title: string;
+  short_title?: string;
   summary: string;
   impact: string;
   evidence_claim?: string;
@@ -633,7 +634,7 @@ export interface RenderReportBody {
   max_paths_per_objective?: number;
 }
 
-export async function renderReport(body: RenderReportBody): Promise<{ report: ReportRecord; findings_count: number; severity_summary: FindingsResponse['severity_summary'] }> {
+export async function renderReport(body: RenderReportBody): Promise<{ report: ReportRecord; findings_count: number; evidence_count: number; severity_summary: FindingsResponse['severity_summary'] }> {
   return fetchJson('/api/reports/render', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -643,6 +644,11 @@ export async function renderReport(body: RenderReportBody): Promise<{ report: Re
 /** Returns the absolute URL — caller can use `window.location.href = url` or `<a download>`. */
 export function reportDownloadUrl(id: string): string {
   return `/api/reports/${id}`;
+}
+
+/** Returns an inline URL for browser-readable report formats. */
+export function reportOpenUrl(id: string): string {
+  return `/api/reports/${id}?disposition=inline`;
 }
 
 export async function deleteReport(id: string): Promise<{ deleted: boolean }> {

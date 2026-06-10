@@ -212,7 +212,7 @@ export function FindingsPanel() {
       {showRender && (
         <RenderReportModal
           onClose={() => setShowRender(false)}
-          onRendered={() => { setShowRender(false); refreshReports(); }}
+          onRendered={() => { refreshReports(); }}
         />
       )}
     </div>

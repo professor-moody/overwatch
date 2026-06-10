@@ -579,6 +579,25 @@ describe('activity timeline section', () => {
 });
 
 describe('recommendations section', () => {
+  it('renders consolidated action plan items', () => {
+    const html = renderReportHtml(makeReportData({
+      actionPlan: [{
+        id: 'credential-rotation',
+        priority: 'immediate',
+        title: 'Rotate exposed credentials',
+        action: 'Rotate affected credentials and revoke active sessions.',
+        rationale: 'Captured credential material can enable follow-on access.',
+        verification: 'Retest the credential and confirm authentication fails.',
+        related_finding_ids: ['f-1'],
+        related_findings: ['Credential exposure requires rotation'],
+      }],
+    }));
+    expect(html).toContain('id="action-plan"');
+    expect(html).toContain('Rotate exposed credentials');
+    expect(html).toContain('Immediate');
+    expect(html).toContain('Credential exposure requires rotation');
+  });
+
   it('renders ordered list of recommendations', () => {
     const recommendations = [
       '**Patch CVE-2025-1234** on all affected hosts.',

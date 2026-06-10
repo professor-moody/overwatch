@@ -716,7 +716,7 @@ export class DashboardServer {
       } else if (findingContextMatch && method === 'GET') {
         this.serveFindingContext(decodeURIComponent(findingContextMatch[1]), res);
       } else if (reportDetailMatch && method === 'GET') {
-        this.serveReportDownload(reportDetailMatch[1], res);
+        this.serveReportDownload(reportDetailMatch[1], url, res);
       } else if (reportDetailMatch && method === 'DELETE') {
         this.handleReportDelete(reportDetailMatch[1], res);
       } else {
@@ -2555,7 +2555,7 @@ export class DashboardServer {
   }
 
   /** GET /api/reports/:id — stream the file content. */
-  private serveReportDownload(id: string, res: ServerResponse): void {
+  private serveReportDownload(id: string, url: string, res: ServerResponse): void {
     const archive = this.engine.getReportArchive();
     const result = archive.get(id);
     if (!result) {
@@ -2570,9 +2570,10 @@ export class DashboardServer {
       : 'text/markdown';
     const ext = record.format === 'markdown' ? 'md' : record.format;
     const downloadName = `report-${record.id.slice(0, 8)}-${record.redaction_mode}.${ext}`;
+    const inline = new URL(url, 'http://localhost').searchParams.get('disposition') === 'inline';
     res.writeHead(200, {
       'Content-Type': contentType,
-      'Content-Disposition': `attachment; filename="${downloadName}"`,
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${downloadName}"`,
       'Content-Length': content.byteLength,
     });
     res.end(content);

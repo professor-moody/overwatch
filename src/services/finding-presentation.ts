@@ -3,6 +3,7 @@ import type { ReportFinding } from './report-generator.js';
 
 export interface FindingPresentation {
   title: string;
+  short_title?: string;
   summary: string;
   impact: string;
   evidence_claim?: string;
@@ -56,6 +57,7 @@ export function presentFinding(finding: ReportFinding, opts: PresentFindingOptio
   return {
     ...presentation,
     title: cleanClientText(presentation.title),
+    short_title: presentation.short_title ? cleanClientText(presentation.short_title) : undefined,
     summary: cleanClientText(presentation.summary),
     impact: cleanClientText(presentation.impact),
     evidence_claim: presentation.evidence_claim ? cleanClientText(presentation.evidence_claim) : undefined,
@@ -68,6 +70,10 @@ export function presentFinding(finding: ReportFinding, opts: PresentFindingOptio
 
 export function displayFindingTitle(finding: ReportFinding): string {
   return finding.presentation?.title || finding.title;
+}
+
+export function displayFindingShortTitle(finding: ReportFinding): string {
+  return finding.presentation?.short_title || displayFindingTitle(finding);
 }
 
 export function displayFindingSummary(finding: ReportFinding): string {
@@ -107,6 +113,7 @@ function presentHostFinding(
   const os = node?.os ? ` The host is running ${node.os}.` : '';
   return {
     title: admin ? `Administrative access confirmed on ${asset}` : `Confirmed host access on ${asset}`,
+    short_title: admin ? 'Administrative host access confirmed' : 'Confirmed host access',
     summary: `${asset} was confirmed accessible during the engagement${domainJoined ? ' and is joined to the domain' : ''}.${os}`.trim(),
     impact: domainJoined
       ? 'A confirmed foothold on a domain-joined system can support credential theft, lateral movement, and broader access to internal resources.'
@@ -125,6 +132,7 @@ function presentAccessPathFinding(
   const [host, principal] = finding.affected_assets;
   return {
     title: `Administrative rights expose ${host || asset}`,
+    short_title: 'Administrative access path requires review',
     summary: `${principal || 'A privileged principal'} has administrative rights to ${host || asset}, even though no live session or command execution has been recorded for that host.`,
     impact: 'The access path may allow rapid host takeover if the principal or its credentials are abused.',
     evidence_claim: `Administrative reach to ${host || asset} is represented in the engagement graph and related evidence.`,
@@ -153,6 +161,7 @@ function presentCredentialFinding(
     title: total === 1
       ? `${kind} for ${user} requires rotation${reachable ? ' after confirmed authentication' : ''}`
       : `${total} captured credentials require rotation${reachable ? ' after confirmed authentication' : ''}`,
+    short_title: reachable ? `${kind} validated for authentication` : `${kind} exposure requires rotation`,
     summary: reachable
       ? `Captured credential material was validated against ${listPhrase(confirmedTargets.slice(0, 3)) || 'an in-scope target'}, confirming it can support authentication.`
       : `Captured credential material for ${listPhrase(finding.affected_assets.slice(0, 3)) || user} was recorded and should be treated as exposed until rotated.`,
@@ -176,6 +185,7 @@ function presentVulnerabilityFinding(
   const exploitable = node?.exploitable === true || /successfully exploited|exploitable: yes/i.test(finding.description);
   return {
     title: exploitable ? `${vulnName} is exploitable on ${affected}` : `${vulnName} affects ${affected}`,
+    short_title: exploitable ? `${vulnName} is exploitable` : `${vulnName} requires remediation`,
     summary: `${vulnName} was identified on ${affected}${node?.cvss !== undefined ? ` with CVSS ${node.cvss}` : ''}.`,
     impact: exploitable
       ? 'Successful exploitation can provide unauthorized access or control of the affected service or host.'
@@ -196,6 +206,7 @@ function presentCloudFinding(
     const publicResource = node?.public === true || /publicly accessible/i.test(finding.description);
     return {
       title: publicResource ? `Public cloud resource exposure affects ${asset}` : `Cloud resource misconfiguration affects ${asset}`,
+      short_title: publicResource ? 'Public cloud resource exposure' : 'Cloud resource misconfiguration',
       summary: `${asset} was identified as a cloud resource with exposure or misconfiguration risk${node?.region ? ` in ${node.region}` : ''}.`,
       impact: publicResource
         ? 'Public access can expose sensitive data or create an entry point into the cloud environment.'
@@ -209,6 +220,7 @@ function presentCloudFinding(
   const admin = finding.severity === 'critical' || /administrator|admin|fullaccess|\*/i.test(finding.description);
   return {
     title: admin ? `Administrative cloud role is reachable: ${asset}` : `Cloud identity permissions require review: ${asset}`,
+    short_title: admin ? 'Administrative cloud role is reachable' : 'Cloud identity permissions require review',
     summary: `${asset} has cloud permissions or trust relationships that can be abused from the observed access path.`,
     impact: admin
       ? 'Broad cloud permissions can enable account takeover, data access, and changes to production infrastructure.'
@@ -231,6 +243,7 @@ function presentWebappFinding(
   const auth = /authenticated via|has login form/i.test(finding.description) || node?.has_login_form === true;
   return {
     title: `${asset} exposes ${humanizeVulnerabilityLabel(vulnLabel)}`,
+    short_title: `${asset} authorization controls require remediation`,
     summary: `${asset} was assessed as an application finding${auth ? ' in an authenticated context' : ''}${node?.technology ? ` on ${node.technology}` : ''}.`,
     impact: 'Application weaknesses can expose data, weaken authentication boundaries, or provide a path into adjacent identity and cloud systems.',
     evidence_claim: `Application testing evidence supports the finding on ${asset}.`,

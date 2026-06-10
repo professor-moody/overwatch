@@ -21,10 +21,18 @@ import {
   displayFindingImpact,
   displayFindingRemediation,
   displayFindingSummary,
+  displayFindingShortTitle,
   displayFindingTitle,
   presentFinding,
   type FindingPresentation,
 } from './finding-presentation.js';
+import {
+  buildActionPlan,
+  buildExecutiveSummary,
+  type ReportActionPlanItem,
+  type ReportExecutiveSummary,
+} from './report-deliverable.js';
+import type { TrustSignalDto } from './trust-signal-summary.js';
 import { createHash } from 'crypto';
 
 // ============================================================
@@ -201,6 +209,7 @@ export interface ReportOptions {
   evidence_preview_bytes?: number;
   report_profile?: ReportProfile;
   evidence_style?: EvidenceStyle;
+  trust_signals?: TrustSignalDto[];
 }
 
 export interface ReportInput {
@@ -999,7 +1008,7 @@ export function buildReportEvidenceModel(
 
   const appendix = new Map<string, EvidenceAppendixEntry>();
   const enriched = findings.map(finding => {
-    const findingTitle = displayFindingTitle(finding);
+    const findingTitle = profile === 'client' ? displayFindingShortTitle(finding) : displayFindingTitle(finding);
     const proofCards = buildProofCardsForFinding(finding, profile);
     for (const card of proofCards) {
       const key = card.appendix_ref;
@@ -1535,6 +1544,82 @@ function sourceKindLabel(kind: EvidenceProofCard['source_kind']): string {
   }
 }
 
+function renderExecutiveSummaryMarkdown(summary: ReportExecutiveSummary, counts: Record<FindingSeverity, number>): string[] {
+  const lines: string[] = [];
+  lines.push(summary.headline);
+  lines.push('');
+  lines.push(`**Risk posture:** ${riskPostureLabel(summary.risk_posture)}`);
+  lines.push('');
+  lines.push(`- **Scope:** ${summary.scope_summary}`);
+  lines.push(`- **Objectives:** ${summary.objective_summary}`);
+  lines.push(`- **Findings:** ${summary.finding_summary}`);
+  lines.push(`- **Evidence confidence:** ${summary.evidence_summary}`);
+  lines.push(`- **Verification notes:** ${summary.verification_summary}`);
+  lines.push('');
+  if (summary.top_risk_themes.length > 0) {
+    lines.push('### Top Risk Themes');
+    lines.push('');
+    for (const theme of summary.top_risk_themes) {
+      lines.push(`- ${theme}`);
+    }
+    lines.push('');
+  }
+  lines.push('| Severity | Count |');
+  lines.push('|----------|-------|');
+  lines.push(`| Critical | ${counts.critical} |`);
+  lines.push(`| High | ${counts.high} |`);
+  lines.push(`| Medium | ${counts.medium} |`);
+  lines.push(`| Low | ${counts.low} |`);
+  lines.push(`| Info | ${counts.info} |`);
+  lines.push('');
+  return lines;
+}
+
+function renderActionPlanMarkdown(actionPlan: ReportActionPlanItem[]): string[] {
+  const lines: string[] = [];
+  lines.push('## Action Plan');
+  lines.push('');
+  if (actionPlan.length === 0) {
+    lines.push('No consolidated remediation actions were generated from the current finding set.');
+    lines.push('');
+    return lines;
+  }
+  for (const item of actionPlan) {
+    lines.push(`### ${item.title}`);
+    lines.push('');
+    lines.push(`**Priority:** ${actionPriorityLabel(item.priority)}`);
+    lines.push('');
+    lines.push(`**Action:** ${item.action}`);
+    lines.push('');
+    lines.push(`**Why it matters:** ${item.rationale}`);
+    lines.push('');
+    lines.push(`**Verification:** ${item.verification}`);
+    if (item.related_findings.length > 0) {
+      lines.push('');
+      lines.push(`**Related findings:** ${item.related_findings.join('; ')}`);
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function riskPostureLabel(posture: ReportExecutiveSummary['risk_posture']): string {
+  switch (posture) {
+    case 'critical': return 'Critical';
+    case 'elevated': return 'Elevated';
+    case 'moderate': return 'Moderate';
+    case 'low': return 'Low';
+  }
+}
+
+function actionPriorityLabel(priority: ReportActionPlanItem['priority']): string {
+  switch (priority) {
+    case 'immediate': return 'Immediate';
+    case 'near_term': return 'Near term';
+    case 'validation': return 'Validation';
+  }
+}
+
 function describeAccessMethod(edge: ExportedGraphEdge, source?: NodeProperties): string {
   const actor = source?.label || source?.username || source?.id || edge.source;
   switch (edge.properties.type) {
@@ -1599,8 +1684,6 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     else confirmedEdges++;
   }
 
-  const objectivesAchieved = config.objectives.filter(o => o.achieved);
-  const objectivesPending = config.objectives.filter(o => !o.achieved);
   const startTime = history.length > 0 ? history[0].timestamp : config.created_at;
   const endTime = history.length > 0 ? history[history.length - 1].timestamp : config.created_at;
 
@@ -1609,6 +1692,29 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   const mediumFindings = findings.filter(f => f.severity === 'medium');
   const lowFindings = findings.filter(f => f.severity === 'low');
   const infoFindings = findings.filter(f => f.severity === 'info');
+  const severityCounts: Record<FindingSeverity, number> = {
+    critical: criticalFindings.length,
+    high: highFindings.length,
+    medium: mediumFindings.length,
+    low: lowFindings.length,
+    info: infoFindings.length,
+  };
+  const executiveSummary = buildExecutiveSummary({
+    config,
+    graph,
+    findings,
+    profile: report_profile,
+    evidenceCount: proofModel.evidenceCount,
+    trustSignals: options.trust_signals,
+  });
+  const actionPlan = buildActionPlan({
+    config,
+    graph,
+    findings,
+    profile: report_profile,
+    evidenceCount: proofModel.evidenceCount,
+    trustSignals: options.trust_signals,
+  });
 
   const lines: string[] = [];
 
@@ -1627,37 +1733,18 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   lines.push('1. [Executive Summary](#executive-summary)');
   lines.push('2. [Scope](#scope)');
   lines.push('3. [Findings Summary](#findings-summary)');
-  lines.push('4. [Detailed Findings](#detailed-findings)');
+  lines.push('4. [Action Plan](#action-plan)');
+  lines.push('5. [Detailed Findings](#detailed-findings)');
   if (include_narrative && narrative.length > 0) {
-    lines.push('5. [Attack Narrative](#attack-narrative)');
+    lines.push('6. [Attack Narrative](#attack-narrative)');
   }
-  lines.push(`${include_narrative && narrative.length > 0 ? '6' : '5'}. [Objectives](#objectives)`);
-  lines.push(`${include_narrative && narrative.length > 0 ? '7' : '6'}. [Recommendations](#recommendations)`);
+  lines.push(`${include_narrative && narrative.length > 0 ? '7' : '6'}. [Objectives](#objectives)`);
   lines.push('');
 
   // === Executive Summary ===
   lines.push('## Executive Summary');
   lines.push('');
-  lines.push(`This penetration test targeted ${config.scope.cidrs.length} CIDR range(s)` +
-    (config.scope.domains.length > 0 ? ` and ${config.scope.domains.length} domain(s)` : '') + '. ' +
-    `${objectivesAchieved.length} of ${config.objectives.length} objective(s) were achieved. ` +
-    `The assessment identified **${findings.length} finding(s)**: ` +
-    `${criticalFindings.length} Critical, ${highFindings.length} High, ${mediumFindings.length} Medium, ` +
-    `${lowFindings.length} Low, ${infoFindings.length} Informational.`);
-  lines.push('');
-  lines.push(`The engagement discovered ${graph.nodes.length} nodes and ${graph.edges.length} relationships ` +
-    `across the target environment (${confirmedEdges} confirmed, ${inferredEdges} inferred).`);
-  lines.push('');
-
-  // Severity distribution table
-  lines.push('| Severity | Count |');
-  lines.push('|----------|-------|');
-  lines.push(`| Critical | ${criticalFindings.length} |`);
-  lines.push(`| High | ${highFindings.length} |`);
-  lines.push(`| Medium | ${mediumFindings.length} |`);
-  lines.push(`| Low | ${lowFindings.length} |`);
-  lines.push(`| Info | ${infoFindings.length} |`);
-  lines.push('');
+  lines.push(...renderExecutiveSummaryMarkdown(executiveSummary, severityCounts));
 
   // === Scope ===
   lines.push('## Scope');
@@ -1683,10 +1770,12 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('| # | Severity | Title | Risk Score |');
     lines.push('|---|----------|-------|------------|');
     findings.forEach((f, i) => {
-      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${escapeTableCell(displayFindingTitle(f))} | ${f.risk_score.toFixed(1)} |`);
+      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${escapeTableCell(displayFindingShortTitle(f))} | ${f.risk_score.toFixed(1)} |`);
     });
     lines.push('');
   }
+
+  lines.push(...renderActionPlanMarkdown(actionPlan));
 
   // === Detailed Findings ===
   lines.push('## Detailed Findings');
@@ -1694,7 +1783,8 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
 
   for (let i = 0; i < findings.length; i++) {
     const f = findings[i];
-    lines.push(`### ${i + 1}. ${displayFindingTitle(f)}`);
+    const findingHeading = report_profile === 'client' ? displayFindingShortTitle(f) : displayFindingTitle(f);
+    lines.push(`### ${i + 1}. ${findingHeading}`);
     lines.push('');
     lines.push(`**Severity:** ${severityBadge(f.severity)} | **Risk Score:** ${f.risk_score.toFixed(1)} | **Category:** ${displayFindingCategory(f.category)}`);
     if (f.cvss_score !== undefined) {
@@ -1927,7 +2017,8 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       lines.push('| Finding | CWE | Name |');
       lines.push('|---------|-----|------|');
       for (const f of cweFindngs) {
-        lines.push(`| ${escapeTableCell(displayFindingTitle(f))} | ${f.classification!.cwe} | ${escapeTableCell(f.classification!.cwe_name || '')} |`);
+        const title = report_profile === 'client' ? displayFindingShortTitle(f) : displayFindingTitle(f);
+        lines.push(`| ${escapeTableCell(title)} | ${f.classification!.cwe} | ${escapeTableCell(f.classification!.cwe_name || '')} |`);
       }
       lines.push('');
     }
@@ -1941,7 +2032,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       for (const f of owaspFindings) {
         const cat = f.classification!.owasp_category!;
         const group = owaspGroups.get(cat) || [];
-        group.push(displayFindingTitle(f));
+        group.push(report_profile === 'client' ? displayFindingShortTitle(f) : displayFindingTitle(f));
         owaspGroups.set(cat, group);
       }
       lines.push('| OWASP Category | Findings |');
@@ -2052,33 +2143,6 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
   }
   lines.push('');
 
-  // === Recommendations ===
-  lines.push('## Recommendations');
-  lines.push('');
-
-  // Auto-generate from findings
-  const remediationsByPriority = findings
-    .filter(f => f.severity === 'critical' || f.severity === 'high')
-    .slice(0, 10);
-
-  if (remediationsByPriority.length > 0) {
-    lines.push('### Immediate Actions');
-    lines.push('');
-    for (const f of remediationsByPriority) {
-      lines.push(`- **${displayFindingTitle(f)}:** ${displayFindingRemediation(f).split('\n')[0]}`);
-    }
-    lines.push('');
-  }
-
-  const untestedInferred = graph.edges.filter(e => e.properties.confidence < 1.0 && !e.properties.tested);
-  if (untestedInferred.length > 0) {
-    lines.push(`- **${untestedInferred.length} inferred edge(s) remain untested** — these represent potential attack paths not validated during the engagement.`);
-  }
-  if (objectivesPending.length > 0) {
-    lines.push(`- **${objectivesPending.length} objective(s) not achieved** — ${objectivesPending.map(o => o.description).join(', ')}.`);
-  }
-  lines.push('');
-
   lines.push('---');
   lines.push(`*Generated by Overwatch at ${new Date().toISOString()}*`);
   lines.push('');
@@ -2153,7 +2217,7 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
     const priorityScore = Math.min(100, cvss * 4 + blastRadius * 0.3 + credExposure * 1.5);
 
     return {
-      title: displayFindingTitle(f),
+      title: displayFindingShortTitle(f),
       cvss,
       cvss_estimated: cvssEstimated,
       blast_radius: blastRadius,

@@ -26,7 +26,8 @@ import { classifyAllFindings, generateNavigatorLayer } from './finding-classifie
 import { redactReportText, redactSecretKeys } from './report-redaction.js';
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
-import { displayFindingCategory, displayFindingRemediation, displayFindingTitle } from './finding-presentation.js';
+import { displayFindingCategory, displayFindingShortTitle, displayFindingTitle } from './finding-presentation.js';
+import { buildActionPlan, buildExecutiveSummary } from './report-deliverable.js';
 
 export type ReportFormat = 'markdown' | 'html' | 'json';
 /** Format the dashboard / generate_report tool can request, including PDF (which is rendered from HTML by `renderReportPdf`). */
@@ -195,7 +196,26 @@ export function assembleReport(
   const proofModel = buildReportEvidenceModel(baseFindings, { profile, includeEvidence: include_evidence });
   const findings = proofModel.findings;
   const trustSignalSummary = buildTrustSignalsResponse({ history, findings });
-  const rawMarkdown = appendTrustSignalNotes(generateFullReport(reportInput, renderOptions), trustSignalSummary.signals);
+  const executiveSummary = buildExecutiveSummary({
+    config,
+    graph,
+    findings,
+    profile,
+    evidenceCount: proofModel.evidenceCount,
+    trustSignals: trustSignalSummary.signals,
+  });
+  const actionPlan = buildActionPlan({
+    config,
+    graph,
+    findings,
+    profile,
+    evidenceCount: proofModel.evidenceCount,
+    trustSignals: trustSignalSummary.signals,
+  });
+  const rawMarkdown = appendTrustSignalNotes(generateFullReport(reportInput, {
+    ...renderOptions,
+    trust_signals: trustSignalSummary.signals,
+  }), trustSignalSummary.signals);
   const markdown = redactionOpts.client_safe ? scrubMarkdownForClient(rawMarkdown) : rawMarkdown;
   const severitySummary = {
     critical: findings.filter(f => f.severity === 'critical').length,
@@ -220,6 +240,8 @@ export function assembleReport(
       })),
       report_profile: profile,
       evidence_style,
+      executive_summary: executiveSummary,
+      action_plan: actionPlan,
       evidence_appendix: proofModel.appendix,
       trust_signals: trustSignalSummary.signals,
       remediation_ranking: remRanking,
@@ -256,22 +278,6 @@ export function assembleReport(
       agent_id: entry.agent_id,
     }));
 
-    const recs: string[] = [];
-    const highPriority = findings
-      .filter(f => f.severity === 'critical' || f.severity === 'high')
-      .slice(0, 10);
-    for (const f of highPriority) {
-      recs.push(`**${displayFindingTitle(f)}:** ${displayFindingRemediation(f).split('\n')[0]}`);
-    }
-    const untestedInferred = graph.edges.filter(e => e.properties.confidence < 1.0 && !e.properties.tested);
-    if (untestedInferred.length > 0) {
-      recs.push(`**${untestedInferred.length} inferred edge(s) remain untested** — these represent potential attack paths not validated during the engagement.`);
-    }
-    const pendingObjectives = config.objectives.filter(o => !o.achieved);
-    if (pendingObjectives.length > 0) {
-      recs.push(`**${pendingObjectives.length} objective(s) not achieved** — ${pendingObjectives.map(o => o.description).join(', ')}.`);
-    }
-
     const htmlData: HtmlReportData = {
       config, graph,
       findings,
@@ -280,7 +286,8 @@ export function assembleReport(
       discoveryStats: { nodesByType, edgesByType, confirmed, inferred },
       agents: { total: agents.length, completed: completedAgents, failed: failedAgents },
       timeline: timelineEntries,
-      recommendations: recs,
+      executiveSummary,
+      actionPlan,
       trustSignals: trustSignalSummary.signals,
       evidenceAppendix: proofModel.appendix,
       reportProfile: profile,
@@ -310,7 +317,7 @@ export function assembleReport(
       const cweFindings = findings.filter(f => f.classification?.cwe);
       if (cweFindings.length > 0) {
         compliance.cwe_findings = cweFindings.map(f => ({
-          title: displayFindingTitle(f),
+          title: profile === 'client' ? displayFindingShortTitle(f) : displayFindingTitle(f),
           cwe: f.classification!.cwe!,
           cwe_name: f.classification!.cwe_name || '',
         }));

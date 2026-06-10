@@ -61,15 +61,29 @@ const redactionFailures = REPORT_QA_SECRET_MARKERS.filter(marker =>
 if (redactionFailures.length > 0) {
   throw new Error(`Client report leaked secret marker(s): ${redactionFailures.join(', ')}`);
 }
-if (!clientHtml.includes('class="proof-card"') || !clientHtml.includes('Evidence Appendix')) {
-  throw new Error('Client HTML report did not include proof cards and evidence appendix.');
+if (!clientHtml.includes('class="proof-card"') || !clientHtml.includes('Evidence Appendix') || !clientHtml.includes('Action Plan')) {
+  throw new Error('Client HTML report did not include proof cards, action plan, and evidence appendix.');
+}
+if (clientHtml.includes('<h2>Recommendations</h2>')) {
+  throw new Error('Client HTML report still includes the legacy Recommendations section.');
 }
 if (!operatorHtml.includes('Raw preview') || !operatorMarkdown.includes('Raw preview')) {
   throw new Error('Operator reports did not expose raw evidence previews.');
 }
-const parsedOperatorJson = JSON.parse(operatorJson) as { report_profile?: string; evidence_appendix?: unknown[] };
-if (parsedOperatorJson.report_profile !== 'operator' || !Array.isArray(parsedOperatorJson.evidence_appendix) || parsedOperatorJson.evidence_appendix.length === 0) {
-  throw new Error('Operator JSON report missing profile or evidence appendix.');
+const parsedOperatorJson = JSON.parse(operatorJson) as { report_profile?: string; executive_summary?: unknown; action_plan?: unknown[]; evidence_appendix?: unknown[] };
+if (
+  parsedOperatorJson.report_profile !== 'operator'
+  || !parsedOperatorJson.executive_summary
+  || !Array.isArray(parsedOperatorJson.action_plan)
+  || parsedOperatorJson.action_plan.length === 0
+  || !Array.isArray(parsedOperatorJson.evidence_appendix)
+  || parsedOperatorJson.evidence_appendix.length === 0
+) {
+  throw new Error('Operator JSON report missing profile, executive summary, action plan, or evidence appendix.');
+}
+const parsedClientJson = JSON.parse(clientJson) as { report_profile?: string; executive_summary?: unknown; action_plan?: unknown[] };
+if (parsedClientJson.report_profile !== 'client' || !parsedClientJson.executive_summary || !Array.isArray(parsedClientJson.action_plan) || parsedClientJson.action_plan.length === 0) {
+  throw new Error('Client JSON report missing profile, executive summary, or action plan.');
 }
 
 const pdfStatus = isPdfRenderingAvailable();

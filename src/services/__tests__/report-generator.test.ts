@@ -405,10 +405,11 @@ describe('generateFullReport', () => {
     expect(report).toContain('## Executive Summary');
     expect(report).toContain('## Scope');
     expect(report).toContain('## Findings Summary');
+    expect(report).toContain('## Action Plan');
     expect(report).toContain('## Detailed Findings');
     expect(report).toContain('## Attack Narrative');
     expect(report).toContain('## Objectives');
-    expect(report).toContain('## Recommendations');
+    expect(report).not.toContain('## Recommendations');
     expect(report).toContain('## Activity Timeline');
   });
 

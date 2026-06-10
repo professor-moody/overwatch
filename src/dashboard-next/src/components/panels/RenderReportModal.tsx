@@ -8,7 +8,8 @@
 
 import { useState } from 'react';
 import * as api from '../../lib/api';
-import { cn } from '../../lib/utils';
+import { formatReportBytes, reportEvidenceLabel, reportPrimaryActionLabel, reportProfileLabel } from '../../lib/report-display';
+import { cn, formatTimestamp } from '../../lib/utils';
 
 interface Props {
   onClose: () => void;
@@ -26,12 +27,13 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
   const [includeCompliance, setIncludeCompliance] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rendered, setRendered] = useState<Awaited<ReturnType<typeof api.renderReport>> | null>(null);
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api.renderReport({
+      const result = await api.renderReport({
         format,
         theme: format === 'html' || format === 'pdf' ? theme : undefined,
         client_safe: clientSafe,
@@ -41,6 +43,7 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
         include_retrospective: includeRetrospective,
         include_compliance: includeCompliance,
       });
+      setRendered(result);
       onRendered();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -67,10 +70,21 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
       <div className="bg-surface border border-border rounded-lg shadow-xl w-full max-w-md p-5">
         <div className="flex items-start justify-between mb-4">
-          <h3 className="text-base font-semibold">Generate Report</h3>
+          <h3 className="text-base font-semibold">{rendered ? 'Report Saved' : 'Generate Report'}</h3>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
         </div>
 
+        {rendered ? (
+          <ReportResult
+            result={rendered}
+            onClose={onClose}
+            onRenderAnother={() => {
+              setRendered(null);
+              setError(null);
+            }}
+          />
+        ) : (
+          <>
         <div className="space-y-3">
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Profile</label>
@@ -192,7 +206,80 @@ export function RenderReportModal({ onClose, onRendered }: Props) {
             {busy ? 'Rendering…' : 'Render & Save'}
           </button>
         </div>
+        </>
+        )}
       </div>
+    </div>
+  );
+}
+
+function ReportResult({ result, onClose, onRenderAnother }: {
+  result: Awaited<ReturnType<typeof api.renderReport>>;
+  onClose: () => void;
+  onRenderAnother: () => void;
+}) {
+  const report = result.report;
+  const findingsCount = report.findings_count ?? result.findings_count;
+  const evidenceCount = report.evidence_count ?? result.evidence_count ?? 0;
+  const openUrl = api.reportOpenUrl(report.id);
+  const downloadUrl = api.reportDownloadUrl(report.id);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded border border-success/30 bg-success/10 p-3">
+        <div className="text-sm font-medium text-success">Render complete</div>
+        <div className="mt-1 text-xs text-muted-foreground break-words">{report.filename}</div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <ResultFact label="Profile" value={reportProfileLabel(report)} />
+        <ResultFact label="Format" value={report.format.toUpperCase()} />
+        <ResultFact label="Redaction" value={report.redaction_mode === 'client_safe' ? 'client-safe' : 'operator'} />
+        <ResultFact label="Evidence style" value={reportEvidenceLabel(report.evidence_style)} />
+        <ResultFact label="Findings" value={String(findingsCount ?? '—')} />
+        <ResultFact label="Evidence count" value={String(evidenceCount)} />
+        <ResultFact label="Generated" value={formatTimestamp(report.generated_at)} span />
+        <ResultFact label="Size" value={formatReportBytes(report.size_bytes)} />
+      </div>
+
+      <div className="flex flex-wrap justify-end gap-2">
+        <button
+          onClick={onRenderAnother}
+          className="text-xs px-3 py-1.5 rounded border border-border text-muted-foreground hover:text-foreground"
+        >
+          Render another
+        </button>
+        <button
+          onClick={onClose}
+          className="text-xs px-3 py-1.5 rounded border border-border text-muted-foreground hover:text-foreground"
+        >
+          Close
+        </button>
+        <a
+          href={openUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs px-3 py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20"
+        >
+          {reportPrimaryActionLabel(report.format)}
+        </a>
+        <a
+          href={downloadUrl}
+          download={report.filename}
+          className="text-xs px-3 py-1.5 rounded bg-accent text-background hover:bg-accent/90"
+        >
+          Download
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function ResultFact({ label, value, span = false }: { label: string; value: string; span?: boolean }) {
+  return (
+    <div className={cn('rounded border border-border bg-elevated p-2 min-w-0', span && 'col-span-2')}>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-0.5 font-medium text-foreground break-words">{value}</div>
     </div>
   );
 }
