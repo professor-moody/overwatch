@@ -15,6 +15,7 @@ import {
   type DisplayAttackPath,
 } from '../../lib/attack-path-workspace';
 import { AttackPathRouteRow } from '../shared/AttackPathRouteRow';
+import { findingTitle } from '../../lib/finding-display';
 
 export function EvidencePanel() {
   const objectives = useEngagementStore((s) => s.objectives);
@@ -153,7 +154,7 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
                   <div className="flex flex-wrap gap-1">
                     {relationships.findings.slice(0, 6).map(finding => (
                       <span key={finding.id} className="text-[10px] px-1.5 py-0.5 rounded bg-background text-muted-foreground">
-                        {finding.severity} · {finding.title}
+                        {finding.severity} · {findingTitle(finding)}
                       </span>
                     ))}
                   </div>

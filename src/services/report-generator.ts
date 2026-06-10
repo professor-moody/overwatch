@@ -16,6 +16,15 @@ import { buildCredentialChains } from './retrospective.js';
 import { classifyFinding, computeGapAnalysis } from './finding-classifier.js';
 import type { FindingClassification } from './finding-classifier.js';
 import { estimateCvssFromContext, vectorToString } from './cvss-calculator.js';
+import {
+  displayFindingCategory,
+  displayFindingImpact,
+  displayFindingRemediation,
+  displayFindingSummary,
+  displayFindingTitle,
+  presentFinding,
+  type FindingPresentation,
+} from './finding-presentation.js';
 import { createHash } from 'crypto';
 
 // ============================================================
@@ -45,6 +54,7 @@ export interface ReportFinding {
   affected_assets: string[];
   evidence: EvidenceChain[];
   proof_cards?: EvidenceProofCard[];
+  presentation?: FindingPresentation;
   remediation: string;
   risk_score: number; // 0-10
   classification?: FindingClassification;
@@ -615,6 +625,7 @@ export function buildFindings(graph: ExportedGraph, history: ActivityLogEntry[],
       f.cvss_score = estimated.score;
       f.cvss_estimated = true;
     }
+    f.presentation = presentFinding(f, { graph });
   }
 
   // Sort by risk_score descending
@@ -988,13 +999,14 @@ export function buildReportEvidenceModel(
 
   const appendix = new Map<string, EvidenceAppendixEntry>();
   const enriched = findings.map(finding => {
+    const findingTitle = displayFindingTitle(finding);
     const proofCards = buildProofCardsForFinding(finding, profile);
     for (const card of proofCards) {
       const key = card.appendix_ref;
       const existing = appendix.get(key);
       if (existing) {
         if (!existing.finding_ids.includes(finding.id)) existing.finding_ids.push(finding.id);
-        if (!existing.finding_titles.includes(finding.title)) existing.finding_titles.push(finding.title);
+        if (!existing.finding_titles.includes(findingTitle)) existing.finding_titles.push(findingTitle);
         continue;
       }
       appendix.set(key, {
@@ -1013,7 +1025,7 @@ export function buildReportEvidenceModel(
         size_bytes: card.evidence_bytes,
         redaction_mode: profile,
         finding_ids: [finding.id],
-        finding_titles: [finding.title],
+        finding_titles: [findingTitle],
         raw_preview: card.raw_preview,
         raw_preview_redacted: card.raw_preview_redacted,
       });
@@ -1671,7 +1683,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('| # | Severity | Title | Risk Score |');
     lines.push('|---|----------|-------|------------|');
     findings.forEach((f, i) => {
-      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${escapeTableCell(f.title)} | ${f.risk_score.toFixed(1)} |`);
+      lines.push(`| ${i + 1} | ${severityBadge(f.severity)} | ${escapeTableCell(displayFindingTitle(f))} | ${f.risk_score.toFixed(1)} |`);
     });
     lines.push('');
   }
@@ -1682,9 +1694,9 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
 
   for (let i = 0; i < findings.length; i++) {
     const f = findings[i];
-    lines.push(`### ${i + 1}. ${f.title}`);
+    lines.push(`### ${i + 1}. ${displayFindingTitle(f)}`);
     lines.push('');
-    lines.push(`**Severity:** ${severityBadge(f.severity)} | **Risk Score:** ${f.risk_score.toFixed(1)} | **Category:** ${f.category}`);
+    lines.push(`**Severity:** ${severityBadge(f.severity)} | **Risk Score:** ${f.risk_score.toFixed(1)} | **Category:** ${displayFindingCategory(f.category)}`);
     if (f.cvss_score !== undefined) {
       lines.push(`**CVSS:** ${f.cvss_score.toFixed(1)}${f.cvss_estimated ? ' (estimated)' : ''}${f.cvss_vector ? ` | \`${f.cvss_vector}\`` : ''}`);
       if (f.cvss_estimated) {
@@ -1694,7 +1706,15 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('');
     lines.push('#### Description');
     lines.push('');
-    lines.push(f.description);
+    lines.push(displayFindingSummary(f));
+    lines.push('');
+    lines.push(`**Impact:** ${displayFindingImpact(f)}`);
+    if (report_profile === 'operator' && f.presentation?.technical_context) {
+      lines.push('');
+      lines.push('**Technical context:**');
+      lines.push('');
+      lines.push(f.presentation.technical_context);
+    }
     lines.push('');
     lines.push('#### Affected Assets');
     lines.push('');
@@ -1715,7 +1735,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
 
     lines.push('#### Remediation');
     lines.push('');
-    lines.push(f.remediation);
+    lines.push(displayFindingRemediation(f));
     lines.push('');
   }
 
@@ -1869,7 +1889,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     for (const cat of categories) {
       const row = severities.map(s => findings.filter(f => f.category === cat && f.severity === s).length);
       const total = row.reduce((a, b) => a + b, 0);
-      lines.push(`| ${cat} | ${row.join(' | ')} | ${total} |`);
+      lines.push(`| ${displayFindingCategory(cat)} | ${row.join(' | ')} | ${total} |`);
     }
     lines.push('');
   }
@@ -1907,7 +1927,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       lines.push('| Finding | CWE | Name |');
       lines.push('|---------|-----|------|');
       for (const f of cweFindngs) {
-        lines.push(`| ${escapeTableCell(f.title)} | ${f.classification!.cwe} | ${escapeTableCell(f.classification!.cwe_name || '')} |`);
+        lines.push(`| ${escapeTableCell(displayFindingTitle(f))} | ${f.classification!.cwe} | ${escapeTableCell(f.classification!.cwe_name || '')} |`);
       }
       lines.push('');
     }
@@ -1921,7 +1941,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
       for (const f of owaspFindings) {
         const cat = f.classification!.owasp_category!;
         const group = owaspGroups.get(cat) || [];
-        group.push(f.title);
+        group.push(displayFindingTitle(f));
         owaspGroups.set(cat, group);
       }
       lines.push('| OWASP Category | Findings |');
@@ -2045,7 +2065,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('### Immediate Actions');
     lines.push('');
     for (const f of remediationsByPriority) {
-      lines.push(`- **${f.title}:** ${f.remediation.split('\n')[0]}`);
+      lines.push(`- **${displayFindingTitle(f)}:** ${displayFindingRemediation(f).split('\n')[0]}`);
     }
     lines.push('');
   }
@@ -2133,7 +2153,7 @@ export function buildRemediationRanking(findings: ReportFinding[], graph: Export
     const priorityScore = Math.min(100, cvss * 4 + blastRadius * 0.3 + credExposure * 1.5);
 
     return {
-      title: f.title,
+      title: displayFindingTitle(f),
       cvss,
       cvss_estimated: cvssEstimated,
       blast_radius: blastRadius,

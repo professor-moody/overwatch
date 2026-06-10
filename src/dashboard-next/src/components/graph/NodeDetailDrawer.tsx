@@ -19,6 +19,7 @@ import { cn, formatRelativeTime } from '../../lib/utils';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { trustSignalsForNode } from '../../lib/trust-signals';
 import { TrustSignalList } from '../shared/TrustSignals';
+import { findingSummary, findingTitle } from '../../lib/finding-display';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -277,9 +278,9 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
                 <button key={`${finding.id}-${index}`} onClick={() => navigateToPanel('findings', finding.id)} className="w-full text-left rounded border border-border bg-background/40 px-2 py-1.5 text-xs hover:border-accent/40 hover:bg-hover/30 transition-colors">
                   <div className="flex items-center gap-2">
                     <StatusPill className={findingSeverityClass(finding.severity)}>{finding.severity}</StatusPill>
-                    <span className="truncate text-foreground">{finding.title}</span>
+                    <span className="truncate text-foreground">{findingTitle(finding)}</span>
                   </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{finding.description}</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{findingSummary(finding)}</div>
                 </button>
               ))}
             </div>

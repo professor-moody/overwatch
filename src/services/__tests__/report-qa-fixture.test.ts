@@ -33,6 +33,12 @@ describe('report QA fixture outputs', () => {
     expect(clientHtml).toContain('class="proof-card"');
     expect(clientHtml).toContain('Evidence Appendix');
     expect(clientHtml).toContain('Raw output preview redacted');
+    expect(clientHtml).toContain('Administrative cloud role is reachable');
+    expect(clientHtml).toContain('Captured credential material');
+    expect(clientHtml).not.toContain('Cloud Identity:');
+    expect(clientHtml).not.toContain('Cloud Resource:');
+    expect(clientHtml).not.toContain('Credential Obtained:');
+    expect(clientHtml).not.toContain('Web Application:');
     for (const marker of REPORT_QA_SECRET_MARKERS) {
       expect(clientHtml).not.toContain(marker);
     }
@@ -86,7 +92,11 @@ describe('report QA fixture outputs', () => {
       evidence_style: 'proof_cards',
       include_attack_paths: true,
     }).content;
-    const clientJson = JSON.parse(clientJsonText) as { report_profile: string; evidence_appendix: unknown[] };
+    const clientJson = JSON.parse(clientJsonText) as {
+      report_profile: string;
+      evidence_appendix: unknown[];
+      findings: Array<{ title: string; presentation?: { title?: string; summary?: string; impact?: string } }>;
+    };
 
     expect(operatorJson.report_profile).toBe('operator');
     expect(operatorJson.evidence_appendix.length).toBeGreaterThan(0);
@@ -97,6 +107,9 @@ describe('report QA fixture outputs', () => {
 
     expect(clientJson.report_profile).toBe('client');
     expect(clientJson.evidence_appendix.length).toBeGreaterThan(0);
+    expect(clientJson.findings.some(f => f.presentation?.title?.includes('Administrative cloud role is reachable'))).toBe(true);
+    expect(clientJson.findings.every(f => f.presentation?.title && f.presentation.summary && f.presentation.impact)).toBe(true);
+    expect(clientJson.findings.map(f => f.presentation?.title).join('\n')).not.toContain('Credential Obtained:');
     for (const marker of REPORT_QA_SECRET_MARKERS) {
       expect(clientJsonText).not.toContain(marker);
     }

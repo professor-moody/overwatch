@@ -554,6 +554,15 @@ export interface FindingClassificationLite {
   attack_techniques?: Array<{ id: string; name: string }>;
 }
 
+export interface FindingPresentationDto {
+  title: string;
+  summary: string;
+  impact: string;
+  evidence_claim?: string;
+  technical_context?: string;
+  remediation_steps: string[];
+}
+
 export interface FindingDto {
   id: string;
   title: string;
@@ -563,6 +572,7 @@ export interface FindingDto {
   description: string;
   affected_assets: string[];
   remediation: string;
+  presentation?: FindingPresentationDto;
   risk_score: number;
   cvss_score?: number;
   cvss_vector?: string;

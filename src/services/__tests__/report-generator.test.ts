@@ -8,6 +8,7 @@ import {
   generateFullReport,
   buildRemediationRanking,
 } from '../report-generator.js';
+import { displayFindingSummary, displayFindingTitle } from '../finding-presentation.js';
 import type { ReportInput } from '../report-generator.js';
 import { renderReportHtml } from '../report-html.js';
 import type { EngagementConfig, NodeProperties, EdgeProperties, ExportedGraph } from '../../types.js';
@@ -150,6 +151,8 @@ describe('buildFindings', () => {
     const hostFindings = findings.filter(f => f.category === 'compromised_host');
     expect(hostFindings.length).toBe(1);
     expect(hostFindings[0].title).toContain('10.10.10.1');
+    expect(displayFindingTitle(hostFindings[0])).toBe('Administrative access confirmed on 10.10.10.1');
+    expect(displayFindingSummary(hostFindings[0])).not.toContain('HAS_SESSION');
     expect(hostFindings[0].severity).toBe('critical'); // has ADMIN_TO
     expect(hostFindings[0].risk_score).toBeGreaterThan(5);
   });
@@ -162,6 +165,9 @@ describe('buildFindings', () => {
 
     const adminCred = credFindings.find(f => f.title.includes('admin'));
     expect(adminCred).toBeDefined();
+    expect(adminCred!.presentation?.title).not.toContain('Credential Obtained');
+    expect(adminCred!.presentation?.title).not.toContain('ntlm_hash');
+    expect(adminCred!.presentation?.summary).toContain('Captured credential material');
     // privileged + has VALID_ON → critical, risk 9.5.
     expect(adminCred!.severity).toBe('critical');
     expect(adminCred!.risk_score).toBe(9.5);

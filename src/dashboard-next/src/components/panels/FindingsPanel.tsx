@@ -24,6 +24,13 @@ import { narrativeItemsFromFindingContext } from '../../lib/evidence-narrative';
 import { ActionButton, EmptyPanelState, PageHeader } from '../shared/primitives';
 import { extractFindingTrustSignals } from '../../lib/trust-signals';
 import { TrustSignalList, TrustSignalPills } from '../shared/TrustSignals';
+import {
+  findingCategoryLabel,
+  findingImpact,
+  findingRemediation,
+  findingSummary,
+  findingTitle,
+} from '../../lib/finding-display';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -229,8 +236,8 @@ function FindingRow({
     <div className={cn('px-3 py-2 hover:bg-hover transition-colors', selected && 'bg-accent/5')}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-foreground">{f.title}</div>
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{f.description}</div>
+          <div className="text-sm font-medium text-foreground">{findingTitle(f)}</div>
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{findingSummary(f)}</div>
           <TrustSignalPills signals={trustSignals} className="mt-1.5" />
           {f.affected_assets.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">
@@ -242,7 +249,7 @@ function FindingRow({
                     nodeId={nodeId}
                     label={asset}
                     className="rounded bg-accent/10 px-1 py-0.5 text-accent"
-                    graphTarget={{ kind: 'finding', findingId: f.id, nodeIds: [nodeId], label: `Finding ${f.title}` }}
+                    graphTarget={{ kind: 'finding', findingId: f.id, nodeIds: [nodeId], label: `Finding ${findingTitle(f)}` }}
                   />
                 ) : (
                   <span key={asset} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground font-mono">{asset}</span>
@@ -308,14 +315,25 @@ function FindingInspector({
 
   const f = context.finding;
   const trustSignals = extractFindingTrustSignals(f);
+  const impact = findingImpact(f);
   return (
     <div className="rounded-lg border border-border bg-surface p-3 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">{f.title}</div>
-          <div className="text-xs text-muted-foreground">{f.category} · {f.severity} · risk {f.risk_score.toFixed(1)}</div>
+          <div className="text-sm font-semibold">{findingTitle(f)}</div>
+          <div className="text-xs text-muted-foreground">{findingCategoryLabel(f.category)} · {f.severity} · risk {f.risk_score.toFixed(1)}</div>
         </div>
         <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
+      </div>
+
+      <div className="rounded border border-border bg-elevated p-2 text-xs space-y-1.5">
+        <div className="text-foreground">{findingSummary(f)}</div>
+        {impact && (
+          <div>
+            <span className="font-medium text-muted-foreground">Impact: </span>
+            <span className="text-foreground">{impact}</span>
+          </div>
+        )}
       </div>
 
       {(f.cvss_score !== undefined || trustSignals.length > 0) && (
@@ -336,6 +354,12 @@ function FindingInspector({
         <div className="space-y-2">
           <div className="text-xs font-medium text-muted-foreground">Supporting Evidence</div>
           <EvidenceNarrative items={narrativeItemsFromFindingContext(context)} />
+          <div>
+            <div className="mb-1 text-xs font-medium text-muted-foreground">Recommended Remediation</div>
+            <div className="rounded border border-border bg-elevated p-2 text-xs text-foreground whitespace-pre-wrap">
+              {findingRemediation(f)}
+            </div>
+          </div>
         </div>
         <div className="space-y-2">
           <ContextMetric label="Affected nodes" value={context.affected_nodes.length} />
@@ -360,7 +384,7 @@ function FindingInspector({
                   kind: 'finding',
                   findingId: context.finding.id,
                   nodeIds: context.affected_nodes.map(affected => affected.id),
-                  label: `Finding ${context.finding.title}`,
+                  label: `Finding ${findingTitle(context.finding)}`,
                 }}
               />
             ))}

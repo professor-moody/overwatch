@@ -1,6 +1,7 @@
 import type { EvidenceChainResponse, ExportedGraph, ExportedNode, FindingContextResponse } from './types';
 import type { FindingDto } from './api';
 import { resolveAssetToNodeId } from './relationships';
+import { findingTitle } from './finding-display';
 
 function clean(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -28,7 +29,7 @@ export function resolveEvidenceQuery(query: string, graph: ExportedGraph, findin
   }
 
   for (const finding of findings) {
-    if (finding.id.toLowerCase() === lower || finding.title.toLowerCase() === lower) {
+    if (finding.id.toLowerCase() === lower || finding.title.toLowerCase() === lower || findingTitle(finding).toLowerCase() === lower) {
       for (const asset of finding.affected_assets) {
         const nodeId = resolveAssetToNodeId(asset, graph);
         if (nodeId) return nodeId;

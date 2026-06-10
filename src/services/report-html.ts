@@ -9,6 +9,13 @@ import type { ReportFinding, NarrativePhase, FindingSeverity, EvidenceProofCard,
 import type { EngagementConfig, ExportedGraph } from '../types.js';
 import type { CredentialChain } from './retrospective.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
+import {
+  displayFindingCategory,
+  displayFindingImpact,
+  displayFindingRemediation,
+  displayFindingSummary,
+  displayFindingTitle,
+} from './finding-presentation.js';
 
 export interface HtmlDiscoveryStats {
   nodesByType: Record<string, number>;
@@ -169,14 +176,14 @@ ${include_toc ? renderToc(findings, narrative, data) : ''}
     <table>
       <thead><tr><th>#</th><th>Severity</th><th>Title</th><th>Risk</th></tr></thead>
       <tbody>
-        ${findings.map((f, i) => `<tr><td>${i + 1}</td><td>${severityHtml(f.severity)}</td><td><a href="#finding-${i}">${esc(f.title)}</a></td><td>${f.risk_score.toFixed(1)}</td></tr>`).join('\n        ')}
+        ${findings.map((f, i) => `<tr><td>${i + 1}</td><td>${severityHtml(f.severity)}</td><td><a href="#finding-${i}">${esc(displayFindingTitle(f))}</a></td><td>${f.risk_score.toFixed(1)}</td></tr>`).join('\n        ')}
       </tbody>
     </table>`}
   </section>
 
   <section id="detailed-findings">
     <h2>Detailed Findings</h2>
-    ${findings.map((f, i) => renderFindingHtml(f, i)).join('\n')}
+    ${findings.map((f, i) => renderFindingHtml(f, i, data.reportProfile ?? 'operator')).join('\n')}
   </section>
 
 ${data.evidenceAppendix && data.evidenceAppendix.length > 0 ? renderEvidenceAppendixHtml(data.evidenceAppendix) : ''}
@@ -244,7 +251,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
       <li><a href="#scope">Scope</a></li>
       <li><a href="#findings-summary">Findings Summary</a></li>
       <li><a href="#detailed-findings">Detailed Findings</a>
-        <ol>${findings.map((f, i) => `<li><a href="#finding-${i}">${esc(f.title)}</a></li>`).join('')}</ol>
+        <ol>${findings.map((f, i) => `<li><a href="#finding-${i}">${esc(displayFindingTitle(f))}</a></li>`).join('')}</ol>
       </li>
       ${narrative.length > 0 ? '<li><a href="#attack-narrative">Attack Narrative</a></li>' : ''}
       ${data.evidenceAppendix && data.evidenceAppendix.length > 0 ? '<li><a href="#evidence-appendix">Evidence Appendix</a></li>' : ''}
@@ -264,7 +271,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
   </nav>`;
 }
 
-function renderFindingHtml(finding: ReportFinding, index: number): string {
+function renderFindingHtml(finding: ReportFinding, index: number, profile: 'operator' | 'client'): string {
   const cvssDisplay = finding.cvss_score !== undefined
     ? `<span class="cvss-score cvss-${cvssColorClass(finding.cvss_score)}">${finding.cvss_score.toFixed(1)}${finding.cvss_estimated ? '†' : ''}</span>`
     : '';
@@ -288,20 +295,27 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
   return `
     <div class="finding" id="finding-${index}">
       <div class="finding-header">
-        <h3>${index + 1}. ${esc(finding.title)}</h3>
+        <h3>${index + 1}. ${esc(displayFindingTitle(finding))}</h3>
         <div class="finding-meta">
           ${severityHtml(finding.severity)}
           ${cvssDisplay}
           <span class="risk-score">Risk: ${finding.risk_score.toFixed(1)}</span>
-          <span class="badge badge-category">${esc(finding.category)}</span>
+          <span class="badge badge-category">${esc(displayFindingCategory(finding.category))}</span>
           ${complianceBadges.join(' ')}
         </div>
         ${vectorDisplay ? `<div class="finding-vector">${vectorDisplay}</div>` : ''}
         ${attackBadges ? `<div class="finding-attack-badges">${attackBadges}</div>` : ''}
       </div>
       <div class="finding-body">
-        <h4>Description</h4>
-        <div class="finding-description">${blockMarkdownToHtml(finding.description)}</div>
+        <h4>Summary</h4>
+        <div class="finding-description">${blockMarkdownToHtml(displayFindingSummary(finding))}</div>
+        <h4>Impact</h4>
+        <div class="finding-description">${blockMarkdownToHtml(displayFindingImpact(finding))}</div>
+        ${profile === 'operator' && finding.presentation?.technical_context ? `
+        <details class="technical-context">
+          <summary>Technical context</summary>
+          <div>${blockMarkdownToHtml(finding.presentation.technical_context)}</div>
+        </details>` : ''}
         <h4>Affected Assets</h4>
         <ul>${finding.affected_assets.slice(0, 10).map(a => `<li>${esc(a)}</li>`).join('')}${finding.affected_assets.length > 10 ? `<li>... and ${finding.affected_assets.length - 10} more</li>` : ''}</ul>
         ${proofCards.length > 0 ? `
@@ -310,7 +324,7 @@ function renderFindingHtml(finding: ReportFinding, index: number): string {
           ${proofCards.slice(0, 10).map(card => renderProofCardHtml(card)).join('\n          ')}
         </div>` : ''}
         <h4>Remediation</h4>
-        <div class="remediation">${inlineMarkdownToHtml(finding.remediation).replace(/\n/g, '<br>')}</div>
+        <div class="remediation">${inlineMarkdownToHtml(displayFindingRemediation(finding)).replace(/\n/g, '<br>')}</div>
       </div>
     </div>`;
 }
@@ -876,6 +890,8 @@ const CSS_STYLES = `
   .finding-body ul { padding-left: 1.5rem; margin-bottom: 0.75rem; }
   .finding-description p { margin-bottom: 0.45rem; }
   .finding-description ul { margin-top: 0.25rem; }
+  .technical-context { border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); padding: 0.65rem 0.75rem; margin: 0.75rem 0; font-size: 0.86rem; }
+  .technical-context summary { cursor: pointer; color: var(--accent); font-weight: 600; }
   .risk-score { font-weight: 600; font-size: 0.85rem; }
   .proof-grid { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; }
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }

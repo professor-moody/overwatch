@@ -26,6 +26,7 @@ import { classifyAllFindings, generateNavigatorLayer } from './finding-classifie
 import { redactReportText, redactSecretKeys } from './report-redaction.js';
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
+import { displayFindingCategory, displayFindingRemediation, displayFindingTitle } from './finding-presentation.js';
 
 export type ReportFormat = 'markdown' | 'html' | 'json';
 /** Format the dashboard / generate_report tool can request, including PDF (which is rendered from HTML by `renderReportPdf`). */
@@ -260,7 +261,7 @@ export function assembleReport(
       .filter(f => f.severity === 'critical' || f.severity === 'high')
       .slice(0, 10);
     for (const f of highPriority) {
-      recs.push(`**${f.title}:** ${f.remediation.split('\n')[0]}`);
+      recs.push(`**${displayFindingTitle(f)}:** ${displayFindingRemediation(f).split('\n')[0]}`);
     }
     const untestedInferred = graph.edges.filter(e => e.properties.confidence < 1.0 && !e.properties.tested);
     if (untestedInferred.length > 0) {
@@ -292,7 +293,7 @@ export function assembleReport(
       const matrix = categories.map(cat =>
         severities.map(s => findings.filter(f => f.category === cat && f.severity === s).length),
       );
-      htmlData.heatmap = { categories, severities, matrix };
+      htmlData.heatmap = { categories: categories.map(displayFindingCategory), severities, matrix };
     }
 
     if (include_compliance && findings.length > 0) {
@@ -309,7 +310,7 @@ export function assembleReport(
       const cweFindings = findings.filter(f => f.classification?.cwe);
       if (cweFindings.length > 0) {
         compliance.cwe_findings = cweFindings.map(f => ({
-          title: f.title,
+          title: displayFindingTitle(f),
           cwe: f.classification!.cwe!,
           cwe_name: f.classification!.cwe_name || '',
         }));
