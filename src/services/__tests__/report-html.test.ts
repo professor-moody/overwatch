@@ -191,7 +191,7 @@ describe('proof card evidence rendering', () => {
     expect(html).toContain('<li>jdoe → RDP (3389)</li>');
   });
 
-  it('links proof cards to evidence appendix anchors', () => {
+  it('keeps proof card evidence IDs in collapsed metadata instead of visible appendix links', () => {
     const findings = [
       makeFinding({
         proof_cards: [{
@@ -223,7 +223,9 @@ describe('proof card evidence rendering', () => {
         finding_titles: ['Test Finding'],
       }],
     }));
-    expect(html).toContain('href="#ev-long-command"');
+    expect(html).not.toContain('class="proof-ref"');
+    expect(html).not.toContain('href="#ev-long-command"');
+    expect(html).toContain('<summary>Evidence metadata</summary>');
     expect(html).toContain('id="ev-long-command"');
     expect(html).toContain('evidence-long-command');
     expect(html).toContain('a'.repeat(64));

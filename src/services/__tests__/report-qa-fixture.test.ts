@@ -32,7 +32,10 @@ describe('report QA fixture outputs', () => {
 
     expect(clientHtml).toContain('class="proof-card"');
     expect(clientHtml).toContain('Action Plan');
-    expect(clientHtml).toContain('Evidence Appendix');
+    expect(clientHtml).not.toContain('<h2>Evidence Appendix</h2>');
+    expect(clientHtml).not.toContain('class="proof-ref"');
+    expect(clientHtml).not.toContain('href="#ev-');
+    expect(clientHtml).toContain('Evidence metadata');
     expect(clientHtml).toContain('Raw output preview redacted');
     expect(clientHtml).toContain('Administrative cloud role is reachable');
     expect(clientHtml).toContain('Captured credential material');
@@ -62,10 +65,11 @@ describe('report QA fixture outputs', () => {
     }).content;
 
     expect(operatorHtml).toContain('Raw preview');
+    expect(operatorHtml).toContain('Evidence Appendix');
     expect(operatorHtml).toContain('Backup2024!');
     expect(operatorHtml).toContain(qa.evidenceIds.rdp.slice(0, 12));
     expect(operatorHtml).toContain('act-report-qa-rdp'.slice(0, 8));
-    expect(operatorHtml).toContain('sha256');
+    expect(operatorHtml).toContain('SHA-256');
 
     expect(operatorMarkdown).toContain('Raw preview');
     expect(operatorMarkdown).toContain('Backup2024!');

@@ -147,4 +147,24 @@ describe('overview workspace helpers', () => {
     expect(changed[0]).toMatchObject({ route: 'graph', nodeId: 'host-1' });
     expect(changed[1]).toMatchObject({ source: 'trust', tone: 'warning' });
   });
+
+  it('summarizes CVSS trust signals instead of exposing full vectors in Changed items', () => {
+    const changed = deriveChangedItems(
+      [],
+      [
+        {
+          id: 'cvss',
+          source: 'finding',
+          severity: 'warning',
+          label: 'Estimated CVSS',
+          detail: 'Derived from current graph evidence: CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:H/I:L/A:N',
+          timestamp: '2026-05-15T10:02:00Z',
+        },
+      ],
+    );
+
+    expect(changed[0].label).toBe('Estimated CVSS requires verification');
+    expect(changed[0].label).not.toContain('CVSS:3.1');
+    expect(changed[0].detail).toContain('CVSS:3.1');
+  });
 });

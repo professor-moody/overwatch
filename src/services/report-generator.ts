@@ -1020,7 +1020,7 @@ export function buildReportEvidenceModel(
       }
       appendix.set(key, {
         id: key,
-        title: card.evidence_id ? `Evidence ${card.evidence_id.slice(0, 8)}` : card.action_id ? `Action ${card.action_id.slice(0, 8)}` : 'Activity evidence',
+        title: evidenceAppendixTitle(card),
         claim: card.claim,
         source_kind: card.source_kind,
         evidence_id: card.evidence_id,
@@ -1047,6 +1047,15 @@ export function buildReportEvidenceModel(
     appendix: [...appendix.values()].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || '')),
     evidenceCount: appendix.size,
   };
+}
+
+function evidenceAppendixTitle(card: EvidenceProofCard): string {
+  const source = sourceKindLabel(card.source_kind);
+  if (card.tool) return `${source} from ${card.tool}`;
+  if (card.filename) return `${source}: ${card.filename}`;
+  if (card.command) return `${source} from command execution`;
+  if (card.action_id) return `${source} from recorded action`;
+  return source;
 }
 
 // ============================================================
@@ -1441,12 +1450,14 @@ export function renderAttackPathsSection(paths: AttackPath[]): string {
   return lines.join('\n');
 }
 
-function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceStyle): string[] {
+function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceStyle, profile: ReportProfile): string[] {
   const lines: string[] = [];
   if (cards.length === 0) return lines;
   if (style === 'appendix') {
     for (const card of cards.slice(0, 5)) {
-      lines.push(`- ${card.claim} (see [${card.appendix_ref}](#${card.appendix_ref}))`);
+      lines.push(`- **${sourceKindLabel(card.source_kind)}:** ${card.claim}`);
+      lines.push(`  - Proof: ${card.proof}`);
+      lines.push('  - Full evidence metadata is recorded in the Evidence Appendix.');
     }
     return lines;
   }
@@ -1457,12 +1468,20 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
     const meta = [
       card.tool ? `tool: ${card.tool}` : undefined,
       card.timestamp ? `time: ${formatTimestamp(card.timestamp)}` : undefined,
-      card.action_id ? `action: ${card.action_id.slice(0, 8)}` : undefined,
-      card.evidence_id ? `evidence: ${card.evidence_id}` : undefined,
       card.filename ? `file: ${card.filename}` : undefined,
-      card.content_hash ? `sha256: ${card.content_hash.slice(0, 16)}...` : undefined,
     ].filter(Boolean);
     if (meta.length > 0) lines.push(`  - ${meta.join(' | ')}`);
+    const evidenceMeta = [
+      card.action_id ? `action: ${card.action_id}` : undefined,
+      card.evidence_id ? `evidence: ${card.evidence_id}` : undefined,
+      card.content_hash ? `sha256: ${card.content_hash}` : undefined,
+      card.appendix_ref ? `archive ref: ${card.appendix_ref}` : undefined,
+    ].filter(Boolean);
+    if (profile === 'operator' && evidenceMeta.length > 0) {
+      lines.push(`  - Evidence metadata: ${evidenceMeta.join(' | ')}`);
+    } else if (profile === 'client' && evidenceMeta.length > 0) {
+      lines.push('  - Evidence metadata: recorded in the structured report archive.');
+    }
     if (card.parsed_summary) lines.push(`  - Result: ${card.parsed_summary}`);
     if (card.command) {
       lines.push('  ```bash');
@@ -1470,7 +1489,7 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
       lines.push('  ```');
     }
     if (card.raw_preview_redacted) {
-      lines.push('  - Raw preview redacted in client profile; full evidence is tracked in the appendix.');
+      lines.push('  - Raw preview redacted in client profile; full evidence remains tracked in the structured archive.');
     } else if (style === 'full_inline' && card.raw_preview) {
       lines.push('  ```');
       for (const pl of card.raw_preview.split('\n').slice(0, 80)) lines.push(`  ${pl}`);
@@ -1483,10 +1502,9 @@ function renderProofCardsMarkdown(cards: EvidenceProofCard[], style: EvidenceSty
       lines.push('  ```');
       lines.push('  </details>');
     }
-    lines.push(`  - Appendix: [${card.appendix_ref}](#${card.appendix_ref})`);
   }
   if (cards.length > 5) {
-    lines.push(`- ... and ${cards.length - 5} more proof card(s) in the evidence appendix`);
+    lines.push(`- ... and ${cards.length - 5} more proof card(s)`);
   }
   return lines;
 }
@@ -1499,12 +1517,11 @@ function renderEvidenceAppendixMarkdown(appendix: EvidenceAppendixEntry[]): stri
   lines.push('Each cited artifact is indexed once. Client reports preserve IDs and hashes for verification while redacting sensitive raw output.');
   lines.push('');
   for (const entry of appendix) {
-    lines.push(`### ${entry.id}`);
-    lines.push('');
-    lines.push(`**${entry.title}**`);
+    lines.push(`### ${entry.title}`);
     lines.push('');
     lines.push(`- Claim: ${entry.claim}`);
     lines.push(`- Source: ${sourceKindLabel(entry.source_kind)}`);
+    lines.push(`- Archive Reference: \`${entry.id}\``);
     if (entry.tool) lines.push(`- Tool: ${entry.tool}`);
     if (entry.timestamp) lines.push(`- Time: ${formatTimestamp(entry.timestamp)}`);
     if (entry.action_id) lines.push(`- Action ID: \`${entry.action_id}\``);
@@ -1533,6 +1550,11 @@ function renderEvidenceAppendixMarkdown(appendix: EvidenceAppendixEntry[]): stri
     lines.push('');
   }
   return lines;
+}
+
+function shouldRenderMarkdownEvidenceAppendix(profile: ReportProfile, style: EvidenceStyle): boolean {
+  if (profile === 'client') return style === 'appendix';
+  return true;
 }
 
 function sourceKindLabel(kind: EvidenceProofCard['source_kind']): string {
@@ -1819,7 +1841,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     if (include_evidence && (f.proof_cards?.length || f.evidence.length > 0)) {
       lines.push('#### Evidence');
       lines.push('');
-      lines.push(...renderProofCardsMarkdown(f.proof_cards ?? buildProofCardsForFinding(f, report_profile), evidence_style));
+      lines.push(...renderProofCardsMarkdown(f.proof_cards ?? buildProofCardsForFinding(f, report_profile), evidence_style, report_profile));
       lines.push('');
     }
 
@@ -1863,7 +1885,7 @@ export function generateFullReport(input: ReportInput, options: ReportOptions = 
     lines.push('');
   }
 
-  if (include_evidence && proofModel.appendix.length > 0) {
+  if (include_evidence && shouldRenderMarkdownEvidenceAppendix(report_profile, evidence_style) && proofModel.appendix.length > 0) {
     lines.push(...renderEvidenceAppendixMarkdown(proofModel.appendix));
   }
 

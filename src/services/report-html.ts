@@ -120,6 +120,7 @@ export function renderReportHtml(data: HtmlReportData, options: HtmlReportOption
 
   const objectivesAchieved = config.objectives.filter(o => o.achieved).length;
   const generatedAt = new Date().toISOString();
+  const showEvidenceAppendix = shouldRenderEvidenceAppendix(data);
 
   return `<!DOCTYPE html>
 <html lang="en" data-theme="${theme === 'dark' ? 'dark' : 'light'}">
@@ -141,7 +142,7 @@ export function renderReportHtml(data: HtmlReportData, options: HtmlReportOption
     </div>
   </header>
 
-${include_toc ? renderToc(findings, narrative, data) : ''}
+${include_toc ? renderToc(findings, narrative, data, showEvidenceAppendix) : ''}
 
 ${renderExecutiveSummaryHtml(data, {
   critical: criticalCount,
@@ -185,7 +186,7 @@ ${data.actionPlan && data.actionPlan.length > 0 ? renderActionPlanHtml(data.acti
     ${findings.map((f, i) => renderFindingHtml(f, i, data.reportProfile ?? 'operator')).join('\n')}
   </section>
 
-${data.evidenceAppendix && data.evidenceAppendix.length > 0 ? renderEvidenceAppendixHtml(data.evidenceAppendix) : ''}
+${showEvidenceAppendix && data.evidenceAppendix && data.evidenceAppendix.length > 0 ? renderEvidenceAppendixHtml(data.evidenceAppendix) : ''}
 
 ${narrative.length > 0 ? `
   <section id="attack-narrative">
@@ -241,7 +242,13 @@ ${data.recommendations && data.recommendations.length > 0 ? renderRecommendation
 // Sub-Renderers
 // ============================================================
 
-function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data: HtmlReportData): string {
+function shouldRenderEvidenceAppendix(data: HtmlReportData): boolean {
+  if (!data.evidenceAppendix || data.evidenceAppendix.length === 0) return false;
+  if (data.reportProfile === 'client') return data.evidenceStyle === 'appendix';
+  return true;
+}
+
+function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data: HtmlReportData, showEvidenceAppendix: boolean): string {
   return `
   <nav id="toc">
     <h2>Table of Contents</h2>
@@ -254,7 +261,7 @@ function renderToc(findings: ReportFinding[], narrative: NarrativePhase[], data:
         <ol>${findings.map((f, i) => `<li><a href="#finding-${i}">${esc(displayFindingShortTitle(f))}</a></li>`).join('')}</ol>
       </li>
       ${narrative.length > 0 ? '<li><a href="#attack-narrative">Attack Narrative</a></li>' : ''}
-      ${data.evidenceAppendix && data.evidenceAppendix.length > 0 ? '<li><a href="#evidence-appendix">Evidence Appendix</a></li>' : ''}
+      ${showEvidenceAppendix ? '<li><a href="#evidence-appendix">Evidence Appendix</a></li>' : ''}
       <li><a href="#objectives">Objectives</a></li>
       ${data.heatmap ? '<li><a href="#risk-heatmap">Risk Heatmap</a></li>' : ''}
       ${data.remediationRanking && data.remediationRanking.length > 0 ? '<li><a href="#remediation-ranking">Remediation Priority Ranking</a></li>' : ''}
@@ -457,22 +464,28 @@ function renderProofCardHtml(card: EvidenceProofCard): string {
   const meta = [
     card.tool ? `<span>${esc(card.tool)}</span>` : '',
     card.timestamp ? `<span>${formatTs(card.timestamp)}</span>` : '',
-    card.action_id ? `<code>${esc(card.action_id)}</code>` : '',
-    card.evidence_id ? `<code>${esc(card.evidence_id.slice(0, 12))}</code>` : '',
+    card.technique ? `<span>${esc(card.technique)}</span>` : '',
+    card.evidence_type ? `<span>${esc(card.evidence_type)}</span>` : '',
     card.filename ? `<span>${esc(card.filename)}</span>` : '',
+  ].filter(Boolean).join('');
+  const metadataRows = [
+    card.action_id ? `<div><dt>Action ID</dt><dd><code>${esc(card.action_id)}</code></dd></div>` : '',
+    card.evidence_id ? `<div><dt>Evidence ID</dt><dd><code>${esc(card.evidence_id)}</code></dd></div>` : '',
+    card.content_hash ? `<div><dt>SHA-256</dt><dd><code>${esc(card.content_hash)}</code></dd></div>` : '',
+    card.appendix_ref ? `<div><dt>Archive Ref</dt><dd><code>${esc(card.appendix_ref)}</code></dd></div>` : '',
+    card.evidence_bytes !== undefined ? `<div><dt>Size</dt><dd>${card.evidence_bytes.toLocaleString()} bytes</dd></div>` : '',
   ].filter(Boolean).join('');
   return `
     <article class="proof-card" id="${esc(card.id)}">
       <div class="proof-card-head">
         <span class="proof-kind proof-${esc(card.source_kind)}">${esc(sourceKindLabel(card.source_kind))}</span>
-        ${card.appendix_ref ? `<a class="proof-ref" href="#${esc(card.appendix_ref)}">${esc(card.appendix_ref)}</a>` : ''}
       </div>
       <p class="proof-claim">${inlineMarkdownToHtml(card.claim)}</p>
       <p class="proof-text">${esc(card.proof)}</p>
       ${meta ? `<div class="proof-meta">${meta}</div>` : ''}
-      ${card.content_hash ? `<div class="proof-hash">sha256 <code>${esc(card.content_hash)}</code></div>` : ''}
       ${card.parsed_summary ? `<div class="proof-summary">${esc(card.parsed_summary)}</div>` : ''}
       ${card.command ? `<pre class="evidence-command">${esc(card.command)}</pre>` : ''}
+      ${metadataRows ? `<details class="proof-metadata"><summary>Evidence metadata</summary><dl>${metadataRows}</dl></details>` : ''}
       ${card.raw_preview_redacted ? `<div class="evidence-warning">Raw output preview redacted for this report profile.</div>` : ''}
       ${card.raw_preview ? `<details class="proof-raw"><summary>Raw preview</summary><pre>${esc(limitPreview(card.raw_preview, 4096, 80))}</pre></details>` : ''}
     </article>`;
@@ -1005,12 +1018,16 @@ const CSS_STYLES = `
   .proof-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem; background: var(--bg); break-inside: avoid; page-break-inside: avoid; }
   .proof-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .proof-kind { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); }
-  .proof-ref { font-family: monospace; font-size: 0.75rem; overflow-wrap: anywhere; }
   .proof-claim { font-weight: 600; margin-bottom: 0.35rem; }
   .proof-text { font-size: 0.9rem; color: var(--fg); margin-bottom: 0.35rem; }
   .proof-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; color: var(--info); font-size: 0.78rem; }
   .proof-meta span, .proof-meta code { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.08rem 0.35rem; }
   .proof-hash, .proof-summary { font-size: 0.78rem; color: var(--info); margin-top: 0.35rem; overflow-wrap: anywhere; }
+  .proof-metadata { margin-top: 0.45rem; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); padding: 0.4rem 0.55rem; }
+  .proof-metadata summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; font-weight: 600; }
+  .proof-metadata dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.45rem 0.75rem; margin-top: 0.45rem; }
+  .proof-metadata dt { color: var(--info); font-size: 0.68rem; text-transform: uppercase; }
+  .proof-metadata dd { font-size: 0.8rem; overflow-wrap: anywhere; }
   .proof-raw { margin-top: 0.45rem; }
   .proof-raw summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; }
   .proof-raw pre, .evidence-command { background: var(--card-bg); border: 1px solid var(--border); padding: 0.7rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 0.4rem; }

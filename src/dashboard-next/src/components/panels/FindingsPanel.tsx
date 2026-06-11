@@ -344,8 +344,13 @@ function FindingInspector({
                 CVSS <span className="font-mono text-foreground">{f.cvss_score.toFixed(1)}</span>{f.cvss_estimated ? ' estimated' : ''}
               </span>
             )}
-            {f.cvss_vector && <span className="font-mono text-[10px] text-muted-foreground break-all">{f.cvss_vector}</span>}
           </div>
+          {f.cvss_vector && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[10px] text-accent">CVSS vector</summary>
+              <div className="mt-1 font-mono text-[10px] text-muted-foreground break-all">{f.cvss_vector}</div>
+            </details>
+          )}
           <TrustSignalList signals={trustSignals} className="mt-2" />
         </div>
       )}

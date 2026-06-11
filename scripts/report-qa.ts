@@ -61,8 +61,11 @@ const redactionFailures = REPORT_QA_SECRET_MARKERS.filter(marker =>
 if (redactionFailures.length > 0) {
   throw new Error(`Client report leaked secret marker(s): ${redactionFailures.join(', ')}`);
 }
-if (!clientHtml.includes('class="proof-card"') || !clientHtml.includes('Evidence Appendix') || !clientHtml.includes('Action Plan')) {
-  throw new Error('Client HTML report did not include proof cards, action plan, and evidence appendix.');
+if (!clientHtml.includes('class="proof-card"') || !clientHtml.includes('Action Plan') || !clientHtml.includes('Evidence metadata')) {
+  throw new Error('Client HTML report did not include proof cards, action plan, and collapsed evidence metadata.');
+}
+if (clientHtml.includes('<h2>Evidence Appendix</h2>') || clientHtml.includes('class="proof-ref"') || clientHtml.includes('href="#ev-')) {
+  throw new Error('Client HTML report still exposes visible evidence appendix links.');
 }
 if (clientHtml.includes('<h2>Recommendations</h2>')) {
   throw new Error('Client HTML report still includes the legacy Recommendations section.');

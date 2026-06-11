@@ -45,6 +45,7 @@ export interface NextActionItem {
 export interface ChangedItem {
   id: string;
   label: string;
+  detail?: string;
   source: 'activity' | 'trust';
   route: 'activity' | 'findings' | 'graph';
   tone: 'default' | 'warning';
@@ -180,11 +181,13 @@ export function deriveChangedItems(
 ): ChangedItem[] {
   const items: ChangedItem[] = [];
   for (const entry of recentActivity) {
-    const label = entry.description || entry.event_type;
+    const rawLabel = entry.description || entry.event_type;
+    const label = summarizeChangedLabel(rawLabel, 'activity');
     if (!label) continue;
     items.push({
       id: entry.event_id || entry.id,
       label,
+      detail: rawLabel,
       source: 'activity',
       route: entry.target_node_ids?.[0] ? 'graph' : entry.event_type?.includes('finding') ? 'findings' : 'activity',
       tone: entry.result_classification === 'failure' ? 'warning' : 'default',
@@ -194,9 +197,11 @@ export function deriveChangedItems(
     });
   }
   for (const signal of trustSignals) {
+    const rawLabel = signal.detail ? `${signal.label}: ${signal.detail}` : signal.label;
     items.push({
       id: signal.id,
-      label: signal.detail ? `${signal.label}: ${signal.detail}` : signal.label,
+      label: summarizeChangedLabel(rawLabel, 'trust'),
+      detail: rawLabel,
       source: 'trust',
       route: signal.node_ids?.[0] ? 'graph' : signal.finding_id ? 'findings' : 'activity',
       tone: signal.severity === 'info' ? 'default' : 'warning',
@@ -212,6 +217,33 @@ export function deriveChangedItems(
     if (!deduped.has(key)) deduped.set(key, item);
   }
   return [...deduped.values()].slice(0, limit);
+}
+
+export function summarizeChangedLabel(label: string, source: ChangedItem['source'] = 'activity'): string {
+  const trimmed = label.trim();
+  if (!trimmed) return trimmed;
+  if (/CVSS/i.test(trimmed)) {
+    if (/estimated/i.test(trimmed)) return 'Estimated CVSS requires verification';
+    return 'CVSS scoring signal requires review';
+  }
+  if (/parser|malformed|skipped|missing object|ingest/i.test(trimmed)) {
+    return sentenceLimit(stripCvssVectors(trimmed), 86);
+  }
+  if (source === 'trust') return sentenceLimit(stripCvssVectors(trimmed), 78);
+  return sentenceLimit(stripCvssVectors(trimmed), 96);
+}
+
+function stripCvssVectors(value: string): string {
+  return value
+    .replace(/CVSS:3\.[01]\/[A-Z:\/.-]+/g, 'CVSS vector')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sentenceLimit(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const slice = value.slice(0, max).trimEnd();
+  return `${slice.replace(/[,:;.\s]+$/, '')}...`;
 }
 
 function severityRank(severity: TrustSignalDto['severity']): number {

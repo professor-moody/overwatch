@@ -351,7 +351,7 @@ export function SessionsPanel() {
       {sessions.length === 0 ? (
         <EmptyState message="No sessions. Use open_session to create one." />
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(300px,340px)_minmax(420px,1fr)_minmax(320px,380px)] gap-4 flex-1 min-h-0">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(300px,340px)_minmax(520px,1fr)] 2xl:grid-cols-[minmax(300px,340px)_minmax(560px,1fr)_minmax(300px,360px)] gap-4 flex-1 min-h-0">
           <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
             <div className="grid grid-cols-3 border-b border-border text-center text-xs">
               <SessionStat label="Live" value={connected.length} tone="success" />
@@ -430,10 +430,10 @@ export function SessionsPanel() {
           </PanelSection>
 
           {selectedSession ? (
-            <PanelSection className="p-3 min-h-0 overflow-y-auto">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1">
+            <PanelSection className="p-3 min-h-0 overflow-y-auto xl:col-span-2 2xl:col-span-1">
+                <div className="space-y-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
                       <StatusPill className={stateClass(selectedSession.state)}>{selectedSession.state}</StatusPill>
                       {selectedSession.auth_status && <StatusPill className="bg-elevated text-muted-foreground">{selectedSession.auth_status}</StatusPill>}
                       <span className="text-xs text-muted-foreground">{selectedSession.kind}{selectedSession.transport ? ` · ${selectedSession.transport}` : ''}</span>
@@ -451,7 +451,7 @@ export function SessionsPanel() {
                       </>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1 justify-end max-w-sm">
+                  <div className="flex flex-wrap gap-1.5">
                     {selectedSession.state === 'connected' && (
                       attachedIds.includes(selectedSession.id) ? (
                         <ActionButton onClick={() => detach(selectedSession.id)} variant="danger">Detach</ActionButton>
@@ -477,12 +477,11 @@ export function SessionsPanel() {
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-1 gap-2 text-xs">
                   <DetailFact label="Target" value={selectedTargetLabel || '—'} mono />
                   <DetailFact label="Owner" value={selectedSession.claimed_by || selectedSession.owner || selectedSession.agent_id || 'dashboard'} mono />
                   <DetailFact label="Validation" value={selectedSession.default_validation?.technique || 'per-command'} mono />
                   <DetailFact label="Last Activity" value={selectedSession.last_activity_at ? formatRelativeTime(selectedSession.last_activity_at) : '—'} />
-                  <DetailFact label="Buffer" value={selectedSession.buffer_end_pos != null ? String(selectedSession.buffer_end_pos) : '—'} mono />
                 </div>
 
                 {selectedNodeIds.length > 0 && (
@@ -500,7 +499,7 @@ export function SessionsPanel() {
                 )}
 
                 <div className="mt-3 grid grid-cols-1 gap-2">
-                  <SessionContextBlock title="Copy Context">
+                  <SessionContextBlock title="Copy Context" collapsed>
                     <div className="flex flex-wrap gap-1">
                       {selectedCopyFields.map(field => (
                         <button
@@ -513,7 +512,7 @@ export function SessionsPanel() {
                       ))}
                     </div>
                   </SessionContextBlock>
-                  <SessionContextBlock title="Terminal Links">
+                  <SessionContextBlock title="Terminal Links" collapsed>
                     <div className="flex flex-wrap gap-1">
                       <button onClick={() => navigateToPanel('actions')} className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning">
                         {selectedRelatedActions.length} actions
@@ -523,7 +522,7 @@ export function SessionsPanel() {
                       </button>
                     </div>
                   </SessionContextBlock>
-                  <SessionContextBlock title="Recent Activity">
+                  <SessionContextBlock title="Recent Activity" collapsed>
                     {selectedRelatedActivity.length === 0 ? (
                       <div className="text-[10px] text-muted-foreground">No linked events</div>
                     ) : (
@@ -539,7 +538,7 @@ export function SessionsPanel() {
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 gap-2">
-                  <SessionContextBlock title="Buffer Tail">
+                  <SessionContextBlock title="Buffer Tail" collapsed>
                     <div className="flex items-center gap-2 mb-2">
                       <input
                         value={bufferQuery}
@@ -567,7 +566,7 @@ export function SessionsPanel() {
                       </div>
                     )}
                   </SessionContextBlock>
-                  <SessionContextBlock title="Commands / Matches">
+                  <SessionContextBlock title="Commands / Matches" collapsed>
                     {bufferQuery.trim() ? (
                       bufferMatches.length === 0 ? (
                         <div className="text-[10px] text-muted-foreground">No matches</div>
@@ -692,7 +691,17 @@ function DetailFact({ label, value, mono }: { label: string; value: string; mono
   );
 }
 
-function SessionContextBlock({ title, children }: { title: string; children: ReactNode }) {
+function SessionContextBlock({ title, children, collapsed = false }: { title: string; children: ReactNode; collapsed?: boolean }) {
+  if (collapsed) {
+    return (
+      <details className="rounded border border-border bg-background/40 px-2 py-1.5 min-w-0">
+        <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wider text-muted-foreground">
+          <span>{title}</span>
+        </summary>
+        <div className="mt-2">{children}</div>
+      </details>
+    );
+  }
   return (
     <div className="rounded border border-border bg-background/40 px-2 py-1.5 min-w-0">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{title}</div>

@@ -49,7 +49,12 @@ describe('evidence narrative helpers', () => {
       label: 'DC01.corp.local',
       count: 1,
       latest: '2026-05-15T00:00:00Z',
-      description: 'SMB evidence',
+      description: 'done',
+      proof: 'SMB evidence',
+      source_kind: 'activity',
+      event_type: 'action_completed',
+      action_id: undefined,
+      tool: undefined,
     }]);
   });
 });

@@ -53,17 +53,39 @@ export interface EvidenceNarrativeItem {
   count: number;
   latest?: string;
   description?: string;
+  proof?: string;
+  source_kind: 'command_output' | 'parsed_result' | 'activity';
+  event_type?: string;
+  action_id?: string;
+  tool?: string;
 }
 
 export function narrativeItemsFromChains(chains: EvidenceChainResponse[]): EvidenceNarrativeItem[] {
-  return chains.map(chain => ({
-    id: chain.node_id,
-    node_id: chain.node_id,
-    label: chain.node_props?.label || chain.node_id,
-    count: chain.count,
-    latest: chain.chains[0]?.timestamp,
-    description: chain.chains[0]?.snippet || chain.findings?.[0]?.description,
-  }));
+  return chains.map(chain => {
+    const first = chain.chains[0];
+    const findingDescription = chain.findings?.[0]?.description;
+    const snippet = first?.snippet || first?.description || findingDescription;
+    return {
+      id: chain.node_id,
+      node_id: chain.node_id,
+      label: chain.node_props?.label || chain.node_id,
+      count: chain.count,
+      latest: first?.timestamp,
+      description: findingDescription || first?.description,
+      proof: snippet,
+      source_kind: sourceKindForChain(first),
+      event_type: first?.event_type,
+      action_id: first?.action_id,
+      tool: first?.tool,
+    };
+  });
+}
+
+function sourceKindForChain(entry: EvidenceChainResponse['chains'][number] | undefined): EvidenceNarrativeItem['source_kind'] {
+  if (!entry) return 'activity';
+  if (entry.tool || entry.command) return 'command_output';
+  if (/parsed|ingest|finding/i.test(entry.event_type || '')) return 'parsed_result';
+  return 'activity';
 }
 
 export function narrativeItemsFromFindingContext(context: FindingContextResponse | null): EvidenceNarrativeItem[] {

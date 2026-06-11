@@ -113,7 +113,7 @@ export function OverviewPanel() {
     <div className="space-y-6">
       <PageHeader title="Overview" />
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_1.35fr_1.15fr_.9fr] gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,.75fr)_minmax(360px,1.25fr)_minmax(320px,1fr)] gap-4">
         <PanelSection title="Now" meta={nowItems.length > 0 ? `(${nowItems.length})` : undefined}>
           <div className="space-y-2 text-xs">
             {nowItems.map((item) => (
@@ -173,21 +173,21 @@ export function OverviewPanel() {
             </div>
           )}
         </PanelSection>
-
-        <PanelSection title="Current Access">
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <AccessFact label="Level" value={accessFacts.level} onClick={() => navigateToGraph()} />
-            <AccessFact label="Sessions" value={accessFacts.liveSessions} onClick={() => navigateToPanel('sessions')} />
-            <AccessFact label="Hosts" value={accessFacts.hosts} onClick={() => navigateToGraphFilter('host')} />
-            <AccessFact label="Valid creds" value={accessFacts.validCredentials} onClick={() => navigateToPanel('credentials')} />
-            <AccessFact
-              label="Campaigns"
-              value={accessFacts.pausedCampaigns > 0 ? `${accessFacts.activeCampaigns}/${accessFacts.pausedCampaigns}` : accessFacts.activeCampaigns}
-              onClick={() => navigateToPanel('campaigns')}
-            />
-          </div>
-        </PanelSection>
       </div>
+
+      <PanelSection title="Current Access">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2 text-xs">
+          <AccessFact label="Level" value={accessFacts.level} onClick={() => navigateToGraph()} />
+          <AccessFact label="Sessions" value={accessFacts.liveSessions} onClick={() => navigateToPanel('sessions')} />
+          <AccessFact label="Hosts" value={accessFacts.hosts} onClick={() => navigateToGraphFilter('host')} />
+          <AccessFact label="Valid creds" value={accessFacts.validCredentials} onClick={() => navigateToPanel('credentials')} />
+          <AccessFact
+            label="Campaigns"
+            value={accessFacts.pausedCampaigns > 0 ? `${accessFacts.activeCampaigns}/${accessFacts.pausedCampaigns}` : accessFacts.activeCampaigns}
+            onClick={() => navigateToPanel('campaigns')}
+          />
+        </div>
+      </PanelSection>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <MetricTile
@@ -454,11 +454,14 @@ function activityKey(entry: ActivityEntry, index: number): string {
 function NextActionRow({ item, onInspect }: { item: NextActionItem; onInspect: () => void }) {
   return (
     <div className="rounded border border-border bg-background/35 px-2.5 py-2 text-xs">
-      <div className="flex items-start gap-2">
-        <span className={cn('mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium', frontierTypeClass(item.type))}>
-          {item.type.replace(/_/g, ' ')}
-        </span>
-        <div className="min-w-0 flex-1">
+      <div className="grid grid-cols-[1fr_auto] gap-2">
+        <div className="min-w-0">
+          <div className="mb-1 flex flex-wrap items-center gap-1.5">
+            <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', frontierTypeClass(item.type))}>
+              {item.type.replace(/_/g, ' ')}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">priority {item.priority.toFixed(1)}</span>
+          </div>
           <div className="text-foreground leading-snug whitespace-normal break-words">{item.label}</div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
             <span>{item.reason}</span>
@@ -467,11 +470,10 @@ function NextActionRow({ item, onInspect }: { item: NextActionItem; onInspect: (
         </div>
         <button
           onClick={onInspect}
-          className="flex-shrink-0 rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
+          className="self-start rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
         >
           Inspect
         </button>
-        <span className="flex-shrink-0 font-mono text-foreground">{item.priority.toFixed(1)}</span>
       </div>
     </div>
   );
@@ -481,6 +483,7 @@ function ChangedRow({ item, onClick }: { item: ChangedItem; onClick: () => void 
   return (
     <button
       onClick={onClick}
+      title={item.detail || item.label}
       className="w-full text-left flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-hover transition-colors"
     >
       <span className={cn('h-1.5 w-1.5 rounded-full flex-shrink-0', item.tone === 'warning' ? 'bg-warning' : 'bg-accent')} />
