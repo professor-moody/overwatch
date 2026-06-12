@@ -36,6 +36,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
       ws.onopen = () => {
         setConnected(true);
         store.getState().setConnected(true);
+        void pollState(true);
         if (reconnectTimer.current) {
           clearInterval(reconnectTimer.current);
           reconnectTimer.current = null;
@@ -115,8 +116,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    async function pollState() {
-      if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    async function pollState(force = false) {
+      if (!force && wsRef.current?.readyState === WebSocket.OPEN) return;
       try {
         const data = await api.getState();
         const s = store.getState();

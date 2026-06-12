@@ -59,6 +59,8 @@ export function ActionsPanel() {
     } catch { /* keep current queue visible */ }
   }, []);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
   const copyText = useCallback(async (key: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
