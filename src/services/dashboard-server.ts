@@ -235,13 +235,15 @@ export class DashboardServer {
       });
     });
 
-    this.sessionManager?.onEvent((event: SessionEvent) => {
-      this.broadcast({
-        type: 'session_update',
-        timestamp: new Date().toISOString(),
-        data: event,
+    if (typeof this.sessionManager?.onEvent === 'function') {
+      this.sessionManager.onEvent((event: SessionEvent) => {
+        this.broadcast({
+          type: 'session_update',
+          timestamp: new Date().toISOString(),
+          data: event,
+        });
       });
-    });
+    }
   }
 
   start(): Promise<DashboardStartResult> {
