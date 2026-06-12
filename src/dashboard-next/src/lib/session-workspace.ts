@@ -64,6 +64,10 @@ export function removeAttachedSession(attached: string[], sessionId: string): st
   return attached.filter(id => id !== sessionId);
 }
 
+export function sessionSupportsResize(session: Pick<SessionInfo, 'capabilities'> | null | undefined): boolean {
+  return session?.capabilities?.supports_resize === true;
+}
+
 export function relatedSessionActions(session: SessionInfo, actions: PendingAction[]): PendingAction[] {
   const ids = new Set([
     session.action_id,

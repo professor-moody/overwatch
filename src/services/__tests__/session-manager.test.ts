@@ -754,6 +754,81 @@ describe('SocketAdapter — dumb session', () => {
     await manager.shutdown();
   });
 
+  it('records graph access when a socket session connects with target and principal metadata', async () => {
+    const ingestCalls: unknown[] = [];
+    const events: unknown[] = [];
+    let connect: (() => void) | undefined;
+    const engine = {
+      ingestSessionResult(result: unknown) { ingestCalls.push(result); },
+      logActionEvent(event: unknown) { events.push(event); },
+    };
+    const manager = new SessionManager(engine as any);
+    const sessionEvents: Array<{ type: string; session: { state: string }; sessions: unknown[] }> = [];
+    manager.onEvent(event => sessionEvents.push(event));
+    const mockSocketAdapter: SessionAdapterFactory = {
+      kind: 'socket',
+      async spawn(options) {
+        connect = (options as { onConnect?: () => void }).onConnect;
+        return {
+          pid: undefined,
+          capabilities: {
+            has_stdin: true,
+            has_stdout: true,
+            supports_resize: false,
+            supports_signals: false,
+            tty_quality: 'dumb',
+          },
+          write() {},
+          close() {},
+          onData() {},
+          onExit() {},
+        };
+      },
+    };
+
+    manager.registerAdapter(mockSocketAdapter);
+
+    const result = await manager.create({
+      kind: 'socket',
+      title: 'reverse shell',
+      mode: 'listen',
+      port: 4444,
+      target_node: 'host-1',
+      principal_node: 'user-1',
+      credential_node: 'cred-1',
+      action_id: 'act-1',
+      frontier_item_id: 'frontier-1',
+      initial_wait_ms: 0,
+    });
+
+    expect(manager.getSession(result.metadata.id)?.state).toBe('pending');
+    connect?.();
+
+    expect(manager.getSession(result.metadata.id)?.state).toBe('connected');
+    expect(ingestCalls).toEqual([
+      expect.objectContaining({
+        success: true,
+        confirmed: true,
+        target_node: 'host-1',
+        principal_node: 'user-1',
+        credential_node: 'cred-1',
+        action_id: 'act-1',
+        frontier_item_id: 'frontier-1',
+        session_id: result.metadata.id,
+      }),
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: 'session_connected' }),
+    ]));
+    expect(sessionEvents.map(event => `${event.type}:${event.session.state}`)).toEqual([
+      'session_created:pending',
+      'session_updated:connected',
+    ]);
+    expect(sessionEvents[1].sessions).toHaveLength(1);
+
+    await manager.shutdown();
+  });
+
   it('dumb session rejects resize gracefully', async () => {
     const manager = new SessionManager(null);
 

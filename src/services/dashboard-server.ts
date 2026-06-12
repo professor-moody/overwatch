@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import type { GraphEngine } from './graph-engine.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
-import type { SessionManager } from './session-manager.js';
+import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign } from '../types.js';
@@ -85,7 +85,7 @@ interface CachedStaticAsset {
 }
 
 export interface DashboardEvent {
-  type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved';
+  type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update';
   timestamp: string;
   data: any;
 }
@@ -232,6 +232,14 @@ export class DashboardServer {
         type: eventType,
         timestamp: new Date().toISOString(),
         data,
+      });
+    });
+
+    this.sessionManager?.onEvent((event: SessionEvent) => {
+      this.broadcast({
+        type: 'session_update',
+        timestamp: new Date().toISOString(),
+        data: event,
       });
     });
   }

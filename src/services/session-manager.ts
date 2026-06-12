@@ -139,6 +139,16 @@ export interface SessionAdapterFactory {
   spawn(options: Record<string, unknown>): Promise<AdapterHandle>;
 }
 
+export type SessionEventType = 'session_created' | 'session_updated' | 'session_closed';
+
+export interface SessionEvent {
+  type: SessionEventType;
+  session: SessionMetadata;
+  sessions: SessionMetadata[];
+}
+
+export type SessionEventCallback = (event: SessionEvent) => void;
+
 // ============================================================
 // SessionManager
 // ============================================================
@@ -181,6 +191,7 @@ export class SessionManager {
   private adapters: Map<SessionKind, SessionAdapterFactory> = new Map();
   private engine: GraphEngine | null;
   private idleTimeoutMs: number;
+  private eventListeners: Set<SessionEventCallback> = new Set();
 
   constructor(engine: GraphEngine | null = null, idleTimeoutMs?: number) {
     this.engine = engine;
@@ -189,6 +200,11 @@ export class SessionManager {
 
   registerAdapter(adapter: SessionAdapterFactory): void {
     this.adapters.set(adapter.kind, adapter);
+  }
+
+  onEvent(callback: SessionEventCallback): () => void {
+    this.eventListeners.add(callback);
+    return () => this.eventListeners.delete(callback);
   }
 
   async create(options: SessionCreateOptions): Promise<{ metadata: SessionMetadata; initial: SessionReadResult }> {
@@ -278,6 +294,7 @@ export class SessionManager {
           this.logSessionEvent(id, 'session_closed',
             `Session "${session.metadata.title}" exited (code=${info.exitCode}, signal=${info.signal})`);
           this.notifySessionClosed(session);
+          this.emitSessionEvent('session_closed', session);
         }
         this.pruneClosedSessions();
       });
@@ -289,6 +306,7 @@ export class SessionManager {
 
       this.logSessionEvent(id, 'session_opened',
         `Session "${options.title}" opened (${options.kind}, ${transport})`);
+      this.emitSessionEvent('session_created', session);
 
       // Wait briefly for initial output (e.g. shell prompt, SSH banner)
       const waitMs = options.initial_wait_ms !== undefined ? options.initial_wait_ms : 2000;
@@ -355,6 +373,7 @@ export class SessionManager {
           this.logSessionEvent(id, 'session_access_unconfirmed',
             `SSH session "${options.title}" reached ${authPrompt} — auth not complete`);
         }
+        this.emitSessionEvent('session_updated', session);
       }
 
       const initial = session.buffer.tail(4096);
@@ -607,6 +626,7 @@ export class SessionManager {
     if (updates.claimed_by !== undefined) session.metadata.claimed_by = updates.claimed_by;
     if (updates.notes !== undefined) session.metadata.notes = updates.notes;
     session.metadata.last_activity_at = new Date().toISOString();
+    this.emitSessionEvent('session_updated', session);
 
     return { ...session.metadata };
   }
@@ -637,6 +657,7 @@ export class SessionManager {
     this.logSessionEvent(sessionId, 'session_closed',
       `Session "${session.metadata.title}" closed by operator`);
     this.notifySessionClosed(session);
+    this.emitSessionEvent('session_closed', session);
     this.pruneClosedSessions();
 
     return { metadata: { ...session.metadata }, final };
@@ -685,6 +706,7 @@ export class SessionManager {
           this.logSessionEvent(id, 'session_closed',
             `Session "${title}" auto-closed after idle timeout (${Math.round(this.idleTimeoutMs / 60000)}min)`);
           this.notifySessionClosed(session);
+          this.emitSessionEvent('session_closed', session);
           reaped.push(id);
         } catch { /* best-effort */ }
       }
@@ -737,6 +759,37 @@ export class SessionManager {
       session.metadata.last_activity_at = new Date().toISOString();
       this.logSessionEvent(sessionId, 'session_connected',
         `Session "${session.metadata.title}" transport connected`);
+      if (this.engine && session.metadata.kind === 'socket' && session.metadata.target_node) {
+        try {
+          this.engine.ingestSessionResult({
+            success: true,
+            confirmed: true,
+            target_node: session.metadata.target_node,
+            principal_node: session.metadata.principal_node,
+            credential_node: session.metadata.credential_node,
+            session_id: sessionId,
+            agent_id: session.metadata.agent_id,
+            action_id: session.metadata.action_id,
+            frontier_item_id: session.metadata.frontier_item_id,
+          });
+        } catch (err) {
+          this.logSessionEvent(sessionId, 'session_error',
+            `Session "${session.metadata.title}" connected but graph access ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (session.handle) this.emitSessionEvent('session_updated', session);
+    }
+  }
+
+  private emitSessionEvent(type: SessionEventType, session: Session): void {
+    if (this.eventListeners.size === 0) return;
+    const event: SessionEvent = {
+      type,
+      session: { ...session.metadata },
+      sessions: Array.from(this.sessions.values()).map(candidate => ({ ...candidate.metadata })),
+    };
+    for (const listener of this.eventListeners) {
+      try { listener(event); } catch { /* isolate listener failures */ }
     }
   }
 

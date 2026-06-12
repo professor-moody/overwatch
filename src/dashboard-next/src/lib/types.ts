@@ -391,6 +391,7 @@ export type WsMessageType =
   | 'graph_update'
   | 'agent_update'
   | 'objective_update'
+  | 'session_update'
   | 'action_pending'
   | 'action_resolved'
   | 'campaign_update'

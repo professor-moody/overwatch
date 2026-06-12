@@ -22,6 +22,7 @@ import {
   searchSessionBuffer,
   searchSession,
   sessionCopyFields,
+  sessionSupportsResize,
   sessionTitle,
   sortSessionsForWorkspace,
   type SessionGroup,
@@ -117,6 +118,8 @@ export function SessionsPanel() {
       return;
     }
 
+    const session = useEngagementStore.getState().sessions.find(s => s.id === sessionId);
+    const canResize = sessionSupportsResize(session);
     const { Terminal } = await import('@xterm/xterm');
     await import('@xterm/xterm/css/xterm.css');
     const { FitAddon } = await import('@xterm/addon-fit');
@@ -201,7 +204,7 @@ export function SessionsPanel() {
     });
 
     term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (canResize && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }));
       }
     });

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useEngagementStore } from '../stores/engagement-store';
 import { useToastStore } from '../stores/toast-store';
-import type { WsMessage, FullStateData, GraphUpdateData } from '../lib/types';
+import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo } from '../lib/types';
 import * as api from '../lib/api';
 
 interface WsContextValue {
@@ -109,6 +109,25 @@ export function WsProvider({ children }: { children: ReactNode }) {
             linkPanel: 'actions',
           });
           break;
+        case 'session_update': {
+          const data = msg.data as { type?: string; session?: SessionInfo; sessions?: SessionInfo[] };
+          const prev = data.session ? s.sessions.find(session => session.id === data.session?.id) : undefined;
+          if (Array.isArray(data.sessions)) {
+            s.setSessions(data.sessions);
+          } else if (data.session) {
+            s.setSessions([...s.sessions.filter(session => session.id !== data.session!.id), data.session]);
+          }
+          if (prev?.state === 'pending' && data.session?.state === 'connected') {
+            toast({
+              type: 'success',
+              title: 'Session connected',
+              message: data.session.title || data.session.id.slice(0, 8),
+              linkPanel: 'sessions',
+              linkItem: data.session.id,
+            });
+          }
+          break;
+        }
         default:
           // agent_update, campaign_update, objective_update
           // These are embedded in graph_update state, but handle standalone if needed

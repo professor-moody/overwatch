@@ -11,6 +11,7 @@ import {
   searchSession,
   searchSessionBuffer,
   sessionCopyFields,
+  sessionSupportsResize,
   sortSessionsForWorkspace,
 } from '../session-workspace';
 import type { ActivityEntry, FrontierItem, PendingAction, SessionInfo } from '../types';
@@ -93,6 +94,12 @@ describe('session workspace helpers', () => {
     expect(addAttachedSession(['a'], 'a')).toEqual(['a']);
     expect(addAttachedSession(['a'], 'b')).toEqual(['a', 'b']);
     expect(removeAttachedSession(['a', 'b'], 'a')).toEqual(['b']);
+  });
+
+  it('only treats sessions with explicit resize support as terminal-resizable', () => {
+    expect(sessionSupportsResize(session({ capabilities: { supports_resize: true } }))).toBe(true);
+    expect(sessionSupportsResize(session({ kind: 'socket', capabilities: { supports_resize: false, tty_quality: 'dumb' } }))).toBe(false);
+    expect(sessionSupportsResize(session({ capabilities: undefined }))).toBe(false);
   });
 
   it('extracts related actions, frontier items, activity, and copy fields', () => {
