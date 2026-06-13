@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useEngagementStore } from '../stores/engagement-store';
 import { useToastStore } from '../stores/toast-store';
-import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo } from '../lib/types';
+import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo, AgentConsoleEvent } from '../lib/types';
 import * as api from '../lib/api';
 
 interface WsContextValue {
@@ -126,6 +126,11 @@ export function WsProvider({ children }: { children: ReactNode }) {
               linkItem: data.session.id,
             });
           }
+          break;
+        }
+        case 'agent_console_update': {
+          const data = msg.data as { events?: AgentConsoleEvent[] };
+          window.dispatchEvent(new CustomEvent('overwatch-agent-console-update', { detail: data }));
           break;
         }
         default:

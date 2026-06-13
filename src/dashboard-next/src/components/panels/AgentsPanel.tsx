@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
-import type { AgentInfo, Campaign, ActivityEntry } from '../../lib/types';
+import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, StatusPill } from '../shared/primitives';
 
@@ -18,6 +18,18 @@ const STATUS_ORDER: Record<string, number> = {
   running: 0, pending: 1, failed: 2, interrupted: 3, completed: 4,
 };
 
+type ConsoleFilter = 'all' | AgentConsoleKind | 'errors';
+
+const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'thought', label: 'Thoughts' },
+  { value: 'action', label: 'Actions' },
+  { value: 'finding', label: 'Findings' },
+  { value: 'approval', label: 'Approvals' },
+  { value: 'session', label: 'Sessions' },
+  { value: 'errors', label: 'Errors' },
+];
+
 function sortAgents(list: AgentInfo[]): AgentInfo[] {
   return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5));
 }
@@ -31,7 +43,7 @@ export function AgentsPanel() {
   const [detailContext, setDetailContext] = useState<{ subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } } | null>(null);
   const [showDispatch, setShowDispatch] = useState(false);
   const [showBulkDispatch, setShowBulkDispatch] = useState(false);
-  const { navigateToGraph, navigateToCampaign } = useNavigation();
+  const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
   const setStoreAgents = useEngagementStore((s) => s.setAgents);
 
   const refreshAgents = useCallback(async () => {
@@ -252,6 +264,7 @@ export function AgentsPanel() {
           onCancel={() => { cancelAgent(detailAgent.id); setDetailAgent(null); }}
           onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
           onNavigateCampaign={(cid) => navigateToCampaign(cid)}
+          onNavigatePanel={navigateToPanel}
         />
       )}
 
@@ -364,6 +377,7 @@ function AgentDetailDrawer({
   onCancel,
   onNavigateGraph,
   onNavigateCampaign,
+  onNavigatePanel,
 }: {
   agent: AgentInfo;
   context: { subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } } | null;
@@ -371,6 +385,7 @@ function AgentDetailDrawer({
   onCancel: () => void;
   onNavigateGraph: (nodeId: string) => void;
   onNavigateCampaign?: (campaignId: string) => void;
+  onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
   const cancellable = agent.status === 'running' || agent.status === 'pending';
   const elapsed = agent.elapsed_ms
@@ -381,13 +396,47 @@ function AgentDetailDrawer({
 
   const subgraphNodes = context?.subgraph?.nodes || [];
 
-  // Fetch task history
-  const [history, setHistory] = useState<ActivityEntry[]>([]);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [consoleEvents, setConsoleEvents] = useState<AgentConsoleEvent[]>([]);
+  const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>('all');
+  const [consolePaused, setConsolePaused] = useState(false);
+  const consoleEndRef = useRef<HTMLDivElement | null>(null);
+
+  const loadConsole = useCallback(async () => {
+    try {
+      const data = await api.getAgentConsole(agent.id, { limit: 80 });
+      setConsoleEvents(data.events || []);
+    } catch {
+      setConsoleEvents([]);
+    }
+  }, [agent.id]);
+
+  useEffect(() => { loadConsole(); }, [loadConsole]);
 
   useEffect(() => {
-    api.getAgentHistory(agent.id).then(d => setHistory(d.entries || [])).catch(() => {});
-  }, [agent.id]);
+    const handleUpdate = (event: Event) => {
+      if (consolePaused) return;
+      const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
+      const incoming = (detail?.events || []).filter(item =>
+        item.agent_id === agent.id || item.agent_id === agent.agent_id,
+      );
+      if (incoming.length === 0) return;
+      setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
+    };
+    window.addEventListener('overwatch-agent-console-update', handleUpdate);
+    return () => window.removeEventListener('overwatch-agent-console-update', handleUpdate);
+  }, [agent.id, agent.agent_id, consolePaused]);
+
+  useEffect(() => {
+    if (!consolePaused) consoleEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [consoleEvents, consolePaused]);
+
+  const visibleConsoleEvents = useMemo(() => {
+    return consoleEvents.filter(event => {
+      if (consoleFilter === 'all') return true;
+      if (consoleFilter === 'errors') return event.severity === 'error' || event.severity === 'warning';
+      return event.kind === consoleFilter;
+    });
+  }, [consoleEvents, consoleFilter]);
 
   return (
     <>
@@ -458,38 +507,168 @@ function AgentDetailDrawer({
             </div>
           )}
 
-          {/* Task History */}
-          {history.length > 0 && (
-            <div>
-              <button
-                onClick={() => setHistoryExpanded(!historyExpanded)}
-                className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1 hover:text-foreground"
-              >
-                <span>{historyExpanded ? '▾' : '▸'}</span>
-                Task History ({history.length})
-              </button>
-              {historyExpanded && (
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {history.map((e, i) => (
-                    <div key={e.id || i} className="flex items-start gap-2 text-[10px]">
-                      <span className="text-muted-foreground font-mono flex-shrink-0 w-12">{formatTimestamp(e.timestamp)}</span>
-                      <span className={cn(
-                        'flex-shrink-0 w-1.5 h-1.5 rounded-full mt-1',
-                        e.event_type?.includes('completed') ? 'bg-success' :
-                        e.event_type?.includes('failed') ? 'bg-destructive' :
-                        e.event_type?.includes('started') ? 'bg-accent' : 'bg-muted',
-                      )} />
-                      <span className="text-muted-foreground">{e.description}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Live Agent Console ({visibleConsoleEvents.length}/{consoleEvents.length})
+              </div>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => {
+                    const nextPaused = !consolePaused;
+                    setConsolePaused(nextPaused);
+                    if (!nextPaused) void loadConsole();
+                  }}
+                  className={cn(
+                    'rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-hover',
+                    consolePaused ? 'text-warning bg-warning/10' : 'text-muted-foreground',
+                  )}
+                >
+                  {consolePaused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={loadConsole}
+                  className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-hover"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
-          )}
+            <div className="mb-2 flex flex-wrap gap-1">
+              {CONSOLE_FILTERS.map(filter => (
+                <button
+                  key={filter.value}
+                  onClick={() => setConsoleFilter(filter.value)}
+                  className={cn(
+                    'rounded px-1.5 py-0.5 text-[10px] transition-colors',
+                    consoleFilter === filter.value
+                      ? 'bg-accent text-accent-foreground'
+                      : 'bg-elevated text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            {visibleConsoleEvents.length === 0 ? (
+              <div className="rounded border border-border bg-background/40 px-3 py-4 text-center text-xs text-muted-foreground">
+                No agent console events yet.
+              </div>
+            ) : (
+              <div className="max-h-72 space-y-1 overflow-y-auto rounded border border-border bg-background/30 p-1.5">
+                {visibleConsoleEvents.map(event => (
+                  <AgentConsoleRow
+                    key={event.id}
+                    event={event}
+                    onNavigateGraph={onNavigateGraph}
+                    onNavigatePanel={onNavigatePanel}
+                  />
+                ))}
+                <div ref={consoleEndRef} />
+              </div>
+            )}
+          </div>
         </div>
       </InspectorDrawer>
     </>
   );
+}
+
+function mergeConsoleEvents(current: AgentConsoleEvent[], incoming: AgentConsoleEvent[]): AgentConsoleEvent[] {
+  const byId = new Map(current.map(event => [event.id, event]));
+  for (const event of incoming) byId.set(event.id, event);
+  return [...byId.values()]
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-120);
+}
+
+function AgentConsoleRow({
+  event,
+  onNavigateGraph,
+  onNavigatePanel,
+}: {
+  event: AgentConsoleEvent;
+  onNavigateGraph: (nodeId: string) => void;
+  onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
+}) {
+  const [rawOpen, setRawOpen] = useState(false);
+  const links = event.links;
+
+  return (
+    <div className={cn('rounded border bg-surface p-2 text-xs', consoleBorderClass(event.severity))}>
+      <div className="flex items-start gap-2">
+        <span className="w-12 flex-shrink-0 font-mono text-[10px] text-muted-foreground">{formatTimestamp(event.timestamp)}</span>
+        <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full', consoleDotClass(event.severity))} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-medium text-foreground">{event.title}</span>
+            <span className="rounded bg-elevated px-1 py-0.5 text-[10px] text-muted-foreground">{event.kind}</span>
+            {event.status && <span className="rounded bg-background px-1 py-0.5 text-[10px] text-muted-foreground">{event.status}</span>}
+          </div>
+          <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">{event.summary}</div>
+          {links && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {links.action_id && <ConsoleLinkButton label={`action ${shortId(links.action_id)}`} onClick={() => onNavigatePanel('actions')} />}
+              {links.frontier_item_id && <ConsoleLinkButton label={`frontier ${shortId(links.frontier_item_id)}`} onClick={() => onNavigatePanel('frontier')} />}
+              {links.evidence_id && <ConsoleLinkButton label={`evidence ${shortId(links.evidence_id)}`} onClick={() => onNavigatePanel('evidence')} />}
+              {links.session_id && <ConsoleLinkButton label={`session ${shortId(links.session_id)}`} onClick={() => onNavigatePanel('sessions', links.session_id)} />}
+              {(links.finding_ids || []).slice(0, 2).map(findingId => (
+                <ConsoleLinkButton key={findingId} label={`finding ${shortId(findingId)}`} onClick={() => onNavigatePanel('findings', findingId)} />
+              ))}
+              {(links.node_ids || []).slice(0, 3).map(nodeId => (
+                <ConsoleLinkButton key={nodeId} label={nodeId} onClick={() => onNavigateGraph(nodeId)} />
+              ))}
+            </div>
+          )}
+          {event.raw && (
+            <div className="mt-1.5">
+              <button
+                onClick={() => setRawOpen(value => !value)}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                {rawOpen ? 'Hide raw details' : 'Raw details'}
+              </button>
+              {rawOpen && (
+                <pre className="mt-1 max-h-36 overflow-auto rounded bg-background p-2 text-[10px] text-muted-foreground">
+                  {JSON.stringify(event.raw, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConsoleLinkButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="max-w-full truncate rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:bg-accent/20"
+      title={label}
+    >
+      {label}
+    </button>
+  );
+}
+
+function consoleBorderClass(severity: AgentConsoleEvent['severity']): string {
+  if (severity === 'error') return 'border-destructive/40';
+  if (severity === 'warning') return 'border-warning/40';
+  if (severity === 'success') return 'border-success/30';
+  return 'border-border';
+}
+
+function consoleDotClass(severity: AgentConsoleEvent['severity']): string {
+  if (severity === 'error') return 'bg-destructive';
+  if (severity === 'warning') return 'bg-warning';
+  if (severity === 'success') return 'bg-success';
+  return 'bg-accent';
+}
+
+function shortId(value: string): string {
+  return value.length > 10 ? value.slice(0, 10) : value;
 }
 
 function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

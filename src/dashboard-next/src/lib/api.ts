@@ -8,6 +8,7 @@ import type {
   SessionInfo,
   SessionBufferResponse,
   AgentInfo,
+  AgentConsoleEvent,
   Campaign,
   PendingAction,
   HealthStatus,
@@ -325,6 +326,17 @@ export async function getOpsecBudget(): Promise<OpsecBudget> {
 
 export async function getAgentHistory(taskId: string): Promise<{ entries: ActivityEntry[]; total: number }> {
   return fetchJson(`/api/agents/${taskId}/history`);
+}
+
+export async function getAgentConsole(taskId: string, params?: {
+  limit?: number;
+  after?: string;
+}): Promise<{ events: AgentConsoleEvent[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.after) qs.set('after', params.after);
+  const q = qs.toString();
+  return fetchJson(`/api/agents/${taskId}/console${q ? `?${q}` : ''}`);
 }
 
 // --- Health ---

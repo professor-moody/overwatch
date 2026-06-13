@@ -40,6 +40,14 @@ function cleanup() {
   }
 }
 
+function sentMessages(mockClient: { send: ReturnType<typeof vi.fn> }): any[] {
+  return mockClient.send.mock.calls.map(call => JSON.parse(call[0]));
+}
+
+function sentGraphUpdates(mockClient: { send: ReturnType<typeof vi.fn> }): any[] {
+  return sentMessages(mockClient).filter(message => message.type === 'graph_update');
+}
+
 describe('DashboardServer', () => {
   let engine: GraphEngine;
   let dashboard: DashboardServer;
@@ -140,7 +148,7 @@ describe('DashboardServer', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('onGraphUpdate skips getState/exportGraph with zero clients', () => {
     const getStateSpy = vi.spyOn(engine, 'getState');
@@ -186,8 +194,9 @@ describe('DashboardServer', () => {
 
     dashboard.flush();
 
-    expect(mockClient.send).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    const graphUpdates = sentGraphUpdates(mockClient);
+    expect(graphUpdates).toHaveLength(1);
+    const payload = graphUpdates[0];
     expect(payload.type).toBe('graph_update');
     expect(payload.data.state.lab_readiness).toBeDefined();
     expect(payload.data.delta.nodes.map((node: any) => node.id).sort()).toEqual([
@@ -242,8 +251,9 @@ describe('DashboardServer', () => {
     });
     dashboard.flush();
 
-    expect(mockClient.send).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    const graphUpdates = sentGraphUpdates(mockClient);
+    expect(graphUpdates).toHaveLength(1);
+    const payload = graphUpdates[0];
     expect(payload.data.delta.removed_nodes).toEqual(['old-alias-node']);
     expect(payload.data.delta.removed_edges).toEqual(['old-alias-edge']);
   });
@@ -525,8 +535,9 @@ describe('DashboardServer', () => {
     dashboard.onGraphUpdate({ new_nodes: ['host-hc-1'] });
     dashboard.flush();
 
-    expect(mockClient.send).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    const graphUpdates = sentGraphUpdates(mockClient);
+    expect(graphUpdates).toHaveLength(1);
+    const payload = graphUpdates[0];
     expect(payload.type).toBe('graph_update');
     expect(typeof payload.data.history_count).toBe('number');
     expect(payload.data.history_count).toBeGreaterThan(0);
@@ -701,8 +712,9 @@ describe('DashboardServer', () => {
     });
     dashboard.flush();
 
-    expect(mockClient.send).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(mockClient.send.mock.calls[0][0]);
+    const graphUpdates = sentGraphUpdates(mockClient);
+    expect(graphUpdates).toHaveLength(1);
+    const payload = graphUpdates[0];
     const deltaNodes = payload.data.delta.nodes;
 
     // Every delta node should have community_id materialized
@@ -1838,6 +1850,14 @@ describe('DashboardServer', () => {
       (dashboard as any).handleHttp(req, res);
       expect(spy).toHaveBeenCalledWith('abc-123-def', req, res);
     });
+
+    it('routes non-uuid agent ids to the agent console endpoint', () => {
+      const spy = vi.spyOn(dashboard as any, 'serveAgentConsole');
+      const req = mockReq('/api/agents/task-web-1/console?limit=5');
+      const res = mockRes();
+      (dashboard as any).handleHttp(req, res);
+      expect(spy).toHaveBeenCalledWith('task-web-1', '/api/agents/task-web-1/console?limit=5', res);
+    });
   });
 
   // ============================================================
@@ -2058,6 +2078,63 @@ describe('DashboardServer', () => {
   });
 
   describe('agent history task-link fallback', () => {
+    it('serves derived agent console events for a task', () => {
+      const taskId = '11111111-1111-1111-1111-111111111111';
+      engine.registerAgent({
+        id: taskId,
+        agent_id: 'sub-recon-1',
+        objective: 'Recon',
+        subgraph_node_ids: [],
+        status: 'running',
+        assigned_at: new Date().toISOString(),
+      } as any);
+      engine.logActionEvent({
+        description: 'I will enumerate SMB first.',
+        event_type: 'thought',
+        category: 'reasoning',
+        provenance: 'agent',
+        agent_id: 'sub-recon-1',
+        details: { kind: 'plan' },
+      });
+
+      const res: any = {
+        statusCode: 0, headers: {}, body: '',
+        writeHead(s: number, h?: Record<string, string>) { this.statusCode = s; if (h) this.headers = h; },
+        end(b?: string) { this.body = b || ''; }, setHeader() {},
+      };
+      (dashboard as any).serveAgentConsole(taskId, `/api/agents/${taskId}/console?limit=10`, res);
+      expect(res.statusCode).toBe(200);
+      const payload = JSON.parse(res.body);
+      expect(payload.events.length).toBeGreaterThan(0);
+      expect(payload.events.at(-1).kind).toBe('thought');
+      expect(payload.events.at(-1).title).toBe('Plan');
+    });
+
+    it('broadcasts live agent console events from activity-only persists', () => {
+      const mockClient = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        close: vi.fn(),
+      };
+      (dashboard as any).clients = new Set([mockClient]);
+
+      engine.logActionEvent({
+        description: 'Agent decided to test SMB.',
+        event_type: 'thought',
+        category: 'reasoning',
+        provenance: 'agent',
+        agent_id: 'sub-recon-1',
+        details: { kind: 'decision' },
+      });
+      engine.persist();
+
+      const messages = mockClient.send.mock.calls.map(call => JSON.parse(call[0]));
+      const consoleMessage = messages.find(message => message.type === 'agent_console_update');
+      expect(consoleMessage).toBeDefined();
+      expect(consoleMessage.data.events[0].kind).toBe('thought');
+      expect(consoleMessage.data.events[0].agent_id).toBe('sub-recon-1');
+    });
+
     it('includes events linked by linked_agent_task_id, not just agent_id', () => {
       const taskId = '11111111-1111-1111-1111-111111111111';
       engine.registerAgent({

@@ -28,6 +28,7 @@ import { ScriptedAgentRunner } from './scripted-agent-runner.js';
 import type { PendingAction } from './pending-action-queue.js';
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
+import { activityToAgentConsoleEvent, buildAgentConsoleEvents, type AgentConsoleEvent } from './agent-console.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -85,7 +86,7 @@ interface CachedStaticAsset {
 }
 
 export interface DashboardEvent {
-  type: 'graph_update' | 'agent_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update';
+  type: 'graph_update' | 'agent_update' | 'agent_console_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update';
   timestamp: string;
   data: any;
 }
@@ -108,6 +109,7 @@ export class DashboardServer {
   private port: number;
   private clients: Set<WebSocket> = new Set();
   private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
+  private agentConsoleCursor = 0;
   private _running: boolean = false;
   private accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -158,6 +160,7 @@ export class DashboardServer {
 
     // Wire engine updates to WS push without requiring external wiring in app.ts.
     engine.onUpdate(detail => this.onGraphUpdate(detail));
+    this.agentConsoleCursor = engine.getFullHistory().length;
 
     this.scriptedRunner = new ScriptedAgentRunner(engine);
 
@@ -310,14 +313,38 @@ export class DashboardServer {
 
   // Called by GraphEngine after persist()
   onGraphUpdate(detail: GraphUpdateDetail): void {
+    const consoleEvents = this.collectNewAgentConsoleEvents();
+
     // Short-circuit: skip expensive work when nobody is listening
     if (this.clients.size === 0) return;
+
+    if (consoleEvents.length > 0) {
+      this.broadcast({
+        type: 'agent_console_update',
+        timestamp: new Date().toISOString(),
+        data: { events: consoleEvents },
+      });
+    }
 
     this.accumulator.push(detail);
 
     // Reset debounce timer
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => this.flushPendingUpdate(), DashboardServer.DEBOUNCE_MS);
+  }
+
+  private collectNewAgentConsoleEvents(): AgentConsoleEvent[] {
+    const history = this.engine.getFullHistory();
+    if (this.agentConsoleCursor > history.length) {
+      this.agentConsoleCursor = history.length;
+      return [];
+    }
+    const entries = history.slice(this.agentConsoleCursor);
+    this.agentConsoleCursor = history.length;
+    if (entries.length === 0) return [];
+    return entries
+      .map(entry => activityToAgentConsoleEvent(entry))
+      .filter((event): event is AgentConsoleEvent => event !== null);
   }
 
   /** Immediately flush any pending debounced update. Useful for testing. */
@@ -662,9 +689,10 @@ export class DashboardServer {
       this.streamBundle(req, res);
     } else {
       // Parameterized routes
-      const agentCtxMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/context$/);
-      const agentHistoryMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/history$/);
-      const agentCancelMatch = pathname.match(/^\/api\/agents\/([a-f0-9-]+)\/cancel$/);
+      const agentCtxMatch = pathname.match(/^\/api\/agents\/([^/]+)\/context$/);
+      const agentHistoryMatch = pathname.match(/^\/api\/agents\/([^/]+)\/history$/);
+      const agentConsoleMatch = pathname.match(/^\/api\/agents\/([^/]+)\/console$/);
+      const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
@@ -684,11 +712,13 @@ export class DashboardServer {
       const reportDetailMatch = pathname.match(/^\/api\/reports\/([a-f0-9-]+)$/);
 
       if (agentCtxMatch) {
-        this.serveAgentContext(agentCtxMatch[1], res);
+        this.serveAgentContext(decodeURIComponent(agentCtxMatch[1]), res);
       } else if (agentHistoryMatch) {
-        this.serveAgentHistory(agentHistoryMatch[1], res);
+        this.serveAgentHistory(decodeURIComponent(agentHistoryMatch[1]), res);
+      } else if (agentConsoleMatch) {
+        this.serveAgentConsole(decodeURIComponent(agentConsoleMatch[1]), url, res);
       } else if (agentCancelMatch && method === 'POST') {
-        this.handleAgentCancel(agentCancelMatch[1], req, res);
+        this.handleAgentCancel(decodeURIComponent(agentCancelMatch[1]), req, res);
       } else if (objectiveMatch && method === 'PATCH') {
         this.handleUpdateObjective(objectiveMatch[1], req, res);
       } else if (objectiveMatch && method === 'DELETE') {
@@ -1551,6 +1581,26 @@ export class DashboardServer {
     );
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ entries, total: entries.length }));
+  }
+
+  private serveAgentConsole(taskId: string, url: string, res: ServerResponse): void {
+    const task = this.engine.getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
+
+    const params = new URL(url, 'http://localhost').searchParams;
+    const rawLimit = params.get('limit') || undefined;
+    const limit = rawLimit ? parseInt(rawLimit, 10) : 80;
+    const after = params.get('after') || undefined;
+    const events = buildAgentConsoleEvents(this.engine.getFullHistory(), task, {
+      limit: Number.isFinite(limit) && limit > 0 ? limit : 80,
+      after,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ events, total: events.length }));
   }
 
   private serveOpsecBudget(res: ServerResponse): void {

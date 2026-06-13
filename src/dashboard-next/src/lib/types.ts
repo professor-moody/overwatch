@@ -105,6 +105,39 @@ export interface AgentInfo {
   frontier_item_id?: string;
 }
 
+export type AgentConsoleKind =
+  | 'thought'
+  | 'action'
+  | 'approval'
+  | 'finding'
+  | 'session'
+  | 'transcript'
+  | 'system';
+
+export type AgentConsoleSeverity = 'info' | 'success' | 'warning' | 'error';
+
+export interface AgentConsoleLinks {
+  action_id?: string;
+  frontier_item_id?: string;
+  evidence_id?: string;
+  session_id?: string;
+  finding_ids?: string[];
+  node_ids?: string[];
+}
+
+export interface AgentConsoleEvent {
+  id: string;
+  timestamp: string;
+  agent_id: string;
+  kind: AgentConsoleKind;
+  severity: AgentConsoleSeverity;
+  title: string;
+  summary: string;
+  status?: string;
+  links?: AgentConsoleLinks;
+  raw?: Record<string, unknown>;
+}
+
 // --- Campaigns ---
 
 export interface Campaign {
@@ -396,6 +429,7 @@ export type WsMessageType =
   | 'full_state'
   | 'graph_update'
   | 'agent_update'
+  | 'agent_console_update'
   | 'objective_update'
   | 'session_update'
   | 'action_pending'
