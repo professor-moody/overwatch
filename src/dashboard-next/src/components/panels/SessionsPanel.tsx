@@ -22,6 +22,7 @@ import {
   searchSessionBuffer,
   searchSession,
   sessionCopyFields,
+  sessionOperationalLabel,
   sessionSupportsResize,
   sessionTitle,
   sortSessionsForWorkspace,
@@ -437,8 +438,9 @@ export function SessionsPanel() {
                 <div className="space-y-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <StatusPill className={stateClass(selectedSession.state)}>{selectedSession.state}</StatusPill>
+                      <StatusPill className={stateClass(selectedSession.state)}>{sessionOperationalLabel(selectedSession)}</StatusPill>
                       {selectedSession.auth_status && <StatusPill className="bg-elevated text-muted-foreground">{selectedSession.auth_status}</StatusPill>}
+                      {selectedSession.accept_mode && <StatusPill className="bg-elevated text-muted-foreground">{selectedSession.accept_mode}</StatusPill>}
                       <span className="text-xs text-muted-foreground">{selectedSession.kind}{selectedSession.transport ? ` · ${selectedSession.transport}` : ''}</span>
                     </div>
                     {editing ? (
@@ -485,7 +487,24 @@ export function SessionsPanel() {
                   <DetailFact label="Owner" value={selectedSession.claimed_by || selectedSession.owner || selectedSession.agent_id || 'dashboard'} mono />
                   <DetailFact label="Validation" value={selectedSession.default_validation?.technique || 'per-command'} mono />
                   <DetailFact label="Last Activity" value={selectedSession.last_activity_at ? formatRelativeTime(selectedSession.last_activity_at) : '—'} />
+                  {selectedSession.bind_host && <DetailFact label="Bind" value={`${selectedSession.bind_host}${selectedSession.port ? `:${selectedSession.port}` : ''}`} mono />}
+                  {selectedSession.advertise_host && <DetailFact label="Callback" value={`${selectedSession.advertise_host}${selectedSession.port ? `:${selectedSession.port}` : ''}`} mono />}
                 </div>
+
+                {(selectedSession.reachability_warnings?.length || selectedSession.capabilities?.tty_quality === 'dumb') && (
+                  <div className="mt-3 space-y-1">
+                    {selectedSession.reachability_warnings?.map(warning => (
+                      <div key={warning} className="rounded border border-warning/20 bg-warning/10 px-2 py-1 text-[11px] text-warning">
+                        {warning}
+                      </div>
+                    ))}
+                    {selectedSession.capabilities?.tty_quality === 'dumb' && (
+                      <div className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                        Raw socket: resize and signals are unavailable. Upgrade the shell for a full TTY when practical.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {selectedNodeIds.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
@@ -664,8 +683,13 @@ function SessionRow({
             {attached && <StatusPill className="bg-accent/10 text-accent">attached</StatusPill>}
           </div>
           <div className="text-[10px] text-muted-foreground truncate">
-            {session.kind}{session.transport ? ` · ${session.transport}` : ''}{session.host ? ` · ${session.host}` : ''}
+            {sessionOperationalLabel(session)}{session.transport ? ` · ${session.transport}` : ''}{session.bind_host ? ` · ${session.bind_host}${session.port ? `:${session.port}` : ''}` : session.host ? ` · ${session.host}` : ''}
           </div>
+          {session.advertise_host && (
+            <div className="text-[10px] text-muted-foreground truncate">
+              callback {session.advertise_host}{session.port ? `:${session.port}` : ''}
+            </div>
+          )}
           <div className="mt-1 flex gap-1 flex-wrap">
             {session.target_node && <span className="text-[10px] font-mono text-accent truncate max-w-32">{session.target_node}</span>}
             {(session.claimed_by || session.agent_id) && <span className="text-[10px] text-muted-foreground truncate max-w-32">{session.claimed_by || session.agent_id}</span>}

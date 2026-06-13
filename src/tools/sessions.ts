@@ -69,6 +69,8 @@ The session is claimed by the opening agent — other agents can read but not wr
         kind: z.enum(['ssh', 'local_pty', 'socket']).describe('Session transport type'),
         title: z.string().describe('Human-readable session label'),
         host: z.string().optional().describe('Target host (required for ssh and socket connect mode)'),
+        bind_host: z.string().optional().describe('Socket listen bind address. Alias for host in listen mode; prefer this for reverse-shell catchers.'),
+        advertise_host: z.string().optional().describe('Callback address the target should use to reach this listener. Display-only metadata for payload construction.'),
         port: z.number().int().optional().describe('Target port (required for socket, optional for ssh)'),
         user: z.string().optional().describe('SSH username'),
         key_path: z.string().optional().describe('Path to SSH private key'),
@@ -77,6 +79,7 @@ The session is claimed by the opening agent — other agents can read but not wr
         shell: z.string().optional().describe('Shell path for local_pty (default: $SHELL or /bin/bash)'),
         cwd: z.string().optional().describe('Working directory for local_pty'),
         mode: z.enum(['connect', 'listen']).optional().describe('Socket mode: connect to target or listen for incoming'),
+        accept_mode: z.enum(['single', 'rearm']).optional().describe('Socket listener accept behavior. reverse_shell_catcher defaults to rearm; generic listeners default to single.'),
         cols: z.number().int().optional().describe('Terminal columns (default: 120)'),
         rows: z.number().int().optional().describe('Terminal rows (default: 30)'),
         agent_id: z.string().optional().describe('Agent that owns this session'),
@@ -104,7 +107,21 @@ The session is claimed by the opening agent — other agents can read but not wr
     },
     withErrorBoundary('open_session', async (params) => {
       const warnings: string[] = [];
-      if (params.host && isRemoteScopedSession(params.kind, params.mode)) {
+      const effectiveMode = params.mode ?? (params.kind === 'socket' ? 'connect' : undefined);
+      const isSocketListener = params.kind === 'socket' && effectiveMode === 'listen';
+      const bindHost = isSocketListener ? (params.bind_host ?? params.host ?? '127.0.0.1') : undefined;
+      const acceptMode = params.accept_mode
+        ?? (isSocketListener && params.mock_service_purpose === 'reverse_shell_catcher' ? 'rearm' : 'single');
+      if (isSocketListener && (bindHost === '127.0.0.1' || bindHost === 'localhost')) {
+        warnings.push(params.advertise_host
+          ? `Listener is bound to ${bindHost}; targets cannot reach ${params.advertise_host} unless a bridge/forwarder is running.`
+          : `Listener is bound to ${bindHost}; pass bind_host/advertise_host or run a bridge if targets must call back from another host.`);
+      }
+      if (isSocketListener && !params.advertise_host && bindHost === '0.0.0.0') {
+        warnings.push('Listener binds all interfaces but no advertise_host was provided; payload callback address is ambiguous.');
+      }
+
+      if (params.host && isRemoteScopedSession(params.kind, effectiveMode)) {
         if (isIPv6(params.host)) {
           return {
             content: [{
@@ -113,7 +130,7 @@ The session is claimed by the opening agent — other agents can read but not wr
                 error: `IPv6 targets are not supported (scope is IPv4-only): "${params.host}"`,
                 host: params.host,
                 kind: params.kind,
-                mode: params.mode ?? 'connect',
+                mode: effectiveMode ?? 'connect',
                 scope_reason: 'ipv6_unsupported',
               }, null, 2),
             }],
@@ -128,7 +145,7 @@ The session is claimed by the opening agent — other agents can read but not wr
                 error: `Refusing to open remote session to out-of-scope host "${params.host}"`,
                 host: params.host,
                 kind: params.kind,
-                mode: params.mode ?? 'connect',
+                mode: effectiveMode ?? 'connect',
                 scope_reason: 'host_out_of_scope',
               }, null, 2),
             }],
@@ -141,7 +158,7 @@ The session is claimed by the opening agent — other agents can read but not wr
       // matches the host they're actually connecting to. Otherwise a
       // successful SSH to host A could be recorded as a HAS_SESSION edge
       // against host B due to an operator/agent metadata bug.
-      if (params.target_node && params.host && isRemoteScopedSession(params.kind, params.mode)) {
+      if (params.target_node && params.host && isRemoteScopedSession(params.kind, effectiveMode)) {
         const node = engine.getNode(params.target_node);
         if (!node) {
           return {
@@ -188,7 +205,7 @@ The session is claimed by the opening agent — other agents can read but not wr
       let defaultValidation: SessionDefaultValidation | undefined = params.default_validation
         ? deriveDefaultTarget(params.host, { ...params.default_validation, agent_id: params.default_validation.agent_id ?? params.agent_id })
         : undefined;
-      if (!defaultValidation && params.host && isRemoteScopedSession(params.kind, params.mode)) {
+      if (!defaultValidation && params.host && isRemoteScopedSession(params.kind, effectiveMode)) {
         defaultValidation = deriveDefaultTarget(params.host, {
           technique: 'session_command',
           target_node: params.target_node,
@@ -232,7 +249,9 @@ The session is claimed by the opening agent — other agents can read but not wr
       const result = await sessionManager.create({
         kind: params.kind,
         title: params.title,
-        host: params.host,
+        host: isSocketListener ? bindHost : params.host,
+        bind_host: bindHost,
+        advertise_host: params.advertise_host,
         user: params.user,
         port: params.port,
         key_path: params.key_path,
@@ -240,7 +259,9 @@ The session is claimed by the opening agent — other agents can read but not wr
         ssh_options: params.ssh_options,
         shell: params.shell,
         cwd: params.cwd,
-        mode: params.mode,
+        mode: effectiveMode,
+        accept_mode: acceptMode,
+        reachability_warnings: warnings.length > 0 ? warnings : undefined,
         cols: params.cols,
         rows: params.rows,
         agent_id: params.agent_id,
@@ -260,13 +281,13 @@ The session is claimed by the opening agent — other agents can read but not wr
       if (
         params.mock_service_purpose
         && params.kind === 'socket'
-        && params.mode === 'listen'
+        && effectiveMode === 'listen'
         && typeof params.port === 'number'
       ) {
         const reg = registerMockServiceCore(engine, {
           purpose: params.mock_service_purpose,
           protocol: params.mock_service_protocol ?? 'tcp',
-          bind_host: params.host ?? '0.0.0.0',
+          bind_host: bindHost ?? '127.0.0.1',
           bind_port: params.port,
           notes: params.mock_service_notes,
           bound_session_id: result.metadata.id,

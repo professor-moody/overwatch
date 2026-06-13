@@ -5,7 +5,9 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import { randomBytes } from 'crypto';
 import { loadTemplate, mergeTemplateWithConfig } from '../config.js';
+import { engagementConfigSchema } from '../types.js';
 
 export interface EngagementSummary {
   id: string;
@@ -18,6 +20,7 @@ export interface EngagementSummary {
   objectives_count: number;
   phases_count: number;
   config_path: string;
+  state_path: string;
   is_active: boolean;
 }
 
@@ -199,14 +202,13 @@ export class EngagementManager {
     // Legacy engagements loaded from disk that lack the nonce stay on UUIDs.
     if (typeof (config as { engagement_nonce?: string }).engagement_nonce !== 'string') {
       // 32 random bytes hex-encoded; 64 chars; matches schema regex.
-      // Imported here lazily to avoid widening the module's static surface.
-      const { randomBytes } = require('crypto');
-      (config as { engagement_nonce?: string }).engagement_nonce = (randomBytes(32) as Buffer).toString('hex');
+      (config as { engagement_nonce?: string }).engagement_nonce = randomBytes(32).toString('hex');
     }
 
+    const parsedConfig = engagementConfigSchema.parse(config);
     const filePath = join(this.engagementsDir, `${id}.json`);
-    writeFileSync(filePath, JSON.stringify(config, null, 2));
-    return this.toSummary(config, filePath, false);
+    writeFileSync(filePath, JSON.stringify(parsedConfig, null, 2));
+    return this.toSummary(parsedConfig, filePath, false);
   }
 
   getEngagement(id: string): Record<string, unknown> | null {
@@ -295,6 +297,7 @@ export class EngagementManager {
       objectives_count: (raw.objectives ?? []).length,
       phases_count: (raw.phases ?? []).length,
       config_path: configPath,
+      state_path: join(dirname(configPath), `state-${raw.id}.json`),
       is_active: isActive,
     };
   }

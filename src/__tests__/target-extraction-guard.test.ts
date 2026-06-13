@@ -20,7 +20,7 @@ function makeConfig(): EngagementConfig {
     id: 'test-target-guard',
     name: 'target-guard',
     created_at: new Date().toISOString(),
-    scope: { cidrs: ['10.10.10.0/24'], domains: ['lab.local'], exclusions: [] },
+    scope: { cidrs: ['10.10.10.0/24', '10.10.110.0/24'], domains: ['lab.local'], exclusions: ['10.10.110.2'] },
     objectives: [],
     opsec: { name: 'pentest', max_noise: 1 },
   };
@@ -114,5 +114,36 @@ describe('Phase D — target-token argv guard', () => {
     const payload = JSON.parse(res.content[0].text);
     expect(payload.argv_tokens_found).toBeUndefined();
     expect(payload.executed).not.toBe(false);
+  });
+
+  it('validates nmap CIDR targets without treating the network address or --exclude values as host targets', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['-oX', '-', '10.10.110.0/24', '--exclude', '10.10.110.2'],
+      command_repr: 'nmap -oX - 10.10.110.0/24 --exclude 10.10.110.2',
+      technique: 'host_discovery',
+      invoking_tool: 'run_tool',
+      timeout_ms: 100,
+    });
+    const validation = engine.getFullHistory().find(e => e.event_type === 'action_validated');
+    expect(validation?.target_cidrs).toEqual(['10.10.110.0/24']);
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).not.toMatch(/10\.10\.110\.0\/24|10\.10\.110\.2/);
+  });
+
+  it('allows local operator infrastructure commands without broad unverified-scope override', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'bash',
+      args: ['-c', 'echo bridge 10.10.14.22:4444 to 127.0.0.1:4445'],
+      command_repr: 'echo bridge 10.10.14.22:4444 to 127.0.0.1:4445',
+      technique: 'note',
+      operator_infra: true,
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBeFalsy();
+    const started = engine.getFullHistory().find(e => e.event_type === 'action_started');
+    expect(started?.details).toMatchObject({ operator_infra: true });
   });
 });

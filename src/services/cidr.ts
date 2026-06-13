@@ -89,6 +89,58 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
   return (ipNum & maskBits) === (baseNum & maskBits);
 }
 
+interface ParsedCidr {
+  base: string;
+  mask: number;
+  network: number;
+  broadcast: number;
+}
+
+function parseCidrRange(cidr: string): ParsedCidr | null {
+  if (isIPv6(cidr)) return null;
+  const [base, maskStr] = cidr.split('/');
+  if (!isIPv4(base)) return null;
+  const mask = maskStr === undefined ? 32 : Number(maskStr);
+  if (!Number.isInteger(mask) || mask < 0 || mask > 32) return null;
+  const baseNum = ipToNum(base);
+  const hostBits = 32 - mask;
+  const maskBits = mask === 0 ? 0 : (0xFFFFFFFF << hostBits) >>> 0;
+  const network = (baseNum & maskBits) >>> 0;
+  const size = mask === 0 ? 2 ** 32 : 2 ** hostBits;
+  const broadcast = (network + size - 1) >>> 0;
+  return { base, mask, network, broadcast };
+}
+
+export function isCidrInCidr(child: string, parent: string): boolean {
+  const childRange = parseCidrRange(child);
+  const parentRange = parseCidrRange(parent);
+  if (!childRange || !parentRange) return false;
+  return childRange.network >= parentRange.network && childRange.broadcast <= parentRange.broadcast;
+}
+
+export function isCidrInScope(
+  cidr: string,
+  scope: { cidrs?: string[]; exclusions?: string[] },
+): boolean {
+  if (!isValidCidr(cidr)) return false;
+  const cidrs = scope.cidrs || [];
+  if (cidrs.length === 0) return false;
+  const inIncludedRange = cidrs.some(scoped => isCidrInCidr(cidr, scoped));
+  if (!inIncludedRange) return false;
+
+  // A scan CIDR may contain excluded hosts as long as the caller supplies
+  // scanner-level exclusions. Only fail here when the entire requested CIDR
+  // is itself an excluded range or exact host.
+  for (const exclusion of scope.exclusions || []) {
+    if (exclusion.includes('/')) {
+      if (isCidrInCidr(cidr, exclusion)) return false;
+    } else if (!cidr.includes('/') && cidr === exclusion) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function isIpInScope(ip: string, cidrs: string[], exclusions: string[]): boolean {
   if (!isIPv4(ip)) return false;
   // Check exclusions first

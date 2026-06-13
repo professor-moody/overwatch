@@ -112,23 +112,69 @@ const HOSTNAME = /\b(?=[a-zA-Z0-9.-]{1,253}\b)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61
 
 interface ImplicitTargets {
   ips: string[];
+  cidrs: string[];
   urls: string[];
   hostnames: string[];
 }
 
-function extractImplicitTargets(_toolName: string, args: string[], commandRepr: string): ImplicitTargets {
+function tokenizeCommandLike(command: string): string[] {
+  const tokens: string[] = [];
+  const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(command)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3]);
+  }
+  return tokens;
+}
+
+function isNmapLike(toolName: string): boolean {
+  const name = basename(toolName).toLowerCase();
+  return name === 'nmap' || name === 'rustscan' || name === 'masscan';
+}
+
+function scanArgsForTargets(toolName: string, args: string[], commandRepr: string): string[] {
+  if (!isNmapLike(toolName)) {
+    const stringsToScan = args.filter(a => typeof a === 'string' && a.length > 0 && !a.startsWith('-'));
+    if (commandRepr) stringsToScan.push(commandRepr);
+    return stringsToScan;
+  }
+
+  const sourceArgs = args.length === 2 && args[0] === '-c'
+    ? tokenizeCommandLike(commandRepr).slice(1)
+    : args;
+  const skipValueOptions = new Set([
+    '-oA', '-oG', '-oN', '-oS', '-oX', '-iL', '-iR',
+    '--exclude', '--excludefile',
+  ]);
+  const stringsToScan: string[] = [];
+  for (let i = 0; i < sourceArgs.length; i += 1) {
+    const token = sourceArgs[i];
+    if (!token) continue;
+    if (skipValueOptions.has(token)) {
+      i += 1;
+      continue;
+    }
+    if (token.startsWith('--exclude=') || token.startsWith('--excludefile=')) continue;
+    if (token.startsWith('-')) continue;
+    stringsToScan.push(token);
+  }
+  return stringsToScan;
+}
+
+function extractImplicitTargets(toolName: string, args: string[], commandRepr: string): ImplicitTargets {
   const ips = new Set<string>();
+  const cidrs = new Set<string>();
   const urls = new Set<string>();
   const hostnames = new Set<string>();
 
-  const stringsToScan: string[] = [];
-  for (const a of args) {
-    if (typeof a === 'string' && a.length > 0 && !a.startsWith('-')) stringsToScan.push(a);
-  }
-  if (commandRepr) stringsToScan.push(commandRepr);
+  const stringsToScan = scanArgsForTargets(toolName, args, commandRepr);
 
   for (const s of stringsToScan) {
-    for (const m of s.matchAll(IPV4)) ips.add(m[0]);
+    for (const m of s.matchAll(IPV4)) {
+      const value = m[0];
+      if (value.includes('/')) cidrs.add(value);
+      else ips.add(value);
+    }
     for (const m of s.matchAll(IPV6)) ips.add(m[1] ?? m[0]);
     for (const m of s.matchAll(URL_RE)) urls.add(m[0]);
   }
@@ -148,7 +194,7 @@ function extractImplicitTargets(_toolName: string, args: string[], commandRepr: 
     }
   }
 
-  return { ips: [...ips], urls: [...urls], hostnames: [...hostnames] };
+  return { ips: [...ips], cidrs: [...cidrs], urls: [...urls], hostnames: [...hostnames] };
 }
 
 
@@ -472,11 +518,15 @@ export interface InstrumentedProcessOpts {
   target_node_ids?: string[];
   target_ip?: string;
   target_ips?: string[];
+  target_cidr?: string;
+  target_cidrs?: string[];
   target_url?: string;
   cloud_resource?: string;
   validate?: boolean;
   /** Operator override: skip the fail-closed check for unverified host/service/share targets. */
   allow_unverified_scope?: boolean;
+  /** Local operator infrastructure helper command (listeners, bridges, port cleanup). */
+  operator_infra?: boolean;
   parse_with?: string;
   parser_context?: ParseContext;
   /**
@@ -524,6 +574,8 @@ export async function runInstrumentedProcess(
     target_node_ids,
     target_ip,
     target_ips,
+    target_cidr,
+    target_cidrs,
     target_url,
     cloud_resource,
     validate,
@@ -532,6 +584,7 @@ export async function runInstrumentedProcess(
     parse_stream,
     noise_estimate: noiseOverride,
     allow_unverified_scope,
+    operator_infra,
   } = opts;
 
   // Auto-register a synthetic running task for this agent_id if none
@@ -570,6 +623,15 @@ export async function runInstrumentedProcess(
     ...(target_ip ? [target_ip] : []),
     ...(target_ips ?? []),
   ].filter((v, i, a) => a.indexOf(v) === i);
+  const allTargetCidrs = [
+    ...(target_cidr ? [target_cidr] : []),
+    ...(target_cidrs ?? []),
+  ].filter((v, i, a) => a.indexOf(v) === i);
+  const observedTargetCidrs = new Set(allTargetCidrs);
+  const targetCidrsForEvents = (): string[] | undefined => {
+    const values = [...observedTargetCidrs];
+    return values.length > 0 ? values : undefined;
+  };
   const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
 
   // ---- 1. Validation ----
@@ -583,6 +645,7 @@ export async function runInstrumentedProcess(
     const validationTargets: Array<Parameters<typeof engine.validateAction>[0]> = [];
     for (const id of allTargetNodeIds) validationTargets.push({ target_node: id, technique, allow_unverified_scope });
     for (const ip of allTargetIps) validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
+    for (const cidr of allTargetCidrs) validationTargets.push({ target_cidr: cidr, technique, allow_unverified_scope });
     if (target_url) validationTargets.push({ target_url, technique, allow_unverified_scope });
     if (cloud_resource) validationTargets.push({ cloud_resource, technique, allow_unverified_scope });
 
@@ -592,10 +655,14 @@ export async function runInstrumentedProcess(
     // this a `nmap 8.8.8.8` invocation that never populated target_ip — and
     // omitted technique entirely — would slip through scope. We fail closed
     // when implicit targets are found and `allow_unverified_scope` is not set.
-    if (validationTargets.length === 0 && isTargetFacing(technique, tool_name, binary)) {
+    if (validationTargets.length === 0 && !operator_infra && isTargetFacing(technique, tool_name, binary)) {
       const implicit = extractImplicitTargets(tool_name, args, command_repr);
       for (const ip of implicit.ips) {
         validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
+      }
+      for (const cidr of implicit.cidrs) {
+        observedTargetCidrs.add(cidr);
+        validationTargets.push({ target_cidr: cidr, technique, allow_unverified_scope });
       }
       for (const u of implicit.urls) {
         validationTargets.push({ target_url: u, technique, allow_unverified_scope });
@@ -623,10 +690,11 @@ export async function runInstrumentedProcess(
     if (
       validationTargets.length === 0
       && !allow_unverified_scope
+      && !operator_infra
       && isNetworkCapableBinary(tool_name, binary)
     ) {
       const sniff = extractImplicitTargets(tool_name, args, command_repr);
-      const found = [...sniff.ips, ...sniff.urls, ...sniff.hostnames];
+      const found = [...sniff.ips, ...sniff.cidrs, ...sniff.urls, ...sniff.hostnames];
       if (found.length > 0) {
         engine.logActionEvent({
           description: `Refused: target tokens in argv with no scope metadata`,
@@ -747,6 +815,7 @@ export async function runInstrumentedProcess(
       technique,
       target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
       target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+      target_cidrs: targetCidrsForEvents(),
       frontier_item_id,
       validation_result: validationResult,
       noise_estimate: noiseEstimate,
@@ -766,6 +835,7 @@ export async function runInstrumentedProcess(
         technique,
         target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
         target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+        target_cidrs: targetCidrsForEvents(),
         frontier_item_id,
         result_classification: 'failure',
         details: { reason: 'validation_failed', validation_errors: v.errors },
@@ -796,6 +866,7 @@ export async function runInstrumentedProcess(
         technique,
         target_node,
         target_ip,
+        target_cidr,
         description: resolvedDescription,
         opsec_context: v.opsec_context,
         validation_result: validationResult as 'valid' | 'warning_only',
@@ -831,6 +902,7 @@ export async function runInstrumentedProcess(
           frontier_item_id,
           tool_name,
           technique,
+          target_cidrs: targetCidrsForEvents(),
           result_classification: 'failure',
           details: { reason: 'operator_denied', approval_reason: approval.reason },
         });
@@ -864,6 +936,7 @@ export async function runInstrumentedProcess(
     command_repr,
     target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
     target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+    target_cidrs: targetCidrsForEvents(),
     frontier_item_id,
     noise_estimate: noiseEstimate,
     details: {
@@ -873,6 +946,7 @@ export async function runInstrumentedProcess(
       cwd,
       timeout_ms: effectiveTimeout,
       invoking_tool: opts.invoking_tool,
+      operator_infra: operator_infra || undefined,
     },
   });
   if (noiseEstimate !== undefined) {
@@ -974,6 +1048,7 @@ export async function runInstrumentedProcess(
     command_repr,
     target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
     target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+    target_cidrs: targetCidrsForEvents(),
     frontier_item_id,
     result_classification: succeeded ? 'success' : 'failure',
     details: {
@@ -998,6 +1073,7 @@ export async function runInstrumentedProcess(
       binary,
       args,
       invoking_tool: opts.invoking_tool,
+      operator_infra: operator_infra || undefined,
     },
   });
   engine.persist();

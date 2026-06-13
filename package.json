@@ -5,6 +5,20 @@
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist/**",
+    "engagement-templates/**",
+    "skills/**",
+    ".claude/hooks/**",
+    ".claude/settings.example.json",
+    ".mcp.example.json",
+    "scripts/setup.mjs",
+    "scripts/doctor.mjs",
+    "scripts/check-package.mjs",
+    "engagement.example.json",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -12,12 +26,15 @@
     "overwatch-mcp-tape": "dist/bin/overwatch-mcp-tape.js"
   },
   "scripts": {
-    "build": "tsc && npx vite build --config src/dashboard-next/vite.config.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && npx vite build --config src/dashboard-next/vite.config.ts",
     "build:dashboard-next": "npx vite build --config src/dashboard-next/vite.config.ts",
     "build:pages": "GITHUB_PAGES=true npx vite build --config src/dashboard-next/vite.config.ts && cp dist/dashboard-next/index.html dist/dashboard-next/404.html",
     "dev:dashboard-next": "npx vite --config src/dashboard-next/vite.config.ts",
     "demo:dashboard": "npx tsx scripts/demo-dashboard.ts",
     "report:qa": "npx tsx scripts/report-qa.ts",
+    "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "npm run test:source",
@@ -25,7 +42,8 @@
     "test:integration:stdio": "npm run build && vitest run --config vitest.integration-stdio.config.ts",
     "test:integration:http": "npm run build && vitest run --config vitest.integration-http.config.ts",
     "check:dist": "git diff --exit-code -- dist",
-    "verify": "npm run test:source && npm run test:integration:stdio && npm run test:integration:http && npm run check:dist",
+    "check:package": "node scripts/check-package.mjs",
+    "verify": "npm run test:source && npm run test:integration:stdio && npm run test:integration:http && npm run check:package",
     "retrospective": "node dist/cli/retrospective.js",
     "lab:smoke": "node dist/cli/lab-smoke.js",
     "hooks:smoke": "node scripts/smoke-claude-hooks.mjs",

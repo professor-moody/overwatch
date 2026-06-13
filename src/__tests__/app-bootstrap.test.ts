@@ -5,7 +5,7 @@ import { createOverwatchApp, registerAllTools } from '../app.js';
 describe('app bootstrap', () => {
   it('creates the core app without binding a transport', () => {
     const app = createOverwatchApp({
-      configPath: resolve('./engagement.json'),
+      configPath: resolve('./engagement.example.json'),
       skillDir: resolve('./skills'),
       dashboardPort: 0,
     });
@@ -18,7 +18,7 @@ describe('app bootstrap', () => {
 
   it('registers all tools without requiring stdio startup', () => {
     const app = createOverwatchApp({
-      configPath: resolve('./engagement.json'),
+      configPath: resolve('./engagement.example.json'),
       skillDir: resolve('./skills'),
       dashboardPort: 0,
     });

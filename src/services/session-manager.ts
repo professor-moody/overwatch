@@ -180,6 +180,10 @@ export interface SessionCreateOptions {
   env?: Record<string, string>;
   // socket-specific
   mode?: 'connect' | 'listen';
+  bind_host?: string;
+  advertise_host?: string;
+  accept_mode?: 'single' | 'rearm';
+  reachability_warnings?: string[];
   // instrumentation
   default_validation?: SessionDefaultValidation;
   // internal
@@ -231,6 +235,11 @@ export class SessionManager {
       kind: options.kind,
       transport,
       state: initialState,
+      mode: options.mode,
+      bind_host: options.bind_host,
+      advertise_host: options.advertise_host,
+      accept_mode: options.accept_mode,
+      reachability_warnings: options.reachability_warnings,
       title: options.title,
       host: options.host,
       user: options.user,
@@ -272,6 +281,9 @@ export class SessionManager {
         cwd: options.cwd,
         env: options.env,
         mode: options.mode,
+        bind_host: options.bind_host,
+        advertise_host: options.advertise_host,
+        accept_mode: options.accept_mode,
         sessionId: id,
         onConnect: () => this.handleConnect(id),
       });
@@ -298,6 +310,9 @@ export class SessionManager {
         }
         this.pruneClosedSessions();
       });
+      if (handle.onDisconnect) {
+        handle.onDisconnect(() => this.handleDisconnect(id));
+      }
 
       // For PTY-backed sessions, mark connected immediately
       if (options.kind !== 'socket') {
@@ -778,6 +793,18 @@ export class SessionManager {
         }
       }
       if (session.handle) this.emitSessionEvent('session_updated', session);
+    }
+  }
+
+  private handleDisconnect(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.metadata.kind === 'socket' && session.metadata.mode === 'listen' && session.metadata.accept_mode === 'rearm') {
+      session.metadata.state = 'pending';
+      session.metadata.last_activity_at = new Date().toISOString();
+      this.logSessionEvent(sessionId, 'session_updated',
+        `Listener "${session.metadata.title}" returned to waiting`);
+      this.emitSessionEvent('session_updated', session);
     }
   }
 

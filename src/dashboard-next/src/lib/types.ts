@@ -146,6 +146,11 @@ export interface SessionInfo {
   kind: string;
   transport?: string;
   state: 'pending' | 'connected' | 'closed' | 'error';
+  mode?: 'connect' | 'listen';
+  bind_host?: string;
+  advertise_host?: string;
+  accept_mode?: 'single' | 'rearm';
+  reachability_warnings?: string[];
   auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
   title?: string;
   host?: string;
@@ -197,6 +202,7 @@ export interface PendingAction {
   target: string;
   target_node?: string;
   target_ip?: string;
+  target_cidr?: string;
   noise_level: number;
   description: string;
   defense_context?: string;
@@ -585,11 +591,13 @@ export interface EngagementListItem {
   phases_count: number;
   created_at?: string;
   config_path?: string;
+  state_path?: string;
 }
 
 export interface EngagementDetail extends EngagementConfig {
   id: string;
   config_path?: string;
+  state_path?: string;
   is_active?: boolean;
 }
 

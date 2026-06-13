@@ -209,10 +209,11 @@ export class SocketAdapter implements SessionAdapterFactory {
 
   async spawn(options: Record<string, unknown>): Promise<AdapterHandle> {
     const mode = (options.mode as string) || 'connect';
-    const host = options.host as string;
+    const host = (options.bind_host as string | undefined) || (options.host as string);
     const port = options.port as number;
     const sessionId = options.sessionId as string;
     const onConnect = options.onConnect as (() => void) | undefined;
+    const acceptMode = (options.accept_mode as 'single' | 'rearm' | undefined) || 'single';
 
     if (!port) throw new Error('Socket adapter requires a port');
 
@@ -221,37 +222,51 @@ export class SocketAdapter implements SessionAdapterFactory {
       if (bindHost === '0.0.0.0') {
         console.error(`[session] Warning: listener binding to 0.0.0.0 — exposed on all interfaces`);
       }
-      return this.spawnListener(bindHost, port, sessionId, onConnect);
+      return this.spawnListener(bindHost, port, sessionId, acceptMode, onConnect);
     } else {
       if (!host) throw new Error('Socket adapter connect mode requires a host');
       return this.spawnConnect(host, port, sessionId, onConnect);
     }
   }
 
-  private spawnListener(host: string, port: number, sessionId: string, onConnect?: () => void): Promise<AdapterHandle> {
+  private spawnListener(
+    host: string,
+    port: number,
+    sessionId: string,
+    acceptMode: 'single' | 'rearm',
+    onConnect?: () => void,
+  ): Promise<AdapterHandle> {
     const self = this;
     return new Promise((resolve, reject) => {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
+      const disconnectCallbacks: Array<(info?: { reason?: string }) => void> = [];
       let activeSocket: Socket | null = null;
       let closed = false;
 
       const server = createServer((socket: Socket) => {
-        // Accept only the first connection
+        // Accept only one active connection at a time. Rearm mode keeps the
+        // listener alive after the accepted shell disconnects.
         if (activeSocket) {
           socket.destroy();
           return;
         }
         activeSocket = socket;
-        this.wireSocket(socket, dataCallbacks, exitCallbacks, () => {
-          // When the accepted socket disconnects, tear down the listener too.
-          // Otherwise the TCP server stays bound and rejects later reconnects
-          // forever, while the session shows as closed.
-          closed = true;
-          activeSocket = null;
-          try { server.close(); } catch { /* best-effort */ }
-          if (sessionId) self.activeServers.delete(sessionId);
-        });
+        this.wireSocket(
+          socket,
+          dataCallbacks,
+          acceptMode === 'rearm' ? [] : exitCallbacks,
+          () => {
+            activeSocket = null;
+            if (acceptMode === 'rearm' && !closed) {
+              for (const cb of disconnectCallbacks) cb({ reason: 'socket_closed' });
+              return;
+            }
+            closed = true;
+            try { server.close(); } catch { /* best-effort */ }
+            if (sessionId) self.activeServers.delete(sessionId);
+          },
+        );
         if (onConnect) onConnect();
       });
 
@@ -287,6 +302,9 @@ export class SocketAdapter implements SessionAdapterFactory {
           },
           onExit(cb: (info: { exitCode?: number; signal?: number }) => void) {
             exitCallbacks.push(cb);
+          },
+          onDisconnect(cb: (info?: { reason?: string }) => void) {
+            disconnectCallbacks.push(cb);
           },
         };
 

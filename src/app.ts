@@ -4,6 +4,7 @@
 // ============================================================
 
 import { readFileSync, existsSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -210,11 +211,12 @@ export function registerAllTools(
 export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): OverwatchApp {
   const configPath = options.configPath || process.env.OVERWATCH_CONFIG || './engagement.json';
   const config = options.config || loadConfig(configPath);
-  // Honor OVERWATCH_STATE_FILE for non-default state file locations
-  // (e.g. the smoke harness keeps state inside ./smoke-engagement/).
-  // Falls back to options.stateFilePath, then the engine's
-  // `./state-<id>.json` default.
-  const stateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE;
+  // Keep config and live state separate. By default, the mutable state file
+  // lives beside the operator-authored config so launching from a different
+  // cwd cannot silently create or load the wrong engagement state.
+  const resolvedConfigPath = resolve(configPath);
+  const defaultStateFilePath = join(dirname(resolvedConfigPath), `state-${config.id}.json`);
+  const stateFilePath = options.stateFilePath || process.env.OVERWATCH_STATE_FILE || defaultStateFilePath;
   const engine = new GraphEngine(config, stateFilePath);
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);

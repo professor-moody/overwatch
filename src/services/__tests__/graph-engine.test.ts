@@ -1008,6 +1008,20 @@ describe('GraphEngine', () => {
       expect(result.errors.length).toBe(0);
     });
 
+    it('validates in-scope target_cidr without treating its network address as a host', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_cidr: '10.10.10.0/28', technique: 'host_discovery' });
+      expect(result.valid).toBe(true);
+      expect(result.errors.length).toBe(0);
+    });
+
+    it('rejects out-of-scope target_cidr', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const result = engine.validateAction({ target_cidr: '192.168.1.0/24', technique: 'host_discovery' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('Target CIDR is out of scope'))).toBe(true);
+    });
+
     it('rejects out-of-scope target_ip', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       const result = engine.validateAction({ target_ip: '192.168.1.1' });

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/dashboard-next/**",
+    "src/dashboard-next/**/*.test.tsx",
+    "src/dashboard-next/**/__tests__/**",
+    "scripts/**",
+    "tmp/**",
+    "dist/**",
+    "node_modules/**"
+  ]
+}

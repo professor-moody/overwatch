@@ -15,7 +15,7 @@ const supportsLocalListen = await new Promise<boolean>((resolve) => {
   srv.listen(0, '127.0.0.1', () => { srv.close(); resolve(true); });
 });
 
-const ENGAGEMENT_JSON = resolve('./engagement.json');
+const ENGAGEMENT_JSON = resolve('./engagement.example.json');
 const rawConfig = readFileSync(ENGAGEMENT_JSON, 'utf-8');
 const config = parseEngagementConfig(rawConfig);
 const tempDir = mkdtempSync(join(tmpdir(), 'overwatch-http-test-'));

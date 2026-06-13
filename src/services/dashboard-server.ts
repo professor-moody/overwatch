@@ -116,6 +116,7 @@ export class DashboardServer {
 
   private host: string;
   private engagementManager: EngagementManager | null = null;
+  private configPath?: string;
   /**
    * Optional in-process tape controller. Attached by app bootstrap so the
    * dashboard can expose status + a runtime on/off toggle. The dashboard
@@ -150,6 +151,7 @@ export class DashboardServer {
     this.port = port;
     this.host = host || process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
     this.sessionManager = sessionManager || null;
+    this.configPath = configPath;
     if (configPath) {
       this.engagementManager = new EngagementManager(configPath);
     }
@@ -943,7 +945,11 @@ export class DashboardServer {
   private serveConfig(res: ServerResponse): void {
     const config = this.engine.getConfig();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(config));
+    res.end(JSON.stringify({
+      ...config,
+      config_path: this.configPath,
+      state_path: this.engine.getStateFilePath(),
+    }));
   }
 
   private handleUpdateConfig(req: IncomingMessage, res: ServerResponse): void {

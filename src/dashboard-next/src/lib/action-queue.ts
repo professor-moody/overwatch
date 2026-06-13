@@ -23,7 +23,7 @@ export function computeActionRisk(action: PendingAction): ActionRisk {
 }
 
 export function actionNodeId(action: PendingAction): string | null {
-  return action.target_node || action.target || null;
+  return action.target_node || action.target_cidr || action.target || null;
 }
 
 export function actionSubmittedTime(action: PendingAction): number {
@@ -52,7 +52,7 @@ export function terminalApprovalCommand(action: PendingAction, decision: 'approv
 }
 
 export function terminalApprovalSummary(action: PendingAction): string {
-  const target = actionNodeId(action) || action.target_ip || action.target || 'unknown-target';
+  const target = actionNodeId(action) || action.target_ip || action.target_cidr || action.target || 'unknown-target';
   return [
     `action_id=${action.action_id}`,
     `technique=${action.technique || 'unknown'}`,

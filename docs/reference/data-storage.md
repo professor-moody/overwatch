@@ -21,16 +21,16 @@ OVERWATCH_CONFIG=/path/to/engagement.json  # override
 ./engagement.json                          # default (cwd-relative)
 ```
 
-The config file is the root from which all other paths are derived. Everything else lives in the same directory or subdirectories beneath it.
+The config file is the operator-authored definition: scope, objectives, OPSEC, phases, and campaign defaults. Mutable graph state is stored separately beside it by default.
 
 ---
 
 ## Engagement state file
 
-The active engagement's full in-memory state is periodically flushed to the config file path itself:
+The active engagement's full in-memory state is periodically flushed to a separate state file beside the config:
 
 ```
-<config-file>                     # e.g. ./engagement.json
+<config-dir>/state-<engagement-id>.json
 ```
 
 This single JSON file contains:
@@ -42,7 +42,7 @@ This single JSON file contains:
 - **Agent registry** — registered agents and their status
 - **Chain checkpoints** — hash-chain integrity anchors (when `hash_chain_enabled: true`)
 
-The server writes this file on every tool call that mutates state (debounced) and on clean shutdown.
+Set `OVERWATCH_STATE_FILE=/path/to/state.json` to override the default. The server writes this file on every tool call that mutates state (debounced) and on clean shutdown. The config file remains clean unless you explicitly edit engagement settings.
 
 ### Snapshots
 
@@ -146,7 +146,8 @@ A typical engagement directory after one session:
 
 ```
 ./
-├── engagement.json                   # active state (config + graph + activity log)
+├── engagement.json                   # active config (scope, objectives, OPSEC)
+├── state-example-engagement.json     # live graph, activity log, agents, campaigns
 ├── .snapshots/
 │   └── engagement-1746005400000.json
 ├── engagements/
@@ -169,9 +170,9 @@ A typical engagement directory after one session:
 
 ## Backup and portability
 
-**To back up an engagement:** copy the entire directory containing `engagement.json`.
+**To back up an engagement:** copy the entire directory containing `engagement.json` and `state-<id>.json`.
 
-The state file is self-contained — it includes the full graph, activity log, and all config. Evidence blobs are referenced by ID from the manifest; copy the `evidence/` subdirectory to retain them.
+The state file contains the full graph, activity log, agents, campaigns, and checkpoints. The config file contains the operator-authored engagement definition. Evidence blobs are referenced by ID from the manifest; copy the `evidence/` subdirectory to retain them.
 
 **To move to another machine:** copy the directory, set `OVERWATCH_CONFIG` to point at the new path, and start the server.
 

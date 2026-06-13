@@ -13,8 +13,16 @@ import type {
   FailurePattern,
 } from '../../lib/types';
 
-const PROFILES = ['network', 'ad', 'cloud', 'webapp', 'hybrid'] as const;
+const PROFILES = ['network', 'goad_ad', 'single_host', 'web_app', 'cloud', 'hybrid'] as const;
 const CLOUD_PROFILES = new Set(['cloud', 'hybrid']);
+const PROFILE_LABELS: Record<string, string> = {
+  network: 'Network',
+  goad_ad: 'GOAD / AD',
+  single_host: 'Single Host',
+  web_app: 'Web App',
+  cloud: 'Cloud',
+  hybrid: 'Hybrid',
+};
 const APPROVAL_MODES = [
   { value: 'auto-approve', label: 'Auto Approve' },
   { value: 'approve-critical', label: 'Approve Critical' },
@@ -132,14 +140,19 @@ export function EngagementsPanel() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{activeEngagement.name}</span>
                       <StatusBadge status="active" />
-                      {activeEngagement.profile && <StatusPill>{activeEngagement.profile}</StatusPill>}
+                      {activeEngagement.profile && <StatusPill>{PROFILE_LABELS[activeEngagement.profile] || activeEngagement.profile}</StatusPill>}
                     </div>
                     <div className="text-muted-foreground">
                       {scopeLabel(activeEngagement)}
                     </div>
                     {activeEngagement.config_path && (
                       <code className="block rounded bg-background px-2 py-1 font-mono text-muted-foreground overflow-x-auto">
-                        {activeEngagement.config_path}
+                        config: {activeEngagement.config_path}
+                      </code>
+                    )}
+                    {activeEngagement.state_path && (
+                      <code className="block rounded bg-background px-2 py-1 font-mono text-muted-foreground overflow-x-auto">
+                        state: {activeEngagement.state_path}
                       </code>
                     )}
                   </div>
@@ -164,7 +177,7 @@ export function EngagementsPanel() {
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-foreground truncate">{e.name}</span>
                     {isActive && <StatusBadge status="active" />}
-                    {e.profile && <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground">{e.profile}</span>}
+                    {e.profile && <span className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-muted-foreground">{PROFILE_LABELS[e.profile] || e.profile}</span>}
                     {!isActive && (
                       <button onClick={(ev) => { ev.stopPropagation(); setLoadHint(e); }}
                         className="ml-auto text-xs text-accent hover:underline">Load guidance</button>
@@ -180,6 +193,11 @@ export function EngagementsPanel() {
                     <span className="truncate">{scopeStr}</span>
                     <span className="font-mono text-muted">{e.id}</span>
                   </div>
+                  {e.state_path && (
+                    <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                      state: {e.state_path}
+                    </div>
+                  )}
                 </div>
               );
                 })}
@@ -367,7 +385,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
 
       <Field label="Profile">
         <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
-          {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
+          {PROFILES.map(p => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}
         </select>
       </Field>
 
@@ -816,7 +834,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
             <Field label="Name"><input value={name} onChange={e => setName(e.target.value)} className="settings-input w-full" /></Field>
             <Field label="Profile">
               <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
-                {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
+                {PROFILES.map(p => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}
               </select>
             </Field>
           </div>

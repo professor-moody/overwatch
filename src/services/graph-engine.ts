@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { createOverwatchGraph } from './graphology-types.js';
 import { existsSync } from 'fs';
-import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope } from './cidr.js';
+import { isIpInCidr, isUrlInScope, isCloudResourceInScope, isHostExcluded, isHostInScope as isScopedHostInScope, isCidrInScope } from './cidr.js';
 import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
@@ -1062,7 +1062,7 @@ export class GraphEngine {
   // =============================================
 
   validateAction(action: {
-    target_node?: string; target_ip?: string;
+    target_node?: string; target_ip?: string; target_cidr?: string;
     edge_source?: string; edge_target?: string;
     technique?: string;
     target_url?: string; cloud_resource?: string;
@@ -1103,6 +1103,14 @@ export class GraphEngine {
     if (action.target_ip) {
       if (!isScopedHostInScope(action.target_ip, this.ctx.config.scope)) {
         errors.push(`Target IP is out of scope: ${action.target_ip}`);
+      }
+    }
+
+    // Scope check for scanner CIDRs. This validates the CIDR as a range
+    // target instead of treating its network address as a host target.
+    if (action.target_cidr) {
+      if (!isCidrInScope(action.target_cidr, this.ctx.config.scope)) {
+        errors.push(`Target CIDR is out of scope: ${action.target_cidr}`);
       }
     }
 

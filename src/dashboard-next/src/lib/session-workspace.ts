@@ -18,6 +18,17 @@ export function sessionTitle(session: SessionInfo): string {
   return session.title || session.host || session.target_node || session.id.slice(0, 8);
 }
 
+export function sessionOperationalLabel(session: SessionInfo): string {
+  const isListener = session.kind === 'socket' && session.mode === 'listen';
+  if (isListener && session.state === 'pending') return 'listener waiting';
+  if (isListener && session.state === 'connected') return 'shell connected';
+  if (isListener && session.state === 'closed') return 'listener closed';
+  if (isListener && session.state === 'error') return 'listener error';
+  if (session.state === 'connected') return 'connected';
+  if (session.state === 'pending') return 'pending';
+  return session.state;
+}
+
 export function searchSession(session: SessionInfo, query: string): boolean {
   if (!query) return true;
   const q = query.toLowerCase();
@@ -27,6 +38,9 @@ export function searchSession(session: SessionInfo, query: string): boolean {
     session.kind,
     session.transport,
     session.host,
+    session.bind_host,
+    session.advertise_host,
+    session.accept_mode,
     session.user,
     session.agent_id,
     session.target_node,
@@ -134,6 +148,8 @@ export function sessionCopyFields(session: SessionInfo): Array<{ label: string; 
     session.action_id ? { label: 'Action', value: session.action_id } : null,
     session.frontier_item_id ? { label: 'Frontier', value: session.frontier_item_id } : null,
     session.target_node ? { label: 'Target', value: session.target_node } : null,
+    session.bind_host ? { label: 'Bind', value: session.port ? `${session.bind_host}:${session.port}` : session.bind_host } : null,
+    session.advertise_host ? { label: 'Callback', value: session.port ? `${session.advertise_host}:${session.port}` : session.advertise_host } : null,
   ].filter((field): field is { label: string; value: string } => field !== null);
 }
 

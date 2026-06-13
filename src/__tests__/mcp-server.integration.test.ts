@@ -7,7 +7,7 @@ import { createConnection, createServer, type Socket } from 'net';
 import { setTimeout as delay } from 'timers/promises';
 import * as pty from 'node-pty';
 
-const ENGAGEMENT_JSON = resolve('./engagement.json');
+const ENGAGEMENT_JSON = resolve('./engagement.example.json');
 const SKILLS_DIR = resolve('./skills');
 const engagementId = JSON.parse(readFileSync(ENGAGEMENT_JSON, 'utf-8')).id;
 const STATE_FILE = resolve(`./state-${engagementId}.json`);

@@ -15,7 +15,9 @@ This page gets you from a clean clone to "AI is doing recon on my lab" in about 
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 npm run build
+npm run doctor
 ```
 
 Requires **Node.js 20+** and the **Claude Code CLI** (`claude`).
@@ -30,10 +32,16 @@ need, then use the `check_tools` MCP tool as a preflight.
 Start with the general-purpose **`ctf.json`** template — it has no OPSEC constraints, auto-approves everything, and works for any lab, CTF, HTB box, or "I just want to try Overwatch" scenario. It's the friendliest first run.
 
 ```bash
-cp engagement-templates/ctf.json engagement.json
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 ```
 
-Then open `engagement.json` and fill in **just two things**:
+This creates a local `engagement.json` from the template, fills in the CIDR,
+adds a fresh `engagement_nonce`, and writes `.mcp.json` / `.claude/settings.json`
+with absolute paths. Re-run with `--force` only when you intentionally want to
+replace existing local config.
+
+If you prefer to edit manually, copy `engagement.example.json` or a template to
+`engagement.json` and fill in **just two things**:
 
 ```jsonc
 {
@@ -46,7 +54,9 @@ Then open `engagement.json` and fill in **just two things**:
 }
 ```
 
-That's enough to start. The full schema is in [Configuration](configuration.md) when you want it.
+That's enough to start. Live graph state is stored separately in
+`state-<engagement-id>.json` beside the config. The full schema is in
+[Configuration](configuration.md) when you want it.
 
 ??? info "Other templates (for real engagements)"
     Once you've gotten comfortable with the basics, swap in the template that matches your engagement profile. Each one preconfigures sensible objectives, OPSEC posture, and the right `profile` field so preflight checks the right tools.

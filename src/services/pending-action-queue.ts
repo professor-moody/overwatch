@@ -18,6 +18,7 @@ export interface PendingAction {
   technique?: string;
   target_node?: string;
   target_ip?: string;
+  target_cidr?: string;
   description: string;
   opsec_context: OpsecContext;
   validation_result: 'valid' | 'warning_only';

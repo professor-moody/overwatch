@@ -42,6 +42,7 @@ export type ActivityEventType =
   | 'objective_achieved'
   | 'session_opened'
   | 'session_connected'
+  | 'session_updated'
   | 'session_signaled'
   | 'session_closed'
   | 'session_error'
@@ -86,6 +87,7 @@ export type ActivityLogEntry = {
   command_repr?: string;
   target_node_ids?: string[];
   target_ips?: string[];
+  target_cidrs?: string[];
   target_edge?: { source: string; target: string; type?: string };
   frontier_item_id?: string;
   validation_result?: 'valid' | 'invalid' | 'warning_only';
@@ -435,6 +437,7 @@ export function normalizeActivityLogEntry(
     command_repr: entry.command_repr,
     target_node_ids: entry.target_node_ids,
     target_ips: entry.target_ips,
+    target_cidrs: entry.target_cidrs,
     target_edge: entry.target_edge,
     frontier_item_id: entry.frontier_item_id,
     validation_result: entry.validation_result,

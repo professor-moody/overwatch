@@ -8,26 +8,19 @@ An offensive security engagement orchestrator built as an MCP server. The persis
 git clone https://github.com/professor-moody/overwatch.git
 cd overwatch
 npm install
+npm run setup -- --template ctf --name "My Lab" --cidr 10.10.10.0/24
 npm run build
+npm run doctor
 ```
 
 > **Note:** `node-pty` is an optional native dependency used for local PTY sessions. It requires native build tools (Python 3, C++ compiler). If it fails to install, the rest of Overwatch works normally — only `local_pty` sessions will be unavailable.
 
-Pick an engagement template (`ctf.json` is the friendliest first run — no
-OPSEC constraints, auto-approves everything):
+`npm run setup` creates local-only `.mcp.json`, `.claude/settings.json`, and
+`engagement.json` files with absolute paths and a fresh engagement nonce. The
+live graph state persists separately to `state-<engagement-id>.json` beside the
+config unless `OVERWATCH_STATE_FILE` is set.
 
-```bash
-cp engagement-templates/ctf.json engagement.json
-```
-
-Create local Claude config files from the examples:
-
-```bash
-cp .mcp.example.json .mcp.json
-cp .claude/settings.example.json .claude/settings.json
-```
-
-Edit `.mcp.json` with absolute paths:
+If you create config files manually, `.mcp.json` should use absolute paths:
 
 ```json
 {

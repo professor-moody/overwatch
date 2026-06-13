@@ -5,7 +5,7 @@ import { GraphEngine } from '../graph-engine.js';
 import { generateSystemPrompt, estimateTokens, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
 
-const config = loadEngagementConfigFile(resolve('./engagement.json'));
+const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
 const TEST_STATE_FILE = './state-test-prompt-gen.json';
 
 function cleanup() {

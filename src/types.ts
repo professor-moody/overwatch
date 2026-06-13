@@ -1250,6 +1250,11 @@ export interface SessionMetadata {
   kind: SessionKind;
   transport: string;
   state: SessionState;
+  mode?: 'connect' | 'listen';
+  bind_host?: string;
+  advertise_host?: string;
+  accept_mode?: 'single' | 'rearm';
+  reachability_warnings?: string[];
   auth_status?: 'shell_confirmed' | 'connected_unconfirmed' | 'auth_prompt' | 'auth_failed';
   title: string;
   host?: string;
@@ -1306,4 +1311,5 @@ export interface AdapterHandle {
   close(): void;
   onData(cb: (chunk: string) => void): void;
   onExit(cb: (info: { exitCode?: number; signal?: number }) => void): void;
+  onDisconnect?(cb: (info?: { reason?: string }) => void): void;
 }

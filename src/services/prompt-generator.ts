@@ -378,6 +378,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '### Sessions (interactive shells / sockets)',
     '',
     '- **Always pass `default_validation` to `open_session`** for SSH/socket-connect sessions: `{ technique, target_ip?, target_url?, allow_unverified_scope? }`. Every subsequent `send_to_session` inherits it and runs the full action lifecycle (validate → action_started → evidence → action_completed). Without it, sends require a per-call `technique`.',
+    '- **For reverse-shell catchers, prefer `open_session({ kind: "socket", mode: "listen", bind_host, advertise_host, mock_service_purpose: "reverse_shell_catcher" })`** over raw `nc`. Reverse-shell catchers default to rearm mode, so a local test connection will not consume the listener.',
     '- **`send_to_session` is the instrumented send.** It validates scope, persists captured output as evidence, and emits action_started/completed. Use `write_session` only for partial I/O (password prompts, REPL navigation) where lifecycle overhead is wrong.',
     '- **A closed session is dead.** Once a shell exits or the watchdog reaps the session, that `HAS_SESSION` edge is marked `session_live: false`. Frontier, path reachability, and objective achievement now ignore dead sessions. If you want to reach a host through a previous compromise, confirm the session is still live (or open a new one).',
     '- **Long-running sub-agents must call `agent_heartbeat({ task_id })` periodically.** Otherwise the watchdog interrupts the task and releases its frontier lease.',
@@ -394,7 +395,9 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '',
     '### Scope guardrails',
     '',
-    '- If you invoke a network-capable binary (`curl`, `ssh`, `nc`, `openssl`, …) without `target_url`/`target_ip` AND a non-target-facing technique label (`note`, `research`), the runner now fails closed when argv contains a URL/IP/hostname. Pass scope explicitly or set `allow_unverified_scope: true` if the tokens are intentional non-target references.',
+    '- For subnet discovery, pass `target_cidr` explicitly (for example `run_tool({ binary: "nmap", args: ["-oX", "-", "10.10.110.0/24", "--exclude", "10.10.110.2"], technique: "host_discovery", target_cidr: "10.10.110.0/24" })`). CIDR targets are validated as ranges; scanner `--exclude` values are not treated as targets.',
+    '- For local listener/bridge setup commands that mention operator-owned IPs or ports, pass `operator_infra: true` instead of broad `allow_unverified_scope`. Avoid `pkill -f` self-match patterns; prefer built-in listener lifecycle controls or port-specific cleanup such as `fuser -k <port>/tcp`.',
+    '- If you invoke a network-capable binary (`curl`, `ssh`, `nc`, `openssl`, …) without `target_url`/`target_ip`/`target_cidr` AND a non-target-facing technique label (`note`, `research`), the runner now fails closed when argv contains a URL/IP/hostname. Pass scope explicitly or set `allow_unverified_scope: true` if the tokens are intentional non-target references.',
   ];
 
   if (config.opsec && config.opsec.enabled) {
