@@ -9,11 +9,23 @@ import * as pty from 'node-pty';
 
 const ENGAGEMENT_JSON = resolve('./engagement.example.json');
 const SKILLS_DIR = resolve('./skills');
-const engagementId = JSON.parse(readFileSync(ENGAGEMENT_JSON, 'utf-8')).id;
+const engagementConfig = JSON.parse(readFileSync(ENGAGEMENT_JSON, 'utf-8'));
+const engagementId = engagementConfig.id;
+const primaryScopeCidr = engagementConfig.scope.cidrs[0];
+const inScopeTargetIp = hostIpFromCidr(primaryScopeCidr, 5);
+const parseOnlyTargetIp = hostIpFromCidr(primaryScopeCidr, 250);
+const outOfScopeTargetIp = '203.0.113.2';
 const STATE_FILE = resolve(`./state-${engagementId}.json`);
 
 let client: Client;
 let transport: StdioClientTransport;
+
+function hostIpFromCidr(cidr: string, hostOctet: number): string {
+  const [network] = cidr.split('/');
+  const octets = network.split('.');
+  octets[3] = String(hostOctet);
+  return octets.join('.');
+}
 
 const supportsLocalPty = (() => {
   try {
@@ -296,7 +308,7 @@ describe('MCP Server Integration', () => {
     const result = await client.callTool({
       name: 'validate_action',
       arguments: {
-        target_ip: '10.10.110.5',
+        target_ip: inScopeTargetIp,
         tool_name: 'nmap',
         technique: 'portscan',
         description: 'Pre-discovery scan of in-scope IP',
@@ -308,12 +320,12 @@ describe('MCP Server Integration', () => {
     expect(body.action_id).toBeDefined();
   });
 
-  it('validate_action rejects excluded target_ip', async () => {
+  it('validate_action rejects out-of-scope target_ip', async () => {
     const result = await client.callTool({
       name: 'validate_action',
       arguments: {
-        target_ip: '10.10.110.2',
-        description: 'Scan excluded IP',
+        target_ip: outOfScopeTargetIp,
+        description: 'Scan out-of-scope IP',
       },
     });
     const content = result.content as Array<{ type: string; text: string }>;
@@ -328,7 +340,7 @@ describe('MCP Server Integration', () => {
     const body = JSON.parse(content[0].text);
     const discovery = body.candidates.filter((c: any) => c.type === 'network_discovery');
     expect(discovery.length).toBeGreaterThan(0);
-    expect(discovery[0].target_cidr).toBe('10.10.110.0/24');
+    expect(discovery[0].target_cidr).toBe(primaryScopeCidr);
   });
 
   it('query_graph returns structured results', async () => {
@@ -530,7 +542,7 @@ describe('MCP Server Integration', () => {
       arguments: {
         kind: 'ssh',
         title: 'out-of-scope-ssh',
-        host: '10.10.110.2',
+        host: outOfScopeTargetIp,
         user: 'operator',
       },
     });
@@ -538,7 +550,7 @@ describe('MCP Server Integration', () => {
     expect(result.isError).toBe(true);
     const body = parseToolBody(result);
     expect(body.error).toContain('out-of-scope');
-    expect(body.host).toBe('10.10.110.2');
+    expect(body.host).toBe(outOfScopeTargetIp);
     expect(body.scope_reason).toBe('host_out_of_scope');
 
     const after = await callToolJson('list_sessions', {});
@@ -719,7 +731,7 @@ describe('MCP Server Integration', () => {
   });
 
   it('parse_output supports parse-only mode without ingesting graph changes', async () => {
-    const uniqueIp = '10.10.110.250';
+    const uniqueIp = parseOnlyTargetIp;
     const result = await client.callTool({
       name: 'parse_output',
       arguments: {
@@ -735,7 +747,7 @@ describe('MCP Server Integration', () => {
     expect(body.ingested).toBeUndefined();
 
     const graph = await callToolJson('export_graph', {});
-    const hostNode = graph.nodes.find((node: any) => node.id === 'host-10-10-110-250');
+    const hostNode = graph.nodes.find((node: any) => node.id === `host-${uniqueIp.replace(/\./g, '-')}`);
     expect(hostNode).toBeUndefined();
   });
 
