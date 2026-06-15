@@ -74,7 +74,7 @@ export function useKeyboardShortcuts({
 }
 
 export const SHORTCUT_HELP: { key: string; desc: string }[] = [
-  { key: '1-0', desc: 'Routes: Overview, Frontier, Actions, Agents, Sessions, Campaigns, Evidence, Credentials, Paths, Settings' },
+  { key: '1-0', desc: 'Routes: Overview, Frontier, Actions, Operator, Sessions, Campaigns, Evidence, Credentials, Paths, Settings' },
   { key: 'g', desc: 'Open Graph workspace' },
   { key: 'e', desc: 'Open Evidence route' },
   { key: 'F / Space', desc: 'Graph route: fit view / pause or resume layout' },

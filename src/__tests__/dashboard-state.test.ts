@@ -64,8 +64,7 @@ describe.skipIf(!supportsLocalListen)('dashboard state API', () => {
       frontier_item_id: 'frontier-2',
       subgraph_node_ids: [],
     });
-    const queue = engine.getPendingActionQueue();
-    queue.submit({
+    engine.recordApprovalRequest({
       action_id: 'act-dashboard-state',
       technique: 'credential_test',
       description: 'Validate captured token',
@@ -96,6 +95,18 @@ describe.skipIf(!supportsLocalListen)('dashboard state API', () => {
         status: 'pending',
         frontier_item_id: 'frontier-2',
       });
+      const pendingResponse = await fetch(`http://127.0.0.1:${port}/api/actions/pending`);
+      expect(pendingResponse.status).toBe(200);
+      const pendingBody = await pendingResponse.json();
+      expect(pendingBody.pending).toHaveLength(1);
+      expect(pendingBody.pending[0]).toMatchObject({
+        action_id: 'act-dashboard-state',
+        status: 'pending',
+      });
+      expect(pendingBody.diagnostics).toMatchObject({
+        approval_mode: 'auto-approve',
+        opsec_enabled: false,
+      });
       expect(body.state.sessions).toHaveLength(1);
       expect(body.state.sessions[0]).toMatchObject({ id: '11111111-1111-4111-8111-111111111111', state: 'connected' });
       const hydratedCampaign = body.state.campaigns.find((candidate: { id?: string }) => candidate.id === campaign.id);
@@ -112,8 +123,6 @@ describe.skipIf(!supportsLocalListen)('dashboard state API', () => {
       const completed = progress?.completed ?? 0;
       expect(hydratedCampaign.completion_pct).toBe(total > 0 ? Math.round((completed / total) * 100) : 0);
     } finally {
-      queue.deny('act-dashboard-state', 'test cleanup');
-      queue.dispose();
       if (startedDashboard) await dashboard.stop();
     }
   });

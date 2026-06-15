@@ -43,6 +43,14 @@ export interface ActionResolution {
   unattended_execute?: boolean;
 }
 
+export interface DurableApprovalRecord extends PendingAction {
+  resolved_at?: string;
+  operator_notes?: string;
+  reason?: string;
+  auto_approved?: boolean;
+  unattended_execute?: boolean;
+}
+
 export type ActionEventCallback = (event: 'action_pending' | 'action_resolved', data: PendingAction | ActionResolution) => void;
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes

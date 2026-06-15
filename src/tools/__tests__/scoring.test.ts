@@ -32,6 +32,15 @@ function cleanup(): void {
   } catch {}
 }
 
+async function waitForPendingApproval(engine: GraphEngine, actionId: string) {
+  for (let i = 0; i < 50; i++) {
+    const approval = engine.getPendingApprovalRequests().find(record => record.action_id === actionId);
+    if (approval && engine.getPendingActionQueue().getAction(actionId)) return approval;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for pending approval ${actionId}`);
+}
+
 describe('scoring and inference tools', () => {
   let engine: GraphEngine;
   let handlers: Record<string, (args: any) => Promise<any>>;
@@ -113,6 +122,91 @@ describe('scoring and inference tools', () => {
     const payload = JSON.parse(result.content[0].text);
     expect(payload.valid).toBe(false);
     expect(payload.errors.length).toBeGreaterThan(0);
+  });
+
+  it('registers terminal-facing approval controls', () => {
+    expect(handlers.approve_action).toBeTypeOf('function');
+    expect(handlers.deny_action).toBeTypeOf('function');
+  });
+
+  it('persists approval-gated validate_action requests before blocking', async () => {
+    const config = engine.getConfig();
+    config.opsec.approval_mode = 'approve-all';
+    config.opsec.approval_timeout_ms = 60_000;
+
+    const validation = handlers.validate_action({
+      action_id: 'act-live-approval',
+      target_ip: '10.10.10.5',
+      technique: 'portscan',
+      description: 'Scan host for open ports',
+    });
+
+    const pending = await waitForPendingApproval(engine, 'act-live-approval');
+    expect(pending).toMatchObject({
+      action_id: 'act-live-approval',
+      status: 'pending',
+      technique: 'portscan',
+      target_ip: '10.10.10.5',
+    });
+
+    const approve = await handlers.approve_action({ action_id: 'act-live-approval', notes: 'approved in test' });
+    expect(approve.isError).toBeUndefined();
+    const approvePayload = JSON.parse(approve.content[0].text);
+    expect(approvePayload.approved).toBe(true);
+
+    const validationResult = await validation;
+    const payload = JSON.parse(validationResult.content[0].text);
+    expect(payload.approval).toMatchObject({ status: 'approved', operator_notes: 'approved in test' });
+    expect(engine.getApprovalRequest('act-live-approval')).toMatchObject({
+      status: 'approved',
+      operator_notes: 'approved in test',
+    });
+  });
+
+  it('returns approval_not_live when durable approval has no live waiter', async () => {
+    engine.recordApprovalRequest({
+      action_id: 'act-stale-approval',
+      target_ip: '10.10.10.6',
+      technique: 'portscan',
+      description: 'Stale approval',
+      opsec_context: {
+        noise_budget_remaining: 1,
+        global_noise_spent: 0,
+        recommended_approach: 'normal',
+        defensive_signals: [],
+      },
+      validation_result: 'valid',
+    });
+
+    const result = await handlers.approve_action({ action_id: 'act-stale-approval' });
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toBe('approval_not_live');
+  });
+
+  it('reloads durable pending approvals from persisted state', () => {
+    engine.recordApprovalRequest({
+      action_id: 'act-reloaded-approval',
+      target_ip: '10.10.10.7',
+      technique: 'portscan',
+      description: 'Reloaded approval',
+      opsec_context: {
+        noise_budget_remaining: 1,
+        global_noise_spent: 0,
+        recommended_approach: 'normal',
+        defensive_signals: [],
+      },
+      validation_result: 'valid',
+    });
+
+    const reloaded = new GraphEngine(engine.getConfig(), TEST_STATE_FILE);
+    expect(reloaded.getPendingApprovalRequests()).toEqual([
+      expect.objectContaining({
+        action_id: 'act-reloaded-approval',
+        status: 'pending',
+        target_ip: '10.10.10.7',
+      }),
+    ]);
   });
 
   describe('next_task frontier linkage tracking', () => {

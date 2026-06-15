@@ -129,6 +129,8 @@ export interface AgentConsoleEvent {
   id: string;
   timestamp: string;
   agent_id: string;
+  source_kind?: 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
+  source_label?: string;
   kind: AgentConsoleKind;
   severity: AgentConsoleSeverity;
   title: string;
@@ -231,17 +233,24 @@ export interface SessionBufferResponse {
 
 export interface PendingAction {
   action_id: string;
-  technique: string;
-  target: string;
+  technique?: string;
+  target?: string;
   target_node?: string;
   target_ip?: string;
   target_cidr?: string;
-  noise_level: number;
+  noise_level?: number;
   description: string;
   defense_context?: string;
   submitted_at: string;
   timeout_at?: string;
+  resolved_at?: string;
+  status?: 'pending' | 'approved' | 'denied' | 'timeout';
+  operator_notes?: string;
+  reason?: string;
+  auto_approved?: boolean;
+  unattended_execute?: boolean;
   frontier_item_id?: string;
+  agent_id?: string;
   validation_result?: string;
   opsec_context?: {
     noise_level?: number;
@@ -262,11 +271,25 @@ export interface ActivityEntry {
   description: string;
   agent_id?: string;
   details?: Record<string, unknown>;
+  source_kind?: 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
+  operator_model?: string;
+  operator_name?: string;
+  operator_session_id?: string;
   frontier_item_id?: string;
   target_node_ids?: string[];
   event_id?: string;
   result_classification?: 'success' | 'failure' | 'partial' | 'neutral';
   validation_result?: string;
+}
+
+export interface ActionQueueDiagnostics {
+  approval_mode?: 'auto-approve' | 'approve-critical' | 'approve-all';
+  opsec_enabled?: boolean;
+  websocket_connected?: boolean;
+  latest_action_at?: string;
+  latest_action_type?: string;
+  latest_approval_at?: string;
+  latest_approval_status?: string;
 }
 
 // --- Read-only introspection ---

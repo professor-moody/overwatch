@@ -391,7 +391,7 @@ function generateKeyPrinciplesSection(config: EngagementConfig): string {
     '- **Use the right export path.** `bundle_engagement()` creates a portable archive with state, evidence, reports, manifest, and the WAL journal. `export_graph()` is graph JSON only.',
     '- **Runtime-only connectors stay runtime-only.** `connect_postgres()` opens an in-process connection for this server session; only the redacted `postgres_dsn` display value survives config validation/reload. Reconnect after restart before `list_postgres_tables()` or `ingest_postgres_table()`.',
     '- **Use `ingest_json()` for one-off structured imports.** Prefer dedicated parsers when they exist; use generic JSON/JSONL mappings for unsupported tool output or custom datasets.',
-    '- **Dashboard tabs:** Overview · Agents · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Campaigns. The **Credentials** tab shows all captured tokens/keys with status, reachability, and reveal/copy for `cred_value`. The **Findings** tab shows classified severity groups + report archive.',
+    '- **Dashboard tabs:** Overview · Operator · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Campaigns. The **Operator** tab is the primary console for main-model activity and subagents. The **Credentials** tab shows all captured tokens/keys with status, reachability, and reveal/copy for `cred_value`. The **Findings** tab shows classified severity groups + report archive.',
     '',
     '### Scope guardrails',
     '',

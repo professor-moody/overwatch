@@ -861,7 +861,7 @@ export async function runInstrumentedProcess(
     // P4.1: pass the phase-effective approval config so per-phase
     // overrides (e.g., approve-all during exploitation) are honored.
     if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig())) {
-      const approval = await queue.submit({
+      const pendingApproval = {
         action_id: normalizedActionId,
         technique,
         target_node,
@@ -871,7 +871,11 @@ export async function runInstrumentedProcess(
         opsec_context: v.opsec_context,
         validation_result: validationResult as 'valid' | 'warning_only',
         frontier_item_id,
-      });
+        agent_id,
+      };
+      engine.recordApprovalRequest(pendingApproval);
+      const approval = await queue.submit(pendingApproval);
+      engine.resolveApprovalRequest(approval);
 
       engine.logActionEvent({
         description: approval.unattended_execute

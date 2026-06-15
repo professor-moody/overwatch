@@ -189,7 +189,7 @@ Call this before every significant action. Returns valid/invalid with specific e
       const queue = engine.getPendingActionQueue();
       let approval: import('../services/pending-action-queue.js').ActionResolution | undefined;
       if (validationResult !== 'invalid' && queue.needsApproval(result.opsec_context, technique)) {
-        approval = await queue.submit({
+        const pendingApproval = {
           action_id: normalizedActionId,
           technique,
           target_node,
@@ -199,7 +199,10 @@ Call this before every significant action. Returns valid/invalid with specific e
           opsec_context: result.opsec_context,
           validation_result: validationResult as 'valid' | 'warning_only',
           frontier_item_id,
-        });
+        };
+        engine.recordApprovalRequest(pendingApproval);
+        approval = await queue.submit(pendingApproval);
+        engine.resolveApprovalRequest(approval);
 
         // Log the approval resolution
         engine.logActionEvent({
@@ -258,6 +261,108 @@ Call this before every significant action. Returns valid/invalid with specific e
         }]
       };
     })
+  );
+
+  // ============================================================
+  // Tools: approve_action / deny_action
+  // Terminal-facing approval controls used by the dashboard Actions page.
+  // ============================================================
+  server.registerTool(
+    'approve_action',
+    {
+      title: 'Approve Action',
+      description: `Approve a currently pending Overwatch action by action_id.
+
+This resolves the live approval gate used by validate_action/run_bash/run_tool. If the durable approval record exists but the live waiter is gone, the tool returns approval_not_live so the operator knows the original tool call cannot continue.`,
+      inputSchema: {
+        action_id: z.string().min(1).describe('Pending action ID to approve'),
+        notes: z.string().optional().describe('Optional operator notes recorded with the approval'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('approve_action', async ({ action_id, notes }) => {
+      const queue = engine.getPendingActionQueue();
+      const durable = engine.getApprovalRequest(action_id);
+      const result = queue.approve(action_id, notes);
+      if (!result) {
+        const reason = durable ? 'approval_not_live' : 'approval_not_found';
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id,
+              approved: false,
+              error: reason,
+              message: durable
+                ? 'Approval record exists, but no live MCP tool call is waiting for this action.'
+                : 'No pending approval record exists for this action.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      engine.resolveApprovalRequest(result);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ action_id, approved: true, approval: result }, null, 2),
+        }],
+      };
+    }),
+  );
+
+  server.registerTool(
+    'deny_action',
+    {
+      title: 'Deny Action',
+      description: `Deny a currently pending Overwatch action by action_id.
+
+This resolves the live approval gate used by validate_action/run_bash/run_tool. If the durable approval record exists but the live waiter is gone, the tool returns approval_not_live so the operator knows the original tool call cannot continue.`,
+      inputSchema: {
+        action_id: z.string().min(1).describe('Pending action ID to deny'),
+        reason: z.string().optional().describe('Optional operator reason recorded with the denial'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    withErrorBoundary('deny_action', async ({ action_id, reason }) => {
+      const queue = engine.getPendingActionQueue();
+      const durable = engine.getApprovalRequest(action_id);
+      const result = queue.deny(action_id, reason);
+      if (!result) {
+        const failureReason = durable ? 'approval_not_live' : 'approval_not_found';
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              action_id,
+              denied: false,
+              error: failureReason,
+              message: durable
+                ? 'Approval record exists, but no live MCP tool call is waiting for this action.'
+                : 'No pending approval record exists for this action.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      engine.resolveApprovalRequest(result);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ action_id, denied: true, approval: result }, null, 2),
+        }],
+      };
+    }),
   );
 
   // ============================================================

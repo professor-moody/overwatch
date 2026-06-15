@@ -11,6 +11,7 @@ import type {
   AgentConsoleEvent,
   Campaign,
   PendingAction,
+  ActionQueueDiagnostics,
   HealthStatus,
   EvidenceChainResponse,
   FindingContextResponse,
@@ -230,7 +231,7 @@ export async function getCampaignChildren(id: string): Promise<{ campaigns: Camp
 
 // --- Pending Actions ---
 
-export async function getPendingActions(): Promise<{ pending: PendingAction[] }> {
+export async function getPendingActions(): Promise<{ pending: PendingAction[]; recent?: PendingAction[]; diagnostics?: ActionQueueDiagnostics }> {
   return fetchJson('/api/actions/pending');
 }
 

@@ -16,6 +16,7 @@ import type { TrackedProcess } from './process-tracker.js';
 import { ColdStore } from './cold-store.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
+import type { DurableApprovalRecord } from './pending-action-queue.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
 import { eventIdOrUuid } from './deterministic-id.js';
@@ -76,6 +77,10 @@ export type ActivityLogEntry = {
   timestamp: string;
   description: string;
   agent_id?: string;
+  source_kind?: 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
+  operator_model?: string;
+  operator_name?: string;
+  operator_session_id?: string;
   provenance?: ActivityProvenance;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'reasoning' | 'system';
   frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test' | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot';
@@ -137,6 +142,7 @@ export class EngineContext {
   coldStore: ColdStore;
   opsecTracker: OpsecTracker;
   pendingActionQueue: PendingActionQueue;
+  approvalRequests: Map<string, DurableApprovalRecord>;
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
   frontierLinkage: FrontierLinkageTracker;   // status of every frontier item we've surfaced
@@ -188,6 +194,7 @@ export class EngineContext {
     this.coldStore = new ColdStore();
     this.opsecTracker = new OpsecTracker(this);
     this.pendingActionQueue = new PendingActionQueue(this);
+    this.approvalRequests = new Map();
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;
     this.frontierLinkage = new FrontierLinkageTracker();
@@ -421,11 +428,18 @@ export function normalizeActivityLogEntry(
     || normalizeOutcome(entry.result_classification, entry.validation_result)
     || inferOutcomeFromEventType(entry.event_type);
   const resolvedProvenance = entry.provenance || inferProvenance(entry, resolvedCategory);
+  const resolvedSourceKind = entry.source_kind || inferSourceKind(entry, resolvedProvenance, resolvedCategory);
+  const operatorName = entry.operator_name || (resolvedSourceKind === 'primary' ? process.env.OVERWATCH_OPERATOR_NAME : undefined);
+  const operatorModel = entry.operator_model || (resolvedSourceKind === 'primary' ? process.env.OVERWATCH_OPERATOR_MODEL : undefined);
   return {
     event_id: entry.event_id || uuidv4(),
     timestamp: entry.timestamp || new Date().toISOString(),
     description: entry.description,
     agent_id: entry.agent_id,
+    source_kind: resolvedSourceKind,
+    operator_model: operatorModel,
+    operator_name: operatorName,
+    operator_session_id: entry.operator_session_id,
     provenance: resolvedProvenance,
     category: resolvedCategory,
     frontier_type: entry.frontier_type,
@@ -451,6 +465,21 @@ export function normalizeActivityLogEntry(
     event_hash: entry.event_hash,
     chain_excluded: entry.chain_excluded,
   };
+}
+
+function inferSourceKind(
+  entry: Partial<ActivityLogEntry>,
+  provenance: ActivityProvenance,
+  category: ActivityLogEntry['category'] | undefined,
+): ActivityLogEntry['source_kind'] {
+  const details = entry.details || {};
+  const source = typeof details.source === 'string' ? details.source.toLowerCase() : '';
+  const invokingTool = typeof details.invoking_tool === 'string' ? details.invoking_tool.toLowerCase() : '';
+  if (source === 'dashboard' || invokingTool === 'dashboard') return 'dashboard';
+  if (source.includes('runner') || invokingTool.includes('runner')) return 'runner';
+  if (entry.agent_id || typeof details.agent_id === 'string' || category === 'agent') return 'subagent';
+  if (category === 'system' || provenance === 'system' || provenance === 'inferred') return 'system';
+  return 'primary';
 }
 
 function normalizeOutcome(

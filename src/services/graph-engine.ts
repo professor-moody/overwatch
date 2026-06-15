@@ -36,6 +36,7 @@ import { WebChainEnricher } from './web-attack-chains.js';
 import type { MatchedChain } from './web-attack-chains.js';
 import type { OpsecContext } from './opsec-tracker.js';
 import { isInTimeWindow } from './opsec-tracker.js';
+import type { ActionResolution, DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import {
   inferPivotReachability as _inferPivotReachability,
   inferDefaultCredentials as _inferDefaultCredentials,
@@ -2297,6 +2298,59 @@ export class GraphEngine {
 
   getPendingActionQueue(): import('./pending-action-queue.js').PendingActionQueue {
     return this.ctx.pendingActionQueue;
+  }
+
+  recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
+    const now = new Date();
+    const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;
+    const record: DurableApprovalRecord = {
+      ...action,
+      status: 'pending',
+      submitted_at: now.toISOString(),
+      timeout_at: new Date(now.getTime() + timeoutMs).toISOString(),
+    };
+    this.ctx.approvalRequests.set(action.action_id, record);
+    this.persist();
+    this.flushNow();
+    return record;
+  }
+
+  resolveApprovalRequest(resolution: ActionResolution): DurableApprovalRecord | null {
+    const existing = this.ctx.approvalRequests.get(resolution.action_id);
+    if (!existing) return null;
+    const record: DurableApprovalRecord = {
+      ...existing,
+      status: resolution.status,
+      resolved_at: resolution.resolved_at,
+      operator_notes: resolution.operator_notes,
+      reason: resolution.reason,
+      auto_approved: resolution.auto_approved,
+      unattended_execute: resolution.unattended_execute,
+    };
+    this.ctx.approvalRequests.set(resolution.action_id, record);
+    this.persist();
+    this.flushNow();
+    return record;
+  }
+
+  getApprovalRequests(options?: { includeResolved?: boolean; resolvedSinceMs?: number }): DurableApprovalRecord[] {
+    const now = Date.now();
+    return [...this.ctx.approvalRequests.values()]
+      .filter(record => {
+        if (record.status === 'pending') return true;
+        if (options?.includeResolved) return true;
+        if (options?.resolvedSinceMs == null || !record.resolved_at) return false;
+        return now - new Date(record.resolved_at).getTime() <= options.resolvedSinceMs;
+      })
+      .sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+  }
+
+  getPendingApprovalRequests(): DurableApprovalRecord[] {
+    return this.getApprovalRequests().filter(record => record.status === 'pending');
+  }
+
+  getApprovalRequest(actionId: string): DurableApprovalRecord | undefined {
+    return this.ctx.approvalRequests.get(actionId);
   }
 
   listSnapshots(): string[] {

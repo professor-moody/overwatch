@@ -3,7 +3,7 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { CountdownTimer, EmptyState } from '../shared';
 import { explainAction, getPendingActions } from '../../lib/api';
-import type { ActionExplanation, PendingAction } from '../../lib/types';
+import type { ActionExplanation, ActionQueueDiagnostics, PendingAction } from '../../lib/types';
 import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import {
@@ -27,10 +27,13 @@ export function ActionsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const sessions = useEngagementStore((s) => s.sessions);
   const frontier = useEngagementStore((s) => s.frontier);
+  const connected = useEngagementStore((s) => s.connected);
   const [sortMode, setSortMode] = useState<ActionSortMode>('risk');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [copied, setCopied] = useState<string | null>(null);
+  const [recentResolved, setRecentResolved] = useState<PendingAction[]>([]);
+  const [diagnostics, setDiagnostics] = useState<ActionQueueDiagnostics | null>(null);
   const { navigateToPanel } = useNavigation();
 
   const sorted = useMemo(() => {
@@ -42,6 +45,7 @@ export function ActionsPanel() {
         action.target,
         action.target_node,
         action.target_ip,
+        action.target_cidr,
         action.description,
       ].some(value => typeof value === 'string' && value.toLowerCase().includes(q)))
       : pendingActions;
@@ -56,6 +60,8 @@ export function ActionsPanel() {
     try {
       const data = await getPendingActions();
       useEngagementStore.setState({ pendingActions: data.pending || [] });
+      setRecentResolved(data.recent || []);
+      setDiagnostics(data.diagnostics || null);
     } catch { /* keep current queue visible */ }
   }, []);
 
@@ -98,9 +104,11 @@ export function ActionsPanel() {
       />
 
       {pendingActions.length === 0 ? (
-        <EmptyState
-          title="No pending actions"
-          description="Approvals still happen from the terminal. When an action waits for review, this workspace will show the context to make that terminal decision."
+        <ActionEmptyState
+          diagnostics={diagnostics}
+          connected={connected}
+          recentResolvedCount={recentResolved.length}
+          onRefresh={refresh}
         />
       ) : (
         <div className="grid grid-cols-[minmax(360px,460px)_1fr] gap-4 flex-1 min-h-0">
@@ -150,6 +158,61 @@ export function ActionsPanel() {
         </div>
       )}
     </div>
+  );
+}
+
+function ActionEmptyState({
+  diagnostics,
+  connected,
+  recentResolvedCount,
+  onRefresh,
+}: {
+  diagnostics: ActionQueueDiagnostics | null;
+  connected: boolean;
+  recentResolvedCount: number;
+  onRefresh: () => void;
+}) {
+  const approvalMode = diagnostics?.approval_mode || 'auto-approve';
+  const reason = !connected
+    ? 'Dashboard websocket is disconnected. Polling can still recover persisted approvals, but live updates may be delayed.'
+    : approvalMode === 'auto-approve'
+      ? 'Current policy auto-approves actions, so the terminal approval queue is expected to stay empty.'
+      : diagnostics?.latest_action_at && !diagnostics.latest_approval_at
+        ? 'Recent actions did not require approval under the current OPSEC policy.'
+        : 'When an action waits for terminal review, it will appear here with copyable approval commands.';
+
+  return (
+    <PanelSection className="min-h-80">
+      <div className="flex h-full min-h-72 flex-col justify-center">
+        <div className="max-w-3xl">
+          <div className="flex items-center gap-2">
+            <h3 className="text-base font-semibold text-foreground">No pending terminal approvals</h3>
+            <StatusPill tone={connected ? 'success' : 'danger'}>{connected ? 'live' : 'disconnected'}</StatusPill>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{reason}</p>
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+            <DetailFact label="Approval mode" value={approvalMode} />
+            <DetailFact label="OPSEC" value={diagnostics?.opsec_enabled ? 'enabled' : 'not enforced'} />
+            <DetailFact label="Last action" value={diagnostics?.latest_action_at ? formatRelativeTime(diagnostics.latest_action_at) : '—'} />
+            <DetailFact label="Last approval" value={diagnostics?.latest_approval_at ? formatRelativeTime(diagnostics.latest_approval_at) : '—'} />
+            <DetailFact label="Resolved recent" value={recentResolvedCount} />
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <ActionButton onClick={onRefresh} variant="secondary">Refresh</ActionButton>
+            {diagnostics?.latest_action_type && (
+              <span className="rounded border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground">
+                latest: {diagnostics.latest_action_type}
+              </span>
+            )}
+            {diagnostics?.latest_approval_status && (
+              <span className="rounded border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground">
+                approval: {diagnostics.latest_approval_status}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </PanelSection>
   );
 }
 

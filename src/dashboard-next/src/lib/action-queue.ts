@@ -47,8 +47,10 @@ export function classifyActionLifecycle(action: PendingAction, now = Date.now())
 }
 
 export function terminalApprovalCommand(action: PendingAction, decision: 'approve' | 'deny' = 'approve'): string {
-  const reason = decision === 'approve' ? 'reviewed in dashboard' : 'denied from dashboard review';
-  return `${decision}_action action_id=${action.action_id} notes="${reason}"`;
+  if (decision === 'approve') {
+    return `approve_action action_id=${action.action_id} notes="reviewed in dashboard"`;
+  }
+  return `deny_action action_id=${action.action_id} reason="denied from dashboard review"`;
 }
 
 export function terminalApprovalSummary(action: PendingAction): string {

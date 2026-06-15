@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type RefObject } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
+import { buildOperatorConsoleEvents } from '../../lib/operator-console';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
-import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, StatusPill } from '../shared/primitives';
+import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
@@ -18,10 +19,13 @@ const STATUS_ORDER: Record<string, number> = {
   running: 0, pending: 1, failed: 2, interrupted: 3, completed: 4,
 };
 
-type ConsoleFilter = 'all' | AgentConsoleKind | 'errors';
+type ConsoleFilter = 'all' | 'primary' | 'subagents' | AgentConsoleKind | 'errors';
+type AgentContext = { subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } };
 
 const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
   { value: 'all', label: 'All' },
+  { value: 'primary', label: 'Primary' },
+  { value: 'subagents', label: 'Subagents' },
   { value: 'thought', label: 'Thoughts' },
   { value: 'action', label: 'Actions' },
   { value: 'finding', label: 'Findings' },
@@ -34,13 +38,28 @@ function sortAgents(list: AgentInfo[]): AgentInfo[] {
   return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5));
 }
 
+function isScrolledNearBottom(el: HTMLElement | null, threshold = 48): boolean {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+
 export function AgentsPanel() {
   const agents = useEngagementStore((s) => s.agents);
   const initialized = useEngagementStore((s) => s.initialized);
+  const connected = useEngagementStore((s) => s.connected);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [detailAgent, setDetailAgent] = useState<AgentInfo | null>(null);
-  const [detailContext, setDetailContext] = useState<{ subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } } | null>(null);
+  const [activeAgentId, setActiveAgentId] = useState<string>('all');
+  const [activeContext, setActiveContext] = useState<AgentContext | null>(null);
+  const [drawerAgent, setDrawerAgent] = useState<AgentInfo | null>(null);
+  const [drawerContext, setDrawerContext] = useState<AgentContext | null>(null);
+  const [consoleEvents, setConsoleEvents] = useState<AgentConsoleEvent[]>([]);
+  const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>('all');
+  const [consolePaused, setConsolePaused] = useState(false);
+  const [consoleFollowing, setConsoleFollowing] = useState(true);
+  const [consoleSearch, setConsoleSearch] = useState('');
+  const consoleEndRef = useRef<HTMLDivElement | null>(null);
+  const consoleScrollRef = useRef<HTMLDivElement | null>(null);
   const [showDispatch, setShowDispatch] = useState(false);
   const [showBulkDispatch, setShowBulkDispatch] = useState(false);
   const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
@@ -80,6 +99,13 @@ export function AgentsPanel() {
   const running = agents.filter(a => a.status === 'running');
   const completed = agents.filter(a => a.status === 'completed');
   const failed = agents.filter(a => a.status === 'failed' || a.status === 'interrupted');
+  const activeAgent = activeAgentId === 'all'
+    ? null
+    : agents.find(agent => agent.id === activeAgentId) || null;
+
+  useEffect(() => {
+    if (activeAgentId !== 'all' && !activeAgent) setActiveAgentId('all');
+  }, [activeAgent, activeAgentId]);
 
   const toggleGroup = (gid: string) => {
     setCollapsedGroups(prev => { const n = new Set(prev); n.has(gid) ? n.delete(gid) : n.add(gid); return n; });
@@ -114,19 +140,111 @@ export function AgentsPanel() {
     await refreshAgents();
   };
 
-  const showDetail = async (agent: AgentInfo) => {
-    setDetailAgent(agent);
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeAgent) {
+      setActiveContext(null);
+      return () => { cancelled = true; };
+    }
+    api.getAgentContext(activeAgent.id)
+      .then(ctx => { if (!cancelled) setActiveContext(ctx as AgentContext); })
+      .catch(() => { if (!cancelled) setActiveContext(null); });
+    return () => { cancelled = true; };
+  }, [activeAgent?.id]);
+
+  const loadConsole = useCallback(async () => {
     try {
-      const ctx = await api.getAgentContext(agent.id);
-      setDetailContext(ctx as typeof detailContext);
-    } catch { setDetailContext(null); }
+      if (activeAgent) {
+        const data = await api.getAgentConsole(activeAgent.id, { limit: 140 });
+        setConsoleEvents(data.events || []);
+      } else {
+        const data = await api.getHistory({ limit: 300 });
+        setConsoleEvents(buildOperatorConsoleEvents(data.entries || [], { agents, limit: 180 }));
+      }
+    } catch {
+      setConsoleEvents([]);
+    }
+  }, [activeAgent?.id, agents]);
+
+  useEffect(() => { loadConsole(); }, [loadConsole]);
+
+  useEffect(() => {
+    if (consolePaused) return;
+    const timer = setInterval(() => {
+      if (connected) void loadConsole();
+    }, activeAgent ? 8000 : 5000);
+    return () => clearInterval(timer);
+  }, [activeAgent, connected, consolePaused, loadConsole]);
+
+  useEffect(() => {
+    const handleUpdate = (event: Event) => {
+      if (consolePaused) return;
+      const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
+      const incoming = (detail?.events || []).filter(item => (
+        !activeAgent
+        || item.agent_id === activeAgent.id
+        || item.agent_id === activeAgent.agent_id
+      ));
+      if (incoming.length === 0) return;
+      setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
+    };
+    window.addEventListener('overwatch-agent-console-update', handleUpdate);
+    return () => window.removeEventListener('overwatch-agent-console-update', handleUpdate);
+  }, [activeAgent, consolePaused]);
+
+  const scrollConsoleToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = consoleScrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!consolePaused && consoleFollowing) scrollConsoleToBottom();
+  }, [consoleEvents, consolePaused, consoleFollowing, scrollConsoleToBottom]);
+
+  const visibleConsoleEvents = useMemo(() => {
+    const q = consoleSearch.trim().toLowerCase();
+    return consoleEvents.filter(event => {
+      if (consoleFilter === 'errors' && event.severity !== 'error' && event.severity !== 'warning') return false;
+      if (consoleFilter === 'primary' && event.source_kind !== 'primary') return false;
+      if (consoleFilter === 'subagents' && event.source_kind !== 'subagent') return false;
+      if (!['all', 'errors', 'primary', 'subagents'].includes(consoleFilter) && event.kind !== consoleFilter) return false;
+      if (!q) return true;
+      return [
+        event.title,
+        event.summary,
+        event.agent_id,
+        event.source_label,
+        event.source_kind,
+        event.status,
+        event.links?.action_id,
+        event.links?.frontier_item_id,
+        event.links?.evidence_id,
+        event.links?.session_id,
+        ...(event.links?.node_ids || []),
+      ].some(value => typeof value === 'string' && value.toLowerCase().includes(q));
+    });
+  }, [consoleEvents, consoleFilter, consoleSearch]);
+
+  const openDetail = async (agent: AgentInfo) => {
+    setDrawerAgent(agent);
+    try {
+      const ctx = activeAgent?.id === agent.id && activeContext
+        ? activeContext
+        : await api.getAgentContext(agent.id);
+      setDrawerContext(ctx as AgentContext);
+    } catch {
+      setDrawerContext(null);
+    }
   };
 
   return (
-    <div className="space-y-4">
+    <div className="h-[calc(100vh-7rem)] min-h-[720px] space-y-4 overflow-hidden">
       <PageHeader
-        title="Agents"
-        meta={`(${agents.length})`}
+        title="Operator Console"
+        meta={activeAgent ? `subagent ${activeAgent.agent_id || activeAgent.id}` : 'primary operator + subagents'}
         actions={(
           <FilterBar>
           <div className="flex gap-2 text-xs">
@@ -139,7 +257,7 @@ export function AgentsPanel() {
             variant="ghost"
             className="text-accent"
           >
-            Deploy Agent
+            Dispatch Subagent
           </ActionButton>
           <ActionButton
             onClick={() => setShowBulkDispatch(true)}
@@ -166,102 +284,75 @@ export function AgentsPanel() {
 
       {!initialized ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
-      ) : agents.length === 0 ? (
-        <EmptyPanelState message="No agents dispatched yet." />
       ) : (
-        <div className="space-y-2">
-          {/* Select all */}
-          <label className="flex items-center gap-2 text-xs text-muted-foreground px-1 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selectedIds.size === agents.length && agents.length > 0}
-              onChange={selectAll}
-              className="accent-accent"
-            />
-            Select all
-          </label>
+        <div className="grid h-[calc(100%-4.25rem)] min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)_minmax(280px,360px)]">
+          <AgentRoster
+            agents={agents}
+            groups={groups}
+            ungrouped={ungrouped}
+            activeAgentId={activeAgentId}
+            selectedIds={selectedIds}
+            collapsedGroups={collapsedGroups}
+            onSelectAllOutput={() => setActiveAgentId('all')}
+            onSelectAgent={(agent) => setActiveAgentId(agent.id)}
+            onToggleSelect={toggleSelect}
+            onSelectAll={selectAll}
+            onToggleGroup={toggleGroup}
+            onCancelAgent={cancelAgent}
+            onCancelGroup={cancelGroup}
+            onOpenDetail={openDetail}
+          />
 
-          {/* Campaign groups */}
-          {[...groups.entries()].map(([cid, group]) => {
-            const isCollapsed = collapsedGroups.has(cid);
-            const runningCount = group.agents.filter(a => a.status === 'running').length;
-            const hasRunning = group.agents.some(a => a.status === 'running' || a.status === 'pending');
-            const icon = STRATEGY_ICONS[group.strategy] || '⚙';
+          <AgentOutputConsole
+            activeAgent={activeAgent}
+            events={visibleConsoleEvents}
+            totalEvents={consoleEvents.length}
+            filter={consoleFilter}
+            search={consoleSearch}
+            paused={consolePaused}
+            following={consoleFollowing}
+            endRef={consoleEndRef}
+            scrollRef={consoleScrollRef}
+            onFilterChange={setConsoleFilter}
+            onSearchChange={setConsoleSearch}
+            onTogglePaused={() => {
+              const nextPaused = !consolePaused;
+              setConsolePaused(nextPaused);
+              if (!nextPaused) {
+                setConsoleFollowing(true);
+                void loadConsole().then(scrollConsoleToBottom);
+              }
+            }}
+            onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+            onJumpLatest={() => {
+              setConsoleFollowing(true);
+              scrollConsoleToBottom();
+            }}
+            onRefresh={loadConsole}
+            onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+            onNavigatePanel={navigateToPanel}
+          />
 
-            return (
-              <div key={cid} className="bg-surface border border-border rounded-lg overflow-hidden">
-                <button
-                  onClick={() => toggleGroup(cid)}
-                  className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
-                >
-                  <span className="text-muted-foreground">{isCollapsed ? '▸' : '▾'}</span>
-                  <span>{icon}</span>
-                  <span className="font-medium text-foreground flex-1 text-left truncate">{group.name}</span>
-                  <span className="text-muted-foreground">{runningCount}/{group.agents.length} running</span>
-                  {hasRunning && (
-                    <span
-                      onClick={e => { e.stopPropagation(); cancelGroup(cid); }}
-                      className="px-1.5 py-0.5 rounded text-destructive hover:bg-destructive/10 cursor-pointer"
-                    >
-                      Cancel All
-                    </span>
-                  )}
-                </button>
-                {!isCollapsed && (
-                  <div className="border-t border-border">
-                    {sortAgents(group.agents).map(a => (
-                      <AgentCard
-                        key={a.id}
-                        agent={a}
-                        selected={selectedIds.has(a.id)}
-                        onToggleSelect={() => toggleSelect(a.id)}
-                        onCancel={() => cancelAgent(a.id)}
-                        onClick={() => showDetail(a)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Ungrouped */}
-          {ungrouped.length > 0 && (
-            <div className="bg-surface border border-border rounded-lg overflow-hidden">
-              <button
-                onClick={() => toggleGroup('__ungrouped__')}
-                className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
-              >
-                <span className="text-muted-foreground">{collapsedGroups.has('__ungrouped__') ? '▸' : '▾'}</span>
-                <span className="font-medium text-foreground flex-1 text-left">Ungrouped</span>
-                <span className="text-muted-foreground">{ungrouped.length}</span>
-              </button>
-              {!collapsedGroups.has('__ungrouped__') && (
-                <div className="border-t border-border">
-                  {sortAgents(ungrouped).map(a => (
-                    <AgentCard
-                      key={a.id}
-                      agent={a}
-                      selected={selectedIds.has(a.id)}
-                      onToggleSelect={() => toggleSelect(a.id)}
-                      onCancel={() => cancelAgent(a.id)}
-                      onClick={() => showDetail(a)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <AgentContextPanel
+            agent={activeAgent}
+            context={activeContext}
+            onOpenDetail={activeAgent ? () => openDetail(activeAgent) : undefined}
+            onCancel={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
+              ? () => cancelAgent(activeAgent.id)
+              : undefined}
+            onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+            onNavigateCampaign={navigateToCampaign}
+          />
         </div>
       )}
 
       {/* Detail Drawer */}
-      {detailAgent && (
+      {drawerAgent && (
         <AgentDetailDrawer
-          agent={detailAgent}
-          context={detailContext}
-          onClose={() => { setDetailAgent(null); setDetailContext(null); }}
-          onCancel={() => { cancelAgent(detailAgent.id); setDetailAgent(null); }}
+          agent={drawerAgent}
+          context={drawerContext}
+          onClose={() => { setDrawerAgent(null); setDrawerContext(null); }}
+          onCancel={() => { cancelAgent(drawerAgent.id); setDrawerAgent(null); }}
           onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
           onNavigateCampaign={(cid) => navigateToCampaign(cid)}
           onNavigatePanel={navigateToPanel}
@@ -287,20 +378,390 @@ export function AgentsPanel() {
   );
 }
 
+// ---- Agent Workbench ----
+
+function AgentRoster({
+  agents,
+  groups,
+  ungrouped,
+  activeAgentId,
+  selectedIds,
+  collapsedGroups,
+  onSelectAllOutput,
+  onSelectAgent,
+  onToggleSelect,
+  onSelectAll,
+  onToggleGroup,
+  onCancelAgent,
+  onCancelGroup,
+  onOpenDetail,
+}: {
+  agents: AgentInfo[];
+  groups: Map<string, { name: string; strategy: string; agents: AgentInfo[] }>;
+  ungrouped: AgentInfo[];
+  activeAgentId: string;
+  selectedIds: Set<string>;
+  collapsedGroups: Set<string>;
+  onSelectAllOutput: () => void;
+  onSelectAgent: (agent: AgentInfo) => void;
+  onToggleSelect: (id: string) => void;
+  onSelectAll: () => void;
+  onToggleGroup: (id: string) => void;
+  onCancelAgent: (id: string) => void;
+  onCancelGroup: (id: string) => void;
+  onOpenDetail: (agent: AgentInfo) => void;
+}) {
+  const running = agents.filter(agent => agent.status === 'running').length;
+  const failed = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
+
+  return (
+    <PanelSection className="min-h-0 overflow-hidden p-0 flex flex-col">
+      <div className="border-b border-border p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Operator Sources</h3>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">The primary model stays pinned; subagents are secondary filters.</p>
+          </div>
+          <StatusPill tone={failed > 0 ? 'danger' : running > 0 ? 'success' : 'muted'}>
+            {running} live
+          </StatusPill>
+        </div>
+      </div>
+
+      <div className="border-b border-border p-2">
+        <button
+          onClick={onSelectAllOutput}
+          className={cn(
+            'w-full rounded-md border px-3 py-2 text-left transition-colors',
+            activeAgentId === 'all'
+              ? 'border-accent/60 bg-accent/10'
+              : 'border-border bg-background/40 hover:bg-hover/40',
+          )}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-medium text-foreground">Primary Operator</span>
+            <span className="text-[10px] text-muted-foreground">{agents.length} subagents</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">Main model output and unassigned operator activity.</div>
+        </button>
+
+        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground px-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={selectedIds.size === agents.length && agents.length > 0}
+            onChange={onSelectAll}
+            className="accent-accent"
+          />
+          Select all subagents for batch controls
+        </label>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-muted-foreground">Subagents</div>
+        {[...groups.entries()].map(([cid, group]) => {
+          const isCollapsed = collapsedGroups.has(cid);
+          const runningCount = group.agents.filter(a => a.status === 'running').length;
+          const hasRunning = group.agents.some(a => a.status === 'running' || a.status === 'pending');
+          const icon = STRATEGY_ICONS[group.strategy] || '⚙';
+
+          return (
+            <div key={cid} className="border-b border-border">
+              <button
+                onClick={() => onToggleGroup(cid)}
+                className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
+              >
+                <span className="text-muted-foreground">{isCollapsed ? '▸' : '▾'}</span>
+                <span>{icon}</span>
+                <span className="font-medium text-foreground flex-1 text-left truncate">{group.name}</span>
+                <span className="text-muted-foreground">{runningCount}/{group.agents.length}</span>
+                {hasRunning && (
+                  <span
+                    onClick={e => { e.stopPropagation(); onCancelGroup(cid); }}
+                    className="px-1.5 py-0.5 rounded text-destructive hover:bg-destructive/10 cursor-pointer"
+                  >
+                    Cancel
+                  </span>
+                )}
+              </button>
+              {!isCollapsed && sortAgents(group.agents).map(agent => (
+                <AgentCard
+                  key={agent.id}
+                  agent={agent}
+                  active={activeAgentId === agent.id}
+                  selected={selectedIds.has(agent.id)}
+                  onToggleSelect={() => onToggleSelect(agent.id)}
+                  onCancel={() => onCancelAgent(agent.id)}
+                  onClick={() => onSelectAgent(agent)}
+                  onOpenDetail={() => onOpenDetail(agent)}
+                />
+              ))}
+            </div>
+          );
+        })}
+
+        {ungrouped.length > 0 && (
+          <div className="border-b border-border">
+            <button
+              onClick={() => onToggleGroup('__ungrouped__')}
+              className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
+            >
+              <span className="text-muted-foreground">{collapsedGroups.has('__ungrouped__') ? '▸' : '▾'}</span>
+              <span className="font-medium text-foreground flex-1 text-left">Ungrouped</span>
+              <span className="text-muted-foreground">{ungrouped.length}</span>
+            </button>
+            {!collapsedGroups.has('__ungrouped__') && sortAgents(ungrouped).map(agent => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                active={activeAgentId === agent.id}
+                selected={selectedIds.has(agent.id)}
+                onToggleSelect={() => onToggleSelect(agent.id)}
+                onCancel={() => onCancelAgent(agent.id)}
+                onClick={() => onSelectAgent(agent)}
+                onOpenDetail={() => onOpenDetail(agent)}
+              />
+            ))}
+          </div>
+        )}
+        {agents.length === 0 && (
+          <div className="mx-2 mb-2 rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
+            No subagents active. The primary operator stream remains available.
+          </div>
+        )}
+      </div>
+    </PanelSection>
+  );
+}
+
+function AgentOutputConsole({
+  activeAgent,
+  events,
+  totalEvents,
+  filter,
+  search,
+  paused,
+  following,
+  endRef,
+  scrollRef,
+  onFilterChange,
+  onSearchChange,
+  onTogglePaused,
+  onScroll,
+  onJumpLatest,
+  onRefresh,
+  onNavigateGraph,
+  onNavigatePanel,
+}: {
+  activeAgent: AgentInfo | null;
+  events: AgentConsoleEvent[];
+  totalEvents: number;
+  filter: ConsoleFilter;
+  search: string;
+  paused: boolean;
+  following: boolean;
+  endRef: RefObject<HTMLDivElement | null>;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onFilterChange: (filter: ConsoleFilter) => void;
+  onSearchChange: (value: string) => void;
+  onTogglePaused: () => void;
+  onScroll: () => void;
+  onJumpLatest: () => void;
+  onRefresh: () => void;
+  onNavigateGraph: (nodeId: string) => void;
+  onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
+}) {
+  return (
+    <PanelSection className="min-h-0 overflow-hidden p-0 flex flex-col border-accent/20">
+      <div className="border-b border-border p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-foreground">Operator Output</h3>
+              <StatusPill tone={paused ? 'warning' : following ? 'success' : 'muted'}>
+                {paused ? 'paused' : following ? 'following' : 'reading'}
+              </StatusPill>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {activeAgent
+                ? `Filtered to subagent ${activeAgent.agent_id || activeAgent.id}.`
+                : 'Primary model output plus subagent events, derived from Activity without duplicating raw output.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {!following && !paused && (
+              <ActionButton onClick={onJumpLatest} variant="ghost" size="xs">
+                Jump to latest
+              </ActionButton>
+            )}
+            <ActionButton onClick={onTogglePaused} variant={paused ? 'warning' : 'secondary'} size="xs">
+              {paused ? 'Resume' : 'Pause'}
+            </ActionButton>
+            <ActionButton onClick={onRefresh} variant="secondary" size="xs">
+              Refresh
+            </ActionButton>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            value={search}
+            onChange={event => onSearchChange(event.target.value)}
+            placeholder="Filter output..."
+            className="settings-input flex-1 min-w-48"
+          />
+          <div className="flex flex-wrap gap-1">
+            {CONSOLE_FILTERS.map(option => (
+              <button
+                key={option.value}
+                onClick={() => onFilterChange(option.value)}
+                className={cn(
+                  'rounded px-2 py-1 text-[10px] transition-colors',
+                  filter === option.value
+                    ? 'bg-accent text-accent-foreground'
+                    : 'bg-elevated text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto bg-background/30 p-3">
+        {events.length === 0 ? (
+          <div className="flex h-full min-h-64 items-center justify-center rounded border border-dashed border-border text-sm text-muted-foreground">
+            {totalEvents === 0 ? 'No operator output yet.' : 'No output matches the current filters.'}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {events.map(event => (
+              <AgentConsoleRow
+                key={event.id}
+                event={event}
+                prominent
+                onNavigateGraph={onNavigateGraph}
+                onNavigatePanel={onNavigatePanel}
+              />
+            ))}
+            <div ref={endRef} />
+          </div>
+        )}
+      </div>
+    </PanelSection>
+  );
+}
+
+function AgentContextPanel({
+  agent,
+  context,
+  onOpenDetail,
+  onCancel,
+  onNavigateGraph,
+  onNavigateCampaign,
+}: {
+  agent: AgentInfo | null;
+  context: AgentContext | null;
+  onOpenDetail?: () => void;
+  onCancel?: () => void;
+  onNavigateGraph: (nodeId: string) => void;
+  onNavigateCampaign: (campaignId: string) => void;
+}) {
+  if (!agent) {
+    return (
+      <PanelSection className="min-h-0 overflow-hidden">
+        <h3 className="text-sm font-semibold text-foreground">Primary Operator</h3>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Main model output is shown in the center stream. Subagents appear here only when selected.
+        </p>
+        <div className="mt-4 space-y-2 rounded border border-border bg-background/40 p-3 text-xs">
+          <DetailRow label="Source" value="Primary Operator" />
+          <DetailRow label="Model" value="Configured by MCP client or OVERWATCH_OPERATOR_MODEL" />
+          <DetailRow label="Subagents" value="Secondary, optional workers" />
+        </div>
+      </PanelSection>
+    );
+  }
+
+  const elapsed = agent.elapsed_ms
+    ? formatElapsed(agent.elapsed_ms)
+    : agent.completed_at && agent.assigned_at
+      ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
+      : '—';
+  const subgraphNodes = context?.subgraph?.nodes || [];
+
+  return (
+    <PanelSection className="min-h-0 overflow-y-auto">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-foreground">{agent.agent_id || agent.id}</h3>
+          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground break-all">{agent.id}</p>
+        </div>
+        <StatusPill tone={agent.status === 'running' ? 'success' : agent.status === 'failed' ? 'danger' : agent.status === 'completed' ? 'accent' : 'muted'}>
+          {agent.status}
+        </StatusPill>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {onOpenDetail && <ActionButton onClick={onOpenDetail} size="xs" variant="secondary">Inspect</ActionButton>}
+        {onCancel && <ActionButton onClick={onCancel} size="xs" variant="danger">Cancel</ActionButton>}
+        {agent.campaign_id && (
+          <ActionButton onClick={() => onNavigateCampaign(agent.campaign_id!)} size="xs" variant="ghost">
+            Campaign
+          </ActionButton>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <DetailRow label="Elapsed" value={elapsed} />
+        {agent.skill && <DetailRow label="Skill" value={agent.skill} />}
+        {agent.frontier_item_id && <DetailRow label="Frontier" value={agent.frontier_item_id} mono />}
+        {agent.result_summary && <DetailRow label="Result" value={agent.result_summary} />}
+        <DetailRow label="Scope" value={`${(agent.subgraph_node_ids || agent.scope_node_ids || []).length} nodes`} />
+      </div>
+
+      {subgraphNodes.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Scoped Nodes</div>
+          <div className="space-y-1">
+            {subgraphNodes.slice(0, 12).map(node => (
+              <button
+                key={node.id}
+                onClick={() => onNavigateGraph(node.id)}
+                className="block w-full truncate rounded bg-elevated/60 px-2 py-1 text-left text-xs text-accent hover:bg-hover"
+                title={node.id}
+              >
+                {String(node.properties?.label || node.id)}
+              </button>
+            ))}
+            {subgraphNodes.length > 12 && (
+              <div className="text-[10px] text-muted-foreground">and {subgraphNodes.length - 12} more</div>
+            )}
+          </div>
+        </div>
+      )}
+    </PanelSection>
+  );
+}
+
 // ---- Agent Card ----
 
 function AgentCard({
   agent,
+  active,
   selected,
   onToggleSelect,
   onCancel,
   onClick,
+  onOpenDetail,
 }: {
   agent: AgentInfo;
+  active: boolean;
   selected: boolean;
   onToggleSelect: () => void;
   onCancel: () => void;
   onClick: () => void;
+  onOpenDetail: () => void;
 }) {
   const cancellable = agent.status === 'running' || agent.status === 'pending';
   const elapsed = agent.elapsed_ms ? formatElapsed(agent.elapsed_ms) : '';
@@ -316,7 +777,10 @@ function AgentCard({
   return (
     <div
       onClick={onClick}
-      className="px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors cursor-pointer"
+      className={cn(
+        'px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors cursor-pointer',
+        active && 'bg-accent/10 border-l-2 border-l-accent',
+      )}
     >
       <div className="flex items-center gap-2">
         <input
@@ -335,10 +799,16 @@ function AgentCard({
           agent.status === 'pending' && 'bg-muted',
         )} />
         <span className="text-xs font-mono text-muted-foreground truncate" title={agent.agent_id || agent.id}>{agent.agent_id || agent.id}</span>
+        <button
+          onClick={e => { e.stopPropagation(); onOpenDetail(); }}
+          className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-hover hover:text-foreground"
+        >
+          Inspect
+        </button>
         {cancellable && (
           <button
             onClick={e => { e.stopPropagation(); onCancel(); }}
-            className="text-muted-foreground hover:text-destructive text-xs ml-auto"
+            className="text-muted-foreground hover:text-destructive text-xs"
             title="Cancel"
           >
             ✕
@@ -399,7 +869,9 @@ function AgentDetailDrawer({
   const [consoleEvents, setConsoleEvents] = useState<AgentConsoleEvent[]>([]);
   const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>('all');
   const [consolePaused, setConsolePaused] = useState(false);
+  const [consoleFollowing, setConsoleFollowing] = useState(true);
   const consoleEndRef = useRef<HTMLDivElement | null>(null);
+  const consoleScrollRef = useRef<HTMLDivElement | null>(null);
 
   const loadConsole = useCallback(async () => {
     try {
@@ -426,9 +898,17 @@ function AgentDetailDrawer({
     return () => window.removeEventListener('overwatch-agent-console-update', handleUpdate);
   }, [agent.id, agent.agent_id, consolePaused]);
 
+  const scrollConsoleToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = consoleScrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    });
+  }, []);
+
   useEffect(() => {
-    if (!consolePaused) consoleEndRef.current?.scrollIntoView({ block: 'end' });
-  }, [consoleEvents, consolePaused]);
+    if (!consolePaused && consoleFollowing) scrollConsoleToBottom();
+  }, [consoleEvents, consolePaused, consoleFollowing, scrollConsoleToBottom]);
 
   const visibleConsoleEvents = useMemo(() => {
     return consoleEvents.filter(event => {
@@ -517,7 +997,10 @@ function AgentDetailDrawer({
                   onClick={() => {
                     const nextPaused = !consolePaused;
                     setConsolePaused(nextPaused);
-                    if (!nextPaused) void loadConsole();
+                    if (!nextPaused) {
+                      setConsoleFollowing(true);
+                      void loadConsole().then(scrollConsoleToBottom);
+                    }
                   }}
                   className={cn(
                     'rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-hover',
@@ -526,6 +1009,17 @@ function AgentDetailDrawer({
                 >
                   {consolePaused ? 'Resume' : 'Pause'}
                 </button>
+                {!consoleFollowing && !consolePaused && (
+                  <button
+                    onClick={() => {
+                      setConsoleFollowing(true);
+                      scrollConsoleToBottom();
+                    }}
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] text-accent hover:bg-hover"
+                  >
+                    Latest
+                  </button>
+                )}
                 <button
                   onClick={loadConsole}
                   className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-hover"
@@ -555,7 +1049,11 @@ function AgentDetailDrawer({
                 No agent console events yet.
               </div>
             ) : (
-              <div className="max-h-72 space-y-1 overflow-y-auto rounded border border-border bg-background/30 p-1.5">
+              <div
+                ref={consoleScrollRef}
+                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+                className="max-h-72 space-y-1 overflow-y-auto rounded border border-border bg-background/30 p-1.5"
+              >
                 {visibleConsoleEvents.map(event => (
                   <AgentConsoleRow
                     key={event.id}
@@ -584,10 +1082,12 @@ function mergeConsoleEvents(current: AgentConsoleEvent[], incoming: AgentConsole
 
 function AgentConsoleRow({
   event,
+  prominent,
   onNavigateGraph,
   onNavigatePanel,
 }: {
   event: AgentConsoleEvent;
+  prominent?: boolean;
   onNavigateGraph: (nodeId: string) => void;
   onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
@@ -595,13 +1095,18 @@ function AgentConsoleRow({
   const links = event.links;
 
   return (
-    <div className={cn('rounded border bg-surface p-2 text-xs', consoleBorderClass(event.severity))}>
+    <div className={cn('rounded border bg-surface p-2 text-xs', prominent && 'p-3', consoleBorderClass(event.severity))}>
       <div className="flex items-start gap-2">
         <span className="w-12 flex-shrink-0 font-mono text-[10px] text-muted-foreground">{formatTimestamp(event.timestamp)}</span>
         <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full', consoleDotClass(event.severity))} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium text-foreground">{event.title}</span>
+            {event.source_label && (
+              <span className={cn('rounded px-1 py-0.5 text-[10px]', sourceKindClass(event.source_kind))}>
+                {event.source_label}
+              </span>
+            )}
             <span className="rounded bg-elevated px-1 py-0.5 text-[10px] text-muted-foreground">{event.kind}</span>
             {event.status && <span className="rounded bg-background px-1 py-0.5 text-[10px] text-muted-foreground">{event.status}</span>}
           </div>
@@ -665,6 +1170,14 @@ function consoleDotClass(severity: AgentConsoleEvent['severity']): string {
   if (severity === 'warning') return 'bg-warning';
   if (severity === 'success') return 'bg-success';
   return 'bg-accent';
+}
+
+function sourceKindClass(sourceKind: AgentConsoleEvent['source_kind']): string {
+  if (sourceKind === 'primary') return 'bg-accent/10 text-accent';
+  if (sourceKind === 'subagent') return 'bg-purple-dim text-purple';
+  if (sourceKind === 'runner') return 'bg-success/10 text-success';
+  if (sourceKind === 'dashboard') return 'bg-warning/10 text-warning';
+  return 'bg-elevated text-muted-foreground';
 }
 
 function shortId(value: string): string {

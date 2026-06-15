@@ -7,7 +7,7 @@ const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/Applications/Googl
 const ROUTES: Array<{ path: string; expects: string[]; expectsAny?: string[] }> = [
   { path: '/overview', expects: ['Overview', 'Now', 'Next', 'Changed', 'Current Access'] },
   { path: '/actions', expects: ['Actions', 'terminal'] },
-  { path: '/agents', expects: ['Agents'] },
+  { path: '/agents', expects: ['Operator Console', 'Primary Operator'] },
   { path: '/activity', expects: ['Activity'], expectsAny: ['No parser data', 'Dropped records', 'Path analysis failed'] },
   { path: '/campaigns', expects: ['Campaigns'] },
   { path: '/sessions', expects: ['Sessions', 'Terminal'], expectsAny: ['Attach', 'Detach', 'open_session'] },

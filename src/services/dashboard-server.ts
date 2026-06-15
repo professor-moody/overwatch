@@ -25,7 +25,7 @@ import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
 import { ScriptedAgentRunner } from './scripted-agent-runner.js';
-import type { PendingAction } from './pending-action-queue.js';
+import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 import { activityToAgentConsoleEvent, buildAgentConsoleEvents, type AgentConsoleEvent } from './agent-console.js';
@@ -1327,7 +1327,8 @@ export class DashboardServer {
   } {
     const state = this.engine.getState();
     const sessions = this.sessionManager?.list() ?? [];
-    const pending_actions = this.engine.getPendingActionQueue().getPending();
+    const pending_actions = this.getDashboardApprovalRecords()
+      .filter(action => action.status === 'pending') as PendingAction[];
     const campaigns = this.enrichCampaigns();
     return { ...state, sessions, pending_actions, campaigns };
   }
@@ -1967,11 +1968,83 @@ export class DashboardServer {
   // Pending Actions (Approval Gates)
   // =============================================
 
+  private getDashboardApprovalRecords(options: { includeResolvedRecent?: boolean } = {}): DurableApprovalRecord[] {
+    const includeResolvedRecent = options.includeResolvedRecent ?? false;
+    const records = new Map<string, DurableApprovalRecord>();
+    const resolvedSinceMs = includeResolvedRecent ? 10 * 60 * 1000 : undefined;
+
+    for (const record of this.readPersistedApprovalRecords()) {
+      if (record.status === 'pending' || includeResolvedRecent) {
+        if (!resolvedSinceMs || record.status === 'pending' || !record.resolved_at || Date.now() - new Date(record.resolved_at).getTime() <= resolvedSinceMs) {
+          records.set(record.action_id, record);
+        }
+      }
+    }
+
+    for (const record of this.engine.getApprovalRequests({ resolvedSinceMs })) {
+      if (record.status === 'pending' || includeResolvedRecent) records.set(record.action_id, record);
+    }
+
+    for (const action of this.engine.getPendingActionQueue().getPending()) {
+      records.set(action.action_id, {
+        ...action,
+        ...(records.get(action.action_id) || {}),
+        status: 'pending',
+      });
+    }
+
+    return [...records.values()]
+      .filter(record => record.status === 'pending' || includeResolvedRecent)
+      .sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+  }
+
+  private readPersistedApprovalRecords(): DurableApprovalRecord[] {
+    try {
+      const statePath = this.engine.getStateFilePath();
+      if (!existsSync(statePath)) return [];
+      const raw = JSON.parse(readFileSync(statePath, 'utf-8')) as { approvalRequests?: unknown };
+      if (!Array.isArray(raw.approvalRequests)) return [];
+      return raw.approvalRequests
+        .map(item => Array.isArray(item) ? item[1] : item)
+        .filter((item): item is DurableApprovalRecord => (
+          !!item
+          && typeof item === 'object'
+          && typeof (item as DurableApprovalRecord).action_id === 'string'
+          && typeof (item as DurableApprovalRecord).status === 'string'
+        ));
+    } catch {
+      return [];
+    }
+  }
+
+  private buildActionDiagnostics(records: DurableApprovalRecord[]): Record<string, unknown> {
+    const state = this.engine.getState({ activityCount: 100, includeReasoning: true, includeSystem: true });
+    const recentActivity = state.recent_activity || [];
+    const latestActionEvent = [...recentActivity].reverse().find(entry => typeof entry.event_type === 'string' && entry.event_type.startsWith('action_'));
+    const latestApproval = records[0];
+    const opsec = this.engine.getConfig().opsec;
+    return {
+      approval_mode: opsec.approval_mode || 'auto-approve',
+      opsec_enabled: opsec.enabled === true,
+      websocket_connected: this.clients.size > 0,
+      latest_action_at: latestActionEvent?.timestamp,
+      latest_action_type: latestActionEvent?.event_type,
+      latest_approval_at: latestApproval?.submitted_at,
+      latest_approval_status: latestApproval?.status,
+    };
+  }
+
   private servePendingActions(res: ServerResponse): void {
-    const queue = this.engine.getPendingActionQueue();
-    const pending = queue.getPending();
+    const records = this.getDashboardApprovalRecords({ includeResolvedRecent: true });
+    const pending = records.filter(record => record.status === 'pending');
+    const recent = records.filter(record => record.status !== 'pending');
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ pending, count: pending.length }));
+    res.end(JSON.stringify({
+      pending,
+      recent,
+      count: pending.length,
+      diagnostics: this.buildActionDiagnostics(records),
+    }));
   }
 
   private handleActionApprove(actionId: string, req: IncomingMessage, res: ServerResponse): void {
@@ -1980,10 +2053,12 @@ export class DashboardServer {
       const queue = this.engine.getPendingActionQueue();
       const result = queue.approve(actionId, body?.notes);
       if (!result) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Action not found or already resolved' }));
+        const durable = this.getDashboardApprovalRecords({ includeResolvedRecent: true }).find(action => action.action_id === actionId);
+        res.writeHead(durable ? 409 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: durable ? 'approval_not_live' : 'Action not found or already resolved' }));
         return;
       }
+      this.engine.resolveApprovalRequest(result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     }).catch(() => {
@@ -1998,10 +2073,12 @@ export class DashboardServer {
       const queue = this.engine.getPendingActionQueue();
       const result = queue.deny(actionId, body?.reason);
       if (!result) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Action not found or already resolved' }));
+        const durable = this.getDashboardApprovalRecords({ includeResolvedRecent: true }).find(action => action.action_id === actionId);
+        res.writeHead(durable ? 409 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: durable ? 'approval_not_live' : 'Action not found or already resolved' }));
         return;
       }
+      this.engine.resolveApprovalRequest(result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     }).catch(() => {
@@ -2149,7 +2226,7 @@ export class DashboardServer {
       || affectedNodeIds.includes(session.principal_node || '')
       || affectedNodeIds.includes(session.credential_node || ''),
     );
-    const pending_actions = this.engine.getPendingActionQueue().getPending().filter(action =>
+    const pending_actions = this.getDashboardApprovalRecords().filter(action =>
       affectedNodeIds.includes(action.target_node || '')
       || affectedNodeIds.includes(((action as unknown as { target?: string }).target) || ''),
     );
@@ -2345,7 +2422,7 @@ export class DashboardServer {
       const graph = this.engine.exportGraph();
       const state = this.engine.getState({ activityCount: 5, includeSystem: false });
       const health = this.engine.getHealthReport();
-      const pending = this.engine.getPendingActionQueue().getPending();
+      const pending = this.getDashboardApprovalRecords().filter(action => action.status === 'pending');
       const agents = this.engine.getAllAgents();
       const sessions = this.sessionManager?.list(false) ?? (Array.isArray((state as any).sessions) ? (state as any).sessions : []);
       const tapeStatus = this.tape?.getStatus() ?? { enabled: false, attached: false };

@@ -44,7 +44,7 @@ const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
       { id: 'overview', label: 'Overview', icon: LayoutGrid },
       { id: 'frontier', label: 'Frontier', icon: Crosshair },
       { id: 'actions', label: 'Actions', icon: Clock },
-      { id: 'agents', label: 'Agents', icon: User },
+      { id: 'agents', label: 'Operator', icon: User },
       { id: 'sessions', label: 'Sessions', icon: Terminal },
       { id: 'campaigns', label: 'Campaigns', icon: Bookmark },
     ],
