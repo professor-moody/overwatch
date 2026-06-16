@@ -171,8 +171,9 @@ function classifyEvent(entry: ActivityLogEntry): DecisionStageKind | null {
   switch (entry.event_type) {
     case 'action_validated': {
       // The validation event also carries approval state for queued actions.
-      const d = entry.details as { approval_status?: 'approved' | 'denied' | 'timeout' } | undefined;
-      if (d?.approval_status === 'denied') return 'denied';
+      const d = entry.details as { approval_status?: 'approved' | 'denied' | 'timeout' | 'aborted' } | undefined;
+      // 'aborted' (client disconnected before a decision) is a non-approval, like 'denied'.
+      if (d?.approval_status === 'denied' || d?.approval_status === 'aborted') return 'denied';
       if (d?.approval_status === 'approved' || d?.approval_status === 'timeout') return 'approved';
       return 'validated';
     }

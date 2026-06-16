@@ -144,7 +144,7 @@ Call this before every significant action. Returns valid/invalid with specific e
         openWorldHint: false
       }
     },
-    withErrorBoundary('validate_action', async ({ target_node, target_ip, target_cidr, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name: rawToolName, tool, frontier_item_id, description, allow_unverified_scope }) => {
+    withErrorBoundary('validate_action', async ({ target_node, target_ip, target_cidr, edge_source, edge_target, technique, target_url, cloud_resource, action_id, tool_name: rawToolName, tool, frontier_item_id, description, allow_unverified_scope }, extra) => {
       const tool_name = rawToolName || tool;
       const normalizedActionId = action_id || uuidv4();
       const result = engine.validateAction({ target_node, target_ip, target_cidr, edge_source, edge_target, technique, target_url, cloud_resource, allow_unverified_scope });
@@ -201,7 +201,7 @@ Call this before every significant action. Returns valid/invalid with specific e
           frontier_item_id,
         };
         engine.recordApprovalRequest(pendingApproval);
-        approval = await queue.submit(pendingApproval);
+        approval = await queue.submit(pendingApproval, { signal: extra?.signal });
         engine.resolveApprovalRequest(approval);
 
         // Log the approval resolution
@@ -211,7 +211,7 @@ Call this before every significant action. Returns valid/invalid with specific e
           event_type: 'action_validated',
           category: 'frontier',
           frontier_item_id,
-          result_classification: approval.status === 'denied' ? 'failure' : 'success',
+          result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
           details: {
             approval_status: approval.status,
             operator_notes: approval.operator_notes,
@@ -247,10 +247,14 @@ Call this before every significant action. Returns valid/invalid with specific e
           operator_notes: approval.operator_notes,
           reason: approval.reason,
         };
-        // If denied, override validation_result so the model knows to abort
+        // If denied or aborted (client disconnected before a decision), override
+        // validation_result so the model knows the action is NOT approved.
         if (approval.status === 'denied') {
           responseObj.validation_result = 'invalid';
           responseObj.errors = [...(result.errors || []), `Operator denied: ${approval.reason || 'no reason given'}`];
+        } else if (approval.status === 'aborted') {
+          responseObj.validation_result = 'invalid';
+          responseObj.errors = [...(result.errors || []), `Approval aborted: ${approval.reason || 'client disconnected before operator response'}`];
         }
       }
 

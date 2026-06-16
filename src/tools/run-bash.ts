@@ -77,7 +77,7 @@ process and pair with \`track_process\`.`,
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_bash', async (params) => {
+    withErrorBoundary('run_bash', async (params, extra) => {
       return runInstrumentedProcess(engine, {
         binary: 'bash',
         args: ['-c', params.command],
@@ -107,6 +107,7 @@ process and pair with \`track_process\`.`,
         parse_stream: params.parse_stream,
         noise_estimate: params.noise_estimate,
         invoking_tool: 'run_bash',
+        abortSignal: extra?.signal,
       });
     }),
   );

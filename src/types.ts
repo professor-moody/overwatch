@@ -801,7 +801,15 @@ export interface AgentTask {
   // don't yet heartbeat.
   heartbeat_at?: string;
   heartbeat_ttl_seconds?: number;
+  // Execution backend that should run this task. Resolved by TaskExecutionService:
+  //  - 'scripted'     : in-process deterministic runner (credential_test, token validation)
+  //  - 'headless_mcp' : a headless `claude -p` reasoning sub-agent (Phase 1B; no-op until then)
+  //  - 'manual'       : a human operator drives it; no automated execution
+  // Defaults to 'scripted' when unset (preserves legacy behavior).
+  backend?: TaskBackend;
 }
+
+export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
 
 // --- Finding (reported by agents) ---
 

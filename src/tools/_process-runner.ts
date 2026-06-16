@@ -545,6 +545,14 @@ export interface InstrumentedProcessOpts {
    * tool wrapper invoked the runner (`run_bash` or `run_tool`).
    */
   invoking_tool: 'run_bash' | 'run_tool';
+
+  /**
+   * Per-request AbortSignal from the MCP SDK (`extra.signal`). If the requesting
+   * client disconnects / cancels while this action is blocked on operator
+   * approval, the pending approval resolves as 'aborted' and the action is not
+   * executed, instead of orphaning the request until the approval timeout.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface InstrumentedProcessResponse {
@@ -585,6 +593,7 @@ export async function runInstrumentedProcess(
     noise_estimate: noiseOverride,
     allow_unverified_scope,
     operator_infra,
+    abortSignal,
   } = opts;
 
   // Auto-register a synthetic running task for this agent_id if none
@@ -874,7 +883,7 @@ export async function runInstrumentedProcess(
         agent_id,
       };
       engine.recordApprovalRequest(pendingApproval);
-      const approval = await queue.submit(pendingApproval);
+      const approval = await queue.submit(pendingApproval, { signal: abortSignal });
       engine.resolveApprovalRequest(approval);
 
       engine.logActionEvent({
@@ -886,7 +895,7 @@ export async function runInstrumentedProcess(
         event_type: 'action_validated',
         category: 'frontier',
         frontier_item_id,
-        result_classification: approval.status === 'denied' ? 'failure' : 'success',
+        result_classification: approval.status === 'denied' || approval.status === 'aborted' ? 'failure' : 'success',
         details: {
           approval_status: approval.status,
           operator_notes: approval.operator_notes,
@@ -896,9 +905,14 @@ export async function runInstrumentedProcess(
         },
       });
 
-      if (approval.status === 'denied') {
+      // Both 'denied' (operator decision) and 'aborted' (client disconnected
+      // before a decision) block execution — the command must not run.
+      if (approval.status === 'denied' || approval.status === 'aborted') {
+        const aborted = approval.status === 'aborted';
         engine.logActionEvent({
-          description: `Operator denied: ${resolvedDescription}`,
+          description: aborted
+            ? `Approval aborted (client disconnected): ${resolvedDescription}`
+            : `Operator denied: ${resolvedDescription}`,
           agent_id,
           action_id: normalizedActionId,
           event_type: 'action_failed',
@@ -908,7 +922,9 @@ export async function runInstrumentedProcess(
           technique,
           target_cidrs: targetCidrsForEvents(),
           result_classification: 'failure',
-          details: { reason: 'operator_denied', approval_reason: approval.reason },
+          details: aborted
+            ? { reason: 'approval_aborted', approval_reason: approval.reason }
+            : { reason: 'operator_denied', approval_reason: approval.reason },
         });
         engine.persist();
         return {
@@ -917,7 +933,7 @@ export async function runInstrumentedProcess(
             text: JSON.stringify({
               action_id: normalizedActionId,
               executed: false,
-              approval_status: 'denied',
+              approval_status: approval.status,
               reason: approval.reason,
             }, null, 2),
           }],
