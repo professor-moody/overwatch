@@ -14,6 +14,7 @@ import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
+import { interpretCommand, executeOps, type OperatorOp } from './command-interpreter.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
@@ -617,6 +618,8 @@ export class DashboardServer {
       this.serveAgents(res);
     } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
       this.handleAgentDispatch(req, res);
+    } else if (pathname === '/api/commands' && method === 'POST') {
+      this.handleCommand(req, res);
     } else if (pathname === '/api/templates') {
       this.serveTemplates(res);
     } else if (pathname === '/api/settings' && method === 'GET') {
@@ -1226,6 +1229,81 @@ export class DashboardServer {
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ dispatched: true, task }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- NL operator command (Phase 3A) ----
+  // Two-phase, like update_scope: a command is first interpreted into a plan
+  // (preview, no mutation); the operator then confirms the plan_id to execute.
+  // Nothing mutates without an explicit confirm.
+  private commandPlans = new Map<string, { ops: OperatorOp[]; command: string; created_at: number }>();
+
+  private pruneCommandPlans(): void {
+    const cutoff = Date.now() - 10 * 60_000; // 10 min TTL
+    for (const [id, p] of this.commandPlans) if (p.created_at < cutoff) this.commandPlans.delete(id);
+  }
+
+  private buildInterpreterState() {
+    return {
+      tasks: this.engine.getAgentTasks().map(t => ({ id: t.id, agent_id: t.agent_id, status: t.status, skill: t.skill })),
+      pendingActionIds: this.engine.getPendingActionQueue().getPending().map(a => a.action_id),
+    };
+  }
+
+  private handleCommand(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      this.pruneCommandPlans();
+
+      // Phase 2 of the flow: confirm + execute a previously-previewed plan.
+      if (b.confirm === true && typeof b.plan_id === 'string') {
+        const plan = this.commandPlans.get(b.plan_id);
+        if (!plan) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'plan not found or expired — re-issue the command' }));
+          return;
+        }
+        this.commandPlans.delete(b.plan_id);
+        const results = executeOps(this.engine, plan.ops, 'operator');
+        this.engine.logActionEvent({
+          description: `Operator command executed: ${plan.command}`,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          result_classification: results.every(r => r.ok) ? 'success' : 'partial',
+          details: { reason: 'operator_command', command: plan.command, results },
+        });
+        this.engine.persist();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ executed: true, results }));
+        return;
+      }
+
+      // Phase 1 of the flow: interpret → preview plan (no mutation).
+      const command = typeof b.command === 'string' ? b.command : '';
+      if (!command.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'command (string) is required' }));
+        return;
+      }
+      const interp = interpretCommand(command, this.buildInterpreterState());
+      let plan_id: string | undefined;
+      if (interp.ops.length > 0) {
+        plan_id = randomUUID();
+        this.commandPlans.set(plan_id, { ops: interp.ops, command, created_at: Date.now() });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        plan_id,
+        ops: interp.ops,
+        summary: interp.summary,
+        unresolved: interp.unresolved,
+        // 3A.2 will route `unresolved` to the headless planner here.
+        needs_planner: interp.unresolved.length > 0 && interp.ops.length === 0,
+      }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
