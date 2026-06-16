@@ -744,6 +744,10 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
         };
       }
       const task = engine.getTask(task_id)!;
+      // Deliver any pending operator steering directive on the heartbeat the
+      // agent already runs — zero extra round-trips. The agent must
+      // acknowledge_agent_directive and then act on it.
+      const pending = engine.getPendingAgentDirective(task_id);
       return {
         content: [{
           type: 'text',
@@ -752,9 +756,80 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
             task_id,
             heartbeat_at: task.heartbeat_at,
             heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
+            ...(pending ? { pending_directive: pending } : {}),
           }, null, 2),
         }],
       };
+    }),
+  );
+
+  // ============================================================
+  // manage_agent_directive — operator/primary steering of a running sub-agent.
+  // acknowledge_agent_directive — sub-agent confirms it saw the directive.
+  // ============================================================
+  server.registerTool(
+    'manage_agent_directive',
+    {
+      title: 'Manage Agent Directive',
+      description: `Steer a running sub-agent. Issues a directive delivered to the agent on its next \`agent_heartbeat\`.
+
+Kinds:
+- \`pause\` / \`resume\` — halt/continue the agent (it keeps heartbeating while paused).
+- \`stop\` — wrap up and exit; the runtime kills the headless process and marks the task interrupted.
+- \`narrow_scope\` — restrict the agent to \`node_ids\`.
+- \`skip_types\` — ignore frontier items of \`frontier_types\`.
+- \`prioritize\` — do \`frontier_types\` first.
+
+A new directive supersedes any still-pending one for the task (latest instruction wins).`,
+      inputSchema: {
+        task_id: z.string().describe('Agent task ID to steer'),
+        kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize'])
+          .describe('The steering action'),
+        node_ids: z.array(z.string()).optional().describe('narrow_scope: node ids to restrict to'),
+        frontier_types: z.array(z.string()).optional().describe('skip_types / prioritize: frontier item types'),
+        note: z.string().optional().describe('Optional human-readable note'),
+        issued_by: z.string().optional().describe('Operator id (defaults to "primary")'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    withErrorBoundary('manage_agent_directive', async ({ task_id, kind, node_ids, frontier_types, note, issued_by }) => {
+      const task = engine.getTask(task_id);
+      if (!task) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }) }], isError: true };
+      }
+      const directive = engine.issueAgentDirective({ task_id, kind, node_ids, frontier_types, note, issued_by });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            directive,
+            note: kind === 'stop'
+              ? 'stop recorded — the task-execution service will kill the process and interrupt the task'
+              : 'directive recorded — delivered to the agent on its next heartbeat',
+          }, null, 2),
+        }],
+      };
+    }),
+  );
+
+  server.registerTool(
+    'acknowledge_agent_directive',
+    {
+      title: 'Acknowledge Agent Directive',
+      description: `Sub-agents call this to confirm they received a steering directive (delivered via the \`pending_directive\` field on \`agent_heartbeat\`). After acknowledging, act on it: pause work, resume, narrow your scope, etc.`,
+      inputSchema: {
+        task_id: z.string().describe('Your agent task ID'),
+        directive_id: z.string().describe('The directive id from agent_heartbeat.pending_directive'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    withErrorBoundary('acknowledge_agent_directive', async ({ task_id, directive_id }) => {
+      const directive = engine.acknowledgeAgentDirective(task_id, directive_id);
+      if (!directive) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'directive not found' }) }], isError: true };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, directive }, null, 2) }] };
     }),
   );
 }

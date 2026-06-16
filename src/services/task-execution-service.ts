@@ -113,9 +113,27 @@ export class TaskExecutionService {
     this.watchdog.start();
     this.engine.onUpdate(() => {
       if (!this.running) return;
+      this.drainDirectives();
       this.drainHeadless();
     });
     this.drainHeadless();
+  }
+
+  /**
+   * Execute pending 'stop' directives for live headless agents. The engine
+   * records the directive (decision); this service performs the process control
+   * (kill + interrupt). pause/resume/steering are NOT acted on here — the agent
+   * observes those via agent_heartbeat and honors them itself.
+   */
+  private drainDirectives(): void {
+    for (const task of this.engine.getAgentTasks()) {
+      if (task.status !== 'running') continue;
+      if (!this.registry.has(task.id)) continue; // only live headless processes
+      const pending = this.engine.getPendingAgentDirective(task.id);
+      if (pending?.kind !== 'stop') continue;
+      this.engine.acknowledgeAgentDirective(task.id, pending.id);
+      this.cancelHeadless(task.id, `stop directive (${pending.id})`);
+    }
   }
 
   stop(): void {

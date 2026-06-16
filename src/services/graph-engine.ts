@@ -795,6 +795,91 @@ export class GraphEngine {
     return cs;
   }
 
+  // --- Agent directives (operator steering) -------------------------------
+  // The engine only RECORDS directives. 'stop' is executed by
+  // TaskExecutionService (process control); pause/resume/steering are observed
+  // by the agent via agent_heartbeat. A new directive supersedes any still-
+  // pending one for the task, so at most one is ever pending.
+
+  issueAgentDirective(params: {
+    task_id: string;
+    kind: import('../types.js').AgentDirectiveKind;
+    node_ids?: string[];
+    frontier_types?: string[];
+    note?: string;
+    issued_by?: string;
+  }): import('../types.js').AgentDirective {
+    const list = this.ctx.agentDirectives.get(params.task_id) ?? [];
+    for (const d of list) {
+      if (d.status === 'pending') d.status = 'superseded';
+    }
+    const directive: import('../types.js').AgentDirective = {
+      id: uuidv4(),
+      task_id: params.task_id,
+      kind: params.kind,
+      node_ids: params.node_ids,
+      frontier_types: params.frontier_types,
+      note: params.note,
+      issued_by: params.issued_by ?? 'primary',
+      issued_at: this.ctx.nowIso(),
+      status: 'pending',
+    };
+    list.push(directive);
+    this.ctx.agentDirectives.set(params.task_id, list);
+    this.logActionEvent({
+      description: `Directive '${directive.kind}' issued to agent task ${params.task_id}`,
+      event_type: 'instrumentation_warning',
+      category: 'system',
+      result_classification: 'neutral',
+      agent_id: this.getTask(params.task_id)?.agent_id,
+      linked_agent_task_id: params.task_id,
+      details: {
+        reason: 'directive_issued',
+        directive_id: directive.id,
+        kind: directive.kind,
+        node_ids: directive.node_ids,
+        frontier_types: directive.frontier_types,
+      },
+    });
+    this.persist();
+    return directive;
+  }
+
+  getPendingAgentDirective(task_id: string): import('../types.js').AgentDirective | null {
+    const list = this.ctx.agentDirectives.get(task_id);
+    if (!list) return null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].status === 'pending') return list[i];
+    }
+    return null;
+  }
+
+  getAgentDirectives(task_id: string): import('../types.js').AgentDirective[] {
+    return this.ctx.agentDirectives.get(task_id) ?? [];
+  }
+
+  acknowledgeAgentDirective(task_id: string, directive_id: string): import('../types.js').AgentDirective | null {
+    const list = this.ctx.agentDirectives.get(task_id);
+    if (!list) return null;
+    const d = list.find(x => x.id === directive_id);
+    if (!d) return null;
+    if (d.status === 'pending') {
+      d.status = 'acknowledged';
+      d.acknowledged_at = this.ctx.nowIso();
+      this.logActionEvent({
+        description: `Agent task ${task_id} acknowledged directive '${d.kind}'`,
+        event_type: 'instrumentation_warning',
+        category: 'system',
+        result_classification: 'neutral',
+        agent_id: this.getTask(task_id)?.agent_id,
+        linked_agent_task_id: task_id,
+        details: { reason: 'directive_acknowledged', directive_id, kind: d.kind },
+      });
+      this.persist();
+    }
+    return d;
+  }
+
   getCampaignChildren(parentId: string): import('../types.js').Campaign[] {
     return this.campaignPlanner.getChildren(parentId);
   }

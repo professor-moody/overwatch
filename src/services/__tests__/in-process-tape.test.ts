@@ -149,4 +149,27 @@ describe('InProcessTapeController', () => {
     await c.disable();
     expect(existsSync(explicit)).toBe(true);
   });
+
+  it('tags frames with session_id so a multiplexed daemon tape can be demuxed per actor', async () => {
+    // Two MCP sessions (primary + a sub-agent) feed ONE tape. Each frame must
+    // carry its session id so the merged tape is attributable.
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    const primary = new FakeTransport(); primary.sessionId = 'sess-primary';
+    const sub = new FakeTransport(); sub.sessionId = 'sess-subagent';
+    const wp = c.wrapTransport(primary); wp.onmessage = () => {};
+    const ws = c.wrapTransport(sub); ws.onmessage = () => {};
+
+    const status = c.enable();
+    primary.emit({ jsonrpc: '2.0', id: 1, method: 'get_state' });
+    await wp.send({ jsonrpc: '2.0', id: 1, result: {} });
+    sub.emit({ jsonrpc: '2.0', id: 7, method: 'report_finding' });
+    await c.disable();
+
+    const recs = readFileSync(status.path!, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    const bySession = new Set(recs.map((r) => r.session_id));
+    expect(bySession).toEqual(new Set(['sess-primary', 'sess-subagent']));
+    // Demux: each actor's frames are recoverable by session_id.
+    expect(recs.filter((r) => r.session_id === 'sess-primary')).toHaveLength(2);
+    expect(recs.filter((r) => r.session_id === 'sess-subagent')).toHaveLength(1);
+  });
 });

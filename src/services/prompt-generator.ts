@@ -194,7 +194,7 @@ function generateSubAgentPrompt(
     'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
     'run_bash', 'run_tool',
     'parse_output', 'report_finding', 'submit_agent_transcript',
-    'agent_heartbeat',
+    'agent_heartbeat', 'acknowledge_agent_directive',
     'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
     'list_sessions', 'close_session', 'resize_session', 'signal_session',
@@ -495,7 +495,13 @@ function generateSubAgentWorkflowSection(): string {
 8. Call \`log_thought({ kind: "reflection", thought: "..." })\` summarizing what you learned before closing the task
 9. Use \`query_graph()\` if you need more context
 10. Use \`get_skill()\` for methodology guidance
-11. If the task runs longer than roughly a minute, call \`agent_heartbeat({ task_id })\` periodically so the watchdog does not reap your lease
+11. If the task runs longer than roughly a minute, call \`agent_heartbeat({ task_id })\` periodically so the watchdog does not reap your lease. **Check the response for \`pending_directive\`** — operator steering. If present, call \`acknowledge_agent_directive({ task_id, directive_id })\` and then honor it:
+    - \`pause\` → stop starting new actions; keep heartbeating; poll until you receive \`resume\`.
+    - \`resume\` → continue.
+    - \`stop\` → call \`submit_agent_transcript\` with what you have, then stop (the runtime will also terminate you).
+    - \`narrow_scope\` → treat \`node_ids\` as your authoritative scope; do not act on nodes outside it.
+    - \`skip_types\` → ignore frontier items whose type is in \`frontier_types\`.
+    - \`prioritize\` → do frontier items whose type is in \`frontier_types\` first.
 12. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ task_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Use \`agent_id\` only as a legacy fallback if you do not have the task ID. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;
