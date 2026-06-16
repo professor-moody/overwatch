@@ -30,18 +30,23 @@ describe('tape startup attribution', () => {
   let tmpDir: string;
   let app: OverwatchApp | null;
   let originalTapeEnv: string | undefined;
+  let originalRequireToken: string | undefined;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'overwatch-tape-startup-'));
     app = null;
     originalTapeEnv = process.env.OVERWATCH_TAPE;
     delete process.env.OVERWATCH_TAPE;
+    originalRequireToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
+    process.env.OVERWATCH_MCP_REQUIRE_TOKEN = '0'; // tape-recording test, not auth
   });
 
   afterEach(async () => {
     if (app) await shutdownOverwatchApp(app).catch(() => {});
     if (originalTapeEnv === undefined) delete process.env.OVERWATCH_TAPE;
     else process.env.OVERWATCH_TAPE = originalTapeEnv;
+    if (originalRequireToken === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
+    else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = originalRequireToken;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 

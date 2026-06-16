@@ -30,7 +30,12 @@ function cleanup() {
 }
 
 describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
+  const prevRequireToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
   beforeAll(async () => {
+    // This suite exercises transport behavior, not auth — opt out of the
+    // fail-closed default so loopback stays open. Auth has dedicated coverage
+    // (mcp-auth.test.ts + the /mcp auth-wiring integration test).
+    process.env.OVERWATCH_MCP_REQUIRE_TOKEN = '0';
     app = createOverwatchApp({
       config,
       skillDir: resolve('./skills'),
@@ -53,6 +58,7 @@ describe.skipIf(!supportsLocalListen)('MCP HTTP Transport Integration', () => {
   afterAll(async () => {
     try { await client?.close(); } catch {}
     if (app) await shutdownOverwatchApp(app);
+    if (prevRequireToken === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = prevRequireToken;
     cleanup();
   });
 

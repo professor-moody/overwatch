@@ -26,7 +26,9 @@ function cleanup() {
 }
 
 describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
+  const prevRequireToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
   beforeAll(async () => {
+    process.env.OVERWATCH_MCP_REQUIRE_TOKEN = '0'; // exercises session limits, not auth
     app = createOverwatchApp({
       config,
       skillDir: resolve('./skills'),
@@ -44,6 +46,7 @@ describe.skipIf(!supportsLocalListen)('HTTP session limit', () => {
 
   afterAll(async () => {
     if (app) await shutdownOverwatchApp(app);
+    if (prevRequireToken === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = prevRequireToken;
     cleanup();
   });
 
