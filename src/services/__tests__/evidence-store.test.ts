@@ -141,6 +141,24 @@ describe('EvidenceStore', () => {
     expect(store.getRawOutput(sink.evidence_id)).toBe('hello world');
   });
 
+  it('createBlobStream attributes the streamed evidence to its agent/task', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    const sink = store.createBlobStream({
+      action_id: 'act-attr-1',
+      agent_id: 'cve-research-agent',
+      task_id: 'task-42',
+      evidence_type: 'command_output',
+      filename: 'stdout',
+      kind: 'raw_output',
+    });
+    sink.write(Buffer.from('nmap output'));
+    await sink.end();
+
+    const record = store.getRecord(sink.evidence_id);
+    expect(record!.agent_id).toBe('cve-research-agent');
+    expect(record!.task_id).toBe('task-42');
+  });
+
   it('createBlobStream captures payloads larger than the in-memory inline cap', async () => {
     const store = new EvidenceStore(TEST_STATE);
     const sink = store.createBlobStream({

@@ -273,6 +273,8 @@ export class EvidenceStore {
   createBlobStream(opts: {
     action_id?: string;
     finding_id?: string;
+    agent_id?: string;
+    task_id?: string;
     evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
     filename?: string;
     /** 'content' writes to <id>.content; 'raw_output' writes to <id>.raw. */
@@ -369,6 +371,8 @@ export class EvidenceStore {
           content_hash: contentHash,
           action_id: opts.action_id,
           finding_id: opts.finding_id,
+          agent_id: opts.agent_id,
+          task_id: opts.task_id,
           timestamp,
           evidence_type: opts.evidence_type,
           filename: opts.filename,
