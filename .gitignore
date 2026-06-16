@@ -22,6 +22,8 @@ site/
 tmp/
 retrospective/
 smoke-engagement/
+# Runtime per-agent stream-json logs written by the headless sub-agent runner.
+logs/
 
 # dashboard-next: Vite handles transpilation; tsc is typecheck-only.
 # Guard against accidental emit if someone runs `tsc -p src/dashboard-next`.

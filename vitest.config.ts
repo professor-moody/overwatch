@@ -9,6 +9,8 @@ export default defineConfig({
       'dist/**',
       'src/__tests__/mcp-server.integration.test.ts',
       'src/__tests__/http-transport.integration.test.ts',
+      'src/__tests__/approval-over-http.integration.test.ts',
+      'src/__tests__/headless-runner.integration.test.ts',
     ],
     testTimeout: 30000,
     coverage: {

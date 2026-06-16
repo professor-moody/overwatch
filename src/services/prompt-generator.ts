@@ -484,6 +484,7 @@ function generateSubAgentIdentitySection(config: EngagementConfig, agent?: Agent
 function generateSubAgentWorkflowSection(): string {
   return `## Workflow
 
+0. **Tool discovery.** Overwatch tools may not be enumerated up front — the MCP server can report \`status: pending\` with zero tools at startup, and tools load on demand. If a tool you need (\`get_agent_context\`, \`agent_heartbeat\`, \`validate_action\`, \`run_tool\`, \`run_bash\`, \`report_finding\`, \`submit_agent_transcript\`, \`update_agent\`, …) is not already available, use \`ToolSearch\` to find it by name before calling it. Do not assume the full tool list is present at boot.
 1. Call \`get_agent_context\` to get your scoped subgraph view
 2. Call \`log_thought({ kind: "plan", thought: "..." })\` to record your intended approach for this task
 3. Call \`validate_action\` before executing any significant action
