@@ -108,4 +108,38 @@ export class HeadlessProcessRegistry {
       this.kill(task_id, opts);
     }
   }
+
+  /**
+   * Shutdown-safe kill that AWAITS termination. Unlike killAll() — which sends
+   * SIGTERM and schedules SIGKILL on an unref()'d timer (so the daemon can exit
+   * before the timer fires, orphaning a stubborn child) — this resolves only
+   * once every child has actually exited (escalating SIGTERM→SIGKILL after
+   * graceMs), with a hard fallback so shutdown can never hang. The child's own
+   * exit handler still performs config cleanup + reconciliation.
+   */
+  async killAllAndWait(opts: { graceMs?: number } = {}): Promise<void> {
+    const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+    await Promise.all([...this.entries.values()].map(e => this.waitForExit(e, graceMs)));
+  }
+
+  private waitForExit(entry: HeadlessProcessEntry, graceMs: number): Promise<void> {
+    const child = entry.child;
+    return new Promise<void>((resolve) => {
+      if (child.exitCode != null || child.signalCode != null) return resolve(); // already dead
+      let settled = false;
+      let killTimer: ReturnType<typeof setTimeout>;
+      let hardTimer: ReturnType<typeof setTimeout>;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        clearTimeout(hardTimer);
+        resolve();
+      };
+      child.once('exit', finish);
+      killProcessTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), graceMs);
+      hardTimer = setTimeout(finish, graceMs + 2000); // never hang shutdown
+    });
+  }
 }

@@ -523,8 +523,9 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 }
 
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
-  // Stop agent-task execution (scripted runner + watchdog) before tearing down.
-  app.taskExecution.stop();
+  // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
+  // SIGKILL) so none outlive the daemon.
+  await app.taskExecution.shutdown();
   // Abort all pending operations and close HTTP transport sessions
   if (app.sessionAbortControllers) {
     for (const [sid, controller] of Object.entries(app.sessionAbortControllers)) {

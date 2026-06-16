@@ -21,7 +21,7 @@
 import type { GraphEngine } from './graph-engine.js';
 import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask, TaskBackend } from '../types.js';
-import { ScriptedAgentRunner } from './scripted-agent-runner.js';
+import { ScriptedAgentRunner, scriptedCanHandle } from './scripted-agent-runner.js';
 import { AgentWatchdog } from './agent-watchdog.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 import { HeadlessMcpRunner, type HeadlessEndpoint, type HeadlessMcpRunnerOptions } from './headless-mcp-runner.js';
@@ -90,10 +90,26 @@ export class TaskExecutionService {
     if (this.running) this.drainHeadless();
   }
 
+  /**
+   * Engine-aware backend routing. Explicit task.backend wins. Otherwise the
+   * scripted runner only takes work it can actually handle (scriptedCanHandle);
+   * all open-ended/reasoning work goes to a real headless agent when the HTTP
+   * runtime is available, falling back to scripted only when it isn't (so tasks
+   * aren't left stuck in stdio mode). This is what makes register_agent /
+   * dispatch_agents / subnet+campaign dispatch spin up real reasoning agents.
+   */
+  private resolveBackend(task: AgentTask): TaskBackend {
+    if (task.backend) return task.backend;
+    if (scriptedCanHandle(this.engine, task)) return 'scripted';
+    return this.endpoint ? 'headless_mcp' : 'scripted';
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.scripted.start(); // self-subscribes; only picks up 'scripted' tasks
+    // The scripted runner only picks up tasks our routing assigns to it.
+    this.scripted.setShouldHandle((task) => this.resolveBackend(task) === 'scripted');
+    this.scripted.start();
     this.watchdog.start();
     this.engine.onUpdate(() => {
       if (!this.running) return;
@@ -108,8 +124,22 @@ export class TaskExecutionService {
     this.watchdog.stop();
     for (const t of this.timeoutTimers.values()) clearTimeout(t);
     this.timeoutTimers.clear();
-    // Kill any live headless children so they don't outlive the daemon.
+    // Best-effort, fire-and-forget (sync callers). Daemon shutdown should use
+    // shutdown() to actually AWAIT termination.
     this.registry.killAll();
+  }
+
+  /**
+   * Async shutdown for the daemon: stops runners and AWAITS headless children
+   * exiting (SIGTERM→SIGKILL escalation) so none outlive the process.
+   */
+  async shutdown(): Promise<void> {
+    this.running = false;
+    this.scripted.stop();
+    this.watchdog.stop();
+    for (const t of this.timeoutTimers.values()) clearTimeout(t);
+    this.timeoutTimers.clear();
+    await this.registry.killAllAndWait();
   }
 
   /** Exposed for tests so a tick can be forced without waiting on the timer. */
@@ -144,7 +174,7 @@ export class TaskExecutionService {
   private drainHeadless(): void {
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running') continue;
-      const backend = resolveTaskBackend(task);
+      const backend = this.resolveBackend(task);
       if (backend === 'scripted') continue; // handled by ScriptedAgentRunner
 
       if (backend === 'manual') { this.logDeferral(task, 'manual'); continue; }
