@@ -35,8 +35,11 @@ describe.skipIf(!supportsLocalListen)('Approval over HTTP — abort + timeout (1
   let baseUrl: string;
   let tempDir: string;
   const APPROVAL_TIMEOUT_MS = 300_000;
+  const prevRequireToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
 
   beforeAll(async () => {
+    // Exercises the approval/abort flow, not auth — open loopback for the test.
+    process.env.OVERWATCH_MCP_REQUIRE_TOKEN = '0';
     tempDir = mkdtempSync(join(tmpdir(), 'overwatch-approval-http-'));
     const config = parseEngagementConfig(rawConfig);
     // Force the approval gate so validate_action blocks.
@@ -61,6 +64,7 @@ describe.skipIf(!supportsLocalListen)('Approval over HTTP — abort + timeout (1
   afterAll(async () => {
     try { await client?.close(); } catch { /* ignore */ }
     if (app) await shutdownOverwatchApp(app);
+    if (prevRequireToken === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = prevRequireToken;
     try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -166,6 +170,55 @@ describe.skipIf(!supportsLocalListen)('/mcp auth wiring (1A)', () => {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer integration-secret' },
       body: initBody,
     });
+    expect(resp.status).not.toBe(401);
+    expect(resp.status).not.toBe(403);
+  });
+});
+
+// Fail-closed DEFAULT: with no token configured and no opt-out, the daemon must
+// generate a token and require it — /mcp is never open on loopback by default.
+describe.skipIf(!supportsLocalListen)('/mcp auth fail-closed default (generated token)', () => {
+  let app: OverwatchApp;
+  let baseUrl: string;
+  let tempDir: string;
+  let generatedToken: string | undefined;
+  const prevToken = process.env.OVERWATCH_MCP_TOKEN;
+  const prevRequire = process.env.OVERWATCH_MCP_REQUIRE_TOKEN;
+
+  beforeAll(async () => {
+    delete process.env.OVERWATCH_MCP_TOKEN;       // no token configured
+    delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; // default (require)
+    tempDir = mkdtempSync(join(tmpdir(), 'overwatch-mcpauth-default-'));
+    const config = parseEngagementConfig(rawConfig);
+    app = createOverwatchApp({ config, skillDir: resolve('./skills'), dashboardPort: 0, stateFilePath: join(tempDir, `state-${config.id}.json`) });
+    await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+    generatedToken = process.env.OVERWATCH_MCP_TOKEN; // startHttpApp generates it
+    const addr = app.httpServer?.address();
+    if (!addr || typeof addr === 'string') throw new Error('no server address');
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  }, 15000);
+
+  afterAll(async () => {
+    if (app) await shutdownOverwatchApp(app);
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (prevToken === undefined) delete process.env.OVERWATCH_MCP_TOKEN; else process.env.OVERWATCH_MCP_TOKEN = prevToken;
+    if (prevRequire === undefined) delete process.env.OVERWATCH_MCP_REQUIRE_TOKEN; else process.env.OVERWATCH_MCP_REQUIRE_TOKEN = prevRequire;
+  });
+
+  const initBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'c', version: '0' } } });
+
+  it('generates a token when none is configured', () => {
+    expect(typeof generatedToken).toBe('string');
+    expect((generatedToken ?? '').length).toBeGreaterThanOrEqual(16);
+  });
+
+  it('rejects loopback /mcp without the generated token (401) — not open by default', async () => {
+    const resp = await fetch(`${baseUrl}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: initBody });
+    expect(resp.status).toBe(401);
+  });
+
+  it('admits /mcp with the generated token', async () => {
+    const resp = await fetch(`${baseUrl}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${generatedToken}` }, body: initBody });
     expect(resp.status).not.toBe(401);
     expect(resp.status).not.toBe(403);
   });

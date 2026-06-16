@@ -354,12 +354,23 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 
   const expressApp = createMcpExpressApp({ host });
 
-  // Guard /mcp with bearer-token auth before any route handlers run. Enforced
-  // whenever a token is configured, on non-loopback binds, or when explicitly
-  // required (OVERWATCH_MCP_REQUIRE_TOKEN — set by the headless-agent runtime so
-  // sub-agent clients must authenticate even on localhost).
-  const requireMcpToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN === '1'
-    || process.env.OVERWATCH_MCP_REQUIRE_TOKEN === 'true';
+  // Guard /mcp with bearer-token auth before any route handlers run. The HTTP
+  // daemon exposes the full Overwatch tool surface — including target-facing
+  // run_bash/run_tool — to every connecting client (the primary + headless
+  // sub-agents). Any local process could otherwise drive those tools, so we
+  // FAIL CLOSED: a token is required by default, even on loopback. If none is
+  // configured we generate one and log it (zero-config but secure). Explicit
+  // opt-out (e.g. trusted single-user dev or test harnesses) via
+  // OVERWATCH_MCP_REQUIRE_TOKEN=0.
+  const requireDisabled = process.env.OVERWATCH_MCP_REQUIRE_TOKEN === '0'
+    || process.env.OVERWATCH_MCP_REQUIRE_TOKEN === 'false';
+  const requireMcpToken = !requireDisabled;
+  if (requireMcpToken && !process.env.OVERWATCH_MCP_TOKEN) {
+    const generated = randomUUID().replace(/-/g, '');
+    process.env.OVERWATCH_MCP_TOKEN = generated;
+    console.error(`[overwatch] /mcp auth required — generated OVERWATCH_MCP_TOKEN=${generated}`);
+    console.error('[overwatch] set OVERWATCH_MCP_TOKEN yourself for a stable token (used by .mcp.http.example.json and headless sub-agents).');
+  }
   expressApp.use('/mcp', createMcpAuthMiddleware({ host, requireToken: requireMcpToken }));
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
