@@ -223,6 +223,16 @@ export class TaskExecutionService {
   }
 
   /**
+   * Whether the headless backend can actually run (daemon mode with a bound
+   * /mcp endpoint). The dashboard checks this before spawning a planner so a
+   * free-form command in stdio mode fails fast instead of registering a task
+   * that can only defer to manual.
+   */
+  isHeadlessAvailable(): boolean {
+    return this.endpoint !== null;
+  }
+
+  /**
    * Stop a running headless sub-agent: kill its OS process (SIGTERM→SIGKILL) and
    * mark the task interrupted (releases the frontier lease). No-op for tasks
    * with no live process. Returns whether a process was killed.

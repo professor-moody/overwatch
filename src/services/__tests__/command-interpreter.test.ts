@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
-import { interpretCommand, executeOps, type InterpreterState } from '../command-interpreter.js';
+import { interpretCommand, executeOps, buildPlannerObjective, type InterpreterState } from '../command-interpreter.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-command-interpreter.json';
@@ -101,5 +101,26 @@ describe('executeOps (engine effects)', () => {
     const results = executeOps(engine, [{ op: 'approve', action_id: 'nope' }]);
     expect(results[0].ok).toBe(false);
     expect(results[0].error).toMatch(/not found/);
+  });
+});
+
+describe('buildPlannerObjective (3A.2 — handed to the headless planner)', () => {
+  it('embeds the command + the EXACT running task ids the planner may reference', () => {
+    const obj = buildPlannerObjective('go pause the noisy scanner', state(
+      [t('task-aaa', 'scanner-1'), t('task-bbb', 'idp-1', 'completed')], ['act-1'],
+    ));
+    expect(obj).toContain('go pause the noisy scanner');
+    expect(obj).toContain('task_id="task-aaa"'); // running → listed
+    expect(obj).not.toContain('task-bbb'); // completed → not steerable
+    expect(obj).toContain('action_id="act-1"');
+    // documents the op vocabulary so the planner emits OperatorOp-shaped ops
+    expect(obj).toContain('"op":"directive"');
+    expect(obj).toContain('"op":"scope"');
+  });
+
+  it('handles no running agents / no pending actions gracefully', () => {
+    const obj = buildPlannerObjective('do something', state([]));
+    expect(obj).toContain('(none running)');
+    expect(obj).toContain('(none pending)');
   });
 });

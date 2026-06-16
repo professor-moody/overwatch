@@ -120,6 +120,39 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
   return finalize(ops, unresolved);
 }
 
+/**
+ * Build the objective handed to a headless 'planner' sub-agent (3A.2) for a
+ * command the deterministic grammar couldn't resolve. Embeds the operator's
+ * free-form command, a snapshot of the steerable state (running task ids +
+ * pending action ids — so the planner references REAL ids), and the OperatorOp
+ * vocabulary it must produce via propose_plan. Pure; co-located with the op
+ * union it documents.
+ */
+export function buildPlannerObjective(command: string, state: InterpreterState): string {
+  const running = state.tasks.filter(t => t.status === 'running');
+  const agentLines = running.length
+    ? running.map(t => `  - task_id="${t.id}" agent="${t.agent_id}"${t.skill ? ` skill="${t.skill}"` : ''}`).join('\n')
+    : '  (none running)';
+  const actionLines = state.pendingActionIds.length
+    ? state.pendingActionIds.map(id => `  - action_id="${id}"`).join('\n')
+    : '  (none pending)';
+  return [
+    `OPERATOR COMMAND (free-form): "${command}"`,
+    ``,
+    `Running agent tasks you may steer (use the EXACT task_id):`,
+    agentLines,
+    `Pending actions you may approve/deny (use the EXACT action_id):`,
+    actionLines,
+    ``,
+    `Produce a plan as an array of ops and submit via propose_plan. Allowed ops:`,
+    `  { "op":"directive", "task_id":"<id>", "agent_label":"<agent>", "kind":"pause|resume|stop|narrow_scope|skip_types|prioritize", "node_ids?":["n1"], "frontier_types?":["network_discovery"], "note?":"" }`,
+    `  { "op":"scope", "add_cidrs?":["10.0.0.0/24"], "add_domains?":["example.com"], "add_exclusions?":["10.0.0.5/32"] }`,
+    `  { "op":"approve", "action_id":"<id>", "notes?":"" }`,
+    `  { "op":"deny", "action_id":"<id>", "reason?":"" }`,
+    `Only reference task_ids/action_ids from the lists above. Pass the operator command back as \`command\` so it's logged with the plan.`,
+  ].join('\n');
+}
+
 function describeOp(op: OperatorOp): string {
   switch (op.op) {
     case 'directive': return `${op.kind} → ${op.agent_label}`;

@@ -14,7 +14,7 @@ import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
-import { interpretCommand, executeOps, type OperatorOp } from './command-interpreter.js';
+import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
@@ -150,8 +150,11 @@ export class DashboardServer {
    * Optional task-execution service. Required for the cancel endpoint to kill a
    * headless sub-agent's OS process (not just mark its task interrupted).
    */
-  private taskExecution: { cancelHeadless(task_id: string, reason?: string): boolean } | null = null;
-  attachTaskExecution(svc: { cancelHeadless(task_id: string, reason?: string): boolean }): void {
+  private taskExecution: {
+    cancelHeadless(task_id: string, reason?: string): boolean;
+    isHeadlessAvailable(): boolean;
+  } | null = null;
+  attachTaskExecution(svc: { cancelHeadless(task_id: string, reason?: string): boolean; isHeadlessAvailable(): boolean }): void {
     this.taskExecution = svc;
   }
 
@@ -620,6 +623,8 @@ export class DashboardServer {
       this.handleAgentDispatch(req, res);
     } else if (pathname === '/api/commands' && method === 'POST') {
       this.handleCommand(req, res);
+    } else if (pathname === '/api/plans' && method === 'GET') {
+      this.serveProposedPlans(res);
     } else if (pathname === '/api/templates') {
       this.serveTemplates(res);
     } else if (pathname === '/api/settings' && method === 'GET') {
@@ -1246,11 +1251,42 @@ export class DashboardServer {
     for (const [id, p] of this.commandPlans) if (p.created_at < cutoff) this.commandPlans.delete(id);
   }
 
-  private buildInterpreterState() {
+  private buildInterpreterState(): InterpreterState {
     return {
       tasks: this.engine.getAgentTasks().map(t => ({ id: t.id, agent_id: t.agent_id, status: t.status, skill: t.skill })),
       pendingActionIds: this.engine.getPendingActionQueue().getPending().map(a => a.action_id),
     };
+  }
+
+  /**
+   * 3A.2: register a read-only headless 'planner' sub-agent to translate a
+   * free-form command (the grammar couldn't resolve) into a proposed plan. The
+   * planner carries the command + a snapshot of steerable state as its objective,
+   * reasons over the graph, and submits ops via propose_plan for the operator to
+   * confirm. No frontier_item_id → no lease conflict. Returns the task id, or
+   * null if the headless runtime isn't available.
+   */
+  private dispatchPlanner(command: string, state: InterpreterState): string | null {
+    if (this.taskExecution && !this.taskExecution.isHeadlessAvailable()) return null;
+    const taskId = randomUUID();
+    const reg = this.engine.registerAgent({
+      id: taskId,
+      agent_id: `planner-${taskId.slice(0, 8)}`,
+      assigned_at: new Date().toISOString(),
+      status: 'running',
+      subgraph_node_ids: [],
+      backend: 'headless_mcp',
+      role: 'planner',
+      skill: 'operator-planner',
+      objective: buildPlannerObjective(command, state),
+    });
+    return reg.ok ? taskId : null;
+  }
+
+  private serveProposedPlans(res: ServerResponse): void {
+    const plans = this.engine.getProposedPlanStore().getOpen();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ plans }));
   }
 
   private handleCommand(req: IncomingMessage, res: ServerResponse): void {
@@ -1259,22 +1295,37 @@ export class DashboardServer {
       const b = (body ?? {}) as Record<string, unknown>;
       this.pruneCommandPlans();
 
-      // Phase 2 of the flow: confirm + execute a previously-previewed plan.
+      // Dismiss a planner-proposed plan without executing it.
+      if (b.deny === true && typeof b.plan_id === 'string') {
+        const denied = this.engine.getProposedPlanStore().resolve(b.plan_id, 'denied');
+        res.writeHead(denied ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(denied ? { denied: true, plan_id: b.plan_id } : { error: 'plan not found or already resolved' }));
+        return;
+      }
+
+      // Phase 2 of the flow: confirm + execute a previously-previewed plan. The
+      // plan_id may be a grammar plan (commandPlans) or a planner-proposed plan
+      // (the shared ProposedPlanStore) — both execute through the same path.
       if (b.confirm === true && typeof b.plan_id === 'string') {
-        const plan = this.commandPlans.get(b.plan_id);
+        const grammarPlan = this.commandPlans.get(b.plan_id);
+        const proposed = grammarPlan ? null : this.engine.getProposedPlanStore().resolve(b.plan_id, 'confirmed');
+        const plan = grammarPlan ?? (proposed ? { ops: proposed.ops, command: proposed.command } : null);
         if (!plan) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'plan not found or expired — re-issue the command' }));
           return;
         }
-        this.commandPlans.delete(b.plan_id);
+        if (grammarPlan) this.commandPlans.delete(b.plan_id);
         const results = executeOps(this.engine, plan.ops, 'operator');
         this.engine.logActionEvent({
-          description: `Operator command executed: ${plan.command}`,
-          event_type: 'instrumentation_warning',
+          description: `Operator command executed: ${plan.command || '(planner plan)'}`,
+          event_type: 'operator_command',
           category: 'system',
+          // source:'dashboard' makes this surface as an operator command card in
+          // the console (inferSourceKind), not an anonymous system warning.
+          source_kind: 'dashboard',
           result_classification: results.every(r => r.ok) ? 'success' : 'partial',
-          details: { reason: 'operator_command', command: plan.command, results },
+          details: { reason: 'operator_command', source: 'dashboard', command: plan.command, planner: !!proposed, results },
         });
         this.engine.persist();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1289,20 +1340,37 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'command (string) is required' }));
         return;
       }
-      const interp = interpretCommand(command, this.buildInterpreterState());
+      const state = this.buildInterpreterState();
+      const interp = interpretCommand(command, state);
       let plan_id: string | undefined;
       if (interp.ops.length > 0) {
         plan_id = randomUUID();
         this.commandPlans.set(plan_id, { ops: interp.ops, command, created_at: Date.now() });
       }
+
+      // The grammar punted entirely — hand the free-form command to a headless
+      // planner (3A.2). It proposes ops asynchronously; the operator confirms
+      // the proposed plan via the same confirm path (polling GET /api/plans).
+      const needsPlanner = interp.unresolved.length > 0 && interp.ops.length === 0;
+      let planner_task_id: string | undefined;
+      let planner_available = true;
+      if (needsPlanner) {
+        const tid = this.dispatchPlanner(command, state);
+        if (tid) planner_task_id = tid;
+        else planner_available = false;
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         plan_id,
         ops: interp.ops,
         summary: interp.summary,
         unresolved: interp.unresolved,
-        // 3A.2 will route `unresolved` to the headless planner here.
-        needs_planner: interp.unresolved.length > 0 && interp.ops.length === 0,
+        needs_planner: needsPlanner,
+        // When a planner was dispatched, the UI polls GET /api/plans for the
+        // proposed plan. planner_available=false means stdio mode (no daemon).
+        planner_task_id,
+        planner_available: needsPlanner ? planner_available : undefined,
       }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
