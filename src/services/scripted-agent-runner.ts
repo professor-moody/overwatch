@@ -24,13 +24,44 @@ import { isTokenCredential, isCredentialUsableForAuth } from './credential-utils
 
 const HEARTBEAT_INTERVAL_MS = 15_000;  // 15s
 
+/**
+ * True only when the scripted runner has a REAL deterministic handler for this
+ * task — i.e. exactly what `dispatchByType` below can do: credential_test, or an
+ * incomplete_node/untested_edge/inferred_edge whose target is a usable token
+ * credential. Everything else (network_discovery, pivots, idp, cve_research, a
+ * non-credential incomplete_node, or no frontier item) has NO scripted handler
+ * and should run as a real reasoning agent instead of being auto-"completed".
+ */
+export function scriptedCanHandle(engine: GraphEngine, task: AgentTask): boolean {
+  if (!task.frontier_item_id) return false;
+  const item = engine.getFrontierItem(task.frontier_item_id);
+  if (!item) return false;
+  if (item.type === 'credential_test') return true;
+  if (item.type === 'incomplete_node' || item.type === 'untested_edge' || item.type === 'inferred_edge') {
+    const targetId = item.node_id ?? item.edge_source ?? item.edge_target;
+    if (!targetId) return false;
+    const node = engine.getNode(targetId);
+    return !!(node && node.type === 'credential' && isTokenCredential(node) && isCredentialUsableForAuth(node));
+  }
+  return false;
+}
+
 export class ScriptedAgentRunner {
   private running = false;
   /** task IDs currently being processed to avoid double-pickup */
   private processing = new Set<string>();
   private heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
+  // Predicate deciding which tasks this runner should pick up. Defaults to the
+  // legacy "scripted-or-unset backend" rule for standalone use; TaskExecution-
+  // Service injects a backend-routing-aware predicate so open-ended work goes
+  // to the headless runtime instead of being auto-completed here.
+  private shouldHandle: (task: AgentTask) => boolean = (task) => (task.backend ?? 'scripted') === 'scripted';
 
   constructor(private engine: GraphEngine) {}
+
+  setShouldHandle(fn: (task: AgentTask) => boolean): void {
+    this.shouldHandle = fn;
+  }
 
   start(): void {
     if (this.running) return;
@@ -55,12 +86,9 @@ export class ScriptedAgentRunner {
     const tasks = this.engine.getAgentTasks();
     for (const task of tasks) {
       if (task.status !== 'running') continue;
-      // Only execute tasks routed to the scripted backend. Tasks marked
-      // 'headless_mcp' or 'manual' are owned by a different backend (or a human)
-      // and must not be auto-completed here. Unset backend defaults to scripted
-      // (legacy behavior). Kept inline to avoid an import cycle with
-      // task-execution-service.
-      if ((task.backend ?? 'scripted') !== 'scripted') continue;
+      // Only execute tasks this runner should own. The injected predicate routes
+      // open-ended work to the headless runtime instead of auto-completing it.
+      if (!this.shouldHandle(task)) continue;
       if (this.processing.has(task.id)) continue;
       if (!task.frontier_item_id) continue;
       this.processing.add(task.id);

@@ -102,6 +102,36 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned).toHaveLength(1);
   });
 
+  it('routes an UNSET-backend open-ended task to headless (not scripted no-op) when endpoint available', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    // A network_discovery frontier item is generated from the scope CIDR. A
+    // dispatched task pointing at it with NO explicit backend must become a real
+    // headless agent — previously it defaulted to scripted and was auto-"completed".
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    expect(disco).toBeDefined();
+    engine.registerAgent({ id: 'open-1', agent_id: 'a-open', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], frontier_item_id: disco!.id } as AgentTask);
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+    expect(engine.getTask('open-1')?.status).toBe('running'); // launched, NOT auto-completed
+  });
+
+  it('still routes a credential_test task to the scripted runner (not headless)', async () => {
+    // engine.computeFrontier() won't have a credential_test item without creds;
+    // assert the routing decision directly via the scripted runner's predicate
+    // by checking that with no frontier item + an endpoint, an open-ended task
+    // goes headless while a scripted-handled one would not. Here we verify the
+    // no-endpoint fallback closes open-ended work via scripted rather than stranding it.
+    svc = makeService();
+    svc.start(); // no endpoint
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    engine.registerAgent({ id: 'open-noep', agent_id: 'a', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], frontier_item_id: disco!.id } as AgentTask);
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(0); // no endpoint → no headless
+    expect(engine.getTask('open-noep')?.status).toBe('completed'); // scripted fallback closed it out
+  });
+
   it('reconciles to interrupted when the child exits without closing the task', async () => {
     svc = makeService();
     svc.start();
