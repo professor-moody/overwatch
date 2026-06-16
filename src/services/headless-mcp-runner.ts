@@ -52,8 +52,31 @@ export interface HeadlessMcpRunnerOptions {
   now?: () => string;
 }
 
-/** The Overwatch MCP server + ToolSearch only — no native shell/editor tools. */
-const ALLOWED_TOOLS = 'mcp__overwatch ToolSearch';
+/**
+ * Tool profile per agent role:
+ *  - default : full Overwatch MCP surface + ToolSearch. No native shell/editor
+ *    tools — all target work flows through instrumented mcp__overwatch__run_*.
+ *  - research: adds Claude Code's WebSearch + WebFetch so the agent can research
+ *    CVEs/POCs the way an operator would, but STILL no run_bash/run_tool/sessions
+ *    (research reads the public web and writes findings; it never executes
+ *    against targets). Target-facing tools are part of the mcp__overwatch surface
+ *    and the agent is told (prompt) not to use them in this role.
+ */
+// Research-safe Overwatch tools: graph read + finding/CVE recording + lifecycle.
+// Deliberately EXCLUDES run_bash / run_tool / sessions / validate_action so the
+// research role cannot execute against targets — this is a real allowlist
+// boundary, not just prompt guidance (`mcp__overwatch` alone would expose the
+// whole server, including target-facing tools).
+const RESEARCH_OVERWATCH_TOOLS = [
+  'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
+  'report_finding', 'research_cve', 'log_thought', 'agent_heartbeat',
+  'acknowledge_agent_directive', 'submit_agent_transcript', 'update_agent', 'get_evidence',
+].map(t => `mcp__overwatch__${t}`).join(' ');
+
+export function allowedToolsFor(role: 'default' | 'research'): string {
+  if (role === 'research') return `WebSearch WebFetch ToolSearch ${RESEARCH_OVERWATCH_TOOLS}`;
+  return 'mcp__overwatch ToolSearch';
+}
 
 export class HeadlessMcpRunner {
   private engine: GraphEngine;
@@ -180,10 +203,11 @@ export class HeadlessMcpRunner {
   // ---- helpers ----
 
   private buildArgs(task: AgentTask, configPath: string): string[] {
+    const role = task.role ?? 'default';
     const args = [
       '-p', this.bootstrapPrompt(task),
       '--mcp-config', configPath,
-      '--allowedTools', ALLOWED_TOOLS,
+      '--allowedTools', allowedToolsFor(role),
       '--output-format', 'stream-json',
       '--verbose',
     ];
@@ -194,14 +218,27 @@ export class HeadlessMcpRunner {
   }
 
   private bootstrapPrompt(task: AgentTask): string {
-    // The child discovers tools via ToolSearch (Phase 0: tools load deferred,
-    // not eagerly enumerated at init), then bootstraps from the real prompt.
-    return [
+    const common = [
       `You are an Overwatch headless sub-agent. Your agent task_id is "${task.id}" (agent_id "${task.agent_id}").`,
       `The Overwatch tools load on demand: first use ToolSearch to find the "overwatch" MCP tools`,
-      `(get_system_prompt, get_agent_context, agent_heartbeat, validate_action, run_tool, run_bash, report_finding, submit_agent_transcript, update_agent).`,
+      `(get_system_prompt, get_agent_context, agent_heartbeat, report_finding, submit_agent_transcript, update_agent).`,
       `Then call get_system_prompt(role="sub_agent", agent_id="${task.agent_id}") for your full operating instructions,`,
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
+    ];
+    if (task.role === 'research') {
+      return [
+        ...common,
+        `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version.`,
+        `Research the way an operator would: use WebSearch + WebFetch to find known vulnerabilities AND public proof-of-concept exploits`,
+        `for that exact product+version — check vendor advisories, NVD, Exploit-DB, GitHub, packetstorm. Judge whether each CVE actually`,
+        `applies to the discovered version (version ranges matter). Do NOT run any target-facing tools (no run_bash/run_tool/sessions) —`,
+        `this is read-the-web + record-findings only. Research public advisories, not the engagement's targets.`,
+        `Record each credible candidate by calling research_cve({ service_id, candidates: [{ cve, title, cvss?, vuln_type?, exploit_available?, poc_url?, applicable, confidence?, notes }], summary }).`,
+        `Call research_cve exactly once with all candidates (or an empty list if none apply) so the service is marked checked. Then submit_agent_transcript and update_agent(task_id="${task.id}", status="completed").`,
+      ].join(' ');
+    }
+    return [
+      ...common,
       `Do only the work within that scope, route every target-facing action through validate_action + run_tool/run_bash, and heartbeat periodically.`,
       `When done (or if you cannot proceed), call submit_agent_transcript then update_agent(task_id="${task.id}", status="completed").`,
     ].join(' ');

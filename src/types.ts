@@ -69,6 +69,11 @@ export interface NodeProperties {
   version?: string;
   banner?: string;
   linked_servers?: string[];    // MSSQL linked server hostnames
+  // P2: CVE research bookkeeping. Set by the research_cve tool when a versioned
+  // service has been researched (even if nothing was found), so the cve_research
+  // frontier item stops regenerating. cve_check_summary holds the agent's note.
+  cve_checked_at?: string;
+  cve_check_summary?: string;
 
   // Domain
   domain_name?: string;
@@ -515,6 +520,14 @@ export interface EngagementConfig {
    *    is set, until follow-up work fills out coverage.
    */
   subagent_isolation?: 'in_process' | 'process';
+  /**
+   * P2: CVE research. When enabled (default), `cve_research` frontier items are
+   * dispatched to a headless web-research sub-agent. Air-gapped engagements set
+   * `enabled: false` to forbid web egress — those items then route to `manual`.
+   */
+  cve_research?: {
+    enabled?: boolean;
+  };
   /** In-process JSON-RPC tape recorder. Off by default. */
   tape?: {
     enabled?: boolean;
@@ -648,6 +661,8 @@ export const engagementConfigSchema = z.object({
   // P4.2: sub-agent isolation mode. Default keeps the in-process path
   // every existing engagement uses today.
   subagent_isolation: z.enum(['in_process', 'process']).default('in_process'),
+  // P2: CVE research toggle. Default enabled; set false for air-gapped engagements.
+  cve_research: z.object({ enabled: z.boolean().optional() }).optional(),
   /**
    * In-process JSON-RPC tape recorder. When `enabled: true` the MCP server
    * captures every wire frame (both directions) into a JSONL tape and
@@ -722,7 +737,9 @@ export interface FrontierItem {
     //   token-theft / consent-phishing attempts.
     // - `cross_tier_pivot`: a cross-tier edge has been inferred but
     //   not yet acted on (e.g. webapp BACKED_BY cloud_resource).
-    | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot';
+    | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot'
+    // P2: a service has a known version but no CVE/exploit research yet.
+    | 'cve_research';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;
@@ -807,9 +824,13 @@ export interface AgentTask {
   //  - 'manual'       : a human operator drives it; no automated execution
   // Defaults to 'scripted' when unset (preserves legacy behavior).
   backend?: TaskBackend;
+  // P2: agent role, which selects the headless tool profile. 'default' = full
+  // Overwatch toolset; 'research' = web search + graph tools, no target execution.
+  role?: AgentRole;
 }
 
 export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
+export type AgentRole = 'default' | 'research';
 
 // --- Agent directives (operator steering) ---
 
