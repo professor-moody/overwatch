@@ -55,6 +55,12 @@ export class ScriptedAgentRunner {
     const tasks = this.engine.getAgentTasks();
     for (const task of tasks) {
       if (task.status !== 'running') continue;
+      // Only execute tasks routed to the scripted backend. Tasks marked
+      // 'headless_mcp' or 'manual' are owned by a different backend (or a human)
+      // and must not be auto-completed here. Unset backend defaults to scripted
+      // (legacy behavior). Kept inline to avoid an import cycle with
+      // task-execution-service.
+      if ((task.backend ?? 'scripted') !== 'scripted') continue;
       if (this.processing.has(task.id)) continue;
       if (!task.frontier_item_id) continue;
       this.processing.add(task.id);

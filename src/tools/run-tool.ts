@@ -82,7 +82,7 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         openWorldHint: true,
       },
     },
-    withErrorBoundary('run_tool', async (params) => {
+    withErrorBoundary('run_tool', async (params, extra) => {
       const args = params.args ?? [];
       const command_repr = [params.binary, ...args].map(shellQuote).join(' ');
       // Default tool_name to the binary basename for cleaner attribution.
@@ -118,6 +118,7 @@ Returns inline stdout/stderr (capped at 256 KiB per stream; full output via get_
         parse_stream: params.parse_stream,
         noise_estimate: params.noise_estimate,
         invoking_tool: 'run_tool',
+        abortSignal: extra?.signal,
       });
     }),
   );

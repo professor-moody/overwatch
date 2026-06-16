@@ -24,7 +24,6 @@ import { prepareBundle, pipeTarGzToStream } from './bundle-builder.js';
 import { buildFindings } from './report-generator.js';
 import { classifyAllFindings } from './finding-classifier.js';
 import type { ReportRecord } from './report-archive.js';
-import { ScriptedAgentRunner } from './scripted-agent-runner.js';
 import type { DurableApprovalRecord, PendingAction } from './pending-action-queue.js';
 import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
@@ -146,8 +145,6 @@ export class DashboardServer {
     this.mcpTools = tools.slice();
   }
 
-  private scriptedRunner: ScriptedAgentRunner;
-
   constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
     this.engine = engine;
     this.port = port;
@@ -161,8 +158,6 @@ export class DashboardServer {
     // Wire engine updates to WS push without requiring external wiring in app.ts.
     engine.onUpdate(detail => this.onGraphUpdate(detail));
     this.agentConsoleCursor = engine.getFullHistory().length;
-
-    this.scriptedRunner = new ScriptedAgentRunner(engine);
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -267,7 +262,6 @@ export class DashboardServer {
           this.host = addr.address;
         }
         this._running = true;
-        this.scriptedRunner.start();
         console.error(`Dashboard running at http://${this.host}:${this.port}`);
         resolve({ started: true });
       });
@@ -276,7 +270,6 @@ export class DashboardServer {
 
   stop(): Promise<void> {
     this._running = false;
-    this.scriptedRunner.stop();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;

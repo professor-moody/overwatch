@@ -23,6 +23,8 @@ import { ProcessTracker } from './services/process-tracker.js';
 import { DashboardServer } from './services/dashboard-server.js';
 import { SessionManager } from './services/session-manager.js';
 import { LocalPtyAdapter, SshAdapter, SocketAdapter } from './services/session-adapters.js';
+import { createMcpAuthMiddleware } from './services/mcp-auth.js';
+import { TaskExecutionService } from './services/task-execution-service.js';
 import type { EngagementConfig } from './types.js';
 import { engagementConfigSchema } from './types.js';
 import { formatConfigError, parseEngagementConfig } from './config.js';
@@ -109,6 +111,7 @@ export type OverwatchApp = {
   sessionManager: SessionManager;
   server: McpServer;
   dashboard: DashboardServer | null;
+  taskExecution: TaskExecutionService;
   telemetry: ToolTelemetry;
   tape: InProcessTapeController;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
@@ -271,6 +274,11 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     dashboard.attachMcpTools(registeredTools);
   }
 
+  // App-level agent-task execution (scripted backend + watchdog). Owned here,
+  // not by the dashboard, so agent execution runs whether or not the dashboard
+  // is enabled. Started in startStdioApp/startHttpApp.
+  const taskExecution = new TaskExecutionService(engine);
+
   return {
     config,
     engine,
@@ -279,6 +287,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     sessionManager,
     server,
     dashboard,
+    taskExecution,
     telemetry: getTelemetry()!,
     tape,
   };
@@ -288,6 +297,7 @@ export async function startStdioApp(app: OverwatchApp): Promise<void> {
   if (app.dashboard) {
     await app.dashboard.start();
   }
+  app.taskExecution.start();
 
   maybeAutoEnableTape(app);
 
@@ -322,6 +332,14 @@ export function maybeAutoEnableTape(app: OverwatchApp): void {
 
 export const MAX_HTTP_SESSIONS = 50;
 
+// Default fallback when no engagement-specific approval timeout is configured.
+// Mirrors DEFAULT_TIMEOUT_MS in pending-action-queue.ts.
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 300_000; // 5 minutes
+// The HTTP socket must outlive the approval window by a margin, otherwise Node's
+// default requestTimeout (~5 min) tears down the connection mid-approval and
+// orphans the pending action. We add headroom on top of the approval timeout.
+export const MCP_REQUEST_TIMEOUT_MARGIN_MS = 60_000; // 1 minute
+
 export type StartHttpAppOptions = {
   port?: number;
   host?: string;
@@ -335,6 +353,15 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   maybeAutoEnableTape(app);
 
   const expressApp = createMcpExpressApp({ host });
+
+  // Guard /mcp with bearer-token auth before any route handlers run. Enforced
+  // whenever a token is configured, on non-loopback binds, or when explicitly
+  // required (OVERWATCH_MCP_REQUIRE_TOKEN — set by the headless-agent runtime so
+  // sub-agent clients must authenticate even on localhost).
+  const requireMcpToken = process.env.OVERWATCH_MCP_REQUIRE_TOKEN === '1'
+    || process.env.OVERWATCH_MCP_REQUIRE_TOKEN === 'true';
+  expressApp.use('/mcp', createMcpAuthMiddleware({ host, requireToken: requireMcpToken }));
+
   const transports: Record<string, StreamableHTTPServerTransport> = {};
   const sessionAbortControllers: Record<string, AbortController> = {};
   app.httpTransports = transports;
@@ -437,11 +464,28 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   if (app.dashboard) {
     await app.dashboard.start();
   }
+  app.taskExecution.start();
 
   // Start HTTP server — use http.createServer so server.address() is
   // reliable even with ephemeral port 0.
   const { createServer: createHttpServer } = await import('http');
   const server = createHttpServer(expressApp);
+
+  // Approvals over HTTP block the tool-call request for up to approval_timeout_ms.
+  // Node's default server.requestTimeout (~5 min) would close the socket mid-wait
+  // and orphan the pending approval, so we set an explicit timeout that always
+  // outlives the approval window by MCP_REQUEST_TIMEOUT_MARGIN_MS. We deliberately
+  // do NOT set requestTimeout = 0 (unbounded): a finite ceiling keeps a hung
+  // request from leaking a socket forever, while the queue's own approval-timeout
+  // auto-resolve remains the functional pressure valve for un-answered approvals.
+  const approvalTimeoutMs = app.config.opsec?.approval_timeout_ms ?? DEFAULT_APPROVAL_TIMEOUT_MS;
+  const mcpRequestTimeoutMs = approvalTimeoutMs + MCP_REQUEST_TIMEOUT_MARGIN_MS;
+  server.requestTimeout = mcpRequestTimeoutMs;
+  // keepAliveTimeout/headersTimeout must exceed requestTimeout to avoid Node
+  // racing the socket closed before the request timeout fires.
+  server.keepAliveTimeout = mcpRequestTimeoutMs + 5_000;
+  server.headersTimeout = mcpRequestTimeoutMs + 10_000;
+
   app.httpServer = server;
 
   return new Promise<Express>((resolve, reject) => {
@@ -459,6 +503,8 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 }
 
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
+  // Stop agent-task execution (scripted runner + watchdog) before tearing down.
+  app.taskExecution.stop();
   // Abort all pending operations and close HTTP transport sessions
   if (app.sessionAbortControllers) {
     for (const [sid, controller] of Object.entries(app.sessionAbortControllers)) {

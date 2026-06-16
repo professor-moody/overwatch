@@ -24,12 +24,16 @@ export interface PendingAction {
   validation_result: 'valid' | 'warning_only';
   frontier_item_id?: string;
   agent_id?: string;
-  status: 'pending' | 'approved' | 'denied' | 'timeout';
+  status: 'pending' | 'approved' | 'denied' | 'timeout' | 'aborted';
 }
 
 export interface ActionResolution {
   action_id: string;
-  status: 'approved' | 'denied' | 'timeout';
+  // 'aborted' = the requesting MCP client disconnected (or cancelled the
+  // request) before the operator responded. Distinct from 'denied' (an explicit
+  // operator decision) so the retrospective can tell a dropped client from a
+  // rejection. An aborted action is NOT executed.
+  status: 'approved' | 'denied' | 'timeout' | 'aborted';
   resolved_at: string;
   operator_notes?: string;
   reason?: string;
@@ -64,6 +68,10 @@ export class PendingActionQueue {
   private resolved: Map<string, ActionResolution> = new Map();
   private resolveCallbacks: Map<string, (resolution: ActionResolution) => void> = new Map();
   private timeoutTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  // Per-action abort listeners, so resolveAction() can detach them and avoid
+  // leaking a listener on a long-lived request AbortSignal after the action
+  // resolves by some other means (approve/deny/timeout).
+  private abortListeners: Map<string, { signal: AbortSignal; handler: () => void }> = new Map();
   private eventCallback: ActionEventCallback | null = null;
 
   constructor(ctx: EngineContext) {
@@ -108,7 +116,10 @@ export class PendingActionQueue {
 
   // ---- Submit / resolve ----
 
-  submit(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): Promise<ActionResolution> {
+  submit(
+    action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ActionResolution> {
     const now = new Date();
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const pendingAction: PendingAction = {
@@ -117,6 +128,19 @@ export class PendingActionQueue {
       submitted_at: now.toISOString(),
       timeout_at: new Date(now.getTime() + timeoutMs).toISOString(),
     };
+
+    const signal = opts?.signal;
+    const abortResolution = (): ActionResolution => ({
+      action_id: action.action_id,
+      status: 'aborted',
+      resolved_at: new Date().toISOString(),
+      reason: 'approval request aborted — client disconnected before operator response',
+    });
+
+    // Already aborted before we even queued: resolve immediately, never block.
+    if (signal?.aborted) {
+      return Promise.resolve(abortResolution());
+    }
 
     this.pending.set(action.action_id, pendingAction);
     this.eventCallback?.('action_pending', pendingAction);
@@ -141,6 +165,19 @@ export class PendingActionQueue {
       }, timeoutMs);
 
       this.timeoutTimers.set(action.action_id, timer);
+
+      // If the requesting client disconnects or cancels mid-wait, resolve the
+      // pending action as 'aborted' (not executed) so the awaiting tool unblocks
+      // and the slot is reclaimed instead of orphaned until timeout.
+      if (signal) {
+        const handler = () => {
+          if (this.pending.has(action.action_id)) {
+            this.resolveAction(action.action_id, abortResolution());
+          }
+        };
+        this.abortListeners.set(action.action_id, { signal, handler });
+        signal.addEventListener('abort', handler, { once: true });
+      }
     });
   }
 
@@ -173,7 +210,7 @@ export class PendingActionQueue {
   private resolveAction(action_id: string, resolution: ActionResolution): void {
     const action = this.pending.get(action_id);
     if (action) {
-      action.status = resolution.status === 'timeout' ? 'timeout' : resolution.status;
+      action.status = resolution.status;
     }
 
     // Clear timeout timer
@@ -181,6 +218,13 @@ export class PendingActionQueue {
     if (timer) {
       clearTimeout(timer);
       this.timeoutTimers.delete(action_id);
+    }
+
+    // Detach any abort listener so it can't fire (or leak) after resolution.
+    const abort = this.abortListeners.get(action_id);
+    if (abort) {
+      abort.signal.removeEventListener('abort', abort.handler);
+      this.abortListeners.delete(action_id);
     }
 
     // Move from pending to resolved

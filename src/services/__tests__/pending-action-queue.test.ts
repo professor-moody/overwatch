@@ -451,4 +451,90 @@ describe('PendingActionQueue', () => {
       queue.dispose();
     });
   });
+
+  // ==== abort via AbortSignal (HTTP client disconnect / cancel) ====
+
+  describe('abort via AbortSignal', () => {
+    it('resolves immediately as aborted when the signal is already aborted', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all' });
+      const controller = new AbortController();
+      controller.abort();
+
+      const resolution = await queue.submit(
+        makeSubmitPayload({ action_id: 'act-pre-abort' }),
+        { signal: controller.signal },
+      );
+
+      expect(resolution.status).toBe('aborted');
+      // Never queued — nothing to drain.
+      expect(queue.getPendingCount()).toBe(0);
+    });
+
+    it('resolves as aborted when the signal fires mid-wait, and reclaims the slot', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
+      const controller = new AbortController();
+      const promise = queue.submit(
+        makeSubmitPayload({ action_id: 'act-mid-abort' }),
+        { signal: controller.signal },
+      );
+
+      expect(queue.getPendingCount()).toBe(1);
+      controller.abort();
+
+      const resolution = await promise;
+      expect(resolution.status).toBe('aborted');
+      expect(resolution.reason).toContain('client disconnected');
+      // Slot reclaimed, not left pending until the (60s) timeout.
+      expect(queue.getPendingCount()).toBe(0);
+    });
+
+    it('clears the timeout timer and detaches the abort listener on abort (no leaks, no double-resolve)', async () => {
+      vi.useFakeTimers();
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 5000 });
+      const controller = new AbortController();
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+      const promise = queue.submit(
+        makeSubmitPayload({ action_id: 'act-leak' }),
+        { signal: controller.signal },
+      );
+      controller.abort();
+      const resolution = await promise;
+      expect(resolution.status).toBe('aborted');
+      // The abort listener must be detached so it can't fire again.
+      expect(removeSpy).toHaveBeenCalled();
+
+      // Advancing past the timeout must NOT change the already-resolved state.
+      vi.advanceTimersByTime(10000);
+      expect(queue.getPendingCount()).toBe(0);
+      expect(queue.getResolution('act-leak')?.status).toBe('aborted');
+    });
+
+    it('does not abort if the action is approved before the signal fires', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
+      const controller = new AbortController();
+      const promise = queue.submit(
+        makeSubmitPayload({ action_id: 'act-approve-first' }),
+        { signal: controller.signal },
+      );
+
+      queue.approve('act-approve-first', 'ok');
+      const resolution = await promise;
+      expect(resolution.status).toBe('approved');
+
+      // A late abort must not resurrect or re-resolve the action.
+      controller.abort();
+      expect(queue.getPendingCount()).toBe(0);
+      expect(queue.getResolution('act-approve-first')?.status).toBe('approved');
+    });
+
+    it('submit() without a signal behaves exactly as before (backward-compatible)', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all' });
+      const promise = queue.submit(makeSubmitPayload({ action_id: 'act-no-signal' }));
+      expect(queue.getPendingCount()).toBe(1);
+      queue.approve('act-no-signal');
+      const resolution = await promise;
+      expect(resolution.status).toBe('approved');
+    });
+  });
 });
