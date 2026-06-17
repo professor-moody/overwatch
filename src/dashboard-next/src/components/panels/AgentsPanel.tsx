@@ -12,6 +12,7 @@ import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace
 import { POLL } from '../../lib/polling';
 import { OperatorCommandBar } from './OperatorCommandBar';
 import { AgentQueriesInbox } from './AgentQueriesInbox';
+import { AddTargetsModal } from './AddTargetsModal';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
@@ -69,6 +70,7 @@ export function AgentsPanel() {
   const consoleScrollRef = useRef<HTMLDivElement | null>(null);
   const [showDispatch, setShowDispatch] = useState(false);
   const [showBulkDispatch, setShowBulkDispatch] = useState(false);
+  const [showAddTargets, setShowAddTargets] = useState(false);
   const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
   const setStoreAgents = useEngagementStore((s) => s.setAgents);
 
@@ -303,6 +305,12 @@ export function AgentsPanel() {
             </div>
           )}
           <ActionButton
+            onClick={() => setShowAddTargets(true)}
+            variant="secondary"
+          >
+            Add Targets
+          </ActionButton>
+          <ActionButton
             onClick={() => setShowDispatch(true)}
             variant="ghost"
             className="text-accent"
@@ -424,6 +432,11 @@ export function AgentsPanel() {
           onClose={() => setShowBulkDispatch(false)}
           onDispatched={() => { setShowBulkDispatch(false); refreshAgents(); }}
         />
+      )}
+
+      {/* Add Targets Modal — live scope entry mid-engagement (Phase 4c) */}
+      {showAddTargets && (
+        <AddTargetsModal onClose={() => setShowAddTargets(false)} />
       )}
     </div>
   );
