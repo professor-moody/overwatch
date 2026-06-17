@@ -141,6 +141,26 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
   }, 30000);
 
+  it('a headless agent escalates via ask_operator, waits, and proceeds on the operator answer (3D)', async () => {
+    process.env.OVERWATCH_FAKE_MODE = 'ask';
+    app.engine.registerAgent({
+      id: 'e2e-ask', agent_id: 'agent-ask', assigned_at: new Date().toISOString(),
+      status: 'running', backend: 'headless_mcp', subgraph_node_ids: [],
+    } as AgentTask);
+
+    // The fake agent connects, calls ask_operator, and starts heartbeating.
+    await waitFor(() => app.engine.getAgentQueryStore().getOpen().length > 0, 18000);
+    const q = app.engine.getAgentQueryStore().getOpen()[0];
+    expect(q.task_id).toBe('e2e-ask');
+    expect(q.question).toContain('loud');
+
+    // Operator answers; the agent receives it on its next heartbeat and completes.
+    app.engine.getAgentQueryStore().answer(q.query_id, 'stay quiet');
+    await waitFor(() => app.engine.getTask('e2e-ask')?.status === 'completed', 18000);
+    expect(app.engine.getTask('e2e-ask')?.result_summary).toContain('stay quiet');
+    await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
+  }, 30000);
+
   it('auto-dispatches a versioned service to a research agent that records a candidate CVE', async () => {
     process.env.OVERWATCH_FAKE_MODE = 'research';
     // Discovering a versioned service generates a cve_research frontier item,

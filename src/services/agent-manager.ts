@@ -111,6 +111,9 @@ export class AgentManager {
     // P1.4: release any frontier lease this task held.
     if (status === 'completed' || status === 'failed' || status === 'interrupted') {
       this.ctx.frontierLeases.releaseByTask(taskId);
+      // 3D: drop this task's open/answered questions so a dead agent's question
+      // doesn't linger in the operator inbox or get answered into the void.
+      this.ctx.agentQueryStore.expireForTask(taskId);
     }
     this.ctx.logEvent({
       description: `Agent ${task.agent_id} ${status}${summary ? `: ${summary}` : ''}`,

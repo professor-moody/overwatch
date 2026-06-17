@@ -6,7 +6,7 @@
 // connects to the Overwatch HTTP MCP endpoint as a real MCP client, exercises
 // the sub-agent loop (get_agent_context → report_finding → update_agent), and
 // emits a couple of stream-json lines. Behavior is selected by env:
-//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner'
+//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner' | 'ask'
 //   OVERWATCH_TASK_ID   = the agent task id (set by the runner)
 // ============================================================
 import { readFileSync } from 'node:fs';
@@ -99,6 +99,32 @@ async function main() {
     }
     await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake planner proposed a plan' } });
     await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake planner done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'ask') {
+    // Escalation: ask the operator a question, then wait for the answer by
+    // heartbeating until pending_answer arrives (3D), then close out.
+    const askRes = await client.callTool({
+      name: 'ask_operator',
+      arguments: { task_id: taskId, agent_id: agentId, question: 'go loud or stay quiet?', options: ['loud', 'quiet'] },
+    });
+    let myQueryId;
+    try { myQueryId = JSON.parse(askRes.content[0].text).query_id; } catch { /* ignore */ }
+    let answer;
+    for (let i = 0; i < 50 && !answer; i++) {
+      const hb = await client.callTool({ name: 'agent_heartbeat', arguments: { task_id: taskId } });
+      try {
+        const parsed = JSON.parse(hb.content[0].text);
+        // Act only on the answer to OUR question (matches query_id).
+        if (parsed.pending_answer && parsed.pending_answer.query_id === myQueryId) answer = parsed.pending_answer.answer;
+      } catch { /* ignore */ }
+      if (!answer) await new Promise(r => setTimeout(r, 150));
+    }
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `proceeded with: ${answer ?? 'no answer'}` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: `operator answer: ${answer ?? 'none'}` } });
     emit({ type: 'result', subtype: 'success', is_error: false });
     await client.close();
     process.exit(0);

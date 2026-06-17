@@ -70,7 +70,7 @@ export interface HeadlessMcpRunnerOptions {
 const RESEARCH_OVERWATCH_TOOLS = [
   'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
   'report_finding', 'research_cve', 'log_thought', 'agent_heartbeat',
-  'acknowledge_agent_directive', 'submit_agent_transcript', 'update_agent', 'get_evidence',
+  'acknowledge_agent_directive', 'ask_operator', 'submit_agent_transcript', 'update_agent', 'get_evidence',
 ].map(t => `mcp__overwatch__${t}`).join(' ');
 
 // Planner-safe Overwatch tools: graph READ + reasoning + the propose_plan write
@@ -83,7 +83,7 @@ const RESEARCH_OVERWATCH_TOOLS = [
 const PLANNER_OVERWATCH_TOOLS = [
   'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
   'propose_plan', 'log_thought', 'agent_heartbeat',
-  'acknowledge_agent_directive', 'submit_agent_transcript', 'update_agent',
+  'acknowledge_agent_directive', 'ask_operator', 'submit_agent_transcript', 'update_agent',
 ].map(t => `mcp__overwatch__${t}`).join(' ');
 
 export function allowedToolsFor(role: AgentRole): string {

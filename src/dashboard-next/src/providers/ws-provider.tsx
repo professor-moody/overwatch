@@ -133,6 +133,12 @@ export function WsProvider({ children }: { children: ReactNode }) {
           window.dispatchEvent(new CustomEvent('overwatch-agent-console-update', { detail: data }));
           break;
         }
+        case 'agent_query': {
+          // 3D: a running agent asked the operator (or one was answered) — wake
+          // the inbox immediately. It also polls as a fallback.
+          window.dispatchEvent(new CustomEvent('overwatch-agent-query-update', { detail: msg.data }));
+          break;
+        }
         default:
           // agent_update, campaign_update, objective_update
           // These are embedded in graph_update state, but handle standalone if needed

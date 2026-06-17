@@ -194,7 +194,7 @@ function generateSubAgentPrompt(
     'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
     'run_bash', 'run_tool',
     'parse_output', 'report_finding', 'research_cve', 'propose_plan', 'submit_agent_transcript',
-    'agent_heartbeat', 'acknowledge_agent_directive',
+    'agent_heartbeat', 'acknowledge_agent_directive', 'ask_operator',
     'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
     'list_sessions', 'close_session', 'resize_session', 'signal_session',
@@ -503,6 +503,8 @@ function generateSubAgentWorkflowSection(): string {
     - \`skip_types\` → ignore frontier items whose type is in \`frontier_types\`.
     - \`prioritize\` → do frontier items whose type is in \`frontier_types\` first.
     - \`instruct\` → the operator's free-text instruction is in \`note\`; read it and adjust your approach accordingly (e.g. focus a technique, try a different path), staying within scope and OPSEC.
+    Also watch for \`pending_answer\` on the heartbeat — the operator's reply to a question you asked via \`ask_operator\`. Act on it only when \`pending_answer.query_id\` matches the \`query_id\` your \`ask_operator\` call returned, and act on a given answer once.
+12b. At a genuine fork you cannot resolve (ambiguous path, risky/irreversible step, missing context), call \`ask_operator({ task_id, question, options? })\` — note the returned \`query_id\` — then keep heartbeating (it's redelivered each beat, so a dropped response self-heals). When \`pending_answer.query_id\` matches, read \`pending_answer.answer\` and proceed. Bound your wait to a few minutes of heartbeats; if no answer arrives, make the safest reasonable choice and note that you proceeded without one. Don't ask for routine decisions — only real escalations.
 12. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ task_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Use \`agent_id\` only as a legacy fallback if you do not have the task ID. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;

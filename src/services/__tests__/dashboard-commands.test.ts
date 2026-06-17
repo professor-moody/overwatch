@@ -173,6 +173,38 @@ describe('/api/agents current_action (Phase 3C — "see everything")', () => {
   });
 });
 
+describe('/api/agent-queries — agent→operator escalation (Phase 3D)', () => {
+  it('lists open questions, answers one, and removes it from the inbox', async () => {
+    const q = engine.getAgentQueryStore().add({ task_id: 'target-1', agent_id: 'scanner-1', question: 'go loud?' });
+
+    const list = await (await fetch(`${baseUrl}/api/agent-queries`)).json();
+    expect(list.queries.some((x: { query_id: string }) => x.query_id === q.query_id)).toBe(true);
+
+    const ans = await fetch(`${baseUrl}/api/agent-queries/${q.query_id}/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: 'stay quiet' }),
+    });
+    expect(ans.status).toBe(200);
+
+    // delivered to the agent on its next heartbeat (peek), and gone from the open inbox
+    const taken = engine.getAgentQueryStore().getAnswerForTask('target-1');
+    expect(taken?.answer).toBe('stay quiet');
+    const after = await (await fetch(`${baseUrl}/api/agent-queries`)).json();
+    expect(after.queries.some((x: { query_id: string }) => x.query_id === q.query_id)).toBe(false);
+  });
+
+  it('rejects an empty answer (400) and an unknown query (404)', async () => {
+    const q = engine.getAgentQueryStore().add({ task_id: 'target-1', question: 'x?' });
+    const empty = await fetch(`${baseUrl}/api/agent-queries/${q.query_id}/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: '  ' }),
+    });
+    expect(empty.status).toBe(400);
+    const unknown = await fetch(`${baseUrl}/api/agent-queries/nope/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: 'hi' }),
+    });
+    expect(unknown.status).toBe(404);
+  });
+});
+
 describe('/api/commands — grammar fast-path', () => {
   it('previews a recognized command without mutating, then confirms it', async () => {
     const preview = await (await post({ command: 'pause scanner-1' })).json();
