@@ -828,6 +828,13 @@ export interface AgentTask {
   // Overwatch toolset; 'research' = web search + graph tools, no target execution;
   // 'planner' = read-only graph + propose_plan, never executes (3A.2 NL cockpit).
   role?: AgentRole;
+  // Phase 5c: the agent archetype id ("agent type") — a data-driven bundle of
+  // {role + tool surface + backend + default skill/objective + scope strategy},
+  // resolved via agent-archetypes.ts. When set it takes precedence over `role`
+  // for the headless tool allowlist + prompt framing; legacy tasks (role only)
+  // still resolve correctly. Kept as a string here to avoid a types→services
+  // import cycle; the registry validates/narrows it.
+  archetype?: string;
   // 3A.2: free-text objective handed to a headless agent at launch (embedded in
   // its bootstrap prompt). The 'planner' role carries the operator's free-form
   // command + a snapshot of steerable state here so it can propose a plan.
