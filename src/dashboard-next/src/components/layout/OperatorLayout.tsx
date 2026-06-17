@@ -61,7 +61,8 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
 
 export function OperatorLayout() {
   const { panelId } = useParams();
-  const activePanel: PanelId = isPanelId(panelId) ? panelId : 'overview';
+  // The Operator Console is the operator's home: the default landing panel.
+  const activePanel: PanelId = isPanelId(panelId) ? panelId : 'agents';
   const [selectedItem, setSelectedItem] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(() => {
@@ -79,7 +80,7 @@ export function OperatorLayout() {
       return;
     }
     if (!isPanelId(panelId)) {
-      navigate('/overview', { replace: true });
+      navigate('/agents', { replace: true });
       return;
     }
     const params = new URLSearchParams(location.search);
@@ -137,6 +138,17 @@ export function OperatorLayout() {
           <div className="mx-6 mt-2 mb-0 px-3 py-1.5 bg-destructive/5 border border-destructive/20 rounded text-xs text-destructive flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />
             Disconnected — reconnecting…
+          </div>
+        )}
+        {activePanel !== 'agents' && (
+          <div className="px-6 pt-2">
+            <button
+              onClick={() => handlePanelChange('agents')}
+              className="inline-flex items-center gap-1.5 rounded border border-accent/30 bg-accent-dim/40 px-2 py-1 text-xs text-accent hover:bg-accent/20"
+              title="Return to the Operator Console (press c)"
+            >
+              ← Back to Console
+            </button>
           </div>
         )}
         <Breadcrumb panel={activePanel} item={selectedItem} />

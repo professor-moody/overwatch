@@ -37,36 +37,40 @@ type SidebarItem = {
   icon: React.ComponentType<{ className?: string }>;
 };
 
+// Console-first IA (Phase 4a): the Operator Console is the home + the top group;
+// everything the operator ACTS with sits in CONSOLE, investigation destinations
+// in INVESTIGATE, engagement/admin in MANAGE. (Approvals stays reachable here as
+// its own item until Phase 4b folds approve/deny into the console and demotes it.)
 const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
   {
-    label: 'Operate',
+    label: 'Console',
     items: [
-      { id: 'overview', label: 'Overview', icon: LayoutGrid },
+      { id: 'agents', label: 'Console', icon: User },
       { id: 'frontier', label: 'Frontier', icon: Crosshair },
-      { id: 'actions', label: 'Actions', icon: Clock },
-      { id: 'agents', label: 'Operator', icon: User },
-      { id: 'sessions', label: 'Sessions', icon: Terminal },
+      { id: 'actions', label: 'Approvals', icon: Clock },
       { id: 'campaigns', label: 'Campaigns', icon: Bookmark },
     ],
   },
   {
-    label: 'Evidence',
+    label: 'Investigate',
     items: [
       { path: '/graph', label: 'Graph', icon: Network },
+      { id: 'findings', label: 'Findings', icon: ShieldAlert },
+      { id: 'paths', label: 'Attack Paths', icon: Route },
       { id: 'evidence', label: 'Evidence', icon: FileText },
       { id: 'identity', label: 'Identity', icon: KeyRound },
       { id: 'credentials', label: 'Credentials', icon: Key },
-      { id: 'paths', label: 'Attack Paths', icon: Route },
-      { id: 'findings', label: 'Findings', icon: ShieldAlert },
       { id: 'activity', label: 'Activity', icon: Activity },
+      { id: 'overview', label: 'Overview', icon: LayoutGrid },
     ],
   },
   {
-    label: 'Admin',
+    label: 'Manage',
     items: [
+      { id: 'sessions', label: 'Sessions', icon: Terminal },
       { id: 'engagements', label: 'Engagements', icon: Briefcase },
-      { id: 'smoke', label: 'Smoke', icon: FlaskConical },
       { id: 'settings', label: 'Settings', icon: Settings },
+      { id: 'smoke', label: 'Smoke', icon: FlaskConical },
     ],
   },
 ];

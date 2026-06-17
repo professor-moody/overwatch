@@ -31,7 +31,7 @@ export function App() {
           />
           <Route path="/" element={<OperatorLayout />} />
           <Route path="/:panelId" element={<OperatorLayout />} />
-          <Route path="*" element={<Navigate to="/overview" replace />} />
+          <Route path="*" element={<Navigate to="/agents" replace />} />
         </Routes>
         <ToastContainer />
       </BrowserRouter>
