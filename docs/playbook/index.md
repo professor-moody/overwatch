@@ -19,6 +19,8 @@ What to do once Overwatch is running. Pick the page that matches your situation:
 
 Read the [End-to-End Walkthrough](walkthrough.md) — a narrated example taking an engagement from empty graph to Domain Admin on a GOAD-like lab. It's the best way to understand what "good" looks like.
 
+New to the dashboard? The [Cockpit Walkthrough](cockpit-walkthrough.md) tours the day-to-day operator loop in the Console — dispatch, steer, talk, approve, add targets, investigate.
+
 ## Reference
 
 These pages aren't tutorials — they're answers to specific questions:

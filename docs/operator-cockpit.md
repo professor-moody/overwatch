@@ -1,6 +1,6 @@
 # Operator Cockpit
 
-Overwatch is operated as a **multi-agent cockpit**: a human operator drives a primary reasoning model, dispatches headless sub-agents, steers and talks to them, and watches everything live from the dashboard's **Operator** panel. This page explains the runtime and the operator surfaces.
+Overwatch is operated as a **multi-agent cockpit**: a human operator drives a primary reasoning model, dispatches headless sub-agents, steers and talks to them, and watches everything live from the dashboard's **Console** (the home of a console-first IA — see [Dashboard](dashboard.md#operator-console-cockpit)). This page explains the runtime and the operator surfaces.
 
 ## Safety invariant
 
@@ -39,6 +39,20 @@ The operator types plain English in the cockpit; `POST /api/commands` is a **two
 
 `ProposedPlanStore` (engine-owned, in-memory, 10-min TTL) is the hand-off between the `propose_plan` tool and the dashboard confirm path. `propose_plan` rejects a plan if **any** op fails to resolve, so a confirmed plan can never silently no-op.
 
+### Grammar reference {#grammar}
+
+The deterministic fast-path (`interpretCommand`) recognizes these verbs (case-insensitive). Anything else falls through to the planner. The same grammar backs the command bar and the typed-command surfaces.
+
+| Intent | Syntax | Notes |
+|--------|--------|-------|
+| Steer one agent | `pause` / `resume` / `stop` / `halt` `<agent>` | `halt` aliases `stop`. `<agent>` matches a label or task id. |
+| Steer the fleet | `pause` / `resume` / `stop` `all` (or `everything`, `all agents`) | Fans out over every running agent. |
+| Talk to an agent | `tell <agent> [to] <text>` · `instruct <agent> [to] <text>` | Delivered as an `instruct` directive on the agent's next heartbeat. |
+| Add scope | `scan <targets>` · `add scope <targets>` · `add to scope <targets>` · `target <targets>` | Targets are whitespace/comma-separated CIDRs, IPs (→`/32`), or domains (lowercased); IPv6/junk is rejected. Same parsing as the Console's **Add Targets** modal. |
+| Resolve an action | `approve [action] <id> [reason]` · `deny [action] <id> [reason]` | The optional `action` keyword is accepted; the trailing text is the reason. |
+
+Each resolves to one or more `OperatorOp`s, previews, and runs through `executeOps` on confirm — never a separate mutation path.
+
 ## Steering — talking to a specific agent {#steering}
 
 The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive.md)) is delivered on the agent's heartbeat as `pending_directive`; the agent calls [`acknowledge_agent_directive`](tools/acknowledge-agent-directive.md) and honors it. The cockpit surfaces it as:
@@ -48,7 +62,14 @@ The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive
 
 ## Seeing everything
 
-The **Operator** panel is the primary surface: a roster (each running agent shows a live `doing: …` line derived from its most recent activity), a center console stream (primary + sub-agent events, filterable by Primary/Subagents/Commands/Thoughts/Actions/Findings/Approvals/Sessions/Errors), and a detail panel. The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen.
+The **Console** is the primary surface, laid out as a focused master-detail workspace:
+
+- a pinned **command bar** (the NL command line above);
+- a **"Needs you" strip** that surfaces what's waiting on the operator — pending **approvals** (inline Approve / Deny+reason) and agent **questions** (inline Answer) — and hides itself when nothing needs attention;
+- a **Fleet** roster on the left: select an agent to *focus* it, and the main column becomes that agent's detail + steering + its own activity stream; with nothing selected the main column is a fleet overview over the full primary/sub-agent stream;
+- the activity stream is filterable by Primary/Subagents/Commands/Thoughts/Actions/Findings/Approvals/Sessions/Errors.
+
+The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen. Resolved approvals clear off the `action_resolved` push. The standalone **Approvals** view is the deep triage queue and shares the same approve/deny path.
 
 ## Escalation — agents asking the operator {#escalation}
 
@@ -63,6 +84,8 @@ A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) 
 | `POST /api/agents/:id/directive` | Steer one agent (one validated directive op) |
 | `POST /api/fleet/directive` | Fleet-wide pause/resume/stop (optionally by campaign) |
 | `GET /api/agent-queries` · `POST /api/agent-queries/:id/answer` | The agent-question inbox |
+| `POST /api/actions/:id/approve` · `POST /api/actions/:id/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
+| `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Add Targets — read-only impact dry-run, then apply via `updateScope` |
 | `POST /api/agents/dispatch` | Dispatch a sub-agent (`{ target_node_ids, skill?, campaign_id?, frontier_item_id? }`) |
 
 ## See Also

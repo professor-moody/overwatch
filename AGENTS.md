@@ -75,13 +75,14 @@ For captured cloud / SaaS credentials, prefer the **playbook tools** over re-der
 
 ### Dashboard Overview
 
-Tabs: **Overview · Engagements · Campaigns · Agents · Sessions · Actions · Frontier · Activity · Evidence · Identity · Credentials · Attack Paths · Findings · Settings**
+Console-first IA. The **Console** is the operator's home; nav is grouped **Console** (Console · Frontier · Approvals · Campaigns) · **Investigate** (Graph · Findings · Attack Paths · Evidence · Identity · Credentials · Activity · Overview) · **Manage** (Sessions · Engagements · Settings · Smoke).
 
+- **Console** — the multi-agent home: pinned command bar, a Fleet roster (select an agent to focus its detail + steering + activity), a "Needs you" strip for inline **approve/deny** + agent questions, an **Add Targets** launcher (paste IPs/CIDRs/domains → preview impact → add to scope), and the live primary/sub-agent stream.
+- **Approvals** — the deep triage queue (risk-sorted, bulk by technique, countdown timers); the same approve/deny also acts inline in the Console.
 - **Credentials** — flat view of all captured credential nodes; filterable by status, reachability badges, reveal/copy for `cred_value`.
 - **Findings** — severity-grouped classifier output; Generate Report button → format/theme/options → archive.
 - **Identity** — IdP-grouped principals, active tokens, cross-tier identity inference results.
 - **Attack Paths** — client-side Dijkstra over the current graph; sources: HAS_SESSION + ADMIN_TO edges; targets: cloud_identity, cloud_resource, idp_principal.
-- **Actions** — pending approval queue; bulk-approve by technique grouping; countdown timers per action.
 
 ### Sessions (interactive shells / sockets)
 
