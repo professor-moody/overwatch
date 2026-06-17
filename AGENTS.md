@@ -114,7 +114,9 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `parse_output` — supported raw tool output → graph artifacts
 > - `report_finding` — report every discovery immediately
 > - `submit_agent_transcript` — wrap-up handoff to the primary (call before being closed out)
-> - `agent_heartbeat` — refresh the task lease during long-running work
+> - `agent_heartbeat` — refresh the task lease; **also check the response for `pending_directive`** (operator steering — `acknowledge_agent_directive` then honor it) **and `pending_answer`** (the reply to a question you asked)
+> - `ask_operator` — at a genuine fork you can't resolve, ask the operator and wait (the answer arrives on a later heartbeat as `pending_answer`, matched by `query_id`)
+> - `acknowledge_agent_directive` — confirm a directive you received, then act on it
 > - `query_graph` — explore the graph if you need more context
 > - `get_skill` — methodology guidance
 > - `open_session`, `write_session`, `read_session`, `send_to_session`, `list_sessions`, `close_session` — sessions
@@ -179,6 +181,8 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 | `correct_graph` | Transactional graph repair | Operator corrections |
 | `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
 | `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
+| `manage_agent_directive` | Steer a running sub-agent: pause/resume/stop/narrow_scope/skip_types/prioritize/instruct (delivered on heartbeat) | Operator steering — per-agent + fleet controls in the cockpit |
+| `ask_operator` | Sub-agent escalates a decision and waits; the answer returns on its heartbeat | At a genuine fork the agent can't resolve |
 | `suggest_inference_rule` | Propose custom inference rules | Operator-driven graph logic |
 | `run_retrospective` | Post-engagement analysis, traces | End of engagement |
 | `register_tape_session` | Register a JSON-RPC tape captured by the `overwatch-mcp-tape` proxy | After running the engagement under the proxy |

@@ -2,6 +2,8 @@
 
 An offensive security engagement orchestrator built as an MCP server. The persistent state layer and reasoning substrate for LLM-powered penetration testing.
 
+It runs as a **multi-agent operator cockpit**: a human operator drives a primary reasoning model, dispatches headless sub-agents, steers and talks to them in natural language, watches everything live, and answers questions agents escalate — all from the dashboard's Operator console. Every operator action routes through the same validated engine path, so OPSEC/scope/approval guards always apply. See [Operator Cockpit](docs/operator-cockpit.md).
+
 ## Quick Start
 
 ```bash
