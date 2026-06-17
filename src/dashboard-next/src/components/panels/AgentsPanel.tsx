@@ -6,27 +6,17 @@ import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
-import { buildConsoleApprovals, isDenyReasonValid, type ConsoleApprovalItem } from '../../lib/console-approvals';
 import { sessionsForAgent } from '../../lib/session-workspace';
+import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
+import { threadConsoleEvents, type ActivityThread } from '../../lib/activity-threads';
 import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
 import { POLL } from '../../lib/polling';
-import { OperatorCommandBar } from './OperatorCommandBar';
-import { AgentQueriesInbox } from './AgentQueriesInbox';
+import { ContextualCommandBar } from './ContextualCommandBar';
+import { AttentionQueue } from './AttentionQueue';
+import { MissionCard } from './MissionCard';
 import { AddTargetsModal } from './AddTargetsModal';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
-
-const STRATEGY_ICONS: Record<string, string> = {
-  credential_spray: '🔑',
-  enumeration: '🔍',
-  post_exploitation: '⚡',
-  network_discovery: '🌐',
-  custom: '⚙',
-};
-
-const STATUS_ORDER: Record<string, number> = {
-  running: 0, pending: 1, failed: 2, interrupted: 3, completed: 4,
-};
 
 type ConsoleFilter = 'all' | 'primary' | 'subagents' | AgentConsoleKind | 'errors';
 type AgentContext = { subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } };
@@ -44,10 +34,6 @@ const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
   { value: 'errors', label: 'Errors' },
 ];
 
-function sortAgents(list: AgentInfo[]): AgentInfo[] {
-  return [...list].sort((a, b) => (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5));
-}
-
 function isScrolledNearBottom(el: HTMLElement | null, threshold = 48): boolean {
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
@@ -57,6 +43,8 @@ export function AgentsPanel() {
   const agents = useEngagementStore((s) => s.agents);
   const initialized = useEngagementStore((s) => s.initialized);
   const connected = useEngagementStore((s) => s.connected);
+  const sessions = useEngagementStore((s) => s.sessions);
+  const pendingActions = useEngagementStore((s) => s.pendingActions);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeAgentId, setActiveAgentId] = useState<string>('all');
@@ -71,8 +59,29 @@ export function AgentsPanel() {
   const [showDispatch, setShowDispatch] = useState(false);
   const [showBulkDispatch, setShowBulkDispatch] = useState(false);
   const [showAddTargets, setShowAddTargets] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [agentQueries, setAgentQueries] = useState<api.AgentQuery[]>([]);
   const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
   const setStoreAgents = useEngagementStore((s) => s.setAgents);
+
+  // Agent→operator questions feed both the Attention Queue and Mission Card
+  // "awaiting answer" badges; fetch once here (live via the WS push + a poll).
+  const loadAgentQueries = useCallback(async () => {
+    try {
+      const { queries } = await api.getAgentQueries();
+      setAgentQueries(queries || []);
+    } catch { /* transient */ }
+  }, []);
+  useEffect(() => {
+    void loadAgentQueries();
+    const onUpdate = () => void loadAgentQueries();
+    window.addEventListener('overwatch-agent-query-update', onUpdate);
+    const timer = setInterval(() => void loadAgentQueries(), POLL.AGENTS_MS);
+    return () => {
+      window.removeEventListener('overwatch-agent-query-update', onUpdate);
+      clearInterval(timer);
+    };
+  }, [loadAgentQueries]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -92,22 +101,20 @@ export function AgentsPanel() {
   useEffect(() => { refreshAgents(); }, [refreshAgents]);
 
   // Campaign groups
-  const { groups, ungrouped } = useMemo(() => {
-    const g = new Map<string, { name: string; strategy: string; agents: AgentInfo[] }>();
-    const ug: AgentInfo[] = [];
-    for (const a of agents) {
-      const cid = a.campaign_id || a.campaign?.id;
-      if (cid) {
-        if (!g.has(cid)) g.set(cid, { name: a.campaign?.name || cid, strategy: a.campaign?.strategy || '', agents: [] });
-        g.get(cid)!.agents.push(a);
-      } else { ug.push(a); }
-    }
-    return { groups: g, ungrouped: ug };
-  }, [agents]);
-
   const running = agents.filter(a => a.status === 'running');
   const completed = agents.filter(a => a.status === 'completed');
   const failed = agents.filter(a => a.status === 'failed' || a.status === 'interrupted');
+
+  // Mission Cards: the operator-shaped per-agent view-model, grouped by campaign.
+  const missionGroups = useMemo(
+    () => groupMissionCards(agents.map(a => buildMissionCard(a, { sessions, pendingActions, agentQueries }))),
+    [agents, sessions, pendingActions, agentQueries],
+  );
+  const elapsedById = useMemo(() => {
+    const m = new Map<string, number | undefined>();
+    for (const a of agents) m.set(a.id, a.elapsed_ms);
+    return m;
+  }, [agents]);
   // Select by task id OR agent label so deep-links from other panels (e.g. a
   // SessionRow chip carrying the agent label) resolve.
   const activeAgent = activeAgentId === 'all'
@@ -134,11 +141,6 @@ export function AgentsPanel() {
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  };
-
-  const selectAll = () => {
-    if (selectedIds.size === agents.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(agents.map(a => a.id)));
   };
 
   const cancelAgent = async (id: string) => {
@@ -170,14 +172,6 @@ export function AgentsPanel() {
     await refreshAgents();
   };
 
-  const cancelGroup = async (gid: string) => {
-    const group = gid === '__ungrouped__'
-      ? agents.filter(a => !a.campaign_id && !a.campaign?.id)
-      : agents.filter(a => (a.campaign_id || a.campaign?.id) === gid);
-    const cancellable = group.filter(a => a.status === 'running' || a.status === 'pending');
-    await Promise.allSettled(cancellable.map(a => api.cancelAgent(a.id)));
-    await refreshAgents();
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -327,15 +321,20 @@ export function AgentsPanel() {
         )}
       />
 
-      {/* Slim, always-pinned command line — acts across the engagement (3A). */}
-      <OperatorCommandBar />
+      {/* One contextual command box — Engagement (NL) or the focused Agent
+          (instruct), via a scope pill. Replaces the separate global command bar
+          and per-agent Tell box. */}
+      <ContextualCommandBar focusedAgent={activeAgent} />
 
-      {/* "Needs you" strip — the operator's attention queue: pending approvals
-          (act inline) + agent escalations (answer inline). Each card hides
-          itself when empty, so the whole strip collapses when nothing is
-          waiting. Engagement-wide, so it shows regardless of agent focus. */}
-      <ConsoleApprovalsLane />
-      <AgentQueriesInbox />
+      {/* One "Needs you" queue — approvals (act inline) + agent questions
+          (answer inline) + failed agents, prioritized, one item expanded. Hides
+          itself when nothing is waiting. */}
+      <AttentionQueue
+        agentQueries={agentQueries}
+        onAnswered={loadAgentQueries}
+        onSelectAgent={(taskId) => setActiveAgentId(taskId)}
+        onTriageAll={() => navigateToPanel('actions')}
+      />
 
       {/* Batch bar */}
       {selectedIds.size > 0 && (
@@ -354,21 +353,21 @@ export function AgentsPanel() {
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)]">
-          {/* LEFT: fleet roster spine */}
-          <AgentRoster
-            agents={agents}
-            groups={groups}
-            ungrouped={ungrouped}
+          {/* LEFT (Monitor): the Fleet — Mission Cards grouped by campaign. */}
+          <MissionRoster
+            groups={missionGroups}
+            agentCount={agents.length}
             activeAgentId={activeAgentId}
             selectedIds={selectedIds}
             collapsedGroups={collapsedGroups}
+            batchMode={batchMode}
+            elapsedById={elapsedById}
+            onToggleBatch={() => { setBatchMode(v => !v); setSelectedIds(new Set()); }}
             onSelectAllOutput={() => setActiveAgentId('all')}
-            onSelectAgent={(agent) => setActiveAgentId(agent.id)}
+            onSelectAgent={(id) => setActiveAgentId(id)}
             onToggleSelect={toggleSelect}
-            onSelectAll={selectAll}
             onToggleGroup={toggleGroup}
             onCancelAgent={cancelAgent}
-            onCancelGroup={cancelGroup}
           />
 
           {/* MAIN: focused agent (detail + steer, top) over its activity stream
@@ -442,158 +441,58 @@ export function AgentsPanel() {
   );
 }
 
-// ---- "Needs you" approvals lane ----
+// ---- Fleet roster (Mission Cards) ----
 
-// Pending approvals, actioned inline in the console. Approve/Deny route through
-// the canonical POST /api/actions/:id/{approve,deny} → resolveApprovalRequest
-// path (same as the terminal and the deep Actions triage view), so the audit
-// record + OPSEC accounting stay consistent. Resolved rows clear off the live
-// `action_resolved` WS push (the store drops them), not optimistically — if a
-// race or 404/409 happens we surface a toast and let the WS reconcile. Hidden
-// when nothing is pending.
-function ConsoleApprovalsLane() {
-  const pendingActions = useEngagementStore(s => s.pendingActions);
-  const { navigateToPanel } = useNavigation();
-  const view = useMemo(() => buildConsoleApprovals(pendingActions, { limit: 4 }), [pendingActions]);
-
-  if (view.total === 0) return null;
-
-  return (
-    <div className="space-y-2 rounded-md border border-accent/40 bg-accent/5 p-3">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-accent">⚠ Approvals</span>
-        <span className="rounded-full bg-accent/20 px-1.5 text-[10px] text-accent">{view.total}</span>
-        {view.highCount > 0 && <span className="text-[10px] text-destructive">{view.highCount} high-risk</span>}
-        {view.timeoutSoonCount > 0 && <span className="text-[10px] text-warning">{view.timeoutSoonCount} expiring</span>}
-        <span className="text-[10px] text-muted-foreground">need your decision</span>
-        <button onClick={() => navigateToPanel('actions')} className="ml-auto text-[10px] text-accent hover:underline">
-          Triage all →
-        </button>
-      </div>
-      <div className="space-y-1.5">
-        {view.items.map(item => <ConsoleApprovalRow key={item.action_id} item={item} />)}
-        {view.overflow > 0 && (
-          <button onClick={() => navigateToPanel('actions')} className="text-[10px] text-muted-foreground hover:text-accent">
-            +{view.overflow} more in Approvals →
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ConsoleApprovalRow({ item }: { item: ConsoleApprovalItem }) {
-  const addToast = useToastStore(s => s.addToast);
-  const [busy, setBusy] = useState(false);
-  const [denying, setDenying] = useState(false);
-  const [reason, setReason] = useState('');
-
-  const approve = async () => {
-    setBusy(true);
-    try {
-      await api.approveAction(item.action_id, { notes: 'approved from console' });
-      addToast({ type: 'success', title: 'Action approved', message: item.technique });
-      // The row clears when the action_resolved WS push lands (store drops it).
-    } catch (err) {
-      addToast({ type: 'error', title: 'Approve failed', message: err instanceof Error ? err.message : String(err) });
-      setBusy(false); // keep the row so the operator can retry / let WS reconcile
-    }
-  };
-
-  const deny = async () => {
-    if (!isDenyReasonValid(reason)) return;
-    setBusy(true);
-    try {
-      await api.denyAction(item.action_id, reason.trim());
-      addToast({ type: 'info', title: 'Action denied', message: item.technique });
-    } catch (err) {
-      addToast({ type: 'error', title: 'Deny failed', message: err instanceof Error ? err.message : String(err) });
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="rounded border border-border bg-surface p-2 text-xs">
-      <div className="flex items-center gap-2">
-        <StatusPill className={item.risk.cls}>{item.risk.label}</StatusPill>
-        <span className="font-medium text-foreground">{item.technique}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground" title={item.target}>{item.target}</span>
-        {item.lifecycle === 'timeout_soon' && <span className="flex-shrink-0 text-[10px] text-warning">expiring</span>}
-        {!denying && (
-          <div className="flex flex-shrink-0 gap-1.5">
-            <ActionButton size="xs" variant="success" disabled={busy} onClick={approve}>Approve</ActionButton>
-            <ActionButton size="xs" variant="danger" disabled={busy} onClick={() => setDenying(true)}>Deny</ActionButton>
-          </div>
-        )}
-      </div>
-      <div className="mt-1 truncate text-[11px] text-muted-foreground" title={item.description}>{item.description}</div>
-      {denying && (
-        <div className="mt-1.5 flex items-center gap-1.5">
-          <input
-            autoFocus
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-accent"
-            placeholder="Reason for denial (required)…"
-            value={reason}
-            onChange={e => setReason(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') void deny();
-              if (e.key === 'Escape') { setDenying(false); setReason(''); }
-            }}
-            disabled={busy}
-          />
-          <ActionButton size="xs" variant="danger" disabled={busy || !isDenyReasonValid(reason)} onClick={deny}>Confirm deny</ActionButton>
-          <ActionButton size="xs" variant="ghost" disabled={busy} onClick={() => { setDenying(false); setReason(''); }}>Cancel</ActionButton>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Agent Workbench ----
-
-function AgentRoster({
-  agents,
+function MissionRoster({
   groups,
-  ungrouped,
+  agentCount,
   activeAgentId,
   selectedIds,
   collapsedGroups,
+  batchMode,
+  elapsedById,
+  onToggleBatch,
   onSelectAllOutput,
   onSelectAgent,
   onToggleSelect,
-  onSelectAll,
   onToggleGroup,
   onCancelAgent,
-  onCancelGroup,
 }: {
-  agents: AgentInfo[];
-  groups: Map<string, { name: string; strategy: string; agents: AgentInfo[] }>;
-  ungrouped: AgentInfo[];
+  groups: import('../../lib/agent-mission').MissionGroup[];
+  agentCount: number;
   activeAgentId: string;
   selectedIds: Set<string>;
   collapsedGroups: Set<string>;
+  batchMode: boolean;
+  elapsedById: Map<string, number | undefined>;
+  onToggleBatch: () => void;
   onSelectAllOutput: () => void;
-  onSelectAgent: (agent: AgentInfo) => void;
+  onSelectAgent: (id: string) => void;
   onToggleSelect: (id: string) => void;
-  onSelectAll: () => void;
   onToggleGroup: (id: string) => void;
   onCancelAgent: (id: string) => void;
-  onCancelGroup: (id: string) => void;
 }) {
-  const running = agents.filter(agent => agent.status === 'running').length;
-  const failed = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
+  const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked').length, 0);
+  const failedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'failed').length, 0);
 
   return (
-    <PanelSection className="min-h-0 overflow-hidden p-0 flex flex-col">
+    <PanelSection className="flex min-h-0 flex-col overflow-hidden p-0">
       <div className="border-b border-border p-3">
         <div className="flex items-center justify-between gap-2">
           <div>
             <h3 className="text-sm font-semibold text-foreground">Fleet</h3>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">Select an agent to focus it; the primary stream stays one click away.</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Select an agent to focus it.</p>
           </div>
-          <StatusPill tone={failed > 0 ? 'danger' : running > 0 ? 'success' : 'muted'}>
-            {running} live
-          </StatusPill>
+          <div className="flex items-center gap-1.5">
+            <StatusPill tone={failedCount > 0 ? 'danger' : liveCount > 0 ? 'success' : 'muted'}>{liveCount} live</StatusPill>
+            <button
+              onClick={onToggleBatch}
+              className={cn('rounded px-1.5 py-0.5 text-[10px]', batchMode ? 'bg-accent/15 text-accent' : 'text-muted-foreground hover:text-foreground')}
+              title="Toggle batch selection"
+            >
+              Batch
+            </button>
+          </div>
         </div>
       </div>
 
@@ -602,97 +501,50 @@ function AgentRoster({
           onClick={onSelectAllOutput}
           className={cn(
             'w-full rounded-md border px-3 py-2 text-left transition-colors',
-            activeAgentId === 'all'
-              ? 'border-accent/60 bg-accent/10'
-              : 'border-border bg-background/40 hover:bg-hover/40',
+            activeAgentId === 'all' ? 'border-accent/60 bg-accent/10' : 'border-border bg-background/40 hover:bg-hover/40',
           )}
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm font-medium text-foreground">Primary Operator</span>
-            <span className="text-[10px] text-muted-foreground">{agents.length} subagents</span>
+            <span className="text-sm font-medium text-foreground">Primary &amp; full stream</span>
+            <span className="text-[10px] text-muted-foreground">{agentCount} agents</span>
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">Main model output and unassigned operator activity.</div>
+          <div className="mt-1 text-[11px] text-muted-foreground">Fleet overview + the full operator activity stream.</div>
         </button>
-
-        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground px-1 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={selectedIds.size === agents.length && agents.length > 0}
-            onChange={onSelectAll}
-            className="accent-accent"
-          />
-          Select all subagents for batch controls
-        </label>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-muted-foreground">Subagents</div>
-        {[...groups.entries()].map(([cid, group]) => {
-          const isCollapsed = collapsedGroups.has(cid);
-          const runningCount = group.agents.filter(a => a.status === 'running').length;
-          const hasRunning = group.agents.some(a => a.status === 'running' || a.status === 'pending');
-          const icon = STRATEGY_ICONS[group.strategy] || '⚙';
-
+        {groups.map(group => {
+          const isCollapsed = collapsedGroups.has(group.key);
+          const groupLive = group.cards.filter(c => c.tone === 'running' || c.tone === 'blocked').length;
           return (
-            <div key={cid} className="border-b border-border">
+            <div key={group.key} className="border-b border-border">
               <button
-                onClick={() => onToggleGroup(cid)}
-                className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
+                onClick={() => onToggleGroup(group.key)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-hover"
               >
                 <span className="text-muted-foreground">{isCollapsed ? '▸' : '▾'}</span>
-                <span>{icon}</span>
-                <span className="font-medium text-foreground flex-1 text-left truncate">{group.name}</span>
-                <span className="text-muted-foreground">{runningCount}/{group.agents.length}</span>
-                {hasRunning && (
-                  <span
-                    onClick={e => { e.stopPropagation(); onCancelGroup(cid); }}
-                    className="px-1.5 py-0.5 rounded text-destructive hover:bg-destructive/10 cursor-pointer"
-                  >
-                    Cancel
-                  </span>
-                )}
+                <span className="flex-1 truncate text-left font-medium text-foreground">{group.name}</span>
+                <span className="text-muted-foreground">{groupLive}/{group.cards.length}</span>
               </button>
-              {!isCollapsed && sortAgents(group.agents).map(agent => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  active={activeAgentId === agent.id}
-                  selected={selectedIds.has(agent.id)}
-                  onToggleSelect={() => onToggleSelect(agent.id)}
-                  onCancel={() => onCancelAgent(agent.id)}
-                  onClick={() => onSelectAgent(agent)}
+              {!isCollapsed && group.cards.map(card => (
+                <MissionCard
+                  key={card.id}
+                  card={card}
+                  active={activeAgentId === card.id}
+                  batchMode={batchMode}
+                  selected={selectedIds.has(card.id)}
+                  elapsedMs={elapsedById.get(card.id)}
+                  onClick={() => onSelectAgent(card.id)}
+                  onToggleSelect={() => onToggleSelect(card.id)}
+                  onCancel={() => onCancelAgent(card.id)}
                 />
               ))}
             </div>
           );
         })}
-
-        {ungrouped.length > 0 && (
-          <div className="border-b border-border">
-            <button
-              onClick={() => onToggleGroup('__ungrouped__')}
-              className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-hover transition-colors"
-            >
-              <span className="text-muted-foreground">{collapsedGroups.has('__ungrouped__') ? '▸' : '▾'}</span>
-              <span className="font-medium text-foreground flex-1 text-left">Ungrouped</span>
-              <span className="text-muted-foreground">{ungrouped.length}</span>
-            </button>
-            {!collapsedGroups.has('__ungrouped__') && sortAgents(ungrouped).map(agent => (
-              <AgentCard
-                key={agent.id}
-                agent={agent}
-                active={activeAgentId === agent.id}
-                selected={selectedIds.has(agent.id)}
-                onToggleSelect={() => onToggleSelect(agent.id)}
-                onCancel={() => onCancelAgent(agent.id)}
-                onClick={() => onSelectAgent(agent)}
-              />
-            ))}
-          </div>
-        )}
-        {agents.length === 0 && (
-          <div className="mx-2 mb-2 rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
-            No subagents active. The primary operator stream remains available.
+        {agentCount === 0 && (
+          <div className="mx-2 my-2 rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
+            No subagents active. The primary operator stream remains available above.
           </div>
         )}
       </div>
@@ -802,11 +654,10 @@ function AgentOutputConsole({
           </div>
         ) : (
           <div className="space-y-2">
-            {events.map(event => (
-              <AgentConsoleRow
-                key={event.id}
-                event={event}
-                prominent
+            {threadConsoleEvents(events).slice().reverse().map(thread => (
+              <ConsoleThreadRow
+                key={thread.id}
+                thread={thread}
                 onNavigateGraph={onNavigateGraph}
                 onNavigatePanel={onNavigatePanel}
               />
@@ -823,24 +674,20 @@ function AgentOutputConsole({
 // the validated /api/agents/:id/directive → executeOps path. Targeted kinds
 // (narrow_scope/skip_types/prioritize) + free-text instruction come via the
 // per-agent NL box in Stage 2.
-function AgentSteeringControls({ taskId, onIssued }: { taskId: string; onIssued?: () => void }) {
+// One-click lifecycle steering for the focused agent. Free-text instruction
+// ("Tell …") now lives in the ContextualCommandBar (Agent scope), so this is
+// just the quick verbs.
+function AgentSteeringControls({ taskId }: { taskId: string }) {
   const addToast = useToastStore(s => s.addToast);
   const [busy, setBusy] = useState<string | null>(null);
-  const [instruction, setInstruction] = useState('');
-  const issue = async (kind: api.DirectiveKind, opts?: { note?: string }) => {
+  const issue = async (kind: api.DirectiveKind) => {
     setBusy(kind);
     try {
-      const res = await api.issueDirective(taskId, kind, opts);
+      const res = await api.issueDirective(taskId, kind);
       addToast({ type: res.ok ? 'success' : 'warning', title: `Directive: ${kind}`, message: res.ok ? 'issued — agent honors it on its next heartbeat' : 'not applied' });
-      if (res.ok && kind === 'instruct') setInstruction('');
-      onIssued?.();
     } catch (err) {
       addToast({ type: 'error', title: `Directive failed: ${kind}`, message: err instanceof Error ? err.message : String(err) });
     } finally { setBusy(null); }
-  };
-  const sendInstruction = () => {
-    const note = instruction.trim();
-    if (note) void issue('instruct', { note });
   };
   return (
     <div className="mt-3">
@@ -849,18 +696,6 @@ function AgentSteeringControls({ taskId, onIssued }: { taskId: string; onIssued?
         <ActionButton size="xs" variant="warning" disabled={!!busy} onClick={() => issue('pause')}>Pause</ActionButton>
         <ActionButton size="xs" variant="success" disabled={!!busy} onClick={() => issue('resume')}>Resume</ActionButton>
         <ActionButton size="xs" variant="danger" disabled={!!busy} onClick={() => issue('stop')}>Stop</ActionButton>
-      </div>
-      {/* Free-text instruction → delivered to the agent on its next heartbeat. */}
-      <div className="mt-2 flex items-center gap-1.5">
-        <input
-          className="flex-1 rounded border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent"
-          placeholder='Tell this agent… e.g. "focus on SMB"'
-          value={instruction}
-          onChange={e => setInstruction(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !busy) sendInstruction(); }}
-          disabled={busy === 'instruct'}
-        />
-        <ActionButton size="xs" variant="purple" disabled={!!busy || !instruction.trim()} onClick={sendInstruction}>Tell</ActionButton>
       </div>
     </div>
   );
@@ -1008,104 +843,49 @@ function AgentContextPanel({
   );
 }
 
-// ---- Agent Card ----
-
-function AgentCard({
-  agent,
-  active,
-  selected,
-  onToggleSelect,
-  onCancel,
-  onClick,
-}: {
-  agent: AgentInfo;
-  active: boolean;
-  selected: boolean;
-  onToggleSelect: () => void;
-  onCancel: () => void;
-  onClick: () => void;
-}) {
-  const cancellable = agent.status === 'running' || agent.status === 'pending';
-  const elapsed = agent.elapsed_ms ? formatElapsed(agent.elapsed_ms) : '';
-  const summary = agent.result_summary
-    ? (agent.result_summary.length > 80 ? agent.result_summary.slice(0, 77) + '…' : agent.result_summary)
-    : '';
-
-  // Compute findings/min rate for running agents
-  const rate = agent.status === 'running' && agent.elapsed_ms && agent.elapsed_ms > 60_000 && agent.findings_count
-    ? ((agent.findings_count / agent.elapsed_ms) * 60_000).toFixed(1)
-    : null;
-
-  return (
-    <div
-      onClick={onClick}
-      className={cn(
-        'px-3 py-2 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors cursor-pointer',
-        active && 'bg-accent/10 border-l-2 border-l-accent',
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={e => { e.stopPropagation(); onToggleSelect(); }}
-          onClick={e => e.stopPropagation()}
-          className="accent-accent"
-        />
-        <span className={cn(
-          'w-2 h-2 rounded-full flex-shrink-0',
-          agent.status === 'running' && 'bg-success animate-pulse',
-          agent.status === 'completed' && 'bg-accent',
-          agent.status === 'failed' && 'bg-destructive',
-          agent.status === 'interrupted' && 'bg-warning',
-          agent.status === 'pending' && 'bg-muted',
-        )} />
-        <span className="min-w-0 flex-1 truncate text-xs font-mono text-muted-foreground" title={agent.agent_id || agent.id}>{agent.agent_id || agent.id}</span>
-        {active && <span className="rounded bg-accent/15 px-1 py-0.5 text-[9px] uppercase tracking-wide text-accent">focused</span>}
-        {cancellable && (
-          <button
-            onClick={e => { e.stopPropagation(); onCancel(); }}
-            className="text-muted-foreground hover:text-destructive text-xs"
-            title="Cancel"
-          >
-            ✕
-          </button>
-        )}
-      </div>
-      <div className="flex items-center gap-2 mt-0.5 ml-6 text-xs">
-        <span className={cn(
-          'font-medium',
-          agent.status === 'running' && 'text-success',
-          agent.status === 'completed' && 'text-accent',
-          agent.status === 'failed' && 'text-destructive',
-          agent.status === 'interrupted' && 'text-warning',
-          agent.status === 'pending' && 'text-muted-foreground',
-        )}>
-          {agent.status}
-        </span>
-        {agent.skill && <span className="text-muted-foreground bg-elevated px-1 py-0.5 rounded text-[10px]">{agent.skill}</span>}
-        {elapsed && <span className="text-muted-foreground">{elapsed}</span>}
-        {agent.findings_count != null && agent.findings_count > 0 && (
-          <span className="text-success text-[10px]">{agent.findings_count} findings</span>
-        )}
-        {rate && <span className="text-accent text-[10px]">{rate}/min</span>}
-      </div>
-      {agent.status === 'running' && agent.current_action && (
-        <div className="text-[10px] text-foreground/70 mt-1 ml-6 truncate" title={agent.current_action}>
-          <span className="text-muted-foreground">doing: </span>{agent.current_action}
-        </div>
-      )}
-      {summary && <div className="text-[10px] text-muted-foreground mt-1 ml-6 truncate">{summary}</div>}
-    </div>
-  );
-}
-
 function mergeConsoleEvents(current: AgentConsoleEvent[], incoming: AgentConsoleEvent[]): AgentConsoleEvent[] {
   const byId = new Map(current.map(event => [event.id, event]));
   for (const event of incoming) byId.set(event.id, event);
   return [...byId.values()]
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
     .slice(-120);
+}
+
+// A threaded activity row: a single event renders as-is; a multi-event action
+// lifecycle (directive→ack→started→completed) collapses to its latest event with
+// an "N steps" expander revealing the earlier steps compactly.
+function ConsoleThreadRow({
+  thread,
+  onNavigateGraph,
+  onNavigatePanel,
+}: {
+  thread: ActivityThread;
+  onNavigateGraph: (nodeId: string) => void;
+  onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
+}) {
+  const [open, setOpen] = useState(false);
+  if (!thread.threaded) {
+    return <AgentConsoleRow event={thread.latest} prominent onNavigateGraph={onNavigateGraph} onNavigatePanel={onNavigatePanel} />;
+  }
+  const earlier = thread.events.slice(0, -1);
+  return (
+    <div>
+      <AgentConsoleRow event={thread.latest} prominent onNavigateGraph={onNavigateGraph} onNavigatePanel={onNavigatePanel} />
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="ml-14 mt-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        {open ? 'Hide steps' : `${thread.count} steps in this action`}
+      </button>
+      {open && (
+        <div className="ml-14 mt-1 space-y-1 border-l border-border pl-2">
+          {earlier.map(event => (
+            <AgentConsoleRow key={event.id} event={event} onNavigateGraph={onNavigateGraph} onNavigatePanel={onNavigatePanel} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function AgentConsoleRow({
