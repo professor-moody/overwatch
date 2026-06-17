@@ -403,6 +403,9 @@ function runProcess(binary: string, args: string[], opts: {
   /** Optional streaming sinks. Receive every byte of stdout/stderr regardless of inline cap. */
   stdoutSink?: { write: (chunk: Buffer) => void };
   stderrSink?: { write: (chunk: Buffer) => void };
+  /** Optional live tee (e.g. the Analysis live-output buffer). Never blocks the process. */
+  onStdout?: (chunk: Buffer) => void;
+  onStderr?: (chunk: Buffer) => void;
 }): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -464,10 +467,12 @@ function runProcess(binary: string, args: string[], opts: {
     child.stdout?.on('data', (c: Buffer) => {
       captureStream(stdout, c);
       try { opts.stdoutSink?.write(c); } catch { /* sink errors must not kill the process */ }
+      try { opts.onStdout?.(c); } catch { /* tee errors must not kill the process */ }
     });
     child.stderr?.on('data', (c: Buffer) => {
       captureStream(stderr, c);
       try { opts.stderrSink?.write(c); } catch { /* sink errors must not kill the process */ }
+      try { opts.onStderr?.(c); } catch { /* tee errors must not kill the process */ }
     });
 
     child.on('error', (err) => {
@@ -999,12 +1004,18 @@ export async function runInstrumentedProcess(
     filename: 'stderr',
     kind: 'raw_output',
   });
+  // Live-output buffer: tee chunks so the Analysis workspace can stream a
+  // running action in real time. Durable bytes still go to the evidence sinks.
+  const liveOutput = engine.getActionOutputBuffer();
+  liveOutput.open(normalizedActionId);
   const result = await runProcess(binary, args, {
     cwd,
     env,
     timeout_ms: effectiveTimeout,
     stdoutSink,
     stderrSink,
+    onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', c),
+    onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', c),
   });
   const stdoutInfo = joinAndCap(result.stdout, STREAM_INLINE_CAP);
   const stderrInfo = joinAndCap(result.stderr, STREAM_INLINE_CAP);
@@ -1099,6 +1110,10 @@ export async function runInstrumentedProcess(
     },
   });
   engine.persist();
+  // Live stream is finished now that the terminal event + evidence are
+  // persisted; connected viewers get `action_done` and fall back to the
+  // durable evidence route. The buffer self-evicts shortly after.
+  liveOutput.markDone(normalizedActionId);
 
   // ---- 6. Optional inline parse + ingest ----
   let parse_summary: Record<string, unknown> | undefined;

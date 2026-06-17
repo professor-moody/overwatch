@@ -27,6 +27,7 @@ import { normalizeNodeProvenance } from './provenance-utils.js';
 import { IdentityReconciler } from './identity-reconciliation.js';
 import { detectCommunities, communityStats } from './community-detection.js';
 import { EvidenceStore } from './evidence-store.js';
+import { ActionOutputBuffer } from './action-output-buffer.js';
 import { ReportArchive } from './report-archive.js';
 import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
@@ -135,6 +136,7 @@ export class GraphEngine {
   private healthReportCache: HealthReport | null = null;
   private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[] } | null = null;
   private evidenceStore: EvidenceStore;
+  private actionOutputBuffer = new ActionOutputBuffer();
   private kb: KnowledgeBase | null = null;
 
   constructor(config: EngagementConfig, stateFilePath?: string) {
@@ -2571,6 +2573,11 @@ export class GraphEngine {
 
   getEvidenceStore(): EvidenceStore {
     return this.evidenceStore;
+  }
+
+  /** Live, in-memory stdout/stderr buffer for running actions (Analysis live stream). */
+  getActionOutputBuffer(): ActionOutputBuffer {
+    return this.actionOutputBuffer;
   }
 
   private reportArchive: ReportArchive | null = null;

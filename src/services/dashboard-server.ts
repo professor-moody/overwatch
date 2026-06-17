@@ -105,17 +105,20 @@ export class DashboardServer {
   private httpServer: ReturnType<typeof createServer>;
   private wss: WebSocketServer;
   private sessionWss: WebSocketServer;
+  private actionWss: WebSocketServer;
   private engine: GraphEngine;
   private sessionManager: SessionManager | null;
   private port: number;
   private clients: Set<WebSocket> = new Set();
   private sessionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
+  private actionPollers: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
   private agentConsoleCursor = 0;
   private _running: boolean = false;
   private accumulator = new DeltaAccumulator();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
   private static readonly SESSION_POLL_MS = 50;
+  private static readonly ACTION_POLL_MS = 100;
 
   private host: string;
   private engagementManager: EngagementManager | null = null;
@@ -186,12 +189,17 @@ export class DashboardServer {
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
     this.sessionWss = new WebSocketServer({ noServer: true });
+    this.actionWss = new WebSocketServer({ noServer: true });
 
     this.wss.on('error', () => {
       // Absorb WSS errors
     });
 
     this.sessionWss.on('error', () => {
+      // Absorb WSS errors
+    });
+
+    this.actionWss.on('error', () => {
       // Absorb WSS errors
     });
 
@@ -212,6 +220,7 @@ export class DashboardServer {
       }
 
       const sessionMatch = pathname.match(/^\/ws\/session\/([a-f0-9-]{36})$/);
+      const actionOutputMatch = pathname.match(/^\/ws\/actions\/([A-Za-z0-9_-]+)\/output$/);
       if (sessionMatch) {
         if (!this.sessionManager) {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
@@ -221,6 +230,11 @@ export class DashboardServer {
         this.sessionWss.handleUpgrade(req, socket, head, (ws) => {
           this.sessionWss.emit('connection', ws, req);
           this.handleSessionConnection(ws, sessionMatch[1]);
+        });
+      } else if (actionOutputMatch) {
+        this.actionWss.handleUpgrade(req, socket, head, (ws) => {
+          this.actionWss.emit('connection', ws, req);
+          this.handleActionOutputConnection(ws, actionOutputMatch[1]);
         });
       } else {
         this.wss.handleUpgrade(req, socket, head, (ws) => {
@@ -306,14 +320,22 @@ export class DashboardServer {
       ws.close();
     }
     this.sessionPollers.clear();
+    // Clean up action-output pollers
+    for (const [ws, interval] of this.actionPollers) {
+      clearInterval(interval);
+      ws.close();
+    }
+    this.actionPollers.clear();
     return new Promise((resolve) => {
       for (const ws of this.clients) {
         ws.close();
       }
       this.clients.clear();
-      this.sessionWss.close(() => {
-        this.wss.close(() => {
-          this.httpServer.close(() => resolve());
+      this.actionWss.close(() => {
+        this.sessionWss.close(() => {
+          this.wss.close(() => {
+            this.httpServer.close(() => resolve());
+          });
         });
       });
     });
@@ -509,6 +531,70 @@ export class DashboardServer {
         this.sessionPollers.delete(ws);
       }
     });
+  }
+
+  // ---- Live action-output bridge (Analysis workspace) ----
+
+  private handleActionOutputConnection(ws: WebSocket, actionId: string): void {
+    const buffer = this.engine.getActionOutputBuffer();
+    if (!buffer.has(actionId)) {
+      // Not live: never streamed, or already finished + evicted. Tell the
+      // client to fall back to the durable evidence route.
+      ws.send(JSON.stringify({ type: 'action_done' }));
+      ws.close(4404, 'No live output');
+      return;
+    }
+
+    let outCursor = 0;
+    let errCursor = 0;
+    const flush = () => {
+      for (const stream of ['stdout', 'stderr'] as const) {
+        const cursor = stream === 'stdout' ? outCursor : errCursor;
+        const r = buffer.read(actionId, stream, cursor);
+        if (r && r.text) {
+          ws.send(JSON.stringify({ type: 'output', stream, text: r.text, end_pos: r.end_pos, dropped: r.dropped }));
+          if (stream === 'stdout') outCursor = r.end_pos; else errCursor = r.end_pos;
+        }
+      }
+    };
+
+    try { flush(); } catch { /* connection may have closed */ }
+
+    const poller = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        clearInterval(poller);
+        this.actionPollers.delete(ws);
+        return;
+      }
+      try {
+        flush();
+        if (buffer.isDone(actionId)) {
+          ws.send(JSON.stringify({ type: 'action_done' }));
+          clearInterval(poller);
+          this.actionPollers.delete(ws);
+          ws.close(1000, 'done');
+        }
+      } catch {
+        // Send error: stop polling and tell the client to fall back to the
+        // durable route rather than freezing in a live state.
+        clearInterval(poller);
+        this.actionPollers.delete(ws);
+        try { ws.send(JSON.stringify({ type: 'action_done' })); } catch { /* socket gone */ }
+        try { ws.close(); } catch { /* already closed */ }
+      }
+    }, DashboardServer.ACTION_POLL_MS);
+
+    this.actionPollers.set(ws, poller);
+
+    const cleanup = () => {
+      const interval = this.actionPollers.get(ws);
+      if (interval) {
+        clearInterval(interval);
+        this.actionPollers.delete(ws);
+      }
+    };
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
   }
 
   private static readonly MIME_TYPES: Record<string, string> = {

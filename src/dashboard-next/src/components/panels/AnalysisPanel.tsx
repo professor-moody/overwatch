@@ -150,6 +150,9 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
   const [stream, setStream] = useState<'stdout' | 'stderr'>('stdout');
   const [find, setFind] = useState('');
   const [maxBytes, setMaxBytes] = useState(MAX_BYTES_INITIAL);
+  // Live stream for a running action (via /ws/actions/:id/output).
+  const [live, setLive] = useState<{ stdout: string; stderr: string; done: boolean; dropped: boolean } | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Refetch on mount (new run, via key remount), on load-more (maxBytes), and
   // when the selected run transitions (status/timestamp) so a running→done run
@@ -164,7 +167,38 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
       .catch(e => { if (!cancelled) { setError(e instanceof Error ? e.message : String(e)); setOutput(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [run?.actionId, run?.status, run?.timestamp, maxBytes]);
+  }, [run?.actionId, run?.status, run?.timestamp, maxBytes, reloadNonce]);
+
+  // Live output: while the selected run is in flight, stream its stdout/stderr
+  // over a dedicated WS (mirrors the session terminal bridge). On action_done,
+  // pull the durable, full-fidelity output via the refetch nonce.
+  useEffect(() => {
+    if (!run || !output?.isRunning) { setLive(null); return; }
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${window.location.host}/ws/actions/${encodeURIComponent(run.actionId)}/output`;
+    let so = '';
+    let se = '';
+    let dropped = false;
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch { return; }
+    setLive({ stdout: '', stderr: '', done: false, dropped: false });
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') return;
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'output') {
+          if (msg.dropped) dropped = true;
+          if (msg.stream === 'stderr') se += msg.text; else so += msg.text;
+          setLive({ stdout: so, stderr: se, done: false, dropped });
+        } else if (msg.type === 'action_done') {
+          setLive(l => (l ? { ...l, done: true } : null));
+          setReloadNonce(n => n + 1);
+        }
+      } catch { /* ignore malformed frames */ }
+    };
+    ws.onerror = () => { /* fall back to durable fetch */ };
+    return () => { try { ws.close(); } catch { /* already closed */ } };
+  }, [run?.actionId, output?.isRunning]);
 
   if (!run) {
     return (
@@ -175,7 +209,11 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
   }
 
   const active: OutputStreamView | null = output ? (stream === 'stdout' ? output.stdout : output.stderr) : null;
-  const match = active ? matchOutputLines(active.text, find) : { lines: [] as string[], matchCount: 0, filtered: false };
+  // While running we render the live buffer; once done the durable fetch wins.
+  const isLiveMode = !!(output?.isRunning && live);
+  const liveText = live ? (stream === 'stdout' ? live.stdout : live.stderr) : '';
+  const bodyText = isLiveMode ? liveText : (active?.text ?? '');
+  const match = matchOutputLines(bodyText, find);
 
   return (
     <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
@@ -183,6 +221,11 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
       <div className="border-b border-border p-3 space-y-2">
         <div className="flex items-center gap-2">
           <StatusPill className={statusPillClass(output?.status ?? run.status)}>{output?.status ?? run.status}</StatusPill>
+          {isLiveMode && !live?.done && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-accent">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" /> live
+            </span>
+          )}
           <span className="font-mono text-sm text-foreground truncate">{output?.tool ?? run.tool ?? 'tool'}</span>
           <span className="ml-auto text-[10px] text-muted-foreground">{formatTimestamp(run.timestamp)}</span>
         </div>
@@ -259,15 +302,32 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
         {find && <span className="text-[10px] text-muted-foreground whitespace-nowrap">{match.matchCount} match{match.matchCount === 1 ? '' : 'es'}</span>}
       </div>
 
-      {/* Banners */}
-      {active && <StreamBanners stream={active} onLoadMore={maxBytes < MAX_BYTES_CEIL ? () => setMaxBytes(MAX_BYTES_CEIL) : undefined} />}
+      {/* Banners (durable view only — live mode has no truncation/evidence state) */}
+      {!isLiveMode && active && <StreamBanners stream={active} onLoadMore={maxBytes < MAX_BYTES_CEIL ? () => setMaxBytes(MAX_BYTES_CEIL) : undefined} />}
+      {isLiveMode && live?.dropped && (
+        <div className="border-b border-border p-2">
+          <div className="flex items-center gap-2 rounded bg-warning/10 px-2 py-1 text-[11px] text-warning">
+            Earlier live output scrolled out of the buffer — the full output is available once the run completes.
+          </div>
+        </div>
+      )}
 
       {/* Output body */}
       <div className="flex-1 min-h-0 overflow-auto bg-background">
-        {loading && !output ? (
+        {loading && !output && !live ? (
           <div className="p-4 text-sm text-muted-foreground animate-pulse">Loading output...</div>
         ) : error ? (
           <div className="p-4 text-sm text-destructive">Failed to load output: {error}</div>
+        ) : isLiveMode ? (
+          bodyText.length === 0 ? (
+            <EmptyState message={`Waiting for ${stream}…`} className="m-3" />
+          ) : match.filtered && match.matchCount === 0 ? (
+            <EmptyState message="No matching lines." className="m-3" />
+          ) : (
+            <pre className="p-3 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words text-muted-foreground">
+              {match.lines.join('\n')}
+            </pre>
+          )
         ) : !active ? (
           <EmptyState message="No output object for this run." className="m-3" />
         ) : active.missing && active.isEmpty ? (
