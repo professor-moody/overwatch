@@ -127,6 +127,11 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Delta Accumulator** | `src/services/delta-accumulator.ts` | Debounced graph change tracking for broadcasts |
 | **Cold Store** | `src/services/cold-store.ts` | Promotion-only compaction for large network sweeps |
 | **Agent Manager** | `src/services/agent-manager.ts` | Sub-agent task lifecycle |
+| **Task Execution Service** | `src/services/task-execution-service.ts` | Routes each `AgentTask` to its backend (scripted / headless_mcp / manual); owns the headless concurrency cap, per-task wall-clock timeout, watchdog, and process registry |
+| **Headless MCP Runner** | `src/services/headless-mcp-runner.ts` | Spawns a `claude -p` reasoning sub-agent connected back to this daemon's `/mcp`; role→tool-allowlist (`default`/`research`/`planner`) + per-task mcp-config |
+| **Command Interpreter** | `src/services/command-interpreter.ts` | NL operator command → `OperatorOp[]` deterministic grammar + `executeOps` (the single validated dashboard mutation path). See [Operator Cockpit](operator-cockpit.md) |
+| **Proposed Plan Store** | `src/services/proposed-plan-store.ts` | Engine-owned, in-memory plans the `planner` role proposes via `propose_plan`, awaiting operator confirmation |
+| **Agent Query Store** | `src/services/agent-query-store.ts` | Engine-owned, in-memory agent→operator questions (`ask_operator`); answers delivered on heartbeat as `pending_answer` |
 | **Retrospective** | `src/services/retrospective.ts` | Post-engagement analysis and RLVR traces |
 | **CIDR** | `src/services/cidr.ts` | CIDR parsing, expansion, and scope matching |
 | **Tool Check** | `src/services/tool-check.ts` | Offensive tool availability detection |

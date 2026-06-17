@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 66 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 67 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -31,7 +31,11 @@ Overwatch exposes 66 MCP tools organized by function. Each tool uses Zod schemas
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | Yes |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | No |
 | [`submit_agent_transcript`](transcripts.md) | Sub-agent wrap-up with optional transcript evidence | No |
-| `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops | No |
+| [`propose_plan`](propose-plan.md) | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops | No |
+| [`ask_operator`](ask-operator.md) | Sub-agent escalates a decision to the operator and waits for an answer (delivered on heartbeat) | No |
+| [`manage_agent_directive`](manage-agent-directive.md) | Steer a running sub-agent (pause/resume/stop/narrow/skip/prioritize/instruct) | No |
+| [`acknowledge_agent_directive`](acknowledge-agent-directive.md) | Sub-agent confirms it received a directive | No |
+| [`research_cve`](research-cve.md) | Record operator-style CVE/exploit research for a versioned service | No |
 | [`agent_heartbeat`](agent-heartbeat.md) | Sub-agent liveness ping (extends lease) | No |
 | [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | No |
 | [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch agents for a campaign's grouped frontier items | No |

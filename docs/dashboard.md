@@ -206,6 +206,10 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 | `src/dashboard-next/src/hooks/` | Navigation, graph data, layout, Sigma lifecycle, keyboard shortcuts |
 | `src/dashboard-next/src/lib/` | API client, graph utilities, camera fitting, route smoke helpers |
 
+## Operator Console (cockpit)
+
+The **Operator** panel is the primary multi-agent surface: a natural-language command bar, the live agent roster (each running agent shows a `doing: …` line), per-agent + fleet steering, an agent-question inbox, and the merged primary/sub-agent console stream. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+
 ## Endpoints
 
 | Endpoint | Method | Description |
@@ -217,7 +221,13 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 | `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |
 | `/api/evidence-chains/:nodeId` | GET | Evidence chain for a node — walks provenance edges (`DERIVED_FROM`, `DUMPED_FROM`, `OWNS_CRED`) to build the full derivation tree |
 | `/api/paths/:objectiveId` | GET | Shortest paths from compromised nodes to an objective — returns path arrays with node/edge details |
-| `ws://` | WebSocket | Live graph delta stream |
+| `/api/agents/dispatch` | POST | Dispatch a sub-agent (`{ target_node_ids, skill?, campaign_id?, frontier_item_id? }`) |
+| `/api/agents/:id/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
+| `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
+| `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
+| `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
+| `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
+| `ws://` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |
 
 ## Verifying Dashboard Status
 
