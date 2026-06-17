@@ -621,6 +621,8 @@ export class DashboardServer {
       this.serveAgents(res);
     } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
       this.handleAgentDispatch(req, res);
+    } else if (pathname === '/api/fleet/directive' && method === 'POST') {
+      this.handleFleetDirective(req, res);
     } else if (pathname === '/api/commands' && method === 'POST') {
       this.handleCommand(req, res);
     } else if (pathname === '/api/plans' && method === 'GET') {
@@ -1698,11 +1700,60 @@ export class DashboardServer {
   private serveAgents(res: ServerResponse): void {
     const agents = this.engine.getAllAgents();
     const now = Date.now();
-    const enriched = agents.map(a => ({
-      ...a,
-      elapsed_ms: a.status === 'running' ? now - new Date(a.assigned_at).getTime() : undefined,
-      campaign: a.campaign_id ? this.engine.getCampaign(a.campaign_id) : undefined,
-    }));
+
+    // Derive each agent's most recent activity ("current action") + last finding
+    // in ONE pass over history, so the roster can show "doing: …" live without
+    // N×history scans. 3C / "see everything".
+    //   - current_action reflects the agent's WORK, so skip operator/runtime
+    //     bookkeeping (directives, launch/exit warnings, registration) and
+    //     heartbeats — otherwise "doing:" reads "Operator directive: pause".
+    //   - keyed by the precise task id when present; agent_id is a fallback only
+    //     when exactly one running task owns that label, so two tasks sharing an
+    //     agent_id never cross-bleed each other's activity.
+    const latestByKey = new Map<string, { description: string; event_type?: string; timestamp: string }>();
+    const lastFindingAtByKey = new Map<string, string>();
+    const BOOKKEEPING_EVENTS = new Set(['instrumentation_warning', 'operator_command', 'agent_registered', 'agent_updated', 'heartbeat']);
+    for (const e of this.engine.getFullHistory()) {
+      const keys = [e.agent_id, e.linked_agent_task_id, (e.details as { task_id?: string } | undefined)?.task_id].filter((k): k is string => !!k);
+      const isFinding = e.category === 'finding' || (e.event_type ?? '').startsWith('finding') || e.event_type === 'parse_output';
+      const isBookkeeping = e.category === 'system' || BOOKKEEPING_EVENTS.has(e.event_type ?? '');
+      for (const k of keys) {
+        if (!isBookkeeping) {
+          const prev = latestByKey.get(k);
+          if (!prev || e.timestamp > prev.timestamp) latestByKey.set(k, { description: e.description, event_type: e.event_type, timestamp: e.timestamp });
+        }
+        if (isFinding) {
+          const pf = lastFindingAtByKey.get(k);
+          if (!pf || e.timestamp > pf) lastFindingAtByKey.set(k, e.timestamp);
+        }
+      }
+    }
+    // Count running tasks per agent_id so a shared label only attributes activity
+    // when it's unambiguous (exactly one running owner).
+    const runningPerAgentId = new Map<string, number>();
+    for (const a of agents) {
+      if (a.status === 'running') runningPerAgentId.set(a.agent_id, (runningPerAgentId.get(a.agent_id) ?? 0) + 1);
+    }
+    const resolveByKeys = <V>(m: Map<string, V>, a: { id: string; agent_id: string }): V | undefined =>
+      m.get(a.id) ?? (runningPerAgentId.get(a.agent_id) === 1 ? m.get(a.agent_id) : undefined);
+
+    const enriched = agents.map(a => {
+      const latest = a.status === 'running' ? resolveByKeys(latestByKey, a) : undefined;
+      return {
+        ...a,
+        elapsed_ms: a.status === 'running' ? now - new Date(a.assigned_at).getTime() : undefined,
+        campaign: a.campaign_id ? this.engine.getCampaign(a.campaign_id) : undefined,
+        // Live "current action" — what this agent most recently did.
+        current_action: latest?.description,
+        current_action_type: latest?.event_type,
+        current_action_at: latest?.timestamp,
+        // A finding timestamp bleeding between same-label tasks is low-harm, and
+        // completed agents (no running owner) still need it — keep the plain fallback.
+        last_finding_at: lastFindingAtByKey.get(a.id) ?? lastFindingAtByKey.get(a.agent_id),
+        // pending headless tasks are effectively queued behind the concurrency cap.
+        queued: a.status === 'pending',
+      };
+    });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ agents: enriched, total: enriched.length }));
   }
@@ -1811,7 +1862,7 @@ export class DashboardServer {
   // mutation surface. Kinds: pause/resume/stop/narrow_scope/skip_types/prioritize
   // (+ free-text 'instruct' once Stage 2 adds it).
   private static DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
-    'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize',
+    'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct',
   ];
 
   private handleAgentDirective(taskId: string, req: IncomingMessage, res: ServerResponse): void {
@@ -1857,6 +1908,46 @@ export class DashboardServer {
       this.engine.persist();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: results[0]?.ok ?? false, results }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // ---- Fleet-level steering (Phase 3C) ----
+  // Apply one directive kind to ALL running agents (optionally one campaign).
+  // Just a fan-out of the same validated executeOps directive op — the grammar's
+  // "pause all" does this in NL; this is the one-click UI equivalent.
+  private handleFleetDirective(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const kind = typeof b.kind === 'string' ? b.kind : '';
+      // Fleet controls are limited to lifecycle kinds (no arg-taking/free-text).
+      if (!['pause', 'resume', 'stop'].includes(kind)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `fleet directive kind must be pause|resume|stop, got "${kind}"` }));
+        return;
+      }
+      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
+      const targets = this.engine.getAgentTasks().filter(t =>
+        t.status === 'running' && (!campaignId || t.campaign_id === campaignId));
+      const ops: OperatorOp[] = targets.map(t => ({
+        op: 'directive', task_id: t.id, agent_label: t.agent_id, kind: kind as AgentDirectiveKind,
+      }));
+      const results = ops.length ? executeOps(this.engine, ops, 'operator') : [];
+      const ok = results.filter(r => r.ok).length;
+      this.engine.logActionEvent({
+        description: `Operator fleet directive: ${kind} → ${ok}/${targets.length} running agent(s)${campaignId ? ` in campaign ${campaignId}` : ''}`,
+        event_type: 'operator_command',
+        category: 'system',
+        source_kind: 'dashboard',
+        result_classification: results.every(r => r.ok) ? 'success' : ok === 0 ? 'failure' : 'partial',
+        details: { reason: 'operator_command', source: 'dashboard', command: `${kind} all${campaignId ? ` (campaign ${campaignId})` : ''}`, results },
+      });
+      this.engine.persist();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, applied: ok, total: targets.length, results }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));

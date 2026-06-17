@@ -150,7 +150,7 @@ export async function cancelAgent(agentId: string): Promise<{ ok: boolean }> {
   return fetchJson(`/api/agents/${agentId}/cancel`, { method: 'POST' });
 }
 
-export type DirectiveKind = 'pause' | 'resume' | 'stop' | 'narrow_scope' | 'skip_types' | 'prioritize';
+export type DirectiveKind = 'pause' | 'resume' | 'stop' | 'narrow_scope' | 'skip_types' | 'prioritize' | 'instruct';
 
 /**
  * Steer a single running agent. Routes through the same validated executeOps
@@ -165,6 +165,17 @@ export async function issueDirective(
   return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/directive`, {
     method: 'POST',
     body: JSON.stringify({ kind, ...opts }),
+  });
+}
+
+/** Fleet-level steering: apply pause/resume/stop to ALL running agents (optionally one campaign). */
+export async function fleetDirective(
+  kind: 'pause' | 'resume' | 'stop',
+  campaignId?: string,
+): Promise<{ ok: boolean; applied: number; total: number }> {
+  return fetchJson('/api/fleet/directive', {
+    method: 'POST',
+    body: JSON.stringify({ kind, campaign_id: campaignId }),
   });
 }
 

@@ -103,6 +103,12 @@ export interface AgentInfo {
   campaign_id?: string;
   campaign?: { id: string; name: string; strategy: string };
   frontier_item_id?: string;
+  // 3C "see everything": the agent's most recent activity, derived server-side.
+  current_action?: string;
+  current_action_type?: string;
+  current_action_at?: string;
+  last_finding_at?: string;
+  queued?: boolean;
 }
 
 export type AgentConsoleKind =

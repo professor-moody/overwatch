@@ -22,7 +22,7 @@ import type { AgentDirectiveKind } from '../types.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 const DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
-  'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize',
+  'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct',
 ];
 
 export interface ProposePlanArgs {
@@ -111,7 +111,7 @@ const opSchema = z.discriminatedUnion('op', [
     op: z.literal('directive'),
     task_id: z.string().describe('The EXACT id of a running agent task to steer'),
     agent_label: z.string().optional().describe('Display name for the agent (cosmetic)'),
-    kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize']),
+    kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct']),
     node_ids: z.array(z.string()).optional().describe('narrow_scope: node ids to restrict to'),
     frontier_types: z.array(z.string()).optional().describe('skip_types/prioritize: frontier item types'),
     note: z.string().optional(),
