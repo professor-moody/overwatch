@@ -52,15 +52,17 @@ describe('Headless runner mechanics (injected spawn)', () => {
   let engine: GraphEngine;
   let svc: TaskExecutionService;
   let spawned: FakeChild[];
+  let spawnedArgs: string[][];
   let logDir: string;
   let nextPid: number;
 
-  function makeService(opts: { maxConcurrentHeadless?: number } = {}) {
-    return new TaskExecutionService(engine, new ProcessTracker(), {
+  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine } = {}) {
+    return new TaskExecutionService(opts.engineOverride ?? engine, new ProcessTracker(), {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
       headless: {
         logDir,
-        spawnFn: () => {
+        spawnFn: (_cmd: string, args: string[]) => {
+          spawnedArgs.push(args);
           const child = new FakeChild(4_000_000_000 + (nextPid++));
           spawned.push(child);
           return child as any;
@@ -74,6 +76,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     logDir = mkdtempSync(join(tmpdir(), 'ow-headless-log-'));
     engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     spawned = [];
+    spawnedArgs = [];
     nextPid = 1;
   });
 
@@ -154,10 +157,17 @@ describe('Headless runner mechanics (injected spawn)', () => {
     engine.registerAgent(headlessTask({ id: 'h-cancel' }));
     await settle();
 
+    // The per-task temp mcp-config (bearer token) exists while running.
+    const cfgPath = join(tmpdir(), 'overwatch-mcp-h-cancel.json');
+    expect(existsSync(cfgPath)).toBe(true);
+
     const killed = svc.cancelHeadless('h-cancel', 'operator cancel');
     expect(killed).toBe(true);
     expect(spawned[0].signals).toContain('SIGTERM');
     expect(engine.getTask('h-cancel')?.status).toBe('interrupted');
+    // Killing cleans up the temp config even though the fake child never emits
+    // 'exit' (regression: configs used to leak when a child was killed).
+    expect(existsSync(cfgPath)).toBe(false);
   });
 
   it('enforces the max-concurrent-headless cap and launches the next when a slot frees', async () => {
@@ -227,6 +237,52 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned[0].signals).not.toContain('SIGTERM');
     expect(svc.activeHeadlessCount()).toBe(1);
     expect(engine.getPendingAgentDirective('h-pausedir')?.kind).toBe('pause');
+  });
+
+  function seedVersionedService(eng: GraphEngine, id: string) {
+    eng.ingestFinding({
+      id: `seed-${id}`, agent_id: 't', timestamp: new Date().toISOString(),
+      nodes: [{ id, type: 'service', label: `http/${id}`, service_name: 'apache', version: '2.4.49' }],
+      edges: [],
+    } as any);
+  }
+
+  it('auto-dispatches a versioned service to a headless RESEARCH agent (web tools, no target execution)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    seedVersionedService(engine, 'svc-cve');
+    await settle();
+
+    expect(svc.activeHeadlessCount()).toBe(1);
+    const task = engine.getAgentTasks().find(t => t.role === 'research');
+    expect(task?.backend).toBe('headless_mcp');
+    // launched with web research tools, NOT target execution. Assert on the
+    // --allowedTools VALUE (the prompt itself legitimately names run_bash to
+    // tell the agent not to use it, so don't scan the whole arg vector).
+    const argv = spawnedArgs[0];
+    const allowed = argv[argv.indexOf('--allowedTools') + 1];
+    expect(allowed).toContain('WebSearch');
+    expect(allowed).toContain('mcp__overwatch__research_cve');
+    expect(allowed).not.toContain('run_bash');
+    expect(allowed).not.toContain('run_tool');
+  });
+
+  it('does NOT auto-dispatch cve_research when cve_research.enabled is false (air-gapped)', async () => {
+    const offlineStateFile = './state-test-headless-runner-offline.json';
+    try { if (existsSync(offlineStateFile)) rmSync(offlineStateFile); } catch { /* ignore */ }
+    const offlineEngine = new GraphEngine({ ...makeConfig(), cve_research: { enabled: false } }, offlineStateFile);
+    const offlineSvc = makeService({ engineOverride: offlineEngine });
+    try {
+      offlineSvc.start();
+      offlineSvc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+      seedVersionedService(offlineEngine, 'svc-off');
+      await settle();
+      expect(offlineSvc.activeHeadlessCount()).toBe(0);
+    } finally {
+      offlineSvc.stop();
+      try { if (existsSync(offlineStateFile)) rmSync(offlineStateFile); } catch { /* ignore */ }
+    }
   });
 
   it('killAll on stop() terminates live headless children', async () => {

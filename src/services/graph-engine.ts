@@ -2640,7 +2640,7 @@ export class GraphEngine {
     this.frontierCache = null;
   }
 
-  private invalidateFrontierCache(): void {
+  invalidateFrontierCache(): void {
     this.frontierCache = null;
   }
 

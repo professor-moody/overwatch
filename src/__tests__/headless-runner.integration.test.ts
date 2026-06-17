@@ -101,4 +101,24 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     await waitFor(() => app.engine.getTask('e2e-hang')?.status === 'interrupted');
     await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
   }, 20000);
+
+  it('auto-dispatches a versioned service to a research agent that records a candidate CVE', async () => {
+    process.env.OVERWATCH_FAKE_MODE = 'research';
+    // Discovering a versioned service generates a cve_research frontier item,
+    // which the daemon auto-dispatches to a headless research agent (the fake).
+    app.engine.ingestFinding({
+      id: 'seed-research', agent_id: 't', timestamp: new Date().toISOString(),
+      nodes: [{ id: 'svc-research-e2e', type: 'service', label: 'http/8080', service_name: 'apache', version: '2.4.49' }],
+      edges: [],
+    } as any);
+
+    // The fake research agent calls research_cve → service stamped + candidate ingested.
+    await waitFor(() => app.engine.getNode('svc-research-e2e')?.cve_checked_at !== undefined, 18000);
+    const vulns = app.engine.getNodesByType('vulnerability');
+    expect(vulns.some((v: any) => v.cve === 'CVE-2021-41773')).toBe(true);
+    // The cve_research frontier item is retired (no longer regenerated).
+    const stillQueued = app.engine.computeFrontier().some(f => f.type === 'cve_research' && f.node_id === 'svc-research-e2e');
+    expect(stillQueued).toBe(false);
+    await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
+  }, 30000);
 });

@@ -987,12 +987,14 @@ export async function runInstrumentedProcess(
   const evidenceStore = engine.getEvidenceStore();
   const stdoutSink = evidenceStore.createBlobStream({
     action_id: normalizedActionId,
+    agent_id,
     evidence_type: 'command_output',
     filename: 'stdout',
     kind: 'raw_output',
   });
   const stderrSink = evidenceStore.createBlobStream({
     action_id: normalizedActionId,
+    agent_id,
     evidence_type: 'command_output',
     filename: 'stderr',
     kind: 'raw_output',

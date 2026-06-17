@@ -445,6 +445,36 @@ export class FrontierComputer {
       frontier.push(item);
     }
 
+    // 6. CVE research: services with a known version but no CVE/exploit research
+    // yet. Promotes the old prompt-only "Services Without CVE Checks" nudge into
+    // a dispatchable item. `cve_checked_at` (set by research_cve, even when nothing
+    // was found) and any VULNERABLE_TO/EXPLOITS edge both retire the item.
+    this.ctx.graph.forEachNode((id: string, attrs) => {
+      if (attrs.type !== 'service') return;
+      if (attrs.identity_status === 'superseded') return;
+      if (!attrs.version) return;
+      if (attrs.cve_checked_at) return;
+      let hasVulnEdge = false;
+      this.ctx.graph.forEachOutEdge(id, (_e: string, eAttrs: { type?: string }) => {
+        if (eAttrs.type === 'VULNERABLE_TO' || eAttrs.type === 'EXPLOITS') hasVulnEdge = true;
+      });
+      if (hasVulnEdge) return;
+      frontier.push({
+        id: `frontier-cve-${id}`,
+        type: 'cve_research',
+        node_id: id,
+        description: `Research CVEs/POCs for ${attrs.label} (${attrs.version})`,
+        graph_metrics: {
+          hops_to_objective: this.hopsToObjective(id),
+          fan_out_estimate: this.estimateFanOut(attrs),
+          node_degree: this.ctx.graph.degree(id),
+          confidence: attrs.confidence,
+        },
+        opsec_noise: 0.0, // web research is silent against the target
+        staleness_seconds: (now - new Date(getNodeLastSeenAt(attrs) || attrs.discovered_at).getTime()) / 1000,
+      });
+    });
+
     return frontier;
   }
 

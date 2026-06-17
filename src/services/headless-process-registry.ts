@@ -8,6 +8,7 @@
 // ============================================================
 
 import type { ChildProcess } from 'child_process';
+import { unlinkSync } from 'fs';
 
 const DEFAULT_GRACE_MS = 5_000;
 
@@ -90,6 +91,14 @@ export class HeadlessProcessRegistry {
     if (!entry) return false;
     const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
     killProcessTree(entry.child, 'SIGTERM');
+    // Best-effort temp-config cleanup at kill time. The child's exit handler
+    // also unlinks on a normal exit, but a killed child (or a parent that exits
+    // before the child's 'exit' event is processed) would otherwise leak the
+    // bearer-token-bearing config file. Unlinking now is safe — the process is
+    // terminating and no longer needs it; a later double-unlink is swallowed.
+    if (entry.configPath) {
+      try { unlinkSync(entry.configPath); } catch { /* already gone */ }
+    }
     if (!this.killTimers.has(task_id)) {
       const timer = setTimeout(() => {
         const still = this.entries.get(task_id);

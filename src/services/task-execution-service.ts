@@ -18,6 +18,7 @@
 // headless process registry (so cancel / timeout / shutdown can stop agents).
 // ============================================================
 
+import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from './graph-engine.js';
 import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask, TaskBackend } from '../types.js';
@@ -66,6 +67,8 @@ export class TaskExecutionService {
   private timeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Tasks for which we've already logged a "no automated backend" deferral. */
   private deferredLogged = new Set<string>();
+  /** cve_research frontier item ids we've already auto-dispatched this session. */
+  private cveAttempted = new Set<string>();
 
   private maxConcurrentHeadless: number;
   private headlessTimeoutMs: number;
@@ -114,9 +117,58 @@ export class TaskExecutionService {
     this.engine.onUpdate(() => {
       if (!this.running) return;
       this.drainDirectives();
+      this.drainCveResearch();
       this.drainHeadless();
     });
+    this.drainCveResearch();
     this.drainHeadless();
+  }
+
+  /**
+   * Auto-dispatch `cve_research` frontier items to headless web-research agents.
+   * Gated on: an HTTP endpoint existing (daemon mode) AND cve_research enabled
+   * (air-gapped engagements set `cve_research.enabled = false`). Bounded by the
+   * shared headless concurrency cap; each item is dispatched at most once per
+   * session (the agent stamps `cve_checked_at` via research_cve, which retires
+   * the item permanently). This is what makes CVE research happen without the
+   * primary having to remember to do it.
+   */
+  private drainCveResearch(): void {
+    if (!this.endpoint) return;
+    if (this.engine.getConfig().cve_research?.enabled === false) return;
+
+    // Budget against all non-terminal headless tasks (launched or queued), not
+    // just live processes, so we don't over-register ahead of the cap.
+    const activeHeadless = this.engine.getAgentTasks().filter(
+      t => (t.status === 'running' || t.status === 'pending') && t.backend === 'headless_mcp',
+    ).length;
+    let budget = this.maxConcurrentHeadless - activeHeadless;
+    if (budget <= 0) return;
+
+    let frontier;
+    try { frontier = this.engine.computeFrontier(); } catch { return; }
+    for (const item of frontier) {
+      if (item.type !== 'cve_research') continue;
+      if (this.cveAttempted.has(item.id)) continue;
+      if (budget <= 0) break;
+      this.cveAttempted.add(item.id);
+      budget--;
+      const taskId = uuidv4();
+      this.engine.registerAgent({
+        id: taskId,
+        agent_id: `cve-research-${taskId.slice(0, 8)}`,
+        assigned_at: new Date().toISOString(),
+        status: 'running',
+        frontier_item_id: item.id,
+        subgraph_node_ids: item.node_id ? [item.node_id] : [],
+        backend: 'headless_mcp',
+        role: 'research',
+        skill: 'cve-research',
+      });
+      // registerAgent acquires the frontier lease + fires onUpdate → drainHeadless
+      // launches the research sub-agent. A lease conflict (already being worked)
+      // is harmless; we keep the id in cveAttempted to avoid re-dispatch churn.
+    }
   }
 
   /**

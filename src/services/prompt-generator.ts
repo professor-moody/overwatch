@@ -193,7 +193,7 @@ function generateSubAgentPrompt(
   const subAgentToolNames = new Set([
     'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
     'run_bash', 'run_tool',
-    'parse_output', 'report_finding', 'submit_agent_transcript',
+    'parse_output', 'report_finding', 'research_cve', 'submit_agent_transcript',
     'agent_heartbeat', 'acknowledge_agent_directive',
     'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',
@@ -819,7 +819,7 @@ function generateSituationalSection(ctx: PromptContext): string {
   });
   if (uncheckedServices.length > 0) {
     lines.push(`### Services Without CVE Checks (${uncheckedServices.length})`);
-    lines.push('These services have version info but no `VULNERABLE_TO` or `EXPLOITS` edges — prioritize CVE lookups:');
+    lines.push('These versioned services have no `VULNERABLE_TO`/`EXPLOITS` edges yet. They are surfaced as `cve_research` frontier items and auto-dispatched to a headless web-research sub-agent (when enabled); you do not need to research them manually.');
     for (const s of uncheckedServices.slice(0, 5)) {
       lines.push(`- ${s}`);
     }

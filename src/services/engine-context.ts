@@ -83,7 +83,7 @@ export type ActivityLogEntry = {
   operator_session_id?: string;
   provenance?: ActivityProvenance;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'reasoning' | 'system';
-  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test' | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot';
+  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test' | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot' | 'cve_research';
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;
   event_type?: ActivityEventType;
