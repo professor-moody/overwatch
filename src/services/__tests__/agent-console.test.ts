@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityMatchesAgent, buildAgentConsoleEvents } from '../agent-console.js';
+import { activityMatchesAgent, buildAgentConsoleEvents, activityToAgentConsoleEvent, OPERATOR_CONSOLE_SOURCE } from '../agent-console.js';
 import type { ActivityLogEntry } from '../engine-context.js';
 import type { AgentTask } from '../../types.js';
 
@@ -74,5 +74,51 @@ describe('agent console helpers', () => {
     ], task, { after: '2026-06-12T10:01:30Z', limit: 1 });
 
     expect(events.map(event => event.id)).toEqual(['new']);
+  });
+});
+
+describe('activityToAgentConsoleEvent — WS-path attribution (3A.3)', () => {
+  it('emits a PRIMARY event (no task, no agent_id) instead of dropping it', () => {
+    // Regression: the WS push used to return null for primary events, so the
+    // live console only showed sub-agents.
+    const event = activityToAgentConsoleEvent(entry({
+      event_id: 'primary-1', event_type: 'thought', category: 'reasoning',
+      agent_id: undefined, source_kind: 'primary', description: 'considering the next move',
+      operator_name: 'Lead', operator_model: 'claude-opus-4-8',
+    }));
+    expect(event).not.toBeNull();
+    expect(event!.source_kind).toBe('primary');
+    expect(event!.agent_id).toBe(OPERATOR_CONSOLE_SOURCE);
+    expect(event!.source_label).toBe('Lead · claude-opus-4-8');
+    expect(event!.kind).toBe('thought');
+  });
+
+  it('attributes a dashboard operator_command as a "command" event', () => {
+    const event = activityToAgentConsoleEvent(entry({
+      event_id: 'cmd-1', event_type: 'operator_command', agent_id: undefined,
+      source_kind: 'dashboard', description: 'Operator command executed: pause agent',
+      result_classification: 'success', details: { source: 'dashboard' },
+    }));
+    expect(event!.source_kind).toBe('dashboard');
+    expect(event!.kind).toBe('command');
+    expect(event!.title).toBe('Operator command');
+  });
+
+  it('a partial operator_command is a WARNING (not hidden from the errors filter)', () => {
+    const event = activityToAgentConsoleEvent(entry({
+      event_id: 'cmd-partial', event_type: 'operator_command', agent_id: undefined,
+      source_kind: 'dashboard', result_classification: 'partial', description: 'some ops failed',
+    }));
+    expect(event!.severity).toBe('warning');
+  });
+
+  it('still attributes a subagent event to its task when given a task', () => {
+    const event = activityToAgentConsoleEvent(entry({ event_id: 's-1', agent_id: task.agent_id }), task);
+    expect(event!.source_kind).toBe('subagent');
+    expect(event!.agent_id).toBe(task.id);
+  });
+
+  it('drops heartbeats', () => {
+    expect(activityToAgentConsoleEvent(entry({ event_type: 'heartbeat', agent_id: undefined }))).toBeNull();
   });
 });

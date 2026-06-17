@@ -4,6 +4,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
+import { OperatorCommandBar } from './OperatorCommandBar';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
@@ -26,6 +27,7 @@ const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'primary', label: 'Primary' },
   { value: 'subagents', label: 'Subagents' },
+  { value: 'command', label: 'Commands' },
   { value: 'thought', label: 'Thoughts' },
   { value: 'action', label: 'Actions' },
   { value: 'finding', label: 'Findings' },
@@ -170,27 +172,44 @@ export function AgentsPanel() {
 
   useEffect(() => {
     if (consolePaused) return;
+    // The live WS push now carries primary/dashboard attribution (3A.3), so this
+    // poll is just reconciliation behind the push — keep it brisk for the primary
+    // cockpit view, slower for a single-agent drawer.
     const timer = setInterval(() => {
       if (connected) void loadConsole();
-    }, activeAgent ? 8000 : 5000);
+    }, activeAgent ? 8000 : 3000);
     return () => clearInterval(timer);
   }, [activeAgent, connected, consolePaused, loadConsole]);
 
   useEffect(() => {
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const handleUpdate = (event: Event) => {
       if (consolePaused) return;
       const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
-      const incoming = (detail?.events || []).filter(item => (
-        !activeAgent
-        || item.agent_id === activeAgent.id
-        || item.agent_id === activeAgent.agent_id
-      ));
+      const all = detail?.events || [];
+      if (all.length === 0) return;
+      if (!activeAgent) {
+        // The primary cockpit is rendered by the CLIENT builder
+        // (buildOperatorConsoleEvents off /api/history). The WS payload is built
+        // by the SERVER builder, which titles/labels the same event_id slightly
+        // differently — merging it would flip rows on every poll. So in the
+        // primary view the push is just a "something changed" signal: debounce a
+        // re-fetch so the client builder stays the single source of truth.
+        if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = null; void loadConsole(); }, 400);
+        return;
+      }
+      // Per-agent drawer: both the poll (getAgentConsole) and the WS push use the
+      // SERVER builder, so merging is consistent — no flip.
+      const incoming = all.filter(item => item.agent_id === activeAgent.id || item.agent_id === activeAgent.agent_id);
       if (incoming.length === 0) return;
       setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
     };
     window.addEventListener('overwatch-agent-console-update', handleUpdate);
-    return () => window.removeEventListener('overwatch-agent-console-update', handleUpdate);
-  }, [activeAgent, consolePaused]);
+    return () => {
+      window.removeEventListener('overwatch-agent-console-update', handleUpdate);
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [activeAgent, consolePaused, loadConsole]);
 
   const scrollConsoleToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -268,6 +287,10 @@ export function AgentsPanel() {
           </FilterBar>
         )}
       />
+
+      {/* NL operator command bar — primary console view only (a subagent drawer
+          steers one agent; the cockpit command bar acts across the engagement). */}
+      {!activeAgent && <OperatorCommandBar />}
 
       {/* Batch bar */}
       {selectedIds.size > 0 && (

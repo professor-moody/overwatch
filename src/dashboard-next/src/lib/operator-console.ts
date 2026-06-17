@@ -103,6 +103,9 @@ function sourceLabelFor(
 function consoleKindFor(entry: ActivityEntry): AgentConsoleEvent['kind'] {
   const type = (entry.event_type || '').toLowerCase();
   const desc = (entry.description || '').toLowerCase();
+  // NL operator cockpit: a confirmed command or a planner-proposed plan gets its
+  // own console lane so the operator sees their commands inline.
+  if (type === 'operator_command' || type === 'plan_proposed') return 'command';
   if (type.includes('thought') || type.includes('decision') || desc.includes('thought')) return 'thought';
   if (type.includes('approval') || desc.includes('approval') || desc.includes('approved') || desc.includes('denied')) return 'approval';
   if (type.includes('session') || desc.includes('session')) return 'session';
@@ -122,13 +125,17 @@ function consoleSeverityFor(entry: ActivityEntry): AgentConsoleEvent['severity']
     || desc.includes('failed')
     || desc.includes('error')
   ) return 'error';
-  if (type.includes('warning') || desc.includes('warning') || desc.includes('approval')) return 'warning';
+  // 'partial' (e.g. an operator command where some ops failed) must surface as a
+  // warning, not info, so it isn't hidden from the console "errors" filter.
+  if (entry.result_classification === 'partial' || type.includes('warning') || desc.includes('warning') || desc.includes('approval')) return 'warning';
   if (entry.result_classification === 'success' || type.includes('completed') || type.includes('finding')) return 'success';
   return 'info';
 }
 
 function consoleTitleFor(entry: ActivityEntry): string {
   const type = (entry.event_type || '').toLowerCase();
+  if (type === 'operator_command') return 'Operator command';
+  if (type === 'plan_proposed') return 'Plan proposed';
   if (type.includes('thought')) return 'Thought';
   if (type.includes('approval')) return 'Approval';
   if (type.includes('action_started')) return 'Action started';

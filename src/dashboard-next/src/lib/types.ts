@@ -112,7 +112,8 @@ export type AgentConsoleKind =
   | 'finding'
   | 'session'
   | 'transcript'
-  | 'system';
+  | 'system'
+  | 'command';
 
 export type AgentConsoleSeverity = 'info' | 'success' | 'warning' | 'error';
 
