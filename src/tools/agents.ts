@@ -748,6 +748,14 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
       // agent already runs — zero extra round-trips. The agent must
       // acknowledge_agent_directive and then act on it.
       const pending = engine.getPendingAgentDirective(task_id);
+      // 3D: also deliver an answer to a question the agent asked via ask_operator.
+      // The agent waits by heartbeating; this PEEKS (at-least-once) so a dropped
+      // heartbeat self-heals on the next beat. The agent matches pending_answer.
+      // query_id to its ask_operator query_id and acts on it once.
+      const answered = engine.getAgentQueryStore().getAnswerForTask(task_id);
+      const pending_answer = answered
+        ? { query_id: answered.query_id, question: answered.question, answer: answered.answer }
+        : undefined;
       return {
         content: [{
           type: 'text',
@@ -757,8 +765,46 @@ Returns the new heartbeat timestamp on success, or an error if the task is unkno
             heartbeat_at: task.heartbeat_at,
             heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
             ...(pending ? { pending_directive: pending } : {}),
+            ...(pending_answer ? { pending_answer } : {}),
           }, null, 2),
         }],
+      };
+    }),
+  );
+
+  // ============================================================
+  // ask_operator (3D) — a running sub-agent escalates a decision to the operator
+  // and waits for an answer. Records a question; the answer comes back on the
+  // agent's next agent_heartbeat as `pending_answer` (no new blocking transport).
+  // ============================================================
+  server.registerTool(
+    'ask_operator',
+    {
+      title: 'Ask the Operator',
+      description: `Escalate a decision to the human operator and WAIT for their answer. Use this at a genuine fork you can't resolve yourself (ambiguous path, risky/irreversible step, missing context) — not for routine work.
+
+After calling this, keep calling \`agent_heartbeat({ task_id })\`; when the operator answers, the heartbeat response carries \`pending_answer: { query_id, question, answer }\`. Read the answer and proceed. If no answer arrives before your task times out, make the safest reasonable choice and note that you proceeded without an answer.`,
+      inputSchema: {
+        task_id: z.string().describe('Your agent task id'),
+        agent_id: z.string().optional().describe('Your agent id (for attribution)'),
+        question: z.string().describe('The question for the operator — be specific and self-contained'),
+        options: z.array(z.string()).optional().describe('Optional suggested answers the operator can pick from'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    withErrorBoundary('ask_operator', async ({ task_id, agent_id, question, options }) => {
+      const query = engine.getAgentQueryStore().add({ task_id, agent_id, question, options });
+      engine.logActionEvent({
+        description: `Agent asked the operator: ${question}`,
+        event_type: 'agent_query',
+        category: 'agent',
+        result_classification: 'neutral',
+        agent_id,
+        linked_agent_task_id: task_id,
+        details: { reason: 'agent_query', query_id: query.query_id, question, options },
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: true, query_id: query.query_id, status: 'open', note: 'Keep heartbeating; the answer arrives as pending_answer on agent_heartbeat.' }, null, 2) }],
       };
     }),
   );

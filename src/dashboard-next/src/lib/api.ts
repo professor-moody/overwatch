@@ -266,6 +266,32 @@ export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
   return fetchJson('/api/plans');
 }
 
+// --- Agent→operator question inbox (Phase 3D) ---
+
+export interface AgentQuery {
+  query_id: string;
+  task_id?: string;
+  agent_id?: string;
+  question: string;
+  options?: string[];
+  status: string;
+  answer?: string;
+  created_at: number;
+}
+
+/** Open questions agents are waiting on. */
+export async function getAgentQueries(): Promise<{ queries: AgentQuery[] }> {
+  return fetchJson('/api/agent-queries');
+}
+
+/** Answer an agent's question — delivered to the agent on its next heartbeat. */
+export async function answerAgentQuery(queryId: string, answer: string): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/agent-queries/${encodeURIComponent(queryId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify({ answer }),
+  });
+}
+
 // --- Campaigns ---
 
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {

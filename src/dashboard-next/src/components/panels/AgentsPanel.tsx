@@ -9,6 +9,7 @@ import { buildOperatorConsoleEvents } from '../../lib/operator-console';
 import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
 import { POLL } from '../../lib/polling';
 import { OperatorCommandBar } from './OperatorCommandBar';
+import { AgentQueriesInbox } from './AgentQueriesInbox';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, InspectorDrawer, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
@@ -329,6 +330,10 @@ export function AgentsPanel() {
           </FilterBar>
         )}
       />
+
+      {/* Agent→operator question inbox — escalations need answering before the
+          rest, so it sits above the command bar in the primary cockpit view. */}
+      {!activeAgent && <AgentQueriesInbox />}
 
       {/* NL operator command bar — primary console view only (a subagent drawer
           steers one agent; the cockpit command bar acts across the engagement). */}

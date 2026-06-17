@@ -2390,6 +2390,11 @@ export class GraphEngine {
     return this.ctx.proposedPlanStore;
   }
 
+  /** 3D: agent→operator questions awaiting an answer. */
+  getAgentQueryStore(): import('./agent-query-store.js').AgentQueryStore {
+    return this.ctx.agentQueryStore;
+  }
+
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
     const now = new Date();
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;

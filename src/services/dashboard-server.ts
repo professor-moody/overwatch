@@ -86,7 +86,7 @@ interface CachedStaticAsset {
 }
 
 export interface DashboardEvent {
-  type: 'graph_update' | 'agent_update' | 'agent_console_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update';
+  type: 'graph_update' | 'agent_update' | 'agent_console_update' | 'objective_update' | 'full_state' | 'action_pending' | 'action_resolved' | 'session_update' | 'agent_query';
   timestamp: string;
   data: any;
 }
@@ -171,6 +171,16 @@ export class DashboardServer {
     // Wire engine updates to WS push without requiring external wiring in app.ts.
     engine.onUpdate(detail => this.onGraphUpdate(detail));
     this.agentConsoleCursor = engine.getFullHistory().length;
+
+    // 3D: push the agent-question inbox live when an agent asks or is answered.
+    engine.getAgentQueryStore().onChange(() => {
+      if (this.clients.size === 0) return;
+      this.broadcast({
+        type: 'agent_query',
+        timestamp: new Date().toISOString(),
+        data: { queries: engine.getAgentQueryStore().getOpen() },
+      });
+    });
 
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -627,6 +637,8 @@ export class DashboardServer {
       this.handleCommand(req, res);
     } else if (pathname === '/api/plans' && method === 'GET') {
       this.serveProposedPlans(res);
+    } else if (pathname === '/api/agent-queries' && method === 'GET') {
+      this.serveAgentQueries(res);
     } else if (pathname === '/api/templates') {
       this.serveTemplates(res);
     } else if (pathname === '/api/settings' && method === 'GET') {
@@ -706,6 +718,7 @@ export class DashboardServer {
       const agentConsoleMatch = pathname.match(/^\/api\/agents\/([^/]+)\/console$/);
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
       const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
+      const agentQueryAnswerMatch = pathname.match(/^\/api\/agent-queries\/([^/]+)\/answer$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
@@ -734,6 +747,8 @@ export class DashboardServer {
         this.handleAgentCancel(decodeURIComponent(agentCancelMatch[1]), req, res);
       } else if (agentDirectiveMatch && method === 'POST') {
         this.handleAgentDirective(decodeURIComponent(agentDirectiveMatch[1]), req, res);
+      } else if (agentQueryAnswerMatch && method === 'POST') {
+        this.handleAnswerAgentQuery(decodeURIComponent(agentQueryAnswerMatch[1]), req, res);
       } else if (objectiveMatch && method === 'PATCH') {
         this.handleUpdateObjective(objectiveMatch[1], req, res);
       } else if (objectiveMatch && method === 'DELETE') {
@@ -1295,6 +1310,59 @@ export class DashboardServer {
     const plans = this.engine.getProposedPlanStore().getOpen();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ plans }));
+  }
+
+  // ---- Agent→operator question inbox (Phase 3D) ----
+  private serveAgentQueries(res: ServerResponse): void {
+    const queries = this.engine.getAgentQueryStore().getOpen();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ queries }));
+  }
+
+  private handleAnswerAgentQuery(queryId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const answer = typeof b.answer === 'string' ? b.answer.trim() : '';
+      if (!answer) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'answer (non-empty string) is required' }));
+        return;
+      }
+      // If the asking agent is already gone (reaped/timed out), don't answer into
+      // the void — terminal transitions expire a task's queries, but guard the race.
+      const existing = this.engine.getAgentQueryStore().get(queryId);
+      if (existing?.task_id) {
+        const task = this.engine.getTask(existing.task_id);
+        if (!task || task.status !== 'running') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'the asking agent is no longer running — answer would not be delivered' }));
+          return;
+        }
+      }
+      const resolved = this.engine.getAgentQueryStore().answer(queryId, answer);
+      if (!resolved) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'question not found or already answered/expired' }));
+        return;
+      }
+      // Surface the answer in the console; the agent picks it up on its next heartbeat.
+      this.engine.logActionEvent({
+        description: `Operator answered agent question: ${resolved.question}`,
+        event_type: 'operator_command',
+        category: 'system',
+        source_kind: 'dashboard',
+        result_classification: 'neutral',
+        linked_agent_task_id: resolved.task_id,
+        details: { reason: 'agent_query_answered', source: 'dashboard', query_id: queryId, question: resolved.question, answer },
+      });
+      this.engine.persist();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, query: resolved }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
   }
 
   private handleCommand(req: IncomingMessage, res: ServerResponse): void {

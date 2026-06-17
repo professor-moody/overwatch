@@ -23,6 +23,7 @@ import { eventIdOrUuid } from './deterministic-id.js';
 import { FrontierLeases } from './frontier-leases.js';
 import { MutationJournal, type MutationType } from './mutation-journal.js';
 import { ProposedPlanStore } from './proposed-plan-store.js';
+import { AgentQueryStore } from './agent-query-store.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -66,7 +67,9 @@ export type ActivityEventType =
   // 3A NL operator cockpit: a free-form planner-proposed plan, and an executed
   // operator command (NL → confirmed ops). Surfaced inline in the console.
   | 'plan_proposed'
-  | 'operator_command';
+  | 'operator_command'
+  // 3D: a running agent escalated a question to the operator.
+  | 'agent_query';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }
@@ -155,6 +158,9 @@ export class EngineContext {
   // (a plan can be re-proposed), shared between the propose_plan tool and the
   // dashboard confirm path.
   proposedPlanStore: ProposedPlanStore;
+  // 3D: agent→operator questions awaiting an answer. In-memory; the ask_operator
+  // tool writes, the dashboard answers, the heartbeat path drains answers back.
+  agentQueryStore: AgentQueryStore;
   approvalRequests: Map<string, DurableApprovalRecord>;
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
@@ -209,6 +215,7 @@ export class EngineContext {
     this.opsecTracker = new OpsecTracker(this);
     this.pendingActionQueue = new PendingActionQueue(this);
     this.proposedPlanStore = new ProposedPlanStore();
+    this.agentQueryStore = new AgentQueryStore();
     this.approvalRequests = new Map();
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;

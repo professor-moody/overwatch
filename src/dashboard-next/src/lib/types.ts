@@ -465,6 +465,7 @@ export type WsMessageType =
   | 'action_pending'
   | 'action_resolved'
   | 'campaign_update'
+  | 'agent_query'
   // Phase 4 (enterprise): identity-tier graph updates carry their own
   // message type so the dashboard can refresh just the IdentityPanel
   // without forcing a full graph re-render. The payload mirrors
