@@ -103,10 +103,10 @@ export function GraphToolbar({
 
   return (
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
-      {/* Back */}
-      <Link to="/overview" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
+      {/* Back to the Operator Console (the operator's home) */}
+      <Link to="/agents" className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 min-w-0">
         <ChevronLeft size={14} />
-        <span className="hidden sm:inline">Dashboard</span>
+        <span className="hidden sm:inline">Console</span>
       </Link>
 
       <span className="text-accent font-semibold whitespace-nowrap">◆ OVERWATCH</span>

@@ -41,6 +41,13 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // 'c' — jump back to the Operator Console (the operator's home)
+      if (key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        onPanelChange('agents');
+        return;
+      }
+
       // 'g' — navigate to graph explorer
       if (key === 'g' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
@@ -75,6 +82,7 @@ export function useKeyboardShortcuts({
 
 export const SHORTCUT_HELP: { key: string; desc: string }[] = [
   { key: '1-0', desc: 'Routes: Overview, Frontier, Actions, Operator, Sessions, Campaigns, Evidence, Credentials, Paths, Settings' },
+  { key: 'c', desc: 'Back to the Operator Console' },
   { key: 'g', desc: 'Open Graph workspace' },
   { key: 'e', desc: 'Open Evidence route' },
   { key: 'F / Space', desc: 'Graph route: fit view / pause or resume layout' },

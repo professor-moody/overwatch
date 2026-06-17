@@ -7,9 +7,9 @@ import type { PanelId } from './OperatorLayout';
 const PANEL_LABELS: Record<PanelId, string> = {
   overview: 'Overview',
   campaigns: 'Campaigns',
-  agents: 'Operator',
+  agents: 'Console',
   sessions: 'Sessions',
-  actions: 'Actions',
+  actions: 'Approvals',
   frontier: 'Frontier',
   activity: 'Activity',
   evidence: 'Evidence',
