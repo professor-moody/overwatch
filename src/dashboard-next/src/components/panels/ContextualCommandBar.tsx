@@ -21,7 +21,16 @@ import { OperatorCommandBar } from './OperatorCommandBar';
 // focus but the operator can flip to Engagement without deselecting. Routing
 // decisions live in lib/command-scope.ts (tested).
 
-export function ContextualCommandBar({ focusedAgent }: { focusedAgent: AgentInfo | null }) {
+export function ContextualCommandBar({
+  focusedAgent,
+  onAgentCommandSent,
+}: {
+  focusedAgent: AgentInfo | null;
+  /** Called after an agent-scoped instruction lands, so the console can refresh
+   *  the focused agent's thread immediately (the per-agent WS push doesn't carry
+   *  dashboard-sourced events, so without this the command echo waits for the poll). */
+  onAgentCommandSent?: () => void;
+}) {
   const [scope, setScope] = useState<CommandScope>(() => defaultScopeFor(focusedAgent));
   const agentAvailable = canScopeToAgent(focusedAgent);
 
@@ -48,7 +57,7 @@ export function ContextualCommandBar({ focusedAgent }: { focusedAgent: AgentInfo
       </div>
       {route.via === 'command'
         ? <OperatorCommandBar />
-        : <InstructBar taskId={route.taskId} placeholder={scopePlaceholder(scope)} />}
+        : <InstructBar taskId={route.taskId} placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />}
     </div>
   );
 }
@@ -67,7 +76,7 @@ function ScopePill({ label, active, onClick }: { label: string; active: boolean;
   );
 }
 
-function InstructBar({ taskId, placeholder }: { taskId: string; placeholder: string }) {
+function InstructBar({ taskId, placeholder, onSent }: { taskId: string; placeholder: string; onSent?: () => void }) {
   const addToast = useToastStore(s => s.addToast);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -83,7 +92,7 @@ function InstructBar({ taskId, placeholder }: { taskId: string; placeholder: str
         title: 'Instruction sent',
         message: res.ok ? 'agent honors it on its next heartbeat' : 'not applied',
       });
-      if (res.ok) setText('');
+      if (res.ok) { setText(''); onSent?.(); }
     } catch (err) {
       addToast({ type: 'error', title: 'Instruction failed', message: err instanceof Error ? err.message : String(err) });
     } finally {

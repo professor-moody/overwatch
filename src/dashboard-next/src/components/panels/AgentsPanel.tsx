@@ -8,12 +8,14 @@ import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '.
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
 import { sessionsForAgent } from '../../lib/session-workspace';
 import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
+import { buildAgentThread } from '../../lib/agent-thread';
 import { threadConsoleEvents, type ActivityThread } from '../../lib/activity-threads';
 import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
 import { POLL } from '../../lib/polling';
 import { ContextualCommandBar } from './ContextualCommandBar';
 import { AttentionQueue } from './AttentionQueue';
 import { MissionCard } from './MissionCard';
+import { AgentThread } from './AgentThread';
 import { AddTargetsModal } from './AddTargetsModal';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
@@ -120,6 +122,19 @@ export function AgentsPanel() {
   const activeAgent = activeAgentId === 'all'
     ? null
     : agents.find(agent => agent.id === activeAgentId || agent.agent_id === activeAgentId) || null;
+
+  // The focused agent's conversation: its (already agent-scoped) console events
+  // interleaved with its open questions. Empty when no agent is focused.
+  const agentThreadEntries = useMemo(
+    () => activeAgent
+      ? buildAgentThread(consoleEvents, agentQueries, {
+          agentId: activeAgent.id,
+          agentLabel: activeAgent.agent_id || activeAgent.id,
+          limit: 200,
+        })
+      : [],
+    [activeAgent, consoleEvents, agentQueries],
+  );
 
   useEffect(() => {
     if (activeAgentId !== 'all' && !activeAgent) setActiveAgentId('all');
@@ -252,7 +267,9 @@ export function AgentsPanel() {
 
   useEffect(() => {
     if (!consolePaused && consoleFollowing) scrollConsoleToBottom();
-  }, [consoleEvents, consolePaused, consoleFollowing, scrollConsoleToBottom]);
+    // agentThreadEntries is in the deps so a newly-arrived question (which changes
+    // the thread via agentQueries, not consoleEvents) still follows to bottom.
+  }, [consoleEvents, agentThreadEntries, consolePaused, consoleFollowing, scrollConsoleToBottom]);
 
   const visibleConsoleEvents = useMemo(() => {
     const q = consoleSearch.trim().toLowerCase();
@@ -324,7 +341,10 @@ export function AgentsPanel() {
       {/* One contextual command box — Engagement (NL) or the focused Agent
           (instruct), via a scope pill. Replaces the separate global command bar
           and per-agent Tell box. */}
-      <ContextualCommandBar focusedAgent={activeAgent} />
+      <ContextualCommandBar
+        focusedAgent={activeAgent}
+        onAgentCommandSent={() => { void loadConsole(); void loadAgentQueries(); }}
+      />
 
       {/* One "Needs you" queue — approvals (act inline) + agent questions
           (answer inline) + failed agents, prioritized, one item expanded. Hides
@@ -384,35 +404,64 @@ export function AgentsPanel() {
               onNavigateCampaign={navigateToCampaign}
             />
 
-            <AgentOutputConsole
-              activeAgent={activeAgent}
-              events={visibleConsoleEvents}
-              totalEvents={consoleEvents.length}
-              filter={consoleFilter}
-              search={consoleSearch}
-              paused={consolePaused}
-              following={consoleFollowing}
-              endRef={consoleEndRef}
-              scrollRef={consoleScrollRef}
-              onFilterChange={setConsoleFilter}
-              onSearchChange={setConsoleSearch}
-              onTogglePaused={() => {
-                const nextPaused = !consolePaused;
-                setConsolePaused(nextPaused);
-                if (!nextPaused) {
+            {activeAgent ? (
+              /* Focused agent → its CONVERSATION: commands, actions+results,
+                 findings, and inline-answerable questions, top to bottom. */
+              <AgentThread
+                agentLabel={activeAgent.agent_id || activeAgent.id}
+                entries={agentThreadEntries}
+                totalEntries={consoleEvents.length}
+                paused={consolePaused}
+                following={consoleFollowing}
+                endRef={consoleEndRef}
+                scrollRef={consoleScrollRef}
+                onTogglePaused={() => {
+                  const nextPaused = !consolePaused;
+                  setConsolePaused(nextPaused);
+                  if (!nextPaused) {
+                    setConsoleFollowing(true);
+                    void loadConsole().then(scrollConsoleToBottom);
+                  }
+                }}
+                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+                onJumpLatest={() => { setConsoleFollowing(true); scrollConsoleToBottom(); }}
+                onRefresh={() => { void loadConsole(); void loadAgentQueries(); }}
+                onAnswered={loadAgentQueries}
+                onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+                onNavigatePanel={navigateToPanel}
+              />
+            ) : (
+              /* No agent selected → the full operator stream (threaded). */
+              <AgentOutputConsole
+                activeAgent={activeAgent}
+                events={visibleConsoleEvents}
+                totalEvents={consoleEvents.length}
+                filter={consoleFilter}
+                search={consoleSearch}
+                paused={consolePaused}
+                following={consoleFollowing}
+                endRef={consoleEndRef}
+                scrollRef={consoleScrollRef}
+                onFilterChange={setConsoleFilter}
+                onSearchChange={setConsoleSearch}
+                onTogglePaused={() => {
+                  const nextPaused = !consolePaused;
+                  setConsolePaused(nextPaused);
+                  if (!nextPaused) {
+                    setConsoleFollowing(true);
+                    void loadConsole().then(scrollConsoleToBottom);
+                  }
+                }}
+                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+                onJumpLatest={() => {
                   setConsoleFollowing(true);
-                  void loadConsole().then(scrollConsoleToBottom);
-                }
-              }}
-              onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
-              onJumpLatest={() => {
-                setConsoleFollowing(true);
-                scrollConsoleToBottom();
-              }}
-              onRefresh={loadConsole}
-              onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
-              onNavigatePanel={navigateToPanel}
-            />
+                  scrollConsoleToBottom();
+                }}
+                onRefresh={loadConsole}
+                onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+                onNavigatePanel={navigateToPanel}
+              />
+            )}
           </div>
         </div>
       )}

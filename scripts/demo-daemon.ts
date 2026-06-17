@@ -96,12 +96,29 @@ app.engine.logActionEvent({
   details: { kind: 'selection' },
 });
 
-// Seed a current-action + an escalation so the cockpit is rich on load: the
-// recon agent is "doing" something and has asked the operator a question.
+// Seed a full command→result→question loop for agent-recon-1 so the focused
+// agent's CONVERSATION view shows the whole arc on load (logged in order so it
+// reads top→bottom): operator command → action started → result → finding →
+// the agent asks the operator. agent-web-1 stays mid-flight.
+app.engine.logActionEvent({
+  description: 'instruct → agent-recon-1: enumerate SSH auth methods on app01 and report back',
+  event_type: 'operator_command', category: 'reasoning', agent_id: 'agent-recon-1',
+  details: { source: 'dashboard', kind: 'instruct' },
+});
 app.engine.logActionEvent({
   description: 'Enumerating SSH auth methods on app01 (10.20.0.20:22)',
   event_type: 'action_started', category: 'frontier', agent_id: 'agent-recon-1',
   target_node_ids: ['h-app', 'svc-ssh'],
+});
+app.engine.logActionEvent({
+  description: 'app01 SSH (10.20.0.20:22): password auth ENABLED; users enumerated — svc-deploy, admin',
+  event_type: 'action_completed', category: 'frontier', agent_id: 'agent-recon-1',
+  target_node_ids: ['h-app', 'svc-ssh'], result_classification: 'success',
+});
+app.engine.logActionEvent({
+  description: 'Finding: app01 exposes SSH password auth (10.20.0.20) — credential-spray candidate',
+  event_type: 'finding_reported', category: 'finding', agent_id: 'agent-recon-1',
+  target_node_ids: ['h-app', 'svc-ssh'], result_classification: 'success',
 });
 app.engine.logActionEvent({
   description: 'Fuzzing app01 web root for hidden endpoints (ffuf)',
