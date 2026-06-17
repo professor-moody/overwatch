@@ -15,6 +15,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
+import { getArchetype, listArchetypes, recommendArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
@@ -631,6 +632,10 @@ export class DashboardServer {
       this.serveAgents(res);
     } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
       this.handleAgentDispatch(req, res);
+    } else if (pathname === '/api/agents/quick-deploy' && method === 'POST') {
+      this.handleQuickDeploy(req, res);
+    } else if (pathname === '/api/agent-archetypes' && method === 'GET') {
+      this.serveAgentArchetypes(res);
     } else if (pathname === '/api/fleet/directive' && method === 'POST') {
       this.handleFleetDirective(req, res);
     } else if (pathname === '/api/commands' && method === 'POST') {
@@ -1275,9 +1280,13 @@ export class DashboardServer {
       }
       const b = body as Record<string, unknown>;
       const targetNodeIds = Array.isArray(b.target_node_ids) ? b.target_node_ids.filter((x: unknown) => typeof x === 'string') as string[] : [];
-      const skill = typeof b.skill === 'string' ? b.skill : undefined;
       const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
       const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
+      // Agent type: an explicit archetype expands to {role, backend, skill,
+      // objective}; an explicit skill still overrides the archetype default.
+      const arch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
+      const skill = typeof b.skill === 'string' ? b.skill : arch?.defaultSkill;
+      const objective = typeof b.objective === 'string' ? b.objective : undefined;
 
       if (targetNodeIds.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1292,11 +1301,16 @@ export class DashboardServer {
         id: taskId,
         agent_id: agentId,
         assigned_at: new Date().toISOString(),
-        status: 'pending' as const,
+        // 'running' so the runners actually pick it up — both drain loops skip
+        // non-running tasks, so a 'pending' dispatch silently never executes
+        // (matches the planner/cve self-dispatch precedent).
+        status: 'running' as const,
         subgraph_node_ids: targetNodeIds,
         skill,
         campaign_id: campaignId,
         frontier_item_id: frontierItemId,
+        ...(arch ? { archetype: arch.id, role: arch.role, backend: arch.backend } : {}),
+        ...(objective ? { objective } : {}),
       };
 
       // F2: registerAgent may refuse on frontier-lease conflict.
@@ -1320,6 +1334,97 @@ export class DashboardServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
     });
+  }
+
+  // ---- Phase 5c: ad-hoc real-time deploy ----
+  // Paste an IP/CIDR/domain → add it to scope (canonical updateScope, so
+  // target-facing actions stay in-scope) and dispatch the recommended (or a
+  // chosen) agent type at it, in one step. No engagement-setup ritual; the
+  // active engagement's scope is the substrate.
+  private handleQuickDeploy(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const b = body as Record<string, unknown>;
+      const targetRaw = typeof b.target === 'string' ? b.target.trim() : '';
+      if (!targetRaw) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'target (IP, CIDR, or domain) is required' }));
+        return;
+      }
+      // Same classification as the `scan` command + the dashboard Add-Targets
+      // parser (IPv4 CIDR / IP→/32 / domain; IPv6 + junk rejected).
+      const CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+      const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+      const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9-]+\.)+[a-z]{2,}$/i;
+      const add_cidrs: string[] = [];
+      const add_domains: string[] = [];
+      for (const tok of targetRaw.split(/[\s,]+/).filter(Boolean)) {
+        if (CIDR_RE.test(tok)) add_cidrs.push(tok);
+        else if (IP_RE.test(tok)) add_cidrs.push(`${tok}/32`);
+        else if (DOMAIN_RE.test(tok)) add_domains.push(tok.toLowerCase());
+      }
+      if (add_cidrs.length === 0 && add_domains.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `no valid IPv4/CIDR/domain target in "${targetRaw}"` }));
+        return;
+      }
+
+      const scopeResult = this.engine.updateScope({ add_cidrs, add_domains, reason: 'quick-deploy' });
+      if (!scopeResult.applied) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: scopeResult.errors.join('; ') || 'scope update failed', errors: scopeResult.errors }));
+        return;
+      }
+
+      // Recommend recon for a raw target unless the operator chose a type.
+      const arch = getArchetype(typeof b.archetype === 'string' ? b.archetype : recommendArchetype({ rawTarget: true }));
+      const objective = (arch.defaultObjective || 'Investigate {target}.').replace('{target}', targetRaw);
+      const taskId = randomUUID();
+      const task = {
+        id: taskId,
+        agent_id: `quick-${taskId.slice(0, 8)}`,
+        assigned_at: new Date().toISOString(),
+        status: 'running' as const, // so the runner picks it up (see handleAgentDispatch)
+        subgraph_node_ids: [] as string[],
+        skill: arch.defaultSkill,
+        archetype: arch.id,
+        role: arch.role,
+        backend: arch.backend,
+        objective,
+      };
+      const reg = this.engine.registerAgent(task);
+      if (!reg.ok) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ dispatched: false, reason: 'dispatch_refused' }));
+        return;
+      }
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        dispatched: true,
+        task,
+        archetype: arch.id,
+        scope: { added_cidrs: add_cidrs, added_domains: add_domains, affected_node_count: scopeResult.affected_node_count },
+      }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // The agent-type catalog for the dashboard Deploy picker (read-only).
+  private serveAgentArchetypes(res: ServerResponse): void {
+    const archetypes = listArchetypes().map(a => ({
+      id: a.id, label: a.label, description: a.description,
+      role: a.role, defaultSkill: a.defaultSkill, suitableFor: a.suitableFor,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ archetypes }));
   }
 
   // ---- NL operator command (Phase 3A) ----
