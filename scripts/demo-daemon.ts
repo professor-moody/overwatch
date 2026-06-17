@@ -65,12 +65,21 @@ app.engine.ingestFinding({
   edges: [{ source: 'h-app', target: 'svc-ssh', properties: { type: 'RUNS', confidence: 1, discovered_at: iso(60) } }],
 } as never);
 
-// A running agent the operator can steer. backend:'manual' so the daemon does
-// NOT auto-launch a headless process for it — it stays a steer target, and the
+// Running agents the operator can steer. backend:'manual' so the daemon does
+// NOT auto-launch headless processes for them — they stay steer targets, and the
 // only headless spawn is the planner the operator triggers via a command.
+// A large heartbeat_ttl keeps the watchdog from reaping these demo agents (they
+// never heartbeat on their own), so the cockpit stays populated.
+const DEMO_TTL = 86_400; // 24h — exempt from the 120s heartbeat watchdog
 app.engine.registerAgent({
   id: 'task-recon-1', agent_id: 'agent-recon-1', assigned_at: iso(15), status: 'running',
   subgraph_node_ids: ['h-app', 'svc-ssh'], skill: 'network_enumeration', backend: 'manual',
+  heartbeat_ttl_seconds: DEMO_TTL,
+} as AgentTask);
+app.engine.registerAgent({
+  id: 'task-web-1', agent_id: 'agent-web-1', assigned_at: iso(8), status: 'running',
+  subgraph_node_ids: ['h-app'], skill: 'webapp_testing', backend: 'manual',
+  heartbeat_ttl_seconds: DEMO_TTL,
 } as AgentTask);
 
 const queue = app.engine.getPendingActionQueue();
@@ -85,6 +94,24 @@ app.engine.logActionEvent({
   description: 'Primary: prioritizing app01 — SSH is the only exposed service and recon is mid-flight.',
   event_type: 'thought', category: 'reasoning', target_node_ids: ['h-app'],
   details: { kind: 'selection' },
+});
+
+// Seed a current-action + an escalation so the cockpit is rich on load: the
+// recon agent is "doing" something and has asked the operator a question.
+app.engine.logActionEvent({
+  description: 'Enumerating SSH auth methods on app01 (10.20.0.20:22)',
+  event_type: 'action_started', category: 'frontier', agent_id: 'agent-recon-1',
+  target_node_ids: ['h-app', 'svc-ssh'],
+});
+app.engine.logActionEvent({
+  description: 'Fuzzing app01 web root for hidden endpoints (ffuf)',
+  event_type: 'action_started', category: 'frontier', agent_id: 'agent-web-1',
+  target_node_ids: ['h-app'],
+});
+app.engine.getAgentQueryStore().add({
+  task_id: 'task-recon-1', agent_id: 'agent-recon-1',
+  question: 'app01 SSH allows password auth — spray a small list, or stay quiet and pivot?',
+  options: ['spray (noisy)', 'stay quiet'],
 });
 
 const result = await startHttpApp(app, { port: MCP_PORT, host: '127.0.0.1' });
