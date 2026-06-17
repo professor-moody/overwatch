@@ -649,6 +649,8 @@ export class DashboardServer {
       this.serveConfig(res);
     } else if (pathname === '/api/config' && method === 'PATCH') {
       this.handleUpdateConfig(req, res);
+    } else if (pathname === '/api/config/scope/preview' && method === 'POST') {
+      this.handlePreviewScope(req, res);
     } else if (pathname === '/api/config/scope' && method === 'PATCH') {
       this.handleUpdateScope(req, res);
     } else if (pathname === '/api/config/objectives' && method === 'POST') {
@@ -1137,6 +1139,62 @@ export class DashboardServer {
             applied: scopeResult.applied,
             affected_node_count: scopeResult.affected_node_count,
           } : {}),
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // Read-only dry-run for the dashboard "Add Targets" flow: accepts the SAME
+  // full-replacement Partial<ScopeConfig> body as PATCH /api/config/scope,
+  // diffs it the same way, then reports what WOULD change via
+  // engine.previewScopeChange (no persist, no audit, no mutation). Lets the
+  // operator see how many graph nodes enter/leave scope before committing.
+  private handlePreviewScope(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      try {
+        // Same parse + diff as handleUpdateScope so the preview matches the
+        // commit exactly (only network fields — cidrs/domains/exclusions —
+        // participate in scope analysis; passthrough fields have no preview).
+        const incoming = body as Record<string, unknown>;
+        const current = this.engine.getConfig().scope;
+        const arr = (v: unknown): string[] | undefined =>
+          Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+        const diff = (next: string[] | undefined, prev: string[]): { add: string[]; remove: string[] } => {
+          if (!next) return { add: [], remove: [] };
+          const nextSet = new Set(next);
+          const prevSet = new Set(prev);
+          return { add: next.filter(x => !prevSet.has(x)), remove: prev.filter(x => !nextSet.has(x)) };
+        };
+        const cidrsDiff = diff(arr(incoming.cidrs), current.cidrs);
+        const domainsDiff = diff(arr(incoming.domains), current.domains);
+        const exclusionsDiff = diff(arr(incoming.exclusions), current.exclusions);
+
+        const preview = this.engine.previewScopeChange({
+          add_cidrs: cidrsDiff.add,
+          remove_cidrs: cidrsDiff.remove,
+          add_domains: domainsDiff.add,
+          remove_domains: domainsDiff.remove,
+          add_exclusions: exclusionsDiff.add,
+          remove_exclusions: exclusionsDiff.remove,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ...preview,
+          added: { cidrs: cidrsDiff.add, domains: domainsDiff.add, exclusions: exclusionsDiff.add },
+          removed: { cidrs: cidrsDiff.remove, domains: domainsDiff.remove, exclusions: exclusionsDiff.remove },
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

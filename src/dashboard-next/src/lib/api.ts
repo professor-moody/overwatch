@@ -393,7 +393,32 @@ export async function updateConfig(body: Partial<EngagementConfig>): Promise<{ u
   });
 }
 
-export async function updateScope(body: Partial<ScopeConfig>): Promise<unknown> {
+export interface ScopeChangePreview {
+  before: { cidrs: string[]; domains: string[]; exclusions: string[] };
+  after: { cidrs: string[]; domains: string[]; exclusions: string[] };
+  nodes_entering_scope: number;
+  nodes_leaving_scope: number;
+  pending_suggestions_resolved: string[];
+  added: { cidrs: string[]; domains: string[]; exclusions: string[] };
+  removed: { cidrs: string[]; domains: string[]; exclusions: string[] };
+}
+
+export interface ScopeUpdateResult {
+  updated: boolean;
+  scope: ScopeConfig;
+  applied?: boolean;
+  affected_node_count?: number;
+}
+
+/** Read-only dry-run: what would change if `body` (full-replacement scope) were applied. */
+export async function previewScope(body: Partial<ScopeConfig>): Promise<ScopeChangePreview> {
+  return fetchJson('/api/config/scope/preview', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateScope(body: Partial<ScopeConfig>): Promise<ScopeUpdateResult> {
   return fetchJson('/api/config/scope', {
     method: 'PATCH',
     body: JSON.stringify(body),

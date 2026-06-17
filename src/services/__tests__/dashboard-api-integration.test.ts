@@ -375,6 +375,55 @@ describe('PATCH /api/config/scope', () => {
   });
 });
 
+interface ScopePreviewBody {
+  nodes_entering_scope: number;
+  nodes_leaving_scope: number;
+  pending_suggestions_resolved: string[];
+  added: { cidrs: string[]; domains: string[]; exclusions: string[] };
+  removed: { cidrs: string[]; domains: string[]; exclusions: string[] };
+}
+
+describe('POST /api/config/scope/preview', () => {
+  // Current scope after the PATCH test above: cidrs ['10.0.0.0/24']; the seed
+  // has host-jump @ 10.0.0.5 (in scope).
+  it('echoes the add delta and reports entering count for a new CIDR', async () => {
+    const { status, body } = await postJson<ScopePreviewBody>('/api/config/scope/preview', {
+      cidrs: ['10.0.0.0/24', '10.99.0.0/24'],
+      domains: ['acme.local', 'acme-corp.com'],
+      exclusions: [],
+    });
+    expect(status).toBe(200);
+    expect(body.added.cidrs).toContain('10.99.0.0/24');
+    expect(body.removed.cidrs).toEqual([]);
+    expect(typeof body.nodes_entering_scope).toBe('number');
+  });
+
+  it('counts nodes leaving scope when a CIDR is removed', async () => {
+    const { status, body } = await postJson<ScopePreviewBody>('/api/config/scope/preview', {
+      cidrs: [],
+      domains: ['acme.local', 'acme-corp.com'],
+      exclusions: [],
+    });
+    expect(status).toBe(200);
+    expect(body.removed.cidrs).toContain('10.0.0.0/24');
+    // host-jump @ 10.0.0.5 was in 10.0.0.0/24 and now isn't.
+    expect(body.nodes_leaving_scope).toBeGreaterThanOrEqual(1);
+  });
+
+  it('is read-only — the live scope is unchanged after previewing', async () => {
+    const before = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+    await postJson('/api/config/scope/preview', { cidrs: [], domains: [], exclusions: [] });
+    const after = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+    expect(after.body.scope.cidrs).toEqual(before.body.scope.cidrs);
+    expect(after.body.scope.cidrs).toContain('10.0.0.0/24');
+  });
+
+  it('400s on a non-object body', async () => {
+    const { status } = await postJson('/api/config/scope/preview', 42);
+    expect(status).toBe(400);
+  });
+});
+
 // =============================================
 // Frontier weights / OPSEC budget / Phases / Pending Actions
 // =============================================
