@@ -75,6 +75,28 @@ The live WS push carries source attribution so primary reasoning and operator co
 
 A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered on the agent's next heartbeat as `pending_answer` (at-least-once; the agent dedups by `query_id`). A task's questions are expired when it goes terminal, so a dead agent's question never lingers.
 
+## Agent types & deploy {#agent-types}
+
+Sub-agents are **typed** (data-driven archetypes in `agent-archetypes.ts`), each a real bundle of a tool surface (a genuine `--allowedTools` boundary), a backend, a default skill/objective, and a scope strategy:
+
+| Agent type | What it does | Tool surface |
+|------------|-------------|--------------|
+| `recon_scanner` | host/service discovery, enumeration | execute + scope; **no** sessions/credentials |
+| `web_tester` | web app testing | execute + sessions |
+| `credential_operator` | validate/spray/expand credentials & tokens | execute + credential tools; no sessions |
+| `post_exploit` | work from a foothold: sessions, lateral movement | execute + sessions + credentials |
+| `cve_researcher` | web CVE/PoC research | web research only — **no** target execution |
+| `pathfinder` | read-only attack-path analysis → proposes plans | read-only + `propose_plan` |
+| `report_scribe` | draft report sections from confirmed state | read-only + `generate_report` |
+| `default` | the generic full-surface agent (fallback) | full `mcp__overwatch` |
+
+The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it from the catalog. Deploy two ways:
+
+- **Ad-hoc / real-time** — the console **Deploy** button (or `POST /api/agents/quick-deploy`): paste an IP/CIDR/domain → it's added to scope (canonical `updateScope`, so the agent's actions stay in-scope) and the recommended (or chosen) agent is dispatched at it, in one step. No engagement-setup ritual.
+- **At existing nodes** — Deploy with node IDs, or `dispatch_agents`, passing an `archetype`.
+
+The engagement/scope/OPSEC substrate is unchanged — ad-hoc deploy just removes the setup friction.
+
 ## Dashboard endpoints
 
 | Endpoint | Purpose |
@@ -86,7 +108,9 @@ A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) 
 | `GET /api/agent-queries` · `POST /api/agent-queries/:id/answer` | The agent-question inbox |
 | `POST /api/actions/:id/approve` · `POST /api/actions/:id/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
 | `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Add Targets — read-only impact dry-run, then apply via `updateScope` |
-| `POST /api/agents/dispatch` | Dispatch a sub-agent (`{ target_node_ids, skill?, campaign_id?, frontier_item_id? }`) |
+| `GET /api/agent-archetypes` | The agent-type catalog for the Deploy picker |
+| `POST /api/agents/quick-deploy` | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen type |
+| `POST /api/agents/dispatch` | Dispatch a sub-agent (`{ target_node_ids, archetype?, skill?, campaign_id?, frontier_item_id? }`) |
 
 ## See Also
 

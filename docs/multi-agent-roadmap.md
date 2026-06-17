@@ -59,7 +59,7 @@ Deepen the natural-language layer.
 
 The heaviest backend, and the biggest "team" leap.
 
-- **Specialized roles** — make roles data-driven (today they're a hardcoded switch): pathfinder, credential_operator, evidence_auditor, opsec_sentinel, session_shepherd, report_scribe, cloud_cartographer — each a tool profile plus default objective, constraints, and directives.
+- **Specialized roles + smart/manual deploy — ✅ shipped** (pulled forward). Roles are now data-driven **agent archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe + the legacy default/research/planner — each a real tool-surface boundary, backend, default skill/objective, and scope strategy. Dispatch honors the type; `recommendArchetype` auto-picks one for a target and the operator can override. **Ad-hoc real-time deploy** (`POST /api/agents/quick-deploy` + the console **Deploy** button): paste an IP/CIDR/domain → auto-scope + dispatch in one step. See [Agent types & deploy](operator-cockpit.md#agent-types). *(Remaining Phase-4 items below are still ahead: evidence_auditor/opsec_sentinel/session_shepherd/cloud_cartographer archetypes, plus —)*
 - **Campaign swimlanes** — a board view (Planned / Running / Needs-Approval / Blocked / Produced-Finding / Completed / Failed) derived from campaign status, frontier-linkage, agent status, and pending approvals.
 - **Question clustering** — group related agent questions (by campaign / role / similarity) so the operator answers once and the decision fans out.
 - **Agent handoff / split / merge** — hand work to a specialist (recon → credential_operator on a token find), split a broad item into child tasks, or merge duplicate agents into a summary.
