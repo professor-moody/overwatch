@@ -30,6 +30,13 @@ export interface EvidenceRecord {
   content_hash?: string;
   action_id?: string;
   finding_id?: string;
+  /**
+   * Actor attribution: which agent/sub-agent task produced this evidence. Lets
+   * the operator console + audit trail answer "who captured this" when multiple
+   * headless sub-agents run concurrently. Optional for backward-compat.
+   */
+  agent_id?: string;
+  task_id?: string;
   timestamp: string;
   evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
   filename?: string;
@@ -160,7 +167,14 @@ export class EvidenceStore {
   }
 
   private saveManifest(): void {
-    writeFileSync(this.manifestPath, JSON.stringify(this.manifest, null, 2));
+    // Atomic write: serialize to a temp file, fsync via writeFileSync, then
+    // rename over the manifest. rename(2) is atomic on POSIX, so a concurrent
+    // reader (or a crash mid-write) never observes a torn manifest. Within this
+    // single-engine process all saveManifest() calls are already serialized by
+    // the event loop (no awaits), so the temp path only needs to be unique.
+    const tmpPath = `${this.manifestPath}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(this.manifest, null, 2));
+    renameSync(tmpPath, this.manifestPath);
   }
 
   /**
@@ -175,6 +189,8 @@ export class EvidenceStore {
   store(opts: {
     action_id?: string;
     finding_id?: string;
+    agent_id?: string;
+    task_id?: string;
     evidence_type: 'screenshot' | 'log' | 'file' | 'command_output';
     filename?: string;
     content?: string;
@@ -197,6 +213,8 @@ export class EvidenceStore {
           content_hash: contentHash,
           action_id: opts.action_id,
           finding_id: opts.finding_id,
+          agent_id: opts.agent_id,
+          task_id: opts.task_id,
           timestamp: new Date().toISOString(),
           evidence_type: opts.evidence_type,
           filename: opts.filename,
@@ -226,6 +244,8 @@ export class EvidenceStore {
       content_hash: contentHash,
       action_id: opts.action_id,
       finding_id: opts.finding_id,
+      agent_id: opts.agent_id,
+      task_id: opts.task_id,
       timestamp,
       evidence_type: opts.evidence_type,
       filename: opts.filename,

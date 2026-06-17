@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
+import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService, resolveTaskBackend } from '../task-execution-service.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
@@ -54,7 +55,7 @@ describe('TaskExecutionService', () => {
   beforeEach(() => {
     cleanup();
     engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
-    svc = new TaskExecutionService(engine);
+    svc = new TaskExecutionService(engine, new ProcessTracker());
   });
 
   afterEach(() => {

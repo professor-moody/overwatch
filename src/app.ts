@@ -274,10 +274,13 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     dashboard.attachMcpTools(registeredTools);
   }
 
-  // App-level agent-task execution (scripted backend + watchdog). Owned here,
-  // not by the dashboard, so agent execution runs whether or not the dashboard
-  // is enabled. Started in startStdioApp/startHttpApp.
-  const taskExecution = new TaskExecutionService(engine);
+  // App-level agent-task execution (scripted + headless backends + watchdog).
+  // Owned here, not by the dashboard, so agent execution runs whether or not the
+  // dashboard is enabled. Started in startStdioApp/startHttpApp; the HTTP
+  // endpoint for headless sub-agents is supplied later via setHttpEndpoint.
+  const taskExecution = new TaskExecutionService(engine, processTracker);
+  // Let the dashboard's cancel endpoint kill headless sub-agent processes.
+  dashboard?.attachTaskExecution(taskExecution);
 
   return {
     config,
@@ -504,6 +507,12 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
     server.listen(port, host, () => {
       const addr = server.address();
       const boundPort = (addr && typeof addr === 'object') ? addr.port : port;
+      // Tell the task-execution service where headless sub-agents should connect.
+      // This enables the headless_mcp backend (only available in daemon mode).
+      app.taskExecution.setHttpEndpoint({
+        url: `http://${host}:${boundPort}/mcp`,
+        token: process.env.OVERWATCH_MCP_TOKEN,
+      });
       console.error(`Overwatch MCP HTTP transport at http://${host}:${boundPort}/mcp`);
       if (app.dashboard?.running) {
         console.error(`Dashboard at ${app.dashboard.address}`);
@@ -514,8 +523,9 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
 }
 
 export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
-  // Stop agent-task execution (scripted runner + watchdog) before tearing down.
-  app.taskExecution.stop();
+  // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
+  // SIGKILL) so none outlive the daemon.
+  await app.taskExecution.shutdown();
   // Abort all pending operations and close HTTP transport sessions
   if (app.sessionAbortControllers) {
     for (const [sid, controller] of Object.entries(app.sessionAbortControllers)) {

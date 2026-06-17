@@ -145,6 +145,15 @@ export class DashboardServer {
     this.mcpTools = tools.slice();
   }
 
+  /**
+   * Optional task-execution service. Required for the cancel endpoint to kill a
+   * headless sub-agent's OS process (not just mark its task interrupted).
+   */
+  private taskExecution: { cancelHeadless(task_id: string, reason?: string): boolean } | null = null;
+  attachTaskExecution(svc: { cancelHeadless(task_id: string, reason?: string): boolean }): void {
+    this.taskExecution = svc;
+  }
+
   constructor(engine: GraphEngine, port: number = 8384, host?: string, sessionManager?: SessionManager, configPath?: string) {
     this.engine = engine;
     this.port = port;
@@ -1625,15 +1634,23 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: `Agent is ${task.status} — cannot cancel` }));
       return;
     }
-    const ok = this.engine.updateAgentStatus(taskId, 'interrupted', 'Cancelled by operator via dashboard');
-    if (!ok) {
+    let killed = false;
+    if (this.taskExecution) {
+      // Kills the headless OS process (if any) AND marks the task interrupted
+      // (releases the lease). Non-headless tasks just get the status update.
+      killed = this.taskExecution.cancelHeadless(taskId, 'Cancelled by operator via dashboard');
+    } else {
+      // No execution service attached (e.g. isolated tests): status-only cancel.
+      this.engine.updateAgentStatus(taskId, 'interrupted', 'Cancelled by operator via dashboard');
+    }
+    const updated = this.engine.getTask(taskId);
+    if (updated?.status !== 'interrupted') {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to cancel agent' }));
       return;
     }
-    const updated = this.engine.getTask(taskId);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ cancelled: true, task: updated }));
+    res.end(JSON.stringify({ cancelled: true, process_killed: killed, task: updated }));
   }
 
   private serveCampaigns(res: ServerResponse): void {
