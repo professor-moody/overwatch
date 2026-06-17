@@ -28,6 +28,17 @@ Much of "command a team" is **surfacing primitives that already exist**, not bui
 
 The net-new engine work is concentrated in a few places: **productivity-based stuck detection**, a **data-driven role system**, a **graph-delta plan estimator**, **question clustering**, **NL graph queries**, and an **operator-memory → compiled-policy** substrate. Those land in the later phases below.
 
+## Runtime: MCP-optional drivers
+
+How these agents reach tools is a **driver**, not a fixed dependency. The headless
+runtime described in [Operator Cockpit](operator-cockpit.md#roles) speaks MCP today,
+which is correct for the external lab. For internal environments where MCP is
+unavailable, the same agents run unchanged through a **no-MCP driver** (headless
+Claude + an `overwatch` CLI / local HTTP), routing into the same executor and
+lifecycle. The phases below are driver-agnostic. See
+[Deployment Architecture](deployment-architecture.md) for the decision and the
+implementation sequence.
+
 ## Phases
 
 ### Phase 1 — Mission Control console *(in progress)*
