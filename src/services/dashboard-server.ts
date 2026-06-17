@@ -734,6 +734,11 @@ export class DashboardServer {
       const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/split$/);
       const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
       const actionExplainMatch = pathname.match(/^\/api\/actions\/([^/]+)\/explain$/);
+      // Raw tool-output for the Analysis workspace. Action ids are `act_<hex>`
+      // or a uuid (the `act_` underscore falls outside [a-f0-9-]), so match the
+      // full id charset — an unknown id is just a 404 in the handler.
+      const actionOutputMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/output$/);
+      const evidenceRawMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/raw$/);
       // Action ids are `act_<hex>` (deterministic, nonce-bearing engagements) or
       // a uuid — both fall outside [a-f0-9-] because of the `act_` underscore, so
       // a hex-only class silently 404s every real action. Match the full id
@@ -782,6 +787,10 @@ export class DashboardServer {
         this.serveCampaignDetail(campaignDetailMatch[1], res);
       } else if (actionExplainMatch && method === 'GET') {
         this.serveActionExplanation(decodeURIComponent(actionExplainMatch[1]), res);
+      } else if (actionOutputMatch && method === 'GET') {
+        this.serveActionOutput(decodeURIComponent(actionOutputMatch[1]), url, res);
+      } else if (evidenceRawMatch && method === 'GET') {
+        this.serveEvidenceRaw(decodeURIComponent(evidenceRawMatch[1]), url, res);
       } else if (actionApproveMatch && method === 'POST') {
         this.handleActionApprove(actionApproveMatch[1], req, res);
       } else if (actionDenyMatch && method === 'POST') {
@@ -1807,6 +1816,136 @@ export class DashboardServer {
     const explanation = this.engine.explainAction(actionId);
     res.writeHead(explanation.found ? 200 : 404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(explanation));
+  }
+
+  /** Clamp a `max_bytes` query param to a safe per-request read window. */
+  private clampReadBytes(raw: string | null): number {
+    const DEFAULT = 64 * 1024;
+    const MAX = 1024 * 1024;
+    const n = raw !== null ? parseInt(raw, 10) : NaN;
+    if (!Number.isFinite(n) || n <= 0) return DEFAULT;
+    return Math.min(n, MAX);
+  }
+
+  /**
+   * Raw stdout/stderr for an action, for the Analysis workspace assessment view.
+   * The evidence manifest does not distinguish streams, so the authoritative
+   * stdout/stderr evidence ids + capture metadata come from the action's
+   * terminal lifecycle event (action_completed / action_failed). Head-by-default:
+   * we return a bounded slice and flag `head_truncated` when the blob is larger.
+   */
+  private serveActionOutput(actionId: string, url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const maxBytes = this.clampReadBytes(params.get('max_bytes'));
+    const store = this.engine.getEvidenceStore();
+
+    const events = this.engine.getFullHistory().filter(e => e.action_id === actionId);
+    if (events.length === 0) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `No action found for ${actionId}` }));
+      return;
+    }
+    const terminal = [...events].reverse().find(
+      e => e.event_type === 'action_completed' || e.event_type === 'action_failed',
+    );
+    const started = events.find(e => e.event_type === 'action_started');
+    const meta = terminal ?? started ?? events[events.length - 1];
+    // Prefer the terminal event's details; fall back to action_started so a
+    // still-running action still reports command/binary/invoking_tool.
+    const d = ((terminal ?? started)?.details ?? {}) as Record<string, unknown>;
+
+    const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+
+    const captureErr = d.evidence_capture_error as { stdout?: string; stderr?: string } | undefined;
+    const readStream = (
+      evId: unknown, truncatedFlag: unknown, totalBytes: unknown, droppedBytes: unknown, streamErr: string | undefined,
+    ) => {
+      const id = str(evId);
+      const total = num(totalBytes) ?? 0;
+      const dropped = num(droppedBytes) ?? 0;
+      if (!id) {
+        // No evidence id. Distinguish "capture failed but bytes existed" from
+        // "genuinely no output" so the UI doesn't render a failure as silence.
+        if (streamErr || total > 0) {
+          return {
+            evidence_id: null, text: '', total_bytes: total,
+            truncated: Boolean(truncatedFlag), head_truncated: false,
+            dropped_bytes: dropped, missing: true, capture_failed: Boolean(streamErr),
+          };
+        }
+        return null;
+      }
+      const head = store.getRawOutputHead(id, maxBytes);
+      if (!head) {
+        return {
+          evidence_id: id, text: '', total_bytes: total,
+          truncated: Boolean(truncatedFlag), head_truncated: false,
+          dropped_bytes: dropped, missing: true, capture_failed: Boolean(streamErr),
+        };
+      }
+      return {
+        evidence_id: id, text: head.text, total_bytes: head.total_bytes,
+        truncated: Boolean(truncatedFlag), head_truncated: head.truncated,
+        dropped_bytes: dropped,
+      };
+    };
+
+    const findingIds = Array.from(new Set(events.flatMap(e => e.linked_finding_ids ?? [])));
+    const payload = {
+      action_id: actionId,
+      status: terminal
+        ? (terminal.result_classification ?? (terminal.event_type === 'action_failed' ? 'failure' : 'success'))
+        : 'running',
+      event_type: meta.event_type,
+      timestamp: meta.timestamp,
+      tool_name: meta.tool_name ?? str(d.invoking_tool),
+      command_repr: meta.command_repr ?? str(d.command),
+      technique: meta.technique,
+      invoking_tool: str(d.invoking_tool),
+      exit_code: num(d.exit_code),
+      signal: str(d.signal),
+      duration_ms: num(d.duration_ms),
+      timed_out: typeof d.timed_out === 'boolean' ? d.timed_out : undefined,
+      target_node_ids: meta.target_node_ids,
+      target_ips: meta.target_ips,
+      target_cidrs: meta.target_cidrs,
+      agent_id: meta.agent_id,
+      frontier_item_id: meta.frontier_item_id,
+      linked_finding_ids: findingIds,
+      max_bytes: maxBytes,
+      stdout: readStream(d.stdout_evidence_id, d.stdout_truncated, d.stdout_total_bytes, d.stdout_dropped_bytes, captureErr?.stdout),
+      stderr: readStream(d.stderr_evidence_id, d.stderr_truncated, d.stderr_total_bytes, d.stderr_dropped_bytes, captureErr?.stderr),
+      capture_error: d.evidence_capture_error ?? undefined,
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  /** Bounded, paged raw-evidence read by evidence_id or content_hash. */
+  private serveEvidenceRaw(evidenceId: string, url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const maxBytes = this.clampReadBytes(params.get('max_bytes'));
+    const rawOffset = params.get('offset');
+    const offset = rawOffset !== null ? Math.max(0, parseInt(rawOffset, 10) || 0) : 0;
+    const store = this.engine.getEvidenceStore();
+
+    const slice = store.getRawOutputSlice(evidenceId, offset, maxBytes);
+    if (!slice) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `No evidence found for ${evidenceId}` }));
+      return;
+    }
+    const record = store.getRecord(evidenceId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      evidence_id: store.resolveKey(evidenceId),
+      ...slice,
+      evidence_type: record?.evidence_type,
+      capture_error: record?.capture_error,
+      action_id: record?.action_id,
+      finding_id: record?.finding_id,
+    }));
   }
 
   private serveTimeline(url: string, res: ServerResponse): void {
