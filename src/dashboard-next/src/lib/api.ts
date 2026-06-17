@@ -161,6 +161,62 @@ export async function dispatchAgent(body: {
   });
 }
 
+// --- NL operator cockpit (Phase 3A) ---
+
+export interface OperatorOp {
+  op: 'directive' | 'scope' | 'approve' | 'deny';
+  [key: string]: unknown;
+}
+
+export interface CommandOpResult {
+  op: OperatorOp;
+  ok: boolean;
+  detail?: string;
+  error?: string;
+}
+
+export interface CommandPreview {
+  plan_id?: string;
+  ops: OperatorOp[];
+  summary: string;
+  unresolved: { text: string; reason: string }[];
+  needs_planner: boolean;
+  planner_task_id?: string;
+  planner_available?: boolean;
+}
+
+export interface ProposedPlan {
+  plan_id: string;
+  command: string;
+  ops: OperatorOp[];
+  summary: string;
+  rationale?: string;
+  source_task_id?: string;
+  source_agent_id?: string;
+  created_at: number;
+  status: string;
+}
+
+/** Phase 1: interpret a free-form command into a previewable plan (no mutation). */
+export async function previewCommand(command: string): Promise<CommandPreview> {
+  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ command }) });
+}
+
+/** Phase 2: confirm + execute a previewed/proposed plan by id. */
+export async function confirmCommand(planId: string): Promise<{ executed: boolean; results: CommandOpResult[] }> {
+  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ confirm: true, plan_id: planId }) });
+}
+
+/** Dismiss a planner-proposed plan without executing it. */
+export async function denyCommandPlan(planId: string): Promise<{ denied: boolean }> {
+  return fetchJson('/api/commands', { method: 'POST', body: JSON.stringify({ deny: true, plan_id: planId }) });
+}
+
+/** Open planner-proposed plans awaiting operator confirmation. */
+export async function getProposedPlans(): Promise<{ plans: ProposedPlan[] }> {
+  return fetchJson('/api/plans');
+}
+
 // --- Campaigns ---
 
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {

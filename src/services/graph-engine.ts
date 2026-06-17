@@ -2385,6 +2385,11 @@ export class GraphEngine {
     return this.ctx.pendingActionQueue;
   }
 
+  /** 3A.2: planner-proposed plans awaiting operator confirmation. */
+  getProposedPlanStore(): import('./proposed-plan-store.js').ProposedPlanStore {
+    return this.ctx.proposedPlanStore;
+  }
+
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
     const now = new Date();
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;

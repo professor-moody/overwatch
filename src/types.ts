@@ -825,12 +825,17 @@ export interface AgentTask {
   // Defaults to 'scripted' when unset (preserves legacy behavior).
   backend?: TaskBackend;
   // P2: agent role, which selects the headless tool profile. 'default' = full
-  // Overwatch toolset; 'research' = web search + graph tools, no target execution.
+  // Overwatch toolset; 'research' = web search + graph tools, no target execution;
+  // 'planner' = read-only graph + propose_plan, never executes (3A.2 NL cockpit).
   role?: AgentRole;
+  // 3A.2: free-text objective handed to a headless agent at launch (embedded in
+  // its bootstrap prompt). The 'planner' role carries the operator's free-form
+  // command + a snapshot of steerable state here so it can propose a plan.
+  objective?: string;
 }
 
 export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
-export type AgentRole = 'default' | 'research';
+export type AgentRole = 'default' | 'research' | 'planner';
 
 // --- Agent directives (operator steering) ---
 

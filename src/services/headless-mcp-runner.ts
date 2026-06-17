@@ -23,7 +23,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
 import type { ProcessTracker } from './process-tracker.js';
-import type { AgentTask } from '../types.js';
+import type { AgentTask, AgentRole } from '../types.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 
 export interface HeadlessEndpoint {
@@ -73,8 +73,22 @@ const RESEARCH_OVERWATCH_TOOLS = [
   'acknowledge_agent_directive', 'submit_agent_transcript', 'update_agent', 'get_evidence',
 ].map(t => `mcp__overwatch__${t}`).join(' ');
 
-export function allowedToolsFor(role: 'default' | 'research'): string {
+// Planner-safe Overwatch tools: graph READ + reasoning + the propose_plan write
+// (which only records a plan for operator confirmation, never mutates the graph).
+// Deliberately EXCLUDES run_bash / run_tool / sessions / validate_action /
+// report_finding / research_cve — the planner can read state and propose, but it
+// can NEVER execute against targets or change the graph. Like the research role,
+// this is a real allowlist boundary (per-tool prefixes), not prompt guidance.
+// No WebSearch/WebFetch: the planner reasons over local engagement state only.
+const PLANNER_OVERWATCH_TOOLS = [
+  'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
+  'propose_plan', 'log_thought', 'agent_heartbeat',
+  'acknowledge_agent_directive', 'submit_agent_transcript', 'update_agent',
+].map(t => `mcp__overwatch__${t}`).join(' ');
+
+export function allowedToolsFor(role: AgentRole): string {
   if (role === 'research') return `WebSearch WebFetch ToolSearch ${RESEARCH_OVERWATCH_TOOLS}`;
+  if (role === 'planner') return `ToolSearch ${PLANNER_OVERWATCH_TOOLS}`;
   return 'mcp__overwatch ToolSearch';
 }
 
@@ -225,6 +239,20 @@ export class HeadlessMcpRunner {
       `Then call get_system_prompt(role="sub_agent", agent_id="${task.agent_id}") for your full operating instructions,`,
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
     ];
+    if (task.role === 'planner') {
+      return [
+        ...common,
+        `YOUR ROLE IS OPERATOR-COMMAND PLANNING. You translate a free-form operator command into a plan of operator`,
+        `operations and submit it with propose_plan for the operator to confirm. You PROPOSE; the operator CONFIRMS;`,
+        `the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph — you have no run_bash/run_tool/`,
+        `sessions tools. Use query_graph + get_agent_context to understand state. Reference ONLY the exact task_ids and`,
+        `action_ids listed in your objective below. When ready, call propose_plan({ agent_id, task_id, command, summary,`,
+        `rationale, ops }). If the command cannot be expressed as the allowed ops, do NOT propose — explain why in`,
+        `submit_agent_transcript. Either way, finish with submit_agent_transcript then update_agent(task_id="${task.id}", status="completed").`,
+        ``,
+        task.objective ?? '(no objective provided)',
+      ].join(' ');
+    }
     if (task.role === 'research') {
       return [
         ...common,

@@ -6,7 +6,7 @@
 // connects to the Overwatch HTTP MCP endpoint as a real MCP client, exercises
 // the sub-agent loop (get_agent_context → report_finding → update_agent), and
 // emits a couple of stream-json lines. Behavior is selected by env:
-//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang'
+//   OVERWATCH_FAKE_MODE = 'complete' (default) | 'hang' | 'research' | 'planner'
 //   OVERWATCH_TASK_ID   = the agent task id (set by the runner)
 // ============================================================
 import { readFileSync } from 'node:fs';
@@ -73,6 +73,32 @@ async function main() {
     }
     await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake research complete' } });
     await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake research done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'planner') {
+    // Planner role: translate the operator command into a plan. The objective
+    // (embedded in the -p prompt) lists the steerable task_ids; pick a running
+    // task that isn't us and propose a `pause` directive on it via propose_plan.
+    const prompt = argValue('-p') || '';
+    const targetIds = [...prompt.matchAll(/task_id="([^"]+)"/g)].map(m => m[1]).filter(id => id !== taskId);
+    if (targetIds.length) {
+      await client.callTool({
+        name: 'propose_plan',
+        arguments: {
+          agent_id: agentId,
+          task_id: taskId,
+          command: 'pause the running agent',
+          summary: `pause ${targetIds[0]}`,
+          rationale: 'operator asked to pause the running agent',
+          ops: [{ op: 'directive', task_id: targetIds[0], agent_label: 'target', kind: 'pause' }],
+        },
+      });
+    }
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake planner proposed a plan' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake planner done' } });
     emit({ type: 'result', subtype: 'success', is_error: false });
     await client.close();
     process.exit(0);

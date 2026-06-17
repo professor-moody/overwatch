@@ -123,6 +123,10 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 >
 > Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure. When done, your task will be marked complete by the primary session.
 
+Sub-agents may run in a specialized **role** with a deliberately restricted (allowlist-enforced) toolset:
+- **`research`** — web search + graph read; records candidate CVEs via `research_cve`. No target execution.
+- **`planner`** — graph read + `propose_plan` only. Translates a free-form operator command into a confirmable plan of ops (directives / scope / approvals); it **proposes**, the operator **confirms**, the dashboard **executes**. Never touches targets or mutates the graph.
+
 ## Tool Reference
 
 **60+ MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
@@ -174,6 +178,7 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 | `generate_report` | Client pentest report (Markdown / HTML / JSON / PDF) | End of engagement; also callable mid-engagement for draft reports |
 | `correct_graph` | Transactional graph repair | Operator corrections |
 | `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
+| `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
 | `suggest_inference_rule` | Propose custom inference rules | Operator-driven graph logic |
 | `run_retrospective` | Post-engagement analysis, traces | End of engagement |
 | `register_tape_session` | Register a JSON-RPC tape captured by the `overwatch-mcp-tape` proxy | After running the engagement under the proxy |

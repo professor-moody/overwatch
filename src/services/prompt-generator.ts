@@ -193,7 +193,7 @@ function generateSubAgentPrompt(
   const subAgentToolNames = new Set([
     'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
     'run_bash', 'run_tool',
-    'parse_output', 'report_finding', 'research_cve', 'submit_agent_transcript',
+    'parse_output', 'report_finding', 'research_cve', 'propose_plan', 'submit_agent_transcript',
     'agent_heartbeat', 'acknowledge_agent_directive',
     'query_graph', 'get_skill',
     'open_session', 'write_session', 'read_session', 'send_to_session',

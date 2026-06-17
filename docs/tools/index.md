@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 65 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes 66 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -31,6 +31,7 @@ Overwatch exposes 65 MCP tools organized by function. Each tool uses Zod schemas
 | [`get_agent_context`](get-agent-context.md) | Scoped subgraph for an agent | Yes |
 | [`update_agent`](update-agent.md) | Mark agent task complete/failed | No |
 | [`submit_agent_transcript`](transcripts.md) | Sub-agent wrap-up with optional transcript evidence | No |
+| `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops | No |
 | [`agent_heartbeat`](agent-heartbeat.md) | Sub-agent liveness ping (extends lease) | No |
 | [`dispatch_subnet_agents`](dispatch-subnet-agents.md) | Dispatch one agent per scope CIDR for parallel enumeration | No |
 | [`dispatch_campaign_agents`](dispatch-campaign-agents.md) | Dispatch agents for a campaign's grouped frontier items | No |
@@ -87,7 +88,7 @@ How new information enters the graph — manual findings or deterministic parsin
 Direct graph access for creative analysis beyond the scored frontier.
 
 ### Agents
-Sub-agent lifecycle — register, scope, heartbeat, and track parallel work. Frontier leases (`register_agent`) prevent agent races; the watchdog reaps silent agents past their `heartbeat_ttl_seconds`.
+Sub-agent lifecycle — register, scope, heartbeat, and track parallel work. Frontier leases (`register_agent`) prevent agent races; the watchdog reaps silent agents past their `heartbeat_ttl_seconds`. Specialized roles carry allowlist-restricted toolsets: `research` (web + `research_cve`, no target execution) and `planner` (graph read + `propose_plan`, translates a free-form operator command into a confirmable plan — proposes only, never executes).
 
 ### Visibility & Introspection
 "What did the agent do, and why?" — the [decision log](get-decision-log.md), [`explain_action`](explain-action.md) for a single action's full chain, and [`get_timeline`](get-timeline.md) for per-node/edge "what was true at time T" queries. All read-only and derived from the activity log.

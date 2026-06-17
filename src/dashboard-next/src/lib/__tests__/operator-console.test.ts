@@ -75,3 +75,48 @@ describe('operator console event normalization', () => {
     expect(events.map(event => event.source_label)).toEqual(['Dashboard', 'Scripted runner']);
   });
 });
+
+describe('operator console — NL cockpit events (3A.3)', () => {
+  it('an executed operator_command is a dashboard "command" event', () => {
+    const [event] = buildOperatorConsoleEvents([
+      activity({
+        event_id: 'evt-cmd',
+        event_type: 'operator_command',
+        description: 'Operator command executed: pause the apache agent',
+        source_kind: 'dashboard',
+        result_classification: 'success',
+        details: { source: 'dashboard', command: 'pause the apache agent' },
+      }),
+    ]);
+    expect(event.kind).toBe('command');
+    expect(event.title).toBe('Operator command');
+    expect(event.source_kind).toBe('dashboard');
+  });
+
+  it('a plan_proposed event is a "command" event attributed to the planner subagent', () => {
+    const [event] = buildOperatorConsoleEvents([
+      activity({
+        event_id: 'evt-plan',
+        event_type: 'plan_proposed',
+        agent_id: 'planner-1',
+        description: 'Planner proposed a 1-op plan: pause apache',
+      }),
+    ], { agents: [agent({ id: 'planner-task', agent_id: 'planner-1' })] });
+    expect(event.kind).toBe('command');
+    expect(event.title).toBe('Plan proposed');
+    expect(event.source_kind).toBe('subagent');
+  });
+
+  it('a partially-failed operator command surfaces as a WARNING (not hidden from the errors filter)', () => {
+    const [event] = buildOperatorConsoleEvents([
+      activity({
+        event_id: 'evt-partial',
+        event_type: 'operator_command',
+        description: 'Operator command executed: approve two actions',
+        source_kind: 'dashboard',
+        result_classification: 'partial',
+      }),
+    ]);
+    expect(event.severity).toBe('warning');
+  });
+});

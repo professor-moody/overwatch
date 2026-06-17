@@ -6,6 +6,7 @@ import { join } from 'path';
 import { GraphEngine } from '../graph-engine.js';
 import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService } from '../task-execution-service.js';
+import { allowedToolsFor } from '../headless-mcp-runner.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-headless-runner.json';
@@ -268,6 +269,38 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(allowed).not.toContain('run_tool');
   });
 
+  it('launches a PLANNER agent read-only (propose_plan, no target/web tools) carrying its objective', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent({
+      id: 'h-planner', agent_id: 'planner-x', assigned_at: new Date().toISOString(), status: 'running',
+      subgraph_node_ids: [], backend: 'headless_mcp', role: 'planner',
+      objective: 'OPERATOR COMMAND (free-form): "pause everything"',
+    } as AgentTask);
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+    const argv = spawnedArgs[0];
+    const allowed = argv[argv.indexOf('--allowedTools') + 1];
+    expect(allowed).toContain('mcp__overwatch__propose_plan');
+    expect(allowed).toContain('ToolSearch');
+    // read-only: no target execution, no web, and NOT the whole-server prefix
+    expect(allowed).not.toContain('run_bash');
+    expect(allowed).not.toContain('run_tool');
+    expect(allowed).not.toContain('WebSearch');
+    expect(allowed.split(/\s+/)).not.toContain('mcp__overwatch');
+    // the operator command is embedded in the -p bootstrap prompt
+    const prompt = argv[argv.indexOf('-p') + 1];
+    expect(prompt).toContain('pause everything');
+  });
+
+  it('isHeadlessAvailable reflects whether an endpoint is set', () => {
+    svc = makeService();
+    expect(svc.isHeadlessAvailable()).toBe(false);
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    expect(svc.isHeadlessAvailable()).toBe(true);
+  });
+
   it('does NOT auto-dispatch cve_research when cve_research.enabled is false (air-gapped)', async () => {
     const offlineStateFile = './state-test-headless-runner-offline.json';
     try { if (existsSync(offlineStateFile)) rmSync(offlineStateFile); } catch { /* ignore */ }
@@ -294,5 +327,32 @@ describe('Headless runner mechanics (injected spawn)', () => {
     const child = spawned[0];
     svc.stop();
     expect(child.signals).toContain('SIGTERM');
+  });
+});
+
+describe('allowedToolsFor (role tool profiles)', () => {
+  it('default = whole Overwatch MCP surface + ToolSearch', () => {
+    expect(allowedToolsFor('default')).toBe('mcp__overwatch ToolSearch');
+  });
+
+  it('research = web tools + per-tool research allowlist, no target execution', () => {
+    const a = allowedToolsFor('research');
+    expect(a).toContain('WebSearch');
+    expect(a).toContain('mcp__overwatch__research_cve');
+    expect(a).not.toContain('run_bash');
+    expect(a.split(/\s+/)).not.toContain('mcp__overwatch'); // not the whole-server prefix
+  });
+
+  it('planner = read-only graph + propose_plan, no target/web tools, never the whole server', () => {
+    const a = allowedToolsFor('planner');
+    expect(a).toContain('mcp__overwatch__propose_plan');
+    expect(a).toContain('mcp__overwatch__query_graph');
+    expect(a).toContain('ToolSearch');
+    expect(a).not.toContain('run_bash');
+    expect(a).not.toContain('run_tool');
+    expect(a).not.toContain('WebSearch');
+    expect(a).not.toContain('research_cve');
+    expect(a).not.toContain('report_finding');
+    expect(a.split(/\s+/)).not.toContain('mcp__overwatch');
   });
 });

@@ -22,6 +22,7 @@ import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, shou
 import { eventIdOrUuid } from './deterministic-id.js';
 import { FrontierLeases } from './frontier-leases.js';
 import { MutationJournal, type MutationType } from './mutation-journal.js';
+import { ProposedPlanStore } from './proposed-plan-store.js';
 
 export type OverwatchGraph = AbstractGraph<NodeProperties, EdgeProperties>;
 
@@ -61,7 +62,11 @@ export type ActivityEventType =
   | 'mock_service_refreshed'
   | 'heartbeat'
   | 'phase_entered'
-  | 'phase_exited';
+  | 'phase_exited'
+  // 3A NL operator cockpit: a free-form planner-proposed plan, and an executed
+  // operator command (NL → confirmed ops). Surfaced inline in the console.
+  | 'plan_proposed'
+  | 'operator_command';
 
 export type ActivityLogDetails =
   | { parsed_nodes: number; parsed_edges: number; ingested: boolean; new_nodes?: number; new_edges?: number; inferred_edges?: number; [key: string]: unknown }
@@ -146,6 +151,10 @@ export class EngineContext {
   coldStore: ColdStore;
   opsecTracker: OpsecTracker;
   pendingActionQueue: PendingActionQueue;
+  // 3A.2: planner-proposed plans awaiting operator confirmation. In-memory only
+  // (a plan can be re-proposed), shared between the propose_plan tool and the
+  // dashboard confirm path.
+  proposedPlanStore: ProposedPlanStore;
   approvalRequests: Map<string, DurableApprovalRecord>;
   recentFindingHashes: Map<string, number>;  // SHA-256 hash → timestamp (ms) for dedup
   dedupCount: number;                        // total deduplicated findings for retrospective
@@ -199,6 +208,7 @@ export class EngineContext {
     this.coldStore = new ColdStore();
     this.opsecTracker = new OpsecTracker(this);
     this.pendingActionQueue = new PendingActionQueue(this);
+    this.proposedPlanStore = new ProposedPlanStore();
     this.approvalRequests = new Map();
     this.recentFindingHashes = new Map();
     this.dedupCount = 0;

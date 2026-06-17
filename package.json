@@ -32,6 +32,7 @@
     "build:pages": "GITHUB_PAGES=true npx vite build --config src/dashboard-next/vite.config.ts && cp dist/dashboard-next/index.html dist/dashboard-next/404.html",
     "dev:dashboard-next": "npx vite --config src/dashboard-next/vite.config.ts",
     "demo:dashboard": "npx tsx scripts/demo-dashboard.ts",
+    "demo:daemon": "npx tsx scripts/demo-daemon.ts",
     "report:qa": "npx tsx scripts/report-qa.ts",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",

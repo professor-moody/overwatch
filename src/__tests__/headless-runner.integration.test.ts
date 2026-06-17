@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { createServer } from 'net';
 import { createOverwatchApp, startHttpApp, shutdownOverwatchApp, type OverwatchApp } from '../app.js';
 import { parseEngagementConfig } from '../config.js';
+import { buildPlannerObjective, executeOps } from '../services/command-interpreter.js';
 import type { AgentTask } from '../types.js';
 
 const supportsLocalListen = await new Promise<boolean>((resolveP) => {
@@ -101,6 +102,44 @@ describe.skipIf(!supportsLocalListen)('Headless runner end-to-end (fake claude) 
     await waitFor(() => app.engine.getTask('e2e-hang')?.status === 'interrupted');
     await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
   }, 20000);
+
+  it('a headless PLANNER agent reads its objective, proposes a plan via propose_plan, and the plan is executable', async () => {
+    process.env.OVERWATCH_FAKE_MODE = 'planner';
+    // A running target the operator wants to steer (manual backend → the daemon
+    // won't spawn a process for it; it just stays a steerable running task).
+    app.engine.registerAgent({
+      id: 'plan-target', agent_id: 'scanner-x', assigned_at: new Date().toISOString(),
+      status: 'running', backend: 'manual', subgraph_node_ids: [],
+    } as AgentTask);
+
+    // Dispatch a planner exactly as the dashboard would: role 'planner', the
+    // free-form command + steerable-state snapshot carried as the objective.
+    const objective = buildPlannerObjective('please pause that noisy scanner', {
+      tasks: [{ id: 'plan-target', agent_id: 'scanner-x', status: 'running' }],
+      pendingActionIds: [],
+    });
+    app.engine.registerAgent({
+      id: 'plan-er', agent_id: 'planner-1', assigned_at: new Date().toISOString(),
+      status: 'running', backend: 'headless_mcp', role: 'planner', subgraph_node_ids: [], objective,
+    } as AgentTask);
+
+    // The fake planner connects over /mcp, reads the objective from its prompt,
+    // and submits a directive(pause) on plan-target via propose_plan.
+    await waitFor(() => app.engine.getProposedPlanStore().getOpen().length > 0, 18000);
+    const plan = app.engine.getProposedPlanStore().getOpen()[0];
+    expect(plan.ops[0]).toMatchObject({ op: 'directive', task_id: 'plan-target', kind: 'pause' });
+
+    // Operator confirm path: the proposed ops execute through the validated
+    // executeOps, issuing the directive the target will see on its next heartbeat.
+    app.engine.getProposedPlanStore().resolve(plan.plan_id, 'confirmed');
+    const results = executeOps(app.engine, plan.ops, 'operator');
+    expect(results.every(r => r.ok)).toBe(true);
+    expect(app.engine.getPendingAgentDirective('plan-target')?.kind).toBe('pause');
+
+    // Planner closed itself out and the process is gone.
+    await waitFor(() => app.engine.getTask('plan-er')?.status === 'completed');
+    await waitFor(() => app.taskExecution.activeHeadlessCount() === 0);
+  }, 30000);
 
   it('auto-dispatches a versioned service to a research agent that records a candidate CVE', async () => {
     process.env.OVERWATCH_FAKE_MODE = 'research';

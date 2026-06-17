@@ -33,6 +33,7 @@ import { registerFindingTools } from './tools/findings.js';
 import { registerScoringTools } from './tools/scoring.js';
 import { registerExplorationTools } from './tools/exploration.js';
 import { registerResearchCveTools } from './tools/research-cve.js';
+import { registerProposePlanTools } from './tools/propose-plan.js';
 import { registerAgentTools } from './tools/agents.js';
 import { registerSkillTools } from './tools/skills.js';
 import { registerBloodHoundTools } from './tools/bloodhound.js';
@@ -175,6 +176,7 @@ export function registerAllTools(
   registerScoringTools(s, deps.engine);
   registerExplorationTools(s, deps.engine);
   registerResearchCveTools(s, deps.engine);
+  registerProposePlanTools(s, deps.engine);
   registerAgentTools(s, deps.engine);
   registerSkillTools(s, deps.skills, deps.engine.getKB());
   registerBloodHoundTools(s, deps.engine);

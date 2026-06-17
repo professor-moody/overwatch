@@ -8,9 +8,15 @@ export type AgentConsoleKind =
   | 'finding'
   | 'session'
   | 'transcript'
-  | 'system';
+  | 'system'
+  | 'command';
 
 export type AgentConsoleSeverity = 'info' | 'success' | 'warning' | 'error';
+
+export type AgentConsoleSourceKind = 'primary' | 'subagent' | 'runner' | 'system' | 'dashboard';
+
+/** Non-subagent events collapse to this agent_id so the operator console can show them. */
+export const OPERATOR_CONSOLE_SOURCE = 'operator';
 
 export interface AgentConsoleLinks {
   action_id?: string;
@@ -25,6 +31,13 @@ export interface AgentConsoleEvent {
   id: string;
   timestamp: string;
   agent_id: string;
+  // 3A.3: attribution so the live WS-pushed stream is primary-first (matches the
+  // polled /api/history builder). Without these, primary/operator events were
+  // dropped from the WS push and the console only showed sub-agents.
+  source_kind?: AgentConsoleSourceKind;
+  source_label?: string;
+  operator_name?: string;
+  operator_model?: string;
   kind: AgentConsoleKind;
   severity: AgentConsoleSeverity;
   title: string;
@@ -76,12 +89,19 @@ export function buildAgentConsoleEvents(
 }
 
 export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: AgentTask): AgentConsoleEvent | null {
-  const agentId = task?.id
+  if (entry.event_type === 'heartbeat') return null;
+
+  const sourceKind = task ? 'subagent' : (entry.source_kind || inferSourceKind(entry));
+  const subAgentId = task?.id
     || entry.linked_agent_task_id
     || entry.agent_id
     || stringDetail(entry.details?.task_id)
     || stringDetail(entry.details?.agent_id);
-  if (!agentId) return null;
+  // Subagent events need a real agent id; everything else (primary operator,
+  // dashboard commands, runner, system) collapses to the operator lane so the
+  // console surfaces it instead of dropping it (the old behavior).
+  if (sourceKind === 'subagent' && !subAgentId) return null;
+  const agentId = sourceKind === 'subagent' ? subAgentId! : OPERATOR_CONSOLE_SOURCE;
 
   const kind = classifyAgentConsoleKind(entry);
   const severity = classifySeverity(entry);
@@ -93,6 +113,10 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
     id: entry.event_id || `${entry.timestamp}-${entry.event_type || 'event'}-${entry.action_id || agentId}`,
     timestamp: entry.timestamp,
     agent_id: agentId,
+    source_kind: sourceKind,
+    source_label: sourceLabelFor(entry, sourceKind, agentId),
+    operator_name: entry.operator_name,
+    operator_model: entry.operator_model,
     kind,
     severity,
     title,
@@ -103,6 +127,7 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
       event_type: entry.event_type,
       category: entry.category,
       provenance: entry.provenance,
+      source_kind: sourceKind,
       action_id: entry.action_id,
       frontier_item_id: entry.frontier_item_id,
       details: entry.details,
@@ -110,11 +135,36 @@ export function activityToAgentConsoleEvent(entry: ActivityLogEntry, task?: Agen
   };
 }
 
+/**
+ * Fallback source-kind inference for entries the engine didn't already stamp
+ * (engine-context.normalizeActivityLogEntry stamps source_kind for most paths).
+ * Mirrors the client operator-console inference + the engine's inferSourceKind.
+ */
+function inferSourceKind(entry: ActivityLogEntry): AgentConsoleSourceKind {
+  const details = entry.details || {};
+  const source = stringDetail(details.source)?.toLowerCase() || '';
+  const invokingTool = stringDetail(details.invoking_tool)?.toLowerCase() || '';
+  if (source === 'dashboard' || invokingTool === 'dashboard') return 'dashboard';
+  if (source.includes('runner') || invokingTool.includes('runner')) return 'runner';
+  if (entry.agent_id || stringDetail(details.agent_id) || entry.category === 'agent') return 'subagent';
+  if (entry.category === 'system' || (entry.event_type || '').startsWith('session_') || (entry.event_type || '').startsWith('mock_service_')) return 'system';
+  return 'primary';
+}
+
+function sourceLabelFor(entry: ActivityLogEntry, sourceKind: AgentConsoleSourceKind, agentId: string): string {
+  if (sourceKind === 'subagent') return agentId;
+  if (sourceKind === 'runner') return 'Scripted runner';
+  if (sourceKind === 'dashboard') return 'Dashboard';
+  if (sourceKind === 'system') return 'System';
+  return `${entry.operator_name || 'Primary Operator'} · ${entry.operator_model || 'model unknown'}`;
+}
+
 function classifyAgentConsoleKind(entry: ActivityLogEntry): AgentConsoleKind {
   const type = (entry.event_type || '').toLowerCase();
   const category = (entry.category || '').toLowerCase();
   const description = (entry.description || '').toLowerCase();
 
+  if (type === 'operator_command' || type === 'plan_proposed') return 'command';
   if (type === 'thought' || category === 'reasoning') return 'thought';
   if (type.includes('approval') || description.includes('approval')) return 'approval';
   if (type.includes('finding') || type === 'parse_output' || category === 'finding') return 'finding';
@@ -127,13 +177,16 @@ function classifyAgentConsoleKind(entry: ActivityLogEntry): AgentConsoleKind {
 function classifySeverity(entry: ActivityLogEntry): AgentConsoleSeverity {
   const type = (entry.event_type || '').toLowerCase();
   if (entry.result_classification === 'failure' || entry.outcome === 'failure' || type.includes('failed') || type.includes('error')) return 'error';
-  if (entry.validation_result === 'warning_only' || type.includes('warning')) return 'warning';
+  // 'partial' (e.g. an operator command where some ops failed) surfaces as a
+  // warning so it isn't hidden from the console "errors" filter.
+  if (entry.result_classification === 'partial' || entry.validation_result === 'warning_only' || type.includes('warning')) return 'warning';
   if (entry.result_classification === 'success' || entry.outcome === 'success' || type.includes('completed') || type.includes('connected')) return 'success';
   return 'info';
 }
 
 function buildTitle(entry: ActivityLogEntry, kind: AgentConsoleKind): string {
   const thoughtKind = stringDetail(entry.details?.kind);
+  if (kind === 'command') return entry.event_type === 'plan_proposed' ? 'Plan proposed' : 'Operator command';
   if (kind === 'thought') return thoughtKind ? titleCase(thoughtKind) : 'Thought';
   if (kind === 'approval') return 'Approval';
   if (kind === 'finding') return entry.event_type === 'parse_output' ? 'Parsed Output' : 'Finding';
