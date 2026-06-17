@@ -15,6 +15,7 @@ export const PANEL_IDS = [
   'actions',
   'frontier',
   'activity',
+  'analysis',
   'evidence',
   'identity',
   'credentials',

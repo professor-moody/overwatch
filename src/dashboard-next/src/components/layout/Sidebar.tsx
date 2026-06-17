@@ -15,6 +15,7 @@ import {
   Key,
   FlaskConical,
   Network,
+  ScrollText,
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
@@ -58,6 +59,7 @@ const NAV_GROUPS: { label: string; items: SidebarItem[] }[] = [
       { id: 'findings', label: 'Findings', icon: ShieldAlert },
       { id: 'paths', label: 'Attack Paths', icon: Route },
       { id: 'evidence', label: 'Evidence', icon: FileText },
+      { id: 'analysis', label: 'Analysis', icon: ScrollText },
       { id: 'identity', label: 'Identity', icon: KeyRound },
       { id: 'credentials', label: 'Credentials', icon: Key },
       { id: 'activity', label: 'Activity', icon: Activity },

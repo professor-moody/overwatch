@@ -3,6 +3,7 @@ import {
   normalizeActionOutput,
   formatBytes,
   streamHasMore,
+  matchOutputLines,
   type OutputStreamView,
 } from '../action-output';
 import type { ActionOutputResponse } from '../api';
@@ -47,6 +48,8 @@ describe('normalizeActionOutput', () => {
     expect(view.exitCode).toBe(0);
     expect(view.durationMs).toBe(1234);
     expect(view.targets).toEqual(['host-1', '10.0.0.5']);
+    expect(view.targetNodeIds).toEqual(['host-1']);
+    expect(view.targetIps).toEqual(['10.0.0.5']);
     expect(view.agentId).toBe('agent-recon-1');
     expect(view.findingIds).toEqual(['f-1', 'f-2']);
     expect(view.stdout.text).toContain('22/tcp open');
@@ -143,5 +146,31 @@ describe('streamHasMore', () => {
     const complete: OutputStreamView = { ...more, headTruncated: false };
     expect(streamHasMore(more)).toBe(true);
     expect(streamHasMore(complete)).toBe(false);
+  });
+});
+
+describe('matchOutputLines', () => {
+  const text = 'PORT   STATE SERVICE\n22/tcp open ssh\n80/tcp open http\n';
+
+  it('returns all lines unfiltered when query is empty', () => {
+    const r = matchOutputLines(text, '');
+    expect(r.filtered).toBe(false);
+    expect(r.lines).toHaveLength(3);
+    expect(r.matchCount).toBe(3);
+  });
+
+  it('keeps only matching lines (case-insensitive)', () => {
+    const r = matchOutputLines(text, 'OPEN');
+    expect(r.filtered).toBe(true);
+    expect(r.lines).toEqual(['22/tcp open ssh', '80/tcp open http']);
+    expect(r.matchCount).toBe(2);
+  });
+
+  it('returns zero matches for an absent term', () => {
+    expect(matchOutputLines(text, 'closed').matchCount).toBe(0);
+  });
+
+  it('handles empty text', () => {
+    expect(matchOutputLines('', '').lines).toEqual([]);
   });
 });

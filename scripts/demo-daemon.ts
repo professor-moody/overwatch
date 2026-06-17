@@ -131,6 +131,78 @@ app.engine.getAgentQueryStore().add({
   options: ['spray (noisy)', 'stay quiet'],
 });
 
+// --- seed real tool runs (action_id + captured output) so the ANALYSIS
+// workspace shows raw stdout/stderr the operator can assess. Each run stores
+// its output in the evidence store and references it from the completed event,
+// exactly as runInstrumentedProcess does. ---
+const store = app.engine.getEvidenceStore();
+const seedRun = (opts: {
+  actionId: string; agent: string; tool: string; command: string; targets: string[];
+  status: 'success' | 'failure'; exitCode: number; durationMs: number;
+  stdout?: string; stderr?: string; findingIds?: string[];
+}) => {
+  const stdoutId = opts.stdout ? store.store({ evidence_type: 'command_output', raw_output: opts.stdout, action_id: opts.actionId, agent_id: opts.agent }) : undefined;
+  const stderrId = opts.stderr ? store.store({ evidence_type: 'command_output', raw_output: opts.stderr, action_id: opts.actionId, agent_id: opts.agent }) : undefined;
+  app.engine.logActionEvent({
+    action_id: opts.actionId, event_type: 'action_started', category: 'frontier', agent_id: opts.agent,
+    tool_name: opts.tool, command_repr: opts.command, target_node_ids: opts.targets,
+    description: `${opts.tool}: ${opts.command}`,
+    details: { command: opts.command, binary: opts.tool, invoking_tool: 'run_tool' },
+  });
+  app.engine.logActionEvent({
+    action_id: opts.actionId,
+    event_type: opts.status === 'success' ? 'action_completed' : 'action_failed',
+    category: 'frontier', agent_id: opts.agent, tool_name: opts.tool, command_repr: opts.command,
+    target_node_ids: opts.targets, result_classification: opts.status,
+    linked_finding_ids: opts.findingIds,
+    description: `${opts.tool} ${opts.status === 'success' ? 'completed' : 'failed'}: ${opts.command}`,
+    details: {
+      exit_code: opts.exitCode, duration_ms: opts.durationMs, binary: opts.tool, invoking_tool: 'run_tool',
+      command: opts.command,
+      stdout_evidence_id: stdoutId, stderr_evidence_id: stderrId,
+      stdout_total_bytes: opts.stdout ? Buffer.byteLength(opts.stdout) : 0,
+      stderr_total_bytes: opts.stderr ? Buffer.byteLength(opts.stderr) : 0,
+    },
+  });
+};
+
+seedRun({
+  actionId: 'act_nmap_app01', agent: 'agent-recon-1', tool: 'nmap',
+  command: 'nmap -sV -p- 10.20.0.20', targets: ['h-app', 'svc-ssh'], status: 'success',
+  exitCode: 0, durationMs: 8420, findingIds: ['find-ssh-passwordauth'],
+  stdout: [
+    'Starting Nmap 7.94 ( https://nmap.org ) at 2026-06-17 12:01 UTC',
+    'Nmap scan report for app01.lab.local (10.20.0.20)',
+    'Host is up (0.00031s latency).',
+    'Not shown: 65532 closed tcp ports (reset)',
+    'PORT     STATE SERVICE     VERSION',
+    '22/tcp   open  ssh         OpenSSH 8.9p1 Ubuntu 3ubuntu0.6 (Ubuntu Linux; protocol 2.0)',
+    '80/tcp   open  http        nginx 1.18.0 (Ubuntu)',
+    '8080/tcp open  http-proxy  Werkzeug/2.0.3 Python/3.10.6',
+    'Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel',
+    '',
+    'Service detection performed. Nmap done: 1 IP address (1 host up) scanned in 8.42 seconds',
+  ].join('\n') + '\n',
+});
+
+seedRun({
+  actionId: 'act_nxc_smb', agent: 'agent-recon-1', tool: 'nxc',
+  command: 'nxc smb 10.20.0.20 -u svc-deploy -p winter2026', targets: ['h-app'], status: 'failure',
+  exitCode: 1, durationMs: 1180,
+  stderr: [
+    'SMB         10.20.0.20      445    APP01            [*] Windows 10 / Server 2019 Build 17763 x64',
+    'SMB         10.20.0.20      445    APP01            [-] lab.local\\svc-deploy:winter2026 STATUS_LOGON_FAILURE',
+  ].join('\n') + '\n',
+});
+
+// A run still in flight: action_started with an id, no terminal event yet.
+app.engine.logActionEvent({
+  action_id: 'act_ffuf_app01', event_type: 'action_started', category: 'frontier', agent_id: 'agent-web-1',
+  tool_name: 'ffuf', command_repr: 'ffuf -u http://10.20.0.20/FUZZ -w common.txt', target_node_ids: ['h-app'],
+  description: 'ffuf: fuzzing app01 web root for hidden endpoints',
+  details: { command: 'ffuf -u http://10.20.0.20/FUZZ -w common.txt', binary: 'ffuf', invoking_tool: 'run_tool' },
+});
+
 const result = await startHttpApp(app, { port: MCP_PORT, host: '127.0.0.1' });
 void result;
 

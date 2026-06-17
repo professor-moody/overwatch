@@ -4,6 +4,7 @@ import type { ActivityEntry, AgentInfo } from '../types';
 
 function activity(partial: Partial<ActivityEntry>): ActivityEntry {
   return {
+    id: partial.id || partial.event_id || 'evt-1',
     event_id: partial.event_id || 'evt-1',
     event_type: partial.event_type || 'action_completed',
     timestamp: partial.timestamp || '2026-06-13T10:00:00Z',
