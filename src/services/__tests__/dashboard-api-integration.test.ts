@@ -424,6 +424,62 @@ describe('POST /api/config/scope/preview', () => {
   });
 });
 
+describe('GET /api/agent-archetypes', () => {
+  it('returns the agent-type catalog', async () => {
+    const { status, body } = await getJson<{ archetypes: Array<{ id: string; label: string }> }>('/api/agent-archetypes');
+    expect(status).toBe(200);
+    const ids = body.archetypes.map(a => a.id);
+    expect(ids).toContain('recon_scanner');
+    expect(ids).toContain('default');
+    expect(body.archetypes.every(a => typeof a.label === 'string')).toBe(true);
+  });
+});
+
+describe('POST /api/agents/dispatch with an archetype', () => {
+  it('expands the archetype into the task (role/skill/archetype)', async () => {
+    const { status, body } = await postJson<{ dispatched: boolean; task: { archetype?: string; role?: string; skill?: string; status?: string } }>(
+      '/api/agents/dispatch',
+      { target_node_ids: ['cloud-id-power'], archetype: 'recon_scanner' },
+    );
+    expect(status).toBe(201);
+    expect(body.dispatched).toBe(true);
+    expect(body.task.archetype).toBe('recon_scanner');
+    expect(body.task.role).toBe('default');
+    expect(body.task.skill).toBe('network_discovery');
+    // 'running' so a runner actually picks it up (not a dormant 'pending').
+    expect(body.task.status).toBe('running');
+  });
+});
+
+describe('POST /api/agents/quick-deploy', () => {
+  it('scopes a raw IP and dispatches the recommended recon agent in one step', async () => {
+    const { status, body } = await postJson<{ dispatched: boolean; archetype: string; scope: { added_cidrs: string[] }; task: { objective?: string; status?: string } }>(
+      '/api/agents/quick-deploy',
+      { target: '10.30.0.5' },
+    );
+    expect(status).toBe(201);
+    expect(body.dispatched).toBe(true);
+    expect(body.archetype).toBe('recon_scanner');
+    expect(body.scope.added_cidrs).toContain('10.30.0.5/32');
+    expect(body.task.objective).toContain('10.30.0.5');
+    expect(body.task.status).toBe('running');
+    // the target is now really in scope (ad-hoc deploy auto-scopes)
+    const cfg = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+    expect(cfg.body.scope.cidrs).toContain('10.30.0.5/32');
+  });
+
+  it('honors a manually chosen archetype', async () => {
+    const { status, body } = await postJson<{ archetype: string }>('/api/agents/quick-deploy', { target: 'shop.acme.local', archetype: 'web_tester' });
+    expect(status).toBe(201);
+    expect(body.archetype).toBe('web_tester');
+  });
+
+  it('400s on a target with no valid IPv4/CIDR/domain', async () => {
+    const { status } = await postJson('/api/agents/quick-deploy', { target: 'not_a_host ::1' });
+    expect(status).toBe(400);
+  });
+});
+
 // =============================================
 // Frontier weights / OPSEC budget / Phases / Pending Actions
 // =============================================
