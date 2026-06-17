@@ -23,7 +23,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { GraphEngine } from './graph-engine.js';
 import type { ProcessTracker } from './process-tracker.js';
-import type { AgentTask, AgentRole } from '../types.js';
+import type { AgentTask } from '../types.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 
 export interface HeadlessEndpoint {
@@ -62,35 +62,13 @@ export interface HeadlessMcpRunnerOptions {
  *    against targets). Target-facing tools are part of the mcp__overwatch surface
  *    and the agent is told (prompt) not to use them in this role.
  */
-// Research-safe Overwatch tools: graph read + finding/CVE recording + lifecycle.
-// Deliberately EXCLUDES run_bash / run_tool / sessions / validate_action so the
-// research role cannot execute against targets — this is a real allowlist
-// boundary, not just prompt guidance (`mcp__overwatch` alone would expose the
-// whole server, including target-facing tools).
-const RESEARCH_OVERWATCH_TOOLS = [
-  'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
-  'report_finding', 'research_cve', 'log_thought', 'agent_heartbeat',
-  'acknowledge_agent_directive', 'ask_operator', 'submit_agent_transcript', 'update_agent', 'get_evidence',
-].map(t => `mcp__overwatch__${t}`).join(' ');
-
-// Planner-safe Overwatch tools: graph READ + reasoning + the propose_plan write
-// (which only records a plan for operator confirmation, never mutates the graph).
-// Deliberately EXCLUDES run_bash / run_tool / sessions / validate_action /
-// report_finding / research_cve — the planner can read state and propose, but it
-// can NEVER execute against targets or change the graph. Like the research role,
-// this is a real allowlist boundary (per-tool prefixes), not prompt guidance.
-// No WebSearch/WebFetch: the planner reasons over local engagement state only.
-const PLANNER_OVERWATCH_TOOLS = [
-  'get_system_prompt', 'get_agent_context', 'query_graph', 'get_skill',
-  'propose_plan', 'log_thought', 'agent_heartbeat',
-  'acknowledge_agent_directive', 'ask_operator', 'submit_agent_transcript', 'update_agent',
-].map(t => `mcp__overwatch__${t}`).join(' ');
-
-export function allowedToolsFor(role: AgentRole): string {
-  if (role === 'research') return `WebSearch WebFetch ToolSearch ${RESEARCH_OVERWATCH_TOOLS}`;
-  if (role === 'planner') return `ToolSearch ${PLANNER_OVERWATCH_TOOLS}`;
-  return 'mcp__overwatch ToolSearch';
-}
+// Tool surfaces are now data-driven in agent-archetypes.ts — each archetype
+// (recon_scanner, web_tester, credential_operator, …, plus the legacy
+// default/research/planner roles) carries a real `--allowedTools` allowlist
+// boundary. Imported + re-exported here so existing callers/tests keep importing
+// it from the runner; the legacy role strings are byte-identical (regression-locked).
+import { allowedToolsFor, getArchetype } from './agent-archetypes.js';
+export { allowedToolsFor };
 
 export class HeadlessMcpRunner {
   private engine: GraphEngine;
@@ -217,11 +195,12 @@ export class HeadlessMcpRunner {
   // ---- helpers ----
 
   private buildArgs(task: AgentTask, configPath: string): string[] {
-    const role = task.role ?? 'default';
+    // An explicit archetype wins; else fall back to the legacy role; else default.
+    const archetype = getArchetype(task.archetype ?? task.role);
     const args = [
       '-p', this.bootstrapPrompt(task),
       '--mcp-config', configPath,
-      '--allowedTools', allowedToolsFor(role),
+      '--allowedTools', allowedToolsFor(archetype.id),
       '--output-format', 'stream-json',
       '--verbose',
     ];
@@ -232,6 +211,9 @@ export class HeadlessMcpRunner {
   }
 
   private bootstrapPrompt(task: AgentTask): string {
+    // Prompt framing follows the archetype's role bucket (planner/research/default),
+    // so specialized archetypes like cve_researcher/pathfinder get the right brief.
+    const archetypeRole = getArchetype(task.archetype ?? task.role).role;
     const common = [
       `You are an Overwatch headless sub-agent. Your agent task_id is "${task.id}" (agent_id "${task.agent_id}").`,
       `The Overwatch tools load on demand: first use ToolSearch to find the "overwatch" MCP tools`,
@@ -239,7 +221,7 @@ export class HeadlessMcpRunner {
       `Then call get_system_prompt(role="sub_agent", agent_id="${task.agent_id}") for your full operating instructions,`,
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
     ];
-    if (task.role === 'planner') {
+    if (archetypeRole === 'planner') {
       return [
         ...common,
         `YOUR ROLE IS OPERATOR-COMMAND PLANNING. You translate a free-form operator command into a plan of operator`,
@@ -253,7 +235,7 @@ export class HeadlessMcpRunner {
         task.objective ?? '(no objective provided)',
       ].join(' ');
     }
-    if (task.role === 'research') {
+    if (archetypeRole === 'research') {
       return [
         ...common,
         `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version.`,
