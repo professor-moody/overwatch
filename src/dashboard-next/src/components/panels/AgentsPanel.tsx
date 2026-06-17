@@ -6,12 +6,14 @@ import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
+import { buildConsoleApprovals, isDenyReasonValid, type ConsoleApprovalItem } from '../../lib/console-approvals';
+import { sessionsForAgent } from '../../lib/session-workspace';
 import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
 import { POLL } from '../../lib/polling';
 import { OperatorCommandBar } from './OperatorCommandBar';
 import { AgentQueriesInbox } from './AgentQueriesInbox';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
-import { ActionButton, FilterBar, InspectorDrawer, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
@@ -58,8 +60,6 @@ export function AgentsPanel() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeAgentId, setActiveAgentId] = useState<string>('all');
   const [activeContext, setActiveContext] = useState<AgentContext | null>(null);
-  const [drawerAgent, setDrawerAgent] = useState<AgentInfo | null>(null);
-  const [drawerContext, setDrawerContext] = useState<AgentContext | null>(null);
   const [consoleEvents, setConsoleEvents] = useState<AgentConsoleEvent[]>([]);
   const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>('all');
   const [consolePaused, setConsolePaused] = useState(false);
@@ -282,23 +282,11 @@ export function AgentsPanel() {
     });
   }, [consoleEvents, consoleFilter, consoleSearch]);
 
-  const openDetail = async (agent: AgentInfo) => {
-    setDrawerAgent(agent);
-    try {
-      const ctx = activeAgent?.id === agent.id && activeContext
-        ? activeContext
-        : await api.getAgentContext(agent.id);
-      setDrawerContext(ctx as AgentContext);
-    } catch {
-      setDrawerContext(null);
-    }
-  };
-
   return (
-    <div className="h-[calc(100vh-7rem)] min-h-[720px] space-y-4 overflow-hidden">
+    <div className="flex h-[calc(100vh-7rem)] min-h-[720px] flex-col gap-3 overflow-hidden">
       <PageHeader
         title="Operator Console"
-        meta={activeAgent ? `subagent ${activeAgent.agent_id || activeAgent.id}` : 'primary operator + subagents'}
+        meta={activeAgent ? `focused on ${activeAgent.agent_id || activeAgent.id}` : 'fleet overview'}
         actions={(
           <FilterBar>
           <div className="flex gap-2 text-xs">
@@ -331,13 +319,15 @@ export function AgentsPanel() {
         )}
       />
 
-      {/* Agent→operator question inbox — escalations need answering before the
-          rest, so it sits above the command bar in the primary cockpit view. */}
-      {!activeAgent && <AgentQueriesInbox />}
+      {/* Slim, always-pinned command line — acts across the engagement (3A). */}
+      <OperatorCommandBar />
 
-      {/* NL operator command bar — primary console view only (a subagent drawer
-          steers one agent; the cockpit command bar acts across the engagement). */}
-      {!activeAgent && <OperatorCommandBar />}
+      {/* "Needs you" strip — the operator's attention queue: pending approvals
+          (act inline) + agent escalations (answer inline). Each card hides
+          itself when empty, so the whole strip collapses when nothing is
+          waiting. Engagement-wide, so it shows regardless of agent focus. */}
+      <ConsoleApprovalsLane />
+      <AgentQueriesInbox />
 
       {/* Batch bar */}
       {selectedIds.size > 0 && (
@@ -355,7 +345,8 @@ export function AgentsPanel() {
       {!initialized ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       ) : (
-        <div className="grid h-[calc(100%-4.25rem)] min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)_minmax(280px,360px)]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)]">
+          {/* LEFT: fleet roster spine */}
           <AgentRoster
             agents={agents}
             groups={groups}
@@ -370,63 +361,53 @@ export function AgentsPanel() {
             onToggleGroup={toggleGroup}
             onCancelAgent={cancelAgent}
             onCancelGroup={cancelGroup}
-            onOpenDetail={openDetail}
           />
 
-          <AgentOutputConsole
-            activeAgent={activeAgent}
-            events={visibleConsoleEvents}
-            totalEvents={consoleEvents.length}
-            filter={consoleFilter}
-            search={consoleSearch}
-            paused={consolePaused}
-            following={consoleFollowing}
-            endRef={consoleEndRef}
-            scrollRef={consoleScrollRef}
-            onFilterChange={setConsoleFilter}
-            onSearchChange={setConsoleSearch}
-            onTogglePaused={() => {
-              const nextPaused = !consolePaused;
-              setConsolePaused(nextPaused);
-              if (!nextPaused) {
+          {/* MAIN: focused agent (detail + steer, top) over its activity stream
+              (bottom). With no agent selected, the top is the fleet overview and
+              the bottom is the full operator stream. */}
+          <div className="flex min-h-0 flex-col gap-4">
+            <AgentContextPanel
+              agent={activeAgent}
+              context={activeContext}
+              onCancel={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
+                ? () => cancelAgent(activeAgent.id)
+                : undefined}
+              onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+              onNavigateCampaign={navigateToCampaign}
+            />
+
+            <AgentOutputConsole
+              activeAgent={activeAgent}
+              events={visibleConsoleEvents}
+              totalEvents={consoleEvents.length}
+              filter={consoleFilter}
+              search={consoleSearch}
+              paused={consolePaused}
+              following={consoleFollowing}
+              endRef={consoleEndRef}
+              scrollRef={consoleScrollRef}
+              onFilterChange={setConsoleFilter}
+              onSearchChange={setConsoleSearch}
+              onTogglePaused={() => {
+                const nextPaused = !consolePaused;
+                setConsolePaused(nextPaused);
+                if (!nextPaused) {
+                  setConsoleFollowing(true);
+                  void loadConsole().then(scrollConsoleToBottom);
+                }
+              }}
+              onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+              onJumpLatest={() => {
                 setConsoleFollowing(true);
-                void loadConsole().then(scrollConsoleToBottom);
-              }
-            }}
-            onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
-            onJumpLatest={() => {
-              setConsoleFollowing(true);
-              scrollConsoleToBottom();
-            }}
-            onRefresh={loadConsole}
-            onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
-            onNavigatePanel={navigateToPanel}
-          />
-
-          <AgentContextPanel
-            agent={activeAgent}
-            context={activeContext}
-            onOpenDetail={activeAgent ? () => openDetail(activeAgent) : undefined}
-            onCancel={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
-              ? () => cancelAgent(activeAgent.id)
-              : undefined}
-            onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
-            onNavigateCampaign={navigateToCampaign}
-          />
+                scrollConsoleToBottom();
+              }}
+              onRefresh={loadConsole}
+              onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
+              onNavigatePanel={navigateToPanel}
+            />
+          </div>
         </div>
-      )}
-
-      {/* Detail Drawer */}
-      {drawerAgent && (
-        <AgentDetailDrawer
-          agent={drawerAgent}
-          context={drawerContext}
-          onClose={() => { setDrawerAgent(null); setDrawerContext(null); }}
-          onCancel={() => { cancelAgent(drawerAgent.id); setDrawerAgent(null); }}
-          onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
-          onNavigateCampaign={(cid) => navigateToCampaign(cid)}
-          onNavigatePanel={navigateToPanel}
-        />
       )}
 
       {/* Dispatch Modal */}
@@ -448,6 +429,113 @@ export function AgentsPanel() {
   );
 }
 
+// ---- "Needs you" approvals lane ----
+
+// Pending approvals, actioned inline in the console. Approve/Deny route through
+// the canonical POST /api/actions/:id/{approve,deny} → resolveApprovalRequest
+// path (same as the terminal and the deep Actions triage view), so the audit
+// record + OPSEC accounting stay consistent. Resolved rows clear off the live
+// `action_resolved` WS push (the store drops them), not optimistically — if a
+// race or 404/409 happens we surface a toast and let the WS reconcile. Hidden
+// when nothing is pending.
+function ConsoleApprovalsLane() {
+  const pendingActions = useEngagementStore(s => s.pendingActions);
+  const { navigateToPanel } = useNavigation();
+  const view = useMemo(() => buildConsoleApprovals(pendingActions, { limit: 4 }), [pendingActions]);
+
+  if (view.total === 0) return null;
+
+  return (
+    <div className="space-y-2 rounded-md border border-accent/40 bg-accent/5 p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-accent">⚠ Approvals</span>
+        <span className="rounded-full bg-accent/20 px-1.5 text-[10px] text-accent">{view.total}</span>
+        {view.highCount > 0 && <span className="text-[10px] text-destructive">{view.highCount} high-risk</span>}
+        {view.timeoutSoonCount > 0 && <span className="text-[10px] text-warning">{view.timeoutSoonCount} expiring</span>}
+        <span className="text-[10px] text-muted-foreground">need your decision</span>
+        <button onClick={() => navigateToPanel('actions')} className="ml-auto text-[10px] text-accent hover:underline">
+          Triage all →
+        </button>
+      </div>
+      <div className="space-y-1.5">
+        {view.items.map(item => <ConsoleApprovalRow key={item.action_id} item={item} />)}
+        {view.overflow > 0 && (
+          <button onClick={() => navigateToPanel('actions')} className="text-[10px] text-muted-foreground hover:text-accent">
+            +{view.overflow} more in Approvals →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConsoleApprovalRow({ item }: { item: ConsoleApprovalItem }) {
+  const addToast = useToastStore(s => s.addToast);
+  const [busy, setBusy] = useState(false);
+  const [denying, setDenying] = useState(false);
+  const [reason, setReason] = useState('');
+
+  const approve = async () => {
+    setBusy(true);
+    try {
+      await api.approveAction(item.action_id, { notes: 'approved from console' });
+      addToast({ type: 'success', title: 'Action approved', message: item.technique });
+      // The row clears when the action_resolved WS push lands (store drops it).
+    } catch (err) {
+      addToast({ type: 'error', title: 'Approve failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false); // keep the row so the operator can retry / let WS reconcile
+    }
+  };
+
+  const deny = async () => {
+    if (!isDenyReasonValid(reason)) return;
+    setBusy(true);
+    try {
+      await api.denyAction(item.action_id, reason.trim());
+      addToast({ type: 'info', title: 'Action denied', message: item.technique });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Deny failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-border bg-surface p-2 text-xs">
+      <div className="flex items-center gap-2">
+        <StatusPill className={item.risk.cls}>{item.risk.label}</StatusPill>
+        <span className="font-medium text-foreground">{item.technique}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground" title={item.target}>{item.target}</span>
+        {item.lifecycle === 'timeout_soon' && <span className="flex-shrink-0 text-[10px] text-warning">expiring</span>}
+        {!denying && (
+          <div className="flex flex-shrink-0 gap-1.5">
+            <ActionButton size="xs" variant="success" disabled={busy} onClick={approve}>Approve</ActionButton>
+            <ActionButton size="xs" variant="danger" disabled={busy} onClick={() => setDenying(true)}>Deny</ActionButton>
+          </div>
+        )}
+      </div>
+      <div className="mt-1 truncate text-[11px] text-muted-foreground" title={item.description}>{item.description}</div>
+      {denying && (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <input
+            autoFocus
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-accent"
+            placeholder="Reason for denial (required)…"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') void deny();
+              if (e.key === 'Escape') { setDenying(false); setReason(''); }
+            }}
+            disabled={busy}
+          />
+          <ActionButton size="xs" variant="danger" disabled={busy || !isDenyReasonValid(reason)} onClick={deny}>Confirm deny</ActionButton>
+          <ActionButton size="xs" variant="ghost" disabled={busy} onClick={() => { setDenying(false); setReason(''); }}>Cancel</ActionButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Agent Workbench ----
 
 function AgentRoster({
@@ -464,7 +552,6 @@ function AgentRoster({
   onToggleGroup,
   onCancelAgent,
   onCancelGroup,
-  onOpenDetail,
 }: {
   agents: AgentInfo[];
   groups: Map<string, { name: string; strategy: string; agents: AgentInfo[] }>;
@@ -479,7 +566,6 @@ function AgentRoster({
   onToggleGroup: (id: string) => void;
   onCancelAgent: (id: string) => void;
   onCancelGroup: (id: string) => void;
-  onOpenDetail: (agent: AgentInfo) => void;
 }) {
   const running = agents.filter(agent => agent.status === 'running').length;
   const failed = agents.filter(agent => agent.status === 'failed' || agent.status === 'interrupted').length;
@@ -489,8 +575,8 @@ function AgentRoster({
       <div className="border-b border-border p-3">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <h3 className="text-sm font-semibold text-foreground">Operator Sources</h3>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">The primary model stays pinned; subagents are secondary filters.</p>
+            <h3 className="text-sm font-semibold text-foreground">Fleet</h3>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Select an agent to focus it; the primary stream stays one click away.</p>
           </div>
           <StatusPill tone={failed > 0 ? 'danger' : running > 0 ? 'success' : 'muted'}>
             {running} live
@@ -562,7 +648,6 @@ function AgentRoster({
                   onToggleSelect={() => onToggleSelect(agent.id)}
                   onCancel={() => onCancelAgent(agent.id)}
                   onClick={() => onSelectAgent(agent)}
-                  onOpenDetail={() => onOpenDetail(agent)}
                 />
               ))}
             </div>
@@ -588,7 +673,6 @@ function AgentRoster({
                 onToggleSelect={() => onToggleSelect(agent.id)}
                 onCancel={() => onCancelAgent(agent.id)}
                 onClick={() => onSelectAgent(agent)}
-                onOpenDetail={() => onOpenDetail(agent)}
               />
             ))}
           </div>
@@ -641,19 +725,19 @@ function AgentOutputConsole({
   onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
   return (
-    <PanelSection className="min-h-0 overflow-hidden p-0 flex flex-col border-accent/20">
+    <PanelSection className="min-h-0 flex-1 overflow-hidden p-0 flex flex-col border-accent/20">
       <div className="border-b border-border p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold text-foreground">Operator Output</h3>
+              <h3 className="text-base font-semibold text-foreground">{activeAgent ? 'Agent activity' : 'Activity'}</h3>
               <StatusPill tone={paused ? 'warning' : following ? 'success' : 'muted'}>
                 {paused ? 'paused' : following ? 'following' : 'reading'}
               </StatusPill>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               {activeAgent
-                ? `Filtered to subagent ${activeAgent.agent_id || activeAgent.id}.`
+                ? `Filtered to ${activeAgent.agent_id || activeAgent.id}.`
                 : 'Primary model output plus subagent events, derived from Activity without duplicating raw output.'}
             </p>
           </div>
@@ -788,10 +872,10 @@ function PrimaryOperatorPanel() {
   );
 
   return (
-    <PanelSection className="min-h-0 overflow-y-auto">
-      <h3 className="text-sm font-semibold text-foreground">Primary Operator</h3>
+    <PanelSection className="max-h-[42%] min-h-0 shrink-0 overflow-y-auto">
+      <h3 className="text-sm font-semibold text-foreground">Fleet overview</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        The primary model orchestrates; sub-agents are dispatched workers. Select one to inspect &amp; steer it.
+        The primary model orchestrates; sub-agents are dispatched workers. Select one on the left to focus &amp; steer it.
       </p>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -825,18 +909,19 @@ function PrimaryOperatorPanel() {
 function AgentContextPanel({
   agent,
   context,
-  onOpenDetail,
   onCancel,
   onNavigateGraph,
   onNavigateCampaign,
 }: {
   agent: AgentInfo | null;
   context: AgentContext | null;
-  onOpenDetail?: () => void;
   onCancel?: () => void;
   onNavigateGraph: (nodeId: string) => void;
   onNavigateCampaign: (campaignId: string) => void;
 }) {
+  const sessions = useEngagementStore(s => s.sessions);
+  const { navigateToSession } = useNavigation();
+
   if (!agent) {
     return <PrimaryOperatorPanel />;
   }
@@ -847,9 +932,10 @@ function AgentContextPanel({
       ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
       : '—';
   const subgraphNodes = context?.subgraph?.nodes || [];
+  const ownedSessions = sessionsForAgent(sessions, agent);
 
   return (
-    <PanelSection className="min-h-0 overflow-y-auto">
+    <PanelSection className="max-h-[42%] min-h-0 shrink-0 overflow-y-auto">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-foreground">{agent.agent_id || agent.id}</h3>
@@ -861,8 +947,12 @@ function AgentContextPanel({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        {onOpenDetail && <ActionButton onClick={onOpenDetail} size="xs" variant="secondary">Inspect</ActionButton>}
         {onCancel && <ActionButton onClick={onCancel} size="xs" variant="danger">Cancel</ActionButton>}
+        {ownedSessions.length > 0 && (
+          <ActionButton onClick={() => navigateToSession(ownedSessions[0].id)} size="xs" variant="secondary">
+            Open session →{ownedSessions.length > 1 ? ` (${ownedSessions.length})` : ''}
+          </ActionButton>
+        )}
         {agent.campaign_id && (
           <ActionButton onClick={() => onNavigateCampaign(agent.campaign_id!)} size="xs" variant="ghost">
             Campaign
@@ -914,7 +1004,6 @@ function AgentCard({
   onToggleSelect,
   onCancel,
   onClick,
-  onOpenDetail,
 }: {
   agent: AgentInfo;
   active: boolean;
@@ -922,7 +1011,6 @@ function AgentCard({
   onToggleSelect: () => void;
   onCancel: () => void;
   onClick: () => void;
-  onOpenDetail: () => void;
 }) {
   const cancellable = agent.status === 'running' || agent.status === 'pending';
   const elapsed = agent.elapsed_ms ? formatElapsed(agent.elapsed_ms) : '';
@@ -959,13 +1047,8 @@ function AgentCard({
           agent.status === 'interrupted' && 'bg-warning',
           agent.status === 'pending' && 'bg-muted',
         )} />
-        <span className="text-xs font-mono text-muted-foreground truncate" title={agent.agent_id || agent.id}>{agent.agent_id || agent.id}</span>
-        <button
-          onClick={e => { e.stopPropagation(); onOpenDetail(); }}
-          className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-hover hover:text-foreground"
-        >
-          Inspect
-        </button>
+        <span className="min-w-0 flex-1 truncate text-xs font-mono text-muted-foreground" title={agent.agent_id || agent.id}>{agent.agent_id || agent.id}</span>
+        {active && <span className="rounded bg-accent/15 px-1 py-0.5 text-[9px] uppercase tracking-wide text-accent">focused</span>}
         {cancellable && (
           <button
             onClick={e => { e.stopPropagation(); onCancel(); }}
@@ -1001,242 +1084,6 @@ function AgentCard({
       )}
       {summary && <div className="text-[10px] text-muted-foreground mt-1 ml-6 truncate">{summary}</div>}
     </div>
-  );
-}
-
-// ---- Agent Detail Drawer ----
-
-function AgentDetailDrawer({
-  agent,
-  context,
-  onClose,
-  onCancel,
-  onNavigateGraph,
-  onNavigateCampaign,
-  onNavigatePanel,
-}: {
-  agent: AgentInfo;
-  context: { subgraph?: { nodes?: { id: string; properties?: Record<string, unknown> }[]; edges?: unknown[] } } | null;
-  onClose: () => void;
-  onCancel: () => void;
-  onNavigateGraph: (nodeId: string) => void;
-  onNavigateCampaign?: (campaignId: string) => void;
-  onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
-}) {
-  const cancellable = agent.status === 'running' || agent.status === 'pending';
-  const elapsed = agent.elapsed_ms
-    ? formatElapsed(agent.elapsed_ms)
-    : agent.completed_at && agent.assigned_at
-      ? formatElapsed(new Date(agent.completed_at).getTime() - new Date(agent.assigned_at).getTime())
-      : '—';
-
-  const subgraphNodes = context?.subgraph?.nodes || [];
-
-  const [consoleEvents, setConsoleEvents] = useState<AgentConsoleEvent[]>([]);
-  const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>('all');
-  const [consolePaused, setConsolePaused] = useState(false);
-  const [consoleFollowing, setConsoleFollowing] = useState(true);
-  const consoleEndRef = useRef<HTMLDivElement | null>(null);
-  const consoleScrollRef = useRef<HTMLDivElement | null>(null);
-
-  const loadConsole = useCallback(async () => {
-    try {
-      const data = await api.getAgentConsole(agent.id, { limit: 80 });
-      setConsoleEvents(data.events || []);
-    } catch {
-      setConsoleEvents([]);
-    }
-  }, [agent.id]);
-
-  useEffect(() => { loadConsole(); }, [loadConsole]);
-
-  useEffect(() => {
-    const handleUpdate = (event: Event) => {
-      if (consolePaused) return;
-      const detail = (event as CustomEvent<{ events?: AgentConsoleEvent[] }>).detail;
-      const incoming = (detail?.events || []).filter(item =>
-        item.agent_id === agent.id || item.agent_id === agent.agent_id,
-      );
-      if (incoming.length === 0) return;
-      setConsoleEvents(prev => mergeConsoleEvents(prev, incoming));
-    };
-    window.addEventListener('overwatch-agent-console-update', handleUpdate);
-    return () => window.removeEventListener('overwatch-agent-console-update', handleUpdate);
-  }, [agent.id, agent.agent_id, consolePaused]);
-
-  const scrollConsoleToBottom = useCallback(() => {
-    requestAnimationFrame(() => {
-      const el = consoleScrollRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!consolePaused && consoleFollowing) scrollConsoleToBottom();
-  }, [consoleEvents, consolePaused, consoleFollowing, scrollConsoleToBottom]);
-
-  const visibleConsoleEvents = useMemo(() => {
-    return consoleEvents.filter(event => {
-      if (consoleFilter === 'all') return true;
-      if (consoleFilter === 'errors') return event.severity === 'error' || event.severity === 'warning';
-      return event.kind === consoleFilter;
-    });
-  }, [consoleEvents, consoleFilter]);
-
-  return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
-      <InspectorDrawer
-        title={agent.agent_id || agent.id}
-        subtitle={agent.id}
-        onClose={onClose}
-        className="z-50"
-        footer={cancellable && (
-          <ActionButton
-            onClick={onCancel}
-            variant="danger"
-            className="w-full"
-          >
-            Cancel Agent
-          </ActionButton>
-        )}
-      >
-        <div className="mb-3 flex items-center gap-2">
-            <span className={cn(
-              'w-2 h-2 rounded-full',
-              agent.status === 'running' && 'bg-success',
-              agent.status === 'completed' && 'bg-accent',
-              agent.status === 'failed' && 'bg-destructive',
-            )} />
-            <StatusPill className={agent.status === 'completed' ? 'bg-accent/10 text-accent' : agent.status === 'running' ? 'bg-success/10 text-success' : agent.status === 'failed' ? 'bg-destructive/10 text-destructive' : 'bg-elevated text-muted-foreground'}>
-              {agent.status}
-            </StatusPill>
-        </div>
-
-        {agent.status === 'running' && <AgentSteeringControls taskId={agent.id} onIssued={loadConsole} />}
-
-        <div className="space-y-3">
-          <DetailRow label="Status" value={agent.status} />
-          <DetailRow label="Task ID" value={agent.id} mono />
-          {agent.assigned_at && <DetailRow label="Assigned" value={new Date(agent.assigned_at).toLocaleString()} />}
-          <DetailRow label="Elapsed" value={elapsed} />
-          {agent.skill && <DetailRow label="Skill" value={agent.skill} />}
-          {agent.frontier_item_id && <DetailRow label="Frontier Item" value={agent.frontier_item_id} mono />}
-          {agent.campaign_id && (
-            <div className="flex items-center gap-2">
-              <DetailRow label="Campaign" value={agent.campaign_id} mono />
-              <button onClick={() => onNavigateCampaign?.(agent.campaign_id!)} className="text-[10px] text-accent hover:underline">view</button>
-            </div>
-          )}
-          {agent.result_summary && <DetailRow label="Result" value={agent.result_summary} />}
-          <DetailRow label="Scope Nodes" value={String((agent.subgraph_node_ids || agent.scope_node_ids || []).length)} />
-
-          {subgraphNodes.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Scoped Subgraph</div>
-              <div className="text-xs text-muted-foreground mb-1">
-                {subgraphNodes.length} nodes, {context?.subgraph?.edges?.length || 0} edges
-              </div>
-              <div className="space-y-0.5">
-                {subgraphNodes.slice(0, 10).map(n => (
-                  <button
-                    key={n.id}
-                    onClick={() => onNavigateGraph(n.id)}
-                    className="block text-xs text-accent hover:underline truncate"
-                  >
-                    {String(n.properties?.label || n.id)}
-                  </button>
-                ))}
-                {subgraphNodes.length > 10 && (
-                  <span className="text-[10px] text-muted-foreground">… and {subgraphNodes.length - 10} more</span>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Live Agent Console ({visibleConsoleEvents.length}/{consoleEvents.length})
-              </div>
-              <div className="flex gap-1">
-                <button
-                  onClick={() => {
-                    const nextPaused = !consolePaused;
-                    setConsolePaused(nextPaused);
-                    if (!nextPaused) {
-                      setConsoleFollowing(true);
-                      void loadConsole().then(scrollConsoleToBottom);
-                    }
-                  }}
-                  className={cn(
-                    'rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-hover',
-                    consolePaused ? 'text-warning bg-warning/10' : 'text-muted-foreground',
-                  )}
-                >
-                  {consolePaused ? 'Resume' : 'Pause'}
-                </button>
-                {!consoleFollowing && !consolePaused && (
-                  <button
-                    onClick={() => {
-                      setConsoleFollowing(true);
-                      scrollConsoleToBottom();
-                    }}
-                    className="rounded border border-border px-1.5 py-0.5 text-[10px] text-accent hover:bg-hover"
-                  >
-                    Latest
-                  </button>
-                )}
-                <button
-                  onClick={loadConsole}
-                  className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-hover"
-                >
-                  Refresh
-                </button>
-              </div>
-            </div>
-            <div className="mb-2 flex flex-wrap gap-1">
-              {CONSOLE_FILTERS.map(filter => (
-                <button
-                  key={filter.value}
-                  onClick={() => setConsoleFilter(filter.value)}
-                  className={cn(
-                    'rounded px-1.5 py-0.5 text-[10px] transition-colors',
-                    consoleFilter === filter.value
-                      ? 'bg-accent text-accent-foreground'
-                      : 'bg-elevated text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div>
-            {visibleConsoleEvents.length === 0 ? (
-              <div className="rounded border border-border bg-background/40 px-3 py-4 text-center text-xs text-muted-foreground">
-                No agent console events yet.
-              </div>
-            ) : (
-              <div
-                ref={consoleScrollRef}
-                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
-                className="max-h-72 space-y-1 overflow-y-auto rounded border border-border bg-background/30 p-1.5"
-              >
-                {visibleConsoleEvents.map(event => (
-                  <AgentConsoleRow
-                    key={event.id}
-                    event={event}
-                    onNavigateGraph={onNavigateGraph}
-                    onNavigatePanel={onNavigatePanel}
-                  />
-                ))}
-                <div ref={consoleEndRef} />
-              </div>
-            )}
-          </div>
-        </div>
-      </InspectorDrawer>
-    </>
   );
 }
 

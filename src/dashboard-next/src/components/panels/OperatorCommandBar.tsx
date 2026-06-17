@@ -109,13 +109,18 @@ export function OperatorCommandBar() {
 
   const busy = phase.kind === 'previewing' || phase.kind === 'executing';
 
+  const active = phase.kind !== 'idle';
+
   return (
-    <div className="rounded-md border border-accent/30 bg-accent-dim/40 p-3 space-y-2">
+    <div className={cn(
+      'space-y-2 rounded-md border px-3 py-2 transition-colors',
+      active ? 'border-accent/30 bg-accent-dim/40' : 'border-border bg-surface',
+    )}>
       <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-accent">⌘ Command</span>
+        <span className="text-xs font-medium text-accent">⌘</span>
         <input
-          className="flex-1 rounded border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent"
-          placeholder='Plain English — e.g. "pause the apache agent", "scan 10.50.0.0/16", or "focus everyone on credentials"'
+          className="flex-1 bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-muted-foreground"
+          placeholder='Command the engagement — "pause the apache agent", "scan 10.50.0.0/16", "focus everyone on credentials"'
           value={command}
           onChange={e => setCommand(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !busy) void submit(); }}

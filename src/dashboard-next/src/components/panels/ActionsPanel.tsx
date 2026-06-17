@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useToastStore } from '../../stores/toast-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { CountdownTimer, EmptyState } from '../shared';
-import { explainAction, getPendingActions } from '../../lib/api';
+import { approveAction, denyAction, explainAction, getPendingActions } from '../../lib/api';
+import { isDenyReasonValid } from '../../lib/console-approvals';
 import type { ActionExplanation, ActionQueueDiagnostics, PendingAction } from '../../lib/types';
 import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
@@ -80,8 +82,8 @@ export function ActionsPanel() {
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
       <PageHeader
-        title="Actions"
-        meta={`(${pendingActions.length} pending)`}
+        title="Approvals"
+        meta={`(${pendingActions.length} pending) · deep triage — approvals also act in the Console`}
         actions={(
           <FilterBar>
             <input
@@ -347,17 +349,79 @@ function ActionDetail({
         </PanelSection>
       )}
 
-      <PanelSection title="Future Dashboard Approval">
-        <div className="rounded border border-dashed border-border bg-background/40 p-3">
-          <div className="text-xs text-muted-foreground mb-2">
-            UI approval controls are intentionally staged but disabled. Terminal approval remains canonical until operator flow and audit semantics are finalized.
-          </div>
-          <div className="flex gap-2">
-            <ActionButton disabled variant="success">Approve in dashboard</ActionButton>
-            <ActionButton disabled variant="danger">Deny in dashboard</ActionButton>
-          </div>
+      <PanelSection title="Resolve">
+        <div className="text-xs text-muted-foreground mb-2">
+          Approve or deny here, or copy the commands above to act from the terminal — both route through the same
+          approval record, so the audit trail and OPSEC accounting stay consistent.
         </div>
+        <ActionResolveControls action={action} />
       </PanelSection>
+    </div>
+  );
+}
+
+// In-dashboard approve/deny for the deep triage view, mirroring the console
+// "Needs you" lane. Routes through POST /api/actions/:id/{approve,deny} →
+// resolveApprovalRequest (canonical). The store drops the action on the
+// `action_resolved` WS push, so the selected action advances on its own; we
+// don't mutate optimistically. Denials require a reason (audit semantics).
+function ActionResolveControls({ action }: { action: PendingAction }) {
+  const addToast = useToastStore(s => s.addToast);
+  const [busy, setBusy] = useState(false);
+  const [denying, setDenying] = useState(false);
+  const [reason, setReason] = useState('');
+
+  // Reset the inline deny form when the operator selects a different action.
+  useEffect(() => { setDenying(false); setReason(''); setBusy(false); }, [action.action_id]);
+
+  const approve = async () => {
+    setBusy(true);
+    try {
+      await approveAction(action.action_id, { notes: 'approved from dashboard' });
+      addToast({ type: 'success', title: 'Action approved', message: action.technique || action.action_id });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Approve failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false);
+    }
+  };
+
+  const deny = async () => {
+    if (!isDenyReasonValid(reason)) return;
+    setBusy(true);
+    try {
+      await denyAction(action.action_id, reason.trim());
+      addToast({ type: 'info', title: 'Action denied', message: action.technique || action.action_id });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Deny failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-border bg-background/40 p-3">
+      {!denying ? (
+        <div className="flex gap-2">
+          <ActionButton variant="success" disabled={busy} onClick={approve}>Approve</ActionButton>
+          <ActionButton variant="danger" disabled={busy} onClick={() => setDenying(true)}>Deny</ActionButton>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <input
+            autoFocus
+            className="flex-1 rounded border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent"
+            placeholder="Reason for denial (required)…"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') void deny();
+              if (e.key === 'Escape') { setDenying(false); setReason(''); }
+            }}
+            disabled={busy}
+          />
+          <ActionButton variant="danger" disabled={busy || !isDenyReasonValid(reason)} onClick={deny}>Confirm deny</ActionButton>
+          <ActionButton variant="ghost" disabled={busy} onClick={() => { setDenying(false); setReason(''); }}>Cancel</ActionButton>
+        </div>
+      )}
     </div>
   );
 }

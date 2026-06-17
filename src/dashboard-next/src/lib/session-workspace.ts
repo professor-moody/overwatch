@@ -70,6 +70,29 @@ export function groupSessions(sessions: SessionInfo[]): Record<SessionGroup, Ses
   return result;
 }
 
+/**
+ * Sessions owned/claimed by a given agent. Phase 4b uses this to bridge the
+ * Operator Console and the Sessions workspace: the focused agent shows an
+ * "Open session →" chip, and a session shows a "view agent →" chip. Matches on
+ * either the agent's task id or its display label, since `session.agent_id` /
+ * `session.claimed_by` may carry either depending on who opened the session.
+ */
+export function sessionsForAgent(
+  sessions: SessionInfo[],
+  agent: { id?: string; agent_id?: string } | null | undefined,
+): SessionInfo[] {
+  if (!agent) return [];
+  const ids = new Set(
+    [agent.id, agent.agent_id].filter((v): v is string => typeof v === 'string' && v.length > 0),
+  );
+  if (ids.size === 0) return [];
+  return sessions.filter(
+    (session) =>
+      (!!session.agent_id && ids.has(session.agent_id)) ||
+      (!!session.claimed_by && ids.has(session.claimed_by)),
+  );
+}
+
 export function addAttachedSession(attached: string[], sessionId: string): string[] {
   return attached.includes(sessionId) ? attached : [...attached, sessionId];
 }

@@ -11,6 +11,7 @@ import {
   searchSession,
   searchSessionBuffer,
   sessionCopyFields,
+  sessionsForAgent,
   sessionSupportsResize,
   sortSessionsForWorkspace,
 } from '../session-workspace';
@@ -141,5 +142,24 @@ describe('session workspace helpers', () => {
     expect(cleanTerminalText(buffer.text)).not.toContain('\u001b');
     expect(extractCommandLikeLines(buffer).map(command => command.text)).toEqual(['whoami', 'hostname']);
     expect(searchSessionBuffer(buffer, 'jdoe').map(match => match.line)).toEqual([2, 3]);
+  });
+
+  it('finds sessions owned/claimed by an agent (by task id or label)', () => {
+    const sessions = [
+      session({ id: 'by-task', agent_id: 'task-123' }),
+      session({ id: 'by-label', agent_id: 'recon-1' }),
+      session({ id: 'by-claim', claimed_by: 'recon-1' }),
+      session({ id: 'other', agent_id: 'task-999' }),
+      session({ id: 'unowned' }),
+    ];
+    const matched = sessionsForAgent(sessions, { id: 'task-123', agent_id: 'recon-1' });
+    expect(matched.map(s => s.id).sort()).toEqual(['by-claim', 'by-label', 'by-task']);
+  });
+
+  it('returns no sessions for a null agent or an agent with no identifiers', () => {
+    const sessions = [session({ id: 'a', agent_id: 'task-1' })];
+    expect(sessionsForAgent(sessions, null)).toEqual([]);
+    expect(sessionsForAgent(sessions, {})).toEqual([]);
+    expect(sessionsForAgent([], { id: 'task-1' })).toEqual([]);
   });
 });
