@@ -167,6 +167,7 @@ nav:
   - FAQ: faq.md
   - Development:
     - Roadmap: roadmap.md
+    - Multi-Agent Roadmap: multi-agent-roadmap.md
     - development.md
     - Development Timeline: development-timeline.md
     - Bedrock Integration Plan: bedrock-integration-plan.md
