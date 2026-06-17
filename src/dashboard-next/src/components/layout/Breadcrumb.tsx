@@ -12,6 +12,7 @@ const PANEL_LABELS: Record<PanelId, string> = {
   actions: 'Approvals',
   frontier: 'Frontier',
   activity: 'Activity',
+  analysis: 'Analysis',
   evidence: 'Evidence',
   identity: 'Identity',
   credentials: 'Credentials',

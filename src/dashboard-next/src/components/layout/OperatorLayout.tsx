@@ -14,6 +14,7 @@ import { SessionsPanel } from '../panels/SessionsPanel';
 import { ActionsPanel } from '../panels/ActionsPanel';
 import { FrontierPanel } from '../panels/FrontierPanel';
 import { ActivityPanel } from '../panels/ActivityPanel';
+import { AnalysisPanel } from '../panels/AnalysisPanel';
 import { EvidencePanel } from '../panels/EvidencePanel';
 import { EngagementsPanel } from '../panels/EngagementsPanel';
 import { SettingsPanel } from '../panels/SettingsPanel';
@@ -32,6 +33,7 @@ export type PanelId =
   | 'actions'
   | 'frontier'
   | 'activity'
+  | 'analysis'
   | 'evidence'
   | 'identity'
   | 'credentials'
@@ -49,6 +51,7 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
   actions: ActionsPanel,
   frontier: FrontierPanel,
   activity: ActivityPanel,
+  analysis: AnalysisPanel,
   evidence: EvidencePanel,
   identity: IdentityPanel,
   credentials: CredentialsPanel,

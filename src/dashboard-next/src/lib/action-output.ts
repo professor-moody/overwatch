@@ -28,6 +28,11 @@ export interface ActionOutputView {
   exitCode: number | null;
   durationMs: number | null;
   timedOut: boolean;
+  /** Graph node ids (linkable to graph/evidence). */
+  targetNodeIds: string[];
+  /** Raw IPs / CIDRs (not graph nodes — render as plain pills). */
+  targetIps: string[];
+  /** Convenience: nodeIds + ips merged. */
   targets: string[];
   agentId: string | null;
   findingIds: string[];
@@ -67,11 +72,9 @@ function normalizeStream(s: ActionOutputStream | null | undefined): OutputStream
 }
 
 export function normalizeActionOutput(raw: ActionOutputResponse): ActionOutputView {
-  const targets = [
-    ...(raw.target_node_ids ?? []),
-    ...(raw.target_ips ?? []),
-    ...(raw.target_cidrs ?? []),
-  ];
+  const targetNodeIds = raw.target_node_ids ?? [];
+  const targetIps = [...(raw.target_ips ?? []), ...(raw.target_cidrs ?? [])];
+  const targets = [...targetNodeIds, ...targetIps];
   const stdout = normalizeStream(raw.stdout);
   const stderr = normalizeStream(raw.stderr);
   return {
@@ -83,6 +86,8 @@ export function normalizeActionOutput(raw: ActionOutputResponse): ActionOutputVi
     exitCode: typeof raw.exit_code === 'number' ? raw.exit_code : null,
     durationMs: typeof raw.duration_ms === 'number' ? raw.duration_ms : null,
     timedOut: Boolean(raw.timed_out),
+    targetNodeIds,
+    targetIps,
     targets,
     agentId: raw.agent_id ?? null,
     findingIds: raw.linked_finding_ids ?? [],
@@ -109,4 +114,20 @@ export function formatBytes(n: number): string {
 /** Whether the viewer should offer to fetch more of a stream (only a head was returned). */
 export function streamHasMore(s: OutputStreamView): boolean {
   return s.headTruncated;
+}
+
+/**
+ * Find-in-output: split text into lines and, when a query is present, keep only
+ * matching lines (case-insensitive). Returns the lines to render and the match
+ * count so the viewer can show "N matches" and an empty state.
+ */
+export function matchOutputLines(text: string, query: string): { lines: string[]; matchCount: number; filtered: boolean } {
+  // Drop a single trailing newline so a normal "...\n"-terminated blob doesn't
+  // render a spurious blank final line.
+  const normalized = text.endsWith('\n') ? text.slice(0, -1) : text;
+  const allLines = normalized.length === 0 ? [] : normalized.split('\n');
+  const q = query.trim().toLowerCase();
+  if (!q) return { lines: allLines, matchCount: allLines.length, filtered: false };
+  const matched = allLines.filter(l => l.toLowerCase().includes(q));
+  return { lines: matched, matchCount: matched.length, filtered: true };
 }
