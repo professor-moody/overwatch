@@ -201,14 +201,34 @@ A compact minimap in the bottom-right overlay shows the full graph at a glance w
 | Area | Purpose |
 |------|---------|
 | `src/dashboard-next/src/components/layout/` | Operator shell, top toolbar, sidebar, tape toggle |
-| `src/dashboard-next/src/components/panels/` | Overview, Frontier, Sessions, Actions, Activity, Evidence, Findings, Smoke, Settings |
+| `src/dashboard-next/src/components/panels/` | Console (Agents), Approvals (Actions), Add Targets, Frontier, Sessions, Activity, Evidence, Findings, Overview, Smoke, Settings |
 | `src/dashboard-next/src/components/graph/` | Sigma graph workspace, overlays, inspector, export controls |
 | `src/dashboard-next/src/hooks/` | Navigation, graph data, layout, Sigma lifecycle, keyboard shortcuts |
 | `src/dashboard-next/src/lib/` | API client, graph utilities, camera fitting, route smoke helpers |
 
 ## Operator Console (cockpit)
 
-The **Operator** panel is the primary multi-agent surface: a natural-language command bar, the live agent roster (each running agent shows a `doing: …` line), per-agent + fleet steering, an agent-question inbox, and the merged primary/sub-agent console stream. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+The dashboard uses a **console-first IA**: the **Console** is the landing page and the operator's home, and the left nav is grouped **Console** (Console · Frontier · Approvals · Campaigns) · **Investigate** (Graph · Findings · Attack Paths · Evidence · Identity · Credentials · Activity · Overview) · **Manage** (Sessions · Engagements · Settings · Smoke). The operator works in the Console and steps out only to investigate, with one click back (press `c`).
+
+The Console is a focused **master-detail** workspace:
+
+- a pinned **command bar** (natural-language commands; see the grammar reference below);
+- a **"Needs you" strip** — inline **Approve / Deny** for pending actions plus an **Answer** box for agent questions; it hides when nothing is waiting;
+- a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream;
+- an **Add Targets** launcher (beside Dispatch Subagent) to add IPs/CIDRs/domains mid-engagement — paste → preview impact (nodes entering/leaving scope) → confirm. See [Add Targets](#add-targets) below.
+
+Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+
+### Add Targets
+
+The **Add Targets** modal adds scope mid-engagement without leaving the Console:
+
+1. **Paste** IPs, CIDRs, or domains (whitespace/comma separated). Parsing matches the `scan` command exactly — a bare IP becomes `/32`, domains are lowercased, IPv6 and other junk are flagged and ignored.
+2. **Preview impact** — `POST /api/config/scope/preview` (read-only) reports how many graph nodes would enter/leave scope and which pending scope suggestions resolve.
+3. **Confirm** — `PATCH /api/config/scope` applies it through `engine.updateScope` (the canonical write path: CIDR validation, cold→hot promotion, inference re-run, `scope_updated` audit event).
+4. **Enumerate** — new CIDRs surface `network_discovery` items on the Frontier (lazy; no host seeding), which you dispatch from there. The modal links straight to the Frontier.
+
+The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 
 ## Endpoints
 
@@ -225,6 +245,9 @@ The **Operator** panel is the primary multi-agent surface: a natural-language co
 | `/api/agents/:id/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
 | `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
+| `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
+| `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |
+| `/api/actions/:id/approve` · `/api/actions/:id/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
 | `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
 | `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
 | `ws://` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |

@@ -154,6 +154,7 @@ nav:
     - "Featured: Kerberoasting": skills/featured.md
   - Operator Playbook:
     - playbook/index.md
+    - Cockpit Walkthrough: playbook/cockpit-walkthrough.md
     - End-to-End Walkthrough: playbook/walkthrough.md
     - GOAD AD Lab: playbook/goad-lab.md
     - HTB / Single Host: playbook/htb-single.md
