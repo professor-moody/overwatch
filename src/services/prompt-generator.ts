@@ -502,6 +502,7 @@ function generateSubAgentWorkflowSection(): string {
     - \`narrow_scope\` → treat \`node_ids\` as your authoritative scope; do not act on nodes outside it.
     - \`skip_types\` → ignore frontier items whose type is in \`frontier_types\`.
     - \`prioritize\` → do frontier items whose type is in \`frontier_types\` first.
+    - \`instruct\` → the operator's free-text instruction is in \`note\`; read it and adjust your approach accordingly (e.g. focus a technique, try a different path), staying within scope and OPSEC.
 12. **Before** the primary calls \`update_agent\` to close you out, call \`submit_agent_transcript({ task_id, summary, transcript_jsonl?, key_thought_event_ids?, key_finding_ids? })\` so the primary session has your wrap-up linked to the agent task. Use \`agent_id\` only as a legacy fallback if you do not have the task ID. Closing terminal status without first submitting will surface an \`instrumentation_warning\`.
 
 Report every discovery immediately. When done, your task will be marked complete by the primary session.`;

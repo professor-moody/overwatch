@@ -110,6 +110,67 @@ describe('/api/agents/:id/directive — per-agent steering (Phase 3B)', () => {
     const res = await directive('ghost', { kind: 'stop' });
     expect(res.status).toBe(404);
   });
+
+  it('accepts a free-text instruct directive (Phase 3C)', async () => {
+    const res = await directive('steer-1', { kind: 'instruct', note: 'focus on SMB' });
+    expect(res.status).toBe(200);
+    const dir = engine.getPendingAgentDirective('steer-1');
+    expect(dir?.kind).toBe('instruct');
+    expect(dir?.note).toBe('focus on SMB');
+  });
+});
+
+describe('/api/fleet/directive — fleet-level steering (Phase 3C)', () => {
+  const fleet = (body: unknown) => fetch(`${baseUrl}/api/fleet/directive`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it('applies pause to all running agents in a campaign (scoped so other agents are untouched)', async () => {
+    engine.registerAgent({ id: 'fleet-a', agent_id: 'fa', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], campaign_id: 'fleet-camp' } as AgentTask);
+    engine.registerAgent({ id: 'fleet-b', agent_id: 'fb', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], campaign_id: 'fleet-camp' } as AgentTask);
+    const res = await fleet({ kind: 'pause', campaign_id: 'fleet-camp' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.applied).toBe(2);
+    expect(body.total).toBe(2);
+    expect(engine.getPendingAgentDirective('fleet-a')?.kind).toBe('pause');
+    expect(engine.getPendingAgentDirective('fleet-b')?.kind).toBe('pause');
+    // target-1 (no campaign) untouched — the grammar tests below depend on it.
+    expect(engine.getPendingAgentDirective('target-1')).toBeNull();
+  });
+
+  it('rejects a non-lifecycle fleet kind (400)', async () => {
+    const res = await fleet({ kind: 'instruct' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('/api/agents current_action (Phase 3C — "see everything")', () => {
+  const ts = () => new Date().toISOString();
+
+  it('attributes a unique-agent_id running task but NOT a shared agent_id (no cross-bleed)', async () => {
+    engine.registerAgent({ id: 'ca-uniq', agent_id: 'ca-uniq-label', assigned_at: ts(), status: 'running', subgraph_node_ids: [] } as AgentTask);
+    engine.logActionEvent({ description: 'running nmap on host', event_type: 'action_started', agent_id: 'ca-uniq-label', category: 'frontier' });
+    // two running tasks share one agent_id → ambiguous, must not attribute either
+    engine.registerAgent({ id: 'ca-dup-a', agent_id: 'ca-dup-label', assigned_at: ts(), status: 'running', subgraph_node_ids: [] } as AgentTask);
+    engine.registerAgent({ id: 'ca-dup-b', agent_id: 'ca-dup-label', assigned_at: ts(), status: 'running', subgraph_node_ids: [] } as AgentTask);
+    engine.logActionEvent({ description: 'shared work', event_type: 'action_started', agent_id: 'ca-dup-label', category: 'frontier' });
+
+    const { agents } = await (await fetch(`${baseUrl}/api/agents`)).json();
+    const byId = (id: string) => agents.find((a: { id: string }) => a.id === id);
+    expect(byId('ca-uniq').current_action).toBe('running nmap on host');
+    expect(byId('ca-dup-a').current_action).toBeUndefined();
+    expect(byId('ca-dup-b').current_action).toBeUndefined();
+  });
+
+  it('does not surface operator/system bookkeeping as current_action', async () => {
+    engine.registerAgent({ id: 'ca-bk', agent_id: 'ca-bk-label', assigned_at: ts(), status: 'running', subgraph_node_ids: [] } as AgentTask);
+    engine.logActionEvent({ description: 'real agent work', event_type: 'action_started', agent_id: 'ca-bk-label', category: 'frontier' });
+    engine.logActionEvent({ description: 'Operator directive: pause', event_type: 'operator_command', category: 'system', linked_agent_task_id: 'ca-bk' });
+
+    const { agents } = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(agents.find((a: { id: string }) => a.id === 'ca-bk').current_action).toBe('real agent work');
+  });
 });
 
 describe('/api/commands — grammar fast-path', () => {

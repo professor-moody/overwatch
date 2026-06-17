@@ -48,6 +48,23 @@ describe('interpretCommand (grammar)', () => {
     expect(r.unresolved[0].reason).toMatch(/matches 2 agents/);
   });
 
+  it('"tell <agent> <text>" → an instruct directive carrying the free text', () => {
+    const r = interpretCommand('tell a1 focus on SMB shares', state([t('1', 'a1')]));
+    expect(r.ops).toHaveLength(1);
+    expect(r.ops[0]).toMatchObject({ op: 'directive', task_id: '1', kind: 'instruct', note: 'focus on SMB shares' });
+  });
+
+  it('"instruct <agent> to <text>" strips the leading "to"', () => {
+    const r = interpretCommand('instruct a1 to try password spray', state([t('1', 'a1')]));
+    expect(r.ops[0]).toMatchObject({ op: 'directive', kind: 'instruct', note: 'try password spray' });
+  });
+
+  it('tell with an unknown agent → unresolved', () => {
+    const r = interpretCommand('tell ghost do something', state([t('1', 'a1')]));
+    expect(r.ops).toHaveLength(0);
+    expect(r.unresolved[0].reason).toMatch(/no running agent/);
+  });
+
   it('"scan <cidr> <ip> <domain>" → scope op with correct classification', () => {
     const r = interpretCommand('scan 10.50.0.0/16 192.168.1.5 corp.example.com', state([]));
     expect(r.ops).toHaveLength(1);

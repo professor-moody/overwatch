@@ -779,15 +779,16 @@ Kinds:
 - \`narrow_scope\` — restrict the agent to \`node_ids\`.
 - \`skip_types\` — ignore frontier items of \`frontier_types\`.
 - \`prioritize\` — do \`frontier_types\` first.
+- \`instruct\` — free-text steer: the operator's instruction in \`note\`; the agent reads and honors it on its next heartbeat (e.g. "focus on SMB", "try password spray instead").
 
 A new directive supersedes any still-pending one for the task (latest instruction wins).`,
       inputSchema: {
         task_id: z.string().describe('Agent task ID to steer'),
-        kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize'])
+        kind: z.enum(['pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize', 'instruct'])
           .describe('The steering action'),
         node_ids: z.array(z.string()).optional().describe('narrow_scope: node ids to restrict to'),
         frontier_types: z.array(z.string()).optional().describe('skip_types / prioritize: frontier item types'),
-        note: z.string().optional().describe('Optional human-readable note'),
+        note: z.string().optional().describe('instruct: the free-text instruction; otherwise an optional human-readable note'),
         issued_by: z.string().optional().describe('Operator id (defaults to "primary")'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

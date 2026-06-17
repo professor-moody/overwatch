@@ -82,6 +82,19 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
     return finalize(ops, unresolved);
   }
 
+  // --- free-text instruction: "tell|instruct <agent> [to] <text>" ---
+  const tell = raw.match(/^(?:tell|instruct)\s+(\S+)\s+(?:to\s+)?(.+)$/i);
+  if (tell) {
+    const ref = tell[1].trim();
+    const note = tell[2].trim();
+    const running = state.tasks.filter(t => t.status === 'running');
+    const matches = resolveTasks(ref, running);
+    if (matches.length === 1) ops.push({ op: 'directive', task_id: matches[0].id, agent_label: matches[0].agent_id, kind: 'instruct', note });
+    else if (matches.length === 0) unresolved.push({ text: raw, reason: `no running agent matches "${ref}"` });
+    else unresolved.push({ text: raw, reason: `"${ref}" matches ${matches.length} agents — be specific (agent id)` });
+    return finalize(ops, unresolved);
+  }
+
   // --- scope (scan / add scope / target) ---
   const scope = raw.match(/^(scan|add scope|add to scope|target)\s+(.+)$/i);
   if (scope) {

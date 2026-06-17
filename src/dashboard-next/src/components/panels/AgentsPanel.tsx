@@ -142,6 +142,24 @@ export function AgentsPanel() {
     try { await api.cancelAgent(id); await refreshAgents(); } catch { /* silent */ }
   };
 
+  const fleetAddToast = useToastStore(s => s.addToast);
+  const fleetAction = async (kind: 'pause' | 'resume' | 'stop') => {
+    try {
+      const res = await api.fleetDirective(kind);
+      // Warn (not green-success) on partial application or an empty fleet — the
+      // operator must not believe a fleet-wide Stop fully landed when it didn't.
+      const clean = res.total > 0 && res.applied === res.total;
+      fleetAddToast({
+        type: clean ? 'success' : 'warning',
+        title: `Fleet ${kind}`,
+        message: res.total === 0 ? 'no running agents' : `applied to ${res.applied}/${res.total} running agent(s)`,
+      });
+      await refreshAgents();
+    } catch (err) {
+      fleetAddToast({ type: 'error', title: `Fleet ${kind} failed`, message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   const batchCancel = async () => {
     const cancellable = agents.filter(a => selectedIds.has(a.id) && (a.status === 'running' || a.status === 'pending'));
     await Promise.allSettled(cancellable.map(a => api.cancelAgent(a.id)));
@@ -287,6 +305,14 @@ export function AgentsPanel() {
             <span className="text-muted-foreground">{completed.length} done</span>
             {failed.length > 0 && <span className="text-destructive">{failed.length} failed</span>}
           </div>
+          {running.length > 0 && (
+            <div className="flex items-center gap-1" title="Steer all running agents">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Fleet</span>
+              <ActionButton onClick={() => fleetAction('pause')} variant="warning" size="xs">Pause all</ActionButton>
+              <ActionButton onClick={() => fleetAction('resume')} variant="success" size="xs">Resume all</ActionButton>
+              <ActionButton onClick={() => fleetAction('stop')} variant="danger" size="xs">Stop all</ActionButton>
+            </div>
+          )}
           <ActionButton
             onClick={() => setShowDispatch(true)}
             variant="ghost"
@@ -698,15 +724,21 @@ function AgentOutputConsole({
 function AgentSteeringControls({ taskId, onIssued }: { taskId: string; onIssued?: () => void }) {
   const addToast = useToastStore(s => s.addToast);
   const [busy, setBusy] = useState<string | null>(null);
-  const issue = async (kind: api.DirectiveKind) => {
+  const [instruction, setInstruction] = useState('');
+  const issue = async (kind: api.DirectiveKind, opts?: { note?: string }) => {
     setBusy(kind);
     try {
-      const res = await api.issueDirective(taskId, kind);
+      const res = await api.issueDirective(taskId, kind, opts);
       addToast({ type: res.ok ? 'success' : 'warning', title: `Directive: ${kind}`, message: res.ok ? 'issued — agent honors it on its next heartbeat' : 'not applied' });
+      if (res.ok && kind === 'instruct') setInstruction('');
       onIssued?.();
     } catch (err) {
       addToast({ type: 'error', title: `Directive failed: ${kind}`, message: err instanceof Error ? err.message : String(err) });
     } finally { setBusy(null); }
+  };
+  const sendInstruction = () => {
+    const note = instruction.trim();
+    if (note) void issue('instruct', { note });
   };
   return (
     <div className="mt-3">
@@ -715,6 +747,18 @@ function AgentSteeringControls({ taskId, onIssued }: { taskId: string; onIssued?
         <ActionButton size="xs" variant="warning" disabled={!!busy} onClick={() => issue('pause')}>Pause</ActionButton>
         <ActionButton size="xs" variant="success" disabled={!!busy} onClick={() => issue('resume')}>Resume</ActionButton>
         <ActionButton size="xs" variant="danger" disabled={!!busy} onClick={() => issue('stop')}>Stop</ActionButton>
+      </div>
+      {/* Free-text instruction → delivered to the agent on its next heartbeat. */}
+      <div className="mt-2 flex items-center gap-1.5">
+        <input
+          className="flex-1 rounded border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent"
+          placeholder='Tell this agent… e.g. "focus on SMB"'
+          value={instruction}
+          onChange={e => setInstruction(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !busy) sendInstruction(); }}
+          disabled={busy === 'instruct'}
+        />
+        <ActionButton size="xs" variant="purple" disabled={!!busy || !instruction.trim()} onClick={sendInstruction}>Tell</ActionButton>
       </div>
     </div>
   );
@@ -824,6 +868,7 @@ function AgentContextPanel({
       {agent.status === 'running' && <AgentSteeringControls taskId={agent.id} />}
 
       <div className="mt-4 space-y-2">
+        {agent.status === 'running' && agent.current_action && <DetailRow label="Doing" value={agent.current_action} />}
         <DetailRow label="Elapsed" value={elapsed} />
         {agent.skill && <DetailRow label="Skill" value={agent.skill} />}
         {agent.frontier_item_id && <DetailRow label="Frontier" value={agent.frontier_item_id} mono />}
@@ -944,6 +989,11 @@ function AgentCard({
         )}
         {rate && <span className="text-accent text-[10px]">{rate}/min</span>}
       </div>
+      {agent.status === 'running' && agent.current_action && (
+        <div className="text-[10px] text-foreground/70 mt-1 ml-6 truncate" title={agent.current_action}>
+          <span className="text-muted-foreground">doing: </span>{agent.current_action}
+        </div>
+      )}
       {summary && <div className="text-[10px] text-muted-foreground mt-1 ml-6 truncate">{summary}</div>}
     </div>
   );

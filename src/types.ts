@@ -852,7 +852,8 @@ export type AgentDirectiveKind =
   | 'stop'         // wrap up + exit; the service kills the process
   | 'narrow_scope' // restrict work to node_ids
   | 'skip_types'   // ignore frontier items of frontier_types
-  | 'prioritize';  // do frontier_types first
+  | 'prioritize'   // do frontier_types first
+  | 'instruct';    // free-text operator instruction in `note` — agent reads + honors it
 
 export interface AgentDirective {
   id: string;
