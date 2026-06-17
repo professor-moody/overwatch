@@ -114,6 +114,26 @@ describe('/api/commands — planner-proposed plan confirm + deny + GET /api/plan
     expect(engine.getProposedPlanStore().getOpen().some(p => p.plan_id === plan.plan_id)).toBe(false);
   });
 
+  it('reports planner_available:false when NO task-execution service is attached (dashboard-only)', async () => {
+    const eng = new GraphEngine(makeConfig(), join(tempDir, 'state-noexec.json'));
+    const dash = new DashboardServer(eng, 0, '127.0.0.1', undefined, undefined);
+    // deliberately do NOT attachTaskExecution
+    const started = await dash.start();
+    if (!started.started) throw new Error('dashboard failed to start');
+    try {
+      const r = await (await fetch(`${dash.address}/api/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'go do something clever and free-form' }),
+      })).json();
+      expect(r.needs_planner).toBe(true);
+      expect(r.planner_available).toBe(false);
+      expect(r.planner_task_id).toBeUndefined();
+      expect(eng.getAgentTasks().some(t => t.role === 'planner')).toBe(false);
+    } finally {
+      await dash.stop().catch(() => {});
+    }
+  });
+
   it('deny dismisses a proposed plan without executing it', async () => {
     const plan = engine.getProposedPlanStore().add({
       command: 'do a risky thing',

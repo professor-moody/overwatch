@@ -1267,7 +1267,10 @@ export class DashboardServer {
    * null if the headless runtime isn't available.
    */
   private dispatchPlanner(command: string, state: InterpreterState): string | null {
-    if (this.taskExecution && !this.taskExecution.isHeadlessAvailable()) return null;
+    // No task-execution service attached (e.g. a dashboard-only deployment) or
+    // no /mcp endpoint (stdio mode) → headless is unavailable; report it instead
+    // of registering a planner task that can never launch.
+    if (!this.taskExecution || !this.taskExecution.isHeadlessAvailable()) return null;
     const taskId = randomUUID();
     const reg = this.engine.registerAgent({
       id: taskId,
