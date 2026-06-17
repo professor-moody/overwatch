@@ -70,6 +70,7 @@ nav:
     - Smoke Test: smoke-test.md
   - Architecture:
     - Overview: architecture.md
+    - Deployment & Drivers: deployment-architecture.md
     - Key Concepts: concepts.md
     - Graph Model: graph-model.md
     - Threat Model: threat-model.md

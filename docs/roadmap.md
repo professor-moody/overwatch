@@ -69,6 +69,12 @@ These remain important but are not the active dashboard-polish sprint.
   data, inferred edges, manual analyst input, and external imports.
 - **Anti-canary detection:** flag honey credentials or canary-like target output
   before it drives the frontier.
+- **Transport drivers / no-MCP internal mode:** Overwatch's engine is
+  transport-agnostic and MCP is one driver, not the brain. Add a no-MCP internal
+  driver (headless Claude + an `overwatch` CLI / local HTTP) for environments where
+  MCP is unavailable, plus operator target-execution endpoints — same executor,
+  same lifecycle and audit. The MCP driver stays first-class for external lab work.
+  See [Deployment Architecture](deployment-architecture.md).
 - **Process-isolated subagents:** move beyond the current scaffold toward
   role-by-role parity with schema-validated IPC.
 - **Parser sandboxing:** constrain file-backed parser input and parser runtime
