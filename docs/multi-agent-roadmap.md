@@ -81,6 +81,43 @@ The heaviest backend, and the biggest "team" leap.
 - **Operator memory → compiled policies** — operator preferences ("low-noise first", "approval-all on production", "expand GitHub before cloud", "at most one target-facing agent per subnet") compiled into *explicit* approval/scope/dispatch rules — not hidden prompt text.
 - **NL retrospective + report drafting** — a natural-language narrative over the existing structured retrospective ("what worked, what wasted time, what the next operator should do"), and a drafting surface over the report generator ("draft this finding", "make this client-safe", "turn these into an executive narrative").
 
+## Agent capability & usefulness
+
+The archetypes are real tool-surface boundaries, but a useful agent needs more
+than the right `--allowedTools`: it needs a capability loop that actually
+produces graph-grade findings, end to end. This track makes each agent type
+genuinely *capable*, not just *scoped*:
+
+- **End-to-end capability loops** — for each archetype, a validated
+  objective → tool selection → output → `parse_output`/`report_finding` loop
+  that lands real nodes/edges/findings (not prose). Today only `credential_test`
+  has a deterministic scripted runner; the reasoning archetypes lean entirely on
+  the headless model.
+- **Skill + prompt quality** — sharpen each archetype's default skill/objective
+  and bootstrap prompt so it knows its tools, its scope strategy, and when to
+  escalate (`ask_operator`) vs. proceed.
+- **Remaining archetypes** — flesh out `evidence_auditor`, `opsec_sentinel`,
+  `session_shepherd`, `cloud_cartographer` (the Phase-4 starter set) with real
+  tool surfaces and capability loops.
+- **Agent eval harness** — a way to *validate* that an archetype is useful:
+  fixture engagements + scripted/fake-claude runs asserting each type produces
+  the findings it should, so capability is regression-tested, not assumed.
+
+## Provenance surfaces — consolidate Evidence and Analysis
+
+The [Analysis workspace](operator-cockpit.md) added a **run-centric** lens (the
+raw output a tool produced). The **Evidence** tab is **node-centric** (a node's
+provenance chain). They are complementary but currently overlap awkwardly — the
+Evidence tab also carries a redundant Attack Paths finder (already its own nav
+item). The consolidation:
+
+- Drop the redundant Attack Paths block from Evidence.
+- Cross-link the two lenses: an Analysis run's linked nodes → that node's
+  evidence chain; an evidence chain → the runs that produced it.
+- Node-provenance is most useful *contextually* (NodeDetailDrawer, finding
+  detail). End state: one provenance story across contextual surfaces + Analysis,
+  with Evidence merged in or demoted rather than a standalone search-only tab.
+
 ## Acceptance gates
 
 Each phase ships as its own reviewed PR, merged in sequence, and passes the standing gates:
