@@ -187,11 +187,56 @@ export interface DispatchAgentResult {
   existing_agent_id?: string;
 }
 
+export interface AgentArchetypeSummary {
+  id: string;
+  label: string;
+  description: string;
+  role: string;
+  defaultSkill?: string;
+  suitableFor: { frontierTypes?: string[]; nodeTypes?: string[]; rawTarget?: boolean };
+}
+
+/** The agent-type catalog for the Deploy picker (Phase 5c). */
+export async function getArchetypes(): Promise<{ archetypes: AgentArchetypeSummary[] }> {
+  return fetchJson('/api/agent-archetypes');
+}
+
+export interface QuickDeployResult {
+  dispatched: boolean;
+  task?: { id: string; agent_id: string; archetype?: string; objective?: string };
+  archetype?: string;
+  scope?: { added_cidrs: string[]; added_domains: string[]; affected_node_count: number };
+  reason?: string;
+}
+
+/** Ad-hoc real-time deploy: scope a raw IP/CIDR/domain + dispatch an agent at it.
+ *  201 success and 409 refusal return structured results so the UI can render a
+ *  clean toast; a 400 (e.g. engine scope validation rejecting a CIDR the loose
+ *  client regex let through) is normalized to a non-dispatched result with the
+ *  server's message; only unexpected statuses throw. */
+export async function quickDeploy(body: { target: string; archetype?: string }): Promise<QuickDeployResult> {
+  const res = await fetch(`${BASE}/api/agents/quick-deploy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 201 || res.status === 409) {
+    return res.json() as Promise<QuickDeployResult>;
+  }
+  if (res.status === 400) {
+    const j = await res.json().catch(() => ({})) as { error?: string; reason?: string };
+    return { dispatched: false, reason: j.reason || j.error || 'invalid request' };
+  }
+  const text = await res.text().catch(() => '');
+  throw new Error(`${res.status} ${res.statusText}: ${text}`);
+}
+
 export async function dispatchAgent(body: {
   target_node_ids?: string[];
   skill?: string;
   campaign_id?: string;
   frontier_item_id?: string;
+  archetype?: string;
 }): Promise<DispatchAgentResult> {
   // The server (handleAgentDispatch) reads `target_node_ids` (400s on empty) and
   // returns 409 with { dispatched:false, reason:'frontier_lease_conflict', ... }

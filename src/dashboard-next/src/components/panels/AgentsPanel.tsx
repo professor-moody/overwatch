@@ -4,7 +4,7 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { useToastStore } from '../../stores/toast-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
-import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
+import type { AgentInfo, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
 import { sessionsForAgent } from '../../lib/session-workspace';
 import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
@@ -17,6 +17,7 @@ import { AttentionQueue } from './AttentionQueue';
 import { MissionCard } from './MissionCard';
 import { AgentThread } from './AgentThread';
 import { AddTargetsModal } from './AddTargetsModal';
+import { DeployModal } from './DeployModal';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
 import { ActionButton, FilterBar, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
@@ -326,7 +327,7 @@ export function AgentsPanel() {
             variant="ghost"
             className="text-accent"
           >
-            Dispatch Subagent
+            Deploy
           </ActionButton>
           <ActionButton
             onClick={() => setShowBulkDispatch(true)}
@@ -466,11 +467,11 @@ export function AgentsPanel() {
         </div>
       )}
 
-      {/* Dispatch Modal */}
+      {/* Deploy Modal — recommended-or-chosen agent type at a target (Phase 5c) */}
       {showDispatch && (
-        <DispatchModal
+        <DeployModal
           onClose={() => setShowDispatch(false)}
-          onDispatched={() => { setShowDispatch(false); refreshAgents(); }}
+          onDeployed={() => { setShowDispatch(false); refreshAgents(); }}
         />
       )}
 
@@ -1046,113 +1047,6 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
     <div className="flex items-start gap-2 text-xs">
       <span className="text-muted-foreground w-24 flex-shrink-0">{label}</span>
       <span className={cn('text-foreground break-all', mono && 'font-mono text-[10px]')}>{value}</span>
-    </div>
-  );
-}
-
-// ---- Dispatch Modal ----
-
-function DispatchModal({ onClose, onDispatched }: { onClose: () => void; onDispatched: () => void }) {
-  const [nodeIds, setNodeIds] = useState<string[]>([]);
-  const [nodeInput, setNodeInput] = useState('');
-  const [skill, setSkill] = useState('');
-  const [campaignId, setCampaignId] = useState('');
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [dispatching, setDispatching] = useState(false);
-  const addToast = useToastStore(s => s.addToast);
-
-  useEffect(() => {
-    api.getCampaigns().then(d => setCampaigns(d.campaigns || [])).catch(() => {});
-  }, []);
-
-  const addNodeId = () => {
-    const id = nodeInput.trim();
-    if (id && !nodeIds.includes(id)) { setNodeIds([...nodeIds, id]); setNodeInput(''); }
-  };
-
-  const dispatch = async () => {
-    if (nodeIds.length === 0) return;
-    setDispatching(true);
-    try {
-      const res = await api.dispatchAgent({
-        target_node_ids: nodeIds,
-        skill: skill || undefined,
-        campaign_id: campaignId || undefined,
-      });
-      addToast({
-        type: res.dispatched ? 'success' : 'warning',
-        title: res.dispatched ? 'Agent dispatched' : 'Not dispatched',
-        message: res.dispatched ? res.task?.agent_id : res.reason,
-      });
-      if (res.dispatched) onDispatched();
-    } catch (err) {
-      addToast({ type: 'error', title: 'Dispatch failed', message: err instanceof Error ? err.message : String(err) });
-    } finally { setDispatching(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40" />
-      <div className="relative bg-surface border border-border rounded-lg p-5 w-96 shadow-xl" onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-3">Dispatch Agent</h3>
-
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Target Nodes</label>
-            <div className="flex gap-1 flex-wrap mb-1">
-              {nodeIds.map(id => (
-                <span key={id} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-foreground flex items-center gap-1">
-                  {id.slice(0, 16)}
-                  <button onClick={() => setNodeIds(nodeIds.filter(x => x !== id))} className="text-muted-foreground hover:text-foreground">✕</button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-1">
-              <input
-                value={nodeInput}
-                onChange={e => setNodeInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addNodeId(); } }}
-                placeholder="Node ID…"
-                className="flex-1 text-xs px-2 py-1 bg-elevated border border-border rounded text-foreground placeholder:text-muted-foreground"
-              />
-              <button onClick={addNodeId} className="text-xs px-2 py-1 rounded bg-accent/10 text-accent">Add</button>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Skill (optional)</label>
-            <input
-              value={skill}
-              onChange={e => setSkill(e.target.value)}
-              placeholder="e.g. credential_spray"
-              className="w-full text-xs px-2 py-1 bg-elevated border border-border rounded text-foreground placeholder:text-muted-foreground"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Campaign (optional)</label>
-            <select
-              value={campaignId}
-              onChange={e => setCampaignId(e.target.value)}
-              className="w-full text-xs px-2 py-1 bg-elevated border border-border rounded text-foreground"
-            >
-              <option value="">None</option>
-              {campaigns.map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2 mt-4">
-          <button onClick={onClose} className="text-xs px-3 py-1.5 rounded border border-border text-muted-foreground hover:text-foreground">Cancel</button>
-          <button
-            onClick={dispatch}
-            disabled={nodeIds.length === 0 || dispatching}
-            className="text-xs px-3 py-1.5 rounded bg-accent text-background hover:bg-accent/90 disabled:opacity-50"
-          >
-            {dispatching ? 'Dispatching…' : 'Dispatch'}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
