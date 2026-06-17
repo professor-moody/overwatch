@@ -16,7 +16,7 @@ import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { opsecPartialUpdateSchema, type Campaign } from '../types.js';
+import { opsecPartialUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
@@ -703,6 +703,7 @@ export class DashboardServer {
       const agentHistoryMatch = pathname.match(/^\/api\/agents\/([^/]+)\/history$/);
       const agentConsoleMatch = pathname.match(/^\/api\/agents\/([^/]+)\/console$/);
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
+      const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
       const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
       const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
@@ -729,6 +730,8 @@ export class DashboardServer {
         this.serveAgentConsole(decodeURIComponent(agentConsoleMatch[1]), url, res);
       } else if (agentCancelMatch && method === 'POST') {
         this.handleAgentCancel(decodeURIComponent(agentCancelMatch[1]), req, res);
+      } else if (agentDirectiveMatch && method === 'POST') {
+        this.handleAgentDirective(decodeURIComponent(agentDirectiveMatch[1]), req, res);
       } else if (objectiveMatch && method === 'PATCH') {
         this.handleUpdateObjective(objectiveMatch[1], req, res);
       } else if (objectiveMatch && method === 'DELETE') {
@@ -1800,6 +1803,64 @@ export class DashboardServer {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ cancelled: true, process_killed: killed, task: updated }));
+  }
+
+  // ---- Per-agent steering (Phase 3B) ----
+  // Single-click directive on one agent. Builds one OperatorOp and runs it
+  // through the SAME validated executeOps path the command bar uses — no new
+  // mutation surface. Kinds: pause/resume/stop/narrow_scope/skip_types/prioritize
+  // (+ free-text 'instruct' once Stage 2 adds it).
+  private static DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
+    'pause', 'resume', 'stop', 'narrow_scope', 'skip_types', 'prioritize',
+  ];
+
+  private handleAgentDirective(taskId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const kind = typeof b.kind === 'string' ? b.kind : '';
+      if (!DashboardServer.DIRECTIVE_KINDS.includes(kind as AgentDirectiveKind)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `unknown directive kind "${kind}"` }));
+        return;
+      }
+      const task = this.engine.getTask(taskId);
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent task not found' }));
+        return;
+      }
+      if (task.status !== 'running') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Agent is ${task.status} — directives only apply to running agents` }));
+        return;
+      }
+      const op: OperatorOp = {
+        op: 'directive',
+        task_id: taskId,
+        agent_label: task.agent_id,
+        kind: kind as AgentDirectiveKind,
+        node_ids: Array.isArray(b.node_ids) ? (b.node_ids as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
+        frontier_types: Array.isArray(b.frontier_types) ? (b.frontier_types as unknown[]).filter(x => typeof x === 'string') as string[] : undefined,
+        note: typeof b.note === 'string' ? b.note : undefined,
+      };
+      const results = executeOps(this.engine, [op], 'operator');
+      this.engine.logActionEvent({
+        description: `Operator directive: ${kind} → ${task.agent_id}`,
+        event_type: 'operator_command',
+        category: 'system',
+        source_kind: 'dashboard',
+        result_classification: results[0]?.ok ? 'success' : 'failure',
+        linked_agent_task_id: taskId,
+        details: { reason: 'operator_command', source: 'dashboard', command: `${kind} ${task.agent_id}`, results },
+      });
+      this.engine.persist();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: results[0]?.ok ?? false, results }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
   }
 
   private serveCampaigns(res: ServerResponse): void {

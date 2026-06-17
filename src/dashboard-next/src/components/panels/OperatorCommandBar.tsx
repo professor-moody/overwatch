@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from '../../lib/api';
 import { cn } from '../../lib/utils';
+import { POLL } from '../../lib/polling';
 import { ActionButton } from '../shared/primitives';
 
 // Phase 3A NL operator cockpit: type a plain-English command → it becomes a
@@ -18,7 +19,6 @@ type Phase =
   | { kind: 'result'; ok: boolean; text: string }
   | { kind: 'error'; text: string };
 
-const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_TRIES = 45; // ~90s for a planner to return
 
 function describeOp(op: api.OperatorOp): string {
@@ -59,7 +59,7 @@ export function OperatorCommandBar() {
           setPhase({ kind: 'error', text: 'The planner did not return a plan in time.' });
         }
       }).catch(() => { /* transient — keep polling */ });
-    }, POLL_INTERVAL_MS);
+    }, POLL.PLAN_POLL_MS);
   }, [clearPoll]);
 
   const submit = useCallback(async () => {
