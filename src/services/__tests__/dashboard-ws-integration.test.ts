@@ -82,6 +82,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Resolve any approval timers still armed by seedApproval() so a future
+  // submit-without-resolve test can't leak a 5-minute handle.
+  try { engine.getPendingActionQueue().dispose(); } catch { /* */ }
   await dashboard.stop().catch(() => {});
   if (existsSync(stateFile)) try { unlinkSync(stateFile); } catch { /* */ }
   if (tempDir && existsSync(tempDir)) try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* */ }
@@ -329,4 +332,100 @@ describe('WS state-payload stability', () => {
       conn.close();
     }
   }, 6_000);
+});
+
+// =============================================
+// Dashboard approve/deny → action_resolved + durable record
+//
+// Phase 4b enables in-console (and in-Actions-panel) approve/deny buttons that
+// POST /api/actions/:id/approve|deny. The console clears resolved approvals off
+// the live `action_resolved` WS push, and the audit trail relies on the durable
+// approval record flipping to approved/denied. Pin that the canonical
+// resolveApprovalRequest path still fires both, so re-enabling the UI buttons
+// can't silently break clear-on-WS or the audit record.
+// =============================================
+
+function seedApproval(actionId: string) {
+  const action = {
+    action_id: actionId,
+    technique: 'credential_spray',
+    target_node: 'host-jump',
+    description: `spray creds (${actionId})`,
+    noise_level: 0.5,
+  };
+  // Durable record (audit trail) + live queue entry (what the dashboard serves
+  // and what approve/deny resolves). submit() returns a promise that only
+  // settles on resolution — capture it so the test can confirm + so the 5-min
+  // timeout timer is cleared when we approve/deny.
+  engine.recordApprovalRequest(action);
+  const resolved = engine.getPendingActionQueue().submit(action);
+  return resolved;
+}
+
+// NOTE: the action ids below are `act_<hex>` — the shape `deterministicActionId`
+// produces for every nonce-bearing engagement (and the auto-minted nonce makes
+// that the norm). The approve/deny route must accept the `act_` underscore; a
+// hex-only route class silently 404s real actions, so these ids guard against
+// that regression.
+describe('WS action_resolved push + durable record on dashboard approve/deny', () => {
+  it('approve emits action_resolved and flips the durable record to approved', async () => {
+    const conn = await openWs();
+    const resolved = seedApproval('act_deadbeef00010002');
+    try {
+      const res = await fetch(`${baseUrl}/api/actions/act_deadbeef00010002/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: 'reviewed in console' }),
+      });
+      expect(res.status).toBe(200);
+
+      const msg = await conn.awaitMessage(
+        m => m.type === 'action_resolved' && (m.data as { action_id?: string }).action_id === 'act_deadbeef00010002',
+      );
+      expect((msg.data as { status?: string }).status).toBe('approved');
+
+      // The awaiting tool unblocks with the resolution, and the durable audit
+      // record reflects the approval + operator notes.
+      expect((await resolved).status).toBe('approved');
+      const record = engine.getApprovalRequest('act_deadbeef00010002');
+      expect(record?.status).toBe('approved');
+      expect(record?.operator_notes).toBe('reviewed in console');
+    } finally {
+      conn.close();
+    }
+  }, 6_000);
+
+  it('deny emits action_resolved and records the denial reason', async () => {
+    const conn = await openWs();
+    const resolved = seedApproval('act_deadbeef00020003');
+    try {
+      const res = await fetch(`${baseUrl}/api/actions/act_deadbeef00020003/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'too noisy for this phase' }),
+      });
+      expect(res.status).toBe(200);
+
+      const msg = await conn.awaitMessage(
+        m => m.type === 'action_resolved' && (m.data as { action_id?: string }).action_id === 'act_deadbeef00020003',
+      );
+      expect((msg.data as { status?: string }).status).toBe('denied');
+
+      expect((await resolved).status).toBe('denied');
+      const record = engine.getApprovalRequest('act_deadbeef00020003');
+      expect(record?.status).toBe('denied');
+      expect(record?.reason).toBe('too noisy for this phase');
+    } finally {
+      conn.close();
+    }
+  }, 6_000);
+
+  it('returns 404 when approving an unknown / already-resolved action', async () => {
+    const res = await fetch(`${baseUrl}/api/actions/act_ffffffffffffffff/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+  });
 });

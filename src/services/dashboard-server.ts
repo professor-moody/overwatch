@@ -727,8 +727,12 @@ export class DashboardServer {
       const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/split$/);
       const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
       const actionExplainMatch = pathname.match(/^\/api\/actions\/([^/]+)\/explain$/);
-      const actionApproveMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/approve$/);
-      const actionDenyMatch = pathname.match(/^\/api\/actions\/([a-f0-9-]+)\/deny$/);
+      // Action ids are `act_<hex>` (deterministic, nonce-bearing engagements) or
+      // a uuid — both fall outside [a-f0-9-] because of the `act_` underscore, so
+      // a hex-only class silently 404s every real action. Match the full id
+      // charset (the queue does an exact lookup, so an unknown id is just a 404).
+      const actionApproveMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/approve$/);
+      const actionDenyMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/deny$/);
       const sessionCloseMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/close$/);
       const sessionBufferMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)\/buffer$/);
       const sessionDetailMatch = pathname.match(/^\/api\/sessions\/([a-f0-9-]+)$/);
