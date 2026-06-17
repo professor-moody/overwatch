@@ -14,7 +14,8 @@ import {
   getFrontierNodeIds,
 } from '../../lib/frontier-workspace';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
-import { getFindings, type FindingDto } from '../../lib/api';
+import { getFindings, dispatchAgent, type FindingDto } from '../../lib/api';
+import { useToastStore } from '../../stores/toast-store';
 
 const SECTION_PRIORITY_LIMIT = 8;
 const SECTION_DEFAULT_LIMIT = 5;
@@ -211,6 +212,8 @@ function FrontierItemCard({
   related?: ReturnType<typeof deriveNodeRelationships> | null;
 }) {
   const { navigateToGraphTarget } = useNavigation();
+  const addToast = useToastStore(s => s.addToast);
+  const [dispatching, setDispatching] = useState(false);
   const badge = TYPE_BADGE[item.type] || TYPE_BADGE.incomplete_node;
   const noise = item.opsec_noise ?? 0;
   const noisePercent = Math.round(noise * 100);
@@ -235,6 +238,19 @@ function FrontierItemCard({
   const nodeIds = getFrontierNodeIds(item);
   const frontierKey = getFrontierKey(item);
 
+  // Quick-dispatch a headless agent scoped to this frontier item (lease links
+  // via frontier_item_id). Reuses the validated /api/agents/dispatch path.
+  const dispatch = async () => {
+    if (nodeIds.length === 0 || dispatching) return;
+    setDispatching(true);
+    try {
+      const res = await dispatchAgent({ target_node_ids: nodeIds, frontier_item_id: frontierKey });
+      addToast({ type: res.dispatched ? 'success' : 'warning', title: res.dispatched ? 'Agent dispatched' : 'Not dispatched', message: res.dispatched ? res.task?.agent_id : res.reason });
+    } catch (err) {
+      addToast({ type: 'error', title: 'Dispatch failed', message: err instanceof Error ? err.message : String(err) });
+    } finally { setDispatching(false); }
+  };
+
   return (
     <div className="px-3 py-3 border-b border-border last:border-b-0 hover:bg-hover/50 transition-colors">
       <div className="flex items-start gap-2 mb-1.5">
@@ -243,14 +259,26 @@ function FrontierItemCard({
           {label}
         </span>
         {nodeIds.length > 0 && (
-          <ActionButton
-            onClick={() => navigateToGraphTarget({ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' })}
-            variant="secondary"
-            size="xs"
-            className="flex-shrink-0"
-          >
-            Inspect
-          </ActionButton>
+          <>
+            <ActionButton
+              onClick={() => navigateToGraphTarget({ kind: 'frontier', frontierItemId: frontierKey, nodeIds, label: 'Frontier item' })}
+              variant="secondary"
+              size="xs"
+              className="flex-shrink-0"
+            >
+              Inspect
+            </ActionButton>
+            <ActionButton
+              onClick={dispatch}
+              variant="purple"
+              size="xs"
+              disabled={dispatching}
+              className="flex-shrink-0"
+              title="Dispatch a headless agent scoped to this frontier item"
+            >
+              {dispatching ? '…' : 'Dispatch'}
+            </ActionButton>
+          </>
         )}
         <span className="text-xs font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
       </div>

@@ -150,15 +150,53 @@ export async function cancelAgent(agentId: string): Promise<{ ok: boolean }> {
   return fetchJson(`/api/agents/${agentId}/cancel`, { method: 'POST' });
 }
 
+export type DirectiveKind = 'pause' | 'resume' | 'stop' | 'narrow_scope' | 'skip_types' | 'prioritize';
+
+/**
+ * Steer a single running agent. Routes through the same validated executeOps
+ * path as the command bar (POST /api/agents/:id/directive). 200 with the op
+ * result, 409 if the agent isn't running, 400 on an unknown kind.
+ */
+export async function issueDirective(
+  taskId: string,
+  kind: DirectiveKind,
+  opts: { node_ids?: string[]; frontier_types?: string[]; note?: string } = {},
+): Promise<{ ok: boolean; results: unknown[] }> {
+  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/directive`, {
+    method: 'POST',
+    body: JSON.stringify({ kind, ...opts }),
+  });
+}
+
+export interface DispatchAgentResult {
+  dispatched: boolean;
+  task?: { id: string; agent_id: string };
+  reason?: string;
+  existing_task_id?: string;
+  existing_agent_id?: string;
+}
+
 export async function dispatchAgent(body: {
-  node_ids?: string[];
+  target_node_ids?: string[];
   skill?: string;
   campaign_id?: string;
-}): Promise<unknown> {
-  return fetchJson('/api/agents/dispatch', {
+  frontier_item_id?: string;
+}): Promise<DispatchAgentResult> {
+  // The server (handleAgentDispatch) reads `target_node_ids` (400s on empty) and
+  // returns 409 with { dispatched:false, reason:'frontier_lease_conflict', ... }
+  // when the item is already leased. Treat that 409 as a STRUCTURED result (not
+  // an exception) so callers can show "already being worked" cleanly; other
+  // non-2xx still throw.
+  const res = await fetch(`${BASE}/api/agents/dispatch`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (res.status === 201 || res.status === 409) {
+    return res.json() as Promise<DispatchAgentResult>;
+  }
+  const text = await res.text().catch(() => '');
+  throw new Error(`${res.status} ${res.statusText}: ${text}`);
 }
 
 // --- NL operator cockpit (Phase 3A) ---

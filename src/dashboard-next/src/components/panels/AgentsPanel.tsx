@@ -1,12 +1,16 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type RefObject } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useToastStore } from '../../stores/toast-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import * as api from '../../lib/api';
 import type { AgentInfo, Campaign, AgentConsoleEvent, AgentConsoleKind } from '../../lib/types';
 import { buildOperatorConsoleEvents } from '../../lib/operator-console';
+import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
+import { POLL } from '../../lib/polling';
 import { OperatorCommandBar } from './OperatorCommandBar';
 import { cn, formatElapsed, formatTimestamp } from '../../lib/utils';
-import { ActionButton, EmptyPanelState, FilterBar, InspectorDrawer, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
+import { ActionButton, FilterBar, InspectorDrawer, MetricTile, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
@@ -101,13 +105,25 @@ export function AgentsPanel() {
   const running = agents.filter(a => a.status === 'running');
   const completed = agents.filter(a => a.status === 'completed');
   const failed = agents.filter(a => a.status === 'failed' || a.status === 'interrupted');
+  // Select by task id OR agent label so deep-links from other panels (e.g. a
+  // SessionRow chip carrying the agent label) resolve.
   const activeAgent = activeAgentId === 'all'
     ? null
-    : agents.find(agent => agent.id === activeAgentId) || null;
+    : agents.find(agent => agent.id === activeAgentId || agent.agent_id === activeAgentId) || null;
 
   useEffect(() => {
     if (activeAgentId !== 'all' && !activeAgent) setActiveAgentId('all');
   }, [activeAgent, activeAgentId]);
+
+  // Honor the ?item=<id|label> deep-link convention every sibling panel uses,
+  // so cross-links into the Operator console select the targeted agent.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const item = searchParams.get('item');
+    if (item && agents.some(a => a.id === item || a.agent_id === item)) {
+      setActiveAgentId(item);
+    }
+  }, [searchParams, agents]);
 
   const toggleGroup = (gid: string) => {
     setCollapsedGroups(prev => { const n = new Set(prev); n.has(gid) ? n.delete(gid) : n.add(gid); return n; });
@@ -177,7 +193,7 @@ export function AgentsPanel() {
     // cockpit view, slower for a single-agent drawer.
     const timer = setInterval(() => {
       if (connected) void loadConsole();
-    }, activeAgent ? 8000 : 3000);
+    }, activeAgent ? POLL.CONSOLE_DRAWER_MS : POLL.CONSOLE_PRIMARY_MS);
     return () => clearInterval(timer);
   }, [activeAgent, connected, consolePaused, loadConsole]);
 
@@ -675,6 +691,88 @@ function AgentOutputConsole({
   );
 }
 
+// Per-agent lifecycle steering (Phase 3B). One-click directives routed through
+// the validated /api/agents/:id/directive → executeOps path. Targeted kinds
+// (narrow_scope/skip_types/prioritize) + free-text instruction come via the
+// per-agent NL box in Stage 2.
+function AgentSteeringControls({ taskId, onIssued }: { taskId: string; onIssued?: () => void }) {
+  const addToast = useToastStore(s => s.addToast);
+  const [busy, setBusy] = useState<string | null>(null);
+  const issue = async (kind: api.DirectiveKind) => {
+    setBusy(kind);
+    try {
+      const res = await api.issueDirective(taskId, kind);
+      addToast({ type: res.ok ? 'success' : 'warning', title: `Directive: ${kind}`, message: res.ok ? 'issued — agent honors it on its next heartbeat' : 'not applied' });
+      onIssued?.();
+    } catch (err) {
+      addToast({ type: 'error', title: `Directive failed: ${kind}`, message: err instanceof Error ? err.message : String(err) });
+    } finally { setBusy(null); }
+  };
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Steer</div>
+      <div className="flex flex-wrap gap-1.5">
+        <ActionButton size="xs" variant="warning" disabled={!!busy} onClick={() => issue('pause')}>Pause</ActionButton>
+        <ActionButton size="xs" variant="success" disabled={!!busy} onClick={() => issue('resume')}>Resume</ActionButton>
+        <ActionButton size="xs" variant="danger" disabled={!!busy} onClick={() => issue('stop')}>Stop</ActionButton>
+      </div>
+    </div>
+  );
+}
+
+// Live summary of the engagement's agent fleet shown when no sub-agent is
+// selected (replaces the old static stub). Reads the store directly.
+function PrimaryOperatorPanel() {
+  const agents = useEngagementStore(s => s.agents);
+  const pendingActions = useEngagementStore(s => s.pendingActions);
+  const campaigns = useEngagementStore(s => s.campaigns);
+  const recentActivity = useEngagementStore(s => s.recentActivity);
+  const { navigateToPanel } = useNavigation();
+
+  const running = agents.filter(a => a.status === 'running').length;
+  const queued = agents.filter(a => a.status === 'pending').length;
+  const done = agents.filter(a => a.status === 'completed').length;
+  const failed = agents.filter(a => a.status === 'failed').length;
+  const activeCampaigns = campaigns.filter(c => c.status === 'active').length;
+  const latestPrimary = [...recentActivity].reverse().find(
+    e => e.event_type !== 'heartbeat' && (e.source_kind === 'primary' || (!e.agent_id && e.source_kind !== 'subagent')),
+  );
+
+  return (
+    <PanelSection className="min-h-0 overflow-y-auto">
+      <h3 className="text-sm font-semibold text-foreground">Primary Operator</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        The primary model orchestrates; sub-agents are dispatched workers. Select one to inspect &amp; steer it.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <MetricTile label="Running" value={running} accent={running > 0} onClick={() => navigateToPanel('agents')} />
+        <MetricTile label="Queued" value={queued} />
+        <MetricTile label="Completed" value={done} />
+        <MetricTile label="Failed" value={failed} />
+      </div>
+
+      <div className="mt-3 space-y-2 rounded border border-border bg-background/40 p-3 text-xs">
+        <button onClick={() => navigateToPanel('actions')} className="flex w-full items-center justify-between hover:text-accent">
+          <span className="text-muted-foreground">Pending approvals</span>
+          <StatusPill tone={pendingActions.length ? 'warning' : 'muted'}>{String(pendingActions.length)}</StatusPill>
+        </button>
+        <button onClick={() => navigateToPanel('campaigns')} className="flex w-full items-center justify-between hover:text-accent">
+          <span className="text-muted-foreground">Active campaigns</span>
+          <StatusPill tone={activeCampaigns ? 'accent' : 'muted'}>{String(activeCampaigns)}</StatusPill>
+        </button>
+      </div>
+
+      {latestPrimary && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Latest primary activity</div>
+          <div className="rounded border border-border bg-background/40 p-2 text-xs text-foreground/90">{latestPrimary.description}</div>
+        </div>
+      )}
+    </PanelSection>
+  );
+}
+
 function AgentContextPanel({
   agent,
   context,
@@ -691,19 +789,7 @@ function AgentContextPanel({
   onNavigateCampaign: (campaignId: string) => void;
 }) {
   if (!agent) {
-    return (
-      <PanelSection className="min-h-0 overflow-hidden">
-        <h3 className="text-sm font-semibold text-foreground">Primary Operator</h3>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Main model output is shown in the center stream. Subagents appear here only when selected.
-        </p>
-        <div className="mt-4 space-y-2 rounded border border-border bg-background/40 p-3 text-xs">
-          <DetailRow label="Source" value="Primary Operator" />
-          <DetailRow label="Model" value="Configured by MCP client or OVERWATCH_OPERATOR_MODEL" />
-          <DetailRow label="Subagents" value="Secondary, optional workers" />
-        </div>
-      </PanelSection>
-    );
+    return <PrimaryOperatorPanel />;
   }
 
   const elapsed = agent.elapsed_ms
@@ -734,6 +820,8 @@ function AgentContextPanel({
           </ActionButton>
         )}
       </div>
+
+      {agent.status === 'running' && <AgentSteeringControls taskId={agent.id} />}
 
       <div className="mt-4 space-y-2">
         <DetailRow label="Elapsed" value={elapsed} />
@@ -970,6 +1058,8 @@ function AgentDetailDrawer({
               {agent.status}
             </StatusPill>
         </div>
+
+        {agent.status === 'running' && <AgentSteeringControls taskId={agent.id} onIssued={loadConsole} />}
 
         <div className="space-y-3">
           <DetailRow label="Status" value={agent.status} />
@@ -1225,6 +1315,7 @@ function DispatchModal({ onClose, onDispatched }: { onClose: () => void; onDispa
   const [campaignId, setCampaignId] = useState('');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [dispatching, setDispatching] = useState(false);
+  const addToast = useToastStore(s => s.addToast);
 
   useEffect(() => {
     api.getCampaigns().then(d => setCampaigns(d.campaigns || [])).catch(() => {});
@@ -1239,13 +1330,20 @@ function DispatchModal({ onClose, onDispatched }: { onClose: () => void; onDispa
     if (nodeIds.length === 0) return;
     setDispatching(true);
     try {
-      await api.dispatchAgent({
-        node_ids: nodeIds,
+      const res = await api.dispatchAgent({
+        target_node_ids: nodeIds,
         skill: skill || undefined,
         campaign_id: campaignId || undefined,
       });
-      onDispatched();
-    } catch { /* silent */ } finally { setDispatching(false); }
+      addToast({
+        type: res.dispatched ? 'success' : 'warning',
+        title: res.dispatched ? 'Agent dispatched' : 'Not dispatched',
+        message: res.dispatched ? res.task?.agent_id : res.reason,
+      });
+      if (res.dispatched) onDispatched();
+    } catch (err) {
+      addToast({ type: 'error', title: 'Dispatch failed', message: err instanceof Error ? err.message : String(err) });
+    } finally { setDispatching(false); }
   };
 
   return (
@@ -1322,6 +1420,7 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [skill, setSkill] = useState('');
   const [dispatching, setDispatching] = useState(false);
+  const addToast = useToastStore(s => s.addToast);
 
   const topItems = frontier.slice(0, 20);
 
@@ -1344,22 +1443,33 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
   const dispatchAll = async () => {
     if (selectedItemIds.size === 0) return;
     setDispatching(true);
-    const selected = topItems.filter(i => selectedItemIds.has(i.frontier_item_id || i.id));
+    const selected = topItems.filter(i => selectedItemIds.has(getFrontierKey(i)));
     try {
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         selected.map(item => {
-          const nodeIds = [item.target_node, item.source_node, item.node_id, item.edge_source, item.edge_target]
-            .filter((n): n is string => !!n);
-          const uniqueNodes = [...new Set(nodeIds)];
-          if (uniqueNodes.length === 0) return Promise.resolve();
+          const nodeIds = getFrontierNodeIds(item);
+          if (nodeIds.length === 0) return Promise.reject(new Error('no node ids'));
+          // frontier_item_id links the lease so the dashboard traces the item.
           return api.dispatchAgent({
-            node_ids: uniqueNodes,
+            target_node_ids: nodeIds,
             skill: skill || undefined,
+            frontier_item_id: getFrontierKey(item),
           });
         })
       );
+      // A fulfilled promise can still be a 409 lease-conflict (dispatched:false);
+      // count only genuinely-dispatched agents.
+      const ok = results.filter(r => r.status === 'fulfilled' && r.value?.dispatched).length;
+      const failed = results.length - ok;
+      addToast({
+        type: failed === 0 ? 'success' : ok === 0 ? 'error' : 'warning',
+        title: `Dispatched ${ok}/${results.length} agent(s)`,
+        message: failed > 0 ? `${failed} skipped (lease conflict or no scope)` : undefined,
+      });
       onDispatched();
-    } catch { /* silent */ } finally { setDispatching(false); }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Bulk dispatch failed', message: err instanceof Error ? err.message : String(err) });
+    } finally { setDispatching(false); }
   };
 
   return (

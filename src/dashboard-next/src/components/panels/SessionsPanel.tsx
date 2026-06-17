@@ -378,6 +378,7 @@ export function SessionsPanel() {
                       onSelect={() => setSelectedSessionId(session.id)}
                       onAttach={() => attachSession(session.id)}
                       onDetach={() => detach(session.id)}
+                      onNavigateAgent={(agentId) => navigateToPanel('agents', agentId)}
                     />
                   ))}
                   {grouped[group].length === 0 && <div className="px-1 pb-1 text-[11px] text-muted">None</div>}
@@ -646,6 +647,7 @@ function SessionRow({
   onSelect,
   onAttach,
   onDetach,
+  onNavigateAgent,
 }: {
   session: SessionInfo;
   selected: boolean;
@@ -653,7 +655,9 @@ function SessionRow({
   onSelect: () => void;
   onAttach: () => void;
   onDetach: () => void;
+  onNavigateAgent?: (agentId: string) => void;
 }) {
+  const ownerAgent = session.agent_id || session.claimed_by;
   return (
     <div
       role="button"
@@ -692,7 +696,10 @@ function SessionRow({
           )}
           <div className="mt-1 flex gap-1 flex-wrap">
             {session.target_node && <span className="text-[10px] font-mono text-accent truncate max-w-32">{session.target_node}</span>}
-            {(session.claimed_by || session.agent_id) && <span className="text-[10px] text-muted-foreground truncate max-w-32">{session.claimed_by || session.agent_id}</span>}
+            {ownerAgent && (onNavigateAgent
+              ? <button onClick={e => { e.stopPropagation(); onNavigateAgent(session.agent_id || ownerAgent); }} className="text-[10px] text-accent hover:underline truncate max-w-32" title="View owning agent in the Operator console">{ownerAgent}</button>
+              : <span className="text-[10px] text-muted-foreground truncate max-w-32">{ownerAgent}</span>
+            )}
           </div>
         </div>
         {session.state === 'connected' && (

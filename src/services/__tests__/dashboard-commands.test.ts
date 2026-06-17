@@ -52,6 +52,66 @@ afterAll(async () => {
   try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+describe('/api/agents/dispatch — contract (regression for the node_ids vs target_node_ids bug)', () => {
+  const dispatch = (body: unknown) => fetch(`${baseUrl}/api/agents/dispatch`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it('rejects the OLD client shape { node_ids } with 400', async () => {
+    const res = await dispatch({ node_ids: ['n1', 'n2'] });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts { target_node_ids } and registers the agent (201)', async () => {
+    const res = await dispatch({ target_node_ids: ['n1', 'n2'], skill: 'enumeration' });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.dispatched).toBe(true);
+    expect(body.task?.subgraph_node_ids).toEqual(['n1', 'n2']);
+  });
+});
+
+describe('/api/agents/:id/directive — per-agent steering (Phase 3B)', () => {
+  const directive = (taskId: string, body: unknown) => fetch(`${baseUrl}/api/agents/${taskId}/directive`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  // Use a dedicated agent so issuing directives here doesn't pollute target-1
+  // (the grammar tests below assert it has no pending directive pre-confirm).
+  beforeAll(() => {
+    engine.registerAgent({
+      id: 'steer-1', agent_id: 'steerable', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [],
+    } as AgentTask);
+  });
+
+  it('issues a pause directive to a running agent (200) and records it', async () => {
+    const res = await directive('steer-1', { kind: 'pause' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(engine.getPendingAgentDirective('steer-1')?.kind).toBe('pause');
+  });
+
+  it('rejects an unknown directive kind (400)', async () => {
+    const res = await directive('steer-1', { kind: 'detonate' });
+    expect(res.status).toBe(400);
+  });
+
+  it('409s when the agent is not running', async () => {
+    engine.registerAgent({
+      id: 'done-1', agent_id: 'done-agent', assigned_at: new Date().toISOString(),
+      status: 'completed', subgraph_node_ids: [],
+    } as AgentTask);
+    const res = await directive('done-1', { kind: 'pause' });
+    expect(res.status).toBe(409);
+  });
+
+  it('404s for an unknown task', async () => {
+    const res = await directive('ghost', { kind: 'stop' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('/api/commands — grammar fast-path', () => {
   it('previews a recognized command without mutating, then confirms it', async () => {
     const preview = await (await post({ command: 'pause scanner-1' })).json();

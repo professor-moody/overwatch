@@ -40,13 +40,16 @@ export function getFrontierKey(item: FrontierItem): string {
 }
 
 export function getFrontierNodeIds(item: FrontierItem): string[] {
-  return [
+  const ids = [
     item.target_node,
     item.node_id,
     item.edge_source,
     item.edge_target,
     item.source_node,
   ].map(clean).filter((v): v is string => !!v);
+  // De-duplicate: a node can appear as both target_node and node_id, and
+  // dispatch scope / display shouldn't list it twice.
+  return [...new Set(ids)];
 }
 
 export function getFrontierPrimaryNodeId(item: FrontierItem): string | null {
