@@ -215,9 +215,17 @@ The Console is a focused **master-detail** workspace:
 - a pinned **command bar** (natural-language commands; see the grammar reference below);
 - a **"Needs you" strip** — inline **Approve / Deny** for pending actions plus an **Answer** box for agent questions; it hides when nothing is waiting;
 - a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream;
-- an **Add Targets** launcher (beside Dispatch Subagent) to add IPs/CIDRs/domains mid-engagement — paste → preview impact (nodes entering/leaving scope) → confirm. See [Add Targets](#add-targets) below.
+- a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
 
 Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+
+### Deploy
+
+The **Deploy** button opens a one-step deploy: type a target, pick (or accept the recommended) agent type, Deploy.
+
+- A raw **IP / CIDR / domain** is an **ad-hoc real-time** target — `POST /api/agents/quick-deploy` adds it to scope (canonical `updateScope`) and dispatches the recommended agent at it, no engagement-setup ritual.
+- Existing **graph node IDs** dispatch against those nodes (`POST /api/agents/dispatch`).
+- The modal pre-selects the **recommended agent type** for the target and offers a **manual override** from the catalog (recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe, default). See [Agent types & deploy](operator-cockpit.md#agent-types) for what each type does and its tool surface.
 
 ### Add Targets
 
@@ -241,7 +249,9 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/history` | GET | Paginated activity log. Query params: `limit`, `after` (ISO), `before` (ISO) |
 | `/api/evidence-chains/:nodeId` | GET | Evidence chain for a node — walks provenance edges (`DERIVED_FROM`, `DUMPED_FROM`, `OWNS_CRED`) to build the full derivation tree |
 | `/api/paths/:objectiveId` | GET | Shortest paths from compromised nodes to an objective — returns path arrays with node/edge details |
-| `/api/agents/dispatch` | POST | Dispatch a sub-agent (`{ target_node_ids, skill?, campaign_id?, frontier_item_id? }`) |
+| `/api/agents/dispatch` | POST | Dispatch a sub-agent (`{ target_node_ids, archetype?, skill?, campaign_id?, frontier_item_id? }`) |
+| `/api/agents/quick-deploy` | POST | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen agent type |
+| `/api/agent-archetypes` | GET | Agent-type catalog for the Deploy picker |
 | `/api/agents/:id/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
 | `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
