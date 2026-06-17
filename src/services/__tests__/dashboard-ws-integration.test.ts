@@ -351,7 +351,13 @@ function seedApproval(actionId: string) {
     technique: 'credential_spray',
     target_node: 'host-jump',
     description: `spray creds (${actionId})`,
-    noise_level: 0.5,
+    validation_result: 'valid' as const,
+    opsec_context: {
+      noise_budget_remaining: 0.5,
+      global_noise_spent: 0.2,
+      recommended_approach: 'normal' as const,
+      defensive_signals: [],
+    },
   };
   // Durable record (audit trail) + live queue entry (what the dashboard serves
   // and what approve/deny resolves). submit() returns a promise that only
