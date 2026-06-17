@@ -296,6 +296,7 @@ export class StatePersistence {
       activityLog: this.ctx.activityLog,
       agents: Array.from(this.ctx.agents.entries()),
       campaigns: Array.from(this.ctx.campaigns.entries()),
+      agentDirectives: Array.from(this.ctx.agentDirectives.entries()),
       approvalRequests: Array.from(this.ctx.approvalRequests.entries()),
       inferenceRules: this.ctx.inferenceRules.filter(r => !this.builtinRuleIds.has(r.id)),
       trackedProcesses: this.ctx.trackedProcesses,
@@ -467,6 +468,7 @@ export class StatePersistence {
     this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.campaigns = new Map(data.campaigns || []);
+    this.ctx.agentDirectives = new Map(data.agentDirectives || []);
     this.ctx.approvalRequests = new Map(data.approvalRequests || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     this.ctx.inferenceRules = [...builtinRules];
@@ -503,6 +505,7 @@ export class StatePersistence {
     this.ctx.activityLog = (data.activityLog || []).map((entry: unknown) => normalizeActivityLogEntry(entry as Partial<ActivityLogEntry> & { description: string }));
     this.ctx.agents = new Map(data.agents || []);
     this.ctx.campaigns = new Map(data.campaigns || []);
+    this.ctx.agentDirectives = new Map(data.agentDirectives || []);
     this.ctx.approvalRequests = new Map(data.approvalRequests || []);
     this.ctx.trackedProcesses = data.trackedProcesses || [];
     if (data.inferenceRules) {

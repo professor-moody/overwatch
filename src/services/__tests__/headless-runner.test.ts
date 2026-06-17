@@ -195,6 +195,40 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getTask('h-spawnfail')?.status).toBe('failed');
   });
 
+  it('executes a stop directive: engine records, service kills the live process + interrupts', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-stopdir' }));
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+
+    // Operator issues a stop directive through the engine. The engine only
+    // records it; the service observes the pending stop and performs the kill.
+    engine.issueAgentDirective({ task_id: 'h-stopdir', kind: 'stop', issued_by: 'operator' });
+    await settle();
+
+    expect(spawned[0].signals).toContain('SIGTERM');
+    expect(engine.getTask('h-stopdir')?.status).toBe('interrupted');
+    // The stop directive was acknowledged (executed), not left pending.
+    expect(engine.getPendingAgentDirective('h-stopdir')).toBeNull();
+  });
+
+  it('does NOT act on pause/resume/steering directives — those are agent-observed', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-pausedir' }));
+    await settle();
+
+    engine.issueAgentDirective({ task_id: 'h-pausedir', kind: 'pause' });
+    await settle();
+    // Process stays alive; the agent honors pause itself via heartbeat.
+    expect(spawned[0].signals).not.toContain('SIGTERM');
+    expect(svc.activeHeadlessCount()).toBe(1);
+    expect(engine.getPendingAgentDirective('h-pausedir')?.kind).toBe('pause');
+  });
+
   it('killAll on stop() terminates live headless children', async () => {
     svc = makeService();
     svc.start();

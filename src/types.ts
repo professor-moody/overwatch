@@ -811,6 +811,38 @@ export interface AgentTask {
 
 export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
 
+// --- Agent directives (operator steering) ---
+
+/**
+ * A steering instruction issued to a running sub-agent. Delivered on the
+ * agent_heartbeat response and acknowledged by the agent. Control vs process:
+ * the engine only RECORDS directives; `stop` is EXECUTED by TaskExecutionService
+ * (which owns the process registry). `pause`/`resume`/steering kinds are pure
+ * state the agent reads and honors.
+ */
+export type AgentDirectiveKind =
+  | 'pause'        // stop taking new actions; keep heartbeating; wait for resume
+  | 'resume'       // continue after a pause
+  | 'stop'         // wrap up + exit; the service kills the process
+  | 'narrow_scope' // restrict work to node_ids
+  | 'skip_types'   // ignore frontier items of frontier_types
+  | 'prioritize';  // do frontier_types first
+
+export interface AgentDirective {
+  id: string;
+  task_id: string;
+  kind: AgentDirectiveKind;
+  /** narrow_scope: the node ids the agent should restrict itself to. */
+  node_ids?: string[];
+  /** skip_types / prioritize: the frontier item types to skip or prioritize. */
+  frontier_types?: string[];
+  note?: string;
+  issued_by: string;       // operator id or 'primary'
+  issued_at: string;
+  status: 'pending' | 'acknowledged' | 'superseded';
+  acknowledged_at?: string;
+}
+
 // --- Finding (reported by agents) ---
 
 export interface Finding {

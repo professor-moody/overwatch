@@ -175,12 +175,13 @@ export class InProcessTapeController {
    * fault never propagates into the live wire path. We log to stderr
    * once, then swallow.
    */
-  private record(direction: 'client_to_server' | 'server_to_client', message: JSONRPCMessage): void {
+  private record(direction: 'client_to_server' | 'server_to_client', message: JSONRPCMessage, session_id?: string): void {
     if (!this.writer) return;
     try {
       this.writer.write({
         ts: new Date().toISOString(),
         direction,
+        ...(session_id ? { session_id } : {}),
         parsed: message as unknown,
       });
     } catch (err) {
@@ -231,8 +232,9 @@ class TapingTransport implements Transport {
     // before forwarding to whatever the MCP Server later assigns.
     this.inner.onmessage = (msg, extra) => {
       // Record incoming (client → server) before dispatching, so a handler
-      // exception doesn't prevent the tape entry.
-      this.controller['record']('client_to_server', msg);
+      // exception doesn't prevent the tape entry. Tag with the session id so a
+      // multiplexed daemon tape can be demuxed per actor.
+      this.controller['record']('client_to_server', msg, this.inner.sessionId);
       try { this._onmessage?.(msg, extra); } catch (err) { this._onerror?.(err as Error); }
     };
     this.inner.onclose = () => { this._onclose?.(); };
@@ -245,7 +247,7 @@ class TapingTransport implements Transport {
   async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     // Record outgoing first; if the inner send throws we still have the
     // attempted frame in the tape, which matches what the proxy does.
-    this.controller['record']('server_to_client', message);
+    this.controller['record']('server_to_client', message, this.inner.sessionId);
     await this.inner.send(message, options);
   }
 

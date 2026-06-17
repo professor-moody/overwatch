@@ -9,7 +9,7 @@
 import type { AbstractGraph } from 'graphology-types';
 import { v4 as uuidv4 } from 'uuid';
 import type {
-  EngagementConfig, InferenceRule, AgentTask, Campaign,
+  EngagementConfig, InferenceRule, AgentTask, Campaign, AgentDirective,
   NodeProperties, EdgeProperties,
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
@@ -132,6 +132,10 @@ export class EngineContext {
   activityLog: ActivityLogEntry[];
   agents: Map<string, AgentTask>;
   campaigns: Map<string, Campaign>;
+  // P1C: operator steering directives, keyed by agent task id → ordered history
+  // (most recent last). The engine only records these; TaskExecutionService
+  // executes 'stop', and the agent observes the rest via agent_heartbeat.
+  agentDirectives: Map<string, AgentDirective[]>;
   stateFilePath: string;
   updateCallbacks: GraphUpdateCallback[];
   lastSnapshotTime: number;
@@ -184,6 +188,7 @@ export class EngineContext {
     this.activityLog = [];
     this.agents = new Map();
     this.campaigns = new Map();
+    this.agentDirectives = new Map();
     this.stateFilePath = stateFilePath;
     this.updateCallbacks = [];
     this.lastSnapshotTime = 0;

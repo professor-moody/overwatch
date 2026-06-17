@@ -23,6 +23,19 @@ export type TapeDirection = 'client_to_server' | 'server_to_client';
 export interface TapeRecord {
   ts: string;
   direction: TapeDirection;
+  /**
+   * MCP session id of the connection this frame belongs to. In daemon mode the
+   * primary + every headless sub-agent are separate sessions multiplexed into
+   * one tape; this is the discriminator that lets the tape be demuxed per actor.
+   * Undefined for stdio (single session).
+   */
+  session_id?: string;
+  /**
+   * Agent id, when the session can be correlated to an agent. Not always known
+   * at the transport layer (the transport sees frames, not agent context), so
+   * demux primarily by session_id; agent_id is best-effort enrichment.
+   */
+  agent_id?: string;
   /** Parsed JSON-RPC frame when the line was valid JSON. */
   parsed?: unknown;
   /** Raw line when parsing failed (kept verbatim, no newline). */
