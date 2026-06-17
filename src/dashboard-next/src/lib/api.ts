@@ -596,6 +596,78 @@ export async function getEvidenceChains(nodeId: string): Promise<EvidenceChainRe
   return fetchJson(`/api/evidence-chains/${encodeURIComponent(nodeId)}`);
 }
 
+// --- Action output (Analysis workspace) ---
+
+export interface ActionOutputStream {
+  /** null when capture failed before an id was assigned (see capture_failed). */
+  evidence_id: string | null;
+  text: string;
+  total_bytes: number;
+  /** The inline capture buffer overflowed while the tool ran (full blob on disk). */
+  truncated: boolean;
+  /** This response is only a head slice of a larger blob (fetch more for the rest). */
+  head_truncated: boolean;
+  dropped_bytes: number;
+  /** Evidence id was recorded but the blob file is missing/unreadable. */
+  missing?: boolean;
+  /** The tool produced output but the capture write failed — bytes are lost. */
+  capture_failed?: boolean;
+}
+
+export interface ActionOutputResponse {
+  action_id: string;
+  status: 'success' | 'failure' | 'partial' | 'neutral' | 'running';
+  event_type?: string;
+  timestamp?: string;
+  tool_name?: string;
+  command_repr?: string;
+  technique?: string;
+  invoking_tool?: string;
+  exit_code?: number;
+  signal?: string;
+  duration_ms?: number;
+  timed_out?: boolean;
+  target_node_ids?: string[];
+  target_ips?: string[];
+  target_cidrs?: string[];
+  agent_id?: string;
+  frontier_item_id?: string;
+  linked_finding_ids?: string[];
+  max_bytes: number;
+  stdout: ActionOutputStream | null;
+  stderr: ActionOutputStream | null;
+  capture_error?: unknown;
+}
+
+export interface EvidenceRawResponse {
+  evidence_id: string | null;
+  text: string;
+  total_bytes: number;
+  offset: number;
+  bytes_read: number;
+  eof: boolean;
+  evidence_type?: string;
+  capture_error?: string;
+  action_id?: string;
+  finding_id?: string;
+}
+
+export async function getActionOutput(actionId: string, maxBytes?: number): Promise<ActionOutputResponse> {
+  const qs = maxBytes ? `?max_bytes=${maxBytes}` : '';
+  return fetchJson(`/api/actions/${encodeURIComponent(actionId)}/output${qs}`);
+}
+
+export async function getEvidenceRaw(
+  evidenceId: string,
+  opts?: { maxBytes?: number; offset?: number },
+): Promise<EvidenceRawResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.maxBytes) qs.set('max_bytes', String(opts.maxBytes));
+  if (opts?.offset) qs.set('offset', String(opts.offset));
+  const q = qs.toString();
+  return fetchJson(`/api/evidence/${encodeURIComponent(evidenceId)}/raw${q ? `?${q}` : ''}`);
+}
+
 export async function getPaths(objectiveId: string, params?: {
   limit?: number;
   optimize?: 'confidence' | 'stealth' | 'balanced';

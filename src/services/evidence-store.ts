@@ -472,6 +472,53 @@ export class EvidenceStore {
     }
   }
 
+  /**
+   * Bounded slice read for paging through a raw-output blob (the dashboard
+   * Analysis viewer fetches large outputs in windows rather than loading a
+   * potentially large blob at once — the on-disk `.raw` is uncapped; only the
+   * in-memory capture buffer is bounded). Reads at most `max_bytes` starting at
+   * `offset`, decoded as UTF-8. Each window is decoded independently, so a
+   * multibyte character straddling a window boundary may render as a U+FFFD
+   * replacement char at the seam — callers needing exact bytes should request a
+   * single window covering the region. Returns null when the blob is missing or
+   * unresolvable.
+   */
+  getRawOutputSlice(
+    idOrHash: string,
+    offset: number,
+    max_bytes: number,
+  ): { text: string; total_bytes: number; offset: number; bytes_read: number; eof: boolean } | null {
+    const resolved = this.resolveKey(idOrHash);
+    if (!resolved) return null;
+    const safe = sanitizeEvidenceId(resolved);
+    const path = join(this.dir, `${safe}.raw`);
+    if (!existsSync(path)) return null;
+
+    const total = statSync(path).size;
+    // Math.trunc (not `| 0`) so offsets beyond 2^31 don't wrap negative and
+    // silently page back to the head of the blob.
+    const start = Math.max(0, Math.min(Math.trunc(offset) || 0, total));
+    const limit = Math.min(Math.max(0, Math.trunc(max_bytes) || 0), total - start);
+    if (limit === 0) {
+      return { text: '', total_bytes: total, offset: start, bytes_read: 0, eof: start >= total };
+    }
+
+    const buf = Buffer.alloc(limit);
+    const fd = openSync(path, 'r');
+    try {
+      let read = 0;
+      while (read < limit) {
+        const n = readSync(fd, buf, read, limit - read, start + read);
+        if (n <= 0) break;
+        read += n;
+      }
+      const text = buf.subarray(0, read).toString('utf-8');
+      return { text, total_bytes: total, offset: start, bytes_read: read, eof: start + read >= total };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   /** Get the manifest record for a specific evidence ID or content_hash. */
   getRecord(idOrHash: string): EvidenceRecord | undefined {
     return this.manifest.find(r => r.evidence_id === idOrHash || r.content_hash === idOrHash);
