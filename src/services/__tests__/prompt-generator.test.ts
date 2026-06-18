@@ -120,6 +120,8 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('Synthesize the moment a sub-agent finishes');
       expect(prompt).toContain('agent_transcript_submitted');
       expect(prompt).toContain('salvaged');
+      // M1: the synthesis poll uses get_state's changes_since digest.
+      expect(prompt).toContain('changes_since');
     });
 
     it('includes tool reference table with all provided tools', () => {

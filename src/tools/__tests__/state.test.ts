@@ -133,6 +133,27 @@ describe('state tools', () => {
     expect(badSince.total_entries).toBeGreaterThanOrEqual(2);
   });
 
+  it('get_state changes_since digests new findings + completed agents since a timestamp', async () => {
+    engine.logActionEvent({ description: 'found a cred', event_type: 'finding_reported', category: 'finding' });
+    engine.logActionEvent({ description: 'agent wrapped up', event_type: 'agent_transcript_submitted', category: 'agent', agent_id: 'recon-7' });
+
+    const since = JSON.parse((await handlers.get_state({ activity_count: 20, since: '2000-01-01T00:00:00Z' })).content[0].text);
+    expect(since.changes_since).toBeDefined();
+    expect(since.changes_since.findings).toBeGreaterThanOrEqual(1);
+    expect(since.changes_since.agents_completed).toBeGreaterThanOrEqual(1);
+    expect(since.changes_since.completed_agent_ids).toContain('recon-7');
+    expect(since.changes_since.recommendation).toContain('re-rank');
+
+    // A future `since` → nothing material to act on.
+    const future = JSON.parse((await handlers.get_state({ activity_count: 20, since: '2999-01-01T00:00:00Z' })).content[0].text);
+    expect(future.changes_since.findings).toBe(0);
+    expect(future.changes_since.agents_completed).toBe(0);
+
+    // No `since` → no changes_since block (stays read-only/minimal).
+    const plain = JSON.parse((await handlers.get_state({ activity_count: 20 })).content[0].text);
+    expect(plain.changes_since).toBeUndefined();
+  });
+
   it('update_scope adds a CIDR to scope in preview mode', async () => {
     const result = await handlers.update_scope({
       add_cidrs: ['172.16.0.0/24'],
