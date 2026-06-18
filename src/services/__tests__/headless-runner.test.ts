@@ -121,19 +121,19 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getTask('open-1')?.status).toBe('running'); // launched, NOT auto-completed
   });
 
-  it('still routes a credential_test task to the scripted runner (not headless)', async () => {
-    // engine.computeFrontier() won't have a credential_test item without creds;
-    // assert the routing decision directly via the scripted runner's predicate
-    // by checking that with no frontier item + an endpoint, an open-ended task
-    // goes headless while a scripted-handled one would not. Here we verify the
-    // no-endpoint fallback closes open-ended work via scripted rather than stranding it.
+  it('fails an open-ended task loudly when no headless endpoint exists (no false "completed")', async () => {
+    // With no endpoint, an open-ended (network_discovery) task falls to scripted,
+    // which has no handler for it. It must fail LOUDLY with a reason — never a
+    // silent "completed" (the prior behavior masked a real recon task as done).
     svc = makeService();
     svc.start(); // no endpoint
     const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
     engine.registerAgent({ id: 'open-noep', agent_id: 'a', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], frontier_item_id: disco!.id } as AgentTask);
     await settle();
     expect(svc.activeHeadlessCount()).toBe(0); // no endpoint → no headless
-    expect(engine.getTask('open-noep')?.status).toBe('completed'); // scripted fallback closed it out
+    const t = engine.getTask('open-noep');
+    expect(t?.status).toBe('failed');
+    expect(t?.result_summary ?? '').toContain('no_scripted_handler');
   });
 
   it('reconciles to interrupted when the child exits without closing the task', async () => {
