@@ -67,7 +67,7 @@ export interface HeadlessMcpRunnerOptions {
 // default/research/planner roles) carries a real `--allowedTools` allowlist
 // boundary. Imported + re-exported here so existing callers/tests keep importing
 // it from the runner; the legacy role strings are byte-identical (regression-locked).
-import { allowedToolsFor, getArchetype } from './agent-archetypes.js';
+import { allowedToolsFor, getArchetype, bootstrapMission } from './agent-archetypes.js';
 export { allowedToolsFor };
 
 export class HeadlessMcpRunner {
@@ -211,9 +211,10 @@ export class HeadlessMcpRunner {
   }
 
   private bootstrapPrompt(task: AgentTask): string {
-    // Prompt framing follows the archetype's role bucket (planner/research/default),
-    // so specialized archetypes like cve_researcher/pathfinder get the right brief.
-    const archetypeRole = getArchetype(task.archetype ?? task.role).role;
+    // The mission is per-archetype (decoupled from the legacy role bucket), so a
+    // specialized type gets a brief that matches its real tools + job. The
+    // objective is appended for EVERY type (raw quick-deploys carry the target
+    // only in the objective), and a uniform close handles the lifecycle.
     const common = [
       `You are an Overwatch headless sub-agent. Your agent task_id is "${task.id}" (agent_id "${task.agent_id}").`,
       `The Overwatch tools load on demand: first use ToolSearch to find the "overwatch" MCP tools`,
@@ -221,37 +222,10 @@ export class HeadlessMcpRunner {
       `Then call get_system_prompt(role="sub_agent", agent_id="${task.agent_id}") for your full operating instructions,`,
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
     ];
-    if (archetypeRole === 'planner') {
-      return [
-        ...common,
-        `YOUR ROLE IS OPERATOR-COMMAND PLANNING. You translate a free-form operator command into a plan of operator`,
-        `operations and submit it with propose_plan for the operator to confirm. You PROPOSE; the operator CONFIRMS;`,
-        `the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph — you have no run_bash/run_tool/`,
-        `sessions tools. Use query_graph + get_agent_context to understand state. Reference ONLY the exact task_ids and`,
-        `action_ids listed in your objective below. When ready, call propose_plan({ agent_id, task_id, command, summary,`,
-        `rationale, ops }). If the command cannot be expressed as the allowed ops, do NOT propose — explain why in`,
-        `submit_agent_transcript. Either way, finish with submit_agent_transcript then update_agent(task_id="${task.id}", status="completed").`,
-        ``,
-        task.objective ?? '(no objective provided)',
-      ].join(' ');
-    }
-    if (archetypeRole === 'research') {
-      return [
-        ...common,
-        `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version.`,
-        `Research the way an operator would: use WebSearch + WebFetch to find known vulnerabilities AND public proof-of-concept exploits`,
-        `for that exact product+version — check vendor advisories, NVD, Exploit-DB, GitHub, packetstorm. Judge whether each CVE actually`,
-        `applies to the discovered version (version ranges matter). Do NOT run any target-facing tools (no run_bash/run_tool/sessions) —`,
-        `this is read-the-web + record-findings only. Research public advisories, not the engagement's targets.`,
-        `Record each credible candidate by calling research_cve({ service_id, candidates: [{ cve, title, cvss?, vuln_type?, exploit_available?, poc_url?, applicable, confidence?, notes }], summary }).`,
-        `Call research_cve exactly once with all candidates (or an empty list if none apply) so the service is marked checked. Then submit_agent_transcript and update_agent(task_id="${task.id}", status="completed").`,
-      ].join(' ');
-    }
-    return [
-      ...common,
-      `Do only the work within that scope, route every target-facing action through validate_action + run_tool/run_bash, and heartbeat periodically.`,
-      `When done (or if you cannot proceed), call submit_agent_transcript then update_agent(task_id="${task.id}", status="completed").`,
-    ].join(' ');
+    const mission = bootstrapMission(task.archetype ?? task.role);
+    const objective = task.objective ? `OBJECTIVE: ${task.objective}` : '';
+    const close = `When done — or if you cannot proceed — call submit_agent_transcript, then update_agent(task_id="${task.id}", status="completed").`;
+    return [...common, mission, objective, close].filter(Boolean).join(' ');
   }
 
   private writeMcpConfig(task_id: string, endpoint: HeadlessEndpoint): string {

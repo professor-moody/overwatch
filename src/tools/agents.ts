@@ -285,6 +285,8 @@ auto-computed from the frontier item's target node(s).`,
               agent_id: task.agent_id,
               frontier_item_id: task.frontier_item_id,
               skill: task.skill,
+              objective: task.objective,
+              archetype: task.archetype,
               discovery_context: {
                 target_cidr: frontierItem?.target_cidr,
                 scope: engine.getState().config.scope,
@@ -296,8 +298,12 @@ auto-computed from the frontier item's target node(s).`,
         };
       }
 
-      // Warn when a non-discovery task has no scope (frontier may have changed since registration)
+      // No seeds. Two cases: an ad-hoc deploy (no frontier item — the target
+      // lives in the objective), or a stale frontier item that no longer
+      // resolves. Either way, return the objective + scope so the agent can act
+      // rather than receiving an empty, contextless reply.
       if (seedIds.length === 0) {
+        const adHoc = !task.frontier_item_id;
         return {
           content: [{
             type: 'text',
@@ -306,8 +312,13 @@ auto-computed from the frontier item's target node(s).`,
               agent_id: task.agent_id,
               frontier_item_id: task.frontier_item_id,
               skill: task.skill,
+              objective: task.objective,
+              archetype: task.archetype,
               subgraph: { nodes: [], edges: [] },
-              warning: `Frontier item ${task.frontier_item_id} no longer resolves to any graph nodes. The frontier may have changed since task registration. Report this to the primary session.`,
+              scope: engine.getState().config.scope,
+              ...(adHoc
+                ? { message: 'Ad-hoc deploy with no pre-seeded graph nodes — work from the objective (your target is named there) and the engagement scope; discover and report findings as you go.' }
+                : { warning: `Frontier item ${task.frontier_item_id} no longer resolves to any graph nodes. The frontier may have changed since task registration. Report this to the primary session.` }),
             }, null, 2)
           }]
         };
@@ -843,6 +854,12 @@ A new directive supersedes any still-pending one for the task (latest instructio
       const task = engine.getTask(task_id);
       if (!task) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task not found: ${task_id}` }) }], isError: true };
+      }
+      // Directives are delivered on the agent's heartbeat, so only a running task
+      // can ever receive one. Reject otherwise (mirrors the dashboard guard) so
+      // we don't record directives that will never be delivered.
+      if (task.status !== 'running') {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `task is not running (status: ${task.status}); directives are only delivered to running agents` }) }], isError: true };
       }
       const directive = engine.issueAgentDirective({ task_id, kind, node_ids, frontier_types, note, issued_by });
       return {

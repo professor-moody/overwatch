@@ -36,7 +36,7 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
       : 'default';
   const effectiveId = override || recommendedId;
   const effective = archetypes.find(a => a.id === effectiveId);
-  const canDeploy = parsed.kind !== 'empty' && !busy;
+  const canDeploy = (parsed.kind === 'raw' || parsed.kind === 'nodes') && !busy;
 
   const deploy = async () => {
     if (parsed.kind === 'empty' || busy) return;
@@ -89,11 +89,15 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
         {parsed.kind === 'raw' && (
           <div className="mt-1.5 text-[11px] text-muted-foreground">
             Real-time scan target{parsed.cidrs.length + parsed.domains.length > 1 ? 's' : ''}: <span className="font-mono text-accent">{[...parsed.cidrs, ...parsed.domains].join(', ')}</span>
-            {parsed.invalid.length > 0 && <span className="text-warning"> · ignored {parsed.invalid.join(', ')}</span>}
           </div>
         )}
         {parsed.kind === 'nodes' && (
           <div className="mt-1.5 text-[11px] text-muted-foreground">Dispatch against {parsed.nodeIds.length} node(s){firstNodeType ? ` (${firstNodeType})` : ''}.</div>
+        )}
+        {parsed.kind === 'mixed' && (
+          <div className="mt-1.5 text-[11px] text-warning">
+            Mix of targets (<span className="font-mono">{[...parsed.cidrs, ...parsed.domains].join(', ')}</span>) and unrecognized tokens (<span className="font-mono">{parsed.invalid.join(', ')}</span>). Deploy raw targets and graph node IDs separately.
+          </div>
         )}
 
         {/* Agent type: recommended + override */}

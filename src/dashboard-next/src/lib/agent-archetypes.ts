@@ -9,19 +9,28 @@ import { parseTargetBlob, hasParsedTargets } from './target-input';
 export type DeployInput =
   | { kind: 'raw'; target: string; cidrs: string[]; domains: string[]; invalid: string[] }
   | { kind: 'nodes'; nodeIds: string[] }
+  // Both valid targets AND unrecognized tokens — ambiguous (raw targets and node
+  // ids can't be deployed together), so the UI blocks rather than silently
+  // dropping the extras.
+  | { kind: 'mixed'; cidrs: string[]; domains: string[]; invalid: string[] }
   | { kind: 'empty' };
 
 /**
- * Decide whether the Deploy input is raw targets (any valid IP/CIDR/domain →
+ * Decide whether the Deploy input is raw targets (all valid IP/CIDR/domain →
  * quick-deploy) or graph node ids (→ dispatch). Reuses parseTargetBlob so the
- * raw classification matches the `scan`/Add-Targets rules exactly.
+ * raw classification matches the `scan`/Add-Targets rules exactly. Input that
+ * mixes valid targets with unrecognized tokens is flagged `mixed` (blocking) so
+ * an intended node id isn't silently discarded by the raw path.
  */
 export function classifyDeployInput(text: string): DeployInput {
   const t = text.trim();
   if (!t) return { kind: 'empty' };
   const parsed = parseTargetBlob(t);
   if (hasParsedTargets(parsed)) {
-    return { kind: 'raw', target: t, cidrs: parsed.cidrs, domains: parsed.domains, invalid: parsed.invalid };
+    if (parsed.invalid.length > 0) {
+      return { kind: 'mixed', cidrs: parsed.cidrs, domains: parsed.domains, invalid: parsed.invalid };
+    }
+    return { kind: 'raw', target: t, cidrs: parsed.cidrs, domains: parsed.domains, invalid: [] };
   }
   const nodeIds = t.split(/[\s,]+/).filter(Boolean);
   return nodeIds.length ? { kind: 'nodes', nodeIds } : { kind: 'empty' };

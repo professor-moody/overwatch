@@ -133,6 +133,45 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
   },
 };
 
+// Per-archetype headless bootstrap mission. Decoupled from the legacy `role`
+// bucket so a specialized type gets a brief that matches its ACTUAL tools and
+// job (e.g. pathfinder analyzes paths rather than translating operator
+// commands; report_scribe drafts via generate_report rather than research_cve).
+// The runner wraps this with the common preamble, the task objective, and a
+// uniform submit/update close — so missions describe the role + tools only.
+// Shared by cve_researcher AND the legacy `research` role — the automatic CVE
+// dispatch (task-execution-service) registers role:'research' with no archetype,
+// so this MUST carry the full research_cve arg shape + the "call once / empty
+// list marks the service checked" instruction that retires the frontier item.
+const CVE_MISSION =
+  `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version. Research the way an operator would: use WebSearch + WebFetch to find known vulnerabilities AND public proof-of-concept exploits for that exact product+version (vendor advisories, NVD, Exploit-DB, GitHub, packetstorm), judging whether each CVE actually applies to the discovered version. Do NOT run any target-facing tools — read-the-web + record-findings only. Record each credible candidate with research_cve({ service_id, candidates: [{ cve, title, cvss?, vuln_type?, exploit_available?, poc_url?, applicable, confidence?, notes }], summary }) — call it exactly once (or with an empty list if none apply) so the service is marked checked.`;
+
+const MISSIONS: Record<AgentArchetypeId, string> = {
+  default:
+    `Do only the work within your scoped subgraph and objective. Route every target-facing action through validate_action + run_tool/run_bash, turn raw output into graph data with parse_output/report_finding, and heartbeat periodically.`,
+  recon_scanner:
+    `YOUR ROLE IS RECON & SERVICE DISCOVERY. Sweep and enumerate the target's hosts, ports, and services using run_tool/run_bash (call validate_action first), then turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions or credential tools — discovery only.`,
+  web_tester:
+    `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. Record findings with parse_output/report_finding.`,
+  credential_operator:
+    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens (validate_token_credential + the expand_* tools), and map the access they unlock. Record findings with report_finding. You have NO interactive sessions — credential lifecycle only.`,
+  post_exploit:
+    `YOUR ROLE IS POST-EXPLOITATION FROM A FOOTHOLD. Work interactively via open_session/send_to_session: enumerate locally, move laterally, and capture credentials and reachable assets. Route execution through validate_action and record findings with report_finding.`,
+  cve_researcher: CVE_MISSION,
+  pathfinder:
+    `YOUR ROLE IS READ-ONLY ATTACK-PATH ANALYSIS. Use query_graph + find_paths + get_agent_context to find the highest-value next hops and the gaps blocking progress toward the objectives, then surface them as a proposed plan via propose_plan({ agent_id, task_id, summary, rationale, ops }). You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). You PROPOSE; the operator CONFIRMS.`,
+  report_scribe:
+    `YOUR ROLE IS REPORT DRAFTING (READ-ONLY). Read the confirmed graph state and evidence in scope (query_graph, get_evidence, explain_action, get_timeline) and draft report sections with generate_report. You CANNOT execute against targets or mutate the graph — synthesis only.`,
+  research: CVE_MISSION,
+  planner:
+    `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript.`,
+};
+
+/** The headless bootstrap mission for an archetype id or legacy role id. */
+export function bootstrapMission(idOrRole: string | undefined | null): string {
+  return MISSIONS[getArchetype(idOrRole).id];
+}
+
 export function listArchetypes(): AgentArchetype[] {
   return Object.values(ARCHETYPES);
 }

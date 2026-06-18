@@ -17,7 +17,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
-import { getArchetype, listArchetypes, recommendArchetype } from './agent-archetypes.js';
+import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
 import { EngagementManager } from './engagement-manager.js';
@@ -1387,6 +1387,13 @@ export class DashboardServer {
       const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
       // Agent type: an explicit archetype expands to {role, backend, skill,
       // objective}; an explicit skill still overrides the archetype default.
+      // Fail closed — an unknown explicit archetype must not silently become the
+      // full-surface default agent.
+      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
+        return;
+      }
       const arch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
       const skill = typeof b.skill === 'string' ? b.skill : arch?.defaultSkill;
       const objective = typeof b.objective === 'string' ? b.objective : undefined;
@@ -1457,6 +1464,12 @@ export class DashboardServer {
       if (!targetRaw) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'target (IP, CIDR, or domain) is required' }));
+        return;
+      }
+      // Fail closed on an unknown explicit agent type, before touching scope.
+      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
         return;
       }
       // Same classification as the `scan` command + the dashboard Add-Targets
