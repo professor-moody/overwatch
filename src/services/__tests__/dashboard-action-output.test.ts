@@ -227,3 +227,79 @@ describe('GET /api/evidence/:id/raw', () => {
     expect(res.status).toBe(404);
   });
 });
+
+const NMAP_XML = `<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="10.10.10.5" addrtype="ipv4"/>
+    <hostnames><hostname name="dc01.acme.local" type="PTR"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port>
+    </ports>
+  </host>
+</nmaprun>`;
+
+describe('POST /api/actions/:id/reparse', () => {
+  let reEvId: string;
+
+  beforeAll(() => {
+    reEvId = engine.getEvidenceStore().store({ evidence_type: 'command_output', raw_output: NMAP_XML, action_id: 'act_reparse1' });
+    engine.logActionEvent({
+      action_id: 'act_reparse1', event_type: 'action_completed', result_classification: 'success',
+      tool_name: 'nmap', command_repr: 'nmap -oX - 10.10.10.5', description: 'nmap',
+      details: { stdout_evidence_id: reEvId, stdout_total_bytes: Buffer.byteLength(NMAP_XML) },
+    });
+  });
+
+  const reparse = (actionId: string, body: Record<string, unknown>) =>
+    fetch(`${baseUrl}/api/actions/${actionId}/reparse`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+  it('previews a parse without ingesting (ingest:false)', async () => {
+    const res = await reparse('act_reparse1', { tool_name: 'nmap', evidence_id: reEvId, ingest: false });
+    expect(res.status).toBe(200);
+    const b = await res.json();
+    expect(b.parse_status).toBe('ok');
+    expect(b.nodes_parsed).toBeGreaterThan(0);
+    expect(b.ingested).toBeUndefined();
+  });
+
+  it('promotes to the graph (ingest:true)', async () => {
+    const res = await reparse('act_reparse1', { tool_name: 'nmap', evidence_id: reEvId, ingest: true });
+    const b = await res.json();
+    expect(b.parse_status).toBe('ok');
+    expect(b.ingested.new_nodes).toBeGreaterThan(0);
+  });
+
+  it('resolves the action stdout evidence when evidence_id is omitted', async () => {
+    const res = await reparse('act_reparse1', { tool_name: 'nmap', ingest: false });
+    const b = await res.json();
+    expect(b.parse_status).toBe('ok');
+    expect(b.evidence_id).toBe(reEvId);
+  });
+
+  it('returns no_parser for an unknown tool', async () => {
+    const res = await reparse('act_reparse1', { tool_name: 'totally-unknown', evidence_id: reEvId });
+    const b = await res.json();
+    expect(b.parse_status).toBe('no_parser');
+    expect(b.isError).toBe(true);
+  });
+
+  it('400s without a tool_name', async () => {
+    const res = await reparse('act_reparse1', { evidence_id: reEvId });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s when the action has no evidence', async () => {
+    const res = await reparse('act_no_evidence', { tool_name: 'nmap' });
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when the chosen evidence has no raw output (content-only)', async () => {
+    const contentOnly = engine.getEvidenceStore().store({ evidence_type: 'log', content: 'note only', action_id: 'act_reparse1' });
+    const res = await reparse('act_reparse1', { tool_name: 'nmap', evidence_id: contentOnly });
+    expect(res.status).toBe(404);
+  });
+});

@@ -10,6 +10,8 @@ import { join, dirname, extname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import type { GraphEngine } from './graph-engine.js';
+import { parseAndMaybeIngest } from './parse-ingest.js';
+import { getSupportedParsers } from './parsers/index.js';
 import type { GraphUpdateDetail } from './engine-context.js';
 import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
@@ -778,6 +780,9 @@ export class DashboardServer {
       this.servePendingActions(res);
     } else if (pathname === '/api/tools' && method === 'GET') {
       this.serveTools(res);
+    } else if (pathname === '/api/parsers' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ parsers: getSupportedParsers() }));
     } else if (pathname === '/api/mcp-tools' && method === 'GET') {
       this.serveMcpTools(res);
     } else if (pathname === '/api/readiness' && method === 'GET') {
@@ -824,6 +829,7 @@ export class DashboardServer {
       // or a uuid (the `act_` underscore falls outside [a-f0-9-]), so match the
       // full id charset — an unknown id is just a 404 in the handler.
       const actionOutputMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/output$/);
+      const actionReparseMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/reparse$/);
       const evidenceRawMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/raw$/);
       // Action ids are `act_<hex>` (deterministic, nonce-bearing engagements) or
       // a uuid — both fall outside [a-f0-9-] because of the `act_` underscore, so
@@ -875,6 +881,8 @@ export class DashboardServer {
         this.serveActionExplanation(decodeURIComponent(actionExplainMatch[1]), res);
       } else if (actionOutputMatch && method === 'GET') {
         this.serveActionOutput(decodeURIComponent(actionOutputMatch[1]), url, res);
+      } else if (actionReparseMatch && method === 'POST') {
+        this.handleActionReparse(decodeURIComponent(actionReparseMatch[1]), req, res);
       } else if (evidenceRawMatch && method === 'GET') {
         this.serveEvidenceRaw(decodeURIComponent(evidenceRawMatch[1]), url, res);
       } else if (actionApproveMatch && method === 'POST') {
@@ -2032,6 +2040,85 @@ export class DashboardServer {
       action_id: record?.action_id,
       finding_id: record?.finding_id,
     }));
+  }
+
+  /**
+   * Re-parse an action's captured output with a chosen parser, then preview
+   * (ingest:false, default) or promote (ingest:true) the result into the graph.
+   * Routes through the SAME parse→ingest pipeline as the parse_output tool, so
+   * validation/event-logging/graph mutation stay identical.
+   */
+  private handleActionReparse(actionId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    const JSON_HEADERS = { 'Content-Type': 'application/json' };
+    this.readJsonBody(req).then(body => {
+      const toolName = typeof body?.tool_name === 'string' ? body.tool_name.trim()
+        : (typeof body?.tool === 'string' ? body.tool.trim() : '');
+      if (!toolName) {
+        res.writeHead(400, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'tool_name is required' }));
+        return;
+      }
+
+      const store = this.engine.getEvidenceStore();
+      // Resolve which blob to re-parse: explicit evidence_id, else the action's
+      // stdout (then stderr) evidence from its terminal lifecycle event.
+      let evidenceId: string | undefined = typeof body?.evidence_id === 'string' ? body.evidence_id : undefined;
+      if (!evidenceId) {
+        const events = this.engine.getFullHistory().filter(e => e.action_id === actionId);
+        const terminal = [...events].reverse().find(
+          e => e.event_type === 'action_completed' || e.event_type === 'action_failed',
+        );
+        const d = (terminal?.details ?? {}) as Record<string, unknown>;
+        const sid = typeof d.stdout_evidence_id === 'string' ? d.stdout_evidence_id : undefined;
+        const eid = typeof d.stderr_evidence_id === 'string' ? d.stderr_evidence_id : undefined;
+        evidenceId = sid || eid;
+      }
+      if (!evidenceId) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: `No evidence to re-parse for action ${actionId}` }));
+        return;
+      }
+
+      if (!store.resolveKey(evidenceId)) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: `Evidence not found: ${evidenceId}` }));
+        return;
+      }
+      const REPARSE_MAX_BYTES = 16 * 1024 * 1024;
+      const raw = store.getRawOutput(evidenceId, { max_bytes: REPARSE_MAX_BYTES });
+      if (raw === null) {
+        // getRawOutput returns null for an oversized blob OR a missing `.raw`
+        // file (e.g. content-only evidence). Probe the file size to tell them
+        // apart rather than always claiming "too large".
+        const head = store.getRawOutputHead(evidenceId, 1);
+        if (head && head.total_bytes > REPARSE_MAX_BYTES) {
+          res.writeHead(413, JSON_HEADERS);
+          res.end(JSON.stringify({ error: `Evidence too large to re-parse (> ${REPARSE_MAX_BYTES} bytes)` }));
+          return;
+        }
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: `Evidence has no raw output to re-parse: ${evidenceId}` }));
+        return;
+      }
+
+      const ingest = body?.ingest === true; // preview by default — promote is explicit
+      const context = (body?.context && typeof body.context === 'object') ? body.context : undefined;
+      const result = parseAndMaybeIngest(this.engine, {
+        tool_name: toolName,
+        outputText: raw,
+        action_id: actionId,
+        ingest,
+        context,
+        agent_id: 'operator',
+      });
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ ...result, evidence_id: store.resolveKey(evidenceId) }));
+    }).catch(err => {
+      const message = err instanceof Error ? err.message : String(err);
+      res.writeHead(400, JSON_HEADERS);
+      res.end(JSON.stringify({ error: message }));
+    });
   }
 
   private serveTimeline(url: string, res: ServerResponse): void {
