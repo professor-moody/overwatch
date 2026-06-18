@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useToastStore } from '../../stores/toast-store';
 import * as api from '../../lib/api';
@@ -26,10 +27,13 @@ const STATUS_OPTIONS: { value: RunStatus | ''; label: string }[] = [
 export function AnalysisPanel() {
   const connected = useEngagementStore((s) => s.connected);
   const initialized = useEngagementStore((s) => s.initialized);
+  const [searchParams] = useSearchParams();
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [statusFilter, setStatusFilter] = useState<RunStatus | ''>('');
   const [search, setSearch] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Deep-link: ?item=<actionId> (e.g. from an Evidence chain's "runs that produced
+  // this" link) focuses that run; otherwise the first run is selected below.
+  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('item'));
   const hasLoaded = useRef(false);
 
   const loadHistory = useCallback(async () => {

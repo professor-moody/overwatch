@@ -130,6 +130,12 @@ export function useNavigation() {
     navigateToPanel('sessions', sessionId);
   }, [navigateToPanel]);
 
+  // The run-centric Analysis workspace, optionally focused on one action's run
+  // (the run that produced an evidence chain). Distinct from 'actions' (Approvals).
+  const navigateToAction = useCallback((actionId: string) => {
+    navigateToPanel('analysis', actionId);
+  }, [navigateToPanel]);
+
   return {
     navigateToGraphTarget,
     navigateToGraph,
@@ -142,5 +148,6 @@ export function useNavigation() {
     navigateToFrontier,
     navigateToFinding,
     navigateToSession,
+    navigateToAction,
   };
 }
