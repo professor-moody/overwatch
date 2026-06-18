@@ -1,0 +1,46 @@
+<svg viewBox="0 0 700 434" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+  .th{font-size:13px;font-weight:500;fill:#e0e0e0}
+  .ts{font-size:11px;fill:#9ca3af}
+  .arr{stroke:#6b7280;stroke-width:1}
+  .n-purple rect{fill:#26215C;stroke:#534AB7;stroke-width:.5}
+  .n-purple .th{fill:#CCFFCC}.n-purple .ts{fill:#AFA9EC}
+  .n-blue rect{fill:#0C3A6E;stroke:#378ADD;stroke-width:.5}
+  .n-blue .th{fill:#B5D4F4}.n-blue .ts{fill:#85B7EB}
+  .n-teal rect{fill:#053B30;stroke:#1D9E75;stroke-width:.5}
+  .n-teal .th{fill:#9FE1CB}.n-teal .ts{fill:#5DCAA5}
+  .n-amber rect{fill:#3A2800;stroke:#BA7517;stroke-width:.5}
+  .n-amber .th{fill:#FAC775}.n-amber .ts{fill:#EF9F27}
+  .n-coral rect{fill:#3E1508;stroke:#D85A30;stroke-width:.5}
+  .n-coral .th{fill:#F5C4B3}.n-coral .ts{fill:#F0997B}
+  .n-pink rect{fill:#3E1028;stroke:#D4537E;stroke-width:.5}
+  .n-pink .th{fill:#F4C0D1}.n-pink .ts{fill:#ED93B1}
+  .n-gray rect{fill:#1e1e1c;stroke:#5F5E5A;stroke-width:.5}
+  .n-gray .th{fill:#D3D1C7}.n-gray .ts{fill:#B4B2A9}
+  .n-red rect{fill:#3A0F0F;stroke:#A32D2D;stroke-width:.5}
+  .n-red .th{fill:#F7C1C1}.n-red .ts{fill:#F09595}
+</style>
+<rect width="100%" height="100%" fill="transparent" rx="6"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+  <g class="n-purple"><rect x="40" y="14" width="290" height="34" rx="7"/><text class="th" x="185" y="31" text-anchor="middle" dominant-baseline="central">Agent (terminal / headless)</text></g>
+  <g class="n-blue"><rect x="380" y="14" width="280" height="34" rx="7"/><text class="th" x="520" y="31" text-anchor="middle" dominant-baseline="central">Operator · Dashboard</text></g>
+  <g class="n-coral"><rect x="40" y="64" width="290" height="46" rx="7"/><text class="th" x="185" y="82" text-anchor="middle" dominant-baseline="central">run_bash / run_tool</text><text class="ts" x="185" y="98" text-anchor="middle" dominant-baseline="central">→ validate_action</text></g>
+  <line x1="185" y1="110" x2="185" y2="134" class="arr" marker-end="url(#arr)"/>
+  <g class="n-amber"><rect x="40" y="134" width="290" height="48" rx="7"/><text class="th" x="185" y="152" text-anchor="middle" dominant-baseline="central">pending-action queue.submit()</text><text class="ts" x="185" y="170" text-anchor="middle" dominant-baseline="central">BLOCKS — awaits resolution</text></g>
+  <line x1="330" y1="157" x2="380" y2="157" class="arr" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <g class="n-blue"><rect x="380" y="134" width="280" height="48" rx="7"/><text class="th" x="520" y="152" text-anchor="middle" dominant-baseline="central">"Needs you" strip</text><text class="ts" x="520" y="170" text-anchor="middle" dominant-baseline="central">Approve / Deny</text></g>
+  <line x1="520" y1="182" x2="520" y2="206" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="380" y="206" width="280" height="40" rx="7"/><text class="th" x="520" y="226" text-anchor="middle" dominant-baseline="central">queue.approve(action_id)</text></g>
+  <line x1="380" y1="226" x2="332" y2="226" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="40" y="206" width="290" height="40" rx="7"/><text class="th" x="185" y="226" text-anchor="middle" dominant-baseline="central">tool resolves → agent resumes</text></g>
+  <g class="n-pink"><rect x="40" y="288" width="290" height="46" rx="7"/><text class="th" x="185" y="306" text-anchor="middle" dominant-baseline="central">ask_operator(question)</text><text class="ts" x="185" y="322" text-anchor="middle" dominant-baseline="central">+ keep heartbeating</text></g>
+  <line x1="330" y1="311" x2="380" y2="311" class="arr" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <g class="n-blue"><rect x="380" y="288" width="280" height="46" rx="7"/><text class="th" x="520" y="306" text-anchor="middle" dominant-baseline="central">Answer box</text><text class="ts" x="520" y="322" text-anchor="middle" dominant-baseline="central">operator responds</text></g>
+  <line x1="520" y1="334" x2="520" y2="358" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="380" y="358" width="280" height="40" rx="7"/><text class="th" x="520" y="378" text-anchor="middle" dominant-baseline="central">queryStore.answer()</text></g>
+  <line x1="380" y1="378" x2="332" y2="378" class="arr" marker-end="url(#arr)"/>
+  <g class="n-teal"><rect x="40" y="358" width="290" height="40" rx="7"/><text class="th" x="185" y="376" text-anchor="middle" dominant-baseline="central">agent_heartbeat →</text><text class="ts" x="185" y="390" text-anchor="middle" dominant-baseline="central">pending_answer</text></g>
+  <text class="ts" x="350" y="420" text-anchor="middle">dashed = WebSocket push to the dashboard (action_pending · agent_query)</text>
+</svg>
