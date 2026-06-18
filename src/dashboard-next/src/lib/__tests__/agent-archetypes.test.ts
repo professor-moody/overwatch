@@ -20,9 +20,13 @@ describe('classifyDeployInput', () => {
     expect(classifyDeployInput('   ')).toEqual({ kind: 'empty' });
   });
 
-  it('classifies as raw when ANY token is a valid target (server ignores the junk)', () => {
-    const r = classifyDeployInput('10.0.0.5 not_a_host');
-    expect(r.kind).toBe('raw');
+  it('flags valid-target + unrecognized-token input as mixed (blocking, not a silent drop)', () => {
+    const r = classifyDeployInput('10.0.0.5 cred-oidc');
+    expect(r.kind).toBe('mixed');
+    if (r.kind === 'mixed') {
+      expect(r.cidrs).toEqual(['10.0.0.5/32']);
+      expect(r.invalid).toContain('cred-oidc');
+    }
   });
 });
 

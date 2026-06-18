@@ -210,7 +210,11 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
 
   const active: OutputStreamView | null = output ? (stream === 'stdout' ? output.stdout : output.stderr) : null;
   // While running we render the live buffer; once done the durable fetch wins.
-  const isLiveMode = !!(output?.isRunning && live);
+  // If the buffer reports done with no content (unknown/evicted — e.g. a run
+  // not backed by a live tee), drop out of live mode so the operator sees the
+  // durable "in progress / no output" state instead of a stuck "Waiting…".
+  const liveHasContent = !!live && (live.stdout.length > 0 || live.stderr.length > 0);
+  const isLiveMode = !!(output?.isRunning && live && (!live.done || liveHasContent));
   const liveText = live ? (stream === 'stdout' ? live.stdout : live.stderr) : '';
   const bodyText = isLiveMode ? liveText : (active?.text ?? '');
   const match = matchOutputLines(bodyText, find);

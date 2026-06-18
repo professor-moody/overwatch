@@ -5,7 +5,49 @@ import {
   listArchetypes,
   isArchetypeId,
   recommendArchetype,
+  bootstrapMission,
 } from '../agent-archetypes.js';
+
+describe('agent-archetypes: bootstrap missions (per-archetype, not legacy-role)', () => {
+  it('gives every archetype a non-empty mission', () => {
+    for (const a of listArchetypes()) {
+      expect(bootstrapMission(a.id).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('pathfinder analyzes attack paths (not operator-command translation like planner)', () => {
+    const pf = bootstrapMission('pathfinder');
+    expect(pf.toLowerCase()).toContain('attack-path');
+    expect(pf).toContain('propose_plan');
+    // The two must be DISTINCT — the P1 bug was pathfinder borrowing planner's brief.
+    expect(pf).not.toBe(bootstrapMission('planner'));
+    expect(bootstrapMission('planner').toLowerCase()).toContain('operator command');
+  });
+
+  it('report_scribe drafts via generate_report (matching its tools), not research_cve', () => {
+    const rs = bootstrapMission('report_scribe');
+    expect(rs).toContain('generate_report');
+    expect(rs).not.toContain('research_cve');
+  });
+
+  it('recon_scanner is target-facing; cve_researcher is read-the-web only', () => {
+    expect(bootstrapMission('recon_scanner')).toContain('run_tool');
+    expect(bootstrapMission('cve_researcher')).toContain('research_cve');
+    expect(bootstrapMission('cve_researcher')).not.toContain('run_tool');
+  });
+
+  it('the legacy research role shares the full CVE mission (auto-dispatch uses role:research)', () => {
+    // The automatic CVE dispatch registers role:"research" with no archetype, so
+    // it must get the same "call research_cve once / empty list marks checked"
+    // brief — not a diluted one — or services never get marked checked.
+    expect(bootstrapMission('research')).toBe(bootstrapMission('cve_researcher'));
+    expect(bootstrapMission('research')).toContain('marked checked');
+  });
+
+  it('falls back to the default mission for an unknown id', () => {
+    expect(bootstrapMission('nope')).toBe(bootstrapMission('default'));
+  });
+});
 
 describe('agent-archetypes: legacy role surfaces (regression-locked)', () => {
   // These three MUST stay byte-identical to the pre-registry allowedToolsFor,
