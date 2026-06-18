@@ -3,6 +3,10 @@
 > **Status:** Accepted (June 2026). The **MCP driver** is in production and is the
 > driver for external lab work. The **no-MCP internal driver** is planned, not yet
 > built — recorded here so the path is ready when internal engagements need it.
+>
+> This is the **decision record** (why MCP is a driver, not the platform). For the
+> user-facing version of the runtime — one engine, the terminal + dashboard
+> surfaces, and how they tie together — see the [Runtime Model](runtime-model.md).
 
 This is the decision record for how Overwatch reaches a model and how a model
 reaches Overwatch's tools — across environments that allow MCP and environments

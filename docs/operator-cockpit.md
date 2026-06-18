@@ -8,8 +8,10 @@ Overwatch is operated as a **multi-agent cockpit**: a human operator drives a pr
 
 ## The headless multi-agent runtime
 
+> New here? Read the [Runtime Model](runtime-model.md) first — one engine, two surfaces (terminal + dashboard), and the agent-dispatch + approval round-trips this cockpit drives.
+
 - **Dispatch.** `register_agent` / `dispatch_agents` / `dispatch_subnet_agents` / `dispatch_campaign_agents` create `AgentTask`s. `TaskExecutionService` routes each to a backend: `scripted` (deterministic in-process), `headless_mcp` (a real `claude -p` reasoning sub-agent connected back to this daemon's `/mcp`), or `manual`.
-- **Liveness.** Sub-agents call [`agent_heartbeat`](tools/agent-heartbeat.md); the watchdog reaps silent tasks past `heartbeat_ttl_seconds` (120s) and a per-task wall-clock timeout (30 min) bounds runaways. Concurrency is capped (default 3 headless agents).
+- **Liveness.** Sub-agents call [`agent_heartbeat`](tools/agent-heartbeat.md); the watchdog reaps silent tasks past `heartbeat_ttl_seconds` (headless agents get a 300s cold-start grace so spawn + MCP bootstrap can't trip it before the first beat) and a per-task wall-clock timeout (30 min) bounds runaways. Concurrency is capped (default 3 headless agents). When a task is reaped or cancelled, its OS process is killed and any approval it was blocked on is aborted (never executed).
 - **Reporting.** Agents record work with `report_finding` / `log_thought` / `parse_output` and close out with `submit_agent_transcript` + `update_agent`.
 
 ### Roles {#roles}
@@ -75,6 +77,13 @@ The live WS push carries source attribution so primary reasoning and operator co
 
 A running agent at a genuine fork calls [`ask_operator`](tools/ask-operator.md) and waits by heartbeating. The question lands in `AgentQueryStore` and surfaces in the cockpit's **Agent Questions** inbox; the operator answers (`POST /api/agent-queries/:id/answer`) and the answer is delivered on the agent's next heartbeat as `pending_answer` (at-least-once; the agent dedups by `query_id`). A task's questions are expired when it goes terminal, so a dead agent's question never lingers.
 
+The approval gate works the same way — an agent's target-facing call **blocks** in the engine's queue, the operator resolves it from the "Needs you" strip, and the agent resumes. Both round-trips are the clearest proof that the terminal agent and the dashboard operate on one shared engine:
+
+![Approval and question round-trip](assets/approval-question-roundtrip-light.svg#only-light)
+![Approval and question round-trip](assets/approval-question-roundtrip-dark.svg#only-dark)
+
+A blocked approval is **aborted** (never executed) if the requesting agent is reaped, cancelled, or times out, and persisted pending approvals are reconciled to `aborted` on restart — see the [Runtime Model](runtime-model.md) for the full lifecycle.
+
 ## Agent types & deploy {#agent-types}
 
 Sub-agents are **typed** (data-driven archetypes in `agent-archetypes.ts`), each a real bundle of a tool surface (a genuine `--allowedTools` boundary), a backend, a default skill/objective, and a scope strategy:
@@ -112,6 +121,11 @@ The **Analysis** workspace (Investigate group) is where the operator **assesses 
 - **Deploy-at-findings** — one-click deploy a follow-up agent at the run's target nodes (dispatch) or raw IPs/CIDRs (quick-deploy), with a recommended agent type — reusing the same validated dispatch/quick-deploy paths, no retyping node IDs.
 
 All target execution still flows through the agents/MCP path; the workspace reads output and routes deploys through existing validated engine methods.
+
+This makes the workspace a tight assess → re-parse → deploy loop, suggest-only: the operator reviews each recommendation before an agent is dispatched.
+
+![Analysis workspace loop](assets/analysis-workspace-loop-light.svg#only-light)
+![Analysis workspace loop](assets/analysis-workspace-loop-dark.svg#only-dark)
 
 ## Dashboard endpoints
 
