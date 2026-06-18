@@ -23,7 +23,7 @@ import { renderReportHtml } from './report-html.js';
 import { runRetrospective, buildCredentialChains } from './retrospective.js';
 import type { RetrospectiveInput } from './retrospective.js';
 import { classifyAllFindings, generateNavigatorLayer } from './finding-classifier.js';
-import { redactReportText, redactSecretKeys } from './report-redaction.js';
+import { redactReportText, redactSecretKeys, sanitizeCommandForClient } from './report-redaction.js';
 import { buildTrustSignalsResponse } from './trust-signal-summary.js';
 import type { TrustSignalDto } from './trust-signal-summary.js';
 import { displayFindingCategory, displayFindingShortTitle, displayFindingTitle } from './finding-presentation.js';
@@ -68,10 +68,21 @@ function scrubMarkdownForClient(md: string): string {
     /(\*\*?(?:Raw Output|Stdout(?: Preview)?|Evidence Content|Output)\*\*?:?\s*\n)```[\s\S]*?```/gi,
     '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
   );
+  // Raw-evidence blocks rendered as a <details><summary>Raw …</summary> with a
+  // fenced body (proof-card raw_preview) — fence-label-agnostic, so redact the
+  // fenced body whenever the summary marks it as raw evidence/output.
+  out = out.replace(
+    /(<summary>(?:Raw[^<]*|Evidence[^<]*|Output[^<]*)<\/summary>\s*\n+\s*)```[\s\S]*?```/gi,
+    '$1```\n<redacted for client delivery — full evidence available in operator report>\n```',
+  );
   out = out.replace(
     /\b(cred_value|password|nt_hash|lm_hash|aes256_hash|aes128_hash|secret|token|bearer|api_key|private_key)\s*[:=]\s*([^\s,'"`<>{}]+)/gi,
     (_m, k) => `${k}: <redacted>`,
   );
+  // Commands render into ```bash fences with their secrets in the args
+  // (-p/--password, --hashes, user:pass@host, Bearer …) — the label-based
+  // redactions above never see them. Sanitize the whole document.
+  out = sanitizeCommandForClient(out) ?? out;
   return out;
 }
 
