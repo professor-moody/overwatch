@@ -95,14 +95,14 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED]) },
   },
   post_exploit: {
-    id: 'post_exploit', label: 'Post-exploitation', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'lateral-movement',
+    id: 'post_exploit', label: 'Post-exploitation', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'post-exploitation',
     description: 'Work from a foothold: interactive sessions, lateral movement, local enumeration from compromised hosts.',
     defaultObjective: 'From the foothold at {target}, escalate and move laterally; capture credentials and reachable assets.',
     suitableFor: { frontierTypes: ['inferred_edge', 'network_pivot', 'cross_tier_pivot'], nodeTypes: ['host'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...SESSIONS, ...CRED]) },
   },
   cve_researcher: {
-    id: 'cve_researcher', label: 'CVE researcher', role: 'research', backend: 'headless_mcp', scopeStrategy: 'subgraph',
+    id: 'cve_researcher', label: 'CVE researcher', role: 'research', backend: 'headless_mcp', scopeStrategy: 'subgraph', defaultSkill: 'cve-research',
     description: 'Read the public web for CVEs/PoCs and record findings. Never executes against targets.',
     defaultObjective: 'Research known vulnerabilities and exploits relevant to {target}; record findings with sources.',
     suitableFor: { frontierTypes: ['cve_research'] },
