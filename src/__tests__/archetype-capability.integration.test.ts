@@ -122,4 +122,49 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     expect(result.task?.status).toBe('completed');
     expect(result.app.engine.getProposedPlanStore().getOpen().length).toBeGreaterThan(0);
   });
+
+  it('credential_operator expands its assigned AWS credential into a recon plan and completes', async () => {
+    // Seed an STS-flavored token credential and scope the agent to it; the cred mode
+    // finds it and runs expand_aws_credential (plan generation, no live AWS).
+    result = await runArchetype({
+      archetype: 'credential_operator',
+      fakeMode: 'cred',
+      seedNodes: [{
+        id: 'aws-cred-eval', type: 'credential', label: 'oidc-sts-token',
+        cred_type: 'oidc_access_token', cred_material_kind: 'oidc_access_token',
+        cred_value: 'eyJhbG.fake.sts-token', cred_user: 'svc-deploy',
+        cred_audience: 'sts.amazonaws.com', cred_usable_for_auth: true, credential_status: 'active',
+      }],
+      scopeSeededNodes: true,
+    });
+    expect(result.task?.status).toBe('completed');
+    // expand_aws_credential stamps the credential node with recon_playbook_invoked_at.
+    const cred = result.app.engine.getNodesByType('credential').find(n => JSON.stringify(n).includes('svc-deploy'));
+    expect(JSON.stringify(cred ?? {})).toContain('recon_playbook_invoked_at');
+  });
+
+  it('post_exploit records a lateral admin-access edge and completes', async () => {
+    result = await runArchetype({ archetype: 'post_exploit', fakeMode: 'postex' });
+    expect(result.task?.status).toBe('completed');
+    // The post-exploitation signature: an ADMIN_TO edge between a foothold and a pivot.
+    const hasAdminEdge = result.app.engine.exportGraph().edges.some(e => e.properties.type === 'ADMIN_TO');
+    expect(hasAdminEdge).toBe(true);
+  });
+
+  it('report_scribe drafts a report from confirmed state and completes (generate_report end-to-end)', async () => {
+    // Seed a finding-producing node so the report has real content to draft.
+    result = await runArchetype({
+      archetype: 'report_scribe',
+      fakeMode: 'scribe',
+      seedNodes: [{
+        id: 'cloud-res-scribe', type: 'cloud_resource', label: 's3://scribe-public-bucket',
+        public: true, resource_type: 's3_bucket', provider: 'aws', region: 'us-east-1',
+      }],
+    });
+    expect(result.task?.status).toBe('completed');
+    const drafted = result.app.engine.getFullHistory().some(
+      e => e.event_type === 'agent_transcript_submitted' && /drafted a \d+-char report/.test(e.description ?? ''),
+    );
+    expect(drafted).toBe(true);
+  });
 });
