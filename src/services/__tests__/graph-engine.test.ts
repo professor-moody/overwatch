@@ -3575,3 +3575,29 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
     edges: overrides.edges || [],
   };
 }
+
+describe('reconcilePendingApprovalsOnStartup (restart safety)', () => {
+  it('flips a persisted pending approval record to aborted on restart', () => {
+    const stateFile = makeTempStateFile();
+    const e1 = new GraphEngine(makeConfig(), stateFile);
+    e1.recordApprovalRequest({
+      action_id: 'pending-on-restart',
+      description: 'half-approved action',
+      opsec_context: { global_noise_spent: 0.1, noise_budget_remaining: 0.9, recommended_approach: 'normal', defensive_signals: [] },
+      validation_result: 'valid',
+      agent_id: 'agent-gone',
+    });
+    expect(e1.getApprovalRequest('pending-on-restart')?.status).toBe('pending');
+    e1.flushNow();
+    e1.dispose();
+
+    // Restart: a new engine over the same state file must NOT leave the request
+    // stuck 'pending' forever — the requesting agent (and the UI that could
+    // action it into a live, awaiting tool call) are gone.
+    const e2 = new GraphEngine(makeConfig(), stateFile);
+    const rec = e2.getApprovalRequest('pending-on-restart');
+    expect(rec?.status).toBe('aborted');
+    expect(rec?.reason ?? '').toContain('restart');
+    e2.dispose();
+  });
+});

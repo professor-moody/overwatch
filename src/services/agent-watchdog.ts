@@ -26,6 +26,13 @@ export interface AgentWatchdogOptions {
   intervalMs?: number;
   /** Optional clock injection (used by tests). */
   now?: () => string;
+  /**
+   * Runs at the end of every tick, after reaping. The owner (TaskExecutionService)
+   * uses this to reconcile reaped tasks with the OS-process registry — heartbeat
+   * reaping flips a task to 'interrupted' but does NOT fire onUpdate or touch the
+   * process, so without this hook a reaped headless agent keeps running.
+   */
+  afterTick?: () => void;
 }
 
 export class AgentWatchdog {
@@ -33,12 +40,14 @@ export class AgentWatchdog {
   private intervalMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private now: () => string;
+  private afterTick?: () => void;
   private reapedTotal = 0;
 
   constructor(engine: GraphEngine, options: AgentWatchdogOptions = {}) {
     this.engine = engine;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.afterTick = options.afterTick;
   }
 
   start(): void {
@@ -82,6 +91,11 @@ export class AgentWatchdog {
       });
     }
     this.reapedTotal += reaped;
+    // Reconcile reaped tasks with the OS-process registry / approval queue.
+    // Wrapped so a reconcile error never kills the watchdog timer.
+    if (this.afterTick) {
+      try { this.afterTick(); } catch { /* best effort — never break the timer */ }
+    }
     return reaped;
   }
 

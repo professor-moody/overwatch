@@ -171,6 +171,49 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(existsSync(cfgPath)).toBe(false);
   });
 
+  it('watchdog reconcile kills an orphaned process AND aborts its pending approval after a reap', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-orphan', agent_id: 'sub-orphan' }));
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+
+    // The agent is blocked on an approval gate (submitted directly; we're testing
+    // the abort path, not the needsApproval gate).
+    const queue = engine.getPendingActionQueue();
+    const pendingApproval = {
+      action_id: 'orphan-act',
+      description: 'risky thing',
+      opsec_context: { global_noise_spent: 0.1, noise_budget_remaining: 0.9, recommended_approach: 'normal' as const, defensive_signals: [] },
+      validation_result: 'valid' as const,
+      agent_id: 'sub-orphan',
+    };
+    engine.recordApprovalRequest(pendingApproval);
+    const approvalPromise = queue.submit(pendingApproval);
+    expect(queue.getPendingCount()).toBe(1);
+
+    // Simulate a heartbeat-reap: the task flips terminal, but reaping does NOT
+    // fire onUpdate, kill the process, or settle the approval (the P1 bug). The
+    // process is still tracked and the approval still pending.
+    engine.updateAgentStatus('h-orphan', 'interrupted', 'heartbeat timeout');
+    await settle();
+    expect(spawned[0].signals).not.toContain('SIGTERM'); // gap: not yet reconciled
+    expect(queue.getPendingCount()).toBe(1);
+
+    // The watchdog tick must reconcile: kill the orphan + abort its approval.
+    svc.tickWatchdog();
+    await settle();
+
+    expect(spawned[0].signals).toContain('SIGTERM');     // orphaned process killed
+    const resolution = await approvalPromise;
+    expect(resolution.status).toBe('aborted');           // NOT auto-fired/executed
+    expect(queue.getPendingCount()).toBe(0);
+    // Durable record resolved too — dashboard/state stop showing a stuck 'pending'.
+    const rec = engine.getApprovalRequests({ includeResolved: true }).find(r => r.action_id === 'orphan-act');
+    expect(rec?.status).toBe('aborted');
+  });
+
   it('enforces the max-concurrent-headless cap and launches the next when a slot frees', async () => {
     svc = makeService({ maxConcurrentHeadless: 1 });
     svc.start();

@@ -224,6 +224,7 @@ export class GraphEngine {
     // Reconcile runtime-dependent state on startup
     this.reconcileSessionEdgesOnStartup();
     this.agentMgr.reconcileOnStartup();
+    this.reconcilePendingApprovalsOnStartup();
     this.persistence.persistImmediate();
 
     // 7.7: Auto health check on startup
@@ -2348,6 +2349,9 @@ export class GraphEngine {
    */
   dispose(): void {
     this.persistence.dispose();
+    // Cancel approval timers + settle any outstanding approval promises so a
+    // blocked tool call can't hang past daemon shutdown.
+    this.ctx.pendingActionQueue.dispose();
   }
 
   // =============================================
@@ -2431,6 +2435,49 @@ export class GraphEngine {
     this.persist();
     this.flushNow();
     return record;
+  }
+
+  /**
+   * Abort any pending approval gate owned by a now-terminal task: resolve the
+   * live queue entries as 'aborted' AND update their durable records. Without
+   * this, a blocked approval for a reaped/cancelled agent would sit pending and
+   * could auto-fire on timeout (executing a command for a dead agent), and the
+   * durable record + dashboard would show a stuck 'pending' forever. Matches the
+   * queue's PendingAction.agent_id to the task's agent_id. Returns the count
+   * aborted.
+   */
+  abortApprovalsForTask(task_id: string, reason = 'requesting agent terminated'): number {
+    const task = this.getTask(task_id);
+    if (!task) return 0;
+    const aborted = this.ctx.pendingActionQueue.abortByAgent(task.agent_id, reason);
+    for (const resolution of aborted) this.resolveApprovalRequest(resolution);
+    return aborted.length;
+  }
+
+  /**
+   * On startup, resolve any persisted 'pending' approval record to 'aborted':
+   * the agent that requested it is gone after a restart, so the record would
+   * otherwise sit un-actionable forever (the operator can no longer approve it
+   * into a live, awaiting tool call). Mirrors `reconcileOnStartup` for agents.
+   */
+  reconcilePendingApprovalsOnStartup(): number {
+    let count = 0;
+    const now = new Date().toISOString();
+    for (const [id, rec] of this.ctx.approvalRequests) {
+      if (rec.status !== 'pending') continue;
+      this.ctx.approvalRequests.set(id, {
+        ...rec,
+        status: 'aborted',
+        resolved_at: now,
+        reason: 'daemon restarted before the approval was actioned',
+      });
+      count++;
+    }
+    if (count > 0) {
+      this.persist();
+      this.flushNow();
+    }
+    return count;
   }
 
   getApprovalRequests(options?: { includeResolved?: boolean; resolvedSinceMs?: number }): DurableApprovalRecord[] {

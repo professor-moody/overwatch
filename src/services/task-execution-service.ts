@@ -76,7 +76,12 @@ export class TaskExecutionService {
   constructor(engine: GraphEngine, processTracker: ProcessTracker, options: TaskExecutionServiceOptions = {}) {
     this.engine = engine;
     this.scripted = new ScriptedAgentRunner(engine);
-    this.watchdog = new AgentWatchdog(engine, { intervalMs: options.watchdogIntervalMs });
+    this.watchdog = new AgentWatchdog(engine, {
+      intervalMs: options.watchdogIntervalMs,
+      // After each reap, kill any headless process whose task is now terminal
+      // and abort its blocked approvals (heartbeat-reap doesn't do either).
+      afterTick: () => this.reconcileTerminatedTasks(),
+    });
     this.registry = new HeadlessProcessRegistry();
     this.headlessRunner = new HeadlessMcpRunner(engine, this.registry, processTracker, options.headless);
     this.maxConcurrentHeadless = options.maxConcurrentHeadless ?? DEFAULT_MAX_HEADLESS;
@@ -248,7 +253,36 @@ export class TaskExecutionService {
     if (task && (task.status === 'running' || task.status === 'pending')) {
       this.engine.updateAgentStatus(task_id, 'interrupted', reason);
     }
+    // Abort any approval gate this agent was blocked on, so it can't auto-fire on
+    // timeout and execute a command for an agent we just killed.
+    this.engine.abortApprovalsForTask(task_id, reason);
     return killed;
+  }
+
+  /**
+   * Reconcile tracked headless processes + wall-clock timers against engine task
+   * state. The watchdog's heartbeat-reap (and any path that flips a task terminal
+   * without going through cancelHeadless) marks the task 'interrupted' but does
+   * NOT fire onUpdate, kill the OS process, or settle its pending approval — so a
+   * reaped `claude -p` keeps running (double-execution risk) and its blocked
+   * approval can auto-fire on timeout. Runs after every watchdog tick. Idempotent.
+   */
+  private reconcileTerminatedTasks(): void {
+    // Orphaned processes: task no longer running but its process is still tracked.
+    for (const entry of this.registry.listActive()) {
+      const task = this.engine.getTask(entry.task_id);
+      if (task && (task.status === 'running' || task.status === 'pending')) continue;
+      this.cancelHeadless(entry.task_id, 'reaped: task no longer running');
+    }
+    // Leaked wall-clock timers: task finished by some path but its timer is still
+    // armed and the process is gone (normal-exit case the timeout path misses).
+    for (const [taskId, timer] of [...this.timeoutTimers]) {
+      if (this.registry.has(taskId)) continue;
+      const task = this.engine.getTask(taskId);
+      if (task && (task.status === 'running' || task.status === 'pending')) continue;
+      clearTimeout(timer);
+      this.timeoutTimers.delete(taskId);
+    }
   }
 
   private drainHeadless(): void {
