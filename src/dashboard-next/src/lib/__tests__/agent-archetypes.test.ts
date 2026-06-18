@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDeployInput, recommendArchetypeFor } from '../agent-archetypes';
+import { classifyDeployInput, recommendArchetypeFor, deployTargetsFromRun } from '../agent-archetypes';
 
 describe('classifyDeployInput', () => {
   it('treats IP/CIDR/domain input as a raw quick-deploy target', () => {
@@ -27,6 +27,18 @@ describe('classifyDeployInput', () => {
       expect(r.cidrs).toEqual(['10.0.0.5/32']);
       expect(r.invalid).toContain('cred-oidc');
     }
+  });
+});
+
+describe('deployTargetsFromRun', () => {
+  it('prefers graph node ids (dispatch) when present', () => {
+    expect(deployTargetsFromRun(['h-app', 'svc-ssh'], ['10.0.0.5'])).toEqual({ mode: 'nodes', nodeIds: ['h-app', 'svc-ssh'] });
+  });
+  it('falls back to raw IPs/CIDRs (quick-deploy) when there are no node ids', () => {
+    expect(deployTargetsFromRun([], ['10.0.0.5', '10.0.0.0/24'])).toEqual({ mode: 'raw', target: '10.0.0.5 10.0.0.0/24' });
+  });
+  it('is none when there are no targets', () => {
+    expect(deployTargetsFromRun([], [])).toEqual({ mode: 'none' });
   });
 });
 
