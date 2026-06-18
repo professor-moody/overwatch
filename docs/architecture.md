@@ -2,6 +2,8 @@
 
 Overwatch inverts the typical "LLM-as-orchestrator" pattern. Instead of stuffing engagement state into a prompt, the orchestrator is a **persistent MCP server** that the LLM calls into.
 
+> For the user-facing runtime shape — one engine, two surfaces (terminal + dashboard), and how they tie together — start with the [Runtime Model](runtime-model.md). This page covers the internal component decomposition and the deterministic-vs-LLM split.
+
 ## System Diagram
 
 ![System Architecture](assets/system-architecture-light.svg#only-light)

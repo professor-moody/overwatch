@@ -60,21 +60,37 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Installation: getting-started.md
-    - Prerequisites: prerequisites.md
-    - Claude Code Hooks: claude-hooks.md
-    - Configuration: configuration.md
-    - Dashboard: dashboard.md
-    - Operator Cockpit: operator-cockpit.md
-    - Smoke Test: smoke-test.md
-  - Architecture:
-    - Overview: architecture.md
-    - Deployment & Drivers: deployment-architecture.md
+  - Concepts:
+    - Runtime Model: runtime-model.md
     - Key Concepts: concepts.md
     - Graph Model: graph-model.md
     - Threat Model: threat-model.md
+  - Setup:
+    - Install & First Engagement: getting-started.md
+    - Prerequisites: prerequisites.md
+    - Configuration: configuration.md
+    - Claude Code Hooks: claude-hooks.md
+    - Smoke Test: smoke-test.md
+  - Operating:
+    - Operator Cockpit: operator-cockpit.md
+    - Live Dashboard: dashboard.md
+    - Playbook:
+      - Overview: playbook/index.md
+      - Cockpit Walkthrough: playbook/cockpit-walkthrough.md
+      - End-to-End Walkthrough: playbook/walkthrough.md
+      - GOAD AD Lab: playbook/goad-lab.md
+      - HTB / Single Host: playbook/htb-single.md
+      - HTB / Network: playbook/htb-network.md
+      - CLI Adapter: playbook/cli-adapter.md
+      - Session Instructions: playbook/session-instructions.md
+      - Operator Infrastructure: playbook/operator-infra.md
+      - parse_output vs report_finding: playbook/parse-vs-report.md
+      - Retrospectives: playbook/retrospective.md
+  - Architecture:
+    - Overview: architecture.md
+    - Drivers (Decision Record): deployment-architecture.md
     - Tape Recording: tape-recording.md
+    - Architecture Review: architecture-review.md
   - Tool Reference:
     - tools/index.md
     - State & Health:
@@ -151,28 +167,15 @@ nav:
     - Analysis:
       - run_retrospective: tools/run-retrospective.md
   - Reference:
+    - Skills:
+      - Overview: skills/index.md
+      - "Featured: Kerberoasting": skills/featured.md
     - Data Storage: reference/data-storage.md
-  - Skills:
-    - skills/index.md
-    - "Featured: Kerberoasting": skills/featured.md
-  - Operator Playbook:
-    - playbook/index.md
-    - Cockpit Walkthrough: playbook/cockpit-walkthrough.md
-    - End-to-End Walkthrough: playbook/walkthrough.md
-    - GOAD AD Lab: playbook/goad-lab.md
-    - HTB / Single Host: playbook/htb-single.md
-    - HTB / Network: playbook/htb-network.md
-    - CLI Adapter: playbook/cli-adapter.md
-    - Session Instructions: playbook/session-instructions.md
-    - Operator Infrastructure: playbook/operator-infra.md
-    - parse_output vs report_finding: playbook/parse-vs-report.md
-    - Retrospectives: playbook/retrospective.md
-  - FAQ: faq.md
-  - Development:
+    - FAQ: faq.md
+  - Project:
     - Roadmap: roadmap.md
     - Multi-Agent Roadmap: multi-agent-roadmap.md
-    - development.md
-    - Development Timeline: development-timeline.md
     - Bedrock Integration Plan: bedrock-integration-plan.md
+    - Development: development.md
+    - Development Timeline: development-timeline.md
     - Contributing: contributing.md
-    - Architecture Review: architecture-review.md

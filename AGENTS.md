@@ -133,15 +133,18 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 
 ## Tool Reference
 
-**60+ MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the live tool table, engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP). Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
+**70+ MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
 | `get_state` | Full engagement briefing | Start of session, after compaction, periodic check-in |
+| `get_opsec_status` | Read-only OPSEC posture: noise budget spent, recommended approach, observed defensive signals | Before noisy actions; the `opsec_sentinel` agent type monitors this |
 | `next_task` | Filtered frontier candidates | When deciding what to do next |
 | `query_graph` | Open-ended graph exploration | When you see a pattern the frontier misses |
 | `find_paths` | Shortest path to objectives | When evaluating if a discovery opens a route |
 | `validate_action` | Pre-execution sanity check | Before every significant action |
+| `approve_action` | Resolve a pending approval gate as approved (with optional notes) | When an action is awaiting approval and you decide to proceed |
+| `deny_action` | Resolve a pending approval gate as denied (with reason) | When an action is awaiting approval and you decide to block it |
 | `log_action_event` | Record action lifecycle around real execution | Before starting and after finishing a significant action |
 | `log_thought` | Record reasoning, plans, decisions, rejections, reflections | Before committing to a frontier item; whenever you weigh alternatives; after major outcomes |
 | `run_bash` | Auto-instrumented `bash -c` execution | One-shot shell commands — wraps validate → approval → action_started → execute → evidence capture → action_completed/failed → optional parse_with ingest in one call |
@@ -183,6 +186,7 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 | `generate_report` | Client pentest report (Markdown / HTML / JSON / PDF) | End of engagement; also callable mid-engagement for draft reports |
 | `correct_graph` | Transactional graph repair | Operator corrections |
 | `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
+| `register_mock_service` | Register operator-controlled infrastructure (decoy listeners / mock services) as graph nodes | Setting up catchers / honeytokens; pass `operator_infra: true` |
 | `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
 | `manage_agent_directive` | Steer a running sub-agent: pause/resume/stop/narrow_scope/skip_types/prioritize/instruct (delivered on heartbeat) | Operator steering — per-agent + fleet controls in the cockpit |
 | `ask_operator` | Sub-agent escalates a decision and waits; the answer returns on its heartbeat | At a genuine fork the agent can't resolve |
