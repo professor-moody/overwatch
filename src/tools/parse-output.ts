@@ -1,13 +1,63 @@
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
 import { readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
-import type { ParseContext } from '../types.js';
-import { parseOutput, getSupportedParsers, isParserError } from '../services/parsers/index.js';
-import { prepareFindingForIngest } from '../services/finding-validation.js';
+import { getSupportedParsers } from '../services/parsers/index.js';
+import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-ingest.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
+
+/** Render the shared parse result into the parse_output tool's JSON response shapes. */
+function formatParseResult(
+  result: ParseIngestResult,
+  parsed_from: 'output' | 'file_path',
+  ingest: boolean,
+): { content: { type: 'text'; text: string }[]; isError?: boolean } {
+  const json = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 2) }] });
+  const warnings = result.warnings && result.warnings.length > 0 ? result.warnings : undefined;
+  switch (result.parse_status) {
+    case 'no_parser':
+      return { ...json({ error: result.error, supported_parsers: result.supported_parsers }), isError: true };
+    case 'parser_exception':
+      return {
+        ...json({
+          parsed: false, parse_status: 'parser_exception', tool: result.tool, action_id: result.action_id,
+          finding_id: result.finding_id, error: result.error,
+          message: `Parser '${result.tool}' threw — see error field for the exception and input prefix.`,
+        }),
+        isError: true,
+      };
+    case 'no_data':
+      return {
+        ...json({
+          parsed: false, ingested: false, parse_status: 'no_data', tool: result.tool, action_id: result.action_id,
+          finding_id: result.finding_id, parsed_from, nodes_parsed: 0, edges_parsed: 0, warnings,
+          message: 'Output parsed but no data extracted. Check the output format.',
+        }),
+        isError: true,
+      };
+    case 'validation_failed':
+      return {
+        ...json({
+          parsed: true, parse_status: 'validation_failed', tool: result.tool, action_id: result.action_id,
+          finding_id: result.finding_id, parsed_from, ingested: false, validation_errors: result.validation_errors, warnings,
+        }),
+        isError: true,
+      };
+    case 'ok':
+    default:
+      return json({
+        parsed: true, parse_status: 'ok', tool: result.tool, action_id: result.action_id, finding_id: result.finding_id,
+        parsed_from, nodes_parsed: result.nodes_parsed, edges_parsed: result.edges_parsed, warnings,
+        ingested: result.ingested
+          ? { new_nodes: result.ingested.new_nodes, new_edges: result.ingested.new_edges, inferred_edges: result.ingested.inferred_edges }
+          : undefined,
+        message: ingest && result.ingested
+          ? `Parsed and ingested: ${result.ingested.new_nodes} nodes, ${result.ingested.new_edges} edges, ${result.ingested.inferred_edges} inferred`
+          : `Parsed: ${result.nodes_parsed} nodes, ${result.edges_parsed} edges (not ingested)`,
+      });
+  }
+}
 
 export function registerParseOutputTools(server: McpServer, engine: GraphEngine): void {
 
@@ -62,14 +112,9 @@ Pass either the raw output content or a local file path for large artifacts.`,
     },
     withErrorBoundary('parse_output', async ({ tool_name: rawToolName, tool, output, file_path, agent_id, action_id, frontier_item_id, context, ingest, list_parsers }) => {
       const tool_name = rawToolName || tool;
-      const normalizedActionId = action_id || uuidv4();
-      const warnings: string[] = [];
       if (list_parsers) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ supported_parsers: getSupportedParsers() }, null, 2)
-          }]
+          content: [{ type: 'text', text: JSON.stringify({ supported_parsers: getSupportedParsers() }, null, 2) }]
         };
       }
 
@@ -92,9 +137,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              error: 'Provide exactly one of "output" or "file_path".',
-            }, null, 2),
+            text: JSON.stringify({ error: 'Provide exactly one of "output" or "file_path".' }, null, 2),
           }],
           isError: true,
         };
@@ -109,9 +152,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
           return {
             content: [{
               type: 'text',
-              text: JSON.stringify({
-                error: `Invalid file_path: ${error instanceof Error ? error.message : String(error)}`,
-              }, null, 2),
+              text: JSON.stringify({ error: `Invalid file_path: ${error instanceof Error ? error.message : String(error)}` }, null, 2),
             }],
             isError: true,
           };
@@ -134,237 +175,8 @@ Pass either the raw output content or a local file path for large artifacts.`,
         outputText = output!;
       }
 
-      // Build NetBIOS→FQDN domain alias map from existing graph domain nodes
-      const enrichedContext: ParseContext = { ...context };
-      if (!enrichedContext.domain_aliases) {
-        const aliases: Record<string, string> = {};
-        for (const node of engine.getNodesByType('domain')) {
-          const fqdn = (node.domain_name || node.label || '') as string;
-          if (fqdn && fqdn.includes('.')) {
-            // Always register the first-label heuristic alias
-            const fqdnLower = fqdn.toLowerCase();
-            const firstLabel = fqdn.split('.')[0].toUpperCase();
-            aliases[firstLabel] = fqdnLower;
-            // Also register explicit netbios_name when it differs (renamed-domain environments)
-            if (typeof node.netbios_name === 'string' && node.netbios_name.length > 0) {
-              aliases[node.netbios_name.toUpperCase()] = fqdnLower;
-            }
-          }
-        }
-        if (Object.keys(aliases).length > 0) {
-          enrichedContext.domain_aliases = aliases;
-        }
-      }
-
-      const finding = parseOutput(tool_name, outputText, agent_id, enrichedContext);
-      if (!finding) {
-        engine.logActionEvent({
-          description: `Output parse failed: no parser for ${tool_name}`,
-          agent_id,
-          action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name,
-          frontier_item_id,
-          frontier_type: frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined,
-          result_classification: 'failure',
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: `No parser found for tool: ${tool_name}`,
-              supported_parsers: getSupportedParsers(),
-            }, null, 2)
-          }],
-          isError: true,
-        };
-      }
-
-      finding.action_id = normalizedActionId;
-      finding.tool_name = tool_name;
-      finding.frontier_item_id = frontier_item_id;
-
-      // F0-1: surface parser exceptions as a distinct error so the operator's
-      // LLM sees what crashed instead of a misleading "no data" reply.
-      if (isParserError(finding)) {
-        engine.logActionEvent({
-          description: `Parser '${tool_name}' threw an exception`,
-          agent_id: finding.agent_id,
-          action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name,
-          frontier_item_id,
-          frontier_type: frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined,
-          result_classification: 'failure',
-          details: { parse_status: 'parser_exception' },
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              parsed: false,
-              parse_status: 'parser_exception',
-              tool: tool_name,
-              action_id: normalizedActionId,
-              finding_id: finding.id,
-              error: finding.raw_output,
-              message: `Parser '${tool_name}' threw — see error field for the exception and input prefix.`,
-            }, null, 2)
-          }],
-          isError: true,
-        };
-      }
-
-      // F06: Warn when certipy text fallback produced nodes but no ESC/CA edges
-      if (tool_name === 'certipy' && finding.nodes.length > 0 && finding.edges.length === 0) {
-        warnings.push('Certipy text fallback used — only template names extracted. ESC edges, CA data, and enrollment permissions are missing. Re-run certipy with JSON output (-json) for full ADCS attack path analysis.');
-      }
-
-      const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
-      if (!action_id) {
-        warnings.push('parse_output was called without prior action context; generated a new action_id, but retrospective linkage will be weaker.');
-        engine.logActionEvent({
-          description: 'Parsed output without prior action context',
-          agent_id: finding.agent_id,
-          action_id: normalizedActionId,
-          event_type: 'instrumentation_warning',
-          category: 'system',
-          frontier_type: frontierType,
-          tool_name,
-          frontier_item_id,
-          result_classification: 'neutral',
-          details: { warning: 'missing_action_context' },
-        });
-      }
-
-      if (finding.nodes.length === 0 && finding.edges.length === 0) {
-        engine.logActionEvent({
-          description: `Output parsed for ${tool_name} but no graph data was extracted`,
-          agent_id: finding.agent_id,
-          action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name,
-          frontier_item_id,
-          frontier_type: frontierType,
-          linked_finding_ids: [finding.id],
-          result_classification: 'failure',
-          details: { parsed_nodes: 0, parsed_edges: 0, ingested: false, parse_status: 'no_data' },
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              parsed: false,
-              ingested: false,
-              parse_status: 'no_data',
-              tool: tool_name,
-              action_id: normalizedActionId,
-              finding_id: finding.id,
-              parsed_from: filePathProvided ? 'file_path' : 'output',
-              nodes_parsed: 0,
-              edges_parsed: 0,
-              warnings: warnings.length > 0 ? warnings : undefined,
-              message: 'Output parsed but no data extracted. Check the output format.',
-            }, null, 2)
-          }],
-          isError: true,
-        };
-      }
-
-      const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
-      if (prepared.errors.length > 0) {
-        engine.logActionEvent({
-          description: `Output parse rejected for ${tool_name}: invalid graph mutation`,
-          agent_id: finding.agent_id,
-          action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name,
-          frontier_item_id,
-          frontier_type: frontierType,
-          linked_finding_ids: [finding.id],
-          result_classification: 'failure',
-          details: { validation_errors: prepared.errors },
-        });
-        engine.persist();
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              parsed: true,
-              parse_status: 'validation_failed',
-              tool: tool_name,
-              action_id: normalizedActionId,
-              finding_id: finding.id,
-              parsed_from: filePathProvided ? 'file_path' : 'output',
-              ingested: false,
-              validation_errors: prepared.errors,
-              warnings: warnings.length > 0 ? warnings : undefined,
-            }, null, 2),
-          }],
-          isError: true,
-        };
-      }
-
-      let ingestResult: { new_nodes: string[]; new_edges: string[]; inferred_edges: string[] } | undefined;
-      if (ingest) {
-        ingestResult = engine.ingestFinding(prepared.finding);
-      }
-
-      engine.logActionEvent({
-        description: ingest
-          ? `Output parsed and ingested for ${tool_name}`
-          : `Output parsed for ${tool_name} without ingest`,
-        agent_id: finding.agent_id,
-        action_id: normalizedActionId,
-        event_type: 'parse_output',
-        category: 'finding',
-        tool_name,
-        frontier_item_id,
-        frontier_type: frontierType,
-        linked_finding_ids: [finding.id],
-        result_classification: ingest ? 'success' : 'neutral',
-        details: {
-          parsed_nodes: finding.nodes.length,
-          parsed_edges: finding.edges.length,
-          ingested: ingest,
-          new_nodes: ingest ? ingestResult!.new_nodes.length : 0,
-          new_edges: ingest ? ingestResult!.new_edges.length : 0,
-          inferred_edges: ingest ? ingestResult!.inferred_edges.length : 0,
-        },
-      });
-      engine.persist();
-
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            parsed: true,
-            parse_status: 'ok',
-            tool: tool_name,
-            action_id: normalizedActionId,
-            finding_id: finding.id,
-            parsed_from: filePathProvided ? 'file_path' : 'output',
-            nodes_parsed: finding.nodes.length,
-            edges_parsed: finding.edges.length,
-            warnings: warnings.length > 0 ? warnings : undefined,
-            ingested: ingest ? {
-              new_nodes: ingestResult!.new_nodes.length,
-              new_edges: ingestResult!.new_edges.length,
-              inferred_edges: ingestResult!.inferred_edges.length,
-            } : undefined,
-            message: ingest
-              ? `Parsed and ingested: ${ingestResult!.new_nodes.length} nodes, ${ingestResult!.new_edges.length} edges, ${ingestResult!.inferred_edges.length} inferred`
-              : `Parsed: ${finding.nodes.length} nodes, ${finding.edges.length} edges (not ingested)`,
-          }, null, 2)
-        }]
-      };
+      const result = parseAndMaybeIngest(engine, { tool_name, outputText, agent_id, action_id, frontier_item_id, context, ingest });
+      return formatParseResult(result, filePathProvided ? 'file_path' : 'output', ingest);
     })
   );
 }

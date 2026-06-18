@@ -281,6 +281,11 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
             ))}
           </div>
         )}
+        {!isLiveMode && active?.evidenceId && (
+          // key per blob: switching stdout/stderr remounts so a stale preview
+          // from the other stream can't linger.
+          <ReparseControls key={active.evidenceId} actionId={run.actionId} evidenceId={active.evidenceId} defaultTool={output?.tool ?? run.tool} />
+        )}
       </div>
 
       {/* Stream toggle + find-in-output */}
@@ -368,6 +373,94 @@ function StreamBanners({ stream, onLoadMore }: { stream: OutputStreamView; onLoa
       ))}
     </div>
   );
+}
+
+function ReparseControls({ actionId, evidenceId, defaultTool }: { actionId: string; evidenceId: string; defaultTool: string | null }) {
+  const [parsers, setParsers] = useState<string[]>([]);
+  const [tool, setTool] = useState('');
+  const [result, setResult] = useState<api.ReparseResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    api.getParsers().then(r => {
+      if (cancelled) return;
+      const list = r.parsers || [];
+      setParsers(list);
+      const guess = defaultTool && list.includes(defaultTool) ? defaultTool : (list[0] || '');
+      setTool(t => t || guess);
+    }).catch(() => { /* dropdown stays empty */ });
+    return () => { cancelled = true; };
+  }, [expanded, defaultTool]);
+
+  const run = async (ingest: boolean) => {
+    if (!tool) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.reparseAction(actionId, { tool_name: tool, evidence_id: evidenceId, ingest });
+      setResult(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!expanded) {
+    return <button onClick={() => setExpanded(true)} className="text-[11px] text-accent hover:underline">Re-parse output…</button>;
+  }
+
+  const canPromote = !!result && result.parse_status === 'ok' && !result.ingested && (result.nodes_parsed + result.edges_parsed) > 0;
+  return (
+    <div className="rounded border border-border bg-elevated p-2 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Re-parse</span>
+        <select
+          value={tool}
+          onChange={e => { setTool(e.target.value); setResult(null); }}
+          className="settings-input text-xs py-1"
+        >
+          {parsers.length === 0 && <option value="">(loading…)</option>}
+          {parsers.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <button onClick={() => run(false)} disabled={busy || !tool} className="rounded border border-border px-2 py-1 text-[11px] hover:bg-hover disabled:opacity-50">
+          Preview
+        </button>
+        {canPromote && (
+          <button onClick={() => run(true)} disabled={busy} className="rounded border border-success/40 bg-success/10 px-2 py-1 text-[11px] text-success hover:bg-success/20 disabled:opacity-50">
+            Promote to graph
+          </button>
+        )}
+        <button onClick={() => setExpanded(false)} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">Close</button>
+      </div>
+      {err && <div className="text-[11px] text-destructive">{err}</div>}
+      {result && <ReparseResult result={result} />}
+    </div>
+  );
+}
+
+function ReparseResult({ result }: { result: api.ReparseResponse }) {
+  if (result.ingested) {
+    return <div className="text-[11px] text-success">Promoted: {result.ingested.new_nodes} nodes, {result.ingested.new_edges} edges, {result.ingested.inferred_edges} inferred.</div>;
+  }
+  switch (result.parse_status) {
+    case 'ok':
+      return <div className="text-[11px] text-muted-foreground">Parsed {result.nodes_parsed} nodes, {result.edges_parsed} edges — review, then Promote.</div>;
+    case 'no_parser':
+      return <div className="text-[11px] text-warning">No parser for “{result.tool}”.</div>;
+    case 'no_data':
+      return <div className="text-[11px] text-warning">No graph data extracted with “{result.tool}”.</div>;
+    case 'validation_failed':
+      return <div className="text-[11px] text-destructive">Validation failed ({result.validation_errors?.length ?? 0} issue{(result.validation_errors?.length ?? 0) === 1 ? '' : 's'}).</div>;
+    case 'parser_exception':
+      return <div className="text-[11px] text-destructive">Parser error: {result.error}</div>;
+    default:
+      return null;
+  }
 }
 
 function Fact({ label, value }: { label: string; value: string }) {

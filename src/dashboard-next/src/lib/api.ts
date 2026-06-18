@@ -652,6 +652,37 @@ export interface EvidenceRawResponse {
   finding_id?: string;
 }
 
+export interface ReparseResponse {
+  parsed: boolean;
+  parse_status: 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'no_parser';
+  isError: boolean;
+  tool: string;
+  action_id: string;
+  evidence_id?: string | null;
+  finding_id?: string;
+  nodes_parsed: number;
+  edges_parsed: number;
+  ingested?: { new_nodes: number; new_edges: number; inferred_edges: number };
+  validation_errors?: unknown[];
+  warnings?: string[];
+  error?: string;
+  supported_parsers?: string[];
+}
+
+export async function getParsers(): Promise<{ parsers: string[] }> {
+  return fetchJson('/api/parsers');
+}
+
+export async function reparseAction(
+  actionId: string,
+  opts: { tool_name: string; evidence_id?: string; ingest?: boolean; context?: Record<string, unknown> },
+): Promise<ReparseResponse> {
+  return fetchJson(`/api/actions/${encodeURIComponent(actionId)}/reparse`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+}
+
 export async function getActionOutput(actionId: string, maxBytes?: number): Promise<ActionOutputResponse> {
   const qs = maxBytes ? `?max_bytes=${maxBytes}` : '';
   return fetchJson(`/api/actions/${encodeURIComponent(actionId)}/output${qs}`);
