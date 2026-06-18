@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Send, Square } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
-import { EmptyState } from '../shared';
+import { EmptyState, OpsecGauge } from '../shared';
 import { DataRow, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import {
   campaignAction,
@@ -294,6 +294,14 @@ function CampaignDetail({ campaign, frontier, onRefresh }: { campaign: Campaign;
       </PanelSection>
 
       {dispatchOpen && <DispatchPanel campaign={campaign} onDone={() => { setDispatchOpen(false); onRefresh(); }} />}
+
+      {campaign.opsec && (
+        <OpsecGauge
+          budget={campaign.opsec}
+          title="Campaign Noise"
+          caption="This campaign's noise as a share of the global budget — recommended approach is engagement-wide."
+        />
+      )}
 
       <PanelSection title="Dispatch Preview">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs mb-3">

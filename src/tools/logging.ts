@@ -130,6 +130,8 @@ Recommended flow:
         engine.recordOpsecNoise({
           action_id: normalizedActionId,
           host_id,
+          agent_id,
+          frontier_item_id,
           noise_estimate,
           noise_actual,
         });

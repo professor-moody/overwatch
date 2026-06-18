@@ -2371,15 +2371,52 @@ export class GraphEngine {
   // OPSEC Tracker
   // =============================================
 
-  recordOpsecNoise(opts: { action_id?: string; host_id?: string; domain?: string; noise_estimate: number; noise_actual?: number }): void {
-    this.ctx.opsecTracker.recordNoise(opts);
+  recordOpsecNoise(opts: { action_id?: string; host_id?: string; domain?: string; campaign_id?: string; agent_id?: string; frontier_item_id?: string; noise_estimate: number; noise_actual?: number }): void {
+    // Per-campaign noise aggregation: callers in the action lifecycle carry an
+    // agent_id and/or frontier_item_id but not the campaign directly. Resolve
+    // it here (one place) so the tracker can attribute noise to a campaign for
+    // the operator's per-campaign OPSEC meter. Explicit campaign_id wins.
+    const campaign_id = opts.campaign_id ?? this.resolveNoiseCampaignId(opts.frontier_item_id, opts.agent_id);
+    this.ctx.opsecTracker.recordNoise({
+      action_id: opts.action_id,
+      host_id: opts.host_id,
+      domain: opts.domain,
+      campaign_id,
+      noise_estimate: opts.noise_estimate,
+      noise_actual: opts.noise_actual,
+    });
+  }
+
+  /** Resolve the owning campaign for a noise event from the IDs the action
+   * lifecycle has on hand: the frontier item's running task first, then the
+   * task matching the agent_id (by agent_id or task id). The noise is being
+   * generated *now*, so a currently-running match wins over a finished task
+   * left in the agents map — otherwise an agent that reused its id across
+   * campaigns could attribute live noise to its previous (completed) campaign.
+   * Returns undefined when no campaign owns the work (ad-hoc/manual actions). */
+  private resolveNoiseCampaignId(frontier_item_id?: string, agent_id?: string): string | undefined {
+    if (frontier_item_id) {
+      const task = this.getRunningTaskForFrontierItem(frontier_item_id);
+      if (task?.campaign_id) return task.campaign_id;
+    }
+    if (agent_id) {
+      let fallback: string | undefined;
+      for (const task of this.ctx.agents.values()) {
+        if (task.id !== agent_id && task.agent_id !== agent_id) continue;
+        if (!task.campaign_id) continue;
+        if (task.status === 'running') return task.campaign_id;
+        fallback ??= task.campaign_id;
+      }
+      return fallback;
+    }
+    return undefined;
   }
 
   recordDefensiveSignal(signal: import('./opsec-tracker.js').DefensiveSignal): void {
     this.ctx.opsecTracker.recordDefensiveSignal(signal);
   }
 
-  getOpsecContext(opts?: { host_id?: string; domain?: string }): OpsecContext {
+  getOpsecContext(opts?: { host_id?: string; domain?: string; campaign_id?: string }): OpsecContext {
     return this.ctx.opsecTracker.getNoiseContext(opts);
   }
 

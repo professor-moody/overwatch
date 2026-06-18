@@ -173,6 +173,9 @@ export interface Campaign {
   agent_count?: number;
   running_agents?: number;
   parent_id?: string;
+  /** Per-campaign OPSEC budget snapshot (this campaign's noise contribution
+   * vs. the global budget). Present on enriched campaign DTOs. */
+  opsec?: OpsecBudget;
 }
 
 export interface AbortCondition {

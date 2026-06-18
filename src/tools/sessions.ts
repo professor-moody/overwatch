@@ -584,6 +584,7 @@ Result fields include action_id, evidence_id, validation_result, plus completion
         engine.recordOpsecNoise({
           action_id: normalizedActionId,
           host_id: effective.target_node,
+          agent_id: effective.agent_id,
           noise_estimate,
         });
       }
