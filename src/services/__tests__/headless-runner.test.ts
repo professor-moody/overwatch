@@ -33,6 +33,11 @@ class FakeChild extends EventEmitter {
   simulateExit(code: number | null, signal: NodeJS.Signals | null = null): void {
     this.emit('exit', code, signal);
   }
+  // 'close' fires after the process exits AND stdout/stderr have drained — the
+  // runner salvages a cut-off agent's captured output here.
+  simulateClose(code: number | null = null, signal: NodeJS.Signals | null = null): void {
+    this.emit('close', code, signal);
+  }
 }
 
 function headlessTask(overrides: Partial<AgentTask> = {}): AgentTask {
@@ -161,6 +166,53 @@ describe('Headless runner mechanics (injected spawn)', () => {
     // Process gone, and the still-running task is marked interrupted (lease released).
     expect(svc.activeHeadlessCount()).toBe(0);
     expect(engine.getTask('h-exit')?.status).toBe('interrupted');
+  });
+
+  it('salvages a cut-off agent\'s run log to evidence on exit', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-salvage', agent_id: 'a-salvage' }));
+    await settle();
+    expect(spawned).toHaveLength(1);
+
+    // The agent emits stream-json output, then is killed mid-flight (exits while
+    // still running) BEFORE it ever called submit_agent_transcript.
+    const trace = '{"type":"assistant","text":"found cred on host-1"}\n{"type":"tool_use","name":"run_bash"}\n';
+    spawned[0].stdout.emit('data', Buffer.from(trace));
+    spawned[0].simulateExit(null, 'SIGTERM'); // marks interrupted (lease release)
+    spawned[0].simulateClose(null, 'SIGTERM'); // stdio drained → salvage runs
+    await settle();
+
+    expect(engine.getTask('h-salvage')?.status).toBe('interrupted');
+    const salvage = engine.getFullHistory().find(e =>
+      e.event_type === 'agent_transcript_submitted' &&
+      (e.details as { salvaged?: boolean } | undefined)?.salvaged === true &&
+      e.linked_agent_task_id === 'h-salvage');
+    expect(salvage).toBeDefined();
+    const evidenceId = (salvage!.details as { evidence_id?: string }).evidence_id;
+    expect(evidenceId).toBeTruthy();
+    expect(engine.getEvidenceStore().getContent(evidenceId!) ?? '').toContain('found cred on host-1');
+  });
+
+  it('does NOT salvage when the agent completed normally (it reported its own work)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-done', agent_id: 'a-done' }));
+    await settle();
+    spawned[0].stdout.emit('data', Buffer.from('{"type":"assistant"}\n'));
+    // Agent finished deliberately before its process exited.
+    engine.updateAgentStatus('h-done', 'completed', 'all done');
+    spawned[0].simulateExit(0);
+    spawned[0].simulateClose(0);
+    await settle();
+
+    expect(engine.getTask('h-done')?.status).toBe('completed');
+    const salvage = engine.getFullHistory().find(e =>
+      (e.details as { salvaged?: boolean } | undefined)?.salvaged === true &&
+      e.linked_agent_task_id === 'h-done');
+    expect(salvage).toBeUndefined();
   });
 
   it('cancelHeadless kills the process (SIGTERM) and marks the task interrupted', async () => {
