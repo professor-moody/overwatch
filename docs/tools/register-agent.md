@@ -16,6 +16,7 @@ Called by the primary session when dispatching sub-agents for parallel work. Pro
 | `frontier_item_id` | `string` | Yes | ID of the frontier item this agent should work on |
 | `subgraph_node_ids` | `string[]` | No | Node IDs relevant to this agent's task. Leave empty to auto-compute from the frontier item. |
 | `skill` | `string` | No | Skill/methodology to apply |
+| `archetype` | `string` | No | Agent-type override (e.g. `recon_scanner`, `web_tester`, `credential_operator`, `post_exploit`, `cve_researcher`). When omitted, the archetype is **auto-selected** from the frontier item type + seed node type so the agent gets the right tool surface instead of the full-surface `default`. An unknown value is ignored (falls back to auto-selection). |
 
 ## Returns
 
@@ -26,6 +27,7 @@ On success:
 | `task_id` | `string` | Unique task ID (use this for `get_agent_context`, `update_agent`, and `agent_heartbeat`) |
 | `agent_id` | `string` | The agent identifier |
 | `status` | `string` | Initial status (`running`) |
+| `archetype` | `string` | The resolved agent type (explicit override, else auto-selected) — drives the agent's tool surface + mission |
 | `scope_node_count` | `number` | Number of seed nodes snapshotted for the agent's subgraph |
 | `scope_warning` | `string?` | Present when auto-scoped seeds resolved to zero nodes |
 | `message` | `string` | Confirmation |

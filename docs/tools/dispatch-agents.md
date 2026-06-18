@@ -18,6 +18,7 @@ This is the generic batch-dispatch tool. For campaign-aware dispatch (strategy-s
 | `strategy` | `"top_priority" \| "by_type"` | No | `"top_priority"` | How to select frontier items |
 | `hops` | `number` | No | 2 | Subgraph scope depth around each frontier seed (1–5) |
 | `skill` | `string` | No | — | Optional skill override applied to all dispatched agents |
+| `archetype` | `string` | No | — | Optional agent-type override applied to every dispatched agent. When omitted, each agent's archetype is **auto-selected** from its frontier item type + seed node type (so a webapp item gets `web_tester`, a credential item gets `credential_operator`, etc.) instead of the full-surface `default`. |
 | `agent_id_prefix` | `string` | No | `"sub"` | Prefix for synthesized `agent_id`s |
 
 **Strategies:**
