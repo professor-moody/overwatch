@@ -64,6 +64,10 @@ export async function runArchetype(opts: {
   /** Seed one open session (via a mock local_pty adapter) before dispatch — for
    *  session_shepherd, which has no tool to open sessions itself. */
   seedSession?: boolean;
+  /** Scope the dispatched agent's subgraph to the seeded nodes (canonical ids) —
+   *  for archetypes that READ their subgraph (e.g. cve_researcher finding its
+   *  assigned service). Default false → scope-wide/empty subgraph. */
+  scopeSeededNodes?: boolean;
   timeoutMs?: number;
 }): Promise<ArchetypeEvalResult> {
   chmodSync(FAKE_CLAUDE, 0o755);
@@ -80,11 +84,14 @@ export async function runArchetype(opts: {
   });
   await startHttpApp(app, { port: 0, host: '127.0.0.1' });
 
+  let seededNodeIds: string[] = [];
   if (opts.seedNodes?.length) {
-    app.engine.ingestFinding({
+    const ingest = app.engine.ingestFinding({
       id: `seed-${opts.archetype}`, agent_id: 'seed', timestamp: new Date().toISOString(),
       nodes: opts.seedNodes, edges: [],
     } as never);
+    // Node ids canonicalize on ingest; capture the actual stored ids for scoping.
+    seededNodeIds = (ingest as { new_nodes?: string[] }).new_nodes ?? [];
   }
 
   if (opts.seedSession) {
@@ -98,7 +105,7 @@ export async function runArchetype(opts: {
     agent_id: `agent-${opts.archetype}`,
     assigned_at: new Date().toISOString(),
     status: 'running',
-    subgraph_node_ids: [],
+    subgraph_node_ids: opts.scopeSeededNodes ? seededNodeIds : [],
     backend: 'headless_mcp',
     archetype: opts.archetype,
   } as AgentTask);
