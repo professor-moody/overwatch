@@ -634,6 +634,24 @@ export interface EngagementConfig {
   objectives?: Objective[];
   failure_patterns?: FailurePattern[];
   phases?: EngagementPhase[];
+  operator_policy?: OperatorPolicy;
+}
+
+/** Compiled operator policy — durable approval/dispatch rules the engine enforces.
+ *  Mirrors the server `OperatorPolicy` type. */
+export interface OperatorApprovalRule {
+  match: { host_class?: 'in_scope' | 'unverified' | 'excluded'; network?: string; technique?: string };
+  require: 'auto-approve' | 'approve-critical' | 'approve-all';
+}
+
+export interface OperatorPolicy {
+  version: 1;
+  approval_rules?: OperatorApprovalRule[];
+  dispatch_limits?: {
+    max_per_subnet?: number;
+    max_per_target?: number;
+    target_facing_archetypes?: string[];
+  };
 }
 
 export interface FailurePattern {
