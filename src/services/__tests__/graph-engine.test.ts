@@ -3601,3 +3601,25 @@ describe('reconcilePendingApprovalsOnStartup (restart safety)', () => {
     e2.dispose();
   });
 });
+
+describe('approval log pruning (bounded durable approvals)', () => {
+  const OPSEC = { global_noise_spent: 0, noise_budget_remaining: 1, recommended_approach: 'normal' as const, defensive_signals: [] };
+  it('caps resolved approval records while preserving pending ones', () => {
+    const stateFile = makeTempStateFile();
+    const e = new GraphEngine(makeConfig(), stateFile);
+    for (let i = 0; i < 210; i++) {
+      const id = `act-${i}`;
+      e.recordApprovalRequest({ action_id: id, description: 'a', opsec_context: OPSEC, validation_result: 'valid' });
+      e.resolveApprovalRequest({ action_id: id, status: 'approved', resolved_at: new Date().toISOString() });
+    }
+    // A still-pending request must never be pruned.
+    e.recordApprovalRequest({ action_id: 'pending-keep', description: 'p', opsec_context: OPSEC, validation_result: 'valid' });
+
+    const resolved = e.getApprovalRequests({ includeResolved: true }).filter(r => r.status !== 'pending');
+    expect(resolved.length).toBeLessThanOrEqual(200);
+    expect(e.getApprovalRequest('pending-keep')?.status).toBe('pending'); // preserved
+    expect(e.getApprovalRequest('act-209')?.status).toBe('approved');     // newest resolved kept
+    expect(e.getApprovalRequest('act-0')).toBeUndefined();                // oldest resolved pruned
+    e.dispose();
+  });
+});

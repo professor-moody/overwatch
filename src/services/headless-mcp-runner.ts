@@ -70,6 +70,11 @@ export interface HeadlessMcpRunnerOptions {
 import { allowedToolsFor, getArchetype, bootstrapMission } from './agent-archetypes.js';
 export { allowedToolsFor };
 
+/** Heartbeat TTL (seconds) granted to a freshly-launched headless agent so its
+ *  cold start (spawn + MCP bootstrap + first tool call) can't trip the watchdog
+ *  before its first heartbeat. Its own periodic heartbeats keep it fresh after. */
+const HEADLESS_STARTUP_TTL_SECONDS = 300;
+
 export class HeadlessMcpRunner {
   private engine: GraphEngine;
   private registry: HeadlessProcessRegistry;
@@ -128,6 +133,12 @@ export class HeadlessMcpRunner {
     }
 
     this.registry.register(task.id, child, configPath, this.now());
+    // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
+    // take longer than the default 120s heartbeat TTL, which would let the watchdog
+    // reap a perfectly healthy agent before its first heartbeat lands. Give headless
+    // agents a generous startup TTL; their own periodic heartbeats keep it fresh,
+    // and the 30-min wall-clock timeout remains the backstop for a truly wedged one.
+    this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
     if (child.pid) {
       this.processTracker.register({
         id: `headless-${task.id}`,

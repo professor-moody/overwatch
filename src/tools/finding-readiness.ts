@@ -22,8 +22,9 @@ interface FindingReadiness {
 }
 
 /** Heuristic proof-readiness over a derived finding. Read-only — surfaces the
- *  signals + gaps for the operator/evidence_auditor to judge, not a verdict. */
-function assess(f: ReportFinding): FindingReadiness {
+ *  signals + gaps for the operator/evidence_auditor to judge, not a verdict.
+ *  Exported for unit testing of the readiness tiers + gap strings. */
+export function assess(f: ReportFinding): FindingReadiness {
   const proof_cards = f.proof_cards?.length ?? 0;
   const evidence_chains = f.evidence?.length ?? 0;
   // "captured" = a chain cites real evidence-store bytes / raw output, not just a claim.
