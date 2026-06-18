@@ -19,7 +19,7 @@ import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
 import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { opsecPartialUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
+import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
@@ -1169,6 +1169,22 @@ export class DashboardServer {
           );
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `OPSEC validation failed: ${issues.join('; ')}`, issues }));
+          return;
+        }
+      }
+      // Strict parse on the operator_policy subtree (same rationale as OPSEC):
+      // a malformed approval rule or dispatch limit surfaces as a 400 instead of
+      // being silently stored and ignored by the engine.
+      if (b.operator_policy !== undefined && b.operator_policy !== null) {
+        const policyParse = operatorPolicyUpdateSchema.safeParse(b.operator_policy);
+        if (!policyParse.success) {
+          const issues = policyParse.error.issues.map(i =>
+            i.code === 'unrecognized_keys'
+              ? `unknown operator_policy key(s): ${(i as unknown as { keys?: string[] }).keys?.join(', ') ?? ''}`
+              : `${i.path.join('.')}: ${i.message}`,
+          );
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `operator_policy validation failed: ${issues.join('; ')}`, issues }));
           return;
         }
       }

@@ -457,6 +457,40 @@ export interface OpsecProfile {
   approval_timeout_ms?: number;  // default: 300000 (5 min)
 }
 
+/**
+ * Compiled operator policy — durable, inspectable rules the approval gate +
+ * dispatcher consult, instead of operator preferences living as prose in the
+ * system prompt (which evaporate on compaction and can't be audited). Lives on
+ * EngagementConfig; editable from the dashboard Settings panel.
+ *
+ * Invariant: policy may only TIGHTEN, never weaken, what phase∪engagement already
+ * require (see getEffectiveApprovalConfig — a looser rule is ignored). Scope is
+ * engagement-GLOBAL this phase (a per-/24 cap is about target blast radius, which
+ * doesn't care which campaign is hammering the subnet).
+ */
+export interface ApprovalRule {
+  match: {
+    host_class?: 'in_scope' | 'unverified' | 'excluded';
+    network?: string;    // CIDR; matched against the action's target IP
+    technique?: string;
+  };
+  require: ApprovalMode;
+}
+
+export interface OperatorPolicy {
+  version: 1;
+  /** Ordered; the STRICTEST matching rule wins (never weakens phase/engagement). */
+  approval_rules?: ApprovalRule[];
+  dispatch_limits?: {
+    /** Max concurrently-running target-facing agents per /24 (0/undefined = unlimited). */
+    max_per_subnet?: number;
+    /** Max concurrently-running target-facing agents per resolved host IP. */
+    max_per_target?: number;
+    /** Override which archetypes count as "target-facing" (default: those with the EXECUTE surface). */
+    target_facing_archetypes?: string[];
+  };
+}
+
 export interface EngagementConfig {
   id: string;
   name: string;
@@ -540,6 +574,8 @@ export interface EngagementConfig {
    * Never contains credentials — a redacted placeholder is stored here.
    */
   postgres_dsn?: string;
+  /** Compiled operator policy: durable approval/dispatch rules the engine consults. */
+  operator_policy?: OperatorPolicy;
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -574,6 +610,26 @@ export const opsecProfileSchema = z.object({
  * `time_window: {start, end}` and the server silently dropped them.
  */
 export const opsecPartialUpdateSchema = opsecProfileSchema.partial().strict();
+
+export const operatorPolicySchema = z.object({
+  version: z.literal(1),
+  approval_rules: z.array(z.object({
+    match: z.object({
+      host_class: z.enum(['in_scope', 'unverified', 'excluded']).optional(),
+      network: z.string().optional(),
+      technique: z.string().optional(),
+    }).strict(),
+    require: z.enum(['auto-approve', 'approve-critical', 'approve-all']),
+  }).strict()).optional(),
+  dispatch_limits: z.object({
+    max_per_subnet: z.number().int().min(1).optional(),
+    max_per_target: z.number().int().min(1).optional(),
+    target_facing_archetypes: z.array(z.string()).optional(),
+  }).strict().optional(),
+}).strict();
+
+/** Strict variant for the config PATCH route — rejects unknown keys with a 400. */
+export const operatorPolicyUpdateSchema = operatorPolicySchema;
 
 const campaignStrategySchema = z.enum(['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom']);
 
@@ -681,6 +737,7 @@ export const engagementConfigSchema = z.object({
    * session-scoped and must be reconnected after restart.
    */
   postgres_dsn: z.string().optional(),
+  operator_policy: operatorPolicySchema.optional(),
 });
 
 export interface ExportedGraphNode {
