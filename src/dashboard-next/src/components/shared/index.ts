@@ -1,4 +1,5 @@
 export { EmptyState } from './EmptyState';
+export { OpsecGauge } from './OpsecGauge';
 export { StatusBadge } from './StatusBadge';
 export { CountdownTimer } from './CountdownTimer';
 export { TagInput } from './TagInput';

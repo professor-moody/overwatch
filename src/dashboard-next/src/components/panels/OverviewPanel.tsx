@@ -4,10 +4,11 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { NODE_COLORS } from '../../lib/graph-constants';
 import { cn, formatTimestamp } from '../../lib/utils';
 import { SkeletonPanel } from '../shared/Skeleton';
+import { OpsecGauge } from '../shared';
 import { TelemetrySection } from './TelemetrySection';
 import * as api from '../../lib/api';
 import type { TrustSignalDto } from '../../lib/api';
-import type { OpsecBudget, Campaign, ActivityEntry } from '../../lib/types';
+import type { Campaign, ActivityEntry } from '../../lib/types';
 import { MetricTile, PageHeader, PanelSection } from '../shared/primitives';
 import {
   deriveAccessFacts,
@@ -350,55 +351,6 @@ export function OverviewPanel() {
 
       <TelemetrySection />
     </div>
-  );
-}
-
-function OpsecGauge({ budget }: { budget: OpsecBudget }) {
-  const pct = budget.max_noise > 0
-    ? Math.round((budget.global_noise_spent / budget.max_noise) * 100)
-    : 0;
-  const remainingPct = 100 - pct;
-
-  const barColor = remainingPct > 60 ? 'bg-success' : remainingPct > 30 ? 'bg-warning' : 'bg-destructive';
-  const approachBadge: Record<string, string> = {
-    loud: 'bg-success/10 text-success',
-    normal: 'bg-warning/10 text-warning',
-    quiet: 'bg-destructive/10 text-destructive',
-  };
-
-  return (
-    <section className="bg-surface border border-border rounded-lg p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-medium flex items-center gap-2">
-          OPSEC Budget
-          <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', approachBadge[budget.recommended_approach] || '')}>
-            {budget.recommended_approach}
-          </span>
-        </h3>
-        <span className="text-xs text-muted-foreground font-mono">
-          {budget.global_noise_spent.toFixed(2)} / {budget.max_noise}
-        </span>
-      </div>
-      <div className="h-2 bg-elevated rounded-full overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
-      </div>
-      <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
-        <span>{pct}% spent</span>
-        {budget.time_window_remaining_hours !== undefined && (
-          <span>{budget.time_window_remaining_hours.toFixed(1)}h remaining in window</span>
-        )}
-      </div>
-      {budget.warning && (
-        <div className="mt-2 text-xs text-warning bg-warning/5 border border-warning/20 rounded px-2 py-1">
-          ⚠ {budget.warning}
-        </div>
-      )}
-      {budget.defensive_signals.length > 0 && (
-        <div className="mt-2 text-xs text-destructive">
-          {budget.defensive_signals.length} defensive signal{budget.defensive_signals.length > 1 ? 's' : ''} detected
-        </div>
-      )}
-    </section>
   );
 }
 

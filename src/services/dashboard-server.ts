@@ -20,6 +20,7 @@ import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, t
 import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
+import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
 import { getTelemetry } from '../tools/error-boundary.js';
@@ -94,6 +95,19 @@ export interface DashboardEvent {
   data: any;
 }
 
+/** Per-campaign OPSEC budget snapshot — the campaign's own noise contribution
+ * measured against the (global) noise budget, plus the global recommended
+ * approach. Shaped to feed the same OpsecGauge the Overview uses. */
+interface CampaignOpsecBudget {
+  global_noise_spent: number;
+  noise_budget_remaining: number;
+  max_noise: number;
+  recommended_approach: OpsecContext['recommended_approach'];
+  defensive_signals: DefensiveSignal[];
+  time_window_remaining_hours?: number;
+  warning?: string;
+}
+
 type DashboardCampaign = Campaign & {
   agent_count: number;
   running_agents: number;
@@ -101,6 +115,7 @@ type DashboardCampaign = Campaign & {
   agents_active: number;
   completion_pct: number;
   findings_count: number;
+  opsec: CampaignOpsecBudget;
 };
 
 export class DashboardServer {
@@ -1809,6 +1824,12 @@ export class DashboardServer {
    */
   private enrichCampaigns(campaigns: Campaign[] = this.engine.listCampaigns()): DashboardCampaign[] {
     const allAgents = this.engine.getAllAgents();
+    // The global noise context (budget remaining, recommended approach, time
+    // window) is the same for every campaign — compute it once. Only the
+    // per-campaign noise contribution differs, via the tracker's accessor.
+    const opsecCtx = this.engine.getOpsecContext();
+    const maxNoise = this.engine.getConfig().opsec.max_noise;
+    const tracker = this.engine.getOpsecTracker();
     return campaigns.map(c => {
       const agents = allAgents.filter(a => a.campaign_id === c.id);
       const completed = c.progress?.completed ?? 0;
@@ -1823,6 +1844,17 @@ export class DashboardServer {
         agents_active: runningAgents,
         completion_pct: completionPct,
         findings_count: c.findings?.length ?? 0,
+        opsec: {
+          global_noise_spent: tracker.getCampaignNoise(c.id),
+          noise_budget_remaining: opsecCtx.noise_budget_remaining,
+          max_noise: maxNoise,
+          recommended_approach: opsecCtx.recommended_approach,
+          // Defensive signals are tracked globally (and per host/domain), not
+          // per campaign — leave empty here so the per-campaign gauge focuses
+          // on this campaign's noise contribution, not global alarms.
+          defensive_signals: [],
+          time_window_remaining_hours: opsecCtx.time_window_remaining_hours,
+        },
       };
     });
   }

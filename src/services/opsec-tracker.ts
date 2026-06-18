@@ -36,6 +36,7 @@ export interface OpsecContext {
   global_noise_spent: number;
   host_noise_spent?: number;
   domain_noise_spent?: number;
+  campaign_noise_spent?: number;
   recommended_approach: 'quiet' | 'normal' | 'loud';
   time_window_remaining_hours?: number;
   defensive_signals: DefensiveSignal[];
@@ -45,6 +46,7 @@ export interface OpsecContext {
 export interface OpsecTrackerState {
   noise_by_host: Record<string, number>;
   noise_by_domain: Record<string, number>;
+  noise_by_campaign?: Record<string, number>;
   global_noise: number;
   defensive_signals: DefensiveSignal[];
 }
@@ -53,6 +55,7 @@ export interface RecordNoiseOpts {
   action_id?: string;
   host_id?: string;
   domain?: string;
+  campaign_id?: string;
   noise_estimate: number;
   noise_actual?: number;
 }
@@ -68,6 +71,7 @@ export class OpsecTracker {
   private ctx: EngineContext;
   private noiseByHost: Map<string, number> = new Map();
   private noiseByDomain: Map<string, number> = new Map();
+  private noiseByCampaign: Map<string, number> = new Map();
   private globalNoise: number = 0;
   private defensiveSignals: DefensiveSignal[] = [];
 
@@ -91,6 +95,10 @@ export class OpsecTracker {
       const prev = this.noiseByDomain.get(opts.domain) ?? 0;
       this.noiseByDomain.set(opts.domain, prev + noise);
     }
+    if (opts.campaign_id) {
+      const prev = this.noiseByCampaign.get(opts.campaign_id) ?? 0;
+      this.noiseByCampaign.set(opts.campaign_id, prev + noise);
+    }
   }
 
   // ---- Defensive signals ----
@@ -111,7 +119,7 @@ export class OpsecTracker {
 
   // ---- Context for validate_action ----
 
-  getNoiseContext(opts?: { host_id?: string; domain?: string }): OpsecContext {
+  getNoiseContext(opts?: { host_id?: string; domain?: string; campaign_id?: string }): OpsecContext {
     const maxNoise = this.ctx.config.opsec.max_noise;
     const remaining = Math.max(0, maxNoise - this.globalNoise);
     const ratio = maxNoise > 0 ? remaining / maxNoise : 0;
@@ -128,6 +136,9 @@ export class OpsecTracker {
     }
     if (opts?.domain) {
       context.domain_noise_spent = round4(this.noiseByDomain.get(opts.domain) ?? 0);
+    }
+    if (opts?.campaign_id) {
+      context.campaign_noise_spent = round4(this.noiseByCampaign.get(opts.campaign_id) ?? 0);
     }
 
     const timeRemaining = this.getTimeWindowRemainingHours();
@@ -212,6 +223,7 @@ export class OpsecTracker {
   getGlobalNoise(): number { return this.globalNoise; }
   getHostNoise(host_id: string): number { return this.noiseByHost.get(host_id) ?? 0; }
   getDomainNoise(domain: string): number { return this.noiseByDomain.get(domain) ?? 0; }
+  getCampaignNoise(campaign_id: string): number { return round4(this.noiseByCampaign.get(campaign_id) ?? 0); }
   getAllDefensiveSignals(): DefensiveSignal[] { return [...this.defensiveSignals]; }
 
   // ---- Serialization ----
@@ -220,6 +232,7 @@ export class OpsecTracker {
     return {
       noise_by_host: Object.fromEntries(this.noiseByHost),
       noise_by_domain: Object.fromEntries(this.noiseByDomain),
+      noise_by_campaign: Object.fromEntries(this.noiseByCampaign),
       global_noise: this.globalNoise,
       defensive_signals: this.defensiveSignals,
     };
@@ -229,6 +242,7 @@ export class OpsecTracker {
     const tracker = new OpsecTracker(ctx);
     tracker.noiseByHost = new Map(Object.entries(state.noise_by_host || {}));
     tracker.noiseByDomain = new Map(Object.entries(state.noise_by_domain || {}));
+    tracker.noiseByCampaign = new Map(Object.entries(state.noise_by_campaign || {}));
     tracker.globalNoise = state.global_noise || 0;
     tracker.defensiveSignals = state.defensive_signals || [];
     return tracker;

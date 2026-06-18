@@ -978,6 +978,8 @@ export async function runInstrumentedProcess(
     engine.recordOpsecNoise({
       action_id: normalizedActionId,
       host_id: allTargetNodeIds[0],
+      agent_id,
+      frontier_item_id,
       noise_estimate: noiseEstimate,
     });
   }

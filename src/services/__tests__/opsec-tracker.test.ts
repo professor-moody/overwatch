@@ -54,6 +54,19 @@ describe('OpsecTracker', () => {
       expect(tracker.getDomainNoise('corp.local')).toBeCloseTo(0.5, 4);
     });
 
+    it('tracks per-campaign noise independently of global/host', () => {
+      const { tracker } = makeTracker();
+      tracker.recordNoise({ campaign_id: 'camp-1', host_id: 'h1', noise_estimate: 0.3 });
+      tracker.recordNoise({ campaign_id: 'camp-1', noise_estimate: 0.1 });
+      tracker.recordNoise({ campaign_id: 'camp-2', noise_estimate: 0.5 });
+      tracker.recordNoise({ noise_estimate: 0.2 }); // ad-hoc, no campaign
+      expect(tracker.getCampaignNoise('camp-1')).toBeCloseTo(0.4, 4);
+      expect(tracker.getCampaignNoise('camp-2')).toBeCloseTo(0.5, 4);
+      expect(tracker.getCampaignNoise('camp-3')).toBe(0);
+      // The ad-hoc action still counts globally but against no campaign.
+      expect(tracker.getGlobalNoise()).toBeCloseTo(1.1, 4);
+    });
+
     it('uses noise_actual over noise_estimate when provided', () => {
       const { tracker } = makeTracker();
       tracker.recordNoise({ noise_estimate: 0.5, noise_actual: 0.1 });
@@ -83,6 +96,14 @@ describe('OpsecTracker', () => {
       const ctx = tracker.getNoiseContext({ host_id: 'h1', domain: 'd1' });
       expect(ctx.host_noise_spent).toBeCloseTo(0.2, 4);
       expect(ctx.domain_noise_spent).toBeCloseTo(0.2, 4);
+    });
+
+    it('returns campaign noise only when a campaign_id is requested', () => {
+      const { tracker } = makeTracker();
+      tracker.recordNoise({ campaign_id: 'camp-1', noise_estimate: 0.2 });
+      expect(tracker.getNoiseContext().campaign_noise_spent).toBeUndefined();
+      expect(tracker.getNoiseContext({ campaign_id: 'camp-1' }).campaign_noise_spent).toBeCloseTo(0.2, 4);
+      expect(tracker.getNoiseContext({ campaign_id: 'camp-2' }).campaign_noise_spent).toBe(0);
     });
 
     it('recommends loud when >60% budget remaining', () => {
@@ -238,7 +259,7 @@ describe('OpsecTracker', () => {
   describe('serialization', () => {
     it('round-trips through serialize/deserialize', () => {
       const { tracker, ctx } = makeTracker();
-      tracker.recordNoise({ host_id: 'h1', domain: 'corp.local', noise_estimate: 0.3 });
+      tracker.recordNoise({ host_id: 'h1', domain: 'corp.local', campaign_id: 'camp-1', noise_estimate: 0.3 });
       tracker.recordNoise({ host_id: 'h2', noise_estimate: 0.2 });
       tracker.recordDefensiveSignal({
         type: 'lockout',
@@ -254,6 +275,7 @@ describe('OpsecTracker', () => {
       expect(restored.getHostNoise('h1')).toBeCloseTo(0.3, 4);
       expect(restored.getHostNoise('h2')).toBeCloseTo(0.2, 4);
       expect(restored.getDomainNoise('corp.local')).toBeCloseTo(0.3, 4);
+      expect(restored.getCampaignNoise('camp-1')).toBeCloseTo(0.3, 4);
       expect(restored.getAllDefensiveSignals()).toHaveLength(1);
     });
 
