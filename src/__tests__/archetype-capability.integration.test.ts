@@ -98,4 +98,28 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     );
     expect(reviewed).toBe(true);
   });
+
+  it('cve_researcher records a CVE candidate for its assigned service and completes', async () => {
+    // Seed a versioned service and scope the agent's subgraph to it — the research
+    // mode reads its subgraph, finds the service, and records a candidate via
+    // research_cve (web-research only; no target execution).
+    result = await runArchetype({
+      archetype: 'cve_researcher',
+      fakeMode: 'research',
+      seedNodes: [{ id: 'svc-cve-eval', type: 'service', label: 'http/2.4.49', service_name: 'http', product: 'apache', version: '2.4.49', port: 80, protocol: 'tcp' }],
+      scopeSeededNodes: true,
+    });
+    expect(result.task?.status).toBe('completed');
+    // research_cve recorded the applicable candidate as a vulnerability node.
+    const vulns = result.app.engine.getNodesByType('vulnerability');
+    expect(vulns.some(n => JSON.stringify(n).includes('CVE-2021-41773'))).toBe(true);
+  });
+
+  it('pathfinder proposes a confirmable plan via propose_plan and completes', async () => {
+    // The planner mode submits a valid plan (a scope op needs no peer task), so
+    // 'completed' + a recorded proposed plan proves the read-only propose_plan path.
+    result = await runArchetype({ archetype: 'pathfinder', fakeMode: 'planner' });
+    expect(result.task?.status).toBe('completed');
+    expect(result.app.engine.getProposedPlanStore().getOpen().length).toBeGreaterThan(0);
+  });
 });

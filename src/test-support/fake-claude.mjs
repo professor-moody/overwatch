@@ -84,19 +84,23 @@ async function main() {
     // task that isn't us and propose a `pause` directive on it via propose_plan.
     const prompt = argValue('-p') || '';
     const targetIds = [...prompt.matchAll(/task_id="([^"]+)"/g)].map(m => m[1]).filter(id => id !== taskId);
-    if (targetIds.length) {
-      await client.callTool({
-        name: 'propose_plan',
-        arguments: {
-          agent_id: agentId,
-          task_id: taskId,
-          command: 'pause the running agent',
-          summary: `pause ${targetIds[0]}`,
-          rationale: 'operator asked to pause the running agent',
-          ops: [{ op: 'directive', task_id: targetIds[0], agent_label: 'target', kind: 'pause' }],
-        },
-      });
-    }
+    // If a steerable peer task is named in the objective, propose a directive on it;
+    // otherwise fall back to a scope op (valid without a peer task) so the planner
+    // always submits *some* valid plan — exercising the propose_plan path end-to-end.
+    const ops = targetIds.length
+      ? [{ op: 'directive', task_id: targetIds[0], agent_label: 'target', kind: 'pause' }]
+      : [{ op: 'scope', add_cidrs: ['10.99.99.0/24'] }];
+    await client.callTool({
+      name: 'propose_plan',
+      arguments: {
+        agent_id: agentId,
+        task_id: taskId,
+        command: targetIds.length ? 'pause the running agent' : 'expand scope to the new subnet',
+        summary: targetIds.length ? `pause ${targetIds[0]}` : 'add 10.99.99.0/24 to scope',
+        rationale: 'fake planner proposed a plan',
+        ops,
+      },
+    });
     await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake planner proposed a plan' } });
     await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake planner done' } });
     emit({ type: 'result', subtype: 'success', is_error: false });
