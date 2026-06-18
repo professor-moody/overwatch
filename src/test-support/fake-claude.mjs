@@ -241,6 +241,64 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'cred') {
+    // credential_operator: find the assigned AWS-flavored credential in scope and
+    // expand it into a recon plan (plan generation only — no live AWS). No try/catch
+    // on expand_aws_credential: if it errors the task is interrupted, so 'completed'
+    // proves the credential playbook works through the credential_operator allowlist.
+    let credId;
+    try {
+      const ctx = await client.callTool({ name: 'get_agent_context', arguments: { task_id: taskId } });
+      const parsed = JSON.parse(ctx.content[0].text);
+      const cred = (parsed.subgraph?.nodes || []).find((n) => (n.properties?.type || n.type) === 'credential');
+      credId = cred?.id;
+    } catch { /* fall through */ }
+    if (!credId) throw new Error('cred mode: no credential in scoped subgraph');
+    const res = await client.callTool({ name: 'expand_aws_credential', arguments: { credential_id: credId } });
+    if (res.isError) throw new Error(`expand_aws_credential failed: ${res.content?.[0]?.text}`);
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'expanded 1 AWS credential into a recon plan' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'credential expansion done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'postex') {
+    // post_exploit capability: from a foothold, record a lateral admin-access edge
+    // (the post-exploitation signature) via report_finding.
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: agentId,
+        nodes: [
+          { id: 'user-admin-eval', type: 'user', label: 'CORP\\\\admin', properties: { username: 'admin', domain: 'corp.local' } },
+          { id: 'host-pivot-eval', type: 'host', label: '10.10.10.61', properties: { ip: '10.10.10.61', hostname: 'pivot', alive: true } },
+        ],
+        // ADMIN_TO is canonically principal→host (graph-schema EDGE_CONSTRAINTS).
+        edges: [{ source: 'user-admin-eval', target: 'host-pivot-eval', type: 'ADMIN_TO', confidence: 0.95 }],
+      },
+    });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake post-exploit: 1 lateral admin edge' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake post-exploit done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'scribe') {
+    // report_scribe: draft a report from confirmed graph state via generate_report
+    // (read-only synthesis). No try/catch — an error interrupts the task, so
+    // 'completed' proves generate_report works through the report_scribe allowlist.
+    const res = await client.callTool({ name: 'generate_report', arguments: { format: 'markdown' } });
+    const text = res.content?.[0]?.text ?? '';
+    if (text.length < 80) throw new Error(`generate_report returned no content (${text.length} chars)`);
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `drafted a ${text.length}-char report` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'report draft done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   // complete: write a finding, then close the task out.
   await client.callTool({
     name: 'report_finding',
