@@ -203,6 +203,39 @@ describe('/api/agent-queries — agent→operator escalation (Phase 3D)', () => 
     });
     expect(unknown.status).toBe(404);
   });
+
+  it('answer-batch fans one answer out to a cluster of identical questions', async () => {
+    // Two running agents asked the same question; the operator answers once.
+    engine.registerAgent({
+      id: 'target-2', agent_id: 'scanner-2', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [],
+    } as AgentTask);
+    const q1 = engine.getAgentQueryStore().add({ task_id: 'target-1', agent_id: 'scanner-1', question: 'go loud everywhere?' });
+    const q2 = engine.getAgentQueryStore().add({ task_id: 'target-2', agent_id: 'scanner-2', question: 'go loud everywhere?' });
+
+    const res = await fetch(`${baseUrl}/api/agent-queries/answer-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query_ids: [q1.query_id, q2.query_id], answer: 'no, stay quiet' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).answered).toBe(2);
+
+    // Both agents receive the answer on their next heartbeat.
+    expect(engine.getAgentQueryStore().getAnswerForTask('target-1')?.answer).toBe('no, stay quiet');
+    expect(engine.getAgentQueryStore().getAnswerForTask('target-2')?.answer).toBe('no, stay quiet');
+  });
+
+  it('answer-batch rejects an empty answer (400) and empty query_ids (400)', async () => {
+    const q = engine.getAgentQueryStore().add({ task_id: 'target-1', question: 'x?' });
+    const emptyAnswer = await fetch(`${baseUrl}/api/agent-queries/answer-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_ids: [q.query_id], answer: '  ' }),
+    });
+    expect(emptyAnswer.status).toBe(400);
+    const noIds = await fetch(`${baseUrl}/api/agent-queries/answer-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_ids: [], answer: 'hi' }),
+    });
+    expect(noIds.status).toBe(400);
+  });
 });
 
 describe('/api/commands — grammar fast-path', () => {

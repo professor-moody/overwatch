@@ -86,5 +86,37 @@ describe('buildAttentionQueue', () => {
     const v = buildAttentionQueue({ now: NOW, agentQueries: [query({ options: ['yes', 'no'] })] });
     expect(v.items[0].options).toEqual(['yes', 'no']);
     expect(v.items[0].queryId).toBe('q1');
+    // An un-clustered question still carries its single member for the fan-out path.
+    expect(v.items[0].queryIds).toEqual(['q1']);
+  });
+
+  it('clusters identical questions from different agents into one item (answer-once)', () => {
+    const v = buildAttentionQueue({
+      now: NOW,
+      agentQueries: [
+        query({ query_id: 'q1', agent_id: 'recon-1', question: 'Increase intensity?' }),
+        query({ query_id: 'q2', agent_id: 'recon-2', question: '  increase   INTENSITY? ' }), // same after normalize
+        query({ query_id: 'q3', agent_id: 'recon-3', question: 'Increase intensity?' }),
+      ],
+    });
+    expect(v.counts.question).toBe(1);
+    const item = v.items[0];
+    expect(item.queryIds).toEqual(['q1', 'q2', 'q3']);
+    expect(item.queryId).toBe('q1'); // representative = oldest/first
+    expect(item.title).toBe('Agent question · 3 agents');
+    expect(item.clusterAgentLabels).toEqual(['recon-1', 'recon-2', 'recon-3']);
+  });
+
+  it('keeps questions with different text or different options as separate items', () => {
+    const v = buildAttentionQueue({
+      now: NOW,
+      agentQueries: [
+        query({ query_id: 'q1', question: 'scan hard?', options: ['yes', 'no'] }),
+        query({ query_id: 'q2', question: 'scan hard?', options: ['yes'] }), // different option set
+        query({ query_id: 'q3', question: 'pivot now?' }),                   // different text
+      ],
+    });
+    expect(v.counts.question).toBe(3);
+    expect(v.items.every(i => i.queryIds?.length === 1)).toBe(true);
   });
 });

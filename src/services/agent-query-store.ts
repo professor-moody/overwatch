@@ -93,11 +93,36 @@ export class AgentQueryStore {
     this.prune(now);
     const query = this.queries.get(query_id);
     if (!query || query.status !== 'open') return null;
+    this.resolveQuery(query, answer, now);
+    this.onChangeCb?.();
+    return query;
+  }
+
+  /**
+   * Answer-once fan-out: resolve every still-open query in `query_ids` with the
+   * same answer. The operator answers one clustered question (identical text
+   * asked by multiple agents) and it fans out to all of them — each agent picks
+   * up its answer on its next heartbeat via getAnswerForTask. Unknown / already-
+   * answered / expired ids are skipped; returns the records actually answered.
+   * Fires onChange once (not per member).
+   */
+  answerMany(query_ids: string[], answer: string, now: number = Date.now()): AgentQuery[] {
+    this.prune(now);
+    const resolved: AgentQuery[] = [];
+    for (const id of query_ids) {
+      const query = this.queries.get(id);
+      if (!query || query.status !== 'open') continue;
+      this.resolveQuery(query, answer, now);
+      resolved.push(query);
+    }
+    if (resolved.length > 0) this.onChangeCb?.();
+    return resolved;
+  }
+
+  private resolveQuery(query: AgentQuery, answer: string, now: number): void {
     query.status = 'answered';
     query.answer = answer;
     query.answered_at = now;
-    this.onChangeCb?.();
-    return query;
   }
 
   /**

@@ -75,4 +75,38 @@ describe('AgentQueryStore (Phase 3D)', () => {
     const b = store.add({ task_id: 't2', question: 'second', now: 2000 });
     expect(store.getOpen(2000).map(q => q.query_id)).toEqual([a.query_id, b.query_id]);
   });
+
+  it('answerMany fans one answer out to every open member (answer-once)', () => {
+    const store = new AgentQueryStore();
+    const a = store.add({ task_id: 't1', agent_id: 'recon-1', question: 'scan hard?', now: 1000 });
+    const b = store.add({ task_id: 't2', agent_id: 'recon-2', question: 'scan hard?', now: 1000 });
+    const resolved = store.answerMany([a.query_id, b.query_id], 'yes', 1001);
+    expect(resolved.map(r => r.query_id).sort()).toEqual([a.query_id, b.query_id].sort());
+    expect(store.getAnswerForTask('t1')?.answer).toBe('yes');
+    expect(store.getAnswerForTask('t2')?.answer).toBe('yes');
+    expect(store.getOpen(1001)).toHaveLength(0);
+  });
+
+  it('answerMany skips unknown / already-answered ids and fires onChange once', () => {
+    const store = new AgentQueryStore();
+    let calls = 0;
+    const a = store.add({ task_id: 't1', question: 'q?', now: 1000 });
+    const b = store.add({ task_id: 't2', question: 'q?', now: 1000 });
+    store.answer(a.query_id, 'early', 1001);
+    store.onChange(() => { calls++; });
+    const resolved = store.answerMany([a.query_id, b.query_id, 'nope'], 'late', 1002);
+    // a is already answered (keeps its first answer), nope is unknown → only b.
+    expect(resolved.map(r => r.query_id)).toEqual([b.query_id]);
+    expect(store.getAnswerForTask('t1')?.answer).toBe('early');
+    expect(store.getAnswerForTask('t2')?.answer).toBe('late');
+    expect(calls).toBe(1);
+  });
+
+  it('answerMany with no answerable ids does not fire onChange', () => {
+    const store = new AgentQueryStore();
+    let calls = 0;
+    store.onChange(() => { calls++; });
+    expect(store.answerMany(['x', 'y'], 'ans', 1000)).toEqual([]);
+    expect(calls).toBe(0);
+  });
 });

@@ -747,6 +747,8 @@ export class DashboardServer {
       this.serveProposedPlans(res);
     } else if (pathname === '/api/agent-queries' && method === 'GET') {
       this.serveAgentQueries(res);
+    } else if (pathname === '/api/agent-queries/answer-batch' && method === 'POST') {
+      this.handleAnswerAgentQueryBatch(req, res);
     } else if (pathname === '/api/templates') {
       this.serveTemplates(res);
     } else if (pathname === '/api/settings' && method === 'GET') {
@@ -1657,6 +1659,69 @@ export class DashboardServer {
       this.engine.persist();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, query: resolved }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  /**
+   * Answer-once fan-out: resolve a cluster of identical questions (asked by
+   * multiple agents) with a single answer. Each query is only answered if its
+   * asking agent is still running — same guard as the single-answer path,
+   * applied per member so a partial fan-out (some agents already gone) is fine.
+   */
+  private handleAnswerAgentQueryBatch(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const answer = typeof b.answer === 'string' ? b.answer.trim() : '';
+      const queryIds = Array.isArray(b.query_ids)
+        ? b.query_ids.filter((x): x is string => typeof x === 'string')
+        : [];
+      if (!answer) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'answer (non-empty string) is required' }));
+        return;
+      }
+      if (queryIds.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'query_ids (non-empty string array) is required' }));
+        return;
+      }
+      const store = this.engine.getAgentQueryStore();
+      // Only fan out to queries whose asking agent is still running.
+      const deliverable = queryIds.filter(id => {
+        const existing = store.get(id);
+        if (!existing) return false;
+        if (!existing.task_id) return true;
+        const task = this.engine.getTask(existing.task_id);
+        return !!task && task.status === 'running';
+      });
+      const resolved = store.answerMany(deliverable, answer);
+      if (resolved.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'no answerable questions — all unknown, already answered, or their agents are gone' }));
+        return;
+      }
+      this.engine.logActionEvent({
+        description: `Operator answered ${resolved.length} clustered agent question(s): ${resolved[0].question}`,
+        event_type: 'operator_command',
+        category: 'system',
+        source_kind: 'dashboard',
+        result_classification: 'neutral',
+        details: {
+          reason: 'agent_query_answered_batch',
+          source: 'dashboard',
+          query_ids: resolved.map(r => r.query_id),
+          question: resolved[0].question,
+          answer,
+          count: resolved.length,
+        },
+      });
+      this.engine.persist();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, answered: resolved.length, queries: resolved }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
