@@ -130,6 +130,46 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'recon') {
+    // recon_scanner capability: discovery output → host + service nodes + RUNS edge.
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: agentId,
+        nodes: [
+          { id: 'host-recon-eval', type: 'host', label: '10.10.10.42', properties: { ip: '10.10.10.42', hostname: 'recon-target', alive: true } },
+          { id: 'svc-recon-ssh', type: 'service', label: 'ssh/22', properties: { port: 22, protocol: 'tcp', service_name: 'ssh' } },
+        ],
+        edges: [{ source: 'host-recon-eval', target: 'svc-recon-ssh', type: 'RUNS', confidence: 1 }],
+      },
+    });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake recon: 1 host, 1 service' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake recon done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'web') {
+    // web_tester capability: a discovered web app + a candidate vulnerability.
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: agentId,
+        nodes: [
+          { id: 'web-eval-app', type: 'webapp', label: 'http://10.10.10.50/', properties: { url: 'http://10.10.10.50/', title: 'eval app' } },
+          { id: 'vuln-eval-xss', type: 'vulnerability', label: 'reflected XSS', properties: { vuln_type: 'xss', severity: 'medium' } },
+        ],
+        edges: [{ source: 'web-eval-app', target: 'vuln-eval-xss', type: 'VULNERABLE_TO', confidence: 0.8 }],
+      },
+    });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake web: 1 app, 1 vuln' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake web done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   // complete: write a finding, then close the task out.
   await client.callTool({
     name: 'report_finding',
