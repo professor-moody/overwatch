@@ -303,7 +303,7 @@ describe('PendingActionQueue', () => {
   // ==== dispose ====
 
   describe('dispose', () => {
-    it('clears all pending actions and resolves promises', async () => {
+    it('clears all pending actions and resolves promises as aborted (not timeout)', async () => {
       const { queue } = makeQueue({ approval_mode: 'approve-all' });
       const p1 = queue.submit(makeSubmitPayload({ action_id: 'disp-1' }));
       const p2 = queue.submit(makeSubmitPayload({ action_id: 'disp-2' }));
@@ -315,9 +315,14 @@ describe('PendingActionQueue', () => {
       expect(queue.getPendingCount()).toBe(0);
 
       const [r1, r2] = await Promise.all([p1, p2]);
-      expect(r1.status).toBe('timeout');
+      // Shutdown is an abort, NOT an unattended-execute timeout (a 'timeout'
+      // resolution carries auto_approved and would run the command).
+      expect(r1.status).toBe('aborted');
       expect(r1.reason).toContain('disposed');
-      expect(r2.status).toBe('timeout');
+      expect(r1.auto_approved).toBeFalsy();
+      expect(r2.status).toBe('aborted');
+      // Resolutions are recorded in the resolved map (getResolution stays correct).
+      expect(queue.getResolution('disp-1')?.status).toBe('aborted');
     });
 
     it('clears timeout timers on dispose', async () => {
@@ -326,9 +331,23 @@ describe('PendingActionQueue', () => {
       const promise = queue.submit(makeSubmitPayload({ action_id: 'disp-t' }));
       queue.dispose();
       const resolution = await promise;
-      expect(resolution.status).toBe('timeout');
+      expect(resolution.status).toBe('aborted');
       // Advancing timers should not cause errors
       vi.advanceTimersByTime(120000);
+    });
+
+    it('detaches abort listeners on dispose (no leak / late fire)', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
+      const controller = new AbortController();
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+      const promise = queue.submit(makeSubmitPayload({ action_id: 'disp-sig' }), { signal: controller.signal });
+
+      queue.dispose();
+      expect((await promise).status).toBe('aborted');
+      expect(removeSpy).toHaveBeenCalled();
+      // A late abort after dispose must not throw or re-resolve.
+      controller.abort();
+      expect(queue.getPendingCount()).toBe(0);
     });
   });
 

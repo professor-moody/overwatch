@@ -92,9 +92,23 @@ export class AgentWatchdog {
     }
     this.reapedTotal += reaped;
     // Reconcile reaped tasks with the OS-process registry / approval queue.
-    // Wrapped so a reconcile error never kills the watchdog timer.
+    // Wrapped so a reconcile error never kills the watchdog timer — but log it,
+    // since a repeatedly-throwing reconcile means orphaned processes aren't being
+    // cleaned up and would otherwise fail silently.
     if (this.afterTick) {
-      try { this.afterTick(); } catch { /* best effort — never break the timer */ }
+      try {
+        this.afterTick();
+      } catch (err) {
+        try {
+          this.engine.logActionEvent({
+            description: `Watchdog post-tick reconcile failed: ${err instanceof Error ? err.message : String(err)}`,
+            event_type: 'instrumentation_warning',
+            category: 'system',
+            result_classification: 'failure',
+            details: { reason: 'watchdog_reconcile_error' },
+          });
+        } catch { /* logging must never break the timer either */ }
+      }
     }
     return reaped;
   }

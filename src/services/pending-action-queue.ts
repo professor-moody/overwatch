@@ -300,22 +300,31 @@ export class PendingActionQueue {
     return this.ctx.config.opsec.approval_mode ?? 'auto-approve';
   }
 
-  /** Cancel all pending timers (for cleanup in tests). */
+  /** Settle every outstanding action and release all timers/listeners. Called on
+   *  daemon shutdown and in tests. */
   dispose(): void {
-    for (const timer of this.timeoutTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.timeoutTimers.clear();
-    // Resolve any outstanding promises so they don't hang
-    for (const [id, cb] of this.resolveCallbacks) {
-      cb({
+    // Resolve each outstanding action as 'aborted' (NOT 'timeout' — disposal is a
+    // forced shutdown, not an unattended-execute that should run). Routing through
+    // resolveAction clears the timeout timer, detaches the abort listener, and
+    // records the resolution in the resolved map, so nothing leaks and
+    // getResolution() stays correct after dispose.
+    for (const id of [...this.resolveCallbacks.keys()]) {
+      this.resolveAction(id, {
         action_id: id,
-        status: 'timeout',
+        status: 'aborted',
         resolved_at: new Date().toISOString(),
-        reason: 'Queue disposed.',
+        reason: 'queue disposed (shutdown)',
       });
     }
-    this.resolveCallbacks.clear();
+    // Safety net for any action with no awaiting callback (shouldn't happen):
+    // never leave a timer or abort listener attached.
+    for (const timer of this.timeoutTimers.values()) clearTimeout(timer);
+    this.timeoutTimers.clear();
+    for (const { signal, handler } of this.abortListeners.values()) {
+      signal.removeEventListener('abort', handler);
+    }
+    this.abortListeners.clear();
     this.pending.clear();
+    this.resolveCallbacks.clear();
   }
 }

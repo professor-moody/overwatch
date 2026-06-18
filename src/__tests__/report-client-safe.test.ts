@@ -131,6 +131,15 @@ describe('report-redaction primitives', () => {
     expect(out).not.toContain('abcdef0123456789');
   });
 
+  it('redactInlineCredentials redacts passwords/secrets that contain colons (NTLM, colon passwords)', () => {
+    // The password segment up to `@` may itself contain colons (NTLM lm:nt, or a
+    // colon password) — it must still be fully redacted, not split at the colon.
+    const out = redactInlineCredentials('psql mysql://svc:aad3b4:31d6cf@db:5432/x');
+    expect(out).not.toContain('aad3b4:31d6cf');
+    expect(out).toContain('svc:<redacted>@');
+    expect(out).toContain('db:5432'); // host:port after @ untouched
+  });
+
   it('redactSecretKeys redacts credentials embedded in a command field (not just secret keys)', () => {
     const input = {
       evidence: [{ claim: 'auth', command: 'nxc smb 10.0.0.1 -u admin -p Secret123' }],

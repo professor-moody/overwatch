@@ -128,8 +128,13 @@ export class HeadlessMcpRunner {
     }
 
     if (!child.pid) {
-      // spawn reported no pid (e.g. ENOENT surfaced via 'error' below); guard anyway.
+      // spawn reported no pid (e.g. ENOENT). A pidless child can't be killed or
+      // heartbeated, so registering it would leave a zombie 'running' task holding
+      // a lease until its TTL. Fail loudly + bail instead (mirrors the catch above).
       this.cleanupConfig(configPath);
+      try { child.kill?.(); } catch { /* nothing to kill */ }
+      this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
+      return null;
     }
 
     this.registry.register(task.id, child, configPath, this.now());

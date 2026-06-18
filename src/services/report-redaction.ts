@@ -113,8 +113,10 @@ const COMMAND_KEYS = new Set(['command', 'command_repr', 'cmd', 'argv_str']);
  */
 export function redactInlineCredentials(text: string): string {
   return text
-    // scheme://user:pass@host  and  user:pass@host
-    .replace(/([a-zA-Z][\w.+-]*:\/\/)?([^\s:/@]+):([^\s:/@]+)@/g,
+    // scheme://user:pass@host  and  user:pass@host. The password group allows
+    // colons so credentials that contain them (NTLM `lm:nt`, colon passwords) are
+    // still redacted; it stops at the `@` host separator.
+    .replace(/([a-zA-Z][\w.+-]*:\/\/)?([^\s:/@]+):([^@\s]+)@/g,
       (_m, scheme, user) => `${scheme || ''}${user}:${REDACTED_PLACEHOLDER}@`)
     .replace(/(Authorization:\s*Bearer\s+)(\S+)/gi, `$1${REDACTED_PLACEHOLDER}`)
     .replace(/(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/g, `$1${REDACTED_PLACEHOLDER}`);
@@ -126,9 +128,16 @@ export function redactInlineCredentials(text: string): string {
  * password in `-u user%pass` (smbclient/nxc), and any inline credentials.
  * Quote-aware so `-p 'pass with spaces'` is fully redacted. The flag itself is
  * preserved so the report still shows what was run.
+ *
+ * Assumes a well-formed shell command, where a value is a single token (quoted
+ * if it contains spaces). An *unquoted* multi-word value (e.g. a naively
+ * argv-joined `-p Pass Phrase`) only has its first token redacted — but that is
+ * not a valid single-arg shell command, and structured credential fields are
+ * already covered by SECRET_KEYS in walkAndRedact, so the residual exposure is
+ * a malformed-input edge, not the normal path.
  */
 export function sanitizeCommandForClient(cmd: string | undefined | null, opts: RedactionOptions = { client_safe: true }): string | null {
-  if (cmd == null) return cmd ?? null;
+  if (cmd == null) return null;
   if (!opts.client_safe) return cmd;
   let out = cmd
     // -p VALUE | --password=VALUE | --hashes LM:NT | --token X | -H X  (quote-aware value)
