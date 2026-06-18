@@ -488,45 +488,9 @@ void queue.submit({
   agent_id: 'agent-ci-1',
 });
 
-engine.registerAgent({
-  id: 'task-smb-1',
-  agent_id: 'agent-smb-1',
-  assigned_at: iso(25),
-  status: 'running',
-  subgraph_node_ids: [ids.dc01, ids.smbDc01, ids.credSvc],
-  skill: 'smb_enumeration',
-  frontier_item_id: fiDc,
-});
-engine.registerAgent({
-  id: 'task-spray-1',
-  agent_id: 'agent-spray-1',
-  assigned_at: iso(22),
-  status: 'running',
-  subgraph_node_ids: [ids.ws01, ids.rdpWs01, ids.credJdoe],
-  skill: 'credential_spray',
-  frontier_item_id: fiWs01,
-});
-engine.registerAgent({
-  id: 'task-web-1',
-  agent_id: 'web-agent',
-  assigned_at: iso(42),
-  completed_at: iso(36),
-  status: 'completed',
-  subgraph_node_ids: [ids.webapp, ids.benefitsApp, ids.backupRole, ids.payrollBucket],
-  skill: 'webapp_testing',
-  frontier_item_id: fiWeb,
-  result_summary: 'Confirmed IDOR and SSO trust path to cloud backup role.',
-});
-engine.registerAgent({
-  id: 'task-ci-1',
-  agent_id: 'agent-ci-1',
-  assigned_at: iso(18),
-  status: 'running',
-  subgraph_node_ids: [ids.credGha, ids.ghaApp, ids.deployRole, ids.adminRole],
-  skill: 'cloud_identity',
-  frontier_item_id: fiCi,
-});
-
+// --- campaigns first, so each agent can carry its campaign_id: the campaign
+//     BOARD view groups agents into per-campaign swimlanes × status lanes, and
+//     the per-campaign OPSEC gauge reads each campaign's own noise. ---
 const draftCampaign = engine.createCampaign({
   name: 'Credential validation wave',
   strategy: 'credential_spray',
@@ -549,6 +513,90 @@ if (childCampaign) {
   engine.activateCampaign(childCampaign.id);
   for (const item of childCampaign.items) engine.updateCampaignProgress(childCampaign.id, item, 'success', 'finding-host-ws01');
 }
+const postExCampaignId = childCampaign?.id ?? parentCampaign.id;
+
+// --- agents, each tagged with its campaign so the board groups them into
+//     swimlanes. The four below carry distinct frontier_item_ids (one lease
+//     each); they land in: Needs-You (pending approval), Completed, and the
+//     Ungrouped swimlane (task-ci-1 has no campaign). ---
+engine.registerAgent({
+  id: 'task-smb-1',
+  agent_id: 'agent-smb-1',
+  assigned_at: iso(25),
+  status: 'running',
+  subgraph_node_ids: [ids.dc01, ids.smbDc01, ids.credSvc],
+  skill: 'smb_enumeration',
+  frontier_item_id: fiDc,
+  campaign_id: activeCampaign.id,
+});
+engine.registerAgent({
+  id: 'task-spray-1',
+  agent_id: 'agent-spray-1',
+  assigned_at: iso(22),
+  status: 'running',
+  subgraph_node_ids: [ids.ws01, ids.rdpWs01, ids.credJdoe],
+  skill: 'credential_spray',
+  frontier_item_id: fiWs01,
+  campaign_id: draftCampaign.id,
+});
+engine.registerAgent({
+  id: 'task-web-1',
+  agent_id: 'web-agent',
+  assigned_at: iso(42),
+  completed_at: iso(36),
+  status: 'completed',
+  subgraph_node_ids: [ids.webapp, ids.benefitsApp, ids.backupRole, ids.payrollBucket],
+  skill: 'webapp_testing',
+  frontier_item_id: fiWeb,
+  campaign_id: postExCampaignId,
+  result_summary: 'Confirmed IDOR and SSO trust path to cloud backup role.',
+});
+engine.registerAgent({
+  id: 'task-ci-1',
+  agent_id: 'agent-ci-1',
+  assigned_at: iso(18),
+  status: 'running',
+  subgraph_node_ids: [ids.credGha, ids.ghaApp, ids.deployRole, ids.adminRole],
+  skill: 'cloud_identity',
+  frontier_item_id: fiCi,
+});
+
+// Extra agents to populate the remaining board lanes. They omit frontier_item_id
+// (no lease) so several can share a campaign without lease conflicts — the board
+// groups by campaign_id, not frontier item.
+engine.registerAgent({
+  id: 'task-enum-2', agent_id: 'agent-enum-2', assigned_at: iso(11), status: 'running',
+  subgraph_node_ids: [ids.dc01, ids.smbDc01], skill: 'network_enumeration', campaign_id: activeCampaign.id,
+}); // → Running lane (no approval, no question)
+engine.registerAgent({
+  id: 'task-plan-1', agent_id: 'agent-plan-1', assigned_at: iso(3), status: 'pending',
+  subgraph_node_ids: [ids.ws01], skill: 'credential_spray', campaign_id: draftCampaign.id,
+}); // → Planned lane (not yet started)
+engine.registerAgent({
+  id: 'task-fail-1', agent_id: 'agent-fail-1', assigned_at: iso(30), completed_at: iso(20), status: 'failed',
+  subgraph_node_ids: [ids.credOkta, ids.benefitsApp], skill: 'token_validation', campaign_id: draftCampaign.id,
+  result_summary: 'Token replay failed: Okta cookie expired (401).',
+}); // → Failed lane
+
+// Three agents that hit the SAME decision point → they cluster into ONE
+// "answer once → fan out" card in the Needs-You queue, and sit in the active
+// campaign's Blocked lane on the board.
+const CLUSTER_Q = 'Noise budget is tight on this segment — spray a small credential list, or stay quiet and pivot?';
+const CLUSTER_OPTS = ['spray (noisy)', 'stay quiet'];
+['agent-recon-a', 'agent-recon-b', 'agent-recon-c'].forEach((label, i) => {
+  const taskId = `task-recon-${i}`;
+  engine.registerAgent({
+    id: taskId, agent_id: label, assigned_at: iso(9 - i), status: 'running',
+    subgraph_node_ids: [ids.dc01], skill: 'network_enumeration', campaign_id: activeCampaign.id,
+  });
+  engine.getAgentQueryStore().add({ task_id: taskId, agent_id: label, question: CLUSTER_Q, options: CLUSTER_OPTS });
+});
+
+// --- per-campaign OPSEC noise so each campaign's gauge differs (this campaign's
+//     noise contribution vs. the global budget). ---
+engine.recordOpsecNoise({ campaign_id: activeCampaign.id, noise_estimate: 0.45 });
+engine.recordOpsecNoise({ campaign_id: draftCampaign.id, noise_estimate: 0.12 });
+engine.recordOpsecNoise({ campaign_id: postExCampaignId, noise_estimate: 0.28 });
 
 engine.logActionEvent({
   description: 'Selected RDP validation because jdoe has confirmed credential material and WS01 is one hop from domain services.',
@@ -801,8 +849,12 @@ if (result.started) {
   console.log(`\nDemo dashboard running at http://localhost:${DASHBOARD_PORT}`);
   console.log('   Vite dev server (with HMR) at http://localhost:5173');
   console.log(`   Graph: ${hosts.length} hosts, ${users.length} users, ${creds.length} creds, ${services.length} services`);
-  console.log(`   Pending actions: ${queue.getPendingCount()}, sessions: ${sessionManager.list().length}, campaigns: ${engine.listCampaigns().length}`);
-  console.log('   Attach to "WS01 jdoe shell" and try: whoami, hostname, ipconfig, dir, net user\n');
+  console.log(`   Pending actions: ${queue.getPendingCount()}, sessions: ${sessionManager.list().length}, campaigns: ${engine.listCampaigns().length}, agents: ${engine.getAllAgents().length}`);
+  console.log('   Attach to "WS01 jdoe shell" and try: whoami, hostname, ipconfig, dir, net user');
+  console.log('\n   New cockpit features to look at:');
+  console.log('     • Campaigns → "Board" toggle: agents grouped into per-campaign swimlanes × status lanes');
+  console.log('     • Campaigns → pick a campaign: the "Campaign Noise" gauge (per-campaign OPSEC contribution)');
+  console.log('     • Agents → "Needs you" queue: 3 recon agents asking the same question cluster into one answer-once card\n');
 } else {
   console.error('Failed to start dashboard:', result.error);
   process.exit(1);

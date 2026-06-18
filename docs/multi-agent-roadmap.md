@@ -71,10 +71,10 @@ Deepen the natural-language layer.
 The heaviest backend, and the biggest "team" leap.
 
 - **Specialized roles + smart/manual deploy — ✅ shipped** (pulled forward). Roles are now data-driven **agent archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe + the legacy default/research/planner — each a real tool-surface boundary, backend, default skill/objective, and scope strategy. Dispatch honors the type; `recommendArchetype` auto-picks one for a target and the operator can override. **Ad-hoc real-time deploy** (`POST /api/agents/quick-deploy` + the console **Deploy** button): paste an IP/CIDR/domain → auto-scope + dispatch in one step. See [Agent types & deploy](operator-cockpit.md#agent-types). *(Remaining Phase-4 items below are still ahead: evidence_auditor/opsec_sentinel/session_shepherd/cloud_cartographer archetypes, plus —)*
-- **Campaign swimlanes** — a board view (Planned / Running / Needs-Approval / Blocked / Produced-Finding / Completed / Failed) derived from campaign status, frontier-linkage, agent status, and pending approvals.
-- **Question clustering** — group related agent questions (by campaign / role / similarity) so the operator answers once and the decision fans out.
+- **Campaign swimlanes — ✅ shipped** — a read-only **board view** in the Campaigns panel (Campaigns ⇄ Board toggle): each campaign is a swimlane, its agents bucketed into status lanes (Planned / Running / Needs You / Blocked / Produced Finding / Completed / Failed). Pure projection of the mission cards (`campaign-board.ts`), no new engine state.
+- **Question clustering — ✅ shipped** — identical open questions (same normalized text + option set) cluster into one card in the "Needs you" queue; answering it **fans out** to every asking agent in one call (`AgentQueryStore.answerMany` + the `/api/agent-queries/answer-batch` route).
 - **Agent handoff / split / merge** — hand work to a specialist (recon → credential_operator on a token find), split a broad item into child tasks, or merge duplicate agents into a summary.
-- **Noise budgets** — a per-campaign live OPSEC meter (actions by noise level, target-facing count, denied/approved, quiet-mode enforcement) over the existing OPSEC tracker.
+- **Per-campaign OPSEC meter — ✅ shipped** — each campaign's detail view shows a **Campaign Noise** gauge: that campaign's noise contribution vs. the global budget, threaded through the action lifecycle (`opsec-tracker.ts` per-campaign aggregation, reusing the shared `OpsecGauge`). *(The fuller noise-budget dashboard — actions-by-noise-level, denied/approved, quiet-mode enforcement — is still ahead.)*
 
 ### Phase 5 — Continuity & deliverables
 
@@ -99,9 +99,12 @@ genuinely *capable*, not just *scoped*:
 - **Remaining archetypes** — flesh out `evidence_auditor`, `opsec_sentinel`,
   `session_shepherd`, `cloud_cartographer` (the Phase-4 starter set) with real
   tool surfaces and capability loops.
-- **Agent eval harness** — a way to *validate* that an archetype is useful:
-  fixture engagements + scripted/fake-claude runs asserting each type produces
-  the findings it should, so capability is regression-tested, not assumed.
+- **Agent eval harness — ✅ shipped** — capability is now regression-tested, not
+  assumed: `fake-claude.mjs` modes + the `runArchetype` fixture +
+  `archetype-capability.integration.test.ts` assert each archetype produces the
+  right graph output (recon/web/opsec/audit/cloud/shepherd/cve_researcher/
+  pathfinder/credential_operator/post_exploit/report_scribe). Sharpening each
+  archetype's mission/skill (above) is the remaining capability work.
 
 ## Provenance surfaces — consolidate Evidence and Analysis
 
@@ -114,11 +117,11 @@ provenance chain). They are complementary but currently overlap awkwardly — th
 Evidence tab also carries a redundant Attack Paths finder (already its own nav
 item). The consolidation:
 
-- Drop the redundant Attack Paths block from Evidence.
-- Cross-link the two lenses: an Analysis run's linked nodes → that node's
-  evidence chain; an evidence chain → the runs that produced it.
+- **✅ Drop the redundant Attack Paths block from Evidence** (it's already its own nav item).
+- **✅ Cross-link the two lenses**: an evidence chain's action ids now deep-link into the
+  Analysis run that produced them (`navigateToAction`), and Analysis auto-selects a run from a `?item=` deep-link.
 - Node-provenance is most useful *contextually* (NodeDetailDrawer, finding
-  detail). End state: one provenance story across contextual surfaces + Analysis,
+  detail). End state (still ahead): one provenance story across contextual surfaces + Analysis,
   with Evidence merged in or demoted rather than a standalone search-only tab.
 
 ## Acceptance gates
