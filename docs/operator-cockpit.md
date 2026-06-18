@@ -67,11 +67,17 @@ The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive
 The **Console** is the primary surface, laid out as a focused master-detail workspace:
 
 - a pinned **command bar** (the NL command line above);
-- a **"Needs you" strip** that surfaces what's waiting on the operator — pending **approvals** (inline Approve / Deny+reason) and agent **questions** (inline Answer) — and hides itself when nothing needs attention;
+- a **"Needs you" strip** that surfaces what's waiting on the operator — pending **approvals** (inline Approve / Deny+reason) and agent **questions** (inline Answer) — and hides itself when nothing needs attention. Identical questions from multiple agents **cluster** into one card: answer once and it fans out to every asking agent;
 - a **Fleet** roster on the left: select an agent to *focus* it, and the main column becomes that agent's detail + steering + its own activity stream; with nothing selected the main column is a fleet overview over the full primary/sub-agent stream;
 - the activity stream is filterable by Primary/Subagents/Commands/Thoughts/Actions/Findings/Approvals/Sessions/Errors.
 
 The live WS push carries source attribution so primary reasoning and operator commands appear inline as they happen. Resolved approvals clear off the `action_resolved` push. The standalone **Approvals** view is the deep triage queue and shares the same approve/deny path.
+
+## Campaign board & per-campaign OPSEC {#campaign-board}
+
+The **Campaigns** panel has a **Campaigns ⇄ Board** toggle. The board is a read-only "where is the work, per campaign?" view: each campaign is a **swimlane**, and its agents bucket into status **lanes** — Planned / Running / Needs You / Blocked / Produced Finding / Completed / Failed. Agents with no campaign collect in an *Ungrouped* swimlane. It's a pure projection of the same mission cards the Console fleet uses (`campaign-board.ts`), so it adds no engine state and clicking a card jumps to that agent.
+
+Each campaign's **detail** view shows a **Campaign Noise** gauge — that campaign's own noise contribution measured against the (global) noise budget, with the engagement-wide recommended approach. Noise is attributed per campaign as actions flow through the lifecycle (`opsec-tracker.ts`), reusing the same `OpsecGauge` the Overview shows globally.
 
 ## Escalation — agents asking the operator {#escalation}
 
