@@ -277,11 +277,18 @@ inference rules fired, and objectives achieved — with timestamps and agent IDs
 Pagination: use \`cursor\` (an event_id) to fetch the next page. The response
 includes \`next_cursor\` when more entries exist. Omit \`cursor\` to start from
 the oldest retained entry. Set \`direction\` to "newest_first" to start from
-the most recent entry instead.`,
+the most recent entry instead.
+
+To close the synthesis loop after dispatching sub-agents, poll with
+\`since\` (your last-seen timestamp) + \`event_types: ["agent_transcript_submitted"]\`
+to pull just the completions you haven't acted on — these never scroll out of
+\`get_state\`'s capped \`recent_activity\` this way.`,
       inputSchema: {
         limit: z.number().int().min(1).max(1000).default(100),
         agent_id: z.string().optional().describe('Filter by specific agent'),
-        event_type: z.string().optional().describe('Filter by event_type (e.g. action_validated, finding_reported)'),
+        event_type: z.string().optional().describe('Filter by a single event_type (e.g. action_validated, finding_reported)'),
+        event_types: z.array(z.string()).optional().describe('Filter by ANY of these event_types (OR). Combined with event_type if both are given.'),
+        since: z.string().optional().describe('ISO timestamp — return only entries strictly newer than this (e.g. your last poll time). Invalid/unparseable values are ignored.'),
         cursor: z.string().optional().describe('event_id cursor — fetch entries after this event'),
         direction: z.enum(['oldest_first', 'newest_first']).default('oldest_first').describe('Traversal direction'),
       },
@@ -292,14 +299,21 @@ the most recent entry instead.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('get_history', async ({ limit, agent_id, event_type, cursor, direction }) => {
+    withErrorBoundary('get_history', async ({ limit, agent_id, event_type, event_types, since, cursor, direction }) => {
       let history = engine.getFullHistory();
 
       if (agent_id) {
         history = history.filter(h => h.agent_id === agent_id);
       }
-      if (event_type) {
-        history = history.filter(h => h.event_type === event_type);
+      const typeFilter = new Set([...(event_types ?? []), ...(event_type ? [event_type] : [])]);
+      if (typeFilter.size > 0) {
+        history = history.filter(h => typeFilter.has(h.event_type ?? ''));
+      }
+      if (since) {
+        const sinceMs = Date.parse(since);
+        if (!Number.isNaN(sinceMs)) {
+          history = history.filter(h => Date.parse(h.timestamp) > sinceMs);
+        }
       }
 
       if (direction === 'newest_first') {

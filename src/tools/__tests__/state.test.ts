@@ -106,6 +106,33 @@ describe('state tools', () => {
     expect(page2Payload.returned).toBe(2);
   });
 
+  it('get_history filters by since timestamp and event_types (OR)', async () => {
+    // Seed precise event types directly (bypasses tool-level action lifecycle rules).
+    engine.logActionEvent({ description: 'started', event_type: 'action_started', category: 'frontier' });
+    engine.logActionEvent({ description: 'agent wrapped up', event_type: 'agent_transcript_submitted', category: 'agent' });
+
+    // (limit is passed explicitly because the test's fake server doesn't apply
+    // the zod default the real MCP layer would.)
+    // event_types OR-filter returns only the requested type(s) — the synthesis
+    // loop polls for completions this way.
+    const onlyDone = JSON.parse((await handlers.get_history({ limit: 100, event_types: ['agent_transcript_submitted'] })).content[0].text);
+    expect(onlyDone.entries.length).toBeGreaterThanOrEqual(1);
+    expect(onlyDone.entries.every((e: { event_type?: string }) => e.event_type === 'agent_transcript_submitted')).toBe(true);
+
+    // since in the future → nothing newer than that.
+    const future = JSON.parse((await handlers.get_history({ limit: 100, since: '2999-01-01T00:00:00Z' })).content[0].text);
+    expect(future.returned).toBe(0);
+
+    // since in the past + an event_types OR-set → the matching entries come back.
+    const past = JSON.parse((await handlers.get_history({ limit: 100, since: '2000-01-01T00:00:00Z', event_types: ['action_started', 'agent_transcript_submitted'] })).content[0].text);
+    expect(past.entries.length).toBeGreaterThanOrEqual(2);
+    expect(past.entries.every((e: { event_type?: string }) => e.event_type === 'action_started' || e.event_type === 'agent_transcript_submitted')).toBe(true);
+
+    // an unparseable since is ignored (not treated as "exclude everything").
+    const badSince = JSON.parse((await handlers.get_history({ limit: 100, since: 'not-a-date' })).content[0].text);
+    expect(badSince.total_entries).toBeGreaterThanOrEqual(2);
+  });
+
   it('update_scope adds a CIDR to scope in preview mode', async () => {
     const result = await handlers.update_scope({
       add_cidrs: ['172.16.0.0/24'],
