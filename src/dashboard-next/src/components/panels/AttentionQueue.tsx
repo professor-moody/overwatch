@@ -104,8 +104,13 @@ function AttentionRow({
       {expanded && (
         <div className="border-t border-border px-2 py-2">
           <div className="mb-2 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">{item.detail}</div>
+          {item.kind === 'question' && item.queryIds && item.queryIds.length > 1 && (
+            <div className="mb-2 text-[10px] text-warning">
+              Answering fans out to {item.queryIds.length} agents{item.clusterAgentLabels && item.clusterAgentLabels.length > 0 ? `: ${item.clusterAgentLabels.join(', ')}` : ''}.
+            </div>
+          )}
           {item.kind === 'approval' && item.actionId && <ApprovalActions actionId={item.actionId} title={item.title} />}
-          {item.kind === 'question' && item.queryId && <AnswerActions queryId={item.queryId} options={item.options} onAnswered={onAnswered} />}
+          {item.kind === 'question' && item.queryIds && item.queryIds.length > 0 && <AnswerActions queryIds={item.queryIds} options={item.options} onAnswered={onAnswered} />}
           {item.kind === 'failed' && item.taskId && (
             <ActionButton size="xs" variant="secondary" onClick={() => onSelectAgent(item.taskId!)}>View agent →</ActionButton>
           )}
@@ -168,7 +173,7 @@ function ApprovalActions({ actionId, title }: { actionId: string; title: string 
   );
 }
 
-function AnswerActions({ queryId, options, onAnswered }: { queryId: string; options?: string[]; onAnswered: () => void }) {
+function AnswerActions({ queryIds, options, onAnswered }: { queryIds: string[]; options?: string[]; onAnswered: () => void }) {
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState(false);
   const send = async (value: string) => {
@@ -176,7 +181,10 @@ function AnswerActions({ queryId, options, onAnswered }: { queryId: string; opti
     if (!text || busy) return;
     setBusy(true);
     try {
-      await api.answerAgentQuery(queryId, text);
+      // Fan out to the whole cluster when >1; the single route keeps its
+      // specific agent-gone messaging for the common one-question case.
+      if (queryIds.length > 1) await api.answerAgentQueryBatch(queryIds, text);
+      else await api.answerAgentQuery(queryIds[0], text);
       onAnswered();
     } catch {
       setBusy(false); // keep the card so the operator can retry

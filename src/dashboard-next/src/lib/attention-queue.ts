@@ -21,7 +21,12 @@ export interface AttentionItem {
   agentLabel?: string;
   // Action handles for the UI:
   actionId?: string;   // approval
-  queryId?: string;    // question
+  queryId?: string;    // question (representative of a cluster)
+  /** Question fan-out: every member query_id of this cluster. Answering the
+   *  item resolves them all at once. Length 1 for an un-clustered question. */
+  queryIds?: string[];
+  /** Distinct agent labels that asked this clustered question. */
+  clusterAgentLabels?: string[];
   taskId?: string;     // failed agent
   risk?: ConsoleApprovalItem['risk'];
   options?: string[];  // question quick-answers
@@ -60,16 +65,37 @@ function approvalItem(action: PendingAction, now: number): AttentionItem {
   };
 }
 
-function questionItem(q: AgentQuery): AttentionItem {
+/** Cluster key: identical question text (whitespace/case-normalized) + the same
+ *  option set. Only genuinely-identical questions merge — a different option set
+ *  is a different decision and stays separate. */
+function questionClusterKey(q: AgentQuery): string {
+  const text = q.question.trim().toLowerCase().replace(/\s+/g, ' ');
+  const opts = (q.options ?? []).map(o => o.trim().toLowerCase()).sort();
+  // JSON-encode rather than join on a delimiter so no option text — one
+  // containing the delimiter, or a comma/space straddling a boundary — can
+  // collide two different questions into one cluster (which would fan an
+  // answer out to the wrong agents).
+  return JSON.stringify([text, opts]);
+}
+
+// One AttentionItem per cluster of identical open questions. The representative
+// (oldest — getOpen is FIFO) drives the id/detail/options; answering fans out to
+// every member via queryIds.
+function questionClusterItem(group: AgentQuery[]): AttentionItem {
+  const rep = group[0];
+  const labels = [...new Set(group.map(q => q.agent_id).filter((v): v is string => !!v))];
+  const clustered = group.length > 1;
   return {
-    id: `question:${q.query_id}`,
+    id: `question:${rep.query_id}`,
     kind: 'question',
     priority: P_QUESTION,
-    title: 'Agent question',
-    detail: q.question,
-    agentLabel: q.agent_id,
-    queryId: q.query_id,
-    options: q.options,
+    title: clustered ? `Agent question · ${group.length} agents` : 'Agent question',
+    detail: rep.question,
+    agentLabel: clustered ? `${labels.length || group.length} agents` : rep.agent_id,
+    queryId: rep.query_id,
+    queryIds: group.map(q => q.query_id),
+    clusterAgentLabels: labels,
+    options: rep.options,
   };
 }
 
@@ -112,9 +138,15 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
   const items: AttentionItem[] = [];
 
   for (const action of input.pendingActions ?? []) items.push(approvalItem(action, now));
+  // Cluster identical open questions so the operator answers once → fan-out.
+  const clusters = new Map<string, AgentQuery[]>();
   for (const q of input.agentQueries ?? []) {
-    if (q.status !== 'answered') items.push(questionItem(q));
+    if (q.status === 'answered') continue;
+    const key = questionClusterKey(q);
+    const group = clusters.get(key);
+    if (group) group.push(q); else clusters.set(key, [q]);
   }
+  for (const group of clusters.values()) items.push(questionClusterItem(group));
   for (const agent of input.agents ?? []) {
     if (recentlyFailed(agent, now, windowMs)) items.push(failedItem(agent));
   }

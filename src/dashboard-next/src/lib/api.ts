@@ -337,6 +337,16 @@ export async function answerAgentQuery(queryId: string, answer: string): Promise
   });
 }
 
+/** Answer-once fan-out: resolve a cluster of identical questions (asked by
+ *  several agents) with one answer. Each still-running agent picks it up on its
+ *  next heartbeat. */
+export async function answerAgentQueryBatch(queryIds: string[], answer: string): Promise<{ ok: boolean; answered: number }> {
+  return fetchJson('/api/agent-queries/answer-batch', {
+    method: 'POST',
+    body: JSON.stringify({ query_ids: queryIds, answer }),
+  });
+}
+
 // --- Campaigns ---
 
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {
