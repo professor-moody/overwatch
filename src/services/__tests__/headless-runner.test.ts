@@ -371,6 +371,63 @@ describe('Headless runner mechanics (injected spawn)', () => {
     svc.stop();
     expect(child.signals).toContain('SIGTERM');
   });
+
+  it('CVE auto-dispatch budget counts non-CVE headless agents (cap honored, no over-registration)', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    // An open-ended dispatched agent with NO persisted backend resolves to headless
+    // and takes the only slot. Pre-fix the CVE budget counted backend==='headless_mcp'
+    // only, missed this agent, and over-registered a CVE task past the cap (which
+    // then got reaped → CVE research abandoned). The fix counts it via resolveBackend.
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    engine.registerAgent({ id: 'open-busy', agent_id: 'a-open', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], frontier_item_id: disco!.id } as AgentTask);
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+
+    seedVersionedService(engine, 'svc-busy');
+    await settle();
+    // Budget is full → no CVE research task registered, no extra launch.
+    expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(0);
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('CVE auto-dispatch is once-per-session (no re-dispatch on later drains)', async () => {
+    svc = makeService({ maxConcurrentHeadless: 3 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    seedVersionedService(engine, 'svc-once');
+    await settle();
+    expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(1);
+
+    // A later, unrelated finding fires another onUpdate → drainCveResearch runs
+    // again. The item is in cveAttempted, so it is NOT re-dispatched.
+    engine.ingestFinding({ id: 'tick', agent_id: 't', timestamp: new Date().toISOString(), nodes: [{ id: 'h-tick', type: 'host', label: '10.0.0.9', ip: '10.0.0.9', alive: true }], edges: [] } as any);
+    await settle();
+    expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(1);
+  });
+
+  it('launches a specialized archetype with its restricted --allowedTools (recon_scanner, web_tester)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+
+    engine.registerAgent({ id: 'h-recon', agent_id: 'a-recon', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'headless_mcp', archetype: 'recon_scanner' } as AgentTask);
+    await settle();
+    const reconArgv = spawnedArgs[spawnedArgs.length - 1];
+    const reconAllowed = reconArgv[reconArgv.indexOf('--allowedTools') + 1];
+    expect(reconAllowed).toBe(allowedToolsFor('recon_scanner'));
+    // recon_scanner has NO interactive sessions or credential tools in its surface.
+    expect(reconAllowed).not.toContain('mcp__overwatch__open_session');
+
+    engine.registerAgent({ id: 'h-web', agent_id: 'a-web', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'headless_mcp', archetype: 'web_tester' } as AgentTask);
+    await settle();
+    const webArgv = spawnedArgs[spawnedArgs.length - 1];
+    const webAllowed = webArgv[webArgv.indexOf('--allowedTools') + 1];
+    expect(webAllowed).toBe(allowedToolsFor('web_tester'));
+    // Neither archetype gets the whole-server prefix.
+    expect(webAllowed.split(/\s+/)).not.toContain('mcp__overwatch');
+  });
 });
 
 describe('allowedToolsFor (role tool profiles)', () => {
