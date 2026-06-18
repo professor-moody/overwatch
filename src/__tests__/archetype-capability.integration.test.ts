@@ -50,4 +50,29 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     result = await runArchetype({ archetype: 'opsec_sentinel', fakeMode: 'opsec' });
     expect(result.task?.status).toBe('completed');
   });
+
+  it('evidence_auditor rolls up finding readiness and completes (get_finding_readiness end-to-end)', async () => {
+    // Seed a public cloud_resource — the one finding-producing node that needs no
+    // edges (report-generator: public resource is a finding on its own). The audit
+    // mode throws (→ interrupted) if get_finding_readiness returns the wrong shape,
+    // so 'completed' proves the new read-only tool works through the MCP path.
+    result = await runArchetype({
+      archetype: 'evidence_auditor',
+      fakeMode: 'audit',
+      // Flat node fields — ingestion spreads `...node` into the stored props, so
+      // report-generator (which reads n.properties.public) sees them. A nested
+      // `properties:{}` would be stored as an inert sub-object and yield 0 findings.
+      seedNodes: [{
+        id: 'cloud-res-eval', type: 'cloud_resource', label: 's3://eval-public-bucket',
+        public: true, resource_type: 's3_bucket', provider: 'aws', region: 'us-east-1',
+      }],
+    });
+    expect(result.task?.status).toBe('completed');
+    // The rollup actually counted the seeded finding: the transcript summary
+    // (surfaced in the agent_transcript_submitted event) reports a non-zero total.
+    const audited = result.app.engine.getFullHistory().some(
+      e => e.event_type === 'agent_transcript_submitted' && /audited [1-9]\d* finding/.test(e.description ?? ''),
+    );
+    expect(audited).toBe(true);
+  });
 });

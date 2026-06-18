@@ -23,6 +23,7 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`run_tool`](run-tool.md) | Auto-instrumented argv-form tool execution | No |
 | [`report_finding`](report-finding.md) | Submit new nodes/edges to the graph | No |
 | [`get_evidence`](get-evidence.md) | Retrieve full-fidelity evidence by ID or list stored evidence records | Yes |
+| [`get_finding_readiness`](get-finding-readiness.md) | Per-finding proof-readiness audit (client_ready / needs_validation / draft) + gaps | Yes |
 | [`parse_output`](parse-output.md) | Parse supported tool output into findings | No |
 | [`ingest_json`](ingest-json.md) | Generic JSON/JSONL ingestion using caller-provided mappings | No |
 | [`query_graph`](query-graph.md) | Open-ended graph exploration | Yes |

@@ -148,7 +148,7 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     description: 'Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes.',
     defaultObjective: 'Audit the confirmed findings and their evidence: which are client-ready vs. need more proof.',
     suitableFor: {},
-    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE]) },
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE, 'get_finding_readiness']) },
   },
   research: {
     id: 'research', label: 'Research (legacy role)', role: 'research', scopeStrategy: 'subgraph',
@@ -198,7 +198,7 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
   session_shepherd:
     `YOUR ROLE IS READ-ONLY SESSION OVERSIGHT. Use list_sessions + read_session (+ query_graph) to review the open interactive sessions: which are live, idle/stale, or orphaned (owner agent gone), and what each is doing. You do NOT run new target commands. Done when each open session's state and ownership is reported, with stale/orphaned ones flagged for the operator.`,
   evidence_auditor:
-    `YOUR ROLE IS READ-ONLY EVIDENCE AUDITING. Use get_evidence + query_graph + explain_action to audit confirmed findings and their evidence chains: which are client-ready vs. which need more proof (missing evidence, weak trust, unvalidated). You CANNOT execute against targets or mutate the graph. Done when each finding's proof readiness is assessed and the gaps are reported for the operator.`,
+    `YOUR ROLE IS READ-ONLY EVIDENCE AUDITING. Start with get_finding_readiness for the per-finding readiness rollup (client_ready / needs_validation / draft + the concrete gaps), then drill in with get_evidence + query_graph + explain_action to confirm each chain's proof. You CANNOT execute against targets or mutate the graph. Done when each finding's proof readiness is assessed and the gaps are reported for the operator.`,
   research: CVE_MISSION,
   planner:
     `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,

@@ -91,7 +91,7 @@ Sub-agents are **typed** (data-driven archetypes in `agent-archetypes.ts`), each
 | `cloud_cartographer` | expand cloud creds (AWS/Entra/GitHub/OIDC), map federation + cloud↔on-prem pivots | execute + credential tools |
 | `opsec_sentinel` | read-only OPSEC monitor: noise budget, defensive signals, recommended approach | read-only + `get_opsec_status` |
 | `session_shepherd` | read-only session oversight: live/stale/orphaned sessions + ownership | read-only + `list_sessions`/`read_session` |
-| `evidence_auditor` | read-only: audit findings + evidence chains for proof readiness | read-only |
+| `evidence_auditor` | read-only: audit findings + evidence chains for proof readiness | read-only + `get_finding_readiness` |
 | `default` | the generic full-surface agent (fallback) | full `mcp__overwatch` |
 
 The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it from the catalog. Deploy two ways:
