@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, unlinkSync, readFileSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerFindingTools } from '../findings.js';
@@ -121,5 +121,21 @@ describe('finding tools', () => {
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0].text);
     expect(payload.error).toContain('not found');
+  });
+
+  it('persists a reported finding to disk synchronously (no debounce window)', async () => {
+    // M3: report_finding flushes immediately, so the node is on disk the instant
+    // the call returns — a daemon crash in the next moment can't lose it. Under
+    // the old debounced persist() the state file would NOT yet contain the node
+    // (the write is scheduled ~100ms later), so reading it synchronously here
+    // proves the flush happened.
+    await handlers.report_finding({
+      agent_id: 'agent-durable',
+      tool_name: 'nmap',
+      nodes: [{ id: 'host-durable-1', type: 'host', label: '10.10.10.9', properties: { ip: '10.10.10.9' } }],
+      edges: [],
+    });
+    const onDisk = readFileSync(TEST_STATE_FILE, 'utf8');
+    expect(onDisk).toContain('host-durable-1');
   });
 });

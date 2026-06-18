@@ -204,6 +204,13 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         }
       }
 
+      // Durability: a reported finding is the engagement's most important data —
+      // flush it (and the campaign link above) to disk synchronously rather than
+      // riding the ≤500ms debounce, so a daemon crash right after report_finding
+      // can't lose it. report_finding is a single, infrequent call (not a bulk
+      // batch), so the extra write is cheap.
+      engine.flushNow();
+
       return {
         content: [{
           type: 'text',
