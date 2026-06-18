@@ -213,4 +213,16 @@ describe('agent-archetypes: registry + recommender', () => {
     expect(recommendArchetype({ nodeType: 'host' })).toBe('recon_scanner');
     expect(recommendArchetype({})).toBe('default');
   });
+
+  it('every archetype defaultSkill resolves to a real skill file', () => {
+    // Locks the archetype→skill bindings: a typo, a renamed/removed skill, or a
+    // mis-binding (e.g. session_shepherd→pivoting) fails here instead of silently
+    // shipping an archetype whose methodology never loads into the sub-agent prompt.
+    const skills = new SkillIndex(resolve('skills'));
+    for (const a of listArchetypes()) {
+      if (a.defaultSkill) {
+        expect(skills.getSkillContent(a.defaultSkill), `${a.id} → ${a.defaultSkill}`).toBeTruthy();
+      }
+    }
+  });
 });
