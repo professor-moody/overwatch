@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
+import { useToastStore } from '../../stores/toast-store';
 import * as api from '../../lib/api';
+import { deployTargetsFromRun, recommendArchetypeFor } from '../../lib/agent-archetypes';
 import type { ActivityEntry } from '../../lib/types';
 import { buildActionRuns, filterRuns, runLabel, type ActionRun, type RunStatus } from '../../lib/action-runs';
 import { normalizeActionOutput, formatBytes, matchOutputLines, type ActionOutputView, type OutputStreamView } from '../../lib/action-output';
@@ -218,6 +220,8 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
   const liveText = live ? (stream === 'stdout' ? live.stdout : live.stderr) : '';
   const bodyText = isLiveMode ? liveText : (active?.text ?? '');
   const match = matchOutputLines(bodyText, find);
+  // Deploy-at-findings: route a one-click follow-up at this run's targets.
+  const deployPlan = output ? deployTargetsFromRun(output.targetNodeIds, output.targetIps) : { mode: 'none' as const };
 
   return (
     <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
@@ -284,6 +288,12 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
               </button>
             ))}
           </div>
+        )}
+        {deployPlan.mode !== 'none' && (
+          <DeployFromRun
+            nodeIds={deployPlan.mode === 'nodes' ? deployPlan.nodeIds : []}
+            rawTarget={deployPlan.mode === 'raw' ? deployPlan.target : null}
+          />
         )}
         {!isLiveMode && active?.evidenceId && (
           // key per blob: switching stdout/stderr remounts so a stale preview
@@ -375,6 +385,73 @@ function StreamBanners({ stream, onLoadMore }: { stream: OutputStreamView; onLoa
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function DeployFromRun({ nodeIds, rawTarget }: { nodeIds: string[]; rawTarget: string | null }) {
+  const graphNodes = useEngagementStore(s => s.graph.nodes);
+  const addToast = useToastStore(s => s.addToast);
+  const [archetypes, setArchetypes] = useState<api.AgentArchetypeSummary[]>([]);
+  const [override, setOverride] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    api.getArchetypes().then(d => { if (!cancelled) setArchetypes(d.archetypes || []); }).catch(() => { /* dropdown stays minimal */ });
+    return () => { cancelled = true; };
+  }, [expanded]);
+
+  const firstNodeType = nodeIds.length ? graphNodes.find(n => n.id === nodeIds[0])?.type : undefined;
+  const recommendedId = nodeIds.length ? recommendArchetypeFor({ nodeType: firstNodeType }) : recommendArchetypeFor({ rawTarget: true });
+  const effectiveId = override || recommendedId;
+
+  const deploy = async () => {
+    setBusy(true);
+    try {
+      if (nodeIds.length) {
+        const res = await api.dispatchAgent({ target_node_ids: nodeIds, archetype: effectiveId });
+        if (res.dispatched) {
+          addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: res.task?.agent_id });
+          setExpanded(false);
+        } else {
+          addToast({ type: 'warning', title: 'Not deployed', message: res.reason === 'frontier_lease_conflict' ? 'target already being worked' : (res.reason || 'dispatch refused') });
+        }
+      } else if (rawTarget) {
+        const res = await api.quickDeploy({ target: rawTarget, archetype: effectiveId });
+        if (res.dispatched) {
+          addToast({ type: 'success', title: `Deployed ${res.archetype || effectiveId}`, message: 'scoped + dispatched' });
+          setExpanded(false);
+        } else {
+          addToast({ type: 'warning', title: 'Not deployed', message: res.reason || 'dispatch refused' });
+        }
+      }
+    } catch (e) {
+      addToast({ type: 'error', title: 'Deploy failed', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = nodeIds.length ? `${nodeIds.length} target node${nodeIds.length === 1 ? '' : 's'}` : rawTarget;
+  if (!expanded) {
+    return <button onClick={() => setExpanded(true)} className="text-[11px] text-accent hover:underline">Deploy agent at {label}…</button>;
+  }
+  return (
+    <div className="rounded border border-border bg-elevated p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Deploy at {label}</span>
+        <select value={override} onChange={e => setOverride(e.target.value)} className="settings-input text-xs py-1">
+          <option value="">Recommended: {recommendedId}</option>
+          {archetypes.map(a => <option key={a.id} value={a.id}>{a.label} ({a.id})</option>)}
+        </select>
+        <button onClick={() => void deploy()} disabled={busy} className="rounded border border-success/40 bg-success/10 px-2 py-1 text-[11px] text-success hover:bg-success/20 disabled:opacity-50">
+          {busy ? 'Deploying…' : 'Deploy'}
+        </button>
+        <button onClick={() => setExpanded(false)} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">Close</button>
+      </div>
     </div>
   );
 }

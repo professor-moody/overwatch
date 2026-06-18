@@ -36,6 +36,20 @@ export function classifyDeployInput(text: string): DeployInput {
   return nodeIds.length ? { kind: 'nodes', nodeIds } : { kind: 'empty' };
 }
 
+// Deploy-at-findings (Analysis workspace): from a tool run's targets, decide how
+// a one-click follow-up deploy should route — at the discovered graph nodes
+// (dispatch) or at the raw IPs/CIDRs the run hit (quick-deploy).
+export type RunDeployPlan =
+  | { mode: 'nodes'; nodeIds: string[] }
+  | { mode: 'raw'; target: string }
+  | { mode: 'none' };
+
+export function deployTargetsFromRun(targetNodeIds: string[], targetIps: string[]): RunDeployPlan {
+  if (targetNodeIds.length > 0) return { mode: 'nodes', nodeIds: targetNodeIds };
+  if (targetIps.length > 0) return { mode: 'raw', target: targetIps.join(' ') };
+  return { mode: 'none' };
+}
+
 /** Client mirror of the server recommendArchetype (instant UI default). */
 export function recommendArchetypeFor(input: { rawTarget?: boolean; nodeType?: string }): string {
   if (input.rawTarget) return 'recon_scanner';
