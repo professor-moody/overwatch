@@ -105,8 +105,11 @@ genuinely *capable*, not just *scoped*:
 
 ## Provenance surfaces — consolidate Evidence and Analysis
 
-The [Analysis workspace](operator-cockpit.md) added a **run-centric** lens (the
-raw output a tool produced). The **Evidence** tab is **node-centric** (a node's
+The [**Analysis workspace**](operator-cockpit.md#analysis) — ✅ **shipped**:
+assess a tool run's raw stdout/stderr (live while running, durable after),
+re-parse it into the graph, and deploy a follow-up at what it found. It added a
+**run-centric** lens (the raw output a tool produced). The **Evidence** tab is
+**node-centric** (a node's
 provenance chain). They are complementary but currently overlap awkwardly — the
 Evidence tab also carries a redundant Attack Paths finder (already its own nav
 item). The consolidation:

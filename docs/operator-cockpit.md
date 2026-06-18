@@ -97,11 +97,28 @@ The system **recommends** a type for a target (`recommendArchetype`, mirroring t
 
 The engagement/scope/OPSEC substrate is unchanged — ad-hoc deploy just removes the setup friction.
 
+## Analysis workspace {#analysis}
+
+The **Analysis** workspace (Investigate group) is where the operator **assesses the raw output of tools the agents run** and uses it to steer the next move — the run-centric complement to the node-centric **Evidence** view. Today a tool's raw output is captured to the evidence store and the *parsed finding* lands in the graph; Analysis surfaces the raw bytes so "what did nmap actually return?" is one click away.
+
+- **Run list** — every agent tool run derived from the activity history (status: running / success / failure / partial; tool; command; agent; targets), filterable by status + free text.
+- **Assessment view** — for a selected run: raw **stdout/stderr** (scrollable, stdout↔stderr toggle, find-in-output) **plus** the run's parsed findings and linked graph nodes. Head-by-default with a **Load more** (up to the 1 MiB server cap), and clear banners for truncated / missing / capture-failed streams.
+- **Live streaming** — while a run is in flight, its output streams in real time over `ws://…/ws/actions/:id/output` (an engine-owned `ActionOutputBuffer`); on completion the view falls back to the durable evidence (the source of truth).
+- **Re-parse & promote** — pick a parser, **Preview** what it extracts (node/edge counts), then **Promote to graph**. Routes through the same parse→ingest pipeline as the [`parse_output`](tools/parse-output.md) tool (`parseAndMaybeIngest`), so validation/events/graph mutation stay identical. Preview never mutates the graph.
+- **Deploy-at-findings** — one-click deploy a follow-up agent at the run's target nodes (dispatch) or raw IPs/CIDRs (quick-deploy), with a recommended agent type — reusing the same validated dispatch/quick-deploy paths, no retyping node IDs.
+
+All target execution still flows through the agents/MCP path; the workspace reads output and routes deploys through existing validated engine methods.
+
 ## Dashboard endpoints
 
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/commands` | NL command — preview (`{command}`) / confirm (`{confirm,plan_id}`) / deny (`{deny,plan_id}`) |
+| `GET /api/actions/:id/output` | Raw stdout/stderr (head-by-default) + metadata for a run (Analysis) |
+| `GET /api/evidence/:id/raw` | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
+| `ws://…/ws/actions/:id/output` | Live stdout/stderr stream of a running action |
+| `POST /api/actions/:id/reparse` | Re-parse an action's output: preview (`ingest:false`) or promote (`ingest:true`) |
+| `GET /api/parsers` | Supported parser names for the re-parse picker |
 | `GET /api/plans` | Open planner-proposed plans awaiting confirmation |
 | `POST /api/agents/:id/directive` | Steer one agent (one validated directive op) |
 | `POST /api/fleet/directive` | Fleet-wide pause/resume/stop (optionally by campaign) |

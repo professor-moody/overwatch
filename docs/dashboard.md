@@ -260,7 +260,12 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/actions/:id/approve` · `/api/actions/:id/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
 | `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
 | `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
+| `/api/actions/:id/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |
+| `/api/evidence/:id/raw` | GET | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
+| `/api/actions/:id/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |
+| `/api/parsers` | GET | Supported parser names for the re-parse picker |
 | `ws://` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |
+| `ws://…/ws/actions/:id/output` | WebSocket | Live stdout/stderr stream of a running action (Analysis) |
 
 ## Verifying Dashboard Status
 
