@@ -184,7 +184,7 @@ describe('scoring and inference tools', () => {
     expect(payload.error).toBe('approval_not_live');
   });
 
-  it('reloads durable pending approvals from persisted state', () => {
+  it('reconciles a persisted pending approval to aborted on reload (restart safety)', () => {
     engine.recordApprovalRequest({
       action_id: 'act-reloaded-approval',
       target_ip: '10.10.10.7',
@@ -199,14 +199,14 @@ describe('scoring and inference tools', () => {
       validation_result: 'valid',
     });
 
+    // On restart the record is still persisted/reloaded, but it must NOT come
+    // back as actionable 'pending' — the requesting agent (and the live tool
+    // call an approval would unblock) are gone, so it's reconciled to 'aborted'.
     const reloaded = new GraphEngine(engine.getConfig(), TEST_STATE_FILE);
-    expect(reloaded.getPendingApprovalRequests()).toEqual([
-      expect.objectContaining({
-        action_id: 'act-reloaded-approval',
-        status: 'pending',
-        target_ip: '10.10.10.7',
-      }),
-    ]);
+    expect(reloaded.getPendingApprovalRequests()).toEqual([]);
+    const rec = reloaded.getApprovalRequest('act-reloaded-approval');
+    expect(rec).toMatchObject({ action_id: 'act-reloaded-approval', status: 'aborted', target_ip: '10.10.10.7' });
+    expect(rec?.reason ?? '').toContain('restart');
   });
 
   describe('next_task frontier linkage tracking', () => {

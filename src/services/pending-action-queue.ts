@@ -207,6 +207,32 @@ export class PendingActionQueue {
     return resolution;
   }
 
+  /**
+   * Abort every pending action submitted by `agentId`, resolving each as
+   * 'aborted' (NOT executed). Called when the owning agent task goes terminal
+   * (operator stop, watchdog heartbeat-reap, wall-clock timeout) so a blocked
+   * approval can't later auto-fire on timeout and run a command on behalf of a
+   * dead agent. Returns the resolutions produced, so the engine can also update
+   * the matching durable approval records. No-op for a falsy agentId (avoids
+   * sweeping up primary-session actions that carry no agent_id).
+   */
+  abortByAgent(agentId: string | undefined, reason = 'requesting agent terminated'): ActionResolution[] {
+    if (!agentId) return [];
+    const out: ActionResolution[] = [];
+    for (const [id, action] of [...this.pending]) {
+      if (action.agent_id !== agentId) continue;
+      const resolution: ActionResolution = {
+        action_id: id,
+        status: 'aborted',
+        resolved_at: new Date().toISOString(),
+        reason,
+      };
+      this.resolveAction(id, resolution);
+      out.push(resolution);
+    }
+    return out;
+  }
+
   private resolveAction(action_id: string, resolution: ActionResolution): void {
     const action = this.pending.get(action_id);
     if (action) {

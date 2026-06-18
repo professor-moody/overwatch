@@ -537,4 +537,54 @@ describe('PendingActionQueue', () => {
       expect(resolution.status).toBe('approved');
     });
   });
+
+  // ==== abortByAgent (owning agent terminated: reap / cancel / timeout) ====
+
+  describe('abortByAgent', () => {
+    it('aborts only the matching agent’s pending actions and unblocks their promises', async () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
+      const pa = queue.submit(makeSubmitPayload({ action_id: 'a-doomed', agent_id: 'agent-dead' }));
+      const pb = queue.submit(makeSubmitPayload({ action_id: 'b-survives', agent_id: 'agent-live' }));
+      expect(queue.getPendingCount()).toBe(2);
+
+      const aborted = queue.abortByAgent('agent-dead', 'requesting agent terminated');
+      expect(aborted).toHaveLength(1);
+      expect(aborted[0].action_id).toBe('a-doomed');
+      expect(aborted[0].status).toBe('aborted');
+
+      const ra = await pa;
+      expect(ra.status).toBe('aborted');           // NOT executed
+      expect(ra.reason).toContain('terminated');
+      // The other agent's action is untouched and still pending.
+      expect(queue.getPendingCount()).toBe(1);
+      expect(queue.getAction('b-survives')?.status).toBe('pending');
+      queue.approve('b-survives');
+      expect((await pb).status).toBe('approved');
+    });
+
+    it('aborted action does NOT auto-fire on a later timeout (the key safety property)', async () => {
+      vi.useFakeTimers();
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 5000 });
+      const p = queue.submit(makeSubmitPayload({ action_id: 'a-race', agent_id: 'agent-x' }));
+
+      queue.abortByAgent('agent-x');
+      const resolution = await p;
+      expect(resolution.status).toBe('aborted');
+
+      // Advancing past the original timeout must not re-resolve it as 'timeout'
+      // (which carries auto_approved/unattended_execute → would execute).
+      vi.advanceTimersByTime(10000);
+      expect(queue.getResolution('a-race')?.status).toBe('aborted');
+      expect(queue.getPendingCount()).toBe(0);
+    });
+
+    it('no-ops for a falsy agentId (never sweeps up agent_id-less primary actions)', () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-all', approval_timeout_ms: 60000 });
+      queue.submit(makeSubmitPayload({ action_id: 'no-agent' })); // agent_id undefined
+      expect(queue.abortByAgent(undefined)).toEqual([]);
+      expect(queue.abortByAgent('')).toEqual([]);
+      expect(queue.getPendingCount()).toBe(1);
+      queue.dispose();
+    });
+  });
 });
