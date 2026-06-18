@@ -29,6 +29,7 @@ import type { EngagementConfig } from './types.js';
 import { engagementConfigSchema } from './types.js';
 import { formatConfigError, parseEngagementConfig } from './config.js';
 import { registerStateTools } from './tools/state.js';
+import { registerOpsecTools } from './tools/opsec.js';
 import { registerFindingTools } from './tools/findings.js';
 import { registerScoringTools } from './tools/scoring.js';
 import { registerExplorationTools } from './tools/exploration.js';
@@ -174,6 +175,7 @@ export function registerAllTools(
   });
   registerFindingTools(s, deps.engine);
   registerScoringTools(s, deps.engine);
+  registerOpsecTools(s, deps.engine);
   registerExplorationTools(s, deps.engine);
   registerResearchCveTools(s, deps.engine);
   registerProposePlanTools(s, deps.engine);

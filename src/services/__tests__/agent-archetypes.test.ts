@@ -10,6 +10,40 @@ import {
 } from '../agent-archetypes.js';
 import { SkillIndex } from '../skill-index.js';
 
+describe('agent-archetypes: Slice 4 archetypes', () => {
+  it('registers the four remaining archetypes', () => {
+    for (const id of ['cloud_cartographer', 'opsec_sentinel', 'session_shepherd', 'evidence_auditor']) {
+      expect(isArchetypeId(id), id).toBe(true);
+    }
+  });
+
+  it('opsec_sentinel is read-only and carries get_opsec_status', () => {
+    const a = allowedToolsFor('opsec_sentinel');
+    expect(a).toContain('mcp__overwatch__get_opsec_status');
+    expect(a).not.toContain('run_bash');
+    expect(a).not.toContain('run_tool');
+    expect(a).not.toContain('open_session');
+  });
+
+  it('cloud_cartographer can expand credentials and execute recon', () => {
+    const a = allowedToolsFor('cloud_cartographer');
+    expect(a).toContain('mcp__overwatch__expand_aws_credential');
+    expect(a).toContain('mcp__overwatch__run_tool');
+  });
+
+  it('session_shepherd + evidence_auditor never get target execution', () => {
+    for (const id of ['session_shepherd', 'evidence_auditor']) {
+      const a = allowedToolsFor(id);
+      expect(a, id).not.toContain('run_bash');
+      expect(a, id).not.toContain('run_tool');
+    }
+    // session_shepherd reads sessions but cannot write/open them
+    const ss = allowedToolsFor('session_shepherd');
+    expect(ss).toContain('mcp__overwatch__list_sessions');
+    expect(ss).not.toContain('mcp__overwatch__send_to_session');
+  });
+});
+
 describe('agent-archetypes: skill wiring + success criteria', () => {
   // Real skills dir (vitest cwd is the repo root). Guards against defaultSkill
   // id drift — the bug this slice fixes was ids that matched no skill file.

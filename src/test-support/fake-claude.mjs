@@ -130,6 +130,20 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'opsec') {
+    // opsec_sentinel: read the OPSEC posture. No try/catch — if get_opsec_status
+    // errors the process exits non-zero and the task is interrupted, so an eval
+    // asserting 'completed' proves the tool works end-to-end.
+    const res = await client.callTool({ name: 'get_opsec_status', arguments: {} });
+    const parsed = JSON.parse(res.content[0].text);
+    if (typeof parsed.global_noise_spent !== 'number') throw new Error('get_opsec_status missing global_noise_spent');
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `opsec posture reviewed (noise ${parsed.global_noise_spent})` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'opsec review done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   if (mode === 'recon') {
     // recon_scanner capability: discovery output → host + service nodes + RUNS edge.
     await client.callTool({

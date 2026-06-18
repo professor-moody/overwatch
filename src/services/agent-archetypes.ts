@@ -14,7 +14,8 @@ import type { AgentRole, FrontierItem, TaskBackend } from '../types.js';
 export type AgentArchetypeId =
   | 'default' | 'research' | 'planner'
   | 'recon_scanner' | 'web_tester' | 'credential_operator' | 'post_exploit'
-  | 'cve_researcher' | 'pathfinder' | 'report_scribe';
+  | 'cve_researcher' | 'pathfinder' | 'report_scribe'
+  | 'cloud_cartographer' | 'opsec_sentinel' | 'session_shepherd' | 'evidence_auditor';
 
 export interface AgentArchetype {
   id: AgentArchetypeId;
@@ -121,6 +122,34 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     suitableFor: {},
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE, 'generate_report']) },
   },
+  cloud_cartographer: {
+    id: 'cloud_cartographer', label: 'Cloud cartographer', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'aws-exploitation',
+    description: 'Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): expand captured credentials, map federation and cloud-to-on-prem pivots.',
+    defaultObjective: 'Expand the cloud credentials around {target} and map the access + federation they unlock.',
+    suitableFor: { nodeTypes: ['credential', 'cloud_identity', 'cloud_resource', 'idp_application'] },
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED]) },
+  },
+  opsec_sentinel: {
+    id: 'opsec_sentinel', label: 'OPSEC sentinel', role: 'research', scopeStrategy: 'scope-wide',
+    description: 'Read-only OPSEC monitor: track the noise budget + defensive signals, flag risk, and recommend an approach. Never executes.',
+    defaultObjective: 'Assess the engagement OPSEC posture: noise spent, defensive signals, and the safest approach right now.',
+    suitableFor: {},
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE, 'get_opsec_status']) },
+  },
+  session_shepherd: {
+    id: 'session_shepherd', label: 'Session shepherd', role: 'default', scopeStrategy: 'scope-wide', defaultSkill: 'pivoting',
+    description: 'Watch interactive sessions: read buffers, surface stale/orphaned sessions and their ownership. Read-only — no new target execution.',
+    defaultObjective: 'Review the open sessions: which are live, stale, or orphaned, and what each is doing.',
+    suitableFor: {},
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE, 'list_sessions', 'read_session']) },
+  },
+  evidence_auditor: {
+    id: 'evidence_auditor', label: 'Evidence auditor', role: 'research', scopeStrategy: 'scope-wide',
+    description: 'Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes.',
+    defaultObjective: 'Audit the confirmed findings and their evidence: which are client-ready vs. need more proof.',
+    suitableFor: {},
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE]) },
+  },
   research: {
     id: 'research', label: 'Research (legacy role)', role: 'research', scopeStrategy: 'subgraph',
     description: 'Legacy research role — web research + finding recording, no target execution.',
@@ -162,6 +191,14 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
     `YOUR ROLE IS READ-ONLY ATTACK-PATH ANALYSIS. Use query_graph + find_paths + get_agent_context to find the highest-value next hops and the gaps blocking progress toward the objectives, then surface them as a proposed plan via propose_plan({ agent_id, task_id, summary, rationale, ops }). You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). You PROPOSE; the operator CONFIRMS. Done when a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists).`,
   report_scribe:
     `YOUR ROLE IS REPORT DRAFTING (READ-ONLY). Read the confirmed graph state and evidence in scope (query_graph, get_evidence, explain_action, get_timeline) and draft report sections with generate_report. You CANNOT execute against targets or mutate the graph — synthesis only. Done when the requested report sections are drafted from confirmed findings and evidence via generate_report.`,
+  cloud_cartographer:
+    `YOUR ROLE IS CLOUD + IDENTITY CARTOGRAPHY. Expand captured cloud credentials/tokens with the expand_* tools (AWS/Entra/GitHub/OIDC), run the resulting recon via validate_action + run_tool, and turn output into graph data with parse_output/report_finding. Map federation (OIDC/SAML role assumption) and cloud-to-on-prem pivots. Done when each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings.`,
+  opsec_sentinel:
+    `YOUR ROLE IS READ-ONLY OPSEC MONITORING. Use get_opsec_status (+ query_graph) to assess the noise budget spent, the defensive signals observed (lockouts, rate limits, honeypots, resets), and the recommended approach. You CANNOT execute against targets or mutate the graph. Done when you have reported the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) as a finding/note for the operator.`,
+  session_shepherd:
+    `YOUR ROLE IS READ-ONLY SESSION OVERSIGHT. Use list_sessions + read_session (+ query_graph) to review the open interactive sessions: which are live, idle/stale, or orphaned (owner agent gone), and what each is doing. You do NOT run new target commands. Done when each open session's state and ownership is reported, with stale/orphaned ones flagged for the operator.`,
+  evidence_auditor:
+    `YOUR ROLE IS READ-ONLY EVIDENCE AUDITING. Use get_evidence + query_graph + explain_action to audit confirmed findings and their evidence chains: which are client-ready vs. which need more proof (missing evidence, weak trust, unvalidated). You CANNOT execute against targets or mutate the graph. Done when each finding's proof readiness is assessed and the gaps are reported for the operator.`,
   research: CVE_MISSION,
   planner:
     `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,

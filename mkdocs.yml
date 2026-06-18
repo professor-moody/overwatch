@@ -81,6 +81,7 @@ nav:
       - get_state: tools/get-state.md
       - run_lab_preflight: tools/run-lab-preflight.md
       - run_graph_health: tools/run-graph-health.md
+      - get_opsec_status: tools/get-opsec-status.md
       - recompute_objectives: tools/recompute-objectives.md
       - verify_activity_chain: tools/verify-activity-chain.md
       - get_history: tools/get-history.md

@@ -43,4 +43,11 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     expect(result.app.engine.getNodesByType('webapp').some(n => JSON.stringify(n).includes('10.10.10.50'))).toBe(true);
     expect(result.app.engine.getNodesByType('vulnerability').length).toBeGreaterThan(0);
   });
+
+  it('opsec_sentinel reads OPSEC status and completes (get_opsec_status end-to-end)', async () => {
+    // The agent crashes (→ interrupted) if get_opsec_status errors, so a
+    // 'completed' status proves the new read-only tool works through the MCP path.
+    result = await runArchetype({ archetype: 'opsec_sentinel', fakeMode: 'opsec' });
+    expect(result.task?.status).toBe('completed');
+  });
 });
