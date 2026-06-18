@@ -1,6 +1,6 @@
 # Tool Reference
 
-Overwatch exposes 67 MCP tools organized by function. Each tool uses Zod schemas for input validation and returns structured JSON.
+Overwatch exposes its MCP tools organized by function (the live count comes from `get_system_prompt(role="primary")`). Each tool uses Zod schemas for input validation and returns structured JSON.
 
 ## Tool Overview
 
@@ -9,6 +9,7 @@ Overwatch exposes 67 MCP tools organized by function. Each tool uses Zod schemas
 | [`get_state`](get-state.md) | Full engagement briefing from graph | Yes |
 | [`run_lab_preflight`](run-lab-preflight.md) | Aggregate lab-readiness checks | Yes |
 | [`run_graph_health`](run-graph-health.md) | Full graph integrity report | Yes |
+| [`get_opsec_status`](get-opsec-status.md) | Noise budget, recommended approach, defensive signals | Yes |
 | [`recompute_objectives`](recompute-objectives.md) | Re-evaluate objective achievement status | No |
 | [`verify_activity_chain`](verify-activity-chain.md) | Verify the tamper-evident activity hash chain | Yes |
 | [`get_history`](get-history.md) | Full activity log | Yes |
