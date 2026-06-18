@@ -36,3 +36,10 @@ src/dashboard-next/tsconfig.tsbuildinfo
 .mcp.json
 .claude/settings.json
 .claude/scheduled_tasks.lock
+
+# Local code-graph tool artifacts (regenerable, machine-specific, large).
+.codegraphy/
+
+# Real engagement files are operator-local; the repo ships engagement.example.json
+# as the template. Keep actual engagements out of version control.
+engagements/
