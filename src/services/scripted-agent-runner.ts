@@ -142,7 +142,13 @@ export class ScriptedAgentRunner {
 
     try {
       const summary = await this.dispatchByType(task, frontierItem);
-      this.engine.updateAgentStatus(task.id, 'completed', summary);
+      if (summary === null) {
+        // Reached only when an operator forced backend:'scripted' on a task the
+        // scripted runner can't handle. Fail loudly instead of a false success.
+        this.engine.updateAgentStatus(task.id, 'failed', 'no_scripted_handler: this task needs a reasoning (headless) agent or manual operator');
+      } else {
+        this.engine.updateAgentStatus(task.id, 'completed', summary);
+      }
     } catch (err) {
       this.engine.updateAgentStatus(task.id, 'failed', `Scripted runner error: ${err}`);
     } finally {
@@ -151,7 +157,8 @@ export class ScriptedAgentRunner {
     }
   }
 
-  private async dispatchByType(task: AgentTask, item: FrontierItem): Promise<string> {
+  /** Returns a completion summary, or null when there is no scripted handler. */
+  private async dispatchByType(task: AgentTask, item: FrontierItem): Promise<string | null> {
     switch (item.type) {
       case 'credential_test':
         return this.runCredentialTest(task, item);
@@ -167,12 +174,12 @@ export class ScriptedAgentRunner {
             return this.runTokenValidationForNode(task, item, node);
           }
         }
-        return 'No scripted handler for this frontier item type; operator should drive manually.';
+        return null; // no scripted handler — caller fails the task loudly
       }
 
       default:
         // network_discovery, network_pivot, mfa_bypass_candidate, etc.
-        return `No scripted handler for type=${item.type}; operator should drive manually.`;
+        return null; // no scripted handler — caller fails the task loudly
     }
   }
 

@@ -91,6 +91,20 @@ describe('TaskExecutionService', () => {
     expect((deferral!.details as any).backend).toBe('headless_mcp');
   });
 
+  it('fails loudly (not falsely "completed") when scripted is forced on an unhandleable frontier item', async () => {
+    svc.start();
+    // The seeded CIDR (no hosts) yields a network_discovery frontier item — a
+    // type the scripted runner has no handler for. Forcing backend:'scripted'
+    // must end 'failed' with a clear reason, never a silent 'completed'.
+    const item = engine.computeFrontier().find(f => f.type !== 'credential_test');
+    expect(item, 'expected a non-credential frontier item from the seeded CIDR').toBeDefined();
+    engine.registerAgent(runningTask({ id: 'forced-scripted-1', backend: 'scripted', frontier_item_id: item!.id }));
+    await settle();
+    const t = engine.getTask('forced-scripted-1');
+    expect(t?.status).toBe('failed');
+    expect(t?.result_summary ?? '').toContain('no_scripted_handler');
+  });
+
   it('leaves manual tasks running for the operator', async () => {
     svc.start();
     engine.registerAgent(runningTask({ id: 'manual-1', backend: 'manual', frontier_item_id: 'frontier-nonexistent' }));
