@@ -106,6 +106,18 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned).toHaveLength(1);
   });
 
+  it('grants a launched headless agent a generous cold-start heartbeat TTL', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-ttl' }));
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+    // The default 120s TTL would let cold-start (spawn + MCP bootstrap + first
+    // tool call) trip the watchdog and reap a healthy agent before its first beat.
+    expect(engine.getTask('h-ttl')?.heartbeat_ttl_seconds).toBe(300);
+  });
+
   it('routes an UNSET-backend open-ended task to headless (not scripted no-op) when endpoint available', async () => {
     svc = makeService();
     svc.start();

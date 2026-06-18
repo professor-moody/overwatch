@@ -3,9 +3,9 @@
 // Core app construction separated from transport startup.
 // ============================================================
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolCallback, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -119,7 +119,6 @@ export type OverwatchApp = {
   telemetry: ToolTelemetry;
   tape: InProcessTapeController;
   httpTransports?: Record<string, StreamableHTTPServerTransport>;
-  sessionAbortControllers?: Record<string, AbortController>;
   httpServer?: Server;
 };
 
@@ -383,15 +382,26 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
   if (requireMcpToken && !process.env.OVERWATCH_MCP_TOKEN) {
     const generated = randomUUID().replace(/-/g, '');
     process.env.OVERWATCH_MCP_TOKEN = generated;
-    console.error(`[overwatch] /mcp auth required — generated OVERWATCH_MCP_TOKEN=${generated}`);
+    // Do NOT print the secret to stderr — it persists in logs / terminal
+    // scrollback / log aggregation. Write it to a 0600 file beside the engagement
+    // state and log only the path + a non-reversible fingerprint. Headless
+    // sub-agents read the env var in-process; an operator wiring .mcp.http.json
+    // reads the file.
+    const fingerprint = createHash('sha256').update(generated).digest('hex').slice(0, 12);
+    let tokenPath: string;
+    try {
+      tokenPath = join(dirname(app.engine.getStateFilePath()), '.overwatch-mcp-token');
+      writeFileSync(tokenPath, generated, { mode: 0o600 });
+    } catch {
+      tokenPath = '(could not write token file — set OVERWATCH_MCP_TOKEN yourself)';
+    }
+    console.error(`[overwatch] /mcp auth required — generated a token (sha256:${fingerprint}…), written 0600 to ${tokenPath}`);
     console.error('[overwatch] set OVERWATCH_MCP_TOKEN yourself for a stable token (used by .mcp.http.example.json and headless sub-agents).');
   }
   expressApp.use('/mcp', createMcpAuthMiddleware({ host, requireToken: requireMcpToken }));
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
-  const sessionAbortControllers: Record<string, AbortController> = {};
   app.httpTransports = transports;
-  app.sessionAbortControllers = sessionAbortControllers;
 
   // Each HTTP session needs its own McpServer (SDK limitation: one connect() per server).
   // All sessions share the same engine, skills, and services.
@@ -441,15 +451,12 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
           // wrapper. The wrapper is only used for the MCP Server connect
           // path so its send/recv hooks can mirror frames into the tape.
           transports[sid] = baseTransport;
-          sessionAbortControllers[sid] = new AbortController();
         },
       });
       baseTransport.onclose = () => {
         const sid = baseTransport.sessionId;
         if (sid) {
           delete transports[sid];
-          sessionAbortControllers[sid]?.abort();
-          delete sessionAbortControllers[sid];
         }
       };
       const wrappedTransport = app.tape.wrapTransport(baseTransport);
@@ -538,13 +545,9 @@ export async function shutdownOverwatchApp(app: OverwatchApp): Promise<void> {
   // Stop agent-task execution and AWAIT headless children exiting (SIGTERM→
   // SIGKILL) so none outlive the daemon.
   await app.taskExecution.shutdown();
-  // Abort all pending operations and close HTTP transport sessions
-  if (app.sessionAbortControllers) {
-    for (const [sid, controller] of Object.entries(app.sessionAbortControllers)) {
-      controller.abort();
-      delete app.sessionAbortControllers[sid];
-    }
-  }
+  // Close HTTP transport sessions. (In-flight tool calls are aborted per-request
+  // via the MCP SDK's extra.signal, which the process runner already honors;
+  // there is no separate per-session abort controller to fire.)
   if (app.httpTransports) {
     for (const [sid, transport] of Object.entries(app.httpTransports)) {
       try {

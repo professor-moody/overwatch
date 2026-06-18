@@ -1824,6 +1824,19 @@ export class GraphEngine {
     return ok;
   }
 
+  /**
+   * Set a task's heartbeat TTL (seconds). Used to give a headless sub-agent a
+   * generous cold-start grace so the watchdog doesn't reap it before its spawn +
+   * MCP bootstrap + first heartbeat complete. Returns false for an unknown task.
+   */
+  setAgentHeartbeatTtl(taskId: string, seconds: number): boolean {
+    const task = this.agentMgr.getTask(taskId);
+    if (!task) return false;
+    task.heartbeat_ttl_seconds = seconds;
+    this.persist();
+    return true;
+  }
+
   reapStaleAgents(now?: string): number {
     const reaped = this.agentMgr.reapStaleHeartbeats(now);
     if (reaped > 0) this.persist();
@@ -2432,9 +2445,25 @@ export class GraphEngine {
       unattended_execute: resolution.unattended_execute,
     };
     this.ctx.approvalRequests.set(resolution.action_id, record);
+    this.pruneResolvedApprovals();
     this.persist();
     this.flushNow();
     return record;
+  }
+
+  /**
+   * Cap the durable approval log: keep every still-pending record plus the most
+   * recent MAX_RESOLVED_APPROVAL_RECORDS resolved ones. Without this the map grows
+   * unbounded for the life of the engagement and is fully re-serialized on every
+   * state flush. Insertion order in the Map is chronological, so the oldest
+   * resolved records are pruned first.
+   */
+  private pruneResolvedApprovals(): void {
+    const MAX_RESOLVED_APPROVAL_RECORDS = 200;
+    const resolved = [...this.ctx.approvalRequests.entries()].filter(([, r]) => r.status !== 'pending');
+    const overflow = resolved.length - MAX_RESOLVED_APPROVAL_RECORDS;
+    if (overflow <= 0) return;
+    for (let i = 0; i < overflow; i++) this.ctx.approvalRequests.delete(resolved[i][0]);
   }
 
   /**
