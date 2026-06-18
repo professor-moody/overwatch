@@ -26,7 +26,7 @@ Much of "command a team" is **surfacing primitives that already exist**, not bui
 | Retrospective | inference-gap, skill-gap, and context-gap analysis plus training traces |
 | Scope preview | `previewScopeChange` is a read-only dry-run returning nodes entering/leaving scope (the Add-Targets precedent) |
 
-The net-new engine work is concentrated in a few places: **productivity-based stuck detection**, a **data-driven role system**, a **graph-delta plan estimator**, **question clustering**, **NL graph queries**, and an **operator-memory → compiled-policy** substrate. Those land in the later phases below.
+The net-new engine work has been landing phase by phase. **Shipped:** the **data-driven role system** (agent archetypes), **question clustering**, and the **operator-memory → compiled-policy** substrate (MVP — approval rules + per-subnet/target dispatch caps + a Settings editor). **Still ahead:** **productivity-based stuck detection**, a **graph-delta plan estimator**, and **NL graph queries** (the active track). Those are tracked in the phases below.
 
 ## Runtime: MCP-optional drivers
 
@@ -41,7 +41,7 @@ implementation sequence.
 
 ## Phases
 
-### Phase 1 — Mission Control console *(in progress)*
+### Phase 1 — Mission Control console *(✅ shipped)*
 
 Reorganize the console body around Monitor / Decide / Command — mostly surfacing existing data, no new engine state.
 
@@ -49,6 +49,7 @@ Reorganize the console body around Monitor / Decide / Command — mostly surfaci
 - **One Attention Queue** — a single prioritized "what needs me" surface merging pending approvals, agent questions, and failures (stuck agents join in Phase 2), with one item expanded at a time. This consolidates today's separate approvals lane and questions inbox.
 - **One contextual command box** — a single command input with a **Fleet / Campaign / Agent** scope pill, replacing the separate global command bar and per-agent "Tell" box.
 - **Threaded, compact activity** — group a directive → acknowledged → action → completed lifecycle into one collapsible thread; raw details hidden until expanded; a segmented filter (All / Agent / Actions / Findings / Errors); loud color reserved for findings, approvals, questions, and failures.
+- **Single-scroll density — ✅ shipped** — the cockpit was getting cramped: clipped Fleet-overview metric cards, a tight "Needs you" queue, nested fixed-height scroll regions fighting each other. The panel is now one page scroll: a sticky act-surface band (command bar + "Needs you" queue) over a flowing master-detail, the Activity stream keeping its own bounded live-tail (the one justified inner scroll). Metric grid widened to a 4-up row so Running/Queued/Completed/Failed never wrap-clip. Reusable `dense` `PanelSection`/`MetricTile` variants.
 
 ### Phase 2 — Smarter Decide
 
@@ -64,21 +65,26 @@ Deepen the natural-language layer.
 
 - **Expected-graph-delta plan preview** — generalize the scope-preview dry-run into a plan preview: before confirming, show the *state transition* (likely new/removed nodes and edges, objective-distance change, OPSEC/noise estimate, approval risk) — and offer variants (quiet / faster / credential-only) instead of a single confirm button.
 - **Ambiguity handling** — when a command is ambiguous or affects more than a threshold, the interpreter returns a tight clarifying question ("48 hosts — campaign or sample?").
-- **Natural-language graph queries (read-only)** — "what changed in the last 15 minutes?", "which findings lack evidence?", "what's the riskiest unapproved action?" — translated to the existing structured query/path/timeline tools, never mutating.
+- **Natural-language graph queries (read-only) — 🔜 active track** — "what changed in the last 15 minutes?", "which findings lack evidence?", "what's the riskiest unapproved action?" — translated to the existing structured query/path/timeline tools (`get_state({since})`, `get_timeline`, `query_graph`, `find_paths`, `get_finding_readiness`), never mutating. Extends `command-interpreter.ts` (mutation-only today) with a read-only NL→query grammar plus a headless-planner fallback, paired with NL drafting over `run_retrospective`/`generate_report` (Phase 5). This is the next slice in flight.
 
 ### Phase 4 — Coordinated team
 
 The heaviest backend, and the biggest "team" leap.
 
-- **Specialized roles + smart/manual deploy — ✅ shipped** (pulled forward). Roles are now data-driven **agent archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe + the legacy default/research/planner — each a real tool-surface boundary, backend, default skill/objective, and scope strategy. Dispatch honors the type; `recommendArchetype` auto-picks one for a target and the operator can override. **Ad-hoc real-time deploy** (`POST /api/agents/quick-deploy` + the console **Deploy** button): paste an IP/CIDR/domain → auto-scope + dispatch in one step. See [Agent types & deploy](operator-cockpit.md#agent-types). *(Remaining Phase-4 items below are still ahead: evidence_auditor/opsec_sentinel/session_shepherd/cloud_cartographer archetypes, plus —)*
-- **Campaign swimlanes — ✅ shipped** — a read-only **board view** in the Campaigns panel (Campaigns ⇄ Board toggle): each campaign is a swimlane, its agents bucketed into status lanes (Planned / Running / Needs You / Blocked / Produced Finding / Completed / Failed). Pure projection of the mission cards (`campaign-board.ts`), no new engine state.
+- **Specialized roles + smart/manual deploy — ✅ shipped** (pulled forward). Roles are now data-driven **agent archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe + the legacy default/research/planner — each a real tool-surface boundary, backend, default skill/objective, and scope strategy. Dispatch honors the type; `recommendArchetype` auto-picks one for a target and the operator can override. **Ad-hoc real-time deploy** (`POST /api/agents/quick-deploy` + the console **Deploy** button): paste an IP/CIDR/domain → auto-scope + dispatch in one step. See [Agent types & deploy](operator-cockpit.md#agent-types). The full archetype set — including `evidence_auditor`/`opsec_sentinel`/`session_shepherd`/`cloud_cartographer` — now ships and is sharpened (see [Agent capability](#agent-capability-usefulness) below); the remaining Phase-4 item below is **agent handoff / split / merge**.
+- **Campaign swimlanes — ✅ shipped (read-only)** — a read-only **board view** in the Campaigns panel (Campaigns ⇄ Board toggle): each campaign is a swimlane, its agents bucketed into status lanes (Planned / Running / Needs You / Blocked / Produced Finding / Completed / Failed). Pure projection of the mission cards (`campaign-board.ts`), no new engine state. **Lane-drag transitions are explicitly deferred** (nice-to-have): dragging an agent card between lanes to issue the matching directive is a convenience over the existing command bar, not a capability gap, so it waits behind the heavier threads.
 - **Question clustering — ✅ shipped** — identical open questions (same normalized text + option set) cluster into one card in the "Needs you" queue; answering it **fans out** to every asking agent in one call (`AgentQueryStore.answerMany` + the `/api/agent-queries/answer-batch` route).
 - **Agent handoff / split / merge** — hand work to a specialist (recon → credential_operator on a token find), split a broad item into child tasks, or merge duplicate agents into a summary.
 - **Per-campaign OPSEC meter — ✅ shipped** — each campaign's detail view shows a **Campaign Noise** gauge: that campaign's noise contribution vs. the global budget, threaded through the action lifecycle (`opsec-tracker.ts` per-campaign aggregation, reusing the shared `OpsecGauge`). *(The fuller noise-budget dashboard — actions-by-noise-level, denied/approved, quiet-mode enforcement — is still ahead.)*
 
 ### Phase 5 — Continuity & deliverables
 
-- **Operator memory → compiled policies** — operator preferences ("low-noise first", "approval-all on production", "expand GitHub before cloud", "at most one target-facing agent per subnet") compiled into *explicit* approval/scope/dispatch rules — not hidden prompt text.
+- **Operator memory → compiled policies — ✅ shipped (MVP)** — operator preferences ("approval-all on production", "at most one target-facing agent per subnet") are now an *explicit* `OperatorPolicy` on the engagement config that the approval gate and dispatcher actually consult — durable, auditable, and editable in Settings, not hidden prompt text that evaporates on compaction. The MVP:
+  - **Approval rules** match on `host_class` / `network` (CIDR) / `technique` and fold into the effective approval mode by **max-strictness** — a rule can only *tighten* the gate (`auto-approve < approve-critical < approve-all`), never weaken the engagement/phase mode, preserving the existing safety invariant. Wired through `getEffectiveApprovalConfig` → `needsApproval` with an optional action context (legacy callers unchanged).
+  - **Per-subnet / per-target dispatch caps** limit concurrent *target-facing* agents per `/24` or host, enforced at the single `registerAgent()` chokepoint all dispatch paths funnel through. On a cap hit the dispatch **defers** (surfaced as HTTP 429 / skip reasons), never silently dropping; read-only and no-IP archetypes are exempt; refusal events use `withClock` for replay determinism.
+  - **Settings editor** to view/edit rules + caps, persisted through the existing `PATCH /api/config` behind a strict Zod guard.
+
+  *Deferred to a later phase:* technique-preference frontier boosting, planner-proposed policy edits, and per-campaign (vs engagement-global) cap scoping.
 - **NL retrospective + report drafting** — a natural-language narrative over the existing structured retrospective ("what worked, what wasted time, what the next operator should do"), and a drafting surface over the report generator ("draft this finding", "make this client-safe", "turn these into an executive narrative").
 
 ## Agent capability & usefulness
@@ -93,12 +99,20 @@ genuinely *capable*, not just *scoped*:
   that lands real nodes/edges/findings (not prose). Today only `credential_test`
   has a deterministic scripted runner; the reasoning archetypes lean entirely on
   the headless model.
-- **Skill + prompt quality** — sharpen each archetype's default skill/objective
-  and bootstrap prompt so it knows its tools, its scope strategy, and when to
-  escalate (`ask_operator`) vs. proceed.
-- **Remaining archetypes** — flesh out `evidence_auditor`, `opsec_sentinel`,
-  `session_shepherd`, `cloud_cartographer` (the Phase-4 starter set) with real
-  tool surfaces and capability loops.
+- **Skill + prompt quality — ✅ shipped** — the six thin/mis-bound archetypes
+  (`pathfinder`, `report_scribe`, `cloud_cartographer`, `opsec_sentinel`,
+  `session_shepherd`, `evidence_auditor`) each got a real default skill
+  (`skills/*.md`: methodology + decision tree + escalation thresholds), a
+  correctly bound `defaultSkill` (replacing mis-bound `pivoting` /
+  `aws-exploitation`), and a prescriptive mission (tool sequence → doneness tied
+  to graph artifacts → when to `ask_operator`). A test asserts every archetype's
+  `defaultSkill` resolves to a real skill file.
+- **Remaining archetypes — ✅ present & sharpened** — `evidence_auditor`,
+  `opsec_sentinel`, `session_shepherd`, and `cloud_cartographer` (the Phase-4
+  starter set) exist with real tool surfaces, eval coverage, and (as of the
+  sharpening pass above) bound skills and prescriptive missions. The remaining
+  capability work is **deterministic scripted runners** for the reasoning
+  archetypes (only `credential_test` has one today).
 - **Agent eval harness — ✅ shipped** — capability is now regression-tested, not
   assumed: `fake-claude.mjs` modes + the `runArchetype` fixture +
   `archetype-capability.integration.test.ts` assert each archetype produces the
