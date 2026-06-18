@@ -127,33 +127,12 @@ export class HeadlessMcpRunner {
       return null;
     }
 
-    if (!child.pid) {
-      // spawn reported no pid (e.g. ENOENT). A pidless child can't be killed or
-      // heartbeated, so registering it would leave a zombie 'running' task holding
-      // a lease until its TTL. Fail loudly + bail instead (mirrors the catch above).
-      this.cleanupConfig(configPath);
-      try { child.kill?.(); } catch { /* nothing to kill */ }
-      this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
-      return null;
-    }
-
-    this.registry.register(task.id, child, configPath, this.now());
-    // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
-    // take longer than the default 120s heartbeat TTL, which would let the watchdog
-    // reap a perfectly healthy agent before its first heartbeat lands. Give headless
-    // agents a generous startup TTL; their own periodic heartbeats keep it fresh,
-    // and the 30-min wall-clock timeout remains the backstop for a truly wedged one.
-    this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
-    if (child.pid) {
-      this.processTracker.register({
-        id: `headless-${task.id}`,
-        pid: child.pid,
-        command: `${this.opts.claudeBinary} -p (headless sub-agent ${task.agent_id})`,
-        description: `Headless sub-agent for task ${task.id}`,
-        agent_id: task.agent_id,
-      });
-    }
-
+    // Attach the log + 'error'/'exit' handlers BEFORE any further setup. A spawned
+    // child can emit 'error' asynchronously (ENOENT surfaces a pidless child that
+    // still fires 'error'), and an unhandled 'error' event crashes the whole
+    // daemon — so a handler must exist before the pidless bail-out below AND before
+    // registry/TTL registration (which could themselves throw and skip handler
+    // attachment).
     const log = this.openLog(task.id);
     child.stdout?.on('data', (c: Buffer) => { try { log?.write(c); } catch { /* log errors must not kill the agent */ } });
     child.stderr?.on('data', (c: Buffer) => { try { log?.write(c); } catch { /* ignore */ } });
@@ -193,6 +172,33 @@ export class HeadlessMcpRunner {
       if (current && current.status === 'running') {
         this.engine.updateAgentStatus(task.id, 'interrupted', 'headless agent exited without submitting a transcript');
       }
+    });
+
+    if (!child.pid) {
+      // No pid (e.g. ENOENT) → the child can't be killed or heartbeated, so
+      // registering it would leave a zombie 'running' task holding a lease until
+      // its TTL. Mark failed synchronously + bail. The async 'error' handler above
+      // also fires for ENOENT; finalize() is idempotent (it no-ops once the task is
+      // terminal), so the double-signal is harmless.
+      try { log?.end(); } catch { /* ignore */ }
+      this.cleanupConfig(configPath);
+      this.engine.updateAgentStatus(task.id, 'failed', 'headless spawn produced no pid');
+      return null;
+    }
+
+    this.registry.register(task.id, child, configPath, this.now());
+    // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
+    // take longer than the default 120s heartbeat TTL, which would let the watchdog
+    // reap a healthy agent before its first heartbeat. Give headless agents a
+    // generous startup TTL; their heartbeats keep it fresh and the 30-min wall-clock
+    // timeout remains the backstop for a truly wedged one.
+    this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
+    this.processTracker.register({
+      id: `headless-${task.id}`,
+      pid: child.pid,
+      command: `${this.opts.claudeBinary} -p (headless sub-agent ${task.agent_id})`,
+      description: `Headless sub-agent for task ${task.id}`,
+      agent_id: task.agent_id,
     });
 
     this.engine.logActionEvent({

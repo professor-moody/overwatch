@@ -42,6 +42,10 @@ export class AgentWatchdog {
   private now: () => string;
   private afterTick?: () => void;
   private reapedTotal = 0;
+  /** True once a post-tick reconcile error has been logged; suppresses repeats so
+   *  a persistently-failing reconcile (every interval) can't flood the log. Reset
+   *  on the next successful tick so a recovered-then-failed-again error re-logs. */
+  private reconcileErrorLogged = false;
 
   constructor(engine: GraphEngine, options: AgentWatchdogOptions = {}) {
     this.engine = engine;
@@ -98,16 +102,26 @@ export class AgentWatchdog {
     if (this.afterTick) {
       try {
         this.afterTick();
+        this.reconcileErrorLogged = false; // recovered → re-arm logging
       } catch (err) {
-        try {
-          this.engine.logActionEvent({
-            description: `Watchdog post-tick reconcile failed: ${err instanceof Error ? err.message : String(err)}`,
-            event_type: 'instrumentation_warning',
-            category: 'system',
-            result_classification: 'failure',
-            details: { reason: 'watchdog_reconcile_error' },
-          });
-        } catch { /* logging must never break the timer either */ }
+        const msg = err instanceof Error ? err.message : String(err);
+        // Log once per error streak (not every interval — a persistently-failing
+        // reconcile would otherwise flood the activity log) with a stderr fallback
+        // so the failure is never fully silent even if logging itself is down.
+        if (!this.reconcileErrorLogged) {
+          this.reconcileErrorLogged = true;
+          try {
+            this.engine.logActionEvent({
+              description: `Watchdog post-tick reconcile failed: ${msg}`,
+              event_type: 'instrumentation_warning',
+              category: 'system',
+              result_classification: 'failure',
+              details: { reason: 'watchdog_reconcile_error' },
+            });
+          } catch {
+            try { console.error(`[overwatch] watchdog reconcile failed and could not be logged: ${msg}`); } catch { /* never break the timer */ }
+          }
+        }
       }
     }
     return reaped;

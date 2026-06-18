@@ -309,12 +309,18 @@ export class PendingActionQueue {
     // records the resolution in the resolved map, so nothing leaks and
     // getResolution() stays correct after dispose.
     for (const id of [...this.resolveCallbacks.keys()]) {
-      this.resolveAction(id, {
-        action_id: id,
-        status: 'aborted',
-        resolved_at: new Date().toISOString(),
-        reason: 'queue disposed (shutdown)',
-      });
+      // Guard each resolution: resolveAction invokes the event callback + the
+      // awaiting resolve callback, either of which is caller-supplied and could
+      // throw. Without this, one throwing callback would abandon every remaining
+      // pending action (their promises never settle) and skip the cleanup below.
+      try {
+        this.resolveAction(id, {
+          action_id: id,
+          status: 'aborted',
+          resolved_at: new Date().toISOString(),
+          reason: 'queue disposed (shutdown)',
+        });
+      } catch { /* keep settling the rest */ }
     }
     // Safety net for any action with no awaiting callback (shouldn't happen):
     // never leave a timer or abort listener attached.
