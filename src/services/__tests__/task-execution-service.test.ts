@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { ProcessTracker } from '../process-tracker.js';
 import { TaskExecutionService, resolveTaskBackend } from '../task-execution-service.js';
+import { scriptedCanHandle } from '../scripted-agent-runner.js';
 import type { EngagementConfig, AgentTask } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-task-execution.json';
@@ -124,5 +125,45 @@ describe('TaskExecutionService', () => {
     const reaped = svc.tickWatchdog();
     expect(reaped).toBe(1);
     expect(engine.getTask('stale-1')?.status).toBe('interrupted');
+  });
+});
+
+describe('archetype ↔ scripted routing boundary', () => {
+  let engine: GraphEngine;
+  beforeEach(() => { cleanup(); engine = new GraphEngine(makeConfig(), TEST_STATE_FILE); });
+  afterEach(() => { cleanup(); });
+
+  function taskAt(frontierItemId: string, archetype: string): AgentTask {
+    return {
+      id: `t-${archetype}`, agent_id: `a-${archetype}`, assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], archetype, frontier_item_id: frontierItemId,
+    } as AgentTask;
+  }
+
+  it('a credential_test item is claimed by the scripted runner even when an explicit reasoning archetype is set', () => {
+    // credential_test items pair a usable credential with a service to test it
+    // against, so seed a host + service + credential (with material fields so the
+    // credential passes ingestion validation).
+    engine.ingestFinding({
+      id: 'seed-cred', agent_id: 't', timestamp: new Date().toISOString(),
+      nodes: [
+        { id: 'host-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', alive: true },
+        { id: 'svc-1', type: 'service', label: 'smb/445', service_name: 'smb', port: 445 },
+        { id: 'cred-1', type: 'credential', label: 'jdoe:pass', cred_type: 'plaintext', cred_material_kind: 'cleartext', cred_value: 'pass', cred_user: 'jdoe', cred_usable_for_auth: true },
+      ],
+      edges: [{ source: 'host-1', target: 'svc-1', properties: { type: 'RUNS', confidence: 1 } }],
+    } as never);
+    const credItem = engine.computeFrontier().find(f => f.type === 'credential_test');
+    expect(credItem).toBeDefined();
+    // recon_scanner is a reasoning archetype, but scriptedCanHandle keys off the
+    // FRONTIER ITEM TYPE, not the archetype — so the deterministic credential-test
+    // handler still claims it (routes to 'scripted'). This locks that precedence.
+    expect(scriptedCanHandle(engine, taskAt(credItem!.id, 'recon_scanner'))).toBe(true);
+  });
+
+  it('an open-ended item (network_discovery) is NOT scripted-handleable — routes to a reasoning agent', () => {
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    expect(disco).toBeDefined();
+    expect(scriptedCanHandle(engine, taskAt(disco!.id, 'recon_scanner'))).toBe(false);
   });
 });

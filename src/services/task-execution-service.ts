@@ -142,10 +142,16 @@ export class TaskExecutionService {
     if (!this.endpoint) return;
     if (this.engine.getConfig().cve_research?.enabled === false) return;
 
-    // Budget against all non-terminal headless tasks (launched or queued), not
-    // just live processes, so we don't over-register ahead of the cap.
+    // Budget against ALL non-terminal headless work (launched or queued) — count
+    // by the RESOLVED backend, NOT the persisted field. Normal dispatched agents
+    // (recon/web/cred/…) never set task.backend yet still run headless, so the old
+    // `t.backend === 'headless_mcp'` check counted 0 of them and over-registered
+    // CVE tasks past the cap. Those extras couldn't launch (registry already full),
+    // sat unspawned, got heartbeat-reaped, and — since they were marked attempted —
+    // CVE research was silently abandoned for the session. resolveBackend matches
+    // exactly what drainHeadless will launch, so the budget is now honest.
     const activeHeadless = this.engine.getAgentTasks().filter(
-      t => (t.status === 'running' || t.status === 'pending') && t.backend === 'headless_mcp',
+      t => (t.status === 'running' || t.status === 'pending') && this.resolveBackend(t) === 'headless_mcp',
     ).length;
     let budget = this.maxConcurrentHeadless - activeHeadless;
     if (budget <= 0) return;
@@ -156,10 +162,12 @@ export class TaskExecutionService {
       if (item.type !== 'cve_research') continue;
       if (this.cveAttempted.has(item.id)) continue;
       if (budget <= 0) break;
+      // Mark attempted BEFORE registering: registerAgent fires onUpdate
+      // synchronously, which re-enters drainCveResearch — marking first stops the
+      // re-entrant pass from double-dispatching the same item.
       this.cveAttempted.add(item.id);
-      budget--;
       const taskId = uuidv4();
-      this.engine.registerAgent({
+      const result = this.engine.registerAgent({
         id: taskId,
         agent_id: `cve-research-${taskId.slice(0, 8)}`,
         assigned_at: new Date().toISOString(),
@@ -170,9 +178,10 @@ export class TaskExecutionService {
         role: 'research',
         skill: 'cve-research',
       });
-      // registerAgent acquires the frontier lease + fires onUpdate → drainHeadless
-      // launches the research sub-agent. A lease conflict (already being worked)
-      // is harmless; we keep the id in cveAttempted to avoid re-dispatch churn.
+      // Only a real launch consumes one of our concurrency slots; a lease conflict
+      // (another task already working the item) does not, so don't burn budget on
+      // it. registerAgent fires onUpdate → drainHeadless launches the sub-agent.
+      if (result.ok) budget--;
     }
   }
 
