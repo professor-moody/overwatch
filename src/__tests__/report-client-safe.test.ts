@@ -11,8 +11,10 @@ import { describe, expect, it } from 'vitest';
 import {
   redactBlob,
   redactCredentialValue,
+  redactInlineCredentials,
   redactOperatorPaths,
   redactSecretKeys,
+  sanitizeCommandForClient,
 } from '../services/report-redaction.js';
 
 describe('report-redaction primitives', () => {
@@ -69,5 +71,74 @@ describe('report-redaction primitives', () => {
     const input = { cred_value: 'PASSWORD123!', count: 5 };
     const out = redactSecretKeys(input, { client_safe: false });
     expect(out).toBe(input);
+  });
+
+  // ==== command-string credential redaction (review P1) ====
+
+  describe('sanitizeCommandForClient', () => {
+    it('redacts -p / --password values (space and = forms)', () => {
+      const a = sanitizeCommandForClient('nxc smb 10.0.0.1 -u admin -p Summer2024!');
+      expect(a).not.toContain('Summer2024!');
+      expect(a).toContain('-p <redacted>');
+      const b = sanitizeCommandForClient('tool --password=hunter2 --host x');
+      expect(b).not.toContain('hunter2');
+      expect(b).toContain('--password=<redacted>');
+    });
+
+    it('is quote-aware (redacts a password containing spaces)', () => {
+      const out = sanitizeCommandForClient("sshpass -p 'pass with spaces' ssh u@h");
+      expect(out).not.toContain('pass with spaces');
+      expect(out).toContain('-p <redacted>');
+    });
+
+    it('redacts --hashes / pass-the-hash material', () => {
+      const out = sanitizeCommandForClient('secretsdump.py corp/a@10.0.0.1 --hashes aad3b4:31d6cf');
+      expect(out).not.toContain('aad3b4:31d6cf');
+      expect(out).toContain('--hashes <redacted>');
+    });
+
+    it('redacts user%password (smbclient / nxc) keeping the user', () => {
+      const out = sanitizeCommandForClient('smbclient //h/share -U corp\\\\admin%P@ssw0rd');
+      expect(out).not.toContain('P@ssw0rd');
+      expect(out).toContain('%<redacted>');
+      expect(out).toContain('corp\\\\admin');
+    });
+
+    it('redacts inline credentials in connection strings and bearer headers', () => {
+      const out = sanitizeCommandForClient("psql postgres://svc:s3cret@db:5432/x ; curl -H 'Authorization: Bearer eyJhbG.tok.zzz'");
+      expect(out).not.toContain('s3cret');
+      expect(out).toContain('svc:<redacted>@');
+      expect(out).not.toContain('eyJhbG.tok.zzz');
+    });
+
+    it('passes through unchanged when client_safe is false', () => {
+      const cmd = 'nxc smb 10.0.0.1 -u admin -p Summer2024!';
+      expect(sanitizeCommandForClient(cmd, { client_safe: false })).toBe(cmd);
+    });
+
+    it('sanitizes a command rendered inside a markdown bash fence', () => {
+      // Mirrors what scrubMarkdownForClient does over the whole client document.
+      const md = '```bash\nnxc smb 10.0.0.1 -u admin -p Summer2024!\n```';
+      const out = sanitizeCommandForClient(md);
+      expect(out).not.toContain('Summer2024!');
+    });
+  });
+
+  it('redactInlineCredentials redacts user:pass@host and Bearer tokens in any string', () => {
+    const out = redactInlineCredentials('connect mysql://root:R00tPass@10.0.0.5 with Bearer abcdef0123456789');
+    expect(out).not.toContain('R00tPass');
+    expect(out).toContain('root:<redacted>@');
+    expect(out).not.toContain('abcdef0123456789');
+  });
+
+  it('redactSecretKeys redacts credentials embedded in a command field (not just secret keys)', () => {
+    const input = {
+      evidence: [{ claim: 'auth', command: 'nxc smb 10.0.0.1 -u admin -p Secret123' }],
+      proof_cards: [{ command: 'curl -H "Authorization: Bearer tok.en.value" https://api' }],
+    };
+    const out = redactSecretKeys(input, { client_safe: true }) as any;
+    expect(out.evidence[0].command).not.toContain('Secret123');
+    expect(out.evidence[0].command).toContain('-p <redacted>');
+    expect(out.proof_cards[0].command).not.toContain('tok.en.value');
   });
 });

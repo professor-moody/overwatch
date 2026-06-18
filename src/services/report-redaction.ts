@@ -100,6 +100,46 @@ const SECRET_KEYS = new Set([
 
 const BLOB_KEYS = new Set(['raw_output', 'evidence_content', 'stdout_preview', 'stderr_preview', 'content']);
 
+// Keys whose string value is a shell/tool command — secrets ride in the ARGS
+// (flags + connection strings), not under a dedicated secret key, so SECRET_KEYS
+// never catches them.
+const COMMAND_KEYS = new Set(['command', 'command_repr', 'cmd', 'argv_str']);
+
+/**
+ * Redact credential material that can appear inline in ANY free-text string,
+ * independent of CLI flags: `user:password@host` (URLs / connection strings)
+ * and `Authorization: Bearer <token>` / bare `Bearer <token>`. Conservative
+ * patterns — they only fire on shapes that are unambiguously credentials.
+ */
+export function redactInlineCredentials(text: string): string {
+  return text
+    // scheme://user:pass@host  and  user:pass@host
+    .replace(/([a-zA-Z][\w.+-]*:\/\/)?([^\s:/@]+):([^\s:/@]+)@/g,
+      (_m, scheme, user) => `${scheme || ''}${user}:${REDACTED_PLACEHOLDER}@`)
+    .replace(/(Authorization:\s*Bearer\s+)(\S+)/gi, `$1${REDACTED_PLACEHOLDER}`)
+    .replace(/(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/g, `$1${REDACTED_PLACEHOLDER}`);
+}
+
+/**
+ * Sanitize a command string for client delivery: drop the VALUE of
+ * secret-bearing CLI flags (-p/--password, --hashes/-H, --token, …), the
+ * password in `-u user%pass` (smbclient/nxc), and any inline credentials.
+ * Quote-aware so `-p 'pass with spaces'` is fully redacted. The flag itself is
+ * preserved so the report still shows what was run.
+ */
+export function sanitizeCommandForClient(cmd: string | undefined | null, opts: RedactionOptions = { client_safe: true }): string | null {
+  if (cmd == null) return cmd ?? null;
+  if (!opts.client_safe) return cmd;
+  let out = cmd
+    // -p VALUE | --password=VALUE | --hashes LM:NT | --token X | -H X  (quote-aware value)
+    .replace(
+      /(^|\s)(-p|--password|--passwd|--pass|-H|--hashes|--hash|--token|--api-key|--apikey)(\s+|=)('[^']*'|"[^"]*"|\S+)/gi,
+      (_m, pre, flag, sep) => `${pre}${flag}${sep}${REDACTED_PLACEHOLDER}`)
+    // -u user%password / -U dom\user%password (smbclient / nxc)
+    .replace(/((?:^|\s)-[uU]\s+\S*?%)(\S+)/g, `$1${REDACTED_PLACEHOLDER}`);
+  return redactInlineCredentials(out);
+}
+
 function walkAndRedact(value: unknown): unknown {
   if (value == null) return value;
   if (Array.isArray(value)) return value.map(walkAndRedact);
@@ -110,9 +150,12 @@ function walkAndRedact(value: unknown): unknown {
       out[k] = redactCredentialValue(v, k);
     } else if (BLOB_KEYS.has(k) && typeof v === 'string') {
       out[k] = redactBlob(v, { client_safe: true });
+    } else if (COMMAND_KEYS.has(k) && typeof v === 'string') {
+      // Commands carry creds in their args (-p, --hashes, user:pass@, Bearer …).
+      out[k] = redactOperatorPaths(sanitizeCommandForClient(v), { client_safe: true });
     } else if (typeof v === 'string') {
-      // Operator paths can leak through any string field.
-      out[k] = redactOperatorPaths(v, { client_safe: true });
+      // Operator paths + inline creds (user:pass@, Bearer) can leak via any field.
+      out[k] = redactInlineCredentials(redactOperatorPaths(v, { client_safe: true }) ?? v);
     } else {
       out[k] = walkAndRedact(v);
     }
