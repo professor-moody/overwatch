@@ -297,7 +297,13 @@ export function AgentsPanel() {
   }, [consoleEvents, consoleFilter, consoleSearch]);
 
   return (
-    <div className="flex h-[calc(100vh-7rem)] min-h-[720px] flex-col gap-3 overflow-hidden">
+    // Single page scroll: the panel flows inside <main>'s scroll (OperatorLayout),
+    // so nothing is trapped in a fixed-height box that clips. The command bar +
+    // "Needs you" queue stick at the top (top-12 mirrors <main>'s pt-12 toolbar
+    // offset); the Fleet roster sticks at xl; only the Activity stream keeps its
+    // own bounded inner scroll (live-tailing would otherwise yank the whole page).
+    <div className="flex flex-col gap-3">
+      <div className="sticky top-12 z-20 flex max-h-[calc(100vh-3.5rem)] flex-col gap-3 overflow-y-auto bg-background pb-2">
       <PageHeader
         title="Operator Console"
         meta={activeAgent ? `focused on ${activeAgent.agent_id || activeAgent.id}` : 'fleet overview'}
@@ -369,11 +375,12 @@ export function AgentsPanel() {
           </ActionButton>
         </div>
       )}
+      </div>
 
       {!initialized ? (
         <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)] xl:items-start">
           {/* LEFT (Monitor): the Fleet — Mission Cards grouped by campaign. */}
           <MissionRoster
             groups={missionGroups}
@@ -393,8 +400,9 @@ export function AgentsPanel() {
 
           {/* MAIN: focused agent (detail + steer, top) over its activity stream
               (bottom). With no agent selected, the top is the fleet overview and
-              the bottom is the full operator stream. */}
-          <div className="flex min-h-0 flex-col gap-4">
+              the bottom is the full operator stream. Flows in the page scroll;
+              only the Activity stream below is a bounded live-tail region. */}
+          <div className="flex min-w-0 flex-col gap-4">
             <AgentContextPanel
               agent={activeAgent}
               context={activeContext}
@@ -526,7 +534,11 @@ function MissionRoster({
   const failedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'failed').length, 0);
 
   return (
-    <PanelSection className="flex min-h-0 flex-col overflow-hidden p-0">
+    // Bounded so a long fleet scrolls within the card instead of bloating the
+    // column; flows in the page scroll (xl:items-start keeps it from stretching
+    // to the taller right column). Not sticky — a fixed sticky offset can't track
+    // the variable-height command/"Needs you" band above it.
+    <PanelSection className="flex max-h-[calc(100vh-9rem)] flex-col overflow-hidden p-0">
       <div className="border-b border-border p-3">
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -640,7 +652,10 @@ function AgentOutputConsole({
   onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
   return (
-    <PanelSection className="min-h-0 flex-1 overflow-hidden p-0 flex flex-col border-accent/20">
+    // Bounded live-tail region: max-h keeps it within the viewport so follow-to-
+    // bottom scrolls inside this box (the deliberate single exception to single-
+    // scroll) instead of yanking the whole page.
+    <PanelSection className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden p-0 border-accent/20">
       <div className="border-b border-border p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -770,17 +785,18 @@ function PrimaryOperatorPanel() {
   );
 
   return (
-    <PanelSection className="max-h-[42%] min-h-0 shrink-0 overflow-y-auto">
+    <PanelSection dense>
       <h3 className="text-sm font-semibold text-foreground">Fleet overview</h3>
       <p className="mt-1 text-xs text-muted-foreground">
         The primary model orchestrates; sub-agents are dispatched workers. Select one on the left to focus &amp; steer it.
       </p>
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <MetricTile label="Running" value={running} accent={running > 0} onClick={() => navigateToPanel('agents')} />
-        <MetricTile label="Queued" value={queued} />
-        <MetricTile label="Completed" value={done} />
-        <MetricTile label="Failed" value={failed} />
+      {/* 4-up at xl so Completed/Failed never wrap to a clipped second row. */}
+      <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
+        <MetricTile dense label="Running" value={running} accent={running > 0} onClick={() => navigateToPanel('agents')} />
+        <MetricTile dense label="Queued" value={queued} />
+        <MetricTile dense label="Completed" value={done} />
+        <MetricTile dense label="Failed" value={failed} />
       </div>
 
       <div className="mt-3 space-y-2 rounded border border-border bg-background/40 p-3 text-xs">
@@ -833,7 +849,7 @@ function AgentContextPanel({
   const ownedSessions = sessionsForAgent(sessions, agent);
 
   return (
-    <PanelSection className="max-h-[42%] min-h-0 shrink-0 overflow-y-auto">
+    <PanelSection dense>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold text-foreground">{agent.agent_id || agent.id}</h3>

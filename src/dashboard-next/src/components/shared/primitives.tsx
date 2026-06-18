@@ -55,16 +55,19 @@ export function PanelSection({
   meta,
   children,
   className,
+  dense,
 }: {
   title?: string;
   meta?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  /** Tighter padding for dense surfaces like the cockpit (p-3 vs p-4). */
+  dense?: boolean;
 }) {
   return (
-    <section className={cn('bg-surface border border-border rounded-lg p-4', className)}>
+    <section className={cn('bg-surface border border-border rounded-lg', dense ? 'p-3' : 'p-4', className)}>
       {title && (
-        <h3 className="text-sm font-medium mb-3">
+        <h3 className={cn('text-sm font-medium', dense ? 'mb-2' : 'mb-3')}>
           {title}
           {meta && <span className="text-muted-foreground font-normal ml-1">{meta}</span>}
         </h3>
@@ -80,24 +83,28 @@ export function MetricTile({
   sub,
   accent,
   onClick,
+  dense,
 }: {
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
   accent?: boolean;
   onClick?: () => void;
+  /** Tighter padding + smaller value for dense grids (p-3/text-xl vs p-4/text-2xl). */
+  dense?: boolean;
 }) {
   const Comp = onClick ? 'button' : 'div';
   return (
     <Comp
       onClick={onClick}
       className={cn(
-        'bg-surface border border-border rounded-lg p-4 text-left',
+        'bg-surface border border-border rounded-lg text-left',
+        dense ? 'p-3' : 'p-4',
         onClick && 'hover:border-accent/40 hover:bg-hover/30 transition-colors cursor-pointer',
       )}
     >
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
-      <div className={cn('text-2xl font-semibold tabular-nums', accent ? 'text-success' : 'text-foreground')}>
+      <div className={cn('font-semibold tabular-nums', dense ? 'text-xl' : 'text-2xl', accent ? 'text-success' : 'text-foreground')}>
         {value}
       </div>
       {sub && <div className="text-xs text-muted-foreground mt-1 truncate">{sub}</div>}
