@@ -25,6 +25,8 @@ import type {
   ToolCheckResult,
   InferenceRuleInfo,
   EngagementTemplate,
+  OperatorPolicy,
+  OperatorApprovalRule,
 } from '../../lib/types';
 import { ActionButton, PageHeader, PanelSection } from '../shared/primitives';
 
@@ -89,6 +91,9 @@ export function SettingsPanel() {
       }} />}
       {settings && <OpsecSection settings={settings} onSave={async (body) => {
         try { await updateConfig(body); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
+      }} />}
+      {config && <OperatorPolicySection policy={config.operator_policy} onSave={async (p) => {
+        try { await updateConfig({ operator_policy: p } as Partial<EngagementConfig>); flash('Saved ✓'); load(); } catch { flash('Error saving', false); }
       }} />}
       {weights && <FrontierWeightsSection weights={weights} onSave={async (w) => {
         try { await updateFrontierWeights(w); flash('Weights saved ✓'); load(); } catch { flash('Error saving', false); }
@@ -386,6 +391,79 @@ function OpsecSection({ settings, onSave }: { settings: Record<string, unknown>;
         </Field>
       </div>
       <button onClick={save} className="settings-save-btn">Save OPSEC</button>
+    </Section>
+  );
+}
+
+/* ============ Operator Policy ============ */
+
+const APPROVAL_MODES = ['auto-approve', 'approve-critical', 'approve-all'] as const;
+const HOST_CLASSES = ['', 'in_scope', 'unverified', 'excluded'] as const;
+
+function OperatorPolicySection({ policy, onSave }: { policy?: OperatorPolicy; onSave: (p: OperatorPolicy) => Promise<void> }) {
+  const [rules, setRules] = useState<OperatorApprovalRule[]>(policy?.approval_rules ?? []);
+  const [maxSubnet, setMaxSubnet] = useState<string>(policy?.dispatch_limits?.max_per_subnet?.toString() ?? '');
+  const [maxTarget, setMaxTarget] = useState<string>(policy?.dispatch_limits?.max_per_target?.toString() ?? '');
+
+  const setRule = (i: number, next: Partial<OperatorApprovalRule>) =>
+    setRules(rs => rs.map((r, idx) => idx === i ? { ...r, ...next, match: { ...r.match, ...next.match } } : r));
+  const addRule = () => setRules(rs => [...rs, { match: {}, require: 'approve-all' }]);
+  const removeRule = (i: number) => setRules(rs => rs.filter((_, idx) => idx !== i));
+
+  const save = () => {
+    const dispatch_limits: OperatorPolicy['dispatch_limits'] = {};
+    if (maxSubnet.trim()) dispatch_limits.max_per_subnet = parseInt(maxSubnet, 10);
+    if (maxTarget.trim()) dispatch_limits.max_per_target = parseInt(maxTarget, 10);
+    // Drop empty match fields so the strict server schema accepts the rule.
+    const cleanRules = rules.map(r => ({
+      require: r.require,
+      match: Object.fromEntries(Object.entries(r.match).filter(([, v]) => v)) as OperatorApprovalRule['match'],
+    }));
+    onSave({
+      version: 1,
+      ...(cleanRules.length ? { approval_rules: cleanRules } : {}),
+      ...(Object.keys(dispatch_limits).length ? { dispatch_limits } : {}),
+    });
+  };
+
+  return (
+    <Section title="Operator Policy">
+      <p className="mb-3 text-xs text-muted-foreground">
+        Durable, enforced rules — not prompt text. Approval rules can only <em>tighten</em> the gate
+        (the strictest match wins, never weaker than the engagement/phase mode). Dispatch caps limit
+        concurrent target-facing agents per /24 or host.
+      </p>
+
+      <Field label="Approval rules">
+        <div className="space-y-2">
+          {rules.length === 0 && <div className="text-xs text-muted-foreground">No rules — the engagement/phase approval mode applies as-is.</div>}
+          {rules.map((r, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1.2fr_1.2fr_1fr_auto] items-center gap-1.5">
+              <select value={r.match.host_class ?? ''} onChange={e => setRule(i, { match: { host_class: (e.target.value || undefined) as OperatorApprovalRule['match']['host_class'] } })} className="settings-input" title="host class">
+                {HOST_CLASSES.map(h => <option key={h} value={h}>{h || 'any host'}</option>)}
+              </select>
+              <input value={r.match.network ?? ''} onChange={e => setRule(i, { match: { network: e.target.value || undefined } })} className="settings-input" placeholder="network CIDR" />
+              <input value={r.match.technique ?? ''} onChange={e => setRule(i, { match: { technique: e.target.value || undefined } })} className="settings-input" placeholder="technique" />
+              <select value={r.require} onChange={e => setRule(i, { require: e.target.value as OperatorApprovalRule['require'] })} className="settings-input" title="require">
+                {APPROVAL_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <button onClick={() => removeRule(i)} className="text-xs text-destructive hover:underline" title="Remove rule">✕</button>
+            </div>
+          ))}
+          <button onClick={addRule} className="text-xs text-accent hover:underline">+ Add rule</button>
+        </div>
+      </Field>
+
+      <div className="mt-3 grid grid-cols-2 gap-4">
+        <Field label="Max target-facing agents / subnet (/24)">
+          <input type="number" min="1" value={maxSubnet} onChange={e => setMaxSubnet(e.target.value)} className="settings-input w-full" placeholder="unlimited" />
+        </Field>
+        <Field label="Max target-facing agents / host">
+          <input type="number" min="1" value={maxTarget} onChange={e => setMaxTarget(e.target.value)} className="settings-input w-full" placeholder="unlimited" />
+        </Field>
+      </div>
+
+      <button onClick={save} className="settings-save-btn">Save Policy</button>
     </Section>
   );
 }
