@@ -5,6 +5,7 @@ import {
   getArchetype,
   listArchetypes,
   isArchetypeId,
+  isTargetFacing,
   recommendArchetype,
   bootstrapMission,
 } from '../agent-archetypes.js';
@@ -212,6 +213,18 @@ describe('agent-archetypes: registry + recommender', () => {
     expect(recommendArchetype({ nodeType: 'credential' })).toBe('credential_operator');
     expect(recommendArchetype({ nodeType: 'host' })).toBe('recon_scanner');
     expect(recommendArchetype({})).toBe('default');
+  });
+
+  it('isTargetFacing splits execute archetypes from read-only ones (dispatch-cap classification)', () => {
+    for (const id of ['recon_scanner', 'web_tester', 'credential_operator', 'post_exploit', 'cloud_cartographer', 'default']) {
+      expect(isTargetFacing(id), id).toBe(true);
+    }
+    for (const id of ['pathfinder', 'report_scribe', 'opsec_sentinel', 'session_shepherd', 'evidence_auditor', 'cve_researcher', 'research', 'planner']) {
+      expect(isTargetFacing(id), id).toBe(false);
+    }
+    // An explicit policy override defines the target-facing set by id.
+    expect(isTargetFacing('pathfinder', ['pathfinder'])).toBe(true);
+    expect(isTargetFacing('recon_scanner', ['pathfinder'])).toBe(false);
   });
 
   it('every archetype defaultSkill resolves to a real skill file', () => {
