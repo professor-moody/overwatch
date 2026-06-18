@@ -75,4 +75,27 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     );
     expect(audited).toBe(true);
   });
+
+  it('cloud_cartographer maps a cloud identity assuming a role and completes', async () => {
+    result = await runArchetype({ archetype: 'cloud_cartographer', fakeMode: 'cloud' });
+    expect(result.task?.status).toBe('completed');
+    const identities = result.app.engine.getNodesByType('cloud_identity');
+    expect(identities.some(n => JSON.stringify(n).includes('role/AdminRole'))).toBe(true);
+    // The ASSUMES_ROLE edge (the cartographer's federation/role-assumption signature) landed.
+    const hasAssumeEdge = result.app.engine.exportGraph().edges.some(e => e.properties.type === 'ASSUMES_ROLE');
+    expect(hasAssumeEdge).toBe(true);
+  });
+
+  it('session_shepherd lists + reads a seeded session and completes (read-only session tools end-to-end)', async () => {
+    // The fixture seeds one open session via a mock adapter. The shepherd crashes
+    // (→ interrupted) if list_sessions/read_session error, so 'completed' proves the
+    // read-only session tools work through the session_shepherd allowlist.
+    result = await runArchetype({ archetype: 'session_shepherd', fakeMode: 'shepherd', seedSession: true });
+    expect(result.task?.status).toBe('completed');
+    // The shepherd actually saw the seeded session (non-zero count in its transcript).
+    const reviewed = result.app.engine.getFullHistory().some(
+      e => e.event_type === 'agent_transcript_submitted' && /reviewed [1-9]\d* session/.test(e.description ?? ''),
+    );
+    expect(reviewed).toBe(true);
+  });
 });
