@@ -5,7 +5,7 @@ import type { EngagementConfig, EngagementPhase } from '../../types.js';
 
 const TEST_STATE = './state-test-phase-policy.json';
 
-function makeConfig(opts: { phases?: EngagementPhase[]; opsec?: any } = {}): EngagementConfig {
+function makeConfig(opts: { phases?: EngagementPhase[]; opsec?: any; operator_policy?: any } = {}): EngagementConfig {
   return {
     id: 'phase-test',
     name: 'phase test',
@@ -14,6 +14,7 @@ function makeConfig(opts: { phases?: EngagementPhase[]; opsec?: any } = {}): Eng
     objectives: [],
     opsec: opts.opsec ?? { name: 'pentest', max_noise: 0.7, enabled: true, approval_mode: 'auto-approve' },
     phases: opts.phases,
+    operator_policy: opts.operator_policy,
   };
 }
 
@@ -160,5 +161,52 @@ describe('Phase-aware OPSEC + approval (P4.1)', () => {
     });
     const after = eng.getFullHistory().filter(e => e.event_type === 'phase_entered').length;
     expect(after).toBe(before);
+  });
+});
+
+describe('operator-policy approval rules (T3 — tightening-only)', () => {
+  afterEach(() => cleanup());
+
+  it('a network rule escalates the mode for a matching target IP', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig({
+      operator_policy: { version: 1, approval_rules: [{ match: { network: '10.10.10.0/24' }, require: 'approve-all' }] },
+    }), TEST_STATE);
+    // base is auto-approve; the rule escalates for an in-network target.
+    expect(eng.getEffectiveApprovalConfig({ ip: '10.10.10.5' }).mode).toBe('approve-all');
+    // a target outside the rule's network is unaffected.
+    expect(eng.getEffectiveApprovalConfig({ ip: '192.168.1.5' }).mode).toBe('auto-approve');
+    // no action context → no rule application.
+    expect(eng.getEffectiveApprovalConfig().mode).toBe('auto-approve');
+  });
+
+  it('a technique rule escalates for the matching technique only', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig({
+      operator_policy: { version: 1, approval_rules: [{ match: { technique: 'rdp_lateral_movement' }, require: 'approve-critical' }] },
+    }), TEST_STATE);
+    expect(eng.getEffectiveApprovalConfig({ technique: 'rdp_lateral_movement' }).mode).toBe('approve-critical');
+    expect(eng.getEffectiveApprovalConfig({ technique: 'port_scan' }).mode).toBe('auto-approve');
+  });
+
+  it('NEVER weakens: a looser rule cannot downgrade the base mode', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig({
+      opsec: { name: 'pentest', max_noise: 0.7, enabled: true, approval_mode: 'approve-all' },
+      operator_policy: { version: 1, approval_rules: [{ match: {}, require: 'auto-approve' }] },
+    }), TEST_STATE);
+    // base approve-all + a match-everything auto-approve rule → stays approve-all.
+    expect(eng.getEffectiveApprovalConfig({ ip: '10.10.10.5' }).mode).toBe('approve-all');
+  });
+
+  it('a host_class rule matches the target node\'s scope status', () => {
+    cleanup();
+    const eng = new GraphEngine(makeConfig({
+      operator_policy: { version: 1, approval_rules: [{ match: { host_class: 'in_scope' }, require: 'approve-all' }] },
+    }), TEST_STATE);
+    eng.addNode({ id: 'h-inscope', type: 'host', label: 'h', ip: '10.10.10.20', discovered_at: '2026-01-01T00:00:00.000Z', confidence: 1 } as never);
+    expect(eng.getEffectiveApprovalConfig({ nodeId: 'h-inscope' }).mode).toBe('approve-all');
+    // no node context → host_class rule can't match → base mode.
+    expect(eng.getEffectiveApprovalConfig({ ip: '10.10.10.20' }).mode).toBe('auto-approve');
   });
 });

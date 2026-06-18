@@ -872,9 +872,11 @@ export async function runInstrumentedProcess(
 
     // Approval gate
     const queue = engine.getPendingActionQueue();
-    // P4.1: pass the phase-effective approval config so per-phase
-    // overrides (e.g., approve-all during exploitation) are honored.
-    if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig())) {
+    // P4.1: pass the phase-effective approval config so per-phase overrides
+    // (e.g., approve-all during exploitation) are honored. The action context
+    // (target ip/node/technique) also lets operator-policy approval rules
+    // escalate the mode (e.g. approve-all on a production subnet).
+    if (queue.needsApproval(v.opsec_context, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
       const pendingApproval = {
         action_id: normalizedActionId,
         technique,

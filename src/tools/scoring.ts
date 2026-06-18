@@ -188,7 +188,10 @@ Call this before every significant action. Returns valid/invalid with specific e
       // block until the operator approves, denies, or timeout fires.
       const queue = engine.getPendingActionQueue();
       let approval: import('../services/pending-action-queue.js').ActionResolution | undefined;
-      if (validationResult !== 'invalid' && queue.needsApproval(result.opsec_context, technique)) {
+      // Pass the phase- + policy-effective approval config (target context lets
+      // operator-policy rules escalate the mode); previously this gate ignored
+      // even phase overrides.
+      if (validationResult !== 'invalid' && queue.needsApproval(result.opsec_context, technique, engine.getEffectiveApprovalConfig({ ip: target_ip, nodeId: target_node, technique }))) {
         const pendingApproval = {
           action_id: normalizedActionId,
           technique,

@@ -124,6 +124,10 @@ const BIDIRECTIONAL_EDGE_TYPES: Set<EdgeType> = new Set([
 
 export { GraphUpdateCallback };
 
+// Approval-mode strictness order — operator-policy rules may only escalate `mode`
+// to a stricter value (auto-approve < approve-critical < approve-all), never relax it.
+const APPROVAL_STRICTNESS: Record<string, number> = { 'auto-approve': 0, 'approve-critical': 1, 'approve-all': 2 };
+
 export class GraphEngine {
   private ctx: EngineContext;
   private persistence: StatePersistence;
@@ -1987,19 +1991,41 @@ export class GraphEngine {
    * P4.1: effective approval mode + blacklist for the current phase.
    * Used by `pending-action-queue.needsApproval`.
    */
-  getEffectiveApprovalConfig(): { mode: import('../types.js').ApprovalMode; blacklisted_techniques: string[] } {
+  getEffectiveApprovalConfig(
+    actionCtx?: { ip?: string; nodeId?: string; technique?: string },
+  ): { mode: import('../types.js').ApprovalMode; blacklisted_techniques: string[] } {
     const phase = _getCurrentPhase(this.objectiveHost);
     const baseMode = this.ctx.config.opsec.approval_mode ?? 'auto-approve';
     const baseBlacklist = this.ctx.config.opsec.blacklisted_techniques ?? [];
     const overrides = phase?.approval_overrides;
-    return {
-      mode: overrides?.mode ?? baseMode,
-      // Phase blacklist EXTENDS the engagement-level one (not replaces) so
-      // operator-level safety rules can't be silently weakened by a phase.
-      blacklisted_techniques: overrides?.blacklisted_techniques
-        ? [...new Set([...baseBlacklist, ...overrides.blacklisted_techniques])]
-        : baseBlacklist,
-    };
+    let mode: import('../types.js').ApprovalMode = overrides?.mode ?? baseMode;
+    // Phase blacklist EXTENDS the engagement-level one (not replaces) so
+    // operator-level safety rules can't be silently weakened by a phase.
+    const blacklisted_techniques = overrides?.blacklisted_techniques
+      ? [...new Set([...baseBlacklist, ...overrides.blacklisted_techniques])]
+      : baseBlacklist;
+
+    // Operator-policy approval rules can only TIGHTEN: fold every rule that
+    // matches this action and take the strictest mode. A rule that resolves to a
+    // looser mode is ignored — the policy is incapable of weakening the gate, so
+    // the "phase/engagement is the floor" invariant holds by construction.
+    const rules = this.ctx.config.operator_policy?.approval_rules;
+    if (rules && rules.length > 0 && actionCtx) {
+      let hostClass: 'in_scope' | 'unverified' | 'excluded' | undefined;
+      if (actionCtx.nodeId) {
+        hostClass = this.isNodeExcluded(actionCtx.nodeId)
+          ? 'excluded'
+          : this.isNodeVerifiedInScope(actionCtx.nodeId) ? 'in_scope' : 'unverified';
+      }
+      for (const rule of rules) {
+        const m = rule.match;
+        if (m.technique && m.technique !== actionCtx.technique) continue;
+        if (m.host_class && m.host_class !== hostClass) continue;
+        if (m.network && !(actionCtx.ip && isIpInCidr(actionCtx.ip, m.network))) continue;
+        if (APPROVAL_STRICTNESS[rule.require] > APPROVAL_STRICTNESS[mode]) mode = rule.require;
+      }
+    }
+    return { mode, blacklisted_techniques };
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
