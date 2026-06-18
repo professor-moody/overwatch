@@ -108,6 +108,20 @@ describe('prompt-generator', () => {
       expect(prompt).toContain('report_finding()');
     });
 
+    it('drives sub-agent synthesis: dispatch auto-selects an archetype, and completion triggers an immediate re-plan', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+
+      // H1: the prompt teaches that dispatch auto-assigns the archetype.
+      expect(prompt).toContain('auto-assigned the right');
+      expect(prompt).toContain('archetype');
+      // H3: an active synthesis trigger (not the old passive "monitor periodically"),
+      // including reading a salvaged transcript from an interrupted agent.
+      expect(prompt).toContain('Synthesize the moment a sub-agent finishes');
+      expect(prompt).toContain('agent_transcript_submitted');
+      expect(prompt).toContain('salvaged');
+    });
+
     it('includes tool reference table with all provided tools', () => {
       const engine = createTestEngine();
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
