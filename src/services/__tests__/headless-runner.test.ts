@@ -261,6 +261,23 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getTask('h-spawnfail')?.status).toBe('failed');
   });
 
+  it('marks the task failed when spawn returns a child with no pid (no zombie task)', async () => {
+    svc = new TaskExecutionService(engine, new ProcessTracker(), {
+      headless: {
+        logDir,
+        spawnFn: () => new FakeChild(0) as any, // pid 0 → falsy: a pidless child
+      },
+    });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-nopid' }));
+    await settle();
+    // A pidless child can't be killed or heartbeated — it must NOT be registered
+    // as a running task (which would leave a zombie holding a lease until TTL).
+    expect(svc.activeHeadlessCount()).toBe(0);
+    expect(engine.getTask('h-nopid')?.status).toBe('failed');
+  });
+
   it('executes a stop directive: engine records, service kills the live process + interrupts', async () => {
     svc = makeService();
     svc.start();
