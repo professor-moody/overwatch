@@ -149,6 +149,7 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 | `parse_output` | Deterministically parse supported tool output into findings | When raw output comes from a supported parser |
 | `report_finding` | Submit discoveries to graph | After every discovery, immediately |
 | `get_evidence` | Retrieve evidence blobs by ID or list by action/finding | After `report_finding` stored evidence; full-fidelity review |
+| `get_finding_readiness` | Per-finding proof-readiness audit (client_ready / needs_validation / draft) + gaps | Read-only; before reporting — the `evidence_auditor` agent type uses this to find which findings still need proof |
 | `register_agent` | Dispatch a sub-agent | When frontier diverges into parallel tasks |
 | `dispatch_agents` | Dispatch multiple agents | Batch agent registration |
 | `get_agent_context` | Scoped view for sub-agents | Called by sub-agents at task start |

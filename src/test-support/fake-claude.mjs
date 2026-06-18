@@ -164,6 +164,21 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'audit') {
+    // evidence_auditor: read the per-finding proof-readiness rollup. No try/catch —
+    // if get_finding_readiness errors the process exits non-zero and the task is
+    // interrupted, so an eval asserting 'completed' proves the tool works end-to-end.
+    const res = await client.callTool({ name: 'get_finding_readiness', arguments: {} });
+    const parsed = JSON.parse(res.content[0].text);
+    if (!parsed.summary || typeof parsed.summary.total !== 'number') throw new Error('get_finding_readiness missing summary.total');
+    if (!Array.isArray(parsed.findings)) throw new Error('get_finding_readiness missing findings array');
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `audited ${parsed.summary.total} findings (${parsed.summary.client_ready} client-ready)` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'evidence audit done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   if (mode === 'web') {
     // web_tester capability: a discovered web app + a candidate vulnerability.
     await client.callTool({
