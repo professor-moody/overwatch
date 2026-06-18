@@ -140,6 +140,10 @@ export async function runSubAgent(
       case 'report_finding': {
         try {
           engine.ingestFinding(msg.finding as Finding);
+          // Durability: a sub-agent can be killed at any moment (reap / timeout /
+          // crash). Flush the finding to disk synchronously so it survives even a
+          // crash in the next instant, rather than riding the ≤500ms debounce.
+          engine.flushNow();
           findingsReceived++;
         } catch (err) {
           log?.(`[parent] ingestFinding error: ${err instanceof Error ? err.message : err}`);
