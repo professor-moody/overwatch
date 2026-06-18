@@ -1411,8 +1411,12 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
         return;
       }
-      const arch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
-      const skill = typeof b.skill === 'string' ? b.skill : arch?.defaultSkill;
+      const explicitArch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
+      // No explicit agent type → auto-select one from the seed node type rather
+      // than silently using the full-surface default (mirrors quick-deploy + the
+      // dispatch tools). role/backend expansion stays on the explicit path.
+      const autoArchetype = recommendArchetype({ nodeType: targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined });
+      const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
       const objective = typeof b.objective === 'string' ? b.objective : undefined;
 
       if (targetNodeIds.length === 0) {
@@ -1436,7 +1440,9 @@ export class DashboardServer {
         skill,
         campaign_id: campaignId,
         frontier_item_id: frontierItemId,
-        ...(arch ? { archetype: arch.id, role: arch.role, backend: arch.backend } : {}),
+        ...(explicitArch
+          ? { archetype: explicitArch.id, role: explicitArch.role, backend: explicitArch.backend }
+          : { archetype: autoArchetype }),
         ...(objective ? { objective } : {}),
       };
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, unlinkSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
-import { registerAgentTools } from '../agents.js';
+import { registerAgentTools, dispatchCampaignAgents } from '../agents.js';
 import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-agents.json';
@@ -146,5 +146,70 @@ describe('agent tools', () => {
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.content[0].text);
     expect(payload.error).toContain('nonexistent-task-id');
+  });
+
+  // H1 — archetype-on-dispatch: every dispatch path now stamps the task with a
+  // resolved archetype so the sub-agent gets the right tool surface, instead of
+  // silently defaulting to the full `default` surface.
+  describe('archetype on dispatch', () => {
+    function seedHost(): void {
+      engine.addNode({
+        id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1',
+        discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+      });
+    }
+
+    it('register_agent honors an explicit archetype override', async () => {
+      seedHost();
+      const result = await handlers.register_agent({
+        agent_id: 'agent-ovr', frontier_item_id: 'frontier-node-host-10-10-10-1',
+        subgraph_node_ids: ['host-10-10-10-1'], archetype: 'cve_researcher',
+      });
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.archetype).toBe('cve_researcher');
+      expect(engine.getTask(payload.task_id)?.archetype).toBe('cve_researcher');
+    });
+
+    it('register_agent ignores an unknown archetype and auto-resolves instead', async () => {
+      seedHost();
+      const result = await handlers.register_agent({
+        agent_id: 'agent-bad', frontier_item_id: 'frontier-node-host-10-10-10-1',
+        subgraph_node_ids: ['host-10-10-10-1'], archetype: 'not_a_real_archetype',
+      });
+      const payload = JSON.parse(result.content[0].text);
+      // Falls through to recommendArchetype (host node → recon_scanner), never the bogus id.
+      expect(payload.archetype).not.toBe('not_a_real_archetype');
+      expect(payload.archetype).toBe('recon_scanner');
+    });
+
+    it('dispatch_agents stamps each agent with a frontier-derived archetype (host → recon_scanner)', async () => {
+      seedHost();
+      const result = await handlers.dispatch_agents({ count: 5, strategy: 'top_priority', hops: 2 });
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.dispatched.length).toBeGreaterThan(0);
+      for (const d of payload.dispatched) {
+        expect(d.archetype).toBe('recon_scanner');
+        expect(engine.getTask(d.task_id)?.archetype).toBe('recon_scanner');
+      }
+    });
+
+    it('dispatch_campaign_agents derives the archetype from the campaign strategy', async () => {
+      seedHost();
+      const fid = engine.computeFrontier()[0]?.id;
+      expect(fid).toBeDefined();
+      const campaign = engine.createCampaign({ name: 'spray', strategy: 'credential_spray', item_ids: [fid!] });
+      const result = dispatchCampaignAgents(engine, campaign.id, {});
+      expect(result.dispatched.length).toBeGreaterThan(0);
+      expect(result.dispatched[0].archetype).toBe('credential_operator');
+      expect(engine.getTask(result.dispatched[0].task_id)?.archetype).toBe('credential_operator');
+    });
+
+    it('dispatch_campaign_agents lets an explicit archetype override the strategy default', async () => {
+      seedHost();
+      const fid = engine.computeFrontier()[0]?.id;
+      const campaign = engine.createCampaign({ name: 'spray2', strategy: 'credential_spray', item_ids: [fid!] });
+      const result = dispatchCampaignAgents(engine, campaign.id, { archetype: 'post_exploit' });
+      expect(result.dispatched[0].archetype).toBe('post_exploit');
+    });
   });
 });

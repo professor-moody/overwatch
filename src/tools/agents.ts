@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isIpInCidr } from '../services/cidr.js';
+import { recommendArchetype, isArchetypeId, type AgentArchetypeId, type RecommendInput } from '../services/agent-archetypes.js';
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot', 'credential_test'] as const;
@@ -24,7 +25,8 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         agent_id: z.string().describe('Unique identifier for the agent'),
         frontier_item_id: z.string().optional().describe('ID of the frontier item this agent should work on (recommended for attribution)'),
         subgraph_node_ids: z.array(z.string()).default([]).describe('Optional node IDs relevant to this agent\'s task. Leave empty to auto-compute from the frontier item.'),
-        skill: z.string().optional().describe('Skill/methodology to apply')
+        skill: z.string().optional().describe('Skill/methodology to apply'),
+        archetype: z.string().optional().describe('Optional agent-type override (e.g. recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher). When omitted, the archetype is auto-selected from the frontier item type + node type.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -33,7 +35,7 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         openWorldHint: false
       }
     },
-    withErrorBoundary('register_agent', async ({ agent_id, frontier_item_id, subgraph_node_ids, skill }) => {
+    withErrorBoundary('register_agent', async ({ agent_id, frontier_item_id, subgraph_node_ids, skill, archetype }) => {
       if (frontier_item_id) {
         const existing = engine.getRunningTaskForFrontierItem(frontier_item_id);
         if (existing) {
@@ -63,7 +65,11 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         }
       }
 
-      const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill);
+      const resolvedArchetype = resolveDispatchArchetype(engine, {
+        explicit: archetype,
+        frontierItem: frontier_item_id ? engine.getFrontierItem(frontier_item_id) : undefined,
+      });
+      const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill, undefined, resolvedArchetype);
       const reg = engine.registerAgent(task);
       if (!reg.ok) {
         // P1.4: another task already holds the lease on this frontier item.
@@ -89,8 +95,9 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         task_id: task.id,
         agent_id,
         status: 'running',
+        archetype: resolvedArchetype,
         scope_node_count: resolvedNodeIds.length,
-        message: `Agent ${agent_id} registered${frontier_item_id ? ` for task ${frontier_item_id}` : ''}`,
+        message: `Agent ${agent_id} registered${frontier_item_id ? ` for task ${frontier_item_id}` : ''} as ${resolvedArchetype}`,
       };
       if (scope_warning) response.scope_warning = scope_warning;
 
@@ -121,6 +128,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         strategy: z.enum(['top_priority', 'by_type']).default('top_priority').describe('How to choose frontier items'),
         types: z.array(z.enum(FRONTIER_TYPES)).optional().describe('Optional frontier types to include when dispatching'),
         skill: z.string().optional().describe('Optional skill override applied to each dispatched agent'),
+        archetype: z.string().optional().describe('Optional agent-type override applied to every dispatched agent. When omitted, each agent\'s archetype is auto-selected from its frontier item type + node type.'),
         hops: z.number().int().min(1).max(5).default(2).describe('Hops to use when auto-computing subgraph scope'),
       },
       annotations: {
@@ -130,7 +138,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         openWorldHint: false,
       }
     },
-    withErrorBoundary('dispatch_agents', async ({ count, strategy, types, skill, hops }) => {
+    withErrorBoundary('dispatch_agents', async ({ count, strategy, types, skill, archetype, hops }) => {
       const frontier = engine.computeFrontier();
       const { passed } = engine.filterFrontier(frontier);
       const typeOrder = types && types.length > 0 ? types : [...FRONTIER_TYPES];
@@ -155,7 +163,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
       }
 
       const total_candidates = candidates.length;
-      const dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; frontier_type: string; skill?: string }> = [];
+      const dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; frontier_type: string; archetype: string; skill?: string }> = [];
       const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_id: string }> = [];
       const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
       const skipped_lease_conflict: Array<{ frontier_item_id: string; frontier_type: string; existing_task_id?: string; existing_agent_id?: string }> = [];
@@ -182,8 +190,9 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
           continue;
         }
 
+        const itemArchetype = resolveDispatchArchetype(engine, { explicit: archetype, frontierItem: item });
         const agent_id = `agent-${item.type.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
-        const task = buildTask(agent_id, item.id, scope, skill);
+        const task = buildTask(agent_id, item.id, scope, skill, undefined, itemArchetype);
         // F2: registerAgent may refuse the task if the frontier lease was
         // grabbed by another caller in the same window. When that happens
         // the task is NOT inserted, so we must NOT report it as dispatched.
@@ -202,6 +211,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
           agent_id: task.agent_id,
           frontier_item_id: item.id,
           frontier_type: item.type,
+          archetype: itemArchetype,
           skill,
         });
       }
@@ -626,8 +636,9 @@ its CIDR as its scoped subgraph.`,
           }
         }
 
+        const subnetArchetype = resolveDispatchArchetype(engine, { frontierItem });
         const agent_id = `agent-subnet-${slug}-${uuidv4().slice(0, 8)}`;
-        const task = buildTask(agent_id, frontierItemId, nodesInCidr, skill);
+        const task = buildTask(agent_id, frontierItemId, nodesInCidr, skill, undefined, subnetArchetype);
         // F2: registerAgent may refuse on frontier-lease conflict.
         const reg = engine.registerAgent(task);
         if (!reg.ok) {
@@ -683,6 +694,7 @@ Skips items that already have a running agent.`,
         max_agents: z.number().int().min(1).max(20).default(8).describe('Maximum number of agents to dispatch'),
         hops: z.number().int().min(1).max(5).default(2).describe('Hops for subgraph scope computation'),
         skill: z.string().optional().describe('Optional skill override applied to each dispatched agent'),
+        archetype: z.string().optional().describe('Optional agent-type override applied to every dispatched agent. When omitted, the archetype is derived from the campaign strategy (e.g. credential_spray → credential_operator).'),
       },
       annotations: {
         readOnlyHint: false,
@@ -691,8 +703,8 @@ Skips items that already have a running agent.`,
         openWorldHint: false,
       }
     },
-    withErrorBoundary('dispatch_campaign_agents', async ({ campaign_id, max_agents, hops, skill }) => {
-      const result = dispatchCampaignAgents(engine, campaign_id, { max_agents, hops, skill });
+    withErrorBoundary('dispatch_campaign_agents', async ({ campaign_id, max_agents, hops, skill, archetype }) => {
+      const result = dispatchCampaignAgents(engine, campaign_id, { max_agents, hops, skill, archetype });
 
       if (result.error) {
         return {
@@ -908,7 +920,7 @@ export interface DispatchResult {
   strategy: string;
   requested: number;
   total_items: number;
-  dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; skill?: string }>;
+  dispatched: Array<{ task_id: string; agent_id: string; frontier_item_id: string; scope_nodes: number; archetype: string; skill?: string }>;
   skipped: Array<{ frontier_item_id: string; reason: string }>;
   warning?: string;
   error?: string;
@@ -917,11 +929,12 @@ export interface DispatchResult {
 export function dispatchCampaignAgents(
   engine: GraphEngine,
   campaign_id: string,
-  options: { max_agents?: number; hops?: number; skill?: string } = {},
+  options: { max_agents?: number; hops?: number; skill?: string; archetype?: string } = {},
 ): DispatchResult {
   const max_agents = options.max_agents ?? 8;
   const hops = options.hops ?? 2;
   const skill = options.skill;
+  const archetypeOverride = options.archetype;
 
   const campaign = engine.getCampaign(campaign_id);
   if (!campaign) {
@@ -965,8 +978,13 @@ export function dispatchCampaignAgents(
     // can be useful (the agent enumerates from scratch). We don't skip
     // them here, just record in details if scope is empty.
 
+    const campaignArchetype = resolveDispatchArchetype(engine, {
+      explicit: archetypeOverride,
+      strategy: campaign.strategy,
+      frontierItem: engine.getFrontierItem(itemId),
+    });
     const agent_id = `agent-campaign-${campaign.strategy.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
-    const task = buildTask(agent_id, itemId, scope, skill, campaign_id);
+    const task = buildTask(agent_id, itemId, scope, skill, campaign_id, campaignArchetype);
     // F2: respect lease conflicts and don't claim success when the
     // task wasn't actually inserted.
     const reg = engine.registerAgent(task);
@@ -978,7 +996,7 @@ export function dispatchCampaignAgents(
       continue;
     }
 
-    dispatched.push({ task_id: task.id, agent_id, frontier_item_id: itemId, scope_nodes: scope.length, skill });
+    dispatched.push({ task_id: task.id, agent_id, frontier_item_id: itemId, scope_nodes: scope.length, archetype: campaignArchetype, skill });
   }
 
   // F5: only activate the campaign once at least one agent is actually
@@ -1003,7 +1021,7 @@ export function dispatchCampaignAgents(
   return result;
 }
 
-function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string, campaign_id?: string) {
+function buildTask(agent_id: string, frontier_item_id: string | undefined, subgraph_node_ids: string[], skill?: string, campaign_id?: string, archetype?: string) {
   return {
     id: uuidv4(),
     agent_id,
@@ -1013,7 +1031,49 @@ function buildTask(agent_id: string, frontier_item_id: string | undefined, subgr
     campaign_id,
     subgraph_node_ids,
     skill,
+    archetype,
   };
+}
+
+// Campaign strategy → the archetype whose tool surface + mission fit that
+// strategy. (custom falls through to frontier-based recommendation.)
+const STRATEGY_ARCHETYPE: Record<string, AgentArchetypeId> = {
+  credential_spray: 'credential_operator',
+  post_exploitation: 'post_exploit',
+  enumeration: 'recon_scanner',
+  network_discovery: 'recon_scanner',
+};
+
+/** Best-effort node type for a frontier item's seed, to sharpen archetype choice.
+ * Reads the item's own node/edge handles (public) — enough for the cases
+ * recommendArchetype keys on (webapp/url → web_tester, credential, host/service);
+ * network_discovery has no seed node and resolves on frontier type alone. */
+function frontierSeedNodeType(
+  engine: GraphEngine,
+  item?: { node_id?: string; target_node?: string; edge_target?: string; edge_source?: string } | null,
+): string | undefined {
+  const nodeId = item?.node_id || item?.target_node || item?.edge_target || item?.edge_source;
+  return nodeId ? engine.getNode(nodeId)?.type : undefined;
+}
+
+/**
+ * Pick the archetype for a dispatched task so the sub-agent gets the right tool
+ * surface + mission instead of the full `default` surface. Precedence: an
+ * explicit operator/agent override (if a known archetype) → a campaign
+ * strategy's archetype → `recommendArchetype` over the frontier item type +
+ * seed node type. Never throws; resolves to `default` only when nothing more
+ * specific is known. (Backend resolution is unaffected — credential_test items
+ * still run on the scripted runner; this only shapes the headless surface.)
+ */
+function resolveDispatchArchetype(engine: GraphEngine, opts: {
+  explicit?: string;
+  strategy?: string;
+  frontierItem?: { type?: string; node_id?: string; target_node?: string; edge_target?: string; edge_source?: string } | null;
+}): AgentArchetypeId {
+  if (opts.explicit && isArchetypeId(opts.explicit)) return opts.explicit;
+  if (opts.strategy && STRATEGY_ARCHETYPE[opts.strategy]) return STRATEGY_ARCHETYPE[opts.strategy];
+  const nodeType = frontierSeedNodeType(engine, opts.frontierItem);
+  return recommendArchetype({ frontierType: opts.frontierItem?.type as RecommendInput['frontierType'], nodeType });
 }
 
 /**
