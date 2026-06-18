@@ -44,8 +44,10 @@ export function AgentThread({
   onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
   const hasQuestion = threadHasOpenQuestion(entries);
+  // Bounded live-tail region (see AgentOutputConsole): max-h keeps follow-to-
+  // bottom scrolling inside this box rather than moving the whole page.
   return (
-    <PanelSection className="flex min-h-0 flex-1 flex-col overflow-hidden p-0 border-accent/20">
+    <PanelSection className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden p-0 border-accent/20">
       <div className="flex items-center justify-between gap-3 border-b border-border p-3">
         <div className="flex items-center gap-2">
           <h3 className="text-base font-semibold text-foreground">Conversation</h3>
