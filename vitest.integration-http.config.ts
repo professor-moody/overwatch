@@ -6,6 +6,7 @@ export default defineConfig({
       'src/__tests__/http-transport.integration.test.ts',
       'src/__tests__/approval-over-http.integration.test.ts',
       'src/__tests__/headless-runner.integration.test.ts',
+      'src/__tests__/archetype-capability.integration.test.ts',
     ],
     exclude: [
       'dist/**',
