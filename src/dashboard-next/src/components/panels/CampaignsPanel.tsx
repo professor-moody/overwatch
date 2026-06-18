@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Copy, Pause, Play, Plus, RefreshCw, Send, Square } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Columns3, Copy, LayoutList, Pause, Play, Plus, RefreshCw, Send, Square } from 'lucide-react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { EmptyState } from '../shared';
@@ -9,9 +9,14 @@ import {
   cloneCampaign,
   createCampaign,
   dispatchCampaign,
+  getAgentQueries,
   getCampaigns,
+  type AgentQuery,
 } from '../../lib/api';
 import type { Campaign, FrontierItem } from '../../lib/types';
+import { buildMissionCard } from '../../lib/agent-mission';
+import { POLL } from '../../lib/polling';
+import { CampaignBoard } from './CampaignBoard';
 import {
   campaignItemNodeLabel,
   campaignLifecycleActions,
@@ -34,9 +39,40 @@ const STATUS_ORDER: Record<Campaign['status'], number> = {
 export function CampaignsPanel() {
   const campaigns = useEngagementStore((s) => s.campaigns);
   const frontier = useEngagementStore((s) => s.frontier);
+  const agents = useEngagementStore((s) => s.agents);
+  const sessions = useEngagementStore((s) => s.sessions);
+  const pendingActions = useEngagementStore((s) => s.pendingActions);
   const [selectedId, setSelectedId] = useState<string | null>(campaigns[0]?.id || null);
   const [mode, setMode] = useState<'detail' | 'builder'>('detail');
+  const [view, setView] = useState<'list' | 'board'>('list');
   const [query, setQuery] = useState('');
+  const [agentQueries, setAgentQueries] = useState<AgentQuery[]>([]);
+
+  // Board view buckets agents into per-campaign lanes; agent→operator questions
+  // drive the "Needs You"/Blocked lanes, so fetch them while the board is shown
+  // (live via the WS push + a poll, mirroring AgentsPanel).
+  const loadAgentQueries = useCallback(async () => {
+    try {
+      const { queries } = await getAgentQueries();
+      setAgentQueries(queries || []);
+    } catch { /* transient */ }
+  }, []);
+  useEffect(() => {
+    if (view !== 'board') return;
+    void loadAgentQueries();
+    const onUpdate = () => void loadAgentQueries();
+    window.addEventListener('overwatch-agent-query-update', onUpdate);
+    const timer = setInterval(() => void loadAgentQueries(), POLL.AGENTS_MS);
+    return () => {
+      window.removeEventListener('overwatch-agent-query-update', onUpdate);
+      clearInterval(timer);
+    };
+  }, [view, loadAgentQueries]);
+
+  const missionCards = useMemo(
+    () => agents.map(a => buildMissionCard(a, { sessions, pendingActions, agentQueries })),
+    [agents, sessions, pendingActions, agentQueries],
+  );
 
   const sortedCampaigns = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -68,17 +104,23 @@ export function CampaignsPanel() {
         meta={`(${campaigns.length} total · ${activeCount} active · ${draftCount} drafts)`}
         actions={(
           <FilterBar>
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Filter campaigns..."
-              className="settings-input w-56"
-            />
+            <div className="inline-flex rounded border border-border bg-elevated p-0.5">
+              <ViewToggle active={view === 'list'} onClick={() => setView('list')} icon={<LayoutList className="h-3.5 w-3.5" />} label="Campaigns" />
+              <ViewToggle active={view === 'board'} onClick={() => setView('board')} icon={<Columns3 className="h-3.5 w-3.5" />} label="Board" />
+            </div>
+            {view === 'list' && (
+              <input
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Filter campaigns..."
+                className="settings-input w-56"
+              />
+            )}
             <button onClick={refresh} className="text-xs px-2 py-1 rounded bg-elevated border border-border text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
               <RefreshCw className="h-3.5 w-3.5" />
               Refresh
             </button>
-            <button onClick={() => setMode('builder')} className="settings-save-btn inline-flex items-center gap-1">
+            <button onClick={() => { setView('list'); setMode('builder'); }} className="settings-save-btn inline-flex items-center gap-1">
               <Plus className="h-3.5 w-3.5" />
               New Campaign
             </button>
@@ -86,6 +128,11 @@ export function CampaignsPanel() {
         )}
       />
 
+      {view === 'board' ? (
+        <PanelSection className="flex-1 min-h-0 flex flex-col">
+          <CampaignBoard cards={missionCards} />
+        </PanelSection>
+      ) : (
       <div className="grid grid-cols-[minmax(340px,420px)_1fr] gap-4 flex-1 min-h-0">
         <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
           <div className="grid grid-cols-3 border-b border-border text-center text-xs">
@@ -121,7 +168,23 @@ export function CampaignsPanel() {
           </PanelSection>
         )}
       </div>
+      )}
     </div>
+  );
+}
+
+function ViewToggle({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1 rounded px-2 py-1 text-xs',
+        active ? 'bg-accent/15 text-accent' : 'text-muted-foreground hover:text-foreground',
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 
