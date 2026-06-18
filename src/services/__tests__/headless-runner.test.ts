@@ -278,6 +278,22 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getTask('h-nopid')?.status).toBe('failed');
   });
 
+  it('a pidless child emitting an async error does NOT crash (error handler attached before bail-out)', async () => {
+    const children: FakeChild[] = [];
+    svc = new TaskExecutionService(engine, new ProcessTracker(), {
+      headless: { logDir, spawnFn: () => { const c = new FakeChild(0); children.push(c); return c as any; } },
+    });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-nopid-err' }));
+    await settle();
+    expect(engine.getTask('h-nopid-err')?.status).toBe('failed');
+    // ENOENT surfaces a pidless child that fires 'error' asynchronously. With no
+    // listener, EventEmitter re-throws it → ERR_UNHANDLED_ERROR crashes the daemon.
+    // The fix attaches the handler BEFORE the pidless bail-out, so this is handled.
+    expect(() => children[0].emit('error', new Error('spawn claude ENOENT'))).not.toThrow();
+  });
+
   it('executes a stop directive: engine records, service kills the live process + interrupts', async () => {
     svc = makeService();
     svc.start();
