@@ -134,8 +134,21 @@ export class HeadlessMcpRunner {
     // registry/TTL registration (which could themselves throw and skip handler
     // attachment).
     const log = this.openLog(task.id);
-    child.stdout?.on('data', (c: Buffer) => { try { log?.write(c); } catch { /* log errors must not kill the agent */ } });
-    child.stderr?.on('data', (c: Buffer) => { try { log?.write(c); } catch { /* ignore */ } });
+    // Keep a capped in-memory tail of the run alongside the on-disk log so a
+    // cut-off agent's trace can be salvaged on exit without depending on the
+    // WriteStream having flushed (the file read would race the flush, and the
+    // final pre-kill chunk — the most useful part — is the one most likely to be
+    // mid-flush). The tail is what matters: it's what the agent was doing when
+    // it was killed.
+    const SALVAGE_CAP = 1_000_000;
+    let captured = '';
+    let capturedTruncated = false;
+    const capture = (c: Buffer) => {
+      captured += c.toString('utf8');
+      if (captured.length > SALVAGE_CAP) { captured = captured.slice(captured.length - SALVAGE_CAP); capturedTruncated = true; }
+    };
+    child.stdout?.on('data', (c: Buffer) => { capture(c); try { log?.write(c); } catch { /* log errors must not kill the agent */ } });
+    child.stderr?.on('data', (c: Buffer) => { capture(c); try { log?.write(c); } catch { /* ignore */ } });
 
     child.on('error', (err) => {
       this.engine.logActionEvent({
@@ -148,6 +161,21 @@ export class HeadlessMcpRunner {
         details: { reason: 'headless_spawn_error', error: err.message },
       });
       this.finalize(task.id, configPath, log, 'failed', `headless process error: ${err.message}`);
+    });
+
+    // Salvage runs on 'close' (not 'exit'): 'close' fires only after stdout/stderr
+    // have fully drained, so the capped tail includes the agent's final pre-kill
+    // output. An agent cut off mid-flight (crash / heartbeat-reap / wall-clock
+    // timeout / operator cancel) never reached its submit_agent_transcript call,
+    // so its reasoning + in-context findings would otherwise be discarded with the
+    // process. `running` = spontaneous exit; `interrupted` = cancelHeadless already
+    // flipped it before the child died — both are "cut off without a transcript".
+    // A `completed` task reported its own work, so it is not salvaged.
+    child.on('close', () => {
+      const current = this.engine.getTask(task.id);
+      if (current && (current.status === 'running' || current.status === 'interrupted')) {
+        try { this.salvageTranscript(task, captured, capturedTruncated); } catch { /* salvage is best-effort */ }
+      }
     });
 
     child.on('exit', (code, signal) => {
@@ -279,6 +307,34 @@ export class HeadlessMcpRunner {
     } catch {
       return null; // logging is best-effort; never block the agent
     }
+  }
+
+  /**
+   * Recover the run log of an agent that was cut off before submitting its own
+   * transcript: read the (now-flushed) `<task_id>.ndjson`, store it to evidence,
+   * and emit an `agent_transcript_submitted` event flagged `salvaged: true` so the
+   * reasoning trace + any in-context findings are recoverable through the same
+   * retrospective surfaces a real transcript uses — instead of vanishing with the
+   * killed process. Best-effort: never throws into the exit path.
+   */
+  private salvageTranscript(task: AgentTask, captured: string, truncated: boolean): void {
+    const content = captured.trim();
+    if (!content) return; // nothing was captured — don't store an empty blob
+    const evidence_id = this.engine.getEvidenceStore().store({
+      evidence_type: 'log',
+      filename: 'agent_transcript_salvaged.ndjson',
+      content: captured,
+    });
+    this.engine.logActionEvent({
+      description: `Salvaged run log from interrupted sub-agent ${task.agent_id} (${captured.length} bytes${truncated ? ', tail-truncated' : ''})`,
+      event_type: 'agent_transcript_submitted',
+      category: 'agent',
+      provenance: 'agent',
+      agent_id: task.agent_id,
+      linked_agent_task_id: task.id,
+      details: { reason: 'salvaged_on_exit', salvaged: true, evidence_id, transcript_bytes: captured.length, truncated },
+    });
+    this.engine.persist();
   }
 
   private finalize(task_id: string, configPath: string | undefined, log: WriteStream | null, status: 'failed' | 'interrupted', summary: string): void {
