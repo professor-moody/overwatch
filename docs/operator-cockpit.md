@@ -94,20 +94,24 @@ A blocked approval is **aborted** (never executed) if the requesting agent is re
 
 Sub-agents are **typed** (data-driven archetypes in `agent-archetypes.ts`), each a real bundle of a tool surface (a genuine `--allowedTools` boundary), a backend, a default skill/objective, and a scope strategy:
 
-| Agent type | What it does | Tool surface |
-|------------|-------------|--------------|
-| `recon_scanner` | host/service discovery, enumeration | execute + scope; **no** sessions/credentials |
-| `web_tester` | web app testing | execute + sessions |
-| `credential_operator` | validate/spray/expand credentials & tokens | execute + credential tools; no sessions |
-| `post_exploit` | work from a foothold: sessions, lateral movement | execute + sessions + credentials |
-| `cve_researcher` | web CVE/PoC research | web research only — **no** target execution |
-| `pathfinder` | read-only attack-path analysis → proposes plans | read-only + `propose_plan` |
-| `report_scribe` | draft report sections from confirmed state | read-only + `generate_report` |
-| `cloud_cartographer` | expand cloud creds (AWS/Entra/GitHub/OIDC), map federation + cloud↔on-prem pivots | execute + credential tools |
-| `opsec_sentinel` | read-only OPSEC monitor: noise budget, defensive signals, recommended approach | read-only + `get_opsec_status` |
-| `session_shepherd` | read-only session oversight: live/stale/orphaned sessions + ownership | read-only + `list_sessions`/`read_session` |
-| `evidence_auditor` | read-only: audit findings + evidence chains for proof readiness | read-only + `get_finding_readiness` |
-| `default` | the generic full-surface agent (fallback) | full `mcp__overwatch` |
+Each type bundles a tool surface **and** a default methodology **skill** (`skills/*.md`,
+inlined into the sub-agent's prompt; the binding is `AgentArchetype.defaultSkill`, locked
+by a test so it always resolves to a real file):
+
+| Agent type | What it does | Tool surface | Default skill |
+|------------|-------------|--------------|---------------|
+| `recon_scanner` | host/service discovery, enumeration | execute + scope; **no** sessions/credentials | `network-recon` |
+| `web_tester` | web app testing | execute + sessions | `web-discovery` |
+| `credential_operator` | validate/spray/expand credentials & tokens | execute + credential tools; no sessions | `password-spraying` |
+| `post_exploit` | work from a foothold: sessions, lateral movement | execute + sessions + credentials | `post-exploitation` |
+| `cve_researcher` | web CVE/PoC research | web research only — **no** target execution | `cve-research` |
+| `pathfinder` | read-only attack-path analysis → proposes plans | read-only + `propose_plan` | `attack-path-planning` |
+| `report_scribe` | draft report sections from confirmed state | read-only + `generate_report` | `pentest-report-structure` |
+| `cloud_cartographer` | expand cloud creds (AWS/Entra/GitHub/OIDC), map federation + cloud↔on-prem pivots | execute + credential tools | `cloud-federation-mapping` |
+| `opsec_sentinel` | read-only OPSEC monitor: noise budget, defensive signals, recommended approach | read-only + `get_opsec_status` | `opsec-defense-signals` |
+| `session_shepherd` | read-only session oversight: live/stale/orphaned sessions + ownership | read-only + `list_sessions`/`read_session` | `session-lifecycle-monitoring` |
+| `evidence_auditor` | read-only: audit findings + evidence chains for proof readiness | read-only + `get_finding_readiness` | `evidence-auditing` |
+| `default` | the generic full-surface agent (fallback) | full `mcp__overwatch` | — |
 
 The system **recommends** a type for a target (`recommendArchetype`, mirroring the frontier→strategy mapping), and the operator can **override** it from the catalog. Deploy two ways:
 
