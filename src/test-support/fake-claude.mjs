@@ -179,6 +179,44 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'shepherd') {
+    // session_shepherd: read-only session oversight. The fixture seeds one session,
+    // so list_sessions must return it; then read its buffer. No try/catch — a tool
+    // error exits non-zero and the task is interrupted, so 'completed' proves the
+    // read-only session tools work end-to-end through the shepherd allowlist.
+    const listed = await client.callTool({ name: 'list_sessions', arguments: {} });
+    const parsed = JSON.parse(listed.content[0].text);
+    if (typeof parsed.total !== 'number' || !Array.isArray(parsed.sessions)) throw new Error('list_sessions missing total/sessions');
+    const first = parsed.sessions[0];
+    if (first?.id) await client.callTool({ name: 'read_session', arguments: { session_id: first.id } });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `reviewed ${parsed.total} session(s), ${parsed.active} active` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'session oversight done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
+  if (mode === 'cloud') {
+    // cloud_cartographer capability: map a cloud identity assuming a privileged
+    // role (the cartographer's signature — federation / role assumption).
+    await client.callTool({
+      name: 'report_finding',
+      arguments: {
+        agent_id: agentId,
+        nodes: [
+          { id: 'cloud-user-eval', type: 'cloud_identity', label: 'arn:aws:iam::111122223333:user/dev', principal_type: 'user', provider: 'aws' },
+          { id: 'cloud-role-eval', type: 'cloud_identity', label: 'arn:aws:iam::111122223333:role/AdminRole', principal_type: 'role', provider: 'aws' },
+        ],
+        edges: [{ source: 'cloud-user-eval', target: 'cloud-role-eval', type: 'ASSUMES_ROLE', confidence: 0.9 }],
+      },
+    });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake cloud: 1 identity assumes 1 role' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake cloud done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   if (mode === 'web') {
     // web_tester capability: a discovered web app + a candidate vulnerability.
     await client.callTool({

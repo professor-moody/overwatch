@@ -11,7 +11,25 @@ import { readFileSync, mkdtempSync, rmSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { createOverwatchApp, startHttpApp, shutdownOverwatchApp, type OverwatchApp } from '../app.js';
 import { parseEngagementConfig } from '../config.js';
-import type { AgentTask } from '../types.js';
+import type { AdapterHandle, AgentTask } from '../types.js';
+import type { SessionAdapterFactory } from '../services/session-manager.js';
+
+/** A no-op local_pty adapter — registering it overrides the real LocalPtyAdapter
+ *  so seeding a session never spawns node-pty (avoids the known CI flake) while
+ *  still exercising the real SessionManager.create path. */
+function mockPtyAdapter(): SessionAdapterFactory {
+  const handle: AdapterHandle = {
+    pid: 4242,
+    capabilities: { has_stdin: true, has_stdout: true, supports_resize: true, supports_signals: true, tty_quality: 'full' },
+    write() { /* discard */ },
+    resize() { /* no-op */ },
+    kill() { /* no-op */ },
+    close() { /* no-op */ },
+    onData() { /* no buffer activity needed for the eval */ },
+    onExit() { /* never exits during the eval */ },
+  };
+  return { kind: 'local_pty', async spawn() { return handle; } };
+}
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
 const rawConfig = readFileSync(resolve('./engagement.example.json'), 'utf-8');
@@ -43,6 +61,9 @@ export async function runArchetype(opts: {
   archetype: string;
   fakeMode: string;
   seedNodes?: Array<Record<string, unknown>>;
+  /** Seed one open session (via a mock local_pty adapter) before dispatch — for
+   *  session_shepherd, which has no tool to open sessions itself. */
+  seedSession?: boolean;
   timeoutMs?: number;
 }): Promise<ArchetypeEvalResult> {
   chmodSync(FAKE_CLAUDE, 0o755);
@@ -64,6 +85,11 @@ export async function runArchetype(opts: {
       id: `seed-${opts.archetype}`, agent_id: 'seed', timestamp: new Date().toISOString(),
       nodes: opts.seedNodes, edges: [],
     } as never);
+  }
+
+  if (opts.seedSession) {
+    app.sessionManager.registerAdapter(mockPtyAdapter());
+    await app.sessionManager.create({ kind: 'local_pty', title: `eval-seed-${opts.archetype}` });
   }
 
   const taskId = `eval-${opts.archetype}`;
