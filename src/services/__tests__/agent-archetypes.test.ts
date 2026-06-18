@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { resolve } from 'path';
 import {
   allowedToolsFor,
   getArchetype,
@@ -7,6 +8,27 @@ import {
   recommendArchetype,
   bootstrapMission,
 } from '../agent-archetypes.js';
+import { SkillIndex } from '../skill-index.js';
+
+describe('agent-archetypes: skill wiring + success criteria', () => {
+  // Real skills dir (vitest cwd is the repo root). Guards against defaultSkill
+  // id drift — the bug this slice fixes was ids that matched no skill file.
+  const skills = new SkillIndex(resolve('skills'));
+
+  it('every archetype defaultSkill resolves to a real skill file', () => {
+    for (const a of listArchetypes()) {
+      if (a.defaultSkill) {
+        expect(skills.getSkillContent(a.defaultSkill), `defaultSkill "${a.defaultSkill}" for archetype ${a.id}`).not.toBeNull();
+      }
+    }
+  });
+
+  it('every mission states a success criterion', () => {
+    for (const a of listArchetypes()) {
+      expect(bootstrapMission(a.id).toLowerCase(), `mission for ${a.id}`).toContain('done');
+    }
+  });
+});
 
 describe('agent-archetypes: bootstrap missions (per-archetype, not legacy-role)', () => {
   it('gives every archetype a non-empty mission', () => {

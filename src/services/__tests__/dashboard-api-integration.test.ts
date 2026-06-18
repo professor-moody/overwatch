@@ -445,7 +445,7 @@ describe('POST /api/agents/dispatch with an archetype', () => {
     expect(body.dispatched).toBe(true);
     expect(body.task.archetype).toBe('recon_scanner');
     expect(body.task.role).toBe('default');
-    expect(body.task.skill).toBe('network_discovery');
+    expect(body.task.skill).toBe('network-recon'); // archetype defaultSkill = real skill basename
     // 'running' so a runner actually picks it up (not a dormant 'pending').
     expect(body.task.status).toBe('running');
   });

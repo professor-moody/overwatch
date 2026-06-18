@@ -7,7 +7,6 @@ import type { GraphEngine } from './graph-engine.js';
 import type { EngagementConfig, EngagementState, AgentTask, LabProfile } from '../types.js';
 import { inferProfile } from '../types.js';
 import { timeToExpiry } from './credential-utils.js';
-import { SkillIndex } from './skill-index.js';
 import type { TechniqueStats } from './knowledge-base.js';
 
 interface PromptContext {
@@ -547,8 +546,7 @@ function generateAgentContextSection(agent: AgentTask, state?: EngagementState, 
   // Skill reference: inline first 500 chars of skill content
   if (agent.skill && engine) {
     try {
-      const skillIndex = new SkillIndex();
-      const content = skillIndex.getSkillContent(agent.skill);
+      const content = engine.getSkillIndex()?.getSkillContent(agent.skill) ?? null;
       if (content) {
         lines.push('');
         lines.push('### Skill Reference');

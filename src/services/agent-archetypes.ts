@@ -73,35 +73,35 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     suitableFor: {}, tools: { full: true },
   },
   recon_scanner: {
-    id: 'recon_scanner', label: 'Recon / scanner', role: 'default', scopeStrategy: 'cidr', defaultSkill: 'network_discovery',
+    id: 'recon_scanner', label: 'Recon / scanner', role: 'default', scopeStrategy: 'cidr', defaultSkill: 'network-recon',
     description: 'Network + service discovery: sweep a CIDR/IP, enumerate hosts, ports, and services. No shells, no credential handling.',
     defaultObjective: 'Discover and enumerate hosts and services for {target}; report what is alive and exposed.',
     suitableFor: { frontierTypes: ['network_discovery', 'incomplete_node'], nodeTypes: ['host', 'service'], rawTarget: true },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...RECON]) },
   },
   web_tester: {
-    id: 'web_tester', label: 'Web app tester', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'webapp_testing',
+    id: 'web_tester', label: 'Web app tester', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'web-discovery',
     description: 'Web application testing: fuzz endpoints, probe auth, find web vulns. Can open sessions for exploitation.',
     defaultObjective: 'Test the web surface of {target} for exposed endpoints, auth weaknesses, and web vulnerabilities.',
     suitableFor: { frontierTypes: ['incomplete_node', 'untested_edge'], nodeTypes: ['webapp', 'url', 'service'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...SESSIONS]) },
   },
   credential_operator: {
-    id: 'credential_operator', label: 'Credential operator', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'credential_spray',
+    id: 'credential_operator', label: 'Credential operator', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'password-spraying',
     description: 'Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC). Focused on credential lifecycle, not broad recon.',
     defaultObjective: 'Validate and expand the credentials around {target}; map what access they unlock.',
     suitableFor: { frontierTypes: ['credential_test', 'inferred_edge'], nodeTypes: ['credential'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED]) },
   },
   post_exploit: {
-    id: 'post_exploit', label: 'Post-exploitation', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'post_exploitation',
+    id: 'post_exploit', label: 'Post-exploitation', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'lateral-movement',
     description: 'Work from a foothold: interactive sessions, lateral movement, local enumeration from compromised hosts.',
     defaultObjective: 'From the foothold at {target}, escalate and move laterally; capture credentials and reachable assets.',
     suitableFor: { frontierTypes: ['inferred_edge', 'network_pivot', 'cross_tier_pivot'], nodeTypes: ['host'] },
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...SESSIONS, ...CRED]) },
   },
   cve_researcher: {
-    id: 'cve_researcher', label: 'CVE researcher', role: 'research', backend: 'headless_mcp', scopeStrategy: 'subgraph', defaultSkill: 'cve-research',
+    id: 'cve_researcher', label: 'CVE researcher', role: 'research', backend: 'headless_mcp', scopeStrategy: 'subgraph',
     description: 'Read the public web for CVEs/PoCs and record findings. Never executes against targets.',
     defaultObjective: 'Research known vulnerabilities and exploits relevant to {target}; record findings with sources.',
     suitableFor: { frontierTypes: ['cve_research'] },
@@ -144,27 +144,27 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
 // so this MUST carry the full research_cve arg shape + the "call once / empty
 // list marks the service checked" instruction that retires the frontier item.
 const CVE_MISSION =
-  `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version. Research the way an operator would: use WebSearch + WebFetch to find known vulnerabilities AND public proof-of-concept exploits for that exact product+version (vendor advisories, NVD, Exploit-DB, GitHub, packetstorm), judging whether each CVE actually applies to the discovered version. Do NOT run any target-facing tools — read-the-web + record-findings only. Record each credible candidate with research_cve({ service_id, candidates: [{ cve, title, cvss?, vuln_type?, exploit_available?, poc_url?, applicable, confidence?, notes }], summary }) — call it exactly once (or with an empty list if none apply) so the service is marked checked.`;
+  `YOUR ROLE IS CVE/EXPLOIT RESEARCH. Your assigned node is a service with a known product/version. Research the way an operator would: use WebSearch + WebFetch to find known vulnerabilities AND public proof-of-concept exploits for that exact product+version (vendor advisories, NVD, Exploit-DB, GitHub, packetstorm), judging whether each CVE actually applies to the discovered version. Do NOT run any target-facing tools — read-the-web + record-findings only. Record each credible candidate with research_cve({ service_id, candidates: [{ cve, title, cvss?, vuln_type?, exploit_available?, poc_url?, applicable, confidence?, notes }], summary }) — call it exactly once (or with an empty list if none apply) so the service is marked checked. Done when research_cve has been called for the service (with candidates, or an empty list if none apply).`;
 
 const MISSIONS: Record<AgentArchetypeId, string> = {
   default:
-    `Do only the work within your scoped subgraph and objective. Route every target-facing action through validate_action + run_tool/run_bash, turn raw output into graph data with parse_output/report_finding, and heartbeat periodically.`,
+    `Do only the work within your scoped subgraph and objective. Route every target-facing action through validate_action + run_tool/run_bash, turn raw output into graph data with parse_output/report_finding, and heartbeat periodically. Done when the scoped objective is satisfied and every useful discovery is in the graph (parse_output/report_finding), not just prose.`,
   recon_scanner:
-    `YOUR ROLE IS RECON & SERVICE DISCOVERY. Sweep and enumerate the target's hosts, ports, and services using run_tool/run_bash (call validate_action first), then turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions or credential tools — discovery only.`,
+    `YOUR ROLE IS RECON & SERVICE DISCOVERY. Sweep and enumerate the target's hosts, ports, and services using run_tool/run_bash (call validate_action first), then turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions or credential tools — discovery only. Done when every live host/service in scope is a graph node with its ports/services recorded via report_finding — leave nothing only in stdout.`,
   web_tester:
-    `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. Record findings with parse_output/report_finding.`,
+    `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. Record findings with parse_output/report_finding. Done when the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.`,
   credential_operator:
-    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens (validate_token_credential + the expand_* tools), and map the access they unlock. Record findings with report_finding. You have NO interactive sessions — credential lifecycle only.`,
+    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens (validate_token_credential + the expand_* tools), and map the access they unlock. Record findings with report_finding. You have NO interactive sessions — credential lifecycle only. Done when each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).`,
   post_exploit:
-    `YOUR ROLE IS POST-EXPLOITATION FROM A FOOTHOLD. Work interactively via open_session/send_to_session: enumerate locally, move laterally, and capture credentials and reachable assets. Route execution through validate_action and record findings with report_finding.`,
+    `YOUR ROLE IS POST-EXPLOITATION FROM A FOOTHOLD. Work interactively via open_session/send_to_session: enumerate locally, move laterally, and capture credentials and reachable assets. Route execution through validate_action and record findings with report_finding. Done when the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings.`,
   cve_researcher: CVE_MISSION,
   pathfinder:
-    `YOUR ROLE IS READ-ONLY ATTACK-PATH ANALYSIS. Use query_graph + find_paths + get_agent_context to find the highest-value next hops and the gaps blocking progress toward the objectives, then surface them as a proposed plan via propose_plan({ agent_id, task_id, summary, rationale, ops }). You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). You PROPOSE; the operator CONFIRMS.`,
+    `YOUR ROLE IS READ-ONLY ATTACK-PATH ANALYSIS. Use query_graph + find_paths + get_agent_context to find the highest-value next hops and the gaps blocking progress toward the objectives, then surface them as a proposed plan via propose_plan({ agent_id, task_id, summary, rationale, ops }). You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). You PROPOSE; the operator CONFIRMS. Done when a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists).`,
   report_scribe:
-    `YOUR ROLE IS REPORT DRAFTING (READ-ONLY). Read the confirmed graph state and evidence in scope (query_graph, get_evidence, explain_action, get_timeline) and draft report sections with generate_report. You CANNOT execute against targets or mutate the graph — synthesis only.`,
+    `YOUR ROLE IS REPORT DRAFTING (READ-ONLY). Read the confirmed graph state and evidence in scope (query_graph, get_evidence, explain_action, get_timeline) and draft report sections with generate_report. You CANNOT execute against targets or mutate the graph — synthesis only. Done when the requested report sections are drafted from confirmed findings and evidence via generate_report.`,
   research: CVE_MISSION,
   planner:
-    `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript.`,
+    `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,
 };
 
 /** The headless bootstrap mission for an archetype id or legacy role id. */

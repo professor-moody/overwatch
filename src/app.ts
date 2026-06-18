@@ -228,6 +228,10 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   const skillDir = options.skillDir || process.env.OVERWATCH_SKILLS || './skills';
   const skills = new SkillIndex(skillDir);
   console.error(`Loaded ${skills.count} skills from ${skillDir}`);
+  // Share the index with the engine so prompt generation + the headless runner
+  // inline archetype methodology from the SAME loaded skills (not a per-call
+  // `new SkillIndex()` that depends on cwd).
+  engine.setSkillIndex(skills);
 
   const savedProcesses = engine.getTrackedProcesses();
   const processTracker = savedProcesses.length > 0
