@@ -222,6 +222,20 @@ export function isArchetypeId(id: string | undefined | null): id is AgentArchety
 }
 
 /**
+ * Does an archetype run target-facing commands (vs. read-only analysis)? True iff
+ * its tool surface includes execution (`run_bash`) or is the full default surface.
+ * Used by the per-subnet/target dispatch cap — read-only archetypes (pathfinder,
+ * report_scribe, opsec_sentinel, session_shepherd, evidence_auditor, cve_researcher,
+ * research, planner) don't count toward target blast-radius limits. An operator
+ * policy may override the classification with an explicit allow-list of ids.
+ */
+export function isTargetFacing(idOrRole: string | undefined | null, override?: string[]): boolean {
+  const a = getArchetype(idOrRole);
+  if (override && override.length > 0) return override.includes(a.id);
+  return a.tools.full === true || a.tools.overwatch.includes('run_bash');
+}
+
+/**
  * Build the `--allowedTools` surface string for an archetype OR a legacy role id.
  * Byte-identical to the pre-registry allowedToolsFor for default/research/planner.
  */

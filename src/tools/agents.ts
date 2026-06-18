@@ -71,6 +71,26 @@ The agent can then call get_agent_context with its task ID to receive its scoped
       });
       const task = buildTask(agent_id, frontier_item_id, resolvedNodeIds, skill, undefined, resolvedArchetype);
       const reg = engine.registerAgent(task);
+      if (reg.cap_exceeded) {
+        // Operator-policy dispatch cap: this subnet/target is at its concurrent
+        // target-facing agent limit. Deferral, not failure — retry when one frees.
+        const c = reg.cap_exceeded;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: 'dispatch_cap_exceeded',
+              cap_scope: c.scope,
+              cap_key: c.key,
+              limit: c.limit,
+              current: c.current,
+              message: `Dispatch cap: ${c.current}/${c.limit} target-facing agents already on ${c.scope} ${c.key}. Wait for one to finish or raise the operator policy limit.`,
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       if (!reg.ok) {
         // P1.4: another task already holds the lease on this frontier item.
         // Surface the conflict to the caller so they can take a different
@@ -167,6 +187,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
       const skipped_existing: Array<{ frontier_item_id: string; task_id: string; agent_id: string }> = [];
       const skipped_unscoped: Array<{ frontier_item_id: string; frontier_type: string }> = [];
       const skipped_lease_conflict: Array<{ frontier_item_id: string; frontier_type: string; existing_task_id?: string; existing_agent_id?: string }> = [];
+      const skipped_dispatch_cap: Array<{ frontier_item_id: string; frontier_type: string; cap_scope: string; cap_key: string; limit: number; current: number }> = [];
 
       for (const item of candidates) {
         if (dispatched.length >= count) break;
@@ -197,6 +218,17 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         // grabbed by another caller in the same window. When that happens
         // the task is NOT inserted, so we must NOT report it as dispatched.
         const reg = engine.registerAgent(task);
+        if (reg.cap_exceeded) {
+          skipped_dispatch_cap.push({
+            frontier_item_id: item.id,
+            frontier_type: item.type,
+            cap_scope: reg.cap_exceeded.scope,
+            cap_key: reg.cap_exceeded.key,
+            limit: reg.cap_exceeded.limit,
+            current: reg.cap_exceeded.current,
+          });
+          continue;
+        }
         if (!reg.ok) {
           skipped_lease_conflict.push({
             frontier_item_id: item.id,
@@ -225,6 +257,7 @@ Skips frontier items that already have a running agent or cannot be scoped.`,
         skipped_existing,
         skipped_unscoped,
         skipped_lease_conflict,
+        skipped_dispatch_cap,
       };
       if (dispatched.length === 0) {
         result.warning = 'No agents dispatched — all candidates were skipped or filtered';
@@ -644,7 +677,9 @@ its CIDR as its scoped subgraph.`,
         if (!reg.ok) {
           skipped.push({
             cidr,
-            reason: `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
+            reason: reg.cap_exceeded
+              ? `dispatch_cap: ${reg.cap_exceeded.current}/${reg.cap_exceeded.limit} on ${reg.cap_exceeded.scope} ${reg.cap_exceeded.key}`
+              : `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
           });
           continue;
         }
@@ -991,7 +1026,9 @@ export function dispatchCampaignAgents(
     if (!reg.ok) {
       skipped.push({
         frontier_item_id: itemId,
-        reason: `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
+        reason: reg.cap_exceeded
+          ? `dispatch_cap: ${reg.cap_exceeded.current}/${reg.cap_exceeded.limit} on ${reg.cap_exceeded.scope} ${reg.cap_exceeded.key}`
+          : `frontier_lease_conflict${reg.lease_conflict ? `: held by task ${reg.lease_conflict.existing_task_id}` : ''}`,
       });
       continue;
     }

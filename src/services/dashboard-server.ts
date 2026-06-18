@@ -1466,6 +1466,19 @@ export class DashboardServer {
       // Returning 201 with { dispatched: true } when the task was never
       // inserted left the dashboard claiming work that didn't exist.
       const reg = this.engine.registerAgent(task);
+      if (reg.cap_exceeded) {
+        // 429 (not 409): the dispatch cap is a deferral — retry when a slot frees.
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          dispatched: false,
+          reason: 'dispatch_cap_exceeded',
+          cap_scope: reg.cap_exceeded.scope,
+          cap_key: reg.cap_exceeded.key,
+          limit: reg.cap_exceeded.limit,
+          current: reg.cap_exceeded.current,
+        }));
+        return;
+      }
       if (!reg.ok) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -1553,6 +1566,18 @@ export class DashboardServer {
         objective,
       };
       const reg = this.engine.registerAgent(task);
+      if (reg.cap_exceeded) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          dispatched: false,
+          reason: 'dispatch_cap_exceeded',
+          cap_scope: reg.cap_exceeded.scope,
+          cap_key: reg.cap_exceeded.key,
+          limit: reg.cap_exceeded.limit,
+          current: reg.cap_exceeded.current,
+        }));
+        return;
+      }
       if (!reg.ok) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ dispatched: false, reason: 'dispatch_refused' }));

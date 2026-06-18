@@ -12,6 +12,7 @@ import { EngineContext } from './engine-context.js';
 import type { ActivityLogEntry, GraphUpdateCallback, GraphUpdateDetail, OverwatchGraph } from './engine-context.js';
 import { StatePersistence } from './state-persistence.js';
 import { AgentManager } from './agent-manager.js';
+import { isTargetFacing } from './agent-archetypes.js';
 import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
@@ -1766,10 +1767,77 @@ export class GraphEngine {
   // Agent Management (delegated to AgentManager)
   // =============================================
 
-  registerAgent(task: AgentTask): { ok: boolean; lease_conflict?: { existing_task_id: string; existing_agent_id: string } } {
+  registerAgent(task: AgentTask): {
+    ok: boolean;
+    lease_conflict?: { existing_task_id: string; existing_agent_id: string };
+    cap_exceeded?: { scope: 'subnet' | 'target'; key: string; limit: number; current: number };
+  } {
+    // Operator-policy dispatch cap: refuse (don't register) when a target-facing
+    // agent would exceed the per-subnet / per-target limit. Checked BEFORE
+    // register() so no lease is taken and — critically — no event is logged, so
+    // a refusal can't perturb replay determinism. The cap is a deferral, not a
+    // drop: the caller surfaces it (429 / skip) and re-dispatches when a slot frees.
+    const cap = this.checkDispatchCap(task);
+    if (cap) return { ok: false, cap_exceeded: cap };
     const result = this.agentMgr.register(task);
     this.persist();
     return result;
+  }
+
+  /** /24 key for an IPv4 address; null for IPv6 / unparseable (exempt from the subnet cap). */
+  private subnetKey(ip: string): string | null {
+    const m = ip.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+    return m ? `${m[1]}.0/24` : null;
+  }
+
+  /** The target IP a task works on, from its seed nodes (host or service→host). */
+  private taskTargetIp(task: AgentTask): string | null {
+    for (const nodeId of task.subgraph_node_ids ?? []) {
+      const ip = this.resolveHostIp(nodeId);
+      if (ip) return ip;
+    }
+    return null;
+  }
+
+  /**
+   * Per-subnet / per-target dispatch cap. Counts the currently running|pending
+   * target-facing tasks already on the new task's target IP / /24, and refuses if
+   * adding this one would exceed the policy limit. Returns null (allow) when: no
+   * policy, the task is read-only, it has no resolvable target IP (exempt — matches
+   * the "no-IP node is in-scope" precedent), or it's under the cap. Engagement-global
+   * by design (blast radius doesn't care which campaign).
+   */
+  private checkDispatchCap(task: AgentTask): { scope: 'subnet' | 'target'; key: string; limit: number; current: number } | null {
+    const limits = this.ctx.config.operator_policy?.dispatch_limits;
+    if (!limits || (!limits.max_per_subnet && !limits.max_per_target)) return null;
+    if (!isTargetFacing(task.archetype ?? task.role, limits.target_facing_archetypes)) return null;
+    const ip = this.taskTargetIp(task);
+    if (!ip) return null;
+    const subnet = this.subnetKey(ip);
+
+    let sameTarget = 0;
+    let sameSubnet = 0;
+    for (const other of this.ctx.agents.values()) {
+      if (other.id === task.id) continue;
+      // Count live work: a running OR queued (pending) agent holds a slot — count
+      // both so a queued dispatch doesn't let the cap be over-shot. A slot frees
+      // when the agent reaches a terminal status (completed/failed/interrupted),
+      // including the watchdog's running→interrupted reap.
+      if (other.status !== 'running' && other.status !== 'pending') continue;
+      if (!isTargetFacing(other.archetype ?? other.role, limits.target_facing_archetypes)) continue;
+      const otherIp = this.taskTargetIp(other);
+      if (!otherIp) continue;
+      if (otherIp === ip) sameTarget++;
+      if (subnet && this.subnetKey(otherIp) === subnet) sameSubnet++;
+    }
+
+    if (limits.max_per_target && sameTarget >= limits.max_per_target) {
+      return { scope: 'target', key: ip, limit: limits.max_per_target, current: sameTarget };
+    }
+    if (limits.max_per_subnet && subnet && sameSubnet >= limits.max_per_subnet) {
+      return { scope: 'subnet', key: subnet, limit: limits.max_per_subnet, current: sameSubnet };
+    }
+    return null;
   }
 
   getRunningTaskForFrontierItem(frontierItemId: string): AgentTask | null {
