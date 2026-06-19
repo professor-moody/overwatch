@@ -17,6 +17,7 @@ type Phase =
   | { kind: 'proposed'; plan: api.ProposedPlan }
   | { kind: 'executing' }
   | { kind: 'result'; ok: boolean; text: string }
+  | { kind: 'answer'; answer: api.QueryAnswer }
   | { kind: 'error'; text: string };
 
 const POLL_MAX_TRIES = 45; // ~90s for a planner to return
@@ -68,7 +69,12 @@ export function OperatorCommandBar() {
     setPhase({ kind: 'previewing' });
     try {
       const res = await api.previewCommand(text);
-      if (res.plan_id && res.ops.length > 0) {
+      if (res.query_answer) {
+        // Read-only query: answer is already computed server-side — render it
+        // inline, no confirm gate (nothing mutated).
+        setPhase({ kind: 'answer', answer: res.query_answer });
+        setCommand('');
+      } else if (res.plan_id && res.ops.length > 0) {
         setPhase({ kind: 'preview', planId: res.plan_id, summary: res.summary, ops: res.ops });
       } else if (res.needs_planner && res.planner_task_id) {
         // A planner was dispatched (planner_task_id is only set when the headless
@@ -120,7 +126,7 @@ export function OperatorCommandBar() {
         <span className="text-xs font-medium text-accent">⌘</span>
         <input
           className="flex-1 bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-muted-foreground"
-          placeholder='Command the engagement — "pause the apache agent", "scan 10.50.0.0/16", "focus everyone on credentials"'
+          placeholder='Command or ask — "pause the apache agent", "scan 10.50.0.0/16", "what changed in the last hour", "list hosts"'
           value={command}
           onChange={e => setCommand(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !busy) void submit(); }}
@@ -158,6 +164,21 @@ export function OperatorCommandBar() {
           <div className="flex gap-2">
             <ActionButton onClick={() => void confirm(phase.plan.plan_id)} variant="success" size="xs">Confirm &amp; run</ActionButton>
             <ActionButton onClick={() => void deny(phase.plan.plan_id)} variant="ghost" size="xs">Dismiss</ActionButton>
+          </div>
+        </div>
+      )}
+
+      {phase.kind === 'answer' && (
+        <div className="rounded border border-border bg-surface p-2 text-xs space-y-1.5">
+          <div className="text-foreground">{phase.answer.summary}</div>
+          {phase.answer.rows && phase.answer.rows.length > 0 && (
+            <ul className="space-y-0.5">
+              {phase.answer.rows.map((r, i) => <li key={i} className="font-mono text-[11px] text-muted-foreground">• {r}</li>)}
+            </ul>
+          )}
+          {phase.answer.note && <div className="text-[11px] italic text-muted-foreground">{phase.answer.note}</div>}
+          <div className="flex justify-end">
+            <ActionButton onClick={reset} variant="ghost" size="xs">Dismiss</ActionButton>
           </div>
         </div>
       )}

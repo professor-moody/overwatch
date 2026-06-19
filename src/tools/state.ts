@@ -6,6 +6,7 @@ import { checkAllTools } from '../services/tool-check.js';
 import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { verifyChain } from '../services/activity-chain.js';
+import { computeChangesSince } from '../services/changes-since.js';
 
 type StateToolOptions = {
   getDashboardStatus?: () => { enabled: boolean; running: boolean; address?: string };
@@ -85,29 +86,8 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
       // recent_activity before the next poll. The caller passes its last
       // get_state timestamp; unparseable values are ignored.
       if (since) {
-        const sinceMs = Date.parse(since);
-        if (!Number.isNaN(sinceMs)) {
-          const recent = engine.getFullHistory().filter(h => Date.parse(h.timestamp) > sinceMs);
-          const isFinding = (h: { category?: string; event_type?: string }) =>
-            h.category === 'finding' || (h.event_type ?? '').startsWith('finding');
-          const findings = recent.filter(isFinding).length;
-          const completedAgents = [...new Set(
-            recent.filter(h => h.event_type === 'agent_transcript_submitted')
-              .map(h => h.agent_id)
-              .filter((v): v is string => !!v),
-          )];
-          const material = findings + completedAgents.length;
-          (state as unknown as { changes_since: unknown }).changes_since = {
-            since,
-            findings,
-            agents_completed: completedAgents.length,
-            completed_agent_ids: completedAgents,
-            total_events: recent.length,
-            recommendation: material > 0
-              ? 'New results since your last check — read the completed agents\' summaries/findings, re-rank the frontier, and re-dispatch or report before continuing.'
-              : 'No new findings or agent completions since your last check.',
-          };
-        }
+        const digest = computeChangesSince(engine.getFullHistory(), since);
+        if (digest) (state as unknown as { changes_since: unknown }).changes_since = digest;
       }
 
       const stateText = JSON.stringify(state, null, 2);

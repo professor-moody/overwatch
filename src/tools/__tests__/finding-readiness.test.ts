@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assess } from '../finding-readiness.js';
+import { assess } from '../../services/finding-readiness.js';
 import type { ReportFinding } from '../../services/report-generator.js';
 
 function mkFinding(overrides: Partial<ReportFinding> = {}): ReportFinding {

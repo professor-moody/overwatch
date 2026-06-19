@@ -269,6 +269,15 @@ export interface CommandOpResult {
   error?: string;
 }
 
+/** A read-only query answer rendered inline in the command bar (no confirm). */
+export interface QueryAnswer {
+  kind: 'changes_since' | 'timeline' | 'list_nodes' | 'finding_readiness' | 'unanswerable';
+  summary: string;
+  rows?: string[];
+  total?: number;
+  note?: string;
+}
+
 export interface CommandPreview {
   plan_id?: string;
   ops: OperatorOp[];
@@ -277,6 +286,8 @@ export interface CommandPreview {
   needs_planner: boolean;
   planner_task_id?: string;
   planner_available?: boolean;
+  /** Present when the input was a read-only query; render directly, no confirm. */
+  query_answer?: QueryAnswer;
 }
 
 export interface ProposedPlan {
