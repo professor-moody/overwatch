@@ -17,6 +17,7 @@ import { DeltaAccumulator } from './delta-accumulator.js';
 import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
+import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
 import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
@@ -1827,6 +1828,24 @@ export class DashboardServer {
         return;
       }
       const state = this.buildInterpreterState();
+
+      // Read-only QUERY fast path: runs BEFORE the mutation grammar and
+      // short-circuits on a hit. Queries execute immediately (no confirm gate,
+      // nothing mutates) and never reach interpretCommand or the planner. A
+      // null result means it's not a query → fall through unchanged.
+      const queryOp = interpretQuery(command);
+      if (queryOp) {
+        let query_answer: QueryAnswer;
+        try {
+          query_answer = executeQuery(this.engine, queryOp);
+        } catch (err) {
+          query_answer = { kind: 'unanswerable', summary: err instanceof Error ? err.message : String(err) };
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ops: [], summary: query_answer.summary, unresolved: [], needs_planner: false, query_answer }));
+        return;
+      }
+
       const interp = interpretCommand(command, state);
       let plan_id: string | undefined;
       if (interp.ops.length > 0) {
