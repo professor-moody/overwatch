@@ -23,13 +23,23 @@ import type { GraphEngine } from './graph-engine.js';
 import type { NodeType } from '../types.js';
 import { computeChangesSince } from './changes-since.js';
 import { buildFindingReadiness, type Readiness } from './finding-readiness.js';
+import { runRetrospective } from './retrospective.js';
 
 // A query the operator asked, resolved to a read-only intent.
 export type QueryOp =
   | { kind: 'changes_since'; since?: string }
   | { kind: 'timeline'; entity_id?: string; entity_kind?: 'node' | 'edge'; since?: string; at?: string; limit?: number }
   | { kind: 'list_nodes'; node_type?: NodeType; count_only: boolean; limit: number }
-  | { kind: 'finding_readiness'; finding_id?: string; readiness?: Readiness; gaps_only?: boolean };
+  | { kind: 'finding_readiness'; finding_id?: string; readiness?: Readiness; gaps_only?: boolean }
+  | { kind: 'retrospective' };
+
+/** Minimal structural view of a SkillIndex — keeps this module decoupled from
+ *  the concrete class while letting the retrospective query read skill names. */
+export interface SkillLister { listSkills(): Array<{ name: string; tags: string[] }> }
+
+/** Execution context for read-only queries. `now` is injected for deterministic
+ *  time math; `skills` is consulted only by the retrospective query. */
+export interface QueryExecCtx { now?: Date; skills?: SkillLister | null }
 
 // The rendered answer the command bar shows (small + flat so it renders without
 // a sub-component). `summary` is always present; `rows` are pre-formatted lines.
@@ -273,6 +283,16 @@ function matchChangesSince(q: string, now: Date): QueryOp | null {
   return { kind: 'changes_since', since };
 }
 
+function matchRetrospective(q: string): QueryOp | null {
+  if (/\b(retrospective|retro|post[\s-]?mortem)\b/.test(q)
+    || /\bwhat\s+(worked|wasted\s+time|went\s+(well|wrong)|did\s+we\s+learn)\b/.test(q)
+    || /\blessons\s+learned\b/.test(q)
+    || /\bwhat\s+should\s+the\s+next\s+operator\b/.test(q)) {
+    return { kind: 'retrospective' };
+  }
+  return null;
+}
+
 function matchListNodes(q: string): QueryOp | null {
   // count intent
   let count_only = false;
@@ -321,6 +341,7 @@ export function interpretQuery(rawText: string, now: Date = new Date()): QueryOp
   if (!q) return null;
 
   return matchFindingReadiness(q)
+    ?? matchRetrospective(q)
     ?? matchTimeline(q, now)
     ?? matchChangesSince(q, now)
     ?? matchListNodes(q);
@@ -357,7 +378,8 @@ function resolveNodeRef(engine: GraphEngine, ref: string): { id?: string; candid
 
 /** Execute a read-only QueryOp against the engine. Never mutates. Each branch
  *  returns a valid answer on empty/bad input rather than throwing. */
-export function executeQuery(engine: GraphEngine, op: QueryOp, now: Date = new Date()): QueryAnswer {
+export function executeQuery(engine: GraphEngine, op: QueryOp, ctx: QueryExecCtx = {}): QueryAnswer {
+  const now = ctx.now ?? new Date();
   switch (op.kind) {
     case 'changes_since': {
       // No explicit window → the last 15 minutes (stated in the summary).
@@ -420,6 +442,29 @@ export function executeQuery(engine: GraphEngine, op: QueryOp, now: Date = new D
       if (fs.length === 0) return { kind: 'finding_readiness', summary: head, rows: [], total: 0 };
       const rows = fs.slice(0, ROW_CAP).map(f => `[${f.readiness}] ${f.title} (${f.severity})${f.gaps.length ? ` — ${f.gaps[0]}` : ''}`);
       return { kind: 'finding_readiness', summary: head, rows, total: fs.length, note: fs.length > ROW_CAP ? `showing first ${ROW_CAP} of ${fs.length}` : undefined };
+    }
+
+    case 'retrospective': {
+      const allSkills = ctx.skills ? ctx.skills.listSkills() : [];
+      const result = runRetrospective({
+        config: engine.getConfig(),
+        graph: engine.exportGraph(),
+        history: engine.getFullHistory(),
+        inferenceRules: engine.getInferenceRules(),
+        agents: engine.getAllAgents(),
+        skillNames: allSkills.map(s => s.name),
+        skillTags: allSkills.flatMap(s => s.tags),
+      });
+      // The structured `summary` is a clean digest (objectives, agents, gaps);
+      // append the actionable context-improvement recommendations.
+      const digest = result.summary.split('\n').filter(l => l && l !== '---');
+      const recs = (result.context_improvements.recommendations ?? []).slice(0, 5).map(r => `→ ${r}`);
+      return {
+        kind: 'retrospective',
+        summary: `Retrospective — ${result.inference_suggestions.length} inference suggestion(s), ${result.skill_gaps.missing_skills.length} skill gap(s)`,
+        rows: [...digest, ...recs],
+        note: 'Full narrative report: Findings → Reports → Generate Report (include retrospective).',
+      };
     }
   }
 }

@@ -176,6 +176,21 @@ describe('interpretQuery — finding_readiness', () => {
   });
 });
 
+describe('interpretQuery — retrospective', () => {
+  it.each([
+    'run a retrospective',
+    'retrospective',
+    'retro',
+    'what worked',
+    'what wasted time',
+    'lessons learned',
+    'what should the next operator do',
+    'post-mortem',
+  ])('claims retrospective phrasing: %s', (input) => {
+    expect(iq(input)).toEqual({ kind: 'retrospective' });
+  });
+});
+
 describe('NODE_TYPE_ALIASES never drifts from NODE_TYPES', () => {
   it('every alias maps to a real NodeType', () => {
     const valid = new Set<string>(NODE_TYPES);
@@ -200,14 +215,14 @@ describe('executeQuery — changes_since', () => {
         { event_id: 'e0', timestamp: '2026-06-18T10:00:00Z', description: 'old', category: 'finding' },
       ],
     });
-    const ans = executeQuery(engine, { kind: 'changes_since', since: '2026-06-18T14:45:00.000Z' }, NOW);
+    const ans = executeQuery(engine, { kind: 'changes_since', since: '2026-06-18T14:45:00.000Z' }, { now: NOW });
     expect(ans.kind).toBe('changes_since');
     expect(ans.rows?.some(r => r.includes('1 new finding'))).toBe(true);
     expect(ans.rows?.some(r => r.includes('recon-1'))).toBe(true);
   });
   it('falls back to a 15-min window when no since given', () => {
     const engine = mockEngine({ getFullHistory: () => [] });
-    const ans = executeQuery(engine, { kind: 'changes_since' }, NOW);
+    const ans = executeQuery(engine, { kind: 'changes_since' }, { now: NOW });
     expect(ans.summary).toContain('last 15 min');
   });
 });
@@ -283,5 +298,33 @@ describe('executeQuery — timeline (resolves entity ref to node id)', () => {
     const ans = executeQuery(engine, { kind: 'timeline', entity_id: '10.0.0.5' });
     expect(askedEntity).toBe('host-10-0-0-5'); // not ambiguous
     expect(ans.summary).not.toContain('be specific');
+  });
+});
+
+describe('executeQuery — retrospective', () => {
+  const engine = mockEngine({
+    getConfig: () => ({
+      id: 'eng-1', name: 'Test Engagement', created_at: '2026-06-18T00:00:00Z',
+      objectives: [{ achieved: true }, { achieved: false }],
+      opsec: { name: 'default', max_noise: 0.5, blacklisted_techniques: [] },
+      scope: { cidrs: [], domains: [], exclusions: [], url_patterns: [], aws_accounts: [], azure_subscriptions: [], gcp_projects: [] },
+    }),
+    exportGraph: () => ({ nodes: [], edges: [] }),
+    getFullHistory: () => [],
+    getInferenceRules: () => [],
+    getAllAgents: () => [],
+  });
+  it('summarizes the retrospective digest and degrades without skills', () => {
+    const ans = executeQuery(engine, { kind: 'retrospective' }, { skills: null });
+    expect(ans.kind).toBe('retrospective');
+    expect(ans.summary).toContain('inference suggestion');
+    // digest carries the engagement line; never throws when skills are absent
+    expect(ans.rows?.some(r => r.includes('Test Engagement'))).toBe(true);
+  });
+  it('reads skill names when a skill index is provided', () => {
+    let asked = false;
+    const skills = { listSkills: () => { asked = true; return [{ name: 'recon', tags: ['discovery'] }]; } };
+    executeQuery(engine, { kind: 'retrospective' }, { skills });
+    expect(asked).toBe(true);
   });
 });
