@@ -730,6 +730,8 @@ export class DashboardServer {
       this.serveDecisionLog(url, res);
     } else if (pathname === '/api/timeline') {
       this.serveTimeline(url, res);
+    } else if (pathname === '/api/find-paths') {
+      this.serveFindPaths(url, res);
     } else if (pathname === '/api/sessions') {
       this.serveSessions(res);
     } else if (pathname === '/api/agents') {
@@ -3309,6 +3311,42 @@ export class DashboardServer {
     } catch {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Objective not found or no paths available' }));
+    }
+  }
+
+  // Read-only structured path finder backing the Attack Paths "Custom path"
+  // picker. Unlike /api/paths/:objectiveId (objective-only, 404 on miss), this
+  // accepts arbitrary from/to or an objective and returns 200 with the engine's
+  // analysis_status (found|no_path|missing_endpoint|analysis_failed) + human
+  // warnings, so the picker renders a directed empty state instead of throwing.
+  private serveFindPaths(url: string, res: ServerResponse): void {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const from = params.get('from') || undefined;
+    const to = params.get('to') || undefined;
+    const objective = params.get('objective') || undefined;
+    const optimize = (['confidence', 'stealth', 'balanced'].includes(params.get('optimize') || '')
+      ? params.get('optimize') : 'confidence') as 'confidence' | 'stealth' | 'balanced';
+    const maxParam = parseInt(params.get('max') || '', 10);
+    const max = Number.isFinite(maxParam) ? Math.min(25, Math.max(1, maxParam)) : 5;
+
+    const ok = (body: unknown) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    try {
+      if (objective) {
+        const paths = this.engine.findPathsToObjective(objective, max, optimize);
+        ok({ paths, analysis_status: paths.length ? 'found' : 'no_path', warnings: [], count: paths.length });
+      } else if (from && to) {
+        const detailed = this.engine.findPathsDetailed(from, to, max, optimize);
+        ok({ paths: detailed.paths, analysis_status: detailed.analysis_status, warnings: detailed.warnings ?? [], count: detailed.paths.length });
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'provide from+to, or objective' }));
+      }
+    } catch (err) {
+      ok({ paths: [], analysis_status: 'analysis_failed', warnings: [err instanceof Error ? err.message : String(err)], count: 0 });
     }
   }
 

@@ -15,23 +15,30 @@
 // the panel renders a directed empty state.
 // ============================================================
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 
-import type { ExportedEdge, ExportedNode } from '../../lib/types';
+import { findPaths } from '../../lib/api';
+import type { ExportedEdge, ExportedNode, PathAnalysisStatus } from '../../lib/types';
 import { tiersForPath, type Tier } from '../../lib/tier';
 import {
   ATTACK_PATH_GROUPS,
   attackPathLaneCounts,
   filterDisplayAttackPaths,
   groupDisplayAttackPaths,
+  normalizeApiAttackPath,
   normalizeComputedAttackPath,
+  shouldAutoRunPaths,
   type AttackPathLaneFilter,
   type DisplayAttackPath,
 } from '../../lib/attack-path-workspace';
 import { AttackPathRouteRow } from '../shared/AttackPathRouteRow';
-import { EmptyPanelState, FilterBar, PageHeader, SegmentedControl } from '../shared/primitives';
+import { NodePicker } from '../shared/NodePicker';
+import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, SegmentedControl } from '../shared/primitives';
+
+type RouteOptimize = 'confidence' | 'stealth' | 'balanced';
 
 export type Optimize = 'confidence' | 'stealth';
 
@@ -218,6 +225,119 @@ export function computePaths(
   return out;
 }
 
+// "Custom path" picker — query the ENGINE (server-ranked, supports `balanced`)
+// for paths between two chosen nodes, complementing the client-computed auto-list
+// below. Endpoints are picked from the graph (no free-form name parsing).
+function CustomPathFinder({ nodes, byId, onInspect }: {
+  nodes: ExportedNode[];
+  byId: Map<string, ExportedNode>;
+  onInspect: (p: DisplayAttackPath) => void;
+}) {
+  const [searchParams] = useSearchParams();
+  const [from, setFrom] = useState<string | undefined>(undefined);
+  const [to, setTo] = useState<string | undefined>(undefined);
+  const [optimize, setOptimize] = useState<RouteOptimize>('confidence');
+  const [max, setMax] = useState(5);
+  const [results, setResults] = useState<DisplayAttackPath[] | null>(null);
+  const [status, setStatus] = useState<PathAnalysisStatus | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(params: { from?: string; to?: string; objective?: string; optimize: RouteOptimize; max: number }) {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await findPaths(params);
+      setResults(res.paths.map(p => normalizeApiAttackPath(p, byId)).filter((p): p is DisplayAttackPath => !!p));
+      setStatus(res.analysis_status);
+      setWarnings(res.warnings ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setResults(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Deep-link prefill (e.g. from a node context-menu "paths from/to here").
+  const pFrom = searchParams.get('from') || undefined;
+  const pTo = searchParams.get('to') || undefined;
+  const pObj = searchParams.get('objective') || undefined;
+  useEffect(() => {
+    if (pFrom) setFrom(pFrom);
+    if (pTo) setTo(pTo);
+    // Only auto-run a COMPLETE query (objective, or both endpoints). A
+    // single-endpoint deep-link — the graph context-menu "paths from/to here" —
+    // just prefills the picker and waits for the operator to choose the other
+    // end; the backend needs from+to or an objective, so running half a query
+    // would surface a raw 400.
+    if (shouldAutoRunPaths(pFrom, pTo, pObj)) {
+      void run({ from: pFrom, to: pTo, objective: pObj, optimize, max });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pFrom, pTo, pObj]);
+
+  const canRun = !!(from && to);
+
+  return (
+    <PanelSection title="Custom path" meta="engine-ranked">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex min-w-[180px] flex-1 flex-col gap-1 text-xs text-muted-foreground">
+          from
+          <NodePicker nodes={nodes} value={from} onChange={setFrom} placeholder="start node…" />
+        </label>
+        <label className="flex min-w-[180px] flex-1 flex-col gap-1 text-xs text-muted-foreground">
+          to
+          <NodePicker nodes={nodes} value={to} onChange={setTo} placeholder="target node…" />
+        </label>
+        <SegmentedControl
+          value={optimize}
+          onChange={setOptimize}
+          options={[
+            { value: 'confidence' as const, label: 'Confidence' },
+            { value: 'stealth' as const, label: 'Stealth' },
+            { value: 'balanced' as const, label: 'Balanced' },
+          ]}
+        />
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          max
+          <input
+            type="number" min={1} max={25} value={max}
+            onChange={e => setMax(Math.min(25, Math.max(1, parseInt(e.target.value) || 5)))}
+            className="w-14 rounded border border-border bg-surface px-1 py-0.5 text-xs"
+          />
+        </label>
+        <ActionButton
+          variant="primary"
+          onClick={() => void run({ from, to, optimize, max })}
+          disabled={!canRun || loading}
+        >
+          {loading ? 'Finding…' : 'Find paths'}
+        </ActionButton>
+      </div>
+
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      {!error && results && (
+        results.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {results.map((path, idx) => (
+              <AttackPathRouteRow key={path.id} path={path} index={idx} onInspect={onInspect} />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {status === 'missing_endpoint' ? 'One endpoint is not reachable in the path graph.'
+              : status === 'analysis_failed' ? 'Path analysis failed.'
+              : 'No path between those nodes.'}
+            {warnings.length > 0 ? ` (${warnings.join('; ')})` : ''}
+          </p>
+        )
+      )}
+    </PanelSection>
+  );
+}
+
 export function AttackPathsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const initialized = useEngagementStore((s) => s.initialized);
@@ -266,13 +386,17 @@ export function AttackPathsPanel() {
   if (graph.nodes.length === 0) {
     return <EmptyPanelState message="Run a scan or ingest a finding to populate the engagement graph." />;
   }
-  if (allPaths.length === 0) {
-    return <EmptyPanelState message="No attack paths reachable from current sources." />;
-  }
 
   return (
     <div className="space-y-4">
       <PageHeader title="Attack Paths" meta={`(${allPaths.length} computed · ${visiblePaths.length} visible)`} />
+
+      <CustomPathFinder nodes={graph.nodes} byId={byId} onInspect={inspectPath} />
+
+      {allPaths.length === 0 ? (
+        <EmptyPanelState message="No attack paths reachable from current sources — use the custom path finder above for a specific source/target." />
+      ) : (
+      <>
       <FilterBar>
         <SegmentedControl
           value={laneFilter}
@@ -336,6 +460,8 @@ export function AttackPathsPanel() {
             <p className="text-xs text-muted-foreground">+ {visiblePaths.length - 100} more not shown — narrow the filter to focus.</p>
           ) : null}
         </div>
+      )}
+      </>
       )}
     </div>
   );
