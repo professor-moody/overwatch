@@ -504,6 +504,40 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(1);
   });
 
+  it('retries a lease-conflicted cve_research item on a later drain (does not abandon it)', async () => {
+    svc = makeService({ maxConcurrentHeadless: 3 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+
+    // Another task already holds the lease on the CVE item's deterministic
+    // frontier id (`frontier-cve-<serviceId>`), so the auto-dispatch register
+    // will lease-conflict. Manual backend → never executed, never counted
+    // against the headless budget, and it keeps the lease until we release it.
+    const leaseHolder = {
+      id: 'lease-holder', agent_id: 'op', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], backend: 'manual',
+      frontier_item_id: 'frontier-cve-svc-lease',
+    } as AgentTask;
+    expect(engine.registerAgent(leaseHolder).ok).toBe(true);
+
+    // Seed the versioned service → drainCveResearch's register is refused
+    // (lease conflict, !result.ok). Pre-fix the item was marked attempted and
+    // then never retried — CVE research silently abandoned for the session.
+    seedVersionedService(engine, 'svc-lease');
+    await settle();
+    expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(0);
+    expect(spawned).toHaveLength(0);
+
+    // Release the lease; a later drain MUST retry the item now that it's free.
+    // With the bug (mark survives a refused register) it stays in cveAttempted
+    // and is skipped forever — this would find 0 research agents.
+    engine.updateAgentStatus('lease-holder', 'completed');
+    engine.ingestFinding({ id: 'tick2', agent_id: 't', timestamp: new Date().toISOString(), nodes: [{ id: 'h-tick2', type: 'host', label: '10.0.0.8', ip: '10.0.0.8', alive: true }], edges: [] } as any);
+    await settle();
+    expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(1);
+    expect(spawned).toHaveLength(1);
+  });
+
   it('launches a specialized archetype with its restricted --allowedTools (recon_scanner, web_tester)', async () => {
     svc = makeService();
     svc.start();
