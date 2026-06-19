@@ -176,6 +176,70 @@ describe('interpretQuery — finding_readiness', () => {
   });
 });
 
+describe('interpretQuery — find_paths (narrow: concrete refs / objective / symbolic DC only)', () => {
+  it('symbolic DC + IP single tokens resolve', () => {
+    expect(iq('paths to the DC')).toMatchObject({ kind: 'find_paths', to_ref: 'dc', optimize: 'confidence' });
+    expect(iq('path to the domain controller')).toMatchObject({ kind: 'find_paths', to_ref: 'domain controller' });
+    expect(iq('how do I reach 10.0.0.5')).toMatchObject({ kind: 'find_paths', to_ref: '10.0.0.5' });
+  });
+  it('from/to + between with concrete single-token refs', () => {
+    expect(iq('attack path from web01 to dc01')).toMatchObject({ kind: 'find_paths', from_ref: 'web01', to_ref: 'dc01' });
+    expect(iq('paths between web01 and dc01')).toMatchObject({ kind: 'find_paths', from_ref: 'web01', to_ref: 'dc01' });
+    expect(iq('attack path from the bastion to the dc')).toMatchObject({ kind: 'find_paths', from_ref: 'bastion', to_ref: 'dc' });
+  });
+  it('"to <target> from <node>" order resolves correctly (no self-path)', () => {
+    expect(iq('path to the dc from web01')).toMatchObject({ kind: 'find_paths', from_ref: 'web01', to_ref: 'dc' });
+  });
+  it('objective intent + explicit objective id', () => {
+    expect(iq('show paths to the objective')).toMatchObject({ kind: 'find_paths', objective_intent: true });
+    expect(iq('paths to objective obj-1')).toMatchObject({ kind: 'find_paths', objective_id: 'obj-1' });
+  });
+  it('optimize + max_paths', () => {
+    expect(iq('stealthiest path to the DC')).toMatchObject({ kind: 'find_paths', to_ref: 'dc', optimize: 'stealth' });
+    expect(iq('fastest path to the objective')).toMatchObject({ kind: 'find_paths', optimize: 'confidence', objective_intent: true });
+    expect(iq('top 3 paths to dc01')).toMatchObject({ kind: 'find_paths', max_paths: 3 });
+  });
+  it('bare "show attack paths" → no refs (fans out to objectives at execute time)', () => {
+    const r = iq('show attack paths') as { kind: string; from_ref?: string; to_ref?: string; hint?: string };
+    expect(r.kind).toBe('find_paths');
+    expect(r.from_ref).toBeUndefined();
+    expect(r.to_ref).toBeUndefined();
+    expect(r.hint).toBeUndefined();
+  });
+  it('hyphenated node names containing an optimize word are NOT corrupted', () => {
+    expect(iq('path to fast-db')).toMatchObject({ kind: 'find_paths', to_ref: 'fast-db', optimize: 'confidence' });
+    expect(iq('path to balanced-node')).toMatchObject({ kind: 'find_paths', to_ref: 'balanced-node', optimize: 'confidence' });
+    expect(iq('path to quiet-host01')).toMatchObject({ kind: 'find_paths', to_ref: 'quiet-host01', optimize: 'confidence' });
+    expect(iq('path from web01 to fast-api-gw')).toMatchObject({ kind: 'find_paths', from_ref: 'web01', to_ref: 'fast-api-gw' });
+  });
+  it('single-token target after "into" resolves; a node named like an objective is a node', () => {
+    expect(iq('path into the dmz')).toMatchObject({ kind: 'find_paths', to_ref: 'dmz' });
+    const r = iq('paths to goal-tracker') as { to_ref?: string; objective_intent?: boolean };
+    expect(r.to_ref).toBe('goal-tracker');
+    expect(r.objective_intent).toBeUndefined();
+  });
+  it('cedes count/changed-led phrasings even when "path" appears', () => {
+    expect(iq('what changed on the path')).toMatchObject({ kind: 'changes_since' });
+    expect(iq('how many paths exist')).toBeNull();
+  });
+  it('free-form multi-word / hop / locative targets are REJECTED with a hint (never a wrong-node path)', () => {
+    const reject = (s: string) => {
+      const r = iq(s) as { kind: string; to_ref?: string; from_ref?: string; hint?: string };
+      expect(r.kind).toBe('find_paths');
+      expect(r.hint).toBeTruthy();
+      expect(r.to_ref).toBeUndefined();
+      expect(r.from_ref).toBeUndefined();
+    };
+    reject('path to the file server');            // multi-word free-form
+    reject('path to dc via web01');               // bare hop word
+    reject('path to dc via 10.0.0.1');            // IP hop must NOT be extracted (was wrong-node)
+    reject('path to dc via web01.corp.local');    // FQDN hop must NOT be extracted
+    reject('path to the file server in vlan10');  // locative digit token
+    reject('path to web app v2');                 // version token
+    reject('path to host 10.0.0.9');              // IP buried in a multi-word phrase → name it directly
+  });
+});
+
 describe('interpretQuery — retrospective', () => {
   it.each([
     'run a retrospective',
@@ -298,6 +362,85 @@ describe('executeQuery — timeline (resolves entity ref to node id)', () => {
     const ans = executeQuery(engine, { kind: 'timeline', entity_id: '10.0.0.5' });
     expect(askedEntity).toBe('host-10-0-0-5'); // not ambiguous
     expect(ans.summary).not.toContain('be specific');
+  });
+});
+
+describe('executeQuery — find_paths', () => {
+  const NODES = [
+    { id: 'host-web01', properties: { label: 'web01', ip: '10.0.0.5' } },
+    { id: 'host-dc01', properties: { label: 'DC01', hostname: 'dc01.corp.local' } },
+  ];
+  const path = (nodes: string[]) => ({ nodes, total_confidence: 0.8, total_opsec_noise: 1.5 });
+
+  it('explicit objective_id → findPathsToObjective', () => {
+    let askedObj: string | undefined;
+    const engine = mockEngine({ findPathsToObjective: (id: string) => { askedObj = id; return [path(['a', 'b'])]; } });
+    const ans = executeQuery(engine, { kind: 'find_paths', objective_id: 'obj-1', optimize: 'confidence' });
+    expect(askedObj).toBe('obj-1');
+    expect(ans.summary).toContain('1 path');
+  });
+
+  it('from + to resolved → findPathsDetailed', () => {
+    let args: [string, string] | undefined;
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: NODES, edges: [] }),
+      findPathsDetailed: (f: string, t: string) => { args = [f, t]; return { paths: [path(['host-web01', 'host-dc01'])], analysis_status: 'found' }; },
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', from_ref: 'web01', to_ref: 'dc01', optimize: 'confidence' });
+    expect(args).toEqual(['host-web01', 'host-dc01']);
+    expect(ans.rows?.[0]).toContain('host-web01 → host-dc01');
+  });
+
+  it('to-only ("paths to the DC") fans out from compromised footholds (resolved by label)', () => {
+    const fromArgs: string[] = [];
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: NODES, edges: [] }),
+      getState: () => ({ objectives: [], access_summary: { compromised_hosts: ['web01'] } }),
+      findPaths: (f: string) => { fromArgs.push(f); return [path(['host-web01', 'host-dc01'])]; },
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', to_ref: 'dc', optimize: 'confidence' });
+    expect(fromArgs).toEqual(['host-web01']); // foothold label 'web01' resolved to its node id
+    expect(ans.summary).toContain('1 path');
+  });
+
+  it('to-only with no foothold → guidance, not a crash', () => {
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: NODES, edges: [] }),
+      getState: () => ({ objectives: [], access_summary: { compromised_hosts: [] } }),
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', to_ref: 'dc', optimize: 'confidence' });
+    expect(ans.summary).toContain('No foothold');
+  });
+
+  it('ambiguous target ref → be specific (no path attempt)', () => {
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: [{ id: 'host-1', properties: { label: 'svc-a' } }, { id: 'host-2', properties: { label: 'svc-b' } }], edges: [] }),
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', to_ref: 'svc', optimize: 'confidence' });
+    expect(ans.summary).toMatch(/matches 2 node|No target node/);
+  });
+
+  it('symbolic "the dc" with no real DC → no-match, NOT a substring wrong-node', () => {
+    // graph has a "cdc-archive" node that merely contains "dc" but is not a DC
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: [{ id: 'db-cdc', properties: { label: 'cdc-archive' } }], edges: [] }),
+      getState: () => ({ objectives: [], access_summary: { compromised_hosts: [] } }),
+      findPaths: () => { throw new Error('must not path to a non-DC'); },
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', to_ref: 'dc', optimize: 'confidence' });
+    expect(ans.summary).toMatch(/No target node matches|matches/);
+  });
+
+  it('objective intent (no from) → findPathsToObjective per unachieved objective', () => {
+    const objIds: string[] = [];
+    const engine = mockEngine({
+      queryGraph: () => ({ nodes: NODES, edges: [] }),
+      getState: () => ({ objectives: [{ id: 'obj-1', description: 'DA', achieved: false }, { id: 'obj-2', description: 'done', achieved: true }], access_summary: { compromised_hosts: [] } }),
+      findPathsToObjective: (id: string) => { objIds.push(id); return [path(['x', 'y'])]; },
+    });
+    const ans = executeQuery(engine, { kind: 'find_paths', objective_intent: true, optimize: 'confidence' });
+    expect(objIds).toEqual(['obj-1']); // only the unachieved objective
+    expect(ans.summary).toContain('path');
   });
 });
 
