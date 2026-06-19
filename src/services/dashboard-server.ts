@@ -1837,7 +1837,7 @@ export class DashboardServer {
       if (queryOp) {
         let query_answer: QueryAnswer;
         try {
-          query_answer = executeQuery(this.engine, queryOp);
+          query_answer = executeQuery(this.engine, queryOp, { skills: this.skills });
         } catch (err) {
           query_answer = { kind: 'unanswerable', summary: err instanceof Error ? err.message : String(err) };
         }

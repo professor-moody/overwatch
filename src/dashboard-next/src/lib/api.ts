@@ -271,7 +271,7 @@ export interface CommandOpResult {
 
 /** A read-only query answer rendered inline in the command bar (no confirm). */
 export interface QueryAnswer {
-  kind: 'changes_since' | 'timeline' | 'list_nodes' | 'finding_readiness' | 'unanswerable';
+  kind: 'changes_since' | 'timeline' | 'list_nodes' | 'finding_readiness' | 'retrospective' | 'unanswerable';
   summary: string;
   rows?: string[];
   total?: number;
