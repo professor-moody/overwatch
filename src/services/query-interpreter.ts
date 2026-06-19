@@ -21,16 +21,20 @@
 
 import type { GraphEngine } from './graph-engine.js';
 import type { NodeType } from '../types.js';
+import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { computeChangesSince } from './changes-since.js';
 import { buildFindingReadiness, type Readiness } from './finding-readiness.js';
 import { runRetrospective } from './retrospective.js';
 
-// A query the operator asked, resolved to a read-only intent.
+// A query the operator asked, resolved to a read-only intent. find_paths carries
+// RAW refs (from_ref/to_ref); executeQuery resolves them to node ids against the
+// live graph (interpretQuery stays pure).
 export type QueryOp =
   | { kind: 'changes_since'; since?: string }
   | { kind: 'timeline'; entity_id?: string; entity_kind?: 'node' | 'edge'; since?: string; at?: string; limit?: number }
   | { kind: 'list_nodes'; node_type?: NodeType; count_only: boolean; limit: number }
   | { kind: 'finding_readiness'; finding_id?: string; readiness?: Readiness; gaps_only?: boolean }
+  | { kind: 'find_paths'; from_ref?: string; to_ref?: string; objective_id?: string; objective_intent?: boolean; optimize: PathOptimize; max_paths?: number; hint?: string }
   | { kind: 'retrospective' };
 
 /** Minimal structural view of a SkillIndex — keeps this module decoupled from
@@ -181,6 +185,98 @@ function extractEntityRef(text: string): string | undefined {
 }
 
 // ---- matchers (each pure, returns QueryOp | null) ----
+
+// Optimize/qualifier words as WHOLE space-delimited tokens. OPTIMIZE_TOKEN peels
+// a trailing qualifier off an endpoint phrase; the *_HINT regexes detect intent.
+// All are hyphen-safe (bounded by whitespace/start/end, NOT \b) so a hyphenated
+// node segment like "fast-db" / "balanced-node" is never mistaken for a qualifier.
+const OPTIMIZE_TOKEN = /^(stealthiest|stealthily|stealthy|stealth|quietest|quietly|quiet|silently|silent|sneak|fastest|fast|reliable|reliably|surest|likeliest|balanced?|shortest|best)$/;
+const STEALTH_HINT = /(?:^|\s)(?:stealthiest|stealthily|stealthy|stealth|quietest|quietly|quiet|silently|silent|sneak)(?=\s|$)|low[\s-]?noise|lowest[\s-]?noise|under\s+the\s+radar|opsec[\s-]?safe/;
+const BALANCED_HINT = /(?:^|\s)balanced?(?=\s|$)/;
+// Leading/trailing articles/prepositions to peel off an endpoint phrase. NOT node words.
+const REF_STOPWORD = /^(the|a|an|my|our|to|from|into|toward|towards|via|using|through|reach)$/;
+
+const FIND_PATHS_HINT = 'Name endpoints by IP or node id (e.g. "paths from 10.0.0.5 to dc01"), or ask "paths to the objective".';
+
+/** Strip an endpoint phrase to its meaningful tokens: drop commas/?/!/trailing
+ *  period, peel leading articles + trailing articles/optimize qualifiers. */
+function cleanTokens(phrase: string): string[] {
+  const p = phrase.replace(/[?!,]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
+  if (!p) return [];
+  const toks = p.split(/\s+/);
+  while (toks.length && REF_STOPWORD.test(toks[0])) toks.shift();
+  while (toks.length && (REF_STOPWORD.test(toks[toks.length - 1]) || OPTIMIZE_TOKEN.test(toks[toks.length - 1]))) toks.pop();
+  return toks;
+}
+
+/** Resolve an endpoint phrase to a node ref — but ONLY when it is unambiguous:
+ *  the symbolic DC, a single concrete token (IP/FQDN/node-id/"web01"-style), or
+ *  an embedded IP/FQDN. Free-form multi-word names are REJECTED so we never guess
+ *  a wrong node. `{}` means "no endpoint named"; `{rejected}` means "named but
+ *  un-resolvable — ask the operator for a concrete ref". */
+function endpointRef(phrase: string): { ref?: string; rejected?: boolean } {
+  const toks = cleanTokens(phrase);
+  if (toks.length === 0) return {};
+  const joined = toks.join(' ');
+  if (/^(dc|domain\s+controllers?)$/.test(joined)) return { ref: joined }; // symbolic DC
+  if (toks.length === 1) return { ref: extractEntityRef(toks[0]) ?? toks[0] };
+  // Multi-word free-form is REJECTED — do NOT grep an embedded IP/FQDN out of a
+  // longer phrase, or a "<dest> via <hop-ip>" / locative clause would resolve to
+  // the wrong node. The operator must name a single concrete ref.
+  return { rejected: true };
+}
+
+function matchFindPaths(q: string): QueryOp | null {
+  const hasPath = /\b(attack\s+)?(path|paths|route|routes)\b/.test(q)
+    || /\b(reach|get\s+to|pivot\s+to)\b/.test(q)
+    || /\bthe\s+way\s+to\b/.test(q)
+    || /\btrace\s+a?\s*path\b/.test(q);
+  if (!hasPath) return null;
+  // Cede count/changed-led phrasings even if "path" appears later.
+  if (/^how\s+many\b/.test(q) || /^what(?:'?s| is| has| have| did)?\s+changed\b/.test(q)) return null;
+
+  let optimize: PathOptimize = 'confidence';
+  if (STEALTH_HINT.test(q)) optimize = 'stealth';
+  else if (BALANCED_HINT.test(q)) optimize = 'balanced';
+
+  let max_paths: number | undefined;
+  const mp = q.match(/\btop\s+(\d+)\b/) || q.match(/\b(\d+)\s+paths?\b/);
+  if (mp) max_paths = Math.min(20, Math.max(1, parseInt(mp[1], 10)));
+
+  const reject = (): QueryOp => ({ kind: 'find_paths', optimize, max_paths, hint: FIND_PATHS_HINT });
+
+  // "between X and Y"
+  const between = q.match(/\bbetween\s+(.+?)\s+and\s+(.+)$/);
+  if (between) {
+    const f = endpointRef(between[1]); const t = endpointRef(between[2]);
+    if (f.rejected || t.rejected) return reject();
+    return { kind: 'find_paths', from_ref: f.ref, to_ref: t.ref, optimize, max_paths };
+  }
+
+  // from/to clauses, in EITHER order — each lazily stops at the other.
+  const fromRaw = (q.match(/\bfrom\s+(.+?)(?:\s+to\s+|$)/) ?? [])[1] ?? '';
+  const toRaw = (q.match(/\b(?:to|into|toward|towards|reach|get\s+to|pivot\s+to)\s+(.+?)(?:\s+from\s+|$)/) ?? [])[1] ?? '';
+
+  // explicit objective id wins
+  const objId = q.match(/\b(obj[-_]\S+)\b/)?.[1];
+  if (objId) {
+    const f = endpointRef(fromRaw);
+    if (f.rejected) return reject();
+    return { kind: 'find_paths', from_ref: f.ref, objective_id: objId, optimize, max_paths };
+  }
+
+  // objective intent: the target IS exactly an objective phrase, or none was named.
+  const toCore = cleanTokens(toRaw).join(' ');
+  if (/^(objective|objectives|goal|goals|domain admin)$/.test(toCore) || (!toRaw && /\b(objective|objectives|goal|goals)\b/.test(q))) {
+    const f = endpointRef(fromRaw);
+    if (f.rejected) return reject();
+    return { kind: 'find_paths', from_ref: f.ref, objective_intent: true, optimize, max_paths };
+  }
+
+  const f = endpointRef(fromRaw); const t = endpointRef(toRaw);
+  if (f.rejected || t.rejected) return reject();
+  return { kind: 'find_paths', from_ref: f.ref, to_ref: t.ref, optimize, max_paths };
+}
 
 function matchFindingReadiness(q: string): QueryOp | null {
   // "(any) new findings" is a changes_since digest (what's new), not a proof
@@ -340,7 +436,8 @@ export function interpretQuery(rawText: string, now: Date = new Date()): QueryOp
   const q = text.toLowerCase().replace(/\?+\s*$/, '').trim();
   if (!q) return null;
 
-  return matchFindingReadiness(q)
+  return matchFindPaths(q)
+    ?? matchFindingReadiness(q)
     ?? matchRetrospective(q)
     ?? matchTimeline(q, now)
     ?? matchChangesSince(q, now)
@@ -355,13 +452,25 @@ function nodeRow(n: { id: string; properties: { label?: string; ip?: string; hos
   return `${name}${ip}`;
 }
 
-/** Resolve a free-form ref to a single node id, or report the candidates.
- *  Mirrors the resolveTasks/resolveActionId discipline: exact id → IP/label
- *  substring. Used to turn a typed "10.0.0.5"/"dc01" into the structured node id
- *  the timeline/graph store actually keys on. */
-function resolveNodeRef(engine: GraphEngine, ref: string): { id?: string; candidates: string[] } {
-  const all = engine.queryGraph({ node_filter: {}, limit: COUNT_PROBE }).nodes;
+type RefNode = { id: string; properties: { ip?: string; hostname?: string; label?: string } };
+
+/** Resolve a free-form ref to a single node id over a pre-fetched node list, or
+ *  report the candidates. Mirrors the resolveTasks/resolveActionId discipline:
+ *  exact id → exact IP/hostname → symbolic ("the DC") → substring. Turns a typed
+ *  "10.0.0.5" / "dc01" / "the domain controller" into the structured node id the
+ *  timeline/graph store actually keys on. Takes the node list (not the engine) so
+ *  multi-source resolution reuses a single fetch. */
+function resolveNodeRef(all: RefNode[], ref: string): { id?: string; candidates: string[] } {
   const lower = ref.toLowerCase();
+  // Symbolic "the DC" / "domain controller" resolves FIRST and ONLY against the
+  // strict DC-like set — ahead of exact id/property matching, so a stray host
+  // literally named "dc" can't pre-empt the disambiguation, and never falling
+  // through to the generic substring (which would match "cdc-archive" → wrong node).
+  if (/^(the\s+)?(dc|domain\s+controllers?)$/.test(lower)) {
+    const dcs = all.filter(n => /(^|[^a-z])dc(\d|[^a-z]|$)|domain.?controller/i.test(`${n.id} ${n.properties.label ?? ''} ${n.properties.hostname ?? ''}`));
+    if (dcs.length === 1) return { id: dcs[0].id, candidates: [dcs[0].id] };
+    return { candidates: dcs.slice(0, 5).map(n => n.id) }; // 0 or >1 → ask, don't guess
+  }
   const exact = all.find(n => n.id === ref || n.id.toLowerCase() === lower);
   if (exact) return { id: exact.id, candidates: [exact.id] };
   // Exact IP/hostname-property match BEFORE the substring fallback, so "10.0.0.5"
@@ -374,6 +483,91 @@ function resolveNodeRef(engine: GraphEngine, ref: string): { id?: string; candid
   });
   if (matches.length === 1) return { id: matches[0].id, candidates: [matches[0].id] };
   return { candidates: matches.slice(0, 5).map(n => n.id) };
+}
+
+function ambiguous(role: string, ref: string, candidates: string[]): QueryAnswer {
+  return {
+    kind: 'find_paths',
+    summary: candidates.length ? `"${ref}" matches ${candidates.length} node(s) — be specific.` : `No ${role} matches "${ref}".`,
+    rows: candidates,
+    note: candidates.length ? 'Re-issue with one of these ids.' : undefined,
+  };
+}
+
+const FANOUT_TARGET_CAP = 25;   // max objective-target nodes to path toward
+const FANOUT_SOURCE_CAP = 10;   // max footholds to path from
+
+function executeFindPaths(engine: GraphEngine, op: Extract<QueryOp, { kind: 'find_paths' }>): QueryAnswer {
+  if (op.hint) return { kind: 'find_paths', summary: op.hint };
+  const maxPaths = op.max_paths ?? 5;
+  const render = (ps: Array<PathResult & { objective?: string }>): QueryAnswer => {
+    if (ps.length === 0) return { kind: 'find_paths', summary: 'No path found.', rows: [], note: 'No route exists in the current graph (or an endpoint is missing).' };
+    const rows = ps.slice(0, ROW_CAP).map(p =>
+      `${p.nodes.join(' → ')}  [conf ${p.total_confidence.toFixed(2)}, noise ${p.total_opsec_noise.toFixed(1)}]${p.objective ? ` ⇒ ${p.objective}` : ''}`);
+    return { kind: 'find_paths', summary: `${ps.length} path(s) found.`, rows, total: ps.length, note: ps.length > ROW_CAP ? `showing first ${ROW_CAP} of ${ps.length}` : undefined };
+  };
+
+  if (op.objective_id) return render(engine.findPathsToObjective(op.objective_id, maxPaths, op.optimize));
+
+  const all = engine.queryGraph({ node_filter: {}, limit: COUNT_PROBE }).nodes;
+  const from = op.from_ref ? resolveNodeRef(all, op.from_ref) : undefined;
+  const to = op.to_ref ? resolveNodeRef(all, op.to_ref) : undefined;
+  if (op.from_ref && !from?.id) return ambiguous('start node', op.from_ref, from?.candidates ?? []);
+  if (op.to_ref && !to?.id) return ambiguous('target node', op.to_ref, to?.candidates ?? []);
+
+  if (from?.id && to?.id) return render(engine.findPathsDetailed(from.id, to.id, maxPaths, op.optimize).paths);
+
+  // Fan out to unachieved objectives — explicit "to the objective", or a bare
+  // "show paths" with no endpoints at all.
+  if (op.objective_intent || (!op.from_ref && !op.to_ref)) {
+    const unachieved = engine.getState().objectives.filter(o => !o.achieved);
+    if (unachieved.length === 0) return { kind: 'find_paths', summary: 'No unachieved objectives to path toward.', note: 'Name two nodes: "paths from <node> to <node>".' };
+    return render(fanOutToObjectives(engine, unachieved, op.optimize, maxPaths, from?.id));
+  }
+
+  // "paths to <target>" with no start → path from current footholds (compromised
+  // hosts are stored as LABELS, so resolve each back to a node id).
+  if (to?.id && !from?.id) {
+    const sources = [...new Set(
+      engine.getState().access_summary.compromised_hosts
+        .map(label => resolveNodeRef(all, label).id)
+        .filter((x): x is string => !!x),
+    )];
+    if (sources.length === 0) return { kind: 'find_paths', summary: `No foothold to path from toward "${op.to_ref}".`, note: 'Compromise a host first, or ask "paths from <node> to <target>".' };
+    const acc: PathResult[] = [];
+    for (const src of sources.slice(0, FANOUT_SOURCE_CAP)) acc.push(...engine.findPaths(src, to.id, maxPaths, op.optimize));
+    return render(acc);
+  }
+
+  // "paths from <node>" with no target → fan out from that node to objectives.
+  if (from?.id) return render(fanOutToObjectives(engine, engine.getState().objectives.filter(o => !o.achieved), op.optimize, maxPaths, from.id));
+
+  return { kind: 'find_paths', summary: 'Specify a target, or ask for paths to the objective.' };
+}
+
+/** Paths toward each unachieved objective. With a start node we enumerate the
+ *  objective's target nodes (guarded on target_criteria, mirroring
+ *  path-analyzer, so an under-specified objective doesn't fan out to EVERY node
+ *  of a type) and run point-to-point; without one we delegate to the canonical
+ *  findPathsToObjective. */
+function fanOutToObjectives(
+  engine: GraphEngine,
+  objectives: Array<{ id: string; description: string; achieved?: boolean; target_node_type?: NodeType; target_criteria?: Record<string, unknown> }>,
+  optimize: PathOptimize,
+  maxPaths: number,
+  fromId?: string,
+): Array<PathResult & { objective?: string }> {
+  const acc: Array<PathResult & { objective?: string }> = [];
+  for (const obj of objectives) {
+    if (fromId) {
+      if (!obj.target_criteria) continue; // guard: matches path-analyzer's resolveObjectiveTargets
+      const targets = engine.queryGraph({ node_type: obj.target_node_type, node_filter: obj.target_criteria, limit: COUNT_PROBE }).nodes.slice(0, FANOUT_TARGET_CAP);
+      for (const tn of targets) acc.push(...engine.findPaths(fromId, tn.id, maxPaths, optimize).map(p => ({ ...p, objective: obj.description })));
+    } else {
+      acc.push(...engine.findPathsToObjective(obj.id, maxPaths, optimize).map(p => ({ ...p, objective: obj.description })));
+    }
+  }
+  return acc;
 }
 
 /** Execute a read-only QueryOp against the engine. Never mutates. Each branch
@@ -398,7 +592,7 @@ export function executeQuery(engine: GraphEngine, op: QueryOp, ctx: QueryExecCtx
       // the timeline keys on; a bare ref never matches the stored id directly.
       let entityId = op.entity_id;
       if (op.entity_id) {
-        const r = resolveNodeRef(engine, op.entity_id);
+        const r = resolveNodeRef(engine.queryGraph({ node_filter: {}, limit: COUNT_PROBE }).nodes, op.entity_id);
         if (r.id) entityId = r.id;
         else if (r.candidates.length > 1) return { kind: 'timeline', summary: `"${op.entity_id}" matches ${r.candidates.length} nodes — be specific.`, rows: r.candidates };
         else return { kind: 'timeline', summary: `No node matches "${op.entity_id}".`, rows: [] };
@@ -443,6 +637,9 @@ export function executeQuery(engine: GraphEngine, op: QueryOp, ctx: QueryExecCtx
       const rows = fs.slice(0, ROW_CAP).map(f => `[${f.readiness}] ${f.title} (${f.severity})${f.gaps.length ? ` — ${f.gaps[0]}` : ''}`);
       return { kind: 'finding_readiness', summary: head, rows, total: fs.length, note: fs.length > ROW_CAP ? `showing first ${ROW_CAP} of ${fs.length}` : undefined };
     }
+
+    case 'find_paths':
+      return executeFindPaths(engine, op);
 
     case 'retrospective': {
       const allSkills = ctx.skills ? ctx.skills.listSkills() : [];
