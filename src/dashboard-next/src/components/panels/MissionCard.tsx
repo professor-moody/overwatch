@@ -7,6 +7,7 @@ import type { MissionCard as MissionCardModel, MissionTone } from '../../lib/age
 
 const TONE_DOT: Record<MissionTone, string> = {
   blocked: 'bg-warning',
+  stuck: 'bg-warning/60',
   running: 'bg-success',
   failed: 'bg-destructive',
   done: 'bg-accent',
@@ -47,6 +48,7 @@ export function MissionCard({
         'cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-hover/40',
         active && 'border-l-2 border-l-accent bg-accent/10',
         card.tone === 'blocked' && !active && 'border-l-2 border-l-warning/60',
+        card.tone === 'stuck' && !active && 'border-l-2 border-l-warning/40',
       )}
     >
       <div className="flex items-center gap-2">

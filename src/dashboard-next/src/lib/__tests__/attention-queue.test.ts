@@ -20,7 +20,7 @@ describe('buildAttentionQueue', () => {
     const v = buildAttentionQueue({ now: NOW });
     expect(v.total).toBe(0);
     expect(v.items).toEqual([]);
-    expect(v.counts).toEqual({ approval: 0, question: 0, failed: 0 });
+    expect(v.counts).toEqual({ approval: 0, question: 0, failed: 0, stuck: 0 });
   });
 
   it('merges approvals, questions, and failed agents into one queue with counts', () => {
@@ -32,7 +32,7 @@ describe('buildAttentionQueue', () => {
       // a running agent should NOT appear:
     }, );
     expect(v.total).toBe(3);
-    expect(v.counts).toEqual({ approval: 1, question: 1, failed: 1 });
+    expect(v.counts).toEqual({ approval: 1, question: 1, failed: 1, stuck: 0 });
   });
 
   it('orders timeout-soon approval > question > high-risk approval > normal approval > failed', () => {
@@ -118,5 +118,63 @@ describe('buildAttentionQueue', () => {
     });
     expect(v.counts.question).toBe(3);
     expect(v.items.every(i => i.queryIds?.length === 1)).toBe(true);
+  });
+});
+
+describe('buildAttentionQueue — stuck agents', () => {
+  const idle = (o: Partial<AgentInfo> = {}) => agent({
+    status: 'running',
+    assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
+    current_action_at: new Date(NOW - 20 * 60_000).toISOString(),
+    ...o,
+  });
+
+  it('flags a heartbeating-but-idle running agent as a stuck item', () => {
+    const v = buildAttentionQueue({ now: NOW, agents: [idle({ id: 'tstuck', agent_id: 'recon-9' })] });
+    expect(v.counts.stuck).toBe(1);
+    const it = v.items.find(i => i.kind === 'stuck');
+    expect(it?.taskId).toBe('tstuck');
+    expect(it?.detail).toContain('idle');
+  });
+
+  it('does NOT flag a just-started agent (assigned_at recent)', () => {
+    const v = buildAttentionQueue({ now: NOW, agents: [idle({ assigned_at: new Date(NOW - 60_000).toISOString(), current_action_at: new Date(NOW - 60_000).toISOString() })] });
+    expect(v.counts.stuck).toBe(0);
+  });
+
+  it('does NOT flag an idle agent that is blocked (pending approval) — no double-count', () => {
+    const v = buildAttentionQueue({
+      now: NOW,
+      agents: [idle({ id: 'tb', agent_id: 'web-2' })],
+      pendingActions: [action({ action_id: 'a1', agent_id: 'web-2' })],
+    });
+    expect(v.counts.stuck).toBe(0);
+    expect(v.counts.approval).toBe(1);
+  });
+
+  it('does NOT flag when assigned_at is missing (legacy non-heartbeating task)', () => {
+    const v = buildAttentionQueue({ now: NOW, agents: [agent({ status: 'running', current_action_at: new Date(NOW - 20 * 60_000).toISOString() })] });
+    expect(v.counts.stuck).toBe(0);
+  });
+
+  it('does NOT flag when current_action_at is absent (unattributable activity)', () => {
+    const v = buildAttentionQueue({ now: NOW, agents: [agent({ status: 'running', assigned_at: new Date(NOW - 20 * 60_000).toISOString() })] });
+    expect(v.counts.stuck).toBe(0);
+  });
+
+  it('a bad last_finding_at does not leak NaN into the stuck detail', () => {
+    const v = buildAttentionQueue({ now: NOW, agents: [idle({ id: 'tn', last_finding_at: 'not-a-date' })] });
+    expect(v.items.find(i => i.kind === 'stuck')?.detail).not.toContain('NaN');
+  });
+
+  it('orders stuck below approvals/questions, above failed', () => {
+    const v = buildAttentionQueue({
+      now: NOW,
+      pendingActions: [action({ action_id: 'a1' })],
+      agents: [idle({ id: 'tstuck' }), agent({ id: 'tf', status: 'failed' })],
+    });
+    const kinds = v.items.map(i => i.kind);
+    expect(kinds.indexOf('approval')).toBeLessThan(kinds.indexOf('stuck'));
+    expect(kinds.indexOf('stuck')).toBeLessThan(kinds.indexOf('failed'));
   });
 });

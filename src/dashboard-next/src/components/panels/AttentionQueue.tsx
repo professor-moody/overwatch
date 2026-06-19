@@ -49,6 +49,7 @@ export function AttentionQueue({
         <span className="rounded-full bg-warning/20 px-1.5 text-[10px] text-warning">{view.total}</span>
         {view.counts.approval > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.approval} approval{view.counts.approval !== 1 ? 's' : ''}</span>}
         {view.counts.question > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.question} question{view.counts.question !== 1 ? 's' : ''}</span>}
+        {view.counts.stuck > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.stuck} stuck</span>}
         {view.counts.failed > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.failed} failed</span>}
         {view.counts.approval > 0 && (
           <button onClick={onTriageAll} className="ml-auto text-[10px] text-accent hover:underline">Triage all →</button>
@@ -92,7 +93,7 @@ function AttentionRow({
   onAnswered: () => void;
   onSelectAgent: (taskId: string) => void;
 }) {
-  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : 'text-accent';
+  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : 'text-accent';
   return (
     <div className={cn('rounded border bg-surface', expanded ? 'border-accent/40' : 'border-border')}>
       <button onClick={onToggle} className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs">
@@ -111,7 +112,7 @@ function AttentionRow({
           )}
           {item.kind === 'approval' && item.actionId && <ApprovalActions actionId={item.actionId} title={item.title} />}
           {item.kind === 'question' && item.queryIds && item.queryIds.length > 0 && <AnswerActions queryIds={item.queryIds} options={item.options} onAnswered={onAnswered} />}
-          {item.kind === 'failed' && item.taskId && (
+          {(item.kind === 'failed' || item.kind === 'stuck') && item.taskId && (
             <ActionButton size="xs" variant="secondary" onClick={() => onSelectAgent(item.taskId!)}>View agent →</ActionButton>
           )}
         </div>

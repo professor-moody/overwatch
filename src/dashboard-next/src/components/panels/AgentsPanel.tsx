@@ -530,7 +530,7 @@ function MissionRoster({
   onToggleGroup: (id: string) => void;
   onCancelAgent: (id: string) => void;
 }) {
-  const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked').length, 0);
+  const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length, 0);
   const failedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'failed').length, 0);
 
   return (
@@ -577,7 +577,7 @@ function MissionRoster({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.map(group => {
           const isCollapsed = collapsedGroups.has(group.key);
-          const groupLive = group.cards.filter(c => c.tone === 'running' || c.tone === 'blocked').length;
+          const groupLive = group.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length;
           return (
             <div key={group.key} className="border-b border-border">
               <button

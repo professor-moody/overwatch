@@ -8,7 +8,14 @@ import { sessionsForAgent } from './session-workspace';
 // shaped "mission card". Pure surfacing: no new engine state. The card answers
 // "is this agent productive, blocked, or done?" at a glance.
 
-export type MissionTone = 'running' | 'blocked' | 'failed' | 'done' | 'idle';
+export type MissionTone = 'running' | 'blocked' | 'stuck' | 'failed' | 'done' | 'idle';
+
+// A running agent that keeps heartbeating (so the watchdog won't reap it) but
+// makes no progress is "stuck". Threshold sits above the mission card's
+// RECENT_MS (5m) — so an agent is already visually "quiet" first — and well clear
+// of the 120s heartbeat TTL / 30s watchdog tick, so there's no overlap with
+// reaping. Tunable; conservative by default to avoid false positives.
+export const STUCK_IDLE_MS = 8 * 60_000;
 export type HeartbeatFreshness = 'fresh' | 'recent' | 'quiet' | 'none';
 
 export interface MissionCard {
@@ -57,7 +64,7 @@ function freshnessFor(agent: AgentInfo, now: number): HeartbeatFreshness {
 }
 
 /** Does an open agent question belong to this agent (by task id or label)? */
-function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): boolean {
+export function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): boolean {
   const ids = new Set([agent.id, agent.agent_id].filter((v): v is string => !!v));
   return queries.some(q => q.status !== 'answered' && (
     (!!q.task_id && ids.has(q.task_id)) || (!!q.agent_id && ids.has(q.agent_id))
@@ -72,13 +79,47 @@ function awaitingAnswerFor(agent: AgentInfo, queries: AgentQuery[]): boolean {
  * card to "waiting on approval". (A real agent_id on validate_action is tracked
  * as backend work in Phase 2.)
  */
-function pendingApprovalFor(agent: AgentInfo, actions: PendingAction[]): boolean {
+export function pendingApprovalFor(agent: AgentInfo, actions: PendingAction[]): boolean {
   const ids = new Set([agent.id, agent.agent_id].filter((v): v is string => !!v));
   const frontier = agent.frontier_item_id;
   return actions.some(a =>
     (!!a.agent_id && ids.has(a.agent_id)) ||
     (!!frontier && !!a.frontier_item_id && a.frontier_item_id === frontier),
   );
+}
+
+/**
+ * A running agent is "stuck" when it's still heartbeating (status stays 'running'
+ * — a stale heartbeat would have been reaped to 'interrupted') but has made no
+ * progress for STUCK_IDLE_MS and is NOT blocked on the operator (no pending
+ * approval / open question — that's "blocked", a different, already-surfaced
+ * state). The assigned_at age gate suppresses just-dispatched agents and any task
+ * with an unparseable/missing timestamp (legacy non-heartbeating runs). Pure;
+ * shared by the mission card tone and the attention queue so they never diverge.
+ */
+export function isStuck(
+  agent: AgentInfo,
+  now: number,
+  ctx: { pendingActions?: PendingAction[]; agentQueries?: AgentQuery[] } = {},
+): boolean {
+  if (agent.status !== 'running') return false;
+  if (awaitingAnswerFor(agent, ctx.agentQueries ?? []) || pendingApprovalFor(agent, ctx.pendingActions ?? [])) return false;
+  const assignedAge = agent.assigned_at ? now - new Date(agent.assigned_at).getTime() : NaN;
+  if (!Number.isFinite(assignedAge) || assignedAge <= STUCK_IDLE_MS) return false;
+  // Require a REAL last-action timestamp — don't fall back to assigned_at. The
+  // server leaves current_action_at undefined when it can't attribute activity
+  // (e.g. two running tasks sharing one agent_id label), and an active agent must
+  // not be flagged stuck just because its action couldn't be keyed to the task.
+  if (!agent.current_action_at) return false;
+  const idleAge = now - new Date(agent.current_action_at).getTime();
+  return Number.isFinite(idleAge) && idleAge > STUCK_IDLE_MS;
+}
+
+/** Whole minutes an agent has been idle (last action, or dispatch if none). */
+export function stuckIdleMinutes(agent: AgentInfo, now: number): number {
+  const lastAt = agent.current_action_at || agent.assigned_at;
+  const age = lastAt ? now - new Date(lastAt).getTime() : 0;
+  return Math.max(0, Math.floor(age / 60_000));
 }
 
 export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): MissionCard {
@@ -90,17 +131,22 @@ export function buildMissionCard(agent: AgentInfo, ctx: MissionContext = {}): Mi
   const awaitingAnswer = awaitingAnswerFor(agent, queries);
   const pendingApproval = pendingApprovalFor(agent, actions);
   const terminalBad = agent.status === 'failed' || agent.status === 'interrupted';
+  // isStuck already excludes blocked agents, so the tone ladder's blocked check
+  // (above stuck) keeps blocked winning — an agent waiting on you is "blocked".
+  const stuck = isStuck(agent, now, { pendingActions: actions, agentQueries: queries });
 
   let blocker: string | undefined;
   if (awaitingAnswer) blocker = 'waiting on your answer';
   else if (pendingApproval) blocker = 'waiting on approval';
   else if (terminalBad) blocker = agent.result_summary || agent.status;
+  else if (stuck) blocker = `idle ${stuckIdleMinutes(agent, now)}m — may be stuck`;
 
   let tone: MissionTone;
   if (terminalBad) tone = 'failed';
   else if (agent.status === 'completed') tone = 'done';
   else if (agent.status === 'pending') tone = 'idle';
   else if (awaitingAnswer || pendingApproval) tone = 'blocked';
+  else if (stuck) tone = 'stuck';
   else tone = 'running';
 
   return {
@@ -130,7 +176,7 @@ export interface MissionGroup {
 }
 
 const TONE_ORDER: Record<MissionTone, number> = {
-  blocked: 0, running: 1, failed: 2, idle: 3, done: 4,
+  blocked: 0, stuck: 1, running: 2, failed: 3, idle: 4, done: 5,
 };
 
 /** Sort so the agents that need attention float up. */
