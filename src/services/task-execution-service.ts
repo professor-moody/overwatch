@@ -181,7 +181,16 @@ export class TaskExecutionService {
       // Only a real launch consumes one of our concurrency slots; a lease conflict
       // (another task already working the item) does not, so don't burn budget on
       // it. registerAgent fires onUpdate → drainHeadless launches the sub-agent.
-      if (result.ok) budget--;
+      if (result.ok) {
+        budget--;
+      } else {
+        // Register was refused (lease conflict / dispatch cap) — nothing launched,
+        // no slot consumed. Un-mark so the item is retried on a later drain when
+        // the lease frees, instead of being silently abandoned for the session.
+        // (The mark above still did its job: it suppressed the synchronous
+        // re-entrant pass during registerAgent from double-dispatching this item.)
+        this.cveAttempted.delete(item.id);
+      }
     }
   }
 

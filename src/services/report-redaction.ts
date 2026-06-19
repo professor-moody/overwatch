@@ -44,7 +44,7 @@ function sha256(s: string): string {
  * leaking the content.
  */
 export function redactBlob(content: string | undefined | null, opts: RedactionOptions): string | null {
-  if (content == null) return content ?? null;
+  if (content == null) return null;
   if (!opts.client_safe) return content;
   const bytes = Buffer.byteLength(content, 'utf-8');
   const kb = (bytes / 1024).toFixed(1);

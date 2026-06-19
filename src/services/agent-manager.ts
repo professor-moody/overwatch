@@ -7,6 +7,14 @@
 import type { EngineContext } from './engine-context.js';
 import type { AgentTask } from '../types.js';
 
+/**
+ * Default heartbeat TTL (seconds) for a running agent that didn't specify one.
+ * A task whose last heartbeat is older than this is reaped as stale. The runner
+ * grants cold-starting headless agents a longer TTL explicitly (its own
+ * `HEADLESS_STARTUP_TTL_SECONDS`); this is the floor for everything else.
+ */
+const DEFAULT_HEARTBEAT_TTL_SECONDS = 120;
+
 export class AgentManager {
   private ctx: EngineContext;
 
@@ -206,7 +214,7 @@ export class AgentManager {
     for (const task of this.ctx.agents.values()) {
       if (task.status !== 'running') continue;
       if (!task.heartbeat_at) continue; // never heartbeated → exempt
-      const ttl = (task.heartbeat_ttl_seconds ?? 120) * 1000;
+      const ttl = (task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS) * 1000;
       const last = Date.parse(task.heartbeat_at);
       if (Number.isNaN(last)) continue;
       if (cutoffNow - last <= ttl) continue;
@@ -226,7 +234,7 @@ export class AgentManager {
         details: {
           reason: 'heartbeat_timeout',
           heartbeat_at: task.heartbeat_at,
-          heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? 120,
+          heartbeat_ttl_seconds: task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS,
         },
       });
       reaped++;
