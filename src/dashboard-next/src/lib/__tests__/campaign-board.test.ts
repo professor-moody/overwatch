@@ -27,6 +27,7 @@ describe('laneForCard', () => {
     expect(laneForCard(card({ tone: 'running', findingsCount: 3 }))).toBe('produced_finding');
     expect(laneForCard(card({ tone: 'idle' }))).toBe('planned');
     expect(laneForCard(card({ tone: 'running', findingsCount: 0 }))).toBe('running');
+    expect(laneForCard(card({ tone: 'stuck' }))).toBe('blocked'); // stuck "needs you"
   });
 
   it('prioritizes attention/terminal states over running + findings', () => {

@@ -1,6 +1,7 @@
 import type { AgentInfo, PendingAction } from './types';
 import type { AgentQuery } from './api';
 import { toConsoleApprovalItem, type ConsoleApprovalItem } from './console-approvals';
+import { isStuck, stuckIdleMinutes } from './agent-mission';
 
 // Phase 5 (Mission Control) — one prioritized "what needs me" queue, merging the
 // surfaces that today live as separate boxes: pending approvals (act inline),
@@ -8,7 +9,7 @@ import { toConsoleApprovalItem, type ConsoleApprovalItem } from './console-appro
 // shows one item expanded at a time. Stuck-agent detection joins this in Phase 2
 // (the `kind` union is the extension point).
 
-export type AttentionKind = 'approval' | 'question' | 'failed';
+export type AttentionKind = 'approval' | 'question' | 'failed' | 'stuck';
 
 export interface AttentionItem {
   /** Stable id so the expanded-item selection survives re-renders: `<kind>:<ref>`. */
@@ -46,6 +47,10 @@ const P_TIMEOUT_APPROVAL = 120;
 const P_QUESTION = 100;
 const P_HIGH_APPROVAL = 95;
 const P_APPROVAL = 80;
+// A stuck agent is burning a concurrency slot doing nothing — more actionable
+// than a stale failure sitting in history, but below a live agent explicitly
+// waiting on the operator (approval/question).
+const P_STUCK = 60;
 const P_FAILED = 40;
 
 function approvalItem(action: PendingAction, now: number): AttentionItem {
@@ -111,6 +116,23 @@ function failedItem(agent: AgentInfo): AttentionItem {
   };
 }
 
+function stuckItem(agent: AgentInfo, now: number): AttentionItem {
+  const idle = stuckIdleMinutes(agent, now);
+  const findingMs = agent.last_finding_at ? now - new Date(agent.last_finding_at).getTime() : NaN;
+  const lastFinding = Number.isFinite(findingMs)
+    ? `, last finding ${Math.max(0, Math.floor(findingMs / 60_000))}m ago`
+    : '';
+  return {
+    id: `stuck:${agent.id}`,
+    kind: 'stuck',
+    priority: P_STUCK,
+    title: 'Agent stuck',
+    detail: `Heartbeating but idle ${idle}m${lastFinding} — no progress. Consider steering or stopping it.`,
+    agentLabel: agent.agent_id || agent.id,
+    taskId: agent.id,
+  };
+}
+
 export interface AttentionInput {
   pendingActions?: PendingAction[];
   agentQueries?: AgentQuery[];
@@ -149,11 +171,17 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
   for (const group of clusters.values()) items.push(questionClusterItem(group));
   for (const agent of input.agents ?? []) {
     if (recentlyFailed(agent, now, windowMs)) items.push(failedItem(agent));
+    // Stuck is mutually exclusive with blocked (isStuck excludes agents waiting
+    // on an approval/question), so this never double-counts a blocked agent that
+    // already has its approval/question item in the queue.
+    else if (isStuck(agent, now, { pendingActions: input.pendingActions, agentQueries: input.agentQueries })) {
+      items.push(stuckItem(agent, now));
+    }
   }
 
   items.sort((a, b) => (b.priority - a.priority) || a.id.localeCompare(b.id));
 
-  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, failed: 0 };
+  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, failed: 0, stuck: 0 };
   for (const it of items) counts[it.kind] += 1;
 
   return { items, total: items.length, counts };

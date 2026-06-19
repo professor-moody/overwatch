@@ -26,7 +26,7 @@ Much of "command a team" is **surfacing primitives that already exist**, not bui
 | Retrospective | inference-gap, skill-gap, and context-gap analysis plus training traces |
 | Scope preview | `previewScopeChange` is a read-only dry-run returning nodes entering/leaving scope (the Add-Targets precedent) |
 
-The net-new engine work has been landing phase by phase. **Shipped:** the **data-driven role system** (agent archetypes), **question clustering**, the **operator-memory → compiled-policy** substrate (MVP — approval rules + per-subnet/target dispatch caps + a Settings editor), and **NL graph queries** (read-only changes_since / timeline / list_nodes / finding_readiness / retrospective / find_paths, plus a structured Attack-Paths node-picker). **Still ahead:** **productivity-based stuck detection** and a **graph-delta plan estimator**. Those are tracked in the phases below.
+The net-new engine work has been landing phase by phase. **Shipped:** the **data-driven role system** (agent archetypes), **question clustering**, the **operator-memory → compiled-policy** substrate (MVP — approval rules + per-subnet/target dispatch caps + a Settings editor), and **NL graph queries** (read-only changes_since / timeline / list_nodes / finding_readiness / retrospective / find_paths, plus a structured Attack-Paths node-picker), and **stuck-agent detection**. **Still ahead:** a **graph-delta plan estimator**. Those are tracked in the phases below.
 
 ## Runtime: MCP-optional drivers
 
@@ -55,7 +55,7 @@ Reorganize the console body around Monitor / Decide / Command — mostly surfaci
 
 Make the cards and queue intelligent.
 
-- **Stuck / blocked detection** — the watchdog today only knows heartbeat-TTL, so a heartbeating-but-idle agent runs forever. Add per-task productivity counters (actions / findings / mutations since last, last-action time) and flag `stuck` (heartbeating, no progress) and `blocked` (waiting on an approval/answer).
+- **Stuck / blocked detection — ✅ shipped** — the watchdog only knows heartbeat-TTL, so a heartbeating-but-idle agent would otherwise run forever. **Blocked** (waiting on an approval/answer) was already derived (mission-card tone + the approval/question items in "Needs you"). **Stuck** is the net-new: a pure dashboard-side projection (`isStuck` in `agent-mission.ts`) flags a still-`running` agent that's idle past `STUCK_IDLE_MS` (8 min, above the heartbeat TTL / visual-quiet thresholds) and **not** blocked, using the `current_action_at` / `assigned_at` already on the agent DTO — no new engine state. It surfaces as a `stuck` "Needs you" item (priority below approvals/questions, above stale failures), a `stuck` mission-card tone, and the board's Blocked lane. *(Richer per-task productivity counters remain a later enrichment; the last-action timestamp is sufficient to flag stuck.)*
 - **Proof Packets** — a per-finding readiness rollup over the existing evidence chains, classifier, and trust signals: summary, supporting action IDs, evidence, affected nodes, validation status, attack-path impact, and a readiness label (draft / needs-validation / client-ready).
 - **Directive Templates** — reusable one-click operator directives ("go quiet", "credential focus only", "no target-facing", "wrap up with proof packet", "avoid this subnet", "prioritize identity edges", "stop after one confirmed finding") compiling to the existing directive ops.
 

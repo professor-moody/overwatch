@@ -111,3 +111,47 @@ describe('sortMissionCards / groupMissionCards', () => {
     expect(groups[1].cards.map(c => c.id)).toEqual(['c']);
   });
 });
+
+describe('buildMissionCard — stuck detection', () => {
+  const idle = (o: Partial<AgentInfo> = {}) => agent({
+    status: 'running',
+    assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
+    current_action_at: new Date(NOW - 20 * 60_000).toISOString(),
+    ...o,
+  });
+
+  it('flags a heartbeating-but-idle running agent as stuck', () => {
+    const card = buildMissionCard(idle(), { now: NOW });
+    expect(card.tone).toBe('stuck');
+    expect(card.blocker).toContain('may be stuck');
+  });
+
+  it('a just-started agent is running, not stuck', () => {
+    const card = buildMissionCard(idle({ assigned_at: new Date(NOW - 60_000).toISOString(), current_action_at: new Date(NOW - 60_000).toISOString() }), { now: NOW });
+    expect(card.tone).toBe('running');
+  });
+
+  it('blocked beats stuck (open question + idle → blocked)', () => {
+    const card = buildMissionCard(idle(), { now: NOW, agentQueries: [query()] });
+    expect(card.tone).toBe('blocked');
+  });
+
+  it('missing assigned_at → running, not stuck', () => {
+    const card = buildMissionCard(agent({ status: 'running', current_action_at: new Date(NOW - 20 * 60_000).toISOString() }), { now: NOW });
+    expect(card.tone).toBe('running');
+  });
+
+  it('no current_action_at (unattributable activity, e.g. shared label) → running, not stuck', () => {
+    const card = buildMissionCard(agent({ status: 'running', assigned_at: new Date(NOW - 20 * 60_000).toISOString() }), { now: NOW });
+    expect(card.tone).toBe('running');
+  });
+
+  it('sortMissionCards places stuck below blocked, above running', () => {
+    const sorted = sortMissionCards([
+      buildMissionCard(agent({ id: 'r', agent_id: 'run', status: 'running', current_action_at: new Date(NOW).toISOString() }), { now: NOW }),
+      buildMissionCard(idle({ id: 's', agent_id: 'stuck' }), { now: NOW }),
+      buildMissionCard(agent({ id: 'b', agent_id: 'blk' }), { now: NOW, agentQueries: [query({ task_id: 'b', agent_id: 'blk' })] }),
+    ]);
+    expect(sorted.map(c => c.tone)).toEqual(['blocked', 'stuck', 'running']);
+  });
+});

@@ -37,6 +37,7 @@ export function laneForCard(card: MissionCard): BoardLane {
   if (card.tone === 'failed') return 'failed';
   if (card.pendingApproval) return 'needs_approval';
   if (card.awaitingAnswer) return 'blocked';
+  if (card.tone === 'stuck') return 'blocked'; // heartbeating-but-idle also "needs you"
   if (card.tone === 'done') return 'completed';
   if (card.findingsCount > 0) return 'produced_finding';
   if (card.tone === 'idle') return 'planned';

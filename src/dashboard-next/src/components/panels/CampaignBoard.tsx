@@ -11,6 +11,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 const TONE_DOT: Record<MissionTone, string> = {
   running: 'bg-accent',
   blocked: 'bg-warning',
+  stuck: 'bg-warning/60',
   failed: 'bg-destructive',
   done: 'bg-success',
   idle: 'bg-muted-foreground',
