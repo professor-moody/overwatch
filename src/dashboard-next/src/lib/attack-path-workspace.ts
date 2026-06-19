@@ -218,6 +218,14 @@ export function normalizeComputedAttackPath(
   });
 }
 
+/** Whether a deep-link should auto-run the path query, vs just prefill the
+ *  picker. Only a COMPLETE query runs (an objective, or both endpoints) — a
+ *  single-endpoint deep-link (graph context-menu "paths from/to here") prefills
+ *  and waits, since GET /api/find-paths 400s on a half query. */
+export function shouldAutoRunPaths(from?: string, to?: string, objective?: string): boolean {
+  return !!(objective || (from && to));
+}
+
 export function normalizeApiAttackPath(
   path: AttackPath,
   byId: Map<string, ExportedNode>,

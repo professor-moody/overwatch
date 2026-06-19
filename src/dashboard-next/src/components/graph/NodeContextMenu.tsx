@@ -22,7 +22,7 @@ interface NodeContextMenuProps {
 }
 
 export function NodeContextMenu({ menu, onClose, onFocus, onUndoPush }: NodeContextMenuProps) {
-  const { navigateToEvidence } = useNavigation();
+  const { navigateToEvidence, navigateToPaths } = useNavigation();
   const toast = useToastStore((s) => s.addToast);
   const [annotateOpen, setAnnotateOpen] = useState(false);
   const [annotateText, setAnnotateText] = useState('');
@@ -78,6 +78,15 @@ export function NodeContextMenu({ menu, onClose, onFocus, onUndoPush }: NodeCont
         </MenuItem>
         <MenuItem onClick={() => { navigateToEvidence(menu.nodeId); onClose(); }}>
           View Evidence
+        </MenuItem>
+
+        <div className="border-t border-border my-1" />
+
+        <MenuItem onClick={() => { navigateToPaths({ from: menu.nodeId }); onClose(); }}>
+          Find Paths From Here
+        </MenuItem>
+        <MenuItem onClick={() => { navigateToPaths({ to: menu.nodeId }); onClose(); }}>
+          Find Paths To Here
         </MenuItem>
 
         <div className="border-t border-border my-1" />

@@ -16,6 +16,7 @@ import type {
   EvidenceChainResponse,
   FindingContextResponse,
   AttackPath,
+  FindPathsResponse,
   FrontierItem,
   ScopeConfig,
   OpsecConfig,
@@ -729,6 +730,25 @@ export async function getPaths(objectiveId: string, params?: {
   if (params?.optimize) qs.set('optimize', params.optimize);
   const q = qs.toString();
   return fetchJson(`/api/paths/${encodeURIComponent(objectiveId)}${q ? `?${q}` : ''}`);
+}
+
+/** Structured path finder (the Attack Paths "Custom path" picker). Returns 200
+ *  with analysis_status even for no_path/missing_endpoint, so the caller renders
+ *  a directed empty state rather than throwing. */
+export async function findPaths(params: {
+  from?: string;
+  to?: string;
+  objective?: string;
+  optimize?: 'confidence' | 'stealth' | 'balanced';
+  max?: number;
+}): Promise<FindPathsResponse> {
+  const qs = new URLSearchParams();
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
+  if (params.objective) qs.set('objective', params.objective);
+  if (params.optimize) qs.set('optimize', params.optimize);
+  if (params.max) qs.set('max', String(params.max));
+  return fetchJson(`/api/find-paths?${qs.toString()}`);
 }
 
 // --- Tools ---

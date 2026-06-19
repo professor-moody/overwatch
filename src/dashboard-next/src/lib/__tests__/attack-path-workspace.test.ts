@@ -5,6 +5,7 @@ import {
   groupDisplayAttackPaths,
   normalizeApiAttackPath,
   normalizeComputedAttackPath,
+  shouldAutoRunPaths,
 } from '../attack-path-workspace';
 import type { AttackPath, ExportedNode } from '../types';
 
@@ -85,5 +86,34 @@ describe('attack path workspace helpers', () => {
     expect(display?.edgeIds).toEqual([]);
     expect(display?.rawEdgeTypes).toEqual(['OWNS_CRED', 'VALID_FOR_IDP_PRINCIPAL']);
     expect(display?.group).toBe('identity_pivots');
+  });
+
+  it('shouldAutoRunPaths only auto-runs a complete query (objective or from+to)', () => {
+    expect(shouldAutoRunPaths('a', 'b', undefined)).toBe(true);   // both endpoints
+    expect(shouldAutoRunPaths(undefined, undefined, 'obj-1')).toBe(true); // objective
+    expect(shouldAutoRunPaths('a', undefined, undefined)).toBe(false); // from-only deep-link → prefill, don't run (400 guard)
+    expect(shouldAutoRunPaths(undefined, 'b', undefined)).toBe(false); // to-only deep-link → prefill only
+    expect(shouldAutoRunPaths(undefined, undefined, undefined)).toBe(false);
+  });
+
+  it('normalizes a bare engine PathResult (all string nodes, no edge_type/edges)', () => {
+    // This is exactly what GET /api/find-paths returns (engine PathResult):
+    // nodes: string[], no per-node edge_type, no edges array.
+    const byId = new Map([
+      ['host-jump', node('host-jump', 'host', 'jumpbox')],
+      ['cloud-id-power', node('cloud-id-power', 'cloud_identity', 'PowerUser')],
+    ]);
+    const apiPath: AttackPath = {
+      nodes: ['host-jump', 'cloud-id-power'],
+      total_confidence: 0.9,
+      total_opsec_noise: 0.3,
+    };
+
+    const display = normalizeApiAttackPath(apiPath, byId);
+
+    expect(display).not.toBeNull();
+    expect(display?.nodeIds).toEqual(['host-jump', 'cloud-id-power']);
+    expect(display?.edgeIds).toEqual([]);
+    expect(display?.rawEdgeTypes).toEqual([]); // no edge types available from the engine shape
   });
 });

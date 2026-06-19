@@ -148,6 +148,7 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | `POST /api/actions/:id/reparse` | Re-parse an action's output: preview (`ingest:false`) or promote (`ingest:true`) |
 | `GET /api/parsers` | Supported parser names for the re-parse picker |
 | `GET /api/plans` | Open planner-proposed plans awaiting confirmation |
+| `GET /api/find-paths` | Structured attack-path query — `from`+`to` or `objective`, `optimize`, `max` (backs the Attack Paths **Custom path** picker; engine-ranked, supports `balanced`) |
 | `POST /api/agents/:id/directive` | Steer one agent (one validated directive op) |
 | `POST /api/fleet/directive` | Fleet-wide pause/resume/stop (optionally by campaign) |
 | `GET /api/agent-queries` · `POST /api/agent-queries/:id/answer` | The agent-question inbox |

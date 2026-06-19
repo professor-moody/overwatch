@@ -605,6 +605,16 @@ export interface AttackPath {
   hop_count?: number;
 }
 
+export type PathAnalysisStatus = 'found' | 'no_path' | 'missing_endpoint' | 'analysis_failed';
+
+/** Response of GET /api/find-paths (the structured Attack Paths picker). */
+export interface FindPathsResponse {
+  paths: AttackPath[];
+  analysis_status: PathAnalysisStatus;
+  warnings: string[];
+  count: number;
+}
+
 // --- Health ---
 
 export interface HealthStatus {

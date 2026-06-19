@@ -136,6 +136,18 @@ export function useNavigation() {
     navigateToPanel('analysis', actionId);
   }, [navigateToPanel]);
 
+  // Attack Paths "Custom path" picker, prefilled from a node (e.g. graph
+  // context-menu "paths from/to here"). Uses from/to/objective query keys that
+  // the picker reads — not buildPanelPath's item/subview mapping.
+  const navigateToPaths = useCallback((params: { from?: string; to?: string; objective?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    if (params.objective) qs.set('objective', params.objective);
+    const q = qs.toString();
+    navigate(`/paths${q ? `?${q}` : ''}`);
+  }, [navigate]);
+
   return {
     navigateToGraphTarget,
     navigateToGraph,
@@ -149,5 +161,6 @@ export function useNavigation() {
     navigateToFinding,
     navigateToSession,
     navigateToAction,
+    navigateToPaths,
   };
 }

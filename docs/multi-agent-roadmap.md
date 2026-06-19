@@ -26,7 +26,7 @@ Much of "command a team" is **surfacing primitives that already exist**, not bui
 | Retrospective | inference-gap, skill-gap, and context-gap analysis plus training traces |
 | Scope preview | `previewScopeChange` is a read-only dry-run returning nodes entering/leaving scope (the Add-Targets precedent) |
 
-The net-new engine work has been landing phase by phase. **Shipped:** the **data-driven role system** (agent archetypes), **question clustering**, and the **operator-memory → compiled-policy** substrate (MVP — approval rules + per-subnet/target dispatch caps + a Settings editor). **Still ahead:** **productivity-based stuck detection**, a **graph-delta plan estimator**, and **NL graph queries** (the active track). Those are tracked in the phases below.
+The net-new engine work has been landing phase by phase. **Shipped:** the **data-driven role system** (agent archetypes), **question clustering**, the **operator-memory → compiled-policy** substrate (MVP — approval rules + per-subnet/target dispatch caps + a Settings editor), and **NL graph queries** (read-only changes_since / timeline / list_nodes / finding_readiness / retrospective / find_paths, plus a structured Attack-Paths node-picker). **Still ahead:** **productivity-based stuck detection** and a **graph-delta plan estimator**. Those are tracked in the phases below.
 
 ## Runtime: MCP-optional drivers
 
@@ -65,7 +65,7 @@ Deepen the natural-language layer.
 
 - **Expected-graph-delta plan preview** — generalize the scope-preview dry-run into a plan preview: before confirming, show the *state transition* (likely new/removed nodes and edges, objective-distance change, OPSEC/noise estimate, approval risk) — and offer variants (quiet / faster / credential-only) instead of a single confirm button.
 - **Ambiguity handling** — when a command is ambiguous or affects more than a threshold, the interpreter returns a tight clarifying question ("48 hosts — campaign or sample?").
-- **Natural-language graph queries (read-only) — 🔜 active track** — "what changed in the last 15 minutes?", "which findings lack evidence?", "what's the riskiest unapproved action?" — translated to the existing structured query/path/timeline tools (`get_state({since})`, `get_timeline`, `query_graph`, `find_paths`, `get_finding_readiness`), never mutating. Extends `command-interpreter.ts` (mutation-only today) with a read-only NL→query grammar plus a headless-planner fallback, paired with NL drafting over `run_retrospective`/`generate_report` (Phase 5). This is the next slice in flight.
+- **Natural-language graph queries (read-only) — ✅ shipped** — "what changed in the last 15 minutes?", "which findings lack evidence?", "timeline of 10.0.0.5", "run a retrospective" — a read-only NL→query grammar in `query-interpreter.ts` (sibling to the mutation `command-interpreter.ts`), running ahead of the mutation grammar behind a `MUTATION_LEAD` guard so it's purely additive, resolving to the existing `get_state({since})` / `get_timeline` / `query_graph` / `get_finding_readiness` / `run_retrospective` reads. `find_paths` is included but deliberately **narrow** (objective fan-out, explicit obj-id, symbolic DC, single concrete IP/id/FQDN endpoints) — free-form two-endpoint NL parsing proved a wrong-node minefield. The robust UX for arbitrary endpoints is the **structured Attack-Paths "Custom path" picker** (`GET /api/find-paths` → engine-ranked, `NodePicker` from/to + optimize), with a graph context-menu "paths from/to here" deep-link.
 
 ### Phase 4 — Coordinated team
 

@@ -674,6 +674,48 @@ describe('cross-endpoint consistency', () => {
 });
 
 // =============================================
+// GET /api/find-paths (structured Attack Paths picker)
+// =============================================
+
+describe('GET /api/find-paths', () => {
+  type FindPathsBody = { paths: unknown[]; analysis_status: string; warnings: string[]; count: number };
+  const STATUSES = ['found', 'no_path', 'missing_endpoint', 'analysis_failed'];
+
+  it('from+to returns 200 with a paths array + analysis_status (never 404)', async () => {
+    const { status, body } = await getJson<FindPathsBody>('/api/find-paths?from=host-jump&to=cloud-id-power');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.paths)).toBe(true);
+    expect(STATUSES).toContain(body.analysis_status);
+    expect(body.count).toBe(body.paths.length);
+  });
+
+  it('a bogus endpoint is a 200 missing_endpoint answer, not a thrown 404', async () => {
+    const { status, body } = await getJson<FindPathsBody>('/api/find-paths?from=does-not-exist&to=cloud-id-power');
+    expect(status).toBe(200);
+    expect(body.analysis_status).toBe('missing_endpoint');
+    expect(body.paths).toEqual([]);
+  });
+
+  it('objective returns 200 with paths + found/no_path', async () => {
+    const { status, body } = await getJson<FindPathsBody>('/api/find-paths?objective=obj-power');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.paths)).toBe(true);
+    expect(['found', 'no_path']).toContain(body.analysis_status);
+  });
+
+  it('optimize=balanced is accepted', async () => {
+    const { status } = await getJson<FindPathsBody>('/api/find-paths?from=host-jump&to=cloud-id-power&optimize=balanced');
+    expect(status).toBe(200);
+  });
+
+  it('neither from+to nor objective → 400', async () => {
+    const { status, body } = await getJson<{ error?: string }>('/api/find-paths?optimize=stealth');
+    expect(status).toBe(400);
+    expect(body.error).toBeTruthy();
+  });
+});
+
+// =============================================
 // 404s / method gating
 // =============================================
 
