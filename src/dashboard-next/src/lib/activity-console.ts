@@ -76,6 +76,32 @@ export function selectDefaultActivityEntry(entries: ActivityEntry[]): ActivityEn
   return entries[0] || null;
 }
 
+/**
+ * Stable identity for an activity entry that survives polling re-fetches (which
+ * replace every entry object). Prefers the server's event_id (always set on
+ * /api/history rows), then id, then a composite. The index only feeds the
+ * composite fallback, which real history rows never hit.
+ */
+export function activityEntryKey(entry: ActivityEntry, index = 0): string {
+  const eventId = (entry as ActivityEntry & { event_id?: string }).event_id;
+  return eventId || entry.id || `${entry.timestamp}-${entry.event_type}-${index}`;
+}
+
+/**
+ * Resolve the operator's selected entry by stable id rather than object identity,
+ * so a 5s poll that re-fetches structurally-equal entries doesn't drop the
+ * selection (which would snap the detail pane back to the newest row). Falls back
+ * to the default selection when the id is absent (e.g. the event aged out of the
+ * fetched window).
+ */
+export function resolveSelectedActivityEntry(entries: ActivityEntry[], selectedId: string | null): ActivityEntry | null {
+  if (selectedId) {
+    const match = entries.find((entry, index) => activityEntryKey(entry, index) === selectedId);
+    if (match) return match;
+  }
+  return selectDefaultActivityEntry(entries);
+}
+
 function stringDetail(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

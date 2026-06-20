@@ -5,7 +5,7 @@ import type { ActionExplanation, ActivityEntry, DecisionLogEntry, TimelineEntry 
 import { formatRelativeTime, formatTimestamp, cn } from '../../lib/utils';
 import { EmptyState } from '../shared';
 import { ActionButton, FilterBar, PageHeader, PanelSection, SegmentedControl, StatusPill } from '../shared/primitives';
-import { classifyActivity, extractActivityLinks, filterActivity, selectDefaultActivityEntry, type ActivityClass } from '../../lib/activity-console';
+import { classifyActivity, extractActivityLinks, filterActivity, activityEntryKey, resolveSelectedActivityEntry, type ActivityClass } from '../../lib/activity-console';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { useNavigation } from '../../hooks/useNavigation';
 import { extractActivityTrustSignals } from '../../lib/trust-signals';
@@ -30,7 +30,10 @@ export function ActivityPanel() {
   const [classFilter, setClassFilter] = useState<ActivityClass | ''>('');
   const [search, setSearch] = useState('');
   const [trustOnly, setTrustOnly] = useState(false);
-  const [selectedEntryOverride, setSelectedEntryOverride] = useState<ActivityEntry | null>(null);
+  // Selection is held by stable id, not object reference: the 5s poll replaces
+  // every entry object, so a reference-based selection would be lost each tick and
+  // the detail pane would snap back to the newest row.
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const hasLoaded = useRef(false);
 
   const loadHistory = useCallback(async () => {
@@ -61,9 +64,7 @@ export function ActivityPanel() {
     // Newest first: history arrives oldest-first, so sort descending by timestamp.
     return [...scoped].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
   }, [entries, classFilter, search, trustOnly]);
-  const selectedEntry = selectedEntryOverride && filtered.includes(selectedEntryOverride)
-    ? selectedEntryOverride
-    : selectDefaultActivityEntry(filtered);
+  const selectedEntry = resolveSelectedActivityEntry(filtered, selectedEntryId);
   const classCounts = useMemo(() => {
     const counts: Record<ActivityClass, number> = {
       approval: 0,
@@ -123,10 +124,10 @@ export function ActivityPanel() {
             <div className="overflow-y-auto p-2 space-y-1">
               {filtered.map((entry, index) => (
                 <ActivityRow
-                  key={activityKey(entry, index)}
+                  key={activityEntryKey(entry, index)}
                   entry={entry}
                   selected={selectedEntry === entry}
-                  onSelect={() => setSelectedEntryOverride(entry)}
+                  onSelect={() => setSelectedEntryId(activityEntryKey(entry, index))}
                 />
               ))}
             </div>
@@ -137,11 +138,6 @@ export function ActivityPanel() {
       </div>
     </div>
   );
-}
-
-function activityKey(entry: ActivityEntry, index: number): string {
-  const eventId = (entry as ActivityEntry & { event_id?: string }).event_id;
-  return eventId || entry.id || `${entry.timestamp}-${entry.event_type}-${index}`;
 }
 
 function ActivityRow({ entry, selected, onSelect }: { entry: ActivityEntry; selected: boolean; onSelect: () => void }) {

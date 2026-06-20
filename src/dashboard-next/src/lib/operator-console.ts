@@ -8,6 +8,13 @@ export interface OperatorConsoleBuildOptions {
   limit?: number;
 }
 
+/**
+ * Normalize raw activity entries into operator-console events in CHRONOLOGICAL
+ * order (oldest → newest); `limit` keeps the newest N via `slice(-limit)`. The
+ * display layer re-sorts/reverses to render newest-first — keep this builder
+ * chronological so "keep newest N" and the downstream merge/thread steps (which
+ * assume ascending order) stay correct.
+ */
 export function buildOperatorConsoleEvents(
   entries: ActivityEntry[],
   options: OperatorConsoleBuildOptions = {},

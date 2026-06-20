@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyActivity, extractActivityLinks, filterActivity, selectDefaultActivityEntry } from '../activity-console';
+import { classifyActivity, extractActivityLinks, filterActivity, selectDefaultActivityEntry, activityEntryKey, resolveSelectedActivityEntry } from '../activity-console';
 import type { ActivityEntry } from '../types';
 
 function entry(partial: Partial<ActivityEntry>): ActivityEntry {
@@ -55,5 +55,23 @@ describe('activity console helpers', () => {
 
     expect(selectDefaultActivityEntry(entries)?.id).toBe('new');
     expect(selectDefaultActivityEntry([])).toBeNull();
+  });
+
+  it('resolves the selected entry by stable id across a poll re-fetch (no snap to newest)', () => {
+    const first = [
+      entry({ id: 'c', event_id: 'c', timestamp: '2026-05-15T10:02:00Z' }),
+      entry({ id: 'b', event_id: 'b', timestamp: '2026-05-15T10:01:00Z' }),
+      entry({ id: 'a', event_id: 'a', timestamp: '2026-05-15T10:00:00Z' }),
+    ];
+    const selectedId = activityEntryKey(first[2]); // the oldest row, 'a'
+    // A poll replaces every entry with a structurally-equal NEW object reference.
+    const refetched = first.map(e => ({ ...e }));
+    // Reference identity is gone, but the id still resolves the same logical entry
+    // instead of snapping to the newest (first).
+    expect(resolveSelectedActivityEntry(refetched, selectedId)?.id).toBe('a');
+    // Selection aged out of the window → fall back to the default (newest-first ⇒ first).
+    expect(resolveSelectedActivityEntry(refetched, 'gone')?.id).toBe('c');
+    // No selection → default.
+    expect(resolveSelectedActivityEntry(refetched, null)?.id).toBe('c');
   });
 });
