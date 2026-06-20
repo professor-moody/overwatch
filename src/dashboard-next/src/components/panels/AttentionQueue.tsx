@@ -34,13 +34,19 @@ export function AttentionQueue({
     [pendingActions, agentQueries, agents],
   );
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Compact by default: show only the summary line + the single top-priority item
+  // (still actionable inline). The operator opens the rest on demand so a queue of
+  // 4–6 expanded rows can't own the viewport and bury the fleet below.
+  const [open, setOpen] = useState(false);
 
   if (view.total === 0) return null;
 
-  // Default the expanded item to the top of the queue if the prior selection is gone.
-  const visible = view.items.slice(0, DISPLAY_CAP);
+  // Collapsed → just the top item; open → the visible slice (one expanded at a
+  // time). Default the expanded item to the top if the prior selection is gone.
+  const visible = open ? view.items.slice(0, DISPLAY_CAP) : view.items.slice(0, 1);
   const activeId = visible.some(i => i.id === expandedId) ? expandedId : visible[0]?.id ?? null;
   const overflow = view.total - visible.length;
+  const hidden = view.total - 1; // items behind the collapsed summary
 
   return (
     <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
@@ -51,12 +57,19 @@ export function AttentionQueue({
         {view.counts.question > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.question} question{view.counts.question !== 1 ? 's' : ''}</span>}
         {view.counts.stuck > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.stuck} stuck</span>}
         {view.counts.failed > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.failed} failed</span>}
-        {view.counts.approval > 0 && (
-          <button onClick={onTriageAll} className="ml-auto text-[10px] text-accent hover:underline">Triage all →</button>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {view.total > 1 && (
+            <button onClick={() => setOpen(o => !o)} className="text-[10px] text-muted-foreground hover:text-foreground">
+              {open ? '▾ hide' : `▸ show all (${hidden} more)`}
+            </button>
+          )}
+          {view.counts.approval > 0 && (
+            <button onClick={onTriageAll} className="text-[10px] text-accent hover:underline">Triage all →</button>
+          )}
+        </div>
       </div>
 
-      <div className="space-y-1.5">
+      <div className={cn('space-y-1.5', open && 'max-h-[40vh] overflow-y-auto pr-1')}>
         {visible.map(item => (
           <AttentionRow
             key={item.id}
@@ -70,7 +83,7 @@ export function AttentionQueue({
             onSelectAgent={onSelectAgent}
           />
         ))}
-        {overflow > 0 && (
+        {open && overflow > 0 && (
           <button onClick={onTriageAll} className="text-[10px] text-muted-foreground hover:text-accent">
             +{overflow} more →
           </button>

@@ -303,7 +303,11 @@ export function AgentsPanel() {
     // offset); the Fleet roster sticks at xl; only the Activity stream keeps its
     // own bounded inner scroll (live-tailing would otherwise yank the whole page).
     <div className="flex flex-col gap-3">
-      <div className="sticky top-12 z-20 flex max-h-[calc(100vh-3.5rem)] flex-col gap-3 overflow-y-auto bg-background pb-2">
+      {/* Cap the sticky band well under the viewport so the fleet/activity grid
+          below is always reachable. The "Needs you" queue is compact-by-default and
+          self-bounds its expanded list; this is the belt-and-suspenders guarantee
+          that header + command + queue can never claim the whole screen. */}
+      <div className="sticky top-12 z-20 flex max-h-[60vh] flex-col gap-3 overflow-y-auto bg-background pb-2">
       <PageHeader
         title="Operator Console"
         meta={activeAgent ? `focused on ${activeAgent.agent_id || activeAgent.id}` : 'fleet overview'}
