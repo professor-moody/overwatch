@@ -37,9 +37,11 @@ const CONSOLE_FILTERS: Array<{ value: ConsoleFilter; label: string }> = [
   { value: 'errors', label: 'Errors' },
 ];
 
-function isScrolledNearBottom(el: HTMLElement | null, threshold = 48): boolean {
+// Activity is newest-first (most recent at the top), so "at the newest end" means
+// scrolled near the TOP. Following keeps the viewport pinned there.
+function isScrolledNearTop(el: HTMLElement | null, threshold = 48): boolean {
   if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  return el.scrollTop <= threshold;
 }
 
 export function AgentsPanel() {
@@ -258,19 +260,19 @@ export function AgentsPanel() {
     };
   }, [activeAgent, consolePaused, loadConsole]);
 
-  const scrollConsoleToBottom = useCallback(() => {
+  const scrollConsoleToNewest = useCallback(() => {
     requestAnimationFrame(() => {
       const el = consoleScrollRef.current;
       if (!el) return;
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = 0; // newest is at the top
     });
   }, []);
 
   useEffect(() => {
-    if (!consolePaused && consoleFollowing) scrollConsoleToBottom();
+    if (!consolePaused && consoleFollowing) scrollConsoleToNewest();
     // agentThreadEntries is in the deps so a newly-arrived question (which changes
-    // the thread via agentQueries, not consoleEvents) still follows to bottom.
-  }, [consoleEvents, agentThreadEntries, consolePaused, consoleFollowing, scrollConsoleToBottom]);
+    // the thread via agentQueries, not consoleEvents) still follows to the newest.
+  }, [consoleEvents, agentThreadEntries, consolePaused, consoleFollowing, scrollConsoleToNewest]);
 
   const visibleConsoleEvents = useMemo(() => {
     const q = consoleSearch.trim().toLowerCase();
@@ -433,11 +435,11 @@ export function AgentsPanel() {
                   setConsolePaused(nextPaused);
                   if (!nextPaused) {
                     setConsoleFollowing(true);
-                    void loadConsole().then(scrollConsoleToBottom);
+                    void loadConsole().then(scrollConsoleToNewest);
                   }
                 }}
-                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
-                onJumpLatest={() => { setConsoleFollowing(true); scrollConsoleToBottom(); }}
+                onScroll={() => setConsoleFollowing(isScrolledNearTop(consoleScrollRef.current))}
+                onJumpLatest={() => { setConsoleFollowing(true); scrollConsoleToNewest(); }}
                 onRefresh={() => { void loadConsole(); void loadAgentQueries(); }}
                 onAnswered={loadAgentQueries}
                 onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
@@ -462,13 +464,13 @@ export function AgentsPanel() {
                   setConsolePaused(nextPaused);
                   if (!nextPaused) {
                     setConsoleFollowing(true);
-                    void loadConsole().then(scrollConsoleToBottom);
+                    void loadConsole().then(scrollConsoleToNewest);
                   }
                 }}
-                onScroll={() => setConsoleFollowing(isScrolledNearBottom(consoleScrollRef.current))}
+                onScroll={() => setConsoleFollowing(isScrolledNearTop(consoleScrollRef.current))}
                 onJumpLatest={() => {
                   setConsoleFollowing(true);
-                  scrollConsoleToBottom();
+                  scrollConsoleToNewest();
                 }}
                 onRefresh={loadConsole}
                 onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
@@ -723,7 +725,11 @@ function AgentOutputConsole({
           </div>
         ) : (
           <div className="space-y-2">
-            {threadConsoleEvents(events).slice().reverse().map(thread => (
+            {/* Newest first: threadConsoleEvents already sorts newest→oldest, so
+                render it directly (no reverse) and put the follow sentinel at the
+                top — the "newest end" the live-tail scrolls to. */}
+            <div ref={endRef} />
+            {threadConsoleEvents(events).map(thread => (
               <ConsoleThreadRow
                 key={thread.id}
                 thread={thread}
@@ -731,7 +737,6 @@ function AgentOutputConsole({
                 onNavigatePanel={onNavigatePanel}
               />
             ))}
-            <div ref={endRef} />
           </div>
         )}
       </div>
