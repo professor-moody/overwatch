@@ -75,6 +75,22 @@ describe('operator console event normalization', () => {
     expect(events.map(event => event.source_kind)).toEqual(['dashboard', 'runner']);
     expect(events.map(event => event.source_label)).toEqual(['Dashboard', 'Scripted runner']);
   });
+
+  it('returns events oldest→newest (chronological) and keeps the newest N via limit', () => {
+    const unordered = [
+      activity({ event_id: 'e1', timestamp: '2026-06-13T10:00:00Z' }),
+      activity({ event_id: 'e3', timestamp: '2026-06-13T10:02:00Z' }),
+      activity({ event_id: 'e2', timestamp: '2026-06-13T10:01:00Z' }),
+    ];
+    // Display layers reverse/re-sort for newest-first; the builder itself stays
+    // chronological so slice(-limit) keeps the NEWEST N (not the oldest).
+    expect(buildOperatorConsoleEvents(unordered).map(e => e.timestamp)).toEqual([
+      '2026-06-13T10:00:00Z', '2026-06-13T10:01:00Z', '2026-06-13T10:02:00Z',
+    ]);
+    expect(buildOperatorConsoleEvents(unordered, { limit: 2 }).map(e => e.timestamp)).toEqual([
+      '2026-06-13T10:01:00Z', '2026-06-13T10:02:00Z',
+    ]);
+  });
 });
 
 describe('operator console — NL cockpit events (3A.3)', () => {
