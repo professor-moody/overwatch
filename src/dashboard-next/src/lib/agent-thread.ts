@@ -97,9 +97,10 @@ export interface AgentThreadOptions {
 
 /**
  * Build the focused agent's conversation: its console events plus its open
- * questions, interleaved chronologically (oldest → newest, so the newest sits at
- * the bottom and follow-to-bottom keeps the latest in view). Answered questions
- * are dropped (they've left the "needs you" state).
+ * questions, interleaved chronologically (oldest → newest). The display layer
+ * reverses this to render newest-first and follows the top; the lib keeps the
+ * chronological order. Answered questions are dropped (they've left the "needs
+ * you" state).
  */
 export function buildAgentThread(
   events: AgentConsoleEvent[],

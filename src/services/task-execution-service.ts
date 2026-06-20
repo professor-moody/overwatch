@@ -162,6 +162,14 @@ export class TaskExecutionService {
       if (item.type !== 'cve_research') continue;
       if (this.cveAttempted.has(item.id)) continue;
       if (budget <= 0) break;
+      // Skip items already held by another task's frontier lease: that task is
+      // working the item, so registering here only earns a lease-conflict refusal.
+      // computeFrontier() returns the UNfiltered set (leased items included), so
+      // without this guard a held lease would be re-registered — and refused,
+      // logging a frontier_lease_conflict warning + a persist — on every drain for
+      // the lease's whole lifetime. Skipping WITHOUT marking keeps the item
+      // retryable: once the lease frees, a later drain dispatches it.
+      if (this.engine.isFrontierItemHeldByOther(item.id)) continue;
       // Mark attempted BEFORE registering: registerAgent fires onUpdate
       // synchronously, which re-enters drainCveResearch — marking first stops the
       // re-entrant pass from double-dispatching the same item.
@@ -184,11 +192,9 @@ export class TaskExecutionService {
       if (result.ok) {
         budget--;
       } else {
-        // Register was refused (lease conflict / dispatch cap) — nothing launched,
-        // no slot consumed. Un-mark so the item is retried on a later drain when
-        // the lease frees, instead of being silently abandoned for the session.
-        // (The mark above still did its job: it suppressed the synchronous
-        // re-entrant pass during registerAgent from double-dispatching this item.)
+        // Refused despite the held-lease pre-check above — a lease was acquired in
+        // the race between the check and here. Nothing launched, no slot consumed;
+        // un-mark so the item is retried on a later drain rather than abandoned.
         this.cveAttempted.delete(item.id);
       }
     }
