@@ -520,17 +520,22 @@ describe('Headless runner mechanics (injected spawn)', () => {
     } as AgentTask;
     expect(engine.registerAgent(leaseHolder).ok).toBe(true);
 
-    // Seed the versioned service → drainCveResearch's register is refused
-    // (lease conflict, !result.ok). Pre-fix the item was marked attempted and
-    // then never retried — CVE research silently abandoned for the session.
+    // Seed the versioned service → its cve_research item is in the frontier but
+    // held by the lease, so drainCveResearch SKIPS it before registering: no
+    // research agent, nothing spawned.
     seedVersionedService(engine, 'svc-lease');
     await settle();
     expect(engine.getAgentTasks().filter(t => t.role === 'research')).toHaveLength(0);
     expect(spawned).toHaveLength(0);
+    // And it must skip QUIETLY: a held lease must not be re-registered+refused on
+    // every drain. Un-marking on refusal without the pre-check would log a
+    // frontier_lease_conflict warning (and persist) per onUpdate for the whole
+    // lease lifetime — assert zero such warnings while the lease is held.
+    expect(engine.getFullHistory().filter(e => (e.details as any)?.reason === 'frontier_lease_conflict')).toHaveLength(0);
 
-    // Release the lease; a later drain MUST retry the item now that it's free.
-    // With the bug (mark survives a refused register) it stays in cveAttempted
-    // and is skipped forever — this would find 0 research agents.
+    // Release the lease; a later drain MUST dispatch the item now that it's free.
+    // Skipping-without-marking (not marking attempted) is what preserves this:
+    // the item never entered cveAttempted, so it's eligible on the next drain.
     engine.updateAgentStatus('lease-holder', 'completed');
     engine.ingestFinding({ id: 'tick2', agent_id: 't', timestamp: new Date().toISOString(), nodes: [{ id: 'h-tick2', type: 'host', label: '10.0.0.8', ip: '10.0.0.8', alive: true }], edges: [] } as any);
     await settle();

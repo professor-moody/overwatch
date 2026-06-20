@@ -59,7 +59,6 @@ export function AgentsPanel() {
   const [consolePaused, setConsolePaused] = useState(false);
   const [consoleFollowing, setConsoleFollowing] = useState(true);
   const [consoleSearch, setConsoleSearch] = useState('');
-  const consoleEndRef = useRef<HTMLDivElement | null>(null);
   const consoleScrollRef = useRef<HTMLDivElement | null>(null);
   const [showDispatch, setShowDispatch] = useState(false);
   const [showBulkDispatch, setShowBulkDispatch] = useState(false);
@@ -428,7 +427,6 @@ export function AgentsPanel() {
                 totalEntries={consoleEvents.length}
                 paused={consolePaused}
                 following={consoleFollowing}
-                endRef={consoleEndRef}
                 scrollRef={consoleScrollRef}
                 onTogglePaused={() => {
                   const nextPaused = !consolePaused;
@@ -455,7 +453,6 @@ export function AgentsPanel() {
                 search={consoleSearch}
                 paused={consolePaused}
                 following={consoleFollowing}
-                endRef={consoleEndRef}
                 scrollRef={consoleScrollRef}
                 onFilterChange={setConsoleFilter}
                 onSearchChange={setConsoleSearch}
@@ -628,7 +625,6 @@ function AgentOutputConsole({
   search,
   paused,
   following,
-  endRef,
   scrollRef,
   onFilterChange,
   onSearchChange,
@@ -646,7 +642,6 @@ function AgentOutputConsole({
   search: string;
   paused: boolean;
   following: boolean;
-  endRef: RefObject<HTMLDivElement | null>;
   scrollRef: RefObject<HTMLDivElement | null>;
   onFilterChange: (filter: ConsoleFilter) => void;
   onSearchChange: (value: string) => void;
@@ -659,7 +654,7 @@ function AgentOutputConsole({
 }) {
   return (
     // Bounded live-tail region: max-h keeps it within the viewport so follow-to-
-    // bottom scrolls inside this box (the deliberate single exception to single-
+    // top scrolls inside this box (the deliberate single exception to single-
     // scroll) instead of yanking the whole page.
     <PanelSection className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden p-0 border-accent/20">
       <div className="border-b border-border p-3">
@@ -726,9 +721,8 @@ function AgentOutputConsole({
         ) : (
           <div className="space-y-2">
             {/* Newest first: threadConsoleEvents already sorts newest→oldest, so
-                render it directly (no reverse) and put the follow sentinel at the
-                top — the "newest end" the live-tail scrolls to. */}
-            <div ref={endRef} />
+                render it directly (no reverse). Follow-to-top is handled by
+                scrollConsoleToNewest (scrollTop = 0) on the scroll container. */}
             {threadConsoleEvents(events).map(thread => (
               <ConsoleThreadRow
                 key={thread.id}

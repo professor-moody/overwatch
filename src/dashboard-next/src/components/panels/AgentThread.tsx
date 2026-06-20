@@ -19,7 +19,6 @@ export function AgentThread({
   paused,
   following,
   scrollRef,
-  endRef,
   onTogglePaused,
   onScroll,
   onJumpLatest,
@@ -34,7 +33,6 @@ export function AgentThread({
   paused: boolean;
   following: boolean;
   scrollRef: RefObject<HTMLDivElement | null>;
-  endRef: RefObject<HTMLDivElement | null>;
   onTogglePaused: () => void;
   onScroll: () => void;
   onJumpLatest: () => void;
@@ -44,8 +42,8 @@ export function AgentThread({
   onNavigatePanel: ReturnType<typeof useNavigation>['navigateToPanel'];
 }) {
   const hasQuestion = threadHasOpenQuestion(entries);
-  // Bounded live-tail region (see AgentOutputConsole): max-h keeps follow-to-
-  // bottom scrolling inside this box rather than moving the whole page.
+  // Bounded live-tail region (see AgentOutputConsole): max-h keeps follow-to-top
+  // scrolling inside this box rather than moving the whole page.
   return (
     <PanelSection className="flex max-h-[calc(100vh-11rem)] flex-col overflow-hidden p-0 border-accent/20">
       <div className="flex items-center justify-between gap-3 border-b border-border p-3">
@@ -72,9 +70,8 @@ export function AgentThread({
         ) : (
           <div className="space-y-2">
             {/* Newest first: buildAgentThread keeps the newest N in chronological
-                order, so reverse only at render and anchor the follow sentinel at
-                the top (the newest end). */}
-            <div ref={endRef} />
+                order, so reverse only at render. Follow-to-top is handled by
+                scrollConsoleToNewest (scrollTop = 0) on the scroll container. */}
             {entries.slice().reverse().map(entry => (
               <ThreadEntryRow
                 key={entry.id}

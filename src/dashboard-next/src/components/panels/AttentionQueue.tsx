@@ -46,7 +46,10 @@ export function AttentionQueue({
   const visible = open ? view.items.slice(0, DISPLAY_CAP) : view.items.slice(0, 1);
   const activeId = visible.some(i => i.id === expandedId) ? expandedId : visible[0]?.id ?? null;
   const overflow = view.total - visible.length;
-  const hidden = view.total - 1; // items behind the collapsed summary
+  // Items the toggle reveals INLINE when opened (capped at DISPLAY_CAP). Anything
+  // beyond that stays behind the "+N more → Triage all" link, so the toggle must
+  // not promise "all" — it shows up to this many more rows in place.
+  const inlineMore = Math.min(view.total, DISPLAY_CAP) - 1;
 
   return (
     <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
@@ -60,7 +63,7 @@ export function AttentionQueue({
         <div className="ml-auto flex items-center gap-3">
           {view.total > 1 && (
             <button onClick={() => setOpen(o => !o)} className="text-[10px] text-muted-foreground hover:text-foreground">
-              {open ? '▾ hide' : `▸ show all (${hidden} more)`}
+              {open ? '▾ hide' : `▸ show ${inlineMore} more`}
             </button>
           )}
           {view.counts.approval > 0 && (
