@@ -71,7 +71,11 @@ export function AgentThread({
           </div>
         ) : (
           <div className="space-y-2">
-            {entries.map(entry => (
+            {/* Newest first: buildAgentThread keeps the newest N in chronological
+                order, so reverse only at render and anchor the follow sentinel at
+                the top (the newest end). */}
+            <div ref={endRef} />
+            {entries.slice().reverse().map(entry => (
               <ThreadEntryRow
                 key={entry.id}
                 entry={entry}
@@ -80,7 +84,6 @@ export function AgentThread({
                 onNavigatePanel={onNavigatePanel}
               />
             ))}
-            <div ref={endRef} />
           </div>
         )}
       </div>

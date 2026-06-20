@@ -57,7 +57,9 @@ export function ActivityPanel() {
 
   const filtered = useMemo(() => {
     const base = filterActivity(entries, { classFilter, search });
-    return trustOnly ? base.filter(entry => extractActivityTrustSignals(entry).length > 0) : base;
+    const scoped = trustOnly ? base.filter(entry => extractActivityTrustSignals(entry).length > 0) : base;
+    // Newest first: history arrives oldest-first, so sort descending by timestamp.
+    return [...scoped].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
   }, [entries, classFilter, search, trustOnly]);
   const selectedEntry = selectedEntryOverride && filtered.includes(selectedEntryOverride)
     ? selectedEntryOverride
