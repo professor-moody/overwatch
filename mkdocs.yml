@@ -106,6 +106,8 @@ nav:
     - Scoring & Validation:
       - next_task: tools/next-task.md
       - validate_action: tools/validate-action.md
+      - approve_action: tools/approve-action.md
+      - deny_action: tools/deny-action.md
       - log_action_event: tools/log-action-event.md
       - log_thought: tools/log-thought.md
       - run_bash: tools/run-bash.md
@@ -171,6 +173,7 @@ nav:
       - Overview: skills/index.md
       - "Featured: Kerberoasting": skills/featured.md
     - Data Storage: reference/data-storage.md
+    - Report Redaction: reference/report-redaction.md
     - FAQ: faq.md
   - Project:
     - Roadmap: roadmap.md

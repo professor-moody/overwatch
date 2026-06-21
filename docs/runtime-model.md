@@ -54,7 +54,7 @@ This is the clearest demonstration that the two surfaces are tied to one engine.
 
 The engine hardens this path:
 
-- An approval that is never answered **auto-fires on timeout** (loud — tagged `unattended_execute` in the OPSEC log and retrospective, never a silent approval).
+- An approval that is never answered **auto-fires on timeout** (default `opsec.approval_timeout_ms` = 300s, configurable) — loud, tagged `unattended_execute` in the OPSEC log and retrospective, never a silent approval. (Note the asymmetry: timeout auto-*approves*; to stop an action you must explicitly [`deny_action`](tools/deny-action.md).)
 - If the requesting agent is **reaped, cancelled, or times out**, its blocked approval is **aborted** (never executed) and its OS process is killed — a dead agent can't run a command.
 - Pending approvals are **persisted**; on a daemon restart they're reconciled to `aborted` rather than left un-actionable.
 

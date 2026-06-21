@@ -17,6 +17,8 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`bundle_engagement`](bundle-engagement.md) | Portable archive with state, evidence, reports, manifest, and journal | No |
 | [`next_task`](next-task.md) | Filtered frontier candidates for scoring | No |
 | [`validate_action`](validate-action.md) | Pre-execution sanity check | No |
+| [`approve_action`](approve-action.md) | Approve a pending action's live approval gate | No |
+| [`deny_action`](deny-action.md) | Deny a pending action's live approval gate | No |
 | [`log_action_event`](log-action-event.md) | Record action lifecycle events | No |
 | [`log_thought`](log-thought.md) | Record plans, hypotheses, decisions, and reflections | No |
 | [`run_bash`](run-bash.md) | Auto-instrumented one-shot shell execution | No |

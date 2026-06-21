@@ -341,7 +341,7 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Fifty-five built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints.
+Sixty-three built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints. The sections below document the major rule families; the complete, current list lives in `src/services/builtin-inference-rules.ts`.
 
 #### AD & Service Rules (21)
 
