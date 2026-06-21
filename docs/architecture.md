@@ -60,7 +60,7 @@ The LLM handles nuanced reasoning:
 
 ### Inference Rules
 
-When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Fifty-five built-in rules span AD, Linux privilege escalation, web application, MSSQL, and cloud domains:
+When findings are reported, deterministic rules fire automatically to generate hypothesis edges. Sixty-three built-in rules span Active Directory, ADCS, Linux privilege escalation, web application, MSSQL, and cloud domains:
 
 | Domain | Rules | Examples |
 |--------|-------|----------|

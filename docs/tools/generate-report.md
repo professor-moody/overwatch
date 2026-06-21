@@ -113,7 +113,9 @@ When operators supply `evidence` or `raw_output` via `report_finding`, or when t
 
 The default report is operator-internal: it includes captured stdout, credential values, NTLM/LM hashes, and absolute filesystem paths so the operator can reason about the engagement and debug findings. None of those are appropriate in a client-deliverable.
 
-`client_safe: true` produces a redacted variant in the same call. The redaction pipeline:
+`client_safe: true` produces a redacted variant in the same call. For the full
+field-by-field reference, see [Report Redaction](../reference/report-redaction.md).
+The redaction pipeline:
 
 | Field | Operator default | Client-safe |
 |-------|------------------|-------------|
