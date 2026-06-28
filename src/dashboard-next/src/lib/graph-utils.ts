@@ -36,6 +36,14 @@ export function getNeighborhood(graph: Graph, node: string, hops = 1): Set<strin
   return visited;
 }
 
+// OSINT external-recon edges describe attack *surface* (subdomain→domain,
+// host→netblock, org→asset), not lateral-movement hops. Keep them out of the
+// client-side BFS so the dashboard's shortest path matches the engine projection
+// (path-analyzer.ts `OSINT_RELATIONSHIP_EDGES`).
+const OSINT_RELATIONSHIP_EDGES = new Set<string>([
+  'SUBDOMAIN_OF', 'RESOLVES_TO', 'IN_NETBLOCK', 'OWNS_ASSET', 'AFFILIATED_WITH',
+]);
+
 /** BFS shortest path — returns the set of nodes and edges on the shortest path */
 export function findShortestPath(
   graph: Graph,
@@ -59,6 +67,7 @@ export function findShortestPath(
     const current = queue.shift()!;
     const edges = graph.edges(current);
     for (const edge of edges) {
+      if (OSINT_RELATIONSHIP_EDGES.has(graph.getEdgeAttribute(edge, 'type') as string)) continue;
       const neighbor = graph.opposite(current, edge);
       if (!visited.has(neighbor)) {
         visited.set(neighbor, current);

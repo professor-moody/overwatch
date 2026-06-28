@@ -56,6 +56,10 @@ export { parseNessus } from './nessus.js';
 export { parseCrtSh } from './crtsh.js';
 export { parseSubfinder } from './subfinder.js';
 export { parseWhois } from './whois.js';
+export { parseAmass } from './amass.js';
+export { parseDnsx } from './dnsx.js';
+export { parseHttpx } from './httpx.js';
+export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -109,6 +113,10 @@ import { parseNessus } from './nessus.js';
 import { parseCrtSh } from './crtsh.js';
 import { parseSubfinder } from './subfinder.js';
 import { parseWhois } from './whois.js';
+import { parseAmass } from './amass.js';
+import { parseDnsx } from './dnsx.js';
+import { parseHttpx } from './httpx.js';
+import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmap,
@@ -229,6 +237,10 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'crt-sh': parseCrtSh,
   'subfinder': parseSubfinder,
   'whois': parseWhois,
+  'amass': parseAmass,
+  'dnsx': parseDnsx,
+  'httpx': parseHttpx,
+  'theharvester': parseTheHarvester,
 };
 
 export function getSupportedParsers(): string[] {

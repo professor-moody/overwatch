@@ -71,6 +71,27 @@ describe('PathAnalyzer', () => {
       expect(path).toEqual(['host-a', 'host-b']);
     });
 
+    it('does NOT traverse OSINT relationship edges (surface, not movement hops)', () => {
+      // subdomain --SUBDOMAIN_OF--> domain --RESOLVES_TO via subdomain... build a
+      // chain where the ONLY connection is OSINT relationship edges, then assert
+      // it is not reachable; a real movement edge between the same endpoints is.
+      const graph = makeGraph();
+      addNode(graph, 'subdomain-api.test.local', { type: 'subdomain' });
+      addNode(graph, 'host-1.2.3.4', { type: 'host' });
+      addNode(graph, 'asn-13335', { type: 'asn' });
+      addEdge(graph, 'subdomain-api.test.local', 'host-1.2.3.4', 'RESOLVES_TO');
+      addEdge(graph, 'host-1.2.3.4', 'asn-13335', 'IN_NETBLOCK');
+
+      const analyzer = buildAnalyzer(graph);
+      expect(analyzer.findShortestPath('subdomain-api.test.local', 'asn-13335')).toBeNull();
+
+      // A real movement edge between the same endpoints IS traversable — proving
+      // the exclusion is edge-type-specific, not a graph-wide break.
+      addEdge(graph, 'subdomain-api.test.local', 'asn-13335', 'REACHABLE');
+      const analyzer2 = buildAnalyzer(graph);
+      expect(analyzer2.findShortestPath('subdomain-api.test.local', 'asn-13335')).toEqual(['subdomain-api.test.local', 'asn-13335']);
+    });
+
     it('finds a multi-hop path', () => {
       const graph = makeGraph();
       addNode(graph, 'host-a', { type: 'host' });
