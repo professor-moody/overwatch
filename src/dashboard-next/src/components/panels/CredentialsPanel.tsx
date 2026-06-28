@@ -11,6 +11,8 @@ import {
   getEffectiveCredentialStatus,
   getCredentialStatusClass,
   isCredentialReachable,
+  credentialExpiry,
+  type CredentialExpiry,
 } from '../../lib/credential-display';
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 
@@ -98,6 +100,11 @@ export function CredentialsPanel() {
     () => creds.filter(c => !!c.cred_token_expires_at && getEffectiveCredentialStatus(c, nowMs) === 'expired'),
     [creds, nowMs],
   );
+  // Not-yet-expired but lapsing within the urgency window — act before they die.
+  const expiringSoonCreds = useMemo(
+    () => creds.filter(c => credentialExpiry(c, nowMs)?.urgency === 'soon'),
+    [creds, nowMs],
+  );
 
   const toggleReveal = (id: string) => {
     setRevealed(prev => {
@@ -119,6 +126,7 @@ export function CredentialsPanel() {
         <CredentialQueueChip label="Reachable" value={reachableCreds} tone="warning" />
         <CredentialQueueChip label="Unverified" value={unverifiedCreds} tone={unverifiedCreds > 0 ? 'accent' : 'muted'} />
         <CredentialQueueChip label="Expansion candidates" value={expansionCandidates} tone={expansionCandidates > 0 ? 'accent' : 'muted'} />
+        <CredentialQueueChip label="Expiring soon" value={expiringSoonCreds.length} tone={expiringSoonCreds.length > 0 ? 'warning' : 'muted'} />
         <CredentialQueueChip label="Expired tokens" value={expiredTokenCreds.length} tone={expiredTokenCreds.length > 0 ? 'warning' : 'muted'} />
       </div>
 
@@ -287,10 +295,19 @@ export function CredentialsPanel() {
                       {cred.confidence != null ? `${Math.round((cred.confidence as number) * 100)}%` : '—'}
                     </DetailRow>
 
-                    {/* Expiry */}
+                    {/* Expiry — with relative TTL urgency for token credentials */}
                     {!!(cred.cred_token_expires_at || cred.valid_until) && (
                       <DetailRow label="Expires">
                         {String(cred.cred_token_expires_at ?? cred.valid_until)}
+                        {(() => {
+                          const exp = credentialExpiry(cred, nowMs);
+                          if (!exp) return null;
+                          return (
+                            <span className={cn('ml-2', exp.urgency === 'ok' ? 'text-muted-foreground' : exp.urgency === 'soon' ? 'text-warning' : 'text-destructive')}>
+                              {formatExpiryLabel(exp)}
+                            </span>
+                          );
+                        })()}
                       </DetailRow>
                     )}
 
@@ -371,6 +388,16 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <div className="flex-1 min-w-0 text-foreground">{children}</div>
     </div>
   );
+}
+
+/** Compact relative TTL: "expires in 3h" / "expired 2d ago". */
+function formatExpiryLabel(exp: CredentialExpiry): string {
+  const abs = Math.abs(exp.ms);
+  const d = Math.floor(abs / 86_400_000);
+  const h = Math.floor(abs / 3_600_000);
+  const m = Math.floor(abs / 60_000);
+  const dur = d >= 1 ? `${d}d` : h >= 1 ? `${h}h` : m >= 1 ? `${m}m` : '<1m';
+  return exp.urgency === 'expired' ? `expired ${dur} ago` : `expires in ${dur}`;
 }
 
 function CredentialQueueChip({

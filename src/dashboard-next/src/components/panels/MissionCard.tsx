@@ -5,9 +5,11 @@ import type { MissionCard as MissionCardModel, MissionTone } from '../../lib/age
 // that makes productive / blocked / failed obvious at a glance. View-model is
 // built by lib/agent-mission.ts (tested); this is pure presentation.
 
+// `blocked` (waiting on you) and `stuck` (alive but idle) are distinct states
+// that need distinct triage — keep them on different hues, not two shades of one.
 const TONE_DOT: Record<MissionTone, string> = {
   blocked: 'bg-warning',
-  stuck: 'bg-warning/60',
+  stuck: 'bg-purple',
   running: 'bg-success',
   failed: 'bg-destructive',
   done: 'bg-accent',
@@ -48,7 +50,7 @@ export function MissionCard({
         'cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-hover/40',
         active && 'border-l-2 border-l-accent bg-accent/10',
         card.tone === 'blocked' && !active && 'border-l-2 border-l-warning/60',
-        card.tone === 'stuck' && !active && 'border-l-2 border-l-warning/40',
+        card.tone === 'stuck' && !active && 'border-l-2 border-l-purple/60',
       )}
     >
       <div className="flex items-center gap-2">
@@ -85,7 +87,7 @@ export function MissionCard({
       </div>
 
       {card.blocker && (
-        <div className={cn('mt-1 truncate pl-4 text-[10px]', card.tone === 'failed' ? 'text-destructive' : 'text-warning')} title={card.blocker}>
+        <div className={cn('mt-1 truncate pl-4 text-[10px]', card.tone === 'failed' ? 'text-destructive' : card.tone === 'stuck' ? 'text-purple' : 'text-warning')} title={card.blocker}>
           {card.blocker}
         </div>
       )}

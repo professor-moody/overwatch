@@ -3,6 +3,7 @@ import {
   addAttachedSession,
   cleanTerminalText,
   extractCommandLikeLines,
+  groupForSession,
   groupSessions,
   relatedSessionActions,
   relatedSessionActivity,
@@ -62,7 +63,8 @@ describe('session workspace helpers', () => {
 
     expect(grouped.live.map(s => s.id)).toEqual(['live']);
     expect(grouped.pending.map(s => s.id)).toEqual(['pending']);
-    expect(grouped.closed.map(s => s.id)).toEqual(['closed', 'error']);
+    expect(grouped.error.map(s => s.id)).toEqual(['error']);
+    expect(grouped.closed.map(s => s.id)).toEqual(['closed']);
   });
 
   it('filters by target, owner, notes, and identifiers', () => {
@@ -161,5 +163,29 @@ describe('session workspace helpers', () => {
     expect(sessionsForAgent(sessions, null)).toEqual([]);
     expect(sessionsForAgent(sessions, {})).toEqual([]);
     expect(sessionsForAgent([], { id: 'task-1' })).toEqual([]);
+  });
+
+  it('splits error sessions out from closed into their own group', () => {
+    expect(groupForSession(session({ state: 'connected' }))).toBe('live');
+    expect(groupForSession(session({ state: 'pending' }))).toBe('pending');
+    expect(groupForSession(session({ state: 'error' }))).toBe('error');
+    expect(groupForSession(session({ state: 'closed' }))).toBe('closed');
+
+    const grouped = groupSessions([
+      session({ id: 'l', state: 'connected' }),
+      session({ id: 'e', state: 'error' }),
+      session({ id: 'c', state: 'closed' }),
+    ]);
+    expect(grouped.error.map(s => s.id)).toEqual(['e']);
+    expect(grouped.closed.map(s => s.id)).toEqual(['c']);
+  });
+
+  it('orders error above closed (errors are more actionable than clean teardowns)', () => {
+    const sorted = sortSessionsForWorkspace([
+      session({ id: 'c', state: 'closed' }),
+      session({ id: 'e', state: 'error' }),
+      session({ id: 'l', state: 'connected' }),
+    ]);
+    expect(sorted.map(s => s.id)).toEqual(['l', 'e', 'c']);
   });
 });

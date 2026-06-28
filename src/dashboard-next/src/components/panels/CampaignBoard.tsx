@@ -11,7 +11,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 const TONE_DOT: Record<MissionTone, string> = {
   running: 'bg-accent',
   blocked: 'bg-warning',
-  stuck: 'bg-warning/60',
+  stuck: 'bg-purple', // distinct from blocked's amber — "alive but idle", not "waiting on you"
   failed: 'bg-destructive',
   done: 'bg-success',
   idle: 'bg-muted-foreground',
@@ -80,7 +80,7 @@ function BoardCard({ card }: { card: MissionCard }) {
         )}
       </div>
       {card.role && <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{card.role}</div>}
-      {card.blocker && <div className="mt-0.5 truncate text-[10px] text-warning">{card.blocker}</div>}
+      {card.blocker && <div className={cn('mt-0.5 truncate text-[10px]', card.tone === 'failed' ? 'text-destructive' : card.tone === 'stuck' ? 'text-purple' : 'text-warning')}>{card.blocker}</div>}
     </button>
   );
 }

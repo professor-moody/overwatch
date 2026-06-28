@@ -4,6 +4,8 @@ import {
   getCredentialMaterialKind,
   getEffectiveCredentialStatus,
   isCredentialReachable,
+  credentialExpiry,
+  CREDENTIAL_EXPIRY_SOON_MS,
 } from '../credential-display';
 import type { ExportedEdge, ExportedNode } from '../types';
 
@@ -65,5 +67,33 @@ describe('credential display helpers', () => {
       credential_status: 'active',
       cred_token_expires_at: '2026-05-14T23:59:59Z',
     }), now)).toBe('expired');
+  });
+});
+
+describe('credentialExpiry', () => {
+  const now = Date.parse('2026-05-15T00:00:00Z');
+
+  it('returns null when there is no (or an unparseable) expiry timestamp', () => {
+    expect(credentialExpiry(cred({}), now)).toBeNull();
+    expect(credentialExpiry(cred({ cred_token_expires_at: 'not-a-date' }), now)).toBeNull();
+  });
+
+  it('classifies a token well in the future as ok', () => {
+    const exp = credentialExpiry(cred({ cred_token_expires_at: '2026-05-16T00:00:00Z' }), now);
+    expect(exp?.urgency).toBe('ok');
+    expect(exp?.ms).toBe(86_400_000);
+  });
+
+  it('classifies a token within the soon window as soon (boundary inclusive)', () => {
+    const atBoundary = new Date(now + CREDENTIAL_EXPIRY_SOON_MS).toISOString();
+    expect(credentialExpiry(cred({ cred_token_expires_at: atBoundary }), now)?.urgency).toBe('soon');
+    const within = new Date(now + 30 * 60_000).toISOString();
+    expect(credentialExpiry(cred({ cred_token_expires_at: within }), now)?.urgency).toBe('soon');
+  });
+
+  it('classifies a lapsed token as expired with a negative ms', () => {
+    const exp = credentialExpiry(cred({ cred_token_expires_at: '2026-05-14T23:00:00Z' }), now);
+    expect(exp?.urgency).toBe('expired');
+    expect(exp?.ms).toBeLessThan(0);
   });
 });
