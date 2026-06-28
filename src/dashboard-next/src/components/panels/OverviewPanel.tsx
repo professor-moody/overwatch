@@ -356,7 +356,6 @@ export function OverviewPanel() {
 
 const STRATEGY_ICONS: Record<string, string> = {
   credential_spray: '🔑',
-  enumeration: '🔍',
   post_exploitation: '⚡',
   network_discovery: '🌐',
   custom: '⚙',
