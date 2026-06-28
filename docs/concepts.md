@@ -20,6 +20,10 @@ A **candidate next action** generated from the graph. The deterministic layer pr
 | `network_discovery` | CIDR scope with undiscovered hosts | Network sweep of 10.10.10.0/24 |
 | `network_pivot` | Host reachable via pivot but without a session | Host in same subnet as session-holder |
 | `credential_test` | Untested credential/target pair from the coverage matrix | Test `jdoe:NTLM` against DC01 (SMB) |
+| `cve_research` | A versioned service with no CVE/exploit research yet | Research CVEs for `Apache 2.4.49` |
+| `domain_enumeration` | An in-scope domain with no subdomains discovered yet | Enumerate subdomains of `test.local` |
+
+The OSINT external-recon item `domain_enumeration` is **passive** — generated from public-source data, carrying `0.0` opsec noise. (org/asn/email-driven items follow in a later slice.)
 
 Frontier items include **graph metrics** (hops to objective, fan-out estimate, node degree) but are **not scored** — scoring is the LLM's job. The deterministic layer only filters out items that are out-of-scope, duplicated, or exceed the OPSEC noise ceiling.
 

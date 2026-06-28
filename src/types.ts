@@ -348,6 +348,11 @@ export interface NodeProperties {
   email_source?: 'breach' | 'harvest' | 'dork' | 'manual' | 'other';
   breach_names?: string[];
   email_verified?: boolean;
+  // OSINT frontier retirement stamp (Phase 2D). Set by the OSINT agent after a
+  // subdomain-enumeration run so the `domain_enumeration` item is retired even
+  // when the run produced nothing — mirrors `cve_checked_at`. (org/asn/email
+  // stamps land in 2D-2 with their frontier items.)
+  subdomains_enumerated_at?: string;  // domain: subdomain enumeration done
 
   // Extensible
   [key: string]: unknown;
@@ -832,7 +837,12 @@ export interface FrontierItem {
     //   not yet acted on (e.g. webapp BACKED_BY cloud_resource).
     | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot'
     // P2: a service has a known version but no CVE/exploit research yet.
-    | 'cve_research';
+    | 'cve_research'
+    // Phase 2D (OSINT external recon): an in-scope `domain` node with no
+    // subdomains discovered yet. Passive (public sources, 0 noise). The
+    // osint_recon archetype + routing land in Phase 2E; org/asn/email-driven
+    // items land in 2D-2 with their scope handling.
+    | 'domain_enumeration';
   node_id?: string;
   edge_source?: string;
   edge_target?: string;

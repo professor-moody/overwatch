@@ -8,7 +8,7 @@ import type { EngineContext } from './engine-context.js';
 import type { NodeProperties, FrontierItem, NodeType } from '../types.js';
 import { getNodeLastSeenAt } from './provenance-utils.js';
 import { isCredentialStaleOrExpired, timeToExpiry } from './credential-utils.js';
-import { isIpInCidr } from './cidr.js';
+import { isIpInCidr, isHostnameInScope } from './cidr.js';
 import type { KnowledgeBase } from './knowledge-base.js';
 import { EDGE_TO_ATTACK } from './finding-classifier.js';
 import { CredentialCoverageTracker } from './credential-coverage.js';
@@ -471,6 +471,46 @@ export class FrontierComputer {
           confidence: attrs.confidence,
         },
         opsec_noise: 0.0, // web research is silent against the target
+        staleness_seconds: (now - new Date(getNodeLastSeenAt(attrs) || attrs.discovered_at).getTime()) / 1000,
+      });
+    });
+
+    // 7. OSINT external-recon discovery: in-scope `domain` nodes whose subdomains
+    // haven't been enumerated yet. Passive (public sources), so 0.0 noise; retired
+    // by `subdomains_enumerated_at` (the OSINT agent stamps it after a run, even one
+    // that found nothing — mirrors cve_checked_at) or once a subdomain is attached.
+    // Intentionally NOT in REQUIRED_PROPERTIES: a dedicated item type (not a generic
+    // `incomplete_node`) is what will let recommendArchetype route it to the
+    // osint_recon archetype once that lands (Phase 2E); until then it falls back to
+    // the default archetype. org/asn/email-driven items + their scope handling land
+    // in 2D-2.
+    const scope = this.ctx.config.scope;
+    this.ctx.graph.forEachNode((id: string, attrs) => {
+      if (attrs.identity_status === 'superseded') return;
+      if (attrs.type !== 'domain') return;
+      if (attrs.subdomains_enumerated_at) return;
+      // Only enumerate in-scope apex domains. A domain node missing both
+      // domain_name and label can't be scope-checked — skip it (guards against a
+      // null hostname crashing the whole frontier). Engagements scoped purely by
+      // CIDR (no scope.domains) intentionally produce no domain_enumeration items.
+      const hostname = attrs.domain_name || attrs.label;
+      if (!hostname || !isHostnameInScope(hostname, scope.domains || [], scope.exclusions || [])) return;
+      // Retire once subdomains are already attached (work effectively done).
+      let hasSub = false;
+      this.ctx.graph.forEachInEdge(id, (_e: string, ea: { type?: string }) => { if (ea.type === 'SUBDOMAIN_OF') hasSub = true; });
+      if (hasSub) return;
+      frontier.push({
+        id: `frontier-osint-${id}`,
+        type: 'domain_enumeration',
+        node_id: id,
+        description: `Enumerate subdomains of ${hostname}`,
+        graph_metrics: {
+          hops_to_objective: this.hopsToObjective(id),
+          fan_out_estimate: this.estimateFanOut(attrs),
+          node_degree: this.ctx.graph.degree(id),
+          confidence: attrs.confidence,
+        },
+        opsec_noise: 0.0, // passive external recon — public sources, no target contact
         staleness_seconds: (now - new Date(getNodeLastSeenAt(attrs) || attrs.discovered_at).getTime()) / 1000,
       });
     });

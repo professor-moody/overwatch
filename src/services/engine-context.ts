@@ -10,7 +10,7 @@ import type { AbstractGraph } from 'graphology-types';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   EngagementConfig, InferenceRule, AgentTask, Campaign, AgentDirective,
-  NodeProperties, EdgeProperties,
+  NodeProperties, EdgeProperties, FrontierItem,
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
 import { ColdStore } from './cold-store.js';
@@ -91,7 +91,7 @@ export type ActivityLogEntry = {
   operator_session_id?: string;
   provenance?: ActivityProvenance;
   category?: 'finding' | 'inference' | 'frontier' | 'objective' | 'agent' | 'reasoning' | 'system';
-  frontier_type?: 'incomplete_node' | 'inferred_edge' | 'untested_edge' | 'network_discovery' | 'network_pivot' | 'credential_test' | 'idp_enumeration' | 'mfa_bypass_candidate' | 'cross_tier_pivot' | 'cve_research';
+  frontier_type?: FrontierItem['type'];  // mirrors the canonical FrontierItem.type union (no drift)
   outcome?: 'success' | 'failure' | 'neutral';
   action_id?: string;
   event_type?: ActivityEventType;
