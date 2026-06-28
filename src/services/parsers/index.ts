@@ -52,6 +52,10 @@ export { parseMsGraphApplications } from './msgraph-applications.js';
 export { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
 export { parseMsGraphGroups } from './msgraph-groups.js';
 export { parseNessus } from './nessus.js';
+// OSINT external-recon parsers (Phase 2C).
+export { parseCrtSh } from './crtsh.js';
+export { parseSubfinder } from './subfinder.js';
+export { parseWhois } from './whois.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
 import { parseNxc } from './nxc.js';
@@ -102,6 +106,9 @@ import { parseMsGraphApplications } from './msgraph-applications.js';
 import { parseMsGraphServicePrincipals } from './msgraph-serviceprincipals.js';
 import { parseMsGraphGroups } from './msgraph-groups.js';
 import { parseNessus } from './nessus.js';
+import { parseCrtSh } from './crtsh.js';
+import { parseSubfinder } from './subfinder.js';
+import { parseWhois } from './whois.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
   'nmap': parseNmap,
@@ -216,6 +223,12 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'nessus': parseNessus,
   'nessus-xml': parseNessus,
   '.nessus': parseNessus,
+  // OSINT external-recon parsers (Phase 2C).
+  'crtsh': parseCrtSh,
+  'crt.sh': parseCrtSh,
+  'crt-sh': parseCrtSh,
+  'subfinder': parseSubfinder,
+  'whois': parseWhois,
 };
 
 export function getSupportedParsers(): string[] {
