@@ -68,6 +68,21 @@ When `engagement.opsec.enabled === true` and a `noise_estimate` is supplied (or 
 
 When OPSEC is disabled, the noise pipeline is fully inert — no ceiling enforcement, no recording.
 
+## Passive OSINT recon (Phase 2B)
+
+Passive OSINT techniques (`crt_sh`, `whois`, `passive_dns`, `subfinder`,
+`theharvester`, `amass_passive`, `shodan`, `github_dork`) query **public sources**
+and never contact the target, so they carry **0 noise** and are **exempt from the
+noise ceiling and the time window** — those constraints exist to limit what the
+*target's* defenders observe. The technique **blacklist is still honored** (an
+explicit operator veto wins). Light-active OSINT (`dnsx`/`httpx`) does contact
+in-scope assets and goes through the normal scope + noise path.
+
+A discovered **subdomain** node is scoped by its name: if its apex domain is in
+`scope.domains` (e.g. `api.example.com` under a scoped `example.com`) it is
+in-scope; otherwise it's flagged `scope unverified`. Actively probing the IP a
+subdomain resolves to still requires that IP to be in a scope CIDR.
+
 ## Usage Notes
 
 - Always validate before executing — this is a core safety gate.

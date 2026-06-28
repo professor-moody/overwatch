@@ -988,6 +988,42 @@ describe('GraphEngine', () => {
       }
     });
 
+    // --- OSINT scope + OPSEC (Phase 2B) ---
+
+    it('scopes a subdomain node by its name (apex-domain suffix match)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE); // scope.domains = ['test.local']
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'subdomain-api.test.local', type: 'subdomain', label: 'api.test.local', subdomain_name: 'api.test.local', parent_domain: 'test.local' },
+          { id: 'subdomain-api.evil.com', type: 'subdomain', label: 'api.evil.com', subdomain_name: 'api.evil.com', parent_domain: 'evil.com' },
+        ] as never,
+      }));
+      // apex test.local is in scope → the subdomain is in scope, no warning.
+      const inScope = engine.validateAction({ target_node: 'subdomain-api.test.local' });
+      expect(inScope.warnings.some(w => w.includes('scope unverified'))).toBe(false);
+      // apex evil.com is NOT in scope → flagged unverified (a warning, not a hard
+      // error — a subdomain isn't a host/service/share). Before 2B it resolved to
+      // no hostname and was trivially treated in-scope.
+      const outScope = engine.validateAction({ target_node: 'subdomain-api.evil.com' });
+      expect(outScope.warnings.some(w => w.includes('scope unverified'))).toBe(true);
+      expect(outScope.valid).toBe(true);
+    });
+
+    it('exempts passive recon techniques from the OPSEC time-window warning', () => {
+      // A 1-hour window starting next hour deterministically excludes "now".
+      const h = new Date().getHours();
+      const engine = trackedEngine(makeConfig({
+        opsec: { name: 'pentest', enabled: true, max_noise: 0.7, blacklisted_techniques: [], time_window: { start_hour: (h + 1) % 24, end_hour: (h + 2) % 24 } },
+      }), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({ nodes: [{ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' }] }));
+      // Active technique outside the window → warned.
+      const active = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'portscan' });
+      expect(active.warnings.some(w => w.includes('Outside approved time window'))).toBe(true);
+      // Passive recon never contacts the target → exempt, no time-window warning.
+      const passive = engine.validateAction({ target_node: 'host-10-10-10-1', technique: 'crt_sh' });
+      expect(passive.warnings.some(w => w.includes('Outside approved time window'))).toBe(false);
+    });
+
     it('rejects excluded edge_source in validateAction', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
