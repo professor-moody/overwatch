@@ -61,6 +61,13 @@ export class PathAnalyzer {
       // a "live reachability" view.
       if (attrs.type === 'HAS_SESSION' && !isLiveSessionEdge(attrs)) return;
 
+      // TODO(osint Phase 2C/2D): the OSINT external-recon edges (SUBDOMAIN_OF,
+      // RESOLVES_TO, IN_NETBLOCK, OWNS_ASSET, AFFILIATED_WITH) are RELATIONSHIPS,
+      // not attack/movement hops. Before any code emits them, exclude them here so
+      // they don't become traversable hops that distort findAttackPaths /
+      // hopsToObjective (mirror the sibling-scorer allowlist pattern). No effect
+      // yet — Phase 2A is schema-only and nothing produces these edges.
+
       const weight = this.computeEdgeWeight(attrs, optimize);
 
       const fwdKey = `${source}--${attrs.type}--${target}`;

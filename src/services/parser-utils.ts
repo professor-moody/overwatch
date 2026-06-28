@@ -88,6 +88,42 @@ export function pkiStoreId(kind: string, name: string): string {
   return `pki-store-${normalizeKeyPart(kind)}-${normalizeKeyPart(name)}`;
 }
 
+// --- OSINT / external-recon tier (Phase 2A) ---
+
+/** Canonical subdomain id. DNS labels can't contain '.', so the dot separator is
+ *  PRESERVED (not collapsed to '-' like normalizeKeyPart would) — otherwise
+ *  `api-gw.example.com` and `api.gw.example.com` would collide on one node. */
+export function subdomainId(fqdn: string): string {
+  const norm = fqdn
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  return `subdomain-${norm}`;
+}
+
+/** ASN canonical id from a number or "AS13335"-style string. */
+export function asnId(asn: string | number): string {
+  const digits = String(asn).replace(/[^0-9]/g, '');
+  return `asn-${digits || normalizeKeyPart(String(asn))}`;
+}
+
+export function organizationId(name: string): string {
+  return `organization-${normalizeKeyPart(name)}`;
+}
+
+/** Canonical email id. Splits on the LAST '@' and normalizes local-part and
+ *  domain separately so distinct mailboxes don't merge — e.g.
+ *  `jane@doe.example.com` and `jane.doe@example.com` get different ids. */
+export function emailId(address: string): string {
+  const at = address.lastIndexOf('@');
+  if (at <= 0) return `email-${normalizeKeyPart(address)}`;
+  const local = normalizeKeyPart(address.slice(0, at));
+  const domain = normalizeKeyPart(address.slice(at + 1));
+  return `email-${local}-at-${domain}`;
+}
+
 export function resolveDomainName(raw: string, aliases?: Record<string, string>): string {
   const trimmed = raw.trim();
   if (trimmed.includes('.')) return trimmed.toLowerCase();
