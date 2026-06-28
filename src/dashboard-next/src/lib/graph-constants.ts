@@ -24,6 +24,16 @@ export const NODE_COLORS: Record<string, string> = {
   cloud_resource: '#e6a459',
   cloud_policy: '#a8d65c',
   cloud_network: '#8fabb8',
+  // Identity tier (SSO / IdP).
+  idp: '#9b8cf0',
+  idp_application: '#b89af2',
+  idp_principal: '#c9b3f5',
+  api_endpoint: '#3fb5a8',
+  // OSINT / external-recon tier (Phase 2).
+  subdomain: '#b5d97a',
+  asn: '#7a9cc6',
+  organization: '#c0a35e',
+  email: '#8fd6c4',
   mock_service: '#d97706',
 };
 
@@ -49,6 +59,16 @@ export const NODE_BASE_SIZES: Record<string, number> = {
   cloud_resource: 7,
   cloud_policy: 5,
   cloud_network: 6,
+  // Identity tier (SSO / IdP).
+  idp: 10,
+  idp_application: 6,
+  idp_principal: 6,
+  api_endpoint: 4,
+  // OSINT / external-recon tier (Phase 2).
+  subdomain: 7,
+  asn: 9,
+  organization: 11,
+  email: 5,
   mock_service: 7,
 };
 
