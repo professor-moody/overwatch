@@ -13,7 +13,7 @@ import {
   isCredentialReachable,
   credentialReachTargets,
   credentialExpiry,
-  type CredentialExpiry,
+  formatExpiryLabel,
 } from '../../lib/credential-display';
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 
@@ -412,16 +412,6 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <div className="flex-1 min-w-0 text-foreground">{children}</div>
     </div>
   );
-}
-
-/** Compact relative TTL: "expires in 3h" / "expired 2d ago". */
-function formatExpiryLabel(exp: CredentialExpiry): string {
-  const abs = Math.abs(exp.ms);
-  const d = Math.floor(abs / 86_400_000);
-  const h = Math.floor(abs / 3_600_000);
-  const m = Math.floor(abs / 60_000);
-  const dur = d >= 1 ? `${d}d` : h >= 1 ? `${h}h` : m >= 1 ? `${m}m` : '<1m';
-  return exp.urgency === 'expired' ? `expired ${dur} ago` : `expires in ${dur}`;
 }
 
 function CredentialQueueChip({

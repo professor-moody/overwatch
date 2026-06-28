@@ -6,6 +6,7 @@ import type { ExportedNode, ExportedEdge } from '../../lib/types';
 import { ActionButton, DataRow, EmptyPanelState, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { cn } from '../../lib/utils';
+import { credentialExpiry, formatExpiryLabel, type CredentialExpiry } from '../../lib/credential-display';
 
 interface IdpGroup {
   idp: ExportedNode;
@@ -22,6 +23,8 @@ export interface IdentityTokenSummary {
   audience?: string;
   scopes: string[];
   expires?: string;
+  /** Relative TTL classification for the token's expiry (null when none). */
+  expiry: CredentialExpiry | null;
   status: 'usable' | 'MFA satisfied' | 'MFA blocked';
   tone: 'success' | 'warning' | 'muted';
 }
@@ -77,7 +80,7 @@ export function tokenCredentials(nodes: ExportedNode[]): ExportedNode[] {
   });
 }
 
-export function identityTokenSummaries(nodes: ExportedNode[]): IdentityTokenSummary[] {
+export function identityTokenSummaries(nodes: ExportedNode[], nowMs: number = Date.now()): IdentityTokenSummary[] {
   return tokenCredentials(nodes).map(node => {
     const scopes = Array.isArray(node.cred_scopes) ? (node.cred_scopes as string[]) : [];
     let status: IdentityTokenSummary['status'] = 'usable';
@@ -97,6 +100,7 @@ export function identityTokenSummaries(nodes: ExportedNode[]): IdentityTokenSumm
       audience: asString(node.cred_audience),
       scopes,
       expires: asString(node.cred_token_expires_at),
+      expiry: credentialExpiry(node, nowMs),
       status,
       tone,
     };
@@ -110,10 +114,13 @@ export function IdentityPanel() {
   const selectedItem = searchParams.get('item');
   const { navigateToPanel } = useNavigation();
 
+  const nowMs = Date.now();
   const groups = useMemo(() => groupByIdp(graph.nodes, graph.edges), [graph.nodes, graph.edges]);
-  const tokens = useMemo(() => identityTokenSummaries(graph.nodes), [graph.nodes]);
+  const tokens = useMemo(() => identityTokenSummaries(graph.nodes, nowMs), [graph.nodes, nowMs]);
   const appCount = groups.reduce((sum, group) => sum + group.apps.length, 0);
   const principalCount = groups.reduce((sum, group) => sum + group.principals.length, 0);
+  const mfaSatisfied = tokens.filter(t => t.status === 'MFA satisfied').length;
+  const mfaBlocked = tokens.filter(t => t.status === 'MFA blocked').length;
 
   if (!initialized) {
     return <EmptyPanelState message="Waiting for engagement state..." />;
@@ -141,6 +148,13 @@ export function IdentityPanel() {
       </PanelSection>
 
       <PanelSection title="Token Relationships" meta={tokens.length}>
+        {tokens.length > 0 && (mfaSatisfied > 0 || mfaBlocked > 0) && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">MFA</span>
+            {mfaSatisfied > 0 && <StatusPill tone="success">{mfaSatisfied} satisfied</StatusPill>}
+            {mfaBlocked > 0 && <StatusPill tone="warning">{mfaBlocked} blocked</StatusPill>}
+          </div>
+        )}
         {tokens.length === 0 ? (
           <EmptyPanelState message="No token credentials reference identity providers yet." />
         ) : (
@@ -157,7 +171,16 @@ export function IdentityPanel() {
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       {token.user && <span>User <span className="font-mono text-foreground">{token.user}</span></span>}
                       {token.audience && <span>Aud <span className="font-mono text-foreground">{token.audience}</span></span>}
-                      {token.expires && <span>Expires <span className="font-mono text-foreground">{token.expires}</span></span>}
+                      {token.expires && (
+                        <span>
+                          Expires <span className="font-mono text-foreground">{token.expires}</span>
+                          {token.expiry && (
+                            <span className={cn('ml-1', token.expiry.urgency === 'ok' ? 'text-muted-foreground' : token.expiry.urgency === 'soon' ? 'text-warning' : 'text-destructive')}>
+                              ({formatExpiryLabel(token.expiry)})
+                            </span>
+                          )}
+                        </span>
+                      )}
                     </div>
                     {token.scopes.length > 0 && (
                       <div className="mt-1 text-xs text-muted-foreground">
