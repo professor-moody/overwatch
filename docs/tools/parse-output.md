@@ -36,6 +36,11 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **Impacket smbclient** | `smbclient`, `impacket-smbclient` | smbclient.py text output | Host + share nodes, file listings, `readable`/`writable` share properties |
 | **Impacket wmiexec** | `wmiexec`, `impacket-wmiexec` | wmiexec.py text output | Host nodes with `ADMIN_TO`/`HAS_SESSION` edges (confirmed execution) |
 | **Impacket psexec** | `psexec`, `impacket-psexec` | psexec.py text output | Host nodes with `ADMIN_TO`/`HAS_SESSION` edges (confirmed execution) |
+| **crt.sh** | `crtsh`, `crt.sh`, `crt-sh` | crt.sh JSON (CT logs) | Subdomain + domain nodes, `SUBDOMAIN_OF` edges (passive OSINT) |
+| **subfinder** | `subfinder` | Text or JSON-lines hosts | Subdomain + domain nodes, `SUBDOMAIN_OF` edges (passive OSINT) |
+| **whois** | `whois` | whois text (domain or IP) | Organization + domain + asn nodes, `OWNS_ASSET` edges (passive OSINT) |
+
+(Plus cloud/identity parsers — `pacu`, `scoutsuite`, `cloudfox`, `roadrecon`, `okta`, the `msgraph-*` / `gh-api-*` / `token_replay_*` families, and more. Use `list_parsers: true` for the authoritative live list.)
 
 ## Parameters
 
@@ -89,6 +94,6 @@ If a parser runs but extracts zero nodes and zero edges, `parse_output` now retu
 - Prefer this over `report_finding` when you have raw output from a supported tool
 - Treat `parse_status: "no_data"` as an operator-visible parser failure or empty-output condition; verify the command output before reporting "nothing found"
 - Set `ingest: false` to preview what would be parsed without modifying the graph
-- Set `list_parsers: true` to get the current list of supported parser names (50 aliases across 28 parsers)
+- Set `list_parsers: true` to get the current, authoritative list of supported parser names (the count grows as parsers are added)
 - Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance
 - See [parse_output vs report_finding](../playbook/parse-vs-report.md) for detailed guidance

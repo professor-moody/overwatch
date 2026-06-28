@@ -113,6 +113,14 @@ export function organizationId(name: string): string {
   return `organization-${normalizeKeyPart(name)}`;
 }
 
+/** Best-effort registrable domain (eTLD+1) from an FQDN — the last two labels.
+ *  No Public Suffix List, so multi-part TLDs (e.g. co.uk) are approximate; good
+ *  enough to anchor a subdomain to its apex for SUBDOMAIN_OF edges. */
+export function apexDomain(host: string): string {
+  const labels = host.trim().toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
+  return labels.length <= 2 ? labels.join('.') : labels.slice(-2).join('.');
+}
+
 /** Canonical email id. Splits on the LAST '@' and normalizes local-part and
  *  domain separately so distinct mailboxes don't merge — e.g.
  *  `jane@doe.example.com` and `jane.doe@example.com` get different ids. */
