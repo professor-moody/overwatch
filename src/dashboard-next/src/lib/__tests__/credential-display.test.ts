@@ -4,6 +4,7 @@ import {
   getCredentialMaterialKind,
   getEffectiveCredentialStatus,
   isCredentialReachable,
+  credentialReachTargets,
   credentialExpiry,
   CREDENTIAL_EXPIRY_SOON_MS,
 } from '../credential-display';
@@ -43,6 +44,17 @@ describe('credential display helpers', () => {
     ];
     expect(isCredentialReachable(cred({}), edges)).toBe(true);
     expect(isCredentialReachable(cred({ id: 'cred-2' }), edges)).toBe(false);
+  });
+
+  it('lists the target ids a credential reaches (one per reach edge)', () => {
+    const edges: ExportedEdge[] = [
+      { source: 'cred-1', target: 'host-a', type: 'VALID_ON' },
+      { source: 'cred-1', target: 'app-b', type: 'VALID_FOR_APP' },
+      { source: 'cred-1', target: 'host-c', type: 'KNOWS' }, // not a reach edge
+      { source: 'other', target: 'host-d', type: 'VALID_ON' }, // different cred
+    ];
+    expect(credentialReachTargets(cred({}), edges).sort()).toEqual(['app-b', 'host-a']);
+    expect(credentialReachTargets(cred({ id: 'cred-2' }), edges)).toEqual([]);
   });
 
   it('preserves non-active credential status values', () => {
