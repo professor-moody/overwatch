@@ -29,6 +29,15 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `cloud_network` | Cloud network construct (VPC, security group) | `network_type`, `ingress_rules`, `egress_rules` |
 | `api_endpoint` | A web API endpoint | `path`, `method`, `auth_required`, `response_type` |
 | `mock_service` | An **operator-controlled** decoy / listener / relay (Responder, ntlmrelayx, fake LDAP, redirector, reverse-shell catcher, etc.) | `mock_purpose`, `bind_host`, `bind_port`, `protocol`, `opsec_loud`, `started_at`, `stopped_at`, `bound_session_id` |
+| `subdomain` | A DNS name under an in-scope domain (external surface) | `subdomain_name`, `parent_domain`, `resolved_ips`, `dns_records`, `wildcard`, `takeover_candidate` |
+| `asn` | An autonomous-system / IP netblock | `asn_number`, `asn_org`, `cidr_ranges`, `registry` |
+| `organization` | An owning organization (external recon) | `org_name`, `domains_owned`, `industry` |
+| `email` | A harvested email / person (the person anchor; breaches recorded as evidence) | `email_address`, `person_name`, `email_source`, `breach_names`, `email_verified` |
+
+> **OSINT / external-recon tier** (`subdomain`, `asn`, `organization`, `email`) models
+> the passive external attack surface distinctly from the internal/AD topology. The schema
+> ships in Phase 2A; parsers and frontier work that populate it land in later phases of the
+> OSINT capability.
 
 ### Common Node Properties
 
@@ -315,6 +324,18 @@ Edges that attribute captures and relays to operator-controlled `mock_service` n
 | `BAITED` | `mock_service → credential` — the listener captured this credential. Auto-emitted by the `rule-baited-credential` inference rule when a credential is reported with `via_mock_service_id` set. |
 | `RELAYED_VIA` | `credential → mock_service` — the credential was relayed through this listener (e.g. ntlmrelayx). Operator-asserted via `report_finding`. |
 | `RUNS_ON` | `mock_service → host` — the listener is hosted on the attacker box (added when `target_node` resolves to a host). |
+
+### OSINT / External Recon
+
+Edges over the external-recon tier (Phase 2A schema; populated by the OSINT capability).
+
+| Edge | Description |
+|------|-------------|
+| `SUBDOMAIN_OF` | `subdomain → domain \| subdomain` — DNS hierarchy. |
+| `RESOLVES_TO` | `subdomain → host` — DNS A/AAAA resolution to a host. |
+| `IN_NETBLOCK` | `host → asn` — the host's IP falls in an announced netblock. |
+| `OWNS_ASSET` | `organization → domain \| asn` — org ownership of an internet asset. Distinct from the AD `OWNS` (ACL ownership). |
+| `AFFILIATED_WITH` | `email → organization` — a harvested email/person affiliated with an org. |
 
 ### Generic
 

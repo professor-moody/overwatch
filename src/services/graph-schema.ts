@@ -136,6 +136,12 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   VALID_FOR_IDP_PRINCIPAL: { source: ['credential'], target: ['idp_principal'] },
   // Objective
   PATH_TO_OBJECTIVE: { source: ['host', 'user', 'credential', 'service', 'group', 'cloud_identity', 'cloud_resource', 'webapp'], target: ['objective'] },
+  // OSINT / external recon (Phase 2A)
+  SUBDOMAIN_OF: { source: ['subdomain'], target: ['domain', 'subdomain'] },
+  RESOLVES_TO: { source: ['subdomain'], target: ['host'] },
+  IN_NETBLOCK: { source: ['host'], target: ['asn'] },
+  OWNS_ASSET: { source: ['organization'], target: ['domain', 'asn'] },
+  AFFILIATED_WITH: { source: ['email'], target: ['organization'] },
   // RELATED is intentionally unconstrained
 };
 

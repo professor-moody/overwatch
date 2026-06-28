@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { validateEdgeEndpoints, EDGE_CONSTRAINTS } from '../graph-schema.js';
 import { EDGE_TYPES, NODE_TYPES } from '../../types.js';
 import { BUILTIN_RULES } from '../builtin-inference-rules.js';
+import { subdomainId, asnId, organizationId, emailId } from '../parser-utils.js';
 
 describe('edge constraints', () => {
   it('covers all edge types except RELATED', () => {
@@ -101,6 +102,14 @@ describe('edge constraints', () => {
     ['ASSUMES_ROLE', 'cloud_resource', 'cloud_identity'],
     ['PATH_TO_OBJECTIVE', 'user', 'objective'],
     ['RELATED', 'host', 'share'],
+    // OSINT / external recon (Phase 2A)
+    ['SUBDOMAIN_OF', 'subdomain', 'domain'],
+    ['SUBDOMAIN_OF', 'subdomain', 'subdomain'],
+    ['RESOLVES_TO', 'subdomain', 'host'],
+    ['IN_NETBLOCK', 'host', 'asn'],
+    ['OWNS_ASSET', 'organization', 'domain'],
+    ['OWNS_ASSET', 'organization', 'asn'],
+    ['AFFILIATED_WITH', 'email', 'organization'],
   ];
 
   for (const [edgeType, sourceType, targetType] of validCases) {
@@ -131,6 +140,11 @@ describe('edge constraints', () => {
     ['DERIVED_FROM', 'credential', 'user'],
     ['DUMPED_FROM', 'user', 'host'],
     ['DUMPED_FROM', 'credential', 'service'],
+    // OSINT: OWNS_ASSET (organization-owned internet asset) must NOT accept the
+    // AD `OWNS` source/target shapes — proves the two edges stay distinct.
+    ['OWNS_ASSET', 'user', 'domain'],
+    ['IN_NETBLOCK', 'asn', 'host'],
+    ['AFFILIATED_WITH', 'organization', 'email'],
   ];
 
   for (const [edgeType, sourceType, targetType] of invalidCases) {
@@ -141,4 +155,32 @@ describe('edge constraints', () => {
       expect(result.valid).toBe(false);
     });
   }
+});
+
+describe('OSINT node types + canonical ids (Phase 2A)', () => {
+  it('registers the four OSINT node types', () => {
+    for (const t of ['subdomain', 'asn', 'organization', 'email']) {
+      expect(NODE_TYPES as readonly string[]).toContain(t);
+    }
+  });
+
+  it('derives stable canonical ids (ASN reduced to digits; org normalized)', () => {
+    expect(asnId('AS13335')).toBe('asn-13335');
+    expect(asnId(13335)).toBe('asn-13335');
+    expect(organizationId('Acme Corp')).toBe('organization-acme-corp');
+  });
+
+  it('subdomainId preserves the dot separator so hyphen vs sub-level do not collide', () => {
+    expect(subdomainId('API.Example.COM')).toBe('subdomain-api.example.com');
+    // The whole point: a hyphenated label and a deeper name must differ.
+    expect(subdomainId('api-gw.example.com')).not.toBe(subdomainId('api.gw.example.com'));
+  });
+
+  it('emailId splits on @ so distinct mailboxes do not merge', () => {
+    expect(emailId('Jane.Doe@Example.com')).toBe('email-jane-doe-at-example-com');
+    // Cross-domain mailboxes that normalizeKeyPart alone would have merged:
+    expect(emailId('jane.doe@example.com')).not.toBe(emailId('jane@doe.example.com'));
+    // Degenerate input (no @) still yields a stable id, not a crash.
+    expect(emailId('not-an-email')).toBe('email-not-an-email');
+  });
 });

@@ -13,6 +13,8 @@ export const NODE_TYPES = [
   // the backend union in src/types.ts.
   'idp', 'idp_application', 'idp_principal',
   'mock_service',
+  // OSINT / external-recon tier (Phase 2A). Mirrors the backend union.
+  'subdomain', 'asn', 'organization', 'email',
 ] as const;
 
 export type NodeType = typeof NODE_TYPES[number];

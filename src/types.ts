@@ -16,7 +16,12 @@ export const NODE_TYPES = [
   // These are first-class so SSO-fed engagements can model the auth surface
   // distinctly from cloud_identity (which models AWS IAM / Azure RBAC).
   'idp', 'idp_application', 'idp_principal',
-  'mock_service'
+  'mock_service',
+  // OSINT / external-recon tier (Phase 2A). Passive external surface modeled
+  // distinctly from the internal/AD topology: DNS names, netblocks, the owning
+  // organization, and harvested email/people. `email` is the person anchor
+  // (person_name is an optional field); breaches are evidence, not nodes.
+  'subdomain', 'asn', 'organization', 'email'
 ] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
@@ -320,6 +325,30 @@ export interface NodeProperties {
   stopped_at?: string;
   opsec_loud?: boolean;
 
+  // OSINT / external-recon tier (Phase 2A)
+  // subdomain
+  subdomain_name?: string;
+  parent_domain?: string;
+  resolved_ips?: string[];
+  dns_records?: string[];
+  wildcard?: boolean;
+  takeover_candidate?: boolean;
+  // asn (netblock)
+  asn_number?: number;
+  asn_org?: string;
+  cidr_ranges?: string[];
+  registry?: string;
+  // organization
+  org_name?: string;
+  domains_owned?: string[];
+  industry?: string;
+  // email (person anchor; breaches recorded as evidence, not nodes)
+  email_address?: string;
+  person_name?: string;
+  email_source?: 'breach' | 'harvest' | 'dork' | 'manual' | 'other';
+  breach_names?: string[];
+  email_verified?: boolean;
+
   // Extensible
   [key: string]: unknown;
 }
@@ -385,6 +414,13 @@ export const EDGE_TYPES = [
   'VALID_FOR_APP', 'VALID_FOR_IDP_PRINCIPAL',
   // Operator-controlled infrastructure (mock_service / decoy listeners)
   'OPERATED_BY', 'BAITED', 'RELAYED_VIA',
+  // OSINT / external recon (Phase 2A). External-surface relationships:
+  // SUBDOMAIN_OF:   subdomain → domain (DNS hierarchy)
+  // RESOLVES_TO:    subdomain → host  (DNS A/AAAA resolution)
+  // IN_NETBLOCK:    host → asn        (IP falls in an announced netblock)
+  // OWNS_ASSET:     organization → domain | asn  (distinct from the AD `OWNS`)
+  // AFFILIATED_WITH: email → organization (harvested person/email ↔ org)
+  'SUBDOMAIN_OF', 'RESOLVES_TO', 'IN_NETBLOCK', 'OWNS_ASSET', 'AFFILIATED_WITH',
   // Objective
   'PATH_TO_OBJECTIVE',
   // Generic
