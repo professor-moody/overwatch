@@ -11,6 +11,7 @@ import {
   getEffectiveCredentialStatus,
   getCredentialStatusClass,
   isCredentialReachable,
+  credentialReachTargets,
   credentialExpiry,
   type CredentialExpiry,
 } from '../../lib/credential-display';
@@ -18,11 +19,15 @@ import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, Segmente
 
 type SortMode = 'recent' | 'kind' | 'status';
 type StatusFilter = 'all' | 'active' | 'stale' | 'expired';
+/** Derived "what kind of attention does this credential need" views, toggled
+ *  from the count chips — orthogonal to the lifecycle StatusFilter. */
+type ViewFilter = 'all' | 'reachable' | 'unverified' | 'expansion' | 'expiring';
 
 export function CredentialsPanel() {
   const graph = useEngagementStore((s) => s.graph);
   const [sortMode, setSortMode] = useState<SortMode>('recent');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [viewFilter, setViewFilter] = useState<ViewFilter>('all');
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
@@ -44,6 +49,16 @@ export function CredentialsPanel() {
 
     if (statusFilter !== 'all') {
       list = list.filter(c => getEffectiveCredentialStatus(c, nowMs) === statusFilter);
+    }
+
+    if (viewFilter === 'reachable') {
+      list = list.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && isCredentialReachable(c, graph.edges));
+    } else if (viewFilter === 'unverified') {
+      list = list.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && !isCredentialReachable(c, graph.edges));
+    } else if (viewFilter === 'expansion') {
+      list = list.filter(isExpansionCandidate);
+    } else if (viewFilter === 'expiring') {
+      list = list.filter(c => credentialExpiry(c, nowMs)?.urgency === 'soon');
     }
 
     if (search.trim()) {
@@ -79,7 +94,7 @@ export function CredentialsPanel() {
       });
     }
     return sorted;
-  }, [creds, sortMode, statusFilter, search, nowMs]);
+  }, [creds, sortMode, statusFilter, viewFilter, search, graph.edges, nowMs]);
 
   // Kind → count breakdown
   const kindCounts = useMemo(() => {
@@ -121,12 +136,19 @@ export function CredentialsPanel() {
         meta={`(${creds.length} total · ${activeCreds} active · ${reachableCreds} reachable)`}
       />
 
+      {/* Derived-view chips double as filters — click to scope the list, click
+          again to clear. (Active / Expired tokens mirror the lifecycle filter
+          below and stay display-only.) */}
       <div className="flex flex-wrap gap-2 text-xs">
         <CredentialQueueChip label="Active" value={activeCreds} tone="success" />
-        <CredentialQueueChip label="Reachable" value={reachableCreds} tone="warning" />
-        <CredentialQueueChip label="Unverified" value={unverifiedCreds} tone={unverifiedCreds > 0 ? 'accent' : 'muted'} />
-        <CredentialQueueChip label="Expansion candidates" value={expansionCandidates} tone={expansionCandidates > 0 ? 'accent' : 'muted'} />
-        <CredentialQueueChip label="Expiring soon" value={expiringSoonCreds.length} tone={expiringSoonCreds.length > 0 ? 'warning' : 'muted'} />
+        <CredentialQueueChip label="Reachable" value={reachableCreds} tone="warning"
+          active={viewFilter === 'reachable'} onClick={() => setViewFilter(v => v === 'reachable' ? 'all' : 'reachable')} />
+        <CredentialQueueChip label="Unverified" value={unverifiedCreds} tone={unverifiedCreds > 0 ? 'accent' : 'muted'}
+          active={viewFilter === 'unverified'} onClick={() => setViewFilter(v => v === 'unverified' ? 'all' : 'unverified')} />
+        <CredentialQueueChip label="Expansion candidates" value={expansionCandidates} tone={expansionCandidates > 0 ? 'accent' : 'muted'}
+          active={viewFilter === 'expansion'} onClick={() => setViewFilter(v => v === 'expansion' ? 'all' : 'expansion')} />
+        <CredentialQueueChip label="Expiring soon" value={expiringSoonCreds.length} tone={expiringSoonCreds.length > 0 ? 'warning' : 'muted'}
+          active={viewFilter === 'expiring'} onClick={() => setViewFilter(v => v === 'expiring' ? 'all' : 'expiring')} />
         <CredentialQueueChip label="Expired tokens" value={expiredTokenCreds.length} tone={expiredTokenCreds.length > 0 ? 'warning' : 'muted'} />
       </div>
 
@@ -200,7 +222,8 @@ export function CredentialsPanel() {
           {filtered.map(cred => {
             const kind = getCredentialMaterialKind(cred);
             const status = getEffectiveCredentialStatus(cred, nowMs);
-            const reachable = status !== 'expired' && isCredentialReachable(cred, graph.edges);
+            const reachTargetCount = status !== 'expired' ? credentialReachTargets(cred, graph.edges).length : 0;
+            const reachable = reachTargetCount > 0;
             const isExpanded = expandedId === cred.id;
             const isRevealed = revealed.has(cred.id);
             const credValue = cred.cred_value as string | undefined;
@@ -228,10 +251,11 @@ export function CredentialsPanel() {
                     <StatusPill className={getCredentialStatusClass(status)}>{status}</StatusPill>
                   )}
 
-                  {/* Reachable indicator */}
+                  {/* Reachable indicator — with the target count so coverage is
+                      glanceable without expanding (full list under "Reachable via"). */}
                   {reachable && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning font-medium">
-                      reachable
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning font-medium" title={`Reaches ${reachTargetCount} target${reachTargetCount === 1 ? '' : 's'}`}>
+                      reachable · {reachTargetCount}
                     </span>
                   )}
 
@@ -404,10 +428,15 @@ function CredentialQueueChip({
   label,
   value,
   tone,
+  onClick,
+  active,
 }: {
   label: string;
   value: number;
   tone: 'success' | 'warning' | 'accent' | 'muted';
+  /** When provided, the chip becomes a toggle filter. */
+  onClick?: () => void;
+  active?: boolean;
 }) {
   const toneClass: Record<typeof tone, string> = {
     success: 'border-success/20 bg-success/5 text-success',
@@ -415,11 +444,25 @@ function CredentialQueueChip({
     accent: 'border-accent/20 bg-accent/5 text-accent',
     muted: 'border-border bg-elevated/40 text-muted-foreground',
   };
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded border px-2 py-1', toneClass[tone])}>
+  const inner = (
+    <>
       <span className="font-medium">{label}</span>
       <span className="font-mono">{value}</span>
-    </span>
+    </>
+  );
+  const base = 'inline-flex items-center gap-1.5 rounded border px-2 py-1';
+  if (!onClick) {
+    return <span className={cn(base, toneClass[tone])}>{inner}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(base, 'transition-colors hover:border-current', toneClass[tone], active && 'ring-1 ring-current')}
+    >
+      {inner}
+    </button>
   );
 }
 

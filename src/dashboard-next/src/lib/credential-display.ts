@@ -118,9 +118,21 @@ export function credentialExpiry(
   return { expiresAtMs, ms, urgency };
 }
 
+/** Edge types that prove a credential reaches a target (app/role/host/service). */
+export const CREDENTIAL_REACH_EDGE_TYPES = ['VALID_FOR_APP', 'ASSUMES_ROLE', 'VALID_ON', 'AUTHENTICATES_TO'];
+
+/** Target node ids this credential is confirmed to reach (one per reach edge). */
+export function credentialReachTargets(
+  cred: Pick<ExportedNode, 'id'>,
+  edges: Pick<ExportedEdge, 'source' | 'type' | 'target'>[],
+): string[] {
+  return edges
+    .filter(e => e.source === cred.id && CREDENTIAL_REACH_EDGE_TYPES.includes(e.type))
+    .map(e => e.target);
+}
+
 export function isCredentialReachable(cred: ExportedNode, edges: Pick<ExportedEdge, 'source' | 'type'>[]): boolean {
   return edges.some(
-    e => e.source === cred.id &&
-      ['VALID_FOR_APP', 'ASSUMES_ROLE', 'VALID_ON', 'AUTHENTICATES_TO'].includes(e.type),
+    e => e.source === cred.id && CREDENTIAL_REACH_EDGE_TYPES.includes(e.type),
   );
 }
