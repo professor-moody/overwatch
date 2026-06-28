@@ -56,6 +56,7 @@ import {
   previewScopeChange as _previewScopeChange,
 } from './scope-manager.js';
 import type { ScopeManagerHost } from './scope-manager.js';
+import { isPassiveTechnique } from './osint-techniques.js';
 import { buildDecisionLog, queryDecisionLog, type DecisionEntry, type DecisionLogQuery } from './decision-log.js';
 import { explainAction, type ExplainActionResult } from './introspection.js';
 import { buildTimeline, queryTimeline, type TimelineEntry, type TimelineQuery } from './timeline.js';
@@ -1099,6 +1100,12 @@ export class GraphEngine {
     const node = this.getNode(nodeId);
     if (!node) return null;
     if (node.hostname) return node.hostname;
+    // A subdomain node's name IS its hostname — so scope checks (domain-suffix
+    // match against scope.domains) apply to discovered subdomains instead of
+    // treating them as hostname-less and trivially in-scope.
+    if (node.type === 'subdomain' && typeof node.subdomain_name === 'string' && node.subdomain_name) {
+      return node.subdomain_name;
+    }
     // Walk inbound edges to find the parent host
     for (const edge of this.ctx.graph.inEdges(nodeId) as string[]) {
       const source = this.ctx.graph.source(edge);
@@ -1275,6 +1282,11 @@ export class GraphEngine {
 
     // OPSEC enforcement (only when enabled). P4.1: read the effective
     // profile, which folds in the active phase's `opsec_overrides`.
+    // Passive OSINT (crt.sh, WHOIS, passive DNS, …) queries public sources and
+    // never contacts the target, so it carries 0 noise and is exempt from the
+    // noise ceiling and time window — those guard what the TARGET's defenders see.
+    // The technique blacklist is still honored (explicit operator intent).
+    const passiveRecon = isPassiveTechnique(action.technique);
     const effectiveOpsec = this.getEffectiveOpsec();
     if (effectiveOpsec.enabled) {
       // Check OPSEC blacklist (engagement-level + phase-extended).
@@ -1283,8 +1295,9 @@ export class GraphEngine {
         errors.push(`Technique blacklisted by OPSEC profile: ${action.technique}`);
       }
 
-      // Time window check (handles wrap-around, e.g. 22:00–06:00)
-      if (effectiveOpsec.time_window) {
+      // Time window check (handles wrap-around, e.g. 22:00–06:00) — skipped for
+      // passive recon (off-target, invisible to defenders).
+      if (effectiveOpsec.time_window && !passiveRecon) {
         const { start_hour, end_hour } = effectiveOpsec.time_window;
         const now = new Date();
         if (!isInTimeWindow(start_hour, end_hour, now)) {
@@ -1316,9 +1329,10 @@ export class GraphEngine {
     const domain = host_id ? this.resolveHostDomain(host_id) : undefined;
     const opsec_context = this.ctx.opsecTracker.getNoiseContext({ host_id: host_id || undefined, domain });
 
-    // Noise budget warning (only when OPSEC enforcement is enabled).
+    // Noise budget warning (only when OPSEC enforcement is enabled). Passive
+    // recon spends no budget, so it's exempt from the ceiling warnings.
     // P4.1: report against the effective max_noise (phase override if any).
-    if (effectiveOpsec.enabled) {
+    if (effectiveOpsec.enabled && !passiveRecon) {
       if (opsec_context.noise_budget_remaining <= 0) {
         warnings.push('Noise budget exhausted — only passive/zero-noise actions recommended.');
       } else if (this.ctx.opsecTracker.isApproachingCeiling(host_id || undefined, domain)) {
