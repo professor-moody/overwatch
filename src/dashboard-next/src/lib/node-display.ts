@@ -24,6 +24,14 @@ export const FRIENDLY_TYPE_LABELS: Record<string, string> = {
   cloud_resource: 'Cloud Resources',
   cloud_policy: 'Cloud Policies',
   cloud_network: 'Cloud Networks',
+  idp: 'Identity Providers',
+  idp_application: 'IdP Applications',
+  idp_principal: 'IdP Principals',
+  api_endpoint: 'API Endpoints',
+  subdomain: 'Subdomains',
+  asn: 'ASNs',
+  organization: 'Organizations',
+  email: 'Emails',
   mock_service: 'Mock Services',
 };
 
@@ -56,6 +64,10 @@ export function getNodeDisplayLabel(props: Record<string, any> = {}, fallbackId 
   if (type === 'cloud_policy') return props.policy_name || props.label || fallbackId;
   if (type === 'cloud_network') return props.network_name || props.cidr || props.label || fallbackId;
   if (type === 'mock_service') return props.label || [props.mock_purpose, `${props.bind_host || ''}:${props.bind_port || ''}`].filter(Boolean).join(' ') || fallbackId;
+  if (type === 'subdomain') return props.subdomain_name || props.label || fallbackId;
+  if (type === 'asn') return props.label || (props.asn_number ? `AS${props.asn_number}` : props.asn_org) || fallbackId;
+  if (type === 'organization') return props.org_name || props.label || fallbackId;
+  if (type === 'email') return props.email_address || props.label || fallbackId;
   return props.label || fallbackId;
 }
 
