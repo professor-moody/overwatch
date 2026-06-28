@@ -244,6 +244,24 @@ const creds = [
     cred_value: 'demo-gha-oidc-jwt-redacted',
     reachable: true,
   },
+  {
+    // Already lapsed → exercises the "Expired tokens" chip/banner + the red
+    // "expired Nm ago" TTL label. (cred-gha-oidc above, expiring in ~55m, is the
+    // "Expiring soon" case; cred-okta-cookie ~105m out is the "ok" case.)
+    id: 'cred-legacy-pat',
+    type: 'credential' as const,
+    label: 'ci-bot:GitHub PAT (legacy)',
+    cred_type: 'token' as const,
+    cred_material_kind: 'pat',
+    credential_status: 'active',
+    cred_user: 'ci-bot',
+    cred_audience: 'github.com',
+    cred_scopes: ['repo', 'read:org'],
+    cred_issuer: 'https://github.com',
+    cred_token_expires_at: iso(90),
+    cred_value: 'demo-legacy-pat-redacted',
+    reachable: false,
+  },
 ];
 
 const services = [
@@ -590,6 +608,20 @@ const CLUSTER_OPTS = ['spray (noisy)', 'stay quiet'];
     subgraph_node_ids: [ids.dc01], skill: 'network_enumeration', campaign_id: activeCampaign.id,
   });
   engine.getAgentQueryStore().add({ task_id: taskId, agent_id: label, question: CLUSTER_Q, options: CLUSTER_OPTS });
+});
+
+// A heartbeating-but-idle agent → "stuck" (distinct from blocked): running, not
+// waiting on the operator, but its last attributed action is ~14m old (>
+// STUCK_IDLE_MS 8m). current_action_at is derived from the latest non-bookkeeping
+// event, so seed one old finding and nothing newer for this agent.
+engine.registerAgent({
+  id: 'task-stuck-1', agent_id: 'agent-stuck-1', assigned_at: iso(20), status: 'running',
+  subgraph_node_ids: [ids.fs01], skill: 'network_enumeration', campaign_id: activeCampaign.id,
+});
+engine.ingestFinding({
+  id: 'f-stuck-1', agent_id: 'agent-stuck-1', timestamp: iso(14),
+  target_node_ids: [ids.fs01], nodes: [], edges: [],
+  evidence: { type: 'command_output', filename: 'stuck-demo.txt', content: 'enumeration stalled; no new results.' },
 });
 
 // --- per-campaign OPSEC noise so each campaign's gauge differs (this campaign's
