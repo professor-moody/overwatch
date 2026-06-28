@@ -86,6 +86,38 @@ export function getEffectiveCredentialStatus(
   return rawStatus;
 }
 
+export type CredentialExpiryUrgency = 'expired' | 'soon' | 'ok';
+
+export interface CredentialExpiry {
+  /** Absolute expiry instant (ms epoch). */
+  expiresAtMs: number;
+  /** Signed time-to-expiry in ms — negative once expired. */
+  ms: number;
+  urgency: CredentialExpiryUrgency;
+}
+
+/** Tokens within this window of expiring are flagged "soon" so the operator can
+ *  act before they lapse (use-it-or-lose-it), not just after. */
+export const CREDENTIAL_EXPIRY_SOON_MS = 60 * 60_000; // 1h
+
+/**
+ * Time-to-expiry classification for a credential with a token-expiry timestamp.
+ * Returns null when the credential has no (or an unparseable) expiry — most
+ * non-token credentials. Pure; the UI formats `ms` for display.
+ */
+export function credentialExpiry(
+  cred: CredentialKindSource,
+  nowMs: number = Date.now(),
+): CredentialExpiry | null {
+  const raw = cred.cred_token_expires_at;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const expiresAtMs = new Date(raw).getTime();
+  if (!Number.isFinite(expiresAtMs)) return null;
+  const ms = expiresAtMs - nowMs;
+  const urgency: CredentialExpiryUrgency = ms < 0 ? 'expired' : ms <= CREDENTIAL_EXPIRY_SOON_MS ? 'soon' : 'ok';
+  return { expiresAtMs, ms, urgency };
+}
+
 export function isCredentialReachable(cred: ExportedNode, edges: Pick<ExportedEdge, 'source' | 'type'>[]): boolean {
   return edges.some(
     e => e.source === cred.id &&

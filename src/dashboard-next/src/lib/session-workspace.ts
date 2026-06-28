@@ -1,16 +1,23 @@
 import type { ActivityEntry, FrontierItem, PendingAction, SessionBufferResponse, SessionInfo } from './types';
 
-export type SessionGroup = 'live' | 'pending' | 'closed';
+// `error` is split out from `closed` — an errored session is a failure the
+// operator may want to act on, not a clean teardown, so it gets its own group
+// (ordered above closed so it surfaces).
+export type SessionGroup = 'live' | 'pending' | 'error' | 'closed';
 
 export const SESSION_GROUP_LABELS: Record<SessionGroup, string> = {
   live: 'Live',
   pending: 'Pending',
-  closed: 'Closed / Error',
+  error: 'Error',
+  closed: 'Closed',
 };
+
+const SESSION_GROUP_ORDER: SessionGroup[] = ['live', 'pending', 'error', 'closed'];
 
 export function groupForSession(session: SessionInfo): SessionGroup {
   if (session.state === 'connected') return 'live';
   if (session.state === 'pending') return 'pending';
+  if (session.state === 'error') return 'error';
   return 'closed';
 }
 
@@ -57,7 +64,7 @@ export function sortSessionsForWorkspace(sessions: SessionInfo[]): SessionInfo[]
   return [...sessions].sort((a, b) => {
     const ga = groupForSession(a);
     const gb = groupForSession(b);
-    if (ga !== gb) return ['live', 'pending', 'closed'].indexOf(ga) - ['live', 'pending', 'closed'].indexOf(gb);
+    if (ga !== gb) return SESSION_GROUP_ORDER.indexOf(ga) - SESSION_GROUP_ORDER.indexOf(gb);
     const ta = new Date(a.last_activity_at || a.started_at || a.created_at || 0).getTime();
     const tb = new Date(b.last_activity_at || b.started_at || b.created_at || 0).getTime();
     return tb - ta;
@@ -65,7 +72,7 @@ export function sortSessionsForWorkspace(sessions: SessionInfo[]): SessionInfo[]
 }
 
 export function groupSessions(sessions: SessionInfo[]): Record<SessionGroup, SessionInfo[]> {
-  const result: Record<SessionGroup, SessionInfo[]> = { live: [], pending: [], closed: [] };
+  const result: Record<SessionGroup, SessionInfo[]> = { live: [], pending: [], error: [], closed: [] };
   for (const session of sessions) result[groupForSession(session)].push(session);
   return result;
 }

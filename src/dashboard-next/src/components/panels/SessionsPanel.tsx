@@ -363,7 +363,7 @@ export function SessionsPanel() {
               <SessionStat label="Total" value={sessions.length} />
             </div>
             <div className="overflow-y-auto p-2 space-y-3">
-              {(['live', 'pending', 'closed'] as SessionGroup[]).map(group => (
+              {(['live', 'pending', 'error', 'closed'] as SessionGroup[]).map(group => (
                 <div key={group} className="space-y-1.5">
                   <div className="flex items-center justify-between px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                     <span>{SESSION_GROUP_LABELS[group]}</span>
