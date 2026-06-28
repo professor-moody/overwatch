@@ -39,6 +39,10 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **crt.sh** | `crtsh`, `crt.sh`, `crt-sh` | crt.sh JSON (CT logs) | Subdomain + domain nodes, `SUBDOMAIN_OF` edges (passive OSINT) |
 | **subfinder** | `subfinder` | Text or JSON-lines hosts | Subdomain + domain nodes, `SUBDOMAIN_OF` edges (passive OSINT) |
 | **whois** | `whois` | whois text (domain or IP) | Organization + domain + asn nodes, `OWNS_ASSET` edges (passive OSINT) |
+| **amass** | `amass` | `amass enum -json` JSON-lines | Subdomain + domain + host + asn nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` / `IN_NETBLOCK` edges |
+| **dnsx** | `dnsx` | `dnsx -json` JSON-lines | Subdomain + domain + resolved host nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` edges (light-active) |
+| **httpx** | `httpx` | `httpx -json` JSON-lines | Webapp nodes with detected technology + HTTP status (light-active) |
+| **theHarvester** | `theharvester` | theHarvester JSON (`-f`) | Email nodes + harvested subdomain/domain nodes (passive OSINT) |
 
 (Plus cloud/identity parsers — `pacu`, `scoutsuite`, `cloudfox`, `roadrecon`, `okta`, the `msgraph-*` / `gh-api-*` / `token_replay_*` families, and more. Use `list_parsers: true` for the authoritative live list.)
 

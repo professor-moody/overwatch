@@ -12,6 +12,15 @@ import { isLiveSessionEdge } from './session-edge-utils.js';
 
 type PathEdgeAttrs = { weight: number };
 
+// OSINT external-recon edges (Phase 2C) describe external attack *surface* — a
+// subdomain belongs to a domain, a host sits in a netblock, an org owns an asset
+// — they are RELATIONSHIPS, not lateral-movement hops. They are excluded from the
+// path graph so findAttackPaths / hopsToObjective measure real reachability
+// rather than treating "owns this ASN" as a traversable step.
+const OSINT_RELATIONSHIP_EDGES: ReadonlySet<EdgeType> = new Set<EdgeType>([
+  'SUBDOMAIN_OF', 'RESOLVES_TO', 'IN_NETBLOCK', 'OWNS_ASSET', 'AFFILIATED_WITH',
+]);
+
 export type PathOptimize = 'confidence' | 'stealth' | 'balanced';
 export type PathResult = { nodes: string[]; total_confidence: number; total_opsec_noise: number };
 export type PathAnalysisStatus = 'found' | 'no_path' | 'missing_endpoint' | 'analysis_failed';
@@ -61,12 +70,9 @@ export class PathAnalyzer {
       // a "live reachability" view.
       if (attrs.type === 'HAS_SESSION' && !isLiveSessionEdge(attrs)) return;
 
-      // TODO(osint Phase 2C/2D): the OSINT external-recon edges (SUBDOMAIN_OF,
-      // RESOLVES_TO, IN_NETBLOCK, OWNS_ASSET, AFFILIATED_WITH) are RELATIONSHIPS,
-      // not attack/movement hops. Before any code emits them, exclude them here so
-      // they don't become traversable hops that distort findAttackPaths /
-      // hopsToObjective (mirror the sibling-scorer allowlist pattern). No effect
-      // yet — Phase 2A is schema-only and nothing produces these edges.
+      // OSINT external-recon edges are relationships, not movement hops — keep
+      // them out of the reachability projection (see OSINT_RELATIONSHIP_EDGES).
+      if (OSINT_RELATIONSHIP_EDGES.has(attrs.type)) return;
 
       const weight = this.computeEdgeWeight(attrs, optimize);
 
