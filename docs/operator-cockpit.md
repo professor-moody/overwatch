@@ -105,6 +105,7 @@ by a test so it always resolves to a real file):
 | `credential_operator` | validate/spray/expand credentials & tokens | execute + credential tools; no sessions | `password-spraying` |
 | `post_exploit` | work from a foothold: sessions, lateral movement | execute + sessions + credentials | `post-exploitation` |
 | `cve_researcher` | web CVE/PoC research | web research only — **no** target execution | `cve-research` |
+| `osint_recon` | passive external recon: subdomains, DNS, netblocks/ASNs, orgs, emails from public sources | `run_tool` (passive binaries) + web; **no** shell/sessions/credentials | `osint-recon` |
 | `pathfinder` | read-only attack-path analysis → proposes plans | read-only + `propose_plan` | `attack-path-planning` |
 | `report_scribe` | draft report sections from confirmed state | read-only + `generate_report` | `pentest-report-structure` |
 | `cloud_cartographer` | expand cloud creds (AWS/Entra/GitHub/OIDC), map federation + cloud↔on-prem pivots | execute + credential tools | `cloud-federation-mapping` |

@@ -179,6 +179,21 @@ describe('agent-archetypes: specialized tool surfaces are real boundaries', () =
     expect(allowedToolsFor('report_scribe')).toContain('mcp__overwatch__generate_report');
     expect(allowedToolsFor('cve_researcher')).toContain('WebSearch');
   });
+
+  it('osint_recon runs passive binaries (run_tool) + web, but no shell/sessions/creds', () => {
+    const a = allowedToolsFor('osint_recon');
+    expect(a).toContain('mcp__overwatch__run_tool');       // runs subfinder/amass/crt.sh/whois
+    expect(a).toContain('mcp__overwatch__parse_output');
+    expect(a).toContain('WebSearch');
+    expect(a).toContain('WebFetch');
+    expect(a).not.toContain('mcp__overwatch__run_bash');   // no raw shell — argv-only
+    expect(a).not.toContain('open_session');               // no interactive sessions
+    expect(a).not.toContain('expand_aws_credential');      // no credential tools
+    // Passive recon hits public sources, not the target → not target-facing
+    // (doesn't count toward per-target blast-radius caps), like cve_researcher.
+    expect(isTargetFacing('osint_recon')).toBe(false);
+    expect(getArchetype('osint_recon').role).toBe('research');
+  });
 });
 
 describe('agent-archetypes: registry + recommender', () => {
@@ -205,6 +220,7 @@ describe('agent-archetypes: registry + recommender', () => {
     expect(recommendArchetype({ frontierType: 'credential_test' })).toBe('credential_operator');
     expect(recommendArchetype({ frontierType: 'inferred_edge' })).toBe('credential_operator');
     expect(recommendArchetype({ frontierType: 'cve_research' })).toBe('cve_researcher');
+    expect(recommendArchetype({ frontierType: 'domain_enumeration' })).toBe('osint_recon');
     expect(recommendArchetype({ frontierType: 'cross_tier_pivot' })).toBe('post_exploit');
     expect(recommendArchetype({ frontierType: 'incomplete_node', nodeType: 'webapp' })).toBe('web_tester');
   });
@@ -212,6 +228,7 @@ describe('agent-archetypes: registry + recommender', () => {
   it('recommends by node type and falls back to default', () => {
     expect(recommendArchetype({ nodeType: 'credential' })).toBe('credential_operator');
     expect(recommendArchetype({ nodeType: 'host' })).toBe('recon_scanner');
+    expect(recommendArchetype({ nodeType: 'domain' })).toBe('osint_recon');
     expect(recommendArchetype({})).toBe('default');
   });
 
@@ -219,7 +236,7 @@ describe('agent-archetypes: registry + recommender', () => {
     for (const id of ['recon_scanner', 'web_tester', 'credential_operator', 'post_exploit', 'cloud_cartographer', 'default']) {
       expect(isTargetFacing(id), id).toBe(true);
     }
-    for (const id of ['pathfinder', 'report_scribe', 'opsec_sentinel', 'session_shepherd', 'evidence_auditor', 'cve_researcher', 'research', 'planner']) {
+    for (const id of ['pathfinder', 'report_scribe', 'opsec_sentinel', 'session_shepherd', 'evidence_auditor', 'cve_researcher', 'osint_recon', 'research', 'planner']) {
       expect(isTargetFacing(id), id).toBe(false);
     }
     // An explicit policy override defines the target-facing set by id.
