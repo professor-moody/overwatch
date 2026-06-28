@@ -118,6 +118,16 @@ export function credentialExpiry(
   return { expiresAtMs, ms, urgency };
 }
 
+/** Compact relative TTL label: "expires in 3h" / "expired 2d ago". */
+export function formatExpiryLabel(exp: CredentialExpiry): string {
+  const abs = Math.abs(exp.ms);
+  const d = Math.floor(abs / 86_400_000);
+  const h = Math.floor(abs / 3_600_000);
+  const m = Math.floor(abs / 60_000);
+  const dur = d >= 1 ? `${d}d` : h >= 1 ? `${h}h` : m >= 1 ? `${m}m` : '<1m';
+  return exp.urgency === 'expired' ? `expired ${dur} ago` : `expires in ${dur}`;
+}
+
 /** Edge types that prove a credential reaches a target (app/role/host/service). */
 export const CREDENTIAL_REACH_EDGE_TYPES = ['VALID_FOR_APP', 'ASSUMES_ROLE', 'VALID_ON', 'AUTHENTICATES_TO'];
 

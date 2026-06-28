@@ -43,4 +43,23 @@ describe('identity credential derivation', () => {
     })]);
     expect(JSON.stringify(summaries)).not.toContain('secret-cookie-value');
   });
+
+  it('classifies token expiry relative to now (null when no expiry)', () => {
+    const now = Date.parse('2026-05-15T00:00:00.000Z');
+    const withExpiry: ExportedNode[] = [{
+      id: 'cred-soon',
+      type: 'credential',
+      label: 'expiring token',
+      confidence: 0.9,
+      discovered_at: '2026-05-15T00:00:00.000Z',
+      cred_material_kind: 'oidc_access_token',
+      cred_token_expires_at: '2026-05-15T00:30:00.000Z',
+    } as ExportedNode];
+    const [soon] = identityTokenSummaries(withExpiry, now);
+    expect(soon.expiry?.urgency).toBe('soon');
+
+    // The session cookie in `nodes` has no expiry timestamp → null.
+    const [cookie] = identityTokenSummaries(nodes, now);
+    expect(cookie.expiry).toBeNull();
+  });
 });
