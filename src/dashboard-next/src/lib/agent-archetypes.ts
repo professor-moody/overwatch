@@ -59,6 +59,11 @@ export function recommendArchetypeFor(input: { rawTarget?: boolean; nodeType?: s
     case 'url': return 'web_tester';
     case 'host':
     case 'service': return 'recon_scanner';
+    case 'domain':
+    case 'subdomain':
+    case 'organization':
+    case 'asn':
+    case 'email': return 'osint_recon';
     default: return 'default';
   }
 }

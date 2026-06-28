@@ -15,7 +15,8 @@ export type AgentArchetypeId =
   | 'default' | 'research' | 'planner'
   | 'recon_scanner' | 'web_tester' | 'credential_operator' | 'post_exploit'
   | 'cve_researcher' | 'pathfinder' | 'report_scribe'
-  | 'cloud_cartographer' | 'opsec_sentinel' | 'session_shepherd' | 'evidence_auditor';
+  | 'cloud_cartographer' | 'opsec_sentinel' | 'session_shepherd' | 'evidence_auditor'
+  | 'osint_recon';
 
 export interface AgentArchetype {
   id: AgentArchetypeId;
@@ -47,6 +48,12 @@ const EXECUTE = ['run_bash', 'run_tool', 'validate_action', 'log_action_event', 
 const SESSIONS = ['open_session', 'send_to_session', 'write_session', 'read_session', 'close_session', 'list_sessions', 'resize_session', 'signal_session', 'update_session'];
 const CRED = ['validate_token_credential', 'exchange_refresh_token', 'expand_aws_credential', 'expand_entra_credential', 'expand_github_credential', 'expand_oidc_capture'];
 const RECON = ['update_scope', 'find_paths', 'run_graph_health'];
+// Passive external-recon execution surface: the public-source OSINT binaries run
+// through the instrumented argv runner (run_tool) — NO run_bash shell, NO
+// interactive sessions, NO credential tools — plus the action lifecycle that turns
+// their output into graph data. (subfinder, amass -passive, crt.sh via curl, whois,
+// theHarvester, dnsx/httpx are all argv-form, so no shell is needed.)
+const OSINT_EXECUTE = ['run_tool', 'validate_action', 'log_action_event', 'parse_output', 'report_finding', 'check_tools', 'track_process', 'check_processes'];
 // Read-only analysis surface — every member is readOnlyHint:true. (Deliberately
 // excludes recompute_objectives, which persists, so read-only archetypes
 // pathfinder/report_scribe stay non-mutating.)
@@ -150,6 +157,13 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     suitableFor: {},
     tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...ANALYZE, 'get_finding_readiness']) },
   },
+  osint_recon: {
+    id: 'osint_recon', label: 'OSINT recon', role: 'research', backend: 'headless_mcp', scopeStrategy: 'scope-wide', defaultSkill: 'osint-recon',
+    description: 'Passive external-recon: map the attack surface (subdomains, DNS, netblocks/ASNs, orgs, emails) from PUBLIC sources via run_tool (subfinder/amass/crt.sh/whois) + web research. No shells, no sessions, no credential tools.',
+    defaultObjective: 'Map the external attack surface of {target} from public sources; record subdomains, domains, netblocks, organizations, and emails.',
+    suitableFor: { frontierTypes: ['domain_enumeration'], nodeTypes: ['domain', 'organization', 'asn', 'email'] },
+    tools: { full: false, native: ['WebSearch', 'WebFetch', 'ToolSearch'], overwatch: uniq([...BASE, ...OSINT_EXECUTE, ...RECON]) },
+  },
   research: {
     id: 'research', label: 'Research (legacy role)', role: 'research', scopeStrategy: 'subgraph',
     description: 'Legacy research role — web research + finding recording, no target execution.',
@@ -199,6 +213,8 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
     `YOUR ROLE IS READ-ONLY SESSION OVERSIGHT. Use list_sessions + read_session (+ query_graph) to review the open interactive sessions: which are live, idle/stale, or orphaned (owner agent gone), and what each is doing. You do NOT run new target commands. Done when each open session's state and ownership is reported, with stale/orphaned ones flagged for the operator.`,
   evidence_auditor:
     `YOUR ROLE IS READ-ONLY EVIDENCE AUDITING. Start with get_finding_readiness for the per-finding readiness rollup (client_ready / needs_validation / draft + the concrete gaps), then drill in with get_evidence + query_graph + explain_action to confirm each chain's proof. You CANNOT execute against targets or mutate the graph. Done when each finding's proof readiness is assessed and the gaps are reported for the operator.`,
+  osint_recon:
+    `YOUR ROLE IS PASSIVE EXTERNAL-RECON (OSINT). Map the target's external attack surface from PUBLIC sources only — subdomains, DNS, netblocks/ASNs, organizations, and emails. Run the passive binaries via validate_action + run_tool (subfinder, amass with -passive, crt.sh via curl, whois, theHarvester) and use WebSearch/WebFetch for web OSINT; turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions, NO credential tools, and NO raw shell — do NOT actively scan, brute-force, or exploit; public sources only. After enumerating a domain, stamp it (subdomains_enumerated_at) so its frontier item retires even if nothing new was found. Done when the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — leave nothing only in stdout.`,
   research: CVE_MISSION,
   planner:
     `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,
@@ -267,6 +283,7 @@ export function recommendArchetype(input: RecommendInput): AgentArchetypeId {
     case 'network_pivot':
     case 'cross_tier_pivot': return 'post_exploit';
     case 'cve_research': return 'cve_researcher';
+    case 'domain_enumeration': return 'osint_recon';
     case 'idp_enumeration': return 'credential_operator';
     case 'untested_edge': return input.nodeType === 'webapp' || input.nodeType === 'url' ? 'web_tester' : 'post_exploit';
     default: break;
@@ -274,5 +291,6 @@ export function recommendArchetype(input: RecommendInput): AgentArchetypeId {
   if (input.nodeType === 'credential') return 'credential_operator';
   if (input.nodeType === 'webapp' || input.nodeType === 'url') return 'web_tester';
   if (input.nodeType === 'host' || input.nodeType === 'service') return 'recon_scanner';
+  if (input.nodeType === 'domain' || input.nodeType === 'subdomain' || input.nodeType === 'organization' || input.nodeType === 'asn' || input.nodeType === 'email') return 'osint_recon';
   return 'default';
 }
