@@ -7,21 +7,24 @@
 // Usage: overwatch <command> [--json] [--no-color] [--url URL] [--token TOK]
 
 import { resolveClientOptions, createClient, ApiError } from './operator/client.js';
-import { READ_COMMANDS, type Command } from './operator/commands.js';
+import { READ_COMMANDS, WRITE_COMMANDS, type Command } from './operator/commands.js';
 import { setColorEnabled, bold, dim, cyan } from './operator/format.js';
 
-const COMMANDS: Record<string, Command> = { ...READ_COMMANDS };
+const COMMANDS: Record<string, Command> = { ...READ_COMMANDS, ...WRITE_COMMANDS };
 
 function printUsage(): void {
-  const names = Object.keys(COMMANDS);
-  const pad = Math.max(...names.map(n => n.length));
-  const lines = names.map(n => `  ${cyan(n.padEnd(pad))}  ${COMMANDS[n].summary}`);
+  const pad = Math.max(...Object.keys(COMMANDS).map(n => n.length));
+  const section = (cmds: Record<string, Command>) =>
+    Object.keys(cmds).map(n => `  ${cyan(n.padEnd(pad))}  ${cmds[n].summary}`).join('\n');
   console.log(`${bold('overwatch')} — terminal operator CLI for a live Overwatch engagement
 
 ${bold('Usage:')} overwatch <command> [options]
 
-${bold('Commands:')}
-${lines.join('\n')}
+${bold('Read:')}
+${section(READ_COMMANDS)}
+
+${bold('Operate:')}
+${section(WRITE_COMMANDS)}
 
 ${bold('Options:')}
   --json             Print raw JSON (for piping to jq); disables color

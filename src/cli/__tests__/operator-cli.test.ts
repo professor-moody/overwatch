@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, type ApiClient } from '../operator/client.js';
-import { READ_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings } from '../operator/render.js';
+import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch } from '../operator/render.js';
 
 // Deterministic output: force color off for all assertions.
 beforeEach(() => setColorEnabled(false));
@@ -94,6 +94,59 @@ describe('read commands', () => {
   });
 });
 
+// Client that records POST calls + returns a canned response.
+function recordingClient(response: unknown = {}): { client: ApiClient; calls: Array<{ path: string; body: unknown }> } {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const client: ApiClient = {
+    get: async <T>() => ({}) as T,
+    post: async <T>(path: string, body?: unknown) => { calls.push({ path, body }); return response as T; },
+  };
+  return { client, calls };
+}
+
+describe('write commands', () => {
+  it('approve posts to the action approve endpoint', async () => {
+    const { client, calls } = recordingClient();
+    const out = await WRITE_COMMANDS.approve.run({ client, args: ['a11c'] });
+    expect(calls[0].path).toBe('/api/actions/a11c/approve');
+    expect(out.text).toContain('Approved a11c');
+  });
+
+  it('deny passes --reason in the body', async () => {
+    const { client, calls } = recordingClient();
+    await WRITE_COMMANDS.deny.run({ client, args: ['a11c', '--reason', 'too noisy'] });
+    expect(calls[0].path).toBe('/api/actions/a11c/deny');
+    expect(calls[0].body).toEqual({ reason: 'too noisy' });
+  });
+
+  it('answer joins the trailing words into the answer body', async () => {
+    const { client, calls } = recordingClient({ ok: true });
+    await WRITE_COMMANDS.answer.run({ client, args: ['q1', 'stay', 'quiet', 'and', 'pivot'] });
+    expect(calls[0].path).toBe('/api/agent-queries/q1/answer');
+    expect(calls[0].body).toEqual({ answer: 'stay quiet and pivot' });
+  });
+
+  it('deploy reads the positional target even when a value-flag precedes it', async () => {
+    const { client, calls } = recordingClient({ dispatched: true, task: { id: 't1', agent_id: 'ag1', archetype: 'recon_scanner' } });
+    await WRITE_COMMANDS.deploy.run({ client, args: ['--archetype', 'recon_scanner', '10.0.0.5'] });
+    expect(calls[0].path).toBe('/api/agents/quick-deploy');
+    expect(calls[0].body).toEqual({ target: '10.0.0.5', archetype: 'recon_scanner' });
+  });
+
+  it('dispatch collects repeated --node values', async () => {
+    const { client, calls } = recordingClient({ dispatched: true, task: { id: 't1', agent_id: 'ag1' } });
+    await WRITE_COMMANDS.dispatch.run({ client, args: ['--node', 'n1', '--node', 'n2', '--skill', 'network-recon'] });
+    expect(calls[0].body).toEqual({ target_node_ids: ['n1', 'n2'], skill: 'network-recon', archetype: undefined });
+  });
+
+  it('missing required args throw before any request', async () => {
+    const { client, calls } = recordingClient();
+    await expect(WRITE_COMMANDS.approve.run({ client, args: [] })).rejects.toThrow(/action-id/);
+    await expect(WRITE_COMMANDS.dispatch.run({ client, args: [] })).rejects.toThrow(/--node/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('renderers', () => {
   it('renderStatus shows name, objective progress, and frontier', () => {
     const out = renderStatus({
@@ -120,6 +173,14 @@ describe('renderers', () => {
     const out = renderOpsec({ global_noise_spent: 0.3, noise_budget_remaining: 0.4, max_noise: 0.7, recommended_approach: 'normal' } as never);
     expect(out).toContain('noise spent');
     expect(out).toContain('normal');
+  });
+
+  it('renderDeploy/renderDispatch confirm success and surface refusals', () => {
+    expect(renderDeploy({ dispatched: true, task: { id: 't1', agent_id: 'ag1', archetype: 'recon_scanner' } } as never, '10.0.0.5'))
+      .toMatch(/Deployed.*10\.0\.0\.5.*t1/);
+    expect(renderDeploy({ dispatched: false, reason: 'out of scope' } as never, '9.9.9.9')).toContain('out of scope');
+    expect(renderDispatch({ dispatched: true, task: { id: 't2', agent_id: 'ag2' } } as never)).toContain('t2');
+    expect(renderDispatch({ dispatched: false, reason: 'leased', existing_task_id: 'tX' } as never)).toMatch(/leased.*tX/);
   });
 
   it('renderFindings shows the severity summary header', () => {
