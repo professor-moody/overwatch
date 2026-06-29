@@ -24,7 +24,7 @@ import { DashboardServer } from './services/dashboard-server.js';
 import { SessionManager } from './services/session-manager.js';
 import { LocalPtyAdapter, SshAdapter, SocketAdapter } from './services/session-adapters.js';
 import { createMcpAuthMiddleware } from './services/mcp-auth.js';
-import { TaskExecutionService } from './services/task-execution-service.js';
+import { TaskExecutionService, type TaskExecutionServiceOptions } from './services/task-execution-service.js';
 import type { EngagementConfig } from './types.js';
 import { engagementConfigSchema } from './types.js';
 import { formatConfigError, parseEngagementConfig } from './config.js';
@@ -131,6 +131,9 @@ export type CreateOverwatchAppOptions = {
   skillDir?: string;
   dashboardPort?: number;
   stateFilePath?: string;
+  /** Forwarded to TaskExecutionService — lets the eval harness set the headless
+   *  claude binary / model (extraArgs) / max-turns / log dir for sub-agents. */
+  taskExecution?: TaskExecutionServiceOptions;
 };
 
 export function loadConfig(configPath: string = process.env.OVERWATCH_CONFIG || './engagement.json'): EngagementConfig {
@@ -300,7 +303,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
   // Owned here, not by the dashboard, so agent execution runs whether or not the
   // dashboard is enabled. Started in startStdioApp/startHttpApp; the HTTP
   // endpoint for headless sub-agents is supplied later via setHttpEndpoint.
-  const taskExecution = new TaskExecutionService(engine, processTracker);
+  const taskExecution = new TaskExecutionService(engine, processTracker, options.taskExecution);
   // Let the dashboard's cancel endpoint kill headless sub-agent processes.
   dashboard?.attachTaskExecution(taskExecution);
 
