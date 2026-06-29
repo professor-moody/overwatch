@@ -95,6 +95,11 @@ nav:
     - Prompt Architecture Review: prompt-architecture-review.md
   - Tool Reference:
     - tools/index.md
+    - Engagement Setup:
+      - create_engagement: tools/create-engagement.md
+      - list_engagements: tools/list-engagements.md
+      - add_objective: tools/add-objective.md
+      - set_opsec: tools/set-opsec.md
     - State & Health:
       - get_state: tools/get-state.md
       - run_lab_preflight: tools/run-lab-preflight.md

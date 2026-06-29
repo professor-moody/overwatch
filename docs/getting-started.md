@@ -58,6 +58,18 @@ That's enough to start. Live graph state is stored separately in
 `state-<engagement-id>.json` beside the config. The full schema is in
 [Configuration](configuration.md) when you want it.
 
+!!! tip "Or set it up conversationally — no JSON"
+    Once Overwatch is wired into Claude Code (even on an empty bootstrap engagement
+    via `OVERWATCH_BOOTSTRAP=1`), you can just **tell the model**: *"set up an
+    engagement scoped to 10.10.10.0/24, objective domain-admin, quiet OPSEC."* It
+    calls [`create_engagement`](tools/create-engagement.md), which writes a
+    validated `engagements/<id>.json` and returns the activation steps
+    (**create-then-start**: set `OVERWATCH_CONFIG` to it → restart → confirm with
+    [`list_engagements`](tools/list-engagements.md)). After it's running, adjust the
+    active engagement with [`add_objective`](tools/add-objective.md),
+    [`set_opsec`](tools/set-opsec.md), and [`update_scope`](tools/update-scope.md) —
+    all without touching the file.
+
 ??? info "Other templates (for real engagements)"
     Once you've gotten comfortable with the basics, swap in the template that matches your engagement profile. Each one preconfigures sensible objectives, OPSEC posture, and the right `profile` field so preflight checks the right tools.
 
