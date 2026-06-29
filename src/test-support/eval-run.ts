@@ -121,73 +121,105 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   // arm never leaks into a later in-process get_system_prompt.
   const prevVariant = process.env.OVERWATCH_PROMPT_VARIANT;
   process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
+  // Unattended eval against synthetic/unreachable targets: make tools fail fast
+  // (real `claude` picks slow scans like nmap -p- that would otherwise run to the
+  // 1-hour default and stall the whole run). Restored in cleanup.
+  const prevActionTimeout = process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS;
+  if (!usingFake) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
+
+  // Restore the env we mutated above — called from cleanup on success AND from the
+  // catch below if anything between here and the return throws (e.g. an HTTP
+  // port-bind failure), so a thrown run can't leak its arm/timeout into a later
+  // in-process run or test.
+  const restoreEnv = () => {
+    if (prevVariant === undefined) delete process.env.OVERWATCH_PROMPT_VARIANT;
+    else process.env.OVERWATCH_PROMPT_VARIANT = prevVariant;
+    if (prevActionTimeout === undefined) delete process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS;
+    else process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = prevActionTimeout;
+  };
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
   const logDir = join(tempDir, 'agents');
-  const config = parseEngagementConfig(rawConfig);
-  const app = createOverwatchApp({
-    config,
-    skillDir: resolve('./skills'),
-    dashboardPort: 0,
-    stateFilePath: join(tempDir, `state-${config.id}.json`),
-    taskExecution: {
-      headless: {
-        // Pass the binary through the structured option too (not only the env)
-        // so the run doesn't depend on env-mutation ordering.
-        claudeBinary: binary,
-        logDir,
-        maxTurns: opts.maxTurns ?? 10,
-        extraArgs: opts.model ? ['--model', opts.model] : undefined,
+  let app: ReturnType<typeof createOverwatchApp> | undefined;
+  try {
+    const config = parseEngagementConfig(rawConfig);
+    // Unattended eval: shrink the operator-approval window so a gated run_bash/
+    // run_tool auto-resolves in seconds instead of stalling on the 5-min default.
+    config.opsec = { ...config.opsec, approval_timeout_ms: 3000 } as typeof config.opsec;
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tempDir, `state-${config.id}.json`),
+      taskExecution: {
+        headless: {
+          // Pass the binary through the structured option too (not only the env)
+          // so the run doesn't depend on env-mutation ordering.
+          claudeBinary: binary,
+          logDir,
+          maxTurns: opts.maxTurns ?? 10,
+          // A real headless `claude -p` has no stdin to answer permission prompts,
+          // so it would hang on the first tool call in the default mode. Bypass
+          // claude's own gate (Overwatch's approval queue still applies); fake-claude
+          // ignores claude flags, so leave it unset there.
+          permissionMode: usingFake ? undefined : 'bypassPermissions',
+          extraArgs: opts.model ? ['--model', opts.model] : undefined,
+        },
       },
-    },
-  });
-  await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+    });
+    await startHttpApp(app, { port: 0, host: '127.0.0.1' });
 
-  // Seed, capturing the canonical ids the engine assigned (ids canonicalize on
-  // ingest, and cold-store nodes never appear in exportGraph until promoted), so
-  // the post-run delta is genuinely the agent's work and the scope points at the
-  // real seed nodes.
-  let seededIds = new Set<string>();
-  if (scenario.seedNodes?.length) {
-    const ingest = app.engine.ingestFinding({ id: `seed-${scenario.id}`, agent_id: 'seed', timestamp: new Date().toISOString(), nodes: scenario.seedNodes, edges: [] } as never) as { new_nodes?: string[] };
-    seededIds = new Set(ingest.new_nodes ?? []);
-  }
+    // Seed, capturing the canonical ids the engine assigned (ids canonicalize on
+    // ingest, and cold-store nodes never appear in exportGraph until promoted), so
+    // the post-run delta is genuinely the agent's work and the scope points at the
+    // real seed nodes.
+    let seededIds = new Set<string>();
+    if (scenario.seedNodes?.length) {
+      const ingest = app.engine.ingestFinding({ id: `seed-${scenario.id}`, agent_id: 'seed', timestamp: new Date().toISOString(), nodes: scenario.seedNodes, edges: [] } as never) as { new_nodes?: string[] };
+      seededIds = new Set(ingest.new_nodes ?? []);
+    }
 
-  const taskId = `eval-${scenario.id}`;
-  const agentId = `agent-${scenario.id}`;
-  const scopedIds = scenario.scopeSeededNodes ? [...seededIds] : [];
-  app.engine.registerAgent({
-    id: taskId, agent_id: agentId, assigned_at: new Date().toISOString(), status: 'running',
-    subgraph_node_ids: scopedIds, backend: 'headless_mcp', archetype: scenario.archetype,
-    objective: scenario.objective,
-  } as AgentTask);
+    const taskId = `eval-${scenario.id}`;
+    const agentId = `agent-${scenario.id}`;
+    const scopedIds = scenario.scopeSeededNodes ? [...seededIds] : [];
+    app.engine.registerAgent({
+      id: taskId, agent_id: agentId, assigned_at: new Date().toISOString(), status: 'running',
+      subgraph_node_ids: scopedIds, backend: 'headless_mcp', archetype: scenario.archetype,
+      objective: scenario.objective,
+    } as AgentTask);
 
-  await waitFor(() => { const s = app.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, opts.timeoutMs ?? 20000);
+    await waitFor(() => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, opts.timeoutMs ?? 20000);
 
-  const logPath = join(logDir, `${taskId}.ndjson`);
-  const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
-  const { tokens, costUsd } = parseUsage(ndjson);
+    const logPath = join(logDir, `${taskId}.ndjson`);
+    const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+    const { tokens, costUsd } = parseUsage(ndjson);
 
-  // One agent + one seed per run, so "everything except the seed" is the agent's
-  // work — robust regardless of how the headless path attributes the agent_id.
-  const activity: ActivityLite[] = app.engine.getFullHistory()
-    .filter(e => (e as { agent_id?: string }).agent_id !== 'seed')
-    .map(e => ({ event_type: (e as { event_type?: string }).event_type, action_id: (e as { action_id?: string }).action_id, frontier_item_id: (e as { frontier_item_id?: string }).frontier_item_id }));
+    // One agent + one seed per run, so "everything except the seed" is the agent's
+    // work — robust regardless of how the headless path attributes the agent_id.
+    const activity: ActivityLite[] = app.engine.getFullHistory()
+      .filter(e => (e as { agent_id?: string }).agent_id !== 'seed')
+      .map(e => ({ event_type: (e as { event_type?: string }).event_type, action_id: (e as { action_id?: string }).action_id, frontier_item_id: (e as { frontier_item_id?: string }).frontier_item_id }));
 
-  const newNodeTypes = [...new Set(app.engine.exportGraph().nodes.filter(n => !seededIds.has(n.id)).map(n => n.properties.type as string))];
+    const newNodeTypes = [...new Set(app.engine.exportGraph().nodes.filter(n => !seededIds.has(n.id)).map(n => n.properties.type as string))];
 
-  const record: RunRecord = {
-    toolCalls: extractToolCalls(ndjson),
-    activity,
-    taskStatus: app.engine.getTask(taskId)?.status ?? 'unknown',
-    newNodeTypes,
-  };
+    const record: RunRecord = {
+      toolCalls: extractToolCalls(ndjson),
+      activity,
+      taskStatus: app.engine.getTask(taskId)?.status ?? 'unknown',
+      newNodeTypes,
+    };
 
-  const cleanup = async () => {
-    if (prevVariant === undefined) delete process.env.OVERWATCH_PROMPT_VARIANT;
-    else process.env.OVERWATCH_PROMPT_VARIANT = prevVariant;
-    await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
+    const runningApp = app;
+    const cleanup = async () => {
+      restoreEnv();
+      await shutdownOverwatchApp(runningApp).catch(() => { /* ignore */ });
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    };
+    return { record, usageTokens: tokens, costUsd, cleanup };
+  } catch (err) {
+    restoreEnv();
+    if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
     try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  };
-  return { record, usageTokens: tokens, costUsd, cleanup };
+    throw err;
+  }
 }

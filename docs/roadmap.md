@@ -40,6 +40,17 @@ These tracks should follow after the graph-context pass is stable.
 - Keep the dashboard review checklist current for desktop layout, narrow-width
   layout, graph focus, trust signals, and duplicate-title regressions.
 
+## Completed: Prompt Architecture Rethink + Behavior-Eval
+
+The agent operating prompt is now changed against evidence, not taste. Step (a)
+trimmed the persona opener to a one-line role tag; step (b) added a context-first
+[`lean` sub-agent variant](prompt-stepb-design.md) (behind a variant seam —
+`control` is still the default). Both are gated by a two-tier
+[behavior-eval harness](prompt-eval.md): a deterministic rubric grader + structural
+guard in CI, and an on-demand, cost-bounded real-model A/B (`npm run prompt-eval`).
+Next: promote `lean` to default only on a clean real A/B, then the archetype-aware
+registry refactor it unblocks.
+
 ## Completed: Graph And Evidence Context
 
 Every operator click in the graph and evidence surfaces now lands on actionable

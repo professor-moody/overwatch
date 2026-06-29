@@ -223,6 +223,18 @@ The dashboard is on by default at `http://localhost:8384`. To change the port or
 
 Full feature list, keyboard shortcuts, and API endpoints in the [Dashboard Guide](dashboard.md).
 
+### Set up an engagement conversationally (no hand-edited JSON)
+
+You don't have to write `engagement.json` by hand. With a server running, just ask Claude to build one and it uses MCP tools to do it:
+
+> **"Set up an engagement named Acme Q3 scoped to 10.10.0.0/16, objective 'reach Domain Admin', quiet OPSEC."**
+
+Under the hood that's `create_engagement` (which validates scope/OPSEC and writes `engagements/<id>.json`, returning activation steps), plus `add_objective`, `set_opsec` (confirm-gated, warns when you loosen posture), and `update_scope`. See the [Engagement Setup tools](tools/index.md). New engagements activate on restart (create-then-start), so there's no live reload to reason about.
+
+### Operate from the terminal
+
+Prefer the terminal? The **`overwatch` CLI** drives a running engagement over the same `/api` — read and write commands, with opt-in compact output. See the [CLI guide](cli.md).
+
 ### Writing engagement.json from scratch
 
 If none of the templates fit, the full schema is in [Configuration](configuration.md). The fields you'll always need: `id`, `name`, `scope`, `objectives`, `opsec`. Everything else has sensible defaults.
