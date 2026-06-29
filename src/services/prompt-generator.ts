@@ -75,7 +75,7 @@ export function generateSystemPrompt(
 // Primary orchestrator prompt
 // ============================================================
 
-const DEFAULT_MAX_PROMPT_TOKENS = 8000;
+export const DEFAULT_MAX_PROMPT_TOKENS = 8000;
 
 function generatePrimaryPrompt(
   state: EngagementState,
@@ -223,7 +223,7 @@ function generateIdentitySection(config: EngagementConfig): string {
   const lines = [
     '# Overwatch — Primary Session Instructions',
     '',
-    'You are an offensive security operator running an authorized engagement. Your state, memory, and reasoning substrate is the Overwatch MCP orchestrator server. You do NOT need to hold engagement state in your context — the graph holds everything.',
+    'Authorized offensive-engagement operator. Your state + memory are the Overwatch MCP graph — it holds everything, so you do not carry engagement state in context.',
     '',
     '## Engagement Briefing',
     '',

@@ -5,6 +5,13 @@ the layers around it — and options for evolving it. **This is an analysis to
 inform a decision; it proposes no code changes.** The source of truth at runtime
 is [`src/services/prompt-generator.ts`](https://github.com/professor-moody/overwatch/blob/main/src/services/prompt-generator.ts).
 
+> **Status:** the recommended **step (a)** has since been implemented — the
+> identity persona opener was trimmed to a one-line role tag, `AGENTS.md`'s Core
+> Loop / Key Principles were condensed to defer to `get_system_prompt` (single
+> source of truth), and a prompt-size guard test was added. The persona quotes
+> below describe the **pre-trim** prompt. The context-first restructure (step b)
+> remains parked behind a behavior eval.
+
 ## TL;DR
 
 The instinct that we're "still doing persona prompting" is half right. The
