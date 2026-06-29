@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolve } from 'path';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
-import { generateSystemPrompt, estimateTokens, type ToolEntry } from '../prompt-generator.js';
+import { generateSystemPrompt, estimateTokens, DEFAULT_MAX_PROMPT_TOKENS, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
@@ -92,9 +92,31 @@ describe('prompt-generator', () => {
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
 
       expect(prompt).toContain('# Overwatch — Primary Session Instructions');
-      expect(prompt).toContain('offensive security operator');
+      expect(prompt).toContain('offensive-engagement operator'); // trimmed one-line role tag
       expect(prompt).toContain(config.name);
       expect(prompt).toContain(config.id);
+    });
+
+    it('keeps the trimmed identity opener tight (persona prose removed)', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'primary' });
+      // The verbose persona paragraph was collapsed to a one-liner that leads
+      // into the briefing; lock that it doesn't creep back.
+      expect(prompt).not.toContain('reasoning substrate');
+      expect(prompt).not.toContain('You are an offensive security operator');
+    });
+
+    it('stays within the token budget and leads with the briefing', () => {
+      const engine = createTestEngine();
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'primary' });
+      // Budget guard: the assembled primary prompt must fit the configured ceiling
+      // so prompt growth is caught in CI (tracks the constant, not a magic number).
+      expect(estimateTokens(prompt)).toBeLessThanOrEqual(DEFAULT_MAX_PROMPT_TOKENS);
+      // The briefing should appear right after the title (specifics-first).
+      const idIdx = prompt.indexOf('## Engagement Briefing');
+      const loopIdx = prompt.indexOf('## Core Loop');
+      expect(idIdx).toBeGreaterThan(0);
+      expect(idIdx).toBeLessThan(loopIdx);
     });
 
     it('includes core loop instructions', () => {
