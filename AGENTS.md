@@ -191,6 +191,10 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 | `generate_report` | Client pentest report (Markdown / HTML / JSON / PDF) | End of engagement; also callable mid-engagement for draft reports |
 | `correct_graph` | Transactional graph repair | Operator corrections |
 | `update_scope` | Expand or contract engagement scope | Discovered pivot networks |
+| `create_engagement` | Build + persist a new engagement config (no hand-edited JSON; create-then-start — restart to activate) | Operator asks to set up a new engagement |
+| `list_engagements` | List persisted engagement configs + which is active | Confirming a created engagement / picking one to activate |
+| `add_objective` | Add an objective to the active engagement | A new goal emerges mid-engagement |
+| `set_opsec` | Update the active engagement's OPSEC policy (confirm-gated; warns on loosening) | Adjust noise ceiling / approval mode / time window |
 | `register_mock_service` | Register operator-controlled infrastructure (decoy listeners / mock services) as graph nodes | Setting up catchers / honeytokens; pass `operator_infra: true` |
 | `propose_plan` | Planner-role sub-agent: submit a free-form operator command as a confirmable plan of ops (directives / scope / approvals) | NL operator cockpit — the planner proposes, the operator confirms, the dashboard executes |
 | `manage_agent_directive` | Steer a running sub-agent: pause/resume/stop/narrow_scope/skip_types/prioritize/instruct (delivered on heartbeat) | Operator steering — per-agent + fleet controls in the cockpit |

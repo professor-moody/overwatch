@@ -77,11 +77,24 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`signal_session`](sessions.md) | Send signal to session process | No |
 | [`close_session`](sessions.md) | Close and destroy a session | No |
 | [`update_scope`](update-scope.md) | Confirmation-gated runtime scope expansion/contraction | No |
+| [`create_engagement`](create-engagement.md) | Build + persist a new engagement config (no hand-edited JSON; create-then-start) | No |
+| [`list_engagements`](list-engagements.md) | List persisted engagement configs + which is active | No |
+| [`add_objective`](add-objective.md) | Add an objective to the active engagement | No |
+| [`set_opsec`](set-opsec.md) | Update the active engagement's OPSEC policy (confirmation-gated) | No |
 | [`get_system_prompt`](get-system-prompt.md) | Generate dynamic agent instructions from engagement state | No |
 | [`generate_report`](generate-report.md) | Full pentest report with findings, narrative, evidence, remediation | Yes |
 | [`register_mock_service`](register-mock-service.md) | Register an operator-controlled decoy / listener / relay as a graph node | No |
 
 ## Tool Categories
+
+### Engagement Setup
+
+Conversational engagement creation + configuration — so nobody hand-edits
+`engagement.json`. [`create_engagement`](create-engagement.md) /
+[`list_engagements`](list-engagements.md) build + list configs (create-then-start:
+restart to activate); [`add_objective`](add-objective.md),
+[`set_opsec`](set-opsec.md), and [`update_scope`](update-scope.md) configure the
+active engagement.
 
 ### State & Health
 Tools for understanding the current engagement state and verifying system health.
