@@ -26,7 +26,7 @@ import { SUBAGENT_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
-  BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
+  BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from './prompt-eval-lib.js';
 
 function confirm(question: string): Promise<boolean> {
@@ -58,8 +58,9 @@ function printUsage(): void {
     --trials N             trials per cell (default: ${DEFAULT_TRIALS})
     --budget <tokens>      hard token ceiling; aborts before exceeding (default: ${DEFAULT_BUDGET})
     --max-turns N          per-run turn cap (default: ${DEFAULT_MAX_TURNS})
+    --timeout-ms N         per-run wall-clock cap (default: ${DEFAULT_TIMEOUT_MS}; real runs take minutes)
     --refresh-baseline     re-run + overwrite cached control baselines
-    --variant <name>       candidate prompt to A/B vs control (requires prompt step (b))
+    --variant <name>       candidate prompt to A/B vs control, e.g. ${SUBAGENT_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
 
   Cost controls: cheap default model, per-run turn cap, global token budget that
   aborts BEFORE an over-budget run, baseline cache (don't repay for control).`);
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
         console.error(`\nBUDGET STOP before [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; next run would exceed the budget.`);
         process.exit(2);
       }
-      const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, variant: arm });
+      const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, variant: arm, timeoutMs: args.timeoutMs });
       budget.used += run.usageTokens;
       budget.maxRun = Math.max(budget.maxRun, run.usageTokens);
       if (run.costUsd) budget.cost += run.costUsd;

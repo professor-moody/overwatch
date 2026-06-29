@@ -4,15 +4,21 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
-  DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
+  DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from '../prompt-eval-lib.js';
 import { RUBRIC_CRITERIA, type RubricResult } from '../../services/eval-rubric.js';
 
 describe('parseArgs', () => {
   it('applies cheap, bounded defaults', () => {
     const a = parseArgs([]);
-    expect(a).toMatchObject({ real: false, yes: false, model: DEFAULT_MODEL, trials: DEFAULT_TRIALS, budget: DEFAULT_BUDGET, maxTurns: DEFAULT_MAX_TURNS });
+    expect(a).toMatchObject({ real: false, yes: false, model: DEFAULT_MODEL, trials: DEFAULT_TRIALS, budget: DEFAULT_BUDGET, maxTurns: DEFAULT_MAX_TURNS, timeoutMs: DEFAULT_TIMEOUT_MS });
     expect(a.scenarios.length).toBeGreaterThan(0);
+  });
+
+  it('parses --timeout-ms (real runs need minutes, not the 20s fake default)', () => {
+    expect(parseArgs(['--timeout-ms', '900000']).timeoutMs).toBe(900000);
+    expect(parseArgs(['--timeout-ms', 'abc']).timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    expect(parseArgs([]).timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
   });
 
   it('falls back to defaults on non-numeric values (a NaN budget would disable the guard)', () => {

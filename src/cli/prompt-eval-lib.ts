@@ -16,6 +16,7 @@ export const DEFAULT_MODEL = 'haiku';      // cheap by default; override with --
 export const DEFAULT_TRIALS = 2;
 export const DEFAULT_BUDGET = 50_000;      // token budget (see prompt-eval.ts for enforcement)
 export const DEFAULT_MAX_TURNS = 10;
+export const DEFAULT_TIMEOUT_MS = 600_000;  // 10 min per run — a real claude sub-agent takes minutes (fake-claude finishes in <1s)
 
 export interface Args {
   real: boolean;
@@ -26,6 +27,7 @@ export interface Args {
   trials: number;
   budget: number;
   maxTurns: number;
+  timeoutMs: number;
   scenarios: EvalScenario[];
 }
 
@@ -58,6 +60,7 @@ export function parseArgs(argv: string[]): Args {
     trials: Math.max(1, Math.floor(int(get('--trials'), DEFAULT_TRIALS))),
     budget: Math.max(0, Math.floor(int(get('--budget'), DEFAULT_BUDGET))),
     maxTurns: Math.max(1, Math.floor(int(get('--max-turns'), DEFAULT_MAX_TURNS))),
+    timeoutMs: Math.max(1000, Math.floor(int(get('--timeout-ms'), DEFAULT_TIMEOUT_MS))),
     scenarios,
   };
 }

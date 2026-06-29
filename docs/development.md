@@ -140,6 +140,27 @@ npm run verify                  # All of the above + dist freshness check
 
 Integration suites auto-skip in restricted environments (e.g., EPERM on `listen()`) using async bind probes.
 
+### Prompt behavior-eval
+
+Changes to the agent operating prompt are validated through the
+[behavior-eval harness](prompt-eval.md), not by eye. Two tiers:
+
+- **Tier 1 (in CI, $0):** the rubric grader (`src/services/eval-rubric.ts`) +
+  the structural affordance guard run as ordinary source tests — a prompt that
+  drops a load-bearing affordance fails here with no model.
+- **Tier 2 (on-demand, real model):** `npm run prompt-eval` runs real `claude`
+  sub-agents on the scenario set, grades them, and A/Bs a candidate prompt
+  variant against the cached `control` baseline:
+
+```bash
+npm run prompt-eval                                     # usage (no spend)
+npm run prompt-eval -- --real --variant lean --yes      # A/B lean vs control
+```
+
+It's cost-bounded (cheap model by default, token `--budget`, per-run turn +
+`--timeout-ms` caps) and never runs in CI. See [Prompt Behavior-Eval](prompt-eval.md)
+for the full flag set, cost controls, and scenarios.
+
 ### Lab smoke harness (multi-profile)
 
 After `npm run build`, **`npm run lab:smoke`** exercises the MCP server against synthetic fixtures (preflight, ingest, graph health, restart persistence, retrospective). Profiles exercise different engagement shapes:

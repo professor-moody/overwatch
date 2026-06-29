@@ -20,6 +20,10 @@ Overwatch is a standard MCP server. Today the shipped runtime transport is stdio
 
 The core server functionality (graph operations, inference rules, parsers, persistence) is model-agnostic.
 
+### How do I validate a change to the agent prompt?
+
+Use the [behavior-eval harness](prompt-eval.md), not your judgment. A deterministic rubric grader + structural affordance guard run in CI ($0) and catch a prompt that drops a load-bearing affordance. To measure real agent behavior, run the on-demand, cost-bounded real-model A/B: `npm run prompt-eval -- --real --variant lean --yes` compares a candidate prompt variant against the cached `control` baseline and flags any per-criterion regression.
+
 ### How do I reset an engagement?
 
 Delete the state file and restart:

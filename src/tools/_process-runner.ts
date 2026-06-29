@@ -200,6 +200,16 @@ function extractImplicitTargets(toolName: string, args: string[], commandRepr: s
 
 export const MAX_TIMEOUT_MS = 4 * 60 * 60 * 1000;      // 4 hours
 export const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;      // 1 hour — enterprise scans (nmap full-port, nuclei) routinely exceed 5 min
+
+/** The default per-action exec timeout when the caller doesn't pass one. Reads
+ *  OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS at call time (not import time) so an
+ *  unattended eval run can make tools against synthetic/unreachable targets fail
+ *  fast instead of stalling on the 1-hour default; unset in production → 1 hour. */
+export function resolveDefaultActionTimeoutMs(): number {
+  const override = Number(process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS);
+  if (Number.isFinite(override) && override >= 1000) return Math.min(MAX_TIMEOUT_MS, override);
+  return DEFAULT_TIMEOUT_MS;
+}
 const STREAM_INLINE_CAP = 256 * 1024;                  // 256 KiB inline per stream
 /**
  * Hard memory cap per stream. Beyond this we keep a head + rolling tail
@@ -627,7 +637,7 @@ export async function runInstrumentedProcess(
   );
   const tool_name = rawToolName || command_repr.trim().split(/\s+/)[0] || binary;
   const resolvedDescription = description || command_repr;
-  const effectiveTimeout = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+  const effectiveTimeout = opts.timeout_ms ?? resolveDefaultActionTimeoutMs();
   const shouldValidate = validate !== false;
   const allTargetNodeIds = [
     ...(target_node ? [target_node] : []),

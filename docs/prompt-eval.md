@@ -51,8 +51,11 @@ These are the point of the design — Tier 2 is hard to run expensively by
 accident:
 
 1. **Cheap model by default** — `haiku`; override with `--model`.
-2. **Per-run turn cap** — `--max-turns` (default 10) bounds a runaway agent (this
-   is the only *per-run* bound — there is no mid-run token cap).
+2. **Per-run caps** — `--max-turns` (default 10) bounds a runaway agent (the only
+   *per-run* token-ish bound — there is no mid-run token cap), and `--timeout-ms`
+   (default 600000 = 10 min) is the wall-clock cap a real run waits for terminal
+   status. A real `claude` sub-agent takes minutes, so the default is generous;
+   lower it to fail fast, raise it for slow models.
 3. **Global token budget** — `--budget` (default 50k), enforced two ways: a
    pre-run gate whose per-run estimate adapts up to the heaviest run seen (so
    after one heavy run it stops optimistically launching more), and a **hard
