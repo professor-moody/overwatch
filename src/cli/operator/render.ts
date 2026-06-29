@@ -163,6 +163,31 @@ export function renderQueries(queries: AgentQuery[]): string {
   return queries.map(q => `  ${yellow('?')} ${dim(q.query_id)} ${dim(`[${q.agent_id ?? 'agent'}]`)}\n    ${q.question}`).join('\n');
 }
 
+/** A green one-line success confirmation for write commands. */
+export function ok(message: string): string {
+  return `${green('✓')} ${message}`;
+}
+
+interface DeployResult { dispatched: boolean; task?: { id: string; agent_id: string; archetype?: string }; archetype?: string; scope?: { affected_node_count: number }; reason?: string }
+interface DispatchResult { dispatched: boolean; task?: { id: string; agent_id: string }; reason?: string; existing_task_id?: string }
+
+export function renderDeploy(r: DeployResult, target: string): string {
+  if (r.dispatched && r.task) {
+    const scope = r.scope ? dim(`  (${r.scope.affected_node_count} node(s) in scope)`) : '';
+    return green(`Deployed ${r.task.archetype ?? r.archetype ?? 'agent'} at ${target}`) +
+      `  → task ${bold(r.task.id)} ${dim(`(agent ${r.task.agent_id})`)}${scope}`;
+  }
+  return yellow(`Not deployed: ${r.reason ?? 'unknown reason'}`);
+}
+
+export function renderDispatch(r: DispatchResult): string {
+  if (r.dispatched && r.task) {
+    return green('Dispatched') + `  → task ${bold(r.task.id)} ${dim(`(agent ${r.task.agent_id})`)}`;
+  }
+  const existing = r.existing_task_id ? dim(` (already on task ${r.existing_task_id})`) : '';
+  return yellow(`Not dispatched: ${r.reason ?? 'unknown reason'}`) + existing;
+}
+
 export function renderOpsec(b: OpsecBudget): string {
   const approachColor = b.recommended_approach === 'quiet' ? green : b.recommended_approach === 'loud' ? red : yellow;
   const pairs: Array<[string, string]> = [

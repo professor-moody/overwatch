@@ -28,6 +28,38 @@ function flagValue(args: string[], name: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
+// Flags that take a value (so their value isn't mistaken for a positional).
+const VALUE_FLAGS = new Set(['url', 'token', 'reason', 'archetype', 'skill', 'type', 'max', 'severity', 'node']);
+
+/** Positional (non-flag) args, skipping `--flag value` pairs and boolean flags. */
+function positionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('--')) {
+      if (VALUE_FLAGS.has(a.slice(2))) i++; // skip its value
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/** All values of a repeatable value-flag (e.g. --node a --node b). */
+function multiFlag(args: string[], name: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && i + 1 < args.length) out.push(args[++i]);
+  }
+  return out;
+}
+
+function requireFirst(args: string[], label: string): string {
+  const p = positionals(args)[0];
+  if (!p) throw new Error(`Missing required <${label}>.`);
+  return p;
+}
+
 interface StateResp { state?: { frontier?: Array<{ type: string }> } }
 
 export const READ_COMMANDS: Record<string, Command> = {
@@ -94,6 +126,62 @@ export const READ_COMMANDS: Record<string, Command> = {
     async run({ client }) {
       const resp = await client.get<{ queries: unknown[] }>('/api/agent-queries');
       return { data: resp.queries ?? [], text: render.renderQueries((resp.queries ?? []) as never) };
+    },
+  },
+};
+
+export const WRITE_COMMANDS: Record<string, Command> = {
+  approve: {
+    summary: 'Approve a pending action',
+    usage: 'approve <action-id>',
+    async run({ client, args }) {
+      const id = requireFirst(args, 'action-id');
+      const data = await client.post<unknown>(`/api/actions/${encodeURIComponent(id)}/approve`, {});
+      return { data, text: render.ok(`Approved ${id}`) };
+    },
+  },
+  deny: {
+    summary: 'Deny a pending action',
+    usage: 'deny <action-id> [--reason TEXT]',
+    async run({ client, args }) {
+      const id = requireFirst(args, 'action-id');
+      const reason = flagValue(args, 'reason');
+      const data = await client.post<unknown>(`/api/actions/${encodeURIComponent(id)}/deny`, { reason });
+      return { data, text: render.ok(`Denied ${id}${reason ? ` (${reason})` : ''}`) };
+    },
+  },
+  answer: {
+    summary: 'Answer an agent\'s question',
+    usage: 'answer <query-id> <answer text…>',
+    async run({ client, args }) {
+      const pos = positionals(args);
+      const id = pos[0];
+      const answer = pos.slice(1).join(' ');
+      if (!id) throw new Error('Missing required <query-id>.');
+      if (!answer) throw new Error('Missing required <answer text>.');
+      const data = await client.post<{ ok: boolean }>(`/api/agent-queries/${encodeURIComponent(id)}/answer`, { answer });
+      return { data, text: render.ok(`Answered ${id}`) };
+    },
+  },
+  deploy: {
+    summary: 'Quick-deploy an agent at a raw IP/CIDR/domain (auto-scopes)',
+    usage: 'deploy <target> [--archetype TYPE]',
+    async run({ client, args }) {
+      const target = requireFirst(args, 'target');
+      const archetype = flagValue(args, 'archetype');
+      const data = await client.post<unknown>('/api/agents/quick-deploy', { target, archetype });
+      return { data, text: render.renderDeploy(data as never, target) };
+    },
+  },
+  dispatch: {
+    summary: 'Dispatch an agent at existing graph node(s)',
+    usage: 'dispatch --node <id> [--node <id>…] [--skill S] [--archetype A]',
+    async run({ client, args }) {
+      const nodes = multiFlag(args, 'node');
+      if (!nodes.length) throw new Error('Missing required --node <id> (repeatable).');
+      const body = { target_node_ids: nodes, skill: flagValue(args, 'skill'), archetype: flagValue(args, 'archetype') };
+      const data = await client.post<unknown>('/api/agents/dispatch', body);
+      return { data, text: render.renderDispatch(data as never) };
     },
   },
 };
