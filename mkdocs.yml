@@ -74,6 +74,7 @@ nav:
   - Operating:
     - Operator Cockpit: operator-cockpit.md
     - Live Dashboard: dashboard.md
+    - Terminal CLI: cli.md
     - Playbook:
       - Overview: playbook/index.md
       - Cockpit Walkthrough: playbook/cockpit-walkthrough.md
