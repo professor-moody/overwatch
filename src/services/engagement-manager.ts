@@ -6,8 +6,8 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
-import { loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { engagementConfigSchema } from '../types.js';
+import { buildEngagementConfig } from './engagement-builder.js';
+import type { EngagementConfig } from '../types.js';
 
 export interface EngagementSummary {
   id: string;
@@ -48,13 +48,6 @@ export interface CreateEngagementInput {
   phases?: Array<{ id: string; name: string; order: number; strategies?: string[]; entry_criteria?: unknown[]; exit_criteria?: unknown[] }>;
   template_id?: string;
 }
-
-const OPSEC_PROFILES: Record<string, { name: string; max_noise: number }> = {
-  stealth: { name: 'stealth', max_noise: 0.2 },
-  normal:  { name: 'normal',  max_noise: 0.5 },
-  pentest: { name: 'pentest', max_noise: 0.7 },
-  loud:    { name: 'loud',    max_noise: 1.0 },
-};
 
 /**
  * Engagement IDs become filesystem path components (`engagements/<id>.json`).
@@ -144,71 +137,34 @@ export class EngagementManager {
   }
 
   createEngagement(input: CreateEngagementInput): EngagementSummary {
-    const slug = input.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40);
-    const id = `${slug}-${Date.now().toString(36)}`;
-    const created_at = new Date().toISOString();
+    // Build + validate via the shared builder (single source of truth for
+    // id/nonce/profile/template logic); this manager owns only persistence.
+    const parsedConfig = buildEngagementConfig(input);
+    return this.persistConfig(parsedConfig);
+  }
 
-    let config: Record<string, unknown>;
-
-    if (input.template_id) {
-      const template = loadTemplate(input.template_id);
-      if (!template) {
-        throw new Error(`Template not found: ${input.template_id}`);
-      }
-      const opsecOverride = input.opsec_profile
-        ? OPSEC_PROFILES[input.opsec_profile] ?? OPSEC_PROFILES.pentest
-        : undefined;
-      const mergedObjectives = input.objectives && input.objectives.length > 0
-        ? input.objectives.map((o, i) => ({ id: o.id || `obj-${i + 1}`, description: o.description, achieved: false }))
-        : undefined;
-      const overrides: any = {
-        id,
-        name: input.name,
-        created_at,
-        scope: this.buildScope(input),
-      };
-      if (input.profile) overrides.profile = input.profile;
-      if (opsecOverride) overrides.opsec = { ...opsecOverride, ...this.buildOpsecOverrides(input) };
-      else if (input.opsec) overrides.opsec = this.buildOpsecOverrides(input);
-      if (mergedObjectives) overrides.objectives = mergedObjectives;
-      if (input.failure_patterns?.length) overrides.failure_patterns = input.failure_patterns;
-      if (input.phases?.length) overrides.phases = input.phases;
-      config = mergeTemplateWithConfig(template, overrides) as unknown as Record<string, unknown>;
-    } else {
-      const baseOpsec = OPSEC_PROFILES[input.opsec_profile || 'pentest'] ?? OPSEC_PROFILES.pentest;
-      config = {
-        id,
-        name: input.name,
-        created_at,
-        profile: input.profile || 'network',
-        scope: this.buildScope(input),
-        objectives: (input.objectives || []).map((o, i) => ({
-          id: o.id || `obj-${i + 1}`,
-          description: o.description,
-          achieved: false,
-        })),
-        opsec: { ...baseOpsec, ...this.buildOpsecOverrides(input) },
-        failure_patterns: input.failure_patterns || [],
-        phases: input.phases || [],
-      };
+  /** Persist an already-built + validated config to engagements/<id>.json.
+   *  The single write gateway (createEngagement + the dashboard from-template
+   *  endpoint both route through here), so it enforces the persistence
+   *  invariants for every path:
+   *   - the id must be filesystem-safe (no path traversal — from-template
+   *     accepts a caller-supplied id that the schema only checks is non-empty),
+   *   - every persisted engagement carries a 64-hex nonce (P1.2), even on the
+   *     from-template path which builds via mergeTemplateWithConfig (no minting),
+   *   - never silently overwrite an existing engagement on an id collision. */
+  persistConfig(config: EngagementConfig): EngagementSummary {
+    if (!isSafeEngagementId(config.id)) {
+      throw new Error(`Refusing to persist engagement with unsafe id: ${JSON.stringify(config.id)}`);
     }
-
-    // P1.2: every NEW engagement gets a deterministic-id nonce. Templates
-    // that already shipped a nonce keep it; otherwise we mint a fresh one.
-    // Legacy engagements loaded from disk that lack the nonce stay on UUIDs.
     if (typeof (config as { engagement_nonce?: string }).engagement_nonce !== 'string') {
-      // 32 random bytes hex-encoded; 64 chars; matches schema regex.
       (config as { engagement_nonce?: string }).engagement_nonce = randomBytes(32).toString('hex');
     }
-
-    const parsedConfig = engagementConfigSchema.parse(config);
-    const filePath = join(this.engagementsDir, `${id}.json`);
-    writeFileSync(filePath, JSON.stringify(parsedConfig, null, 2));
-    return this.toSummary(parsedConfig, filePath, false);
+    const filePath = join(this.engagementsDir, `${config.id}.json`);
+    if (existsSync(filePath)) {
+      throw new Error(`Engagement already exists: ${config.id}`);
+    }
+    writeFileSync(filePath, JSON.stringify(config, null, 2));
+    return this.toSummary(config, filePath, false);
   }
 
   getEngagement(id: string): Record<string, unknown> | null {
@@ -255,35 +211,6 @@ export class EngagementManager {
     } catch { return null; }
   }
 
-  private buildScope(input: CreateEngagementInput): Record<string, unknown> {
-    const scope: Record<string, unknown> = {
-      cidrs: input.cidrs || [],
-      domains: input.domains || [],
-      exclusions: input.exclusions || [],
-    };
-    if (input.hosts?.length) scope.hosts = input.hosts;
-    if (input.url_patterns?.length) scope.url_patterns = input.url_patterns;
-    if (input.aws_accounts?.length) scope.aws_accounts = input.aws_accounts;
-    if (input.azure_subscriptions?.length) scope.azure_subscriptions = input.azure_subscriptions;
-    if (input.gcp_projects?.length) scope.gcp_projects = input.gcp_projects;
-    return scope;
-  }
-
-  private buildOpsecOverrides(input: CreateEngagementInput): Record<string, unknown> {
-    const o: Record<string, unknown> = {};
-    if (!input.opsec) return o;
-    if (input.opsec.max_noise != null) o.max_noise = input.opsec.max_noise;
-    if (input.opsec.approval_mode) o.approval_mode = input.opsec.approval_mode;
-    if (input.opsec.approval_timeout_ms != null) o.approval_timeout_ms = input.opsec.approval_timeout_ms;
-    // Only persist a time_window when caller supplies a real object; the
-    // UI sends `null` to mean "no window", but the schema treats the field
-    // as an optional object and would reject `null`.
-    if (input.opsec.time_window) {
-      o.time_window = input.opsec.time_window;
-    }
-    if (input.opsec.blacklisted_techniques?.length) o.blacklisted_techniques = input.opsec.blacklisted_techniques;
-    return o;
-  }
 
   private toSummary(raw: any, configPath: string, isActive: boolean): EngagementSummary {
     return {

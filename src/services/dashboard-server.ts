@@ -1035,10 +1035,19 @@ export class DashboardServer {
       if (!overrides.created_at || typeof overrides.created_at !== 'string') {
         overrides.created_at = new Date().toISOString();
       }
+      if (!this.engagementManager) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Engagement manager not available' }));
+        return;
+      }
       try {
         const config = mergeTemplateWithConfig(template, overrides as any);
+        // Persist so a created-from-template engagement actually lands on disk
+        // (it previously only returned the config). persistConfig is the shared
+        // write gateway — it enforces id-safety, nonce minting, and no-overwrite.
+        const engagement = this.engagementManager.persistConfig(config);
         res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ config }));
+        res.end(JSON.stringify({ config, persisted: true, engagement }));
       } catch (err: any) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

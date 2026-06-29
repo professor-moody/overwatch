@@ -588,7 +588,12 @@ export async function createEngagement(body: Record<string, unknown>): Promise<E
   });
 }
 
-export async function createEngagementFromTemplate(templateId: string, overrides?: Record<string, unknown>): Promise<EngagementListItem> {
+export async function createEngagementFromTemplate(
+  templateId: string,
+  overrides?: Record<string, unknown>,
+): Promise<{ config: unknown; persisted: boolean; engagement?: EngagementListItem }> {
+  // The endpoint persists the built config and returns { config, persisted, engagement }
+  // — not a bare EngagementListItem.
   return fetchJson('/api/engagements/from-template', {
     method: 'POST',
     body: JSON.stringify({ template_id: templateId, overrides }),

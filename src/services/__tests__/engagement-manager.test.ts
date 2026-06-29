@@ -167,4 +167,38 @@ describe('EngagementManager — dashboard create flow produces a valid engagemen
     expect(cfg.id).toBe(summary.id);
     expect(cfg.name).toBe('Test Engagement');
   });
+
+  it('persistConfig writes a pre-built config to engagements/<id>.json (from-template path)', async () => {
+    const { buildEngagementConfig } = await import('../engagement-builder.js');
+    const config = buildEngagementConfig({ name: 'Prebuilt', cidrs: ['10.0.0.0/24'] });
+    const summary = mgr.persistConfig(config);
+    expect(existsSync(summary.config_path)).toBe(true);
+    expect(summary.id).toBe(config.id);
+    const { loadEngagementConfigFile } = await import('../../config.js');
+    expect(loadEngagementConfigFile(summary.config_path).id).toBe(config.id);
+  });
+
+  it('persistConfig refuses an unsafe (path-traversal) id', async () => {
+    const { buildEngagementConfig } = await import('../engagement-builder.js');
+    const config = buildEngagementConfig({ name: 'x' });
+    (config as { id: string }).id = '../escape';
+    expect(() => mgr.persistConfig(config)).toThrow(/unsafe id/i);
+    expect(existsSync(join(dir, 'escape.json'))).toBe(false);
+  });
+
+  it('persistConfig refuses to silently overwrite an existing engagement', async () => {
+    const { buildEngagementConfig } = await import('../engagement-builder.js');
+    const config = buildEngagementConfig({ name: 'Dup' });
+    mgr.persistConfig(config);
+    expect(() => mgr.persistConfig(config)).toThrow(/already exists/i);
+  });
+
+  it('persistConfig mints a 64-hex nonce when the config lacks one (from-template invariant)', async () => {
+    const { buildEngagementConfig } = await import('../engagement-builder.js');
+    const config = buildEngagementConfig({ name: 'NoNonce' });
+    delete (config as { engagement_nonce?: string }).engagement_nonce;
+    const summary = mgr.persistConfig(config);
+    const written = JSON.parse(readFileSync(summary.config_path, 'utf-8'));
+    expect(written.engagement_nonce).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
