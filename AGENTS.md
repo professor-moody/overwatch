@@ -86,6 +86,10 @@ Console-first IA. The **Console** is the operator's home; nav is grouped **Conso
 - **Identity** — IdP-grouped principals, active tokens, cross-tier identity inference results.
 - **Attack Paths** — client-side Dijkstra over the current graph; sources: HAS_SESSION + ADMIN_TO edges; targets: cloud_identity, cloud_resource, idp_principal.
 
+### Terminal CLI (`overwatch`)
+
+A standalone terminal operator client over the same `/api/*` surface — for operators who prefer the shell, and runnable in a second pane while the model drives. Read: `overwatch status` / `frontier` / `findings` / `agents` / `approvals` / `opsec` / `sessions` / `queries`. Operate: `approve` / `deny` / `answer` / `deploy` / `dispatch`. `--json` emits compact raw API JSON (a token-cheap way for a shell-capable sub-agent to pull state without an MCP round-trip). Needs the engagement running (`npm start -- --http`); loopback needs no auth (remote: `--token`/`OVERWATCH_DASHBOARD_TOKEN`). See [Terminal CLI](docs/cli.md).
+
 ### Sessions (interactive shells / sockets)
 
 - **Always pass `default_validation` to `open_session`** for SSH/socket-connect sessions: `{ technique, target_ip?, target_url?, allow_unverified_scope? }`. Every subsequent `send_to_session` inherits it and runs the full action lifecycle. Without it, sends require a per-call `technique`.

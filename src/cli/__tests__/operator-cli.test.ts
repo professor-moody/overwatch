@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
-import { resolveClientOptions, type ApiClient } from '../operator/client.js';
+import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
 import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch } from '../operator/render.js';
 
@@ -51,6 +51,38 @@ describe('client option resolution', () => {
     expect(opts.token).toBeUndefined();
     if (prevUrl !== undefined) process.env.OVERWATCH_URL = prevUrl;
     if (prevTok !== undefined) process.env.OVERWATCH_DASHBOARD_TOKEN = prevTok;
+  });
+
+  it('sends a Bearer header only when a token is set, and never an Origin header', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      await createClient({ url: 'http://h:8384', token: 'secret123' }).get('/api/state');
+      const withTok = (calls[0].init.headers ?? {}) as Record<string, string>;
+      expect(withTok.Authorization).toBe('Bearer secret123');
+      expect(withTok.Origin).toBeUndefined(); // CLI never sends Origin → server CSRF check is skipped
+      calls.length = 0;
+      await createClient({ url: 'http://h:8384' }).get('/api/state');
+      expect(((calls[0].init.headers ?? {}) as Record<string, string>).Authorization).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('raises an unreachable ApiError when the server cannot be reached', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+    try {
+      const err = await createClient({ url: 'http://127.0.0.1:9' }).get('/api/state').catch(e => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).unreachable).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

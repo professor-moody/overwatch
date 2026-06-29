@@ -159,8 +159,12 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | `POST /api/agents/quick-deploy` | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen type |
 | `POST /api/agents/dispatch` | Dispatch a sub-agent (`{ target_node_ids, archetype?, skill?, campaign_id?, frontier_item_id? }`) |
 
+These same endpoints back the [Terminal CLI](cli.md) (`overwatch status` /
+`approve` / `deploy` / …) — a Claude-independent operator surface over the same API.
+
 ## See Also
 
 - [Dashboard](dashboard.md) — the full panel + endpoint reference.
+- [Terminal CLI](cli.md) — `overwatch`, the standalone terminal operator client.
 - [Architecture](architecture.md#component-overview) — `CommandInterpreter`, `ProposedPlanStore`, `AgentQueryStore`.
 - Tools: [`propose_plan`](tools/propose-plan.md), [`ask_operator`](tools/ask-operator.md), [`manage_agent_directive`](tools/manage-agent-directive.md).
