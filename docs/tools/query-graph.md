@@ -27,6 +27,7 @@ This gives the FULL graph — no filtering, no scoring. Use it when the frontier
 | `direction` | `string` | `"both"` | Traversal direction: `outbound`, `inbound`, or `both` |
 | `max_depth` | `integer` | `2` | Max traversal depth (1–10) |
 | `limit` | `integer` | `100` | Max results to return (1–500) |
+| `compact` | `boolean` | `false` | Return compact JSON (no indentation) to save tokens. Identical payload — only whitespace differs. |
 
 ## Returns
 

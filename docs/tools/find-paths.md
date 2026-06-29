@@ -22,6 +22,7 @@ Returns paths with per-hop confidence scores and total path confidence.
 | `from_node` | `string` | — | Find paths from this specific node |
 | `to_node` | `string` | — | Find paths to this specific node |
 | `max_paths` | `integer` | `5` | Maximum paths to return (1–20) |
+| `compact` | `boolean` | `false` | Return compact JSON (no indentation) to save tokens. Identical payload — only whitespace differs. |
 
 ## Behavior
 

@@ -4,6 +4,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { nodeTypeSchema, edgeTypeSchema } from '../types.js';
 import type { NodeType, EdgeType } from '../types.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
 export function registerExplorationTools(server: McpServer, engine: GraphEngine): void {
 
@@ -48,7 +49,8 @@ Use structured selectors — free-text query payloads are not supported.`,
         max_depth: z.number().int().min(1).max(10)
           .default(2).describe('Max traversal depth from from_node'),
         limit: z.number().int().min(1).max(500)
-          .default(100).describe('Max results to return')
+          .default(100).describe('Max results to return'),
+        compact: z.boolean().default(false).describe(COMPACT_PARAM_DESCRIPTION)
       },
       annotations: {
         readOnlyHint: true,
@@ -69,16 +71,11 @@ Use structured selectors — free-text query payloads are not supported.`,
         limit: params.limit
       });
 
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            nodes_found: result.nodes.length,
-            edges_found: result.edges.length,
-            ...result
-          }, null, 2)
-        }]
-      };
+      return toolText({
+        nodes_found: result.nodes.length,
+        edges_found: result.edges.length,
+        ...result
+      }, { compact: params.compact });
     })
   );
 
@@ -103,7 +100,8 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         from_node: z.string().optional().describe('Find paths from this specific node'),
         to_node: z.string().optional().describe('Find paths to this specific node'),
         max_paths: z.number().int().min(1).max(20).default(5),
-        optimize: z.enum(['confidence', 'stealth', 'balanced']).default('confidence').describe('Path optimization strategy: confidence (default) picks highest-confidence paths, stealth picks lowest-noise paths, balanced weighs both equally')
+        optimize: z.enum(['confidence', 'stealth', 'balanced']).default('confidence').describe('Path optimization strategy: confidence (default) picks highest-confidence paths, stealth picks lowest-noise paths, balanced weighs both equally'),
+        compact: z.boolean().default(false).describe(COMPACT_PARAM_DESCRIPTION)
       },
       annotations: {
         readOnlyHint: true,
@@ -112,7 +110,7 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         openWorldHint: false
       }
     },
-    withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths, optimize }) => {
+    withErrorBoundary('find_paths', async ({ objective_id, from_node, to_node, max_paths, optimize, compact }) => {
       let paths;
       let analysisStatus: string | undefined;
       let analysisWarnings: string[] | undefined;
@@ -149,17 +147,12 @@ Returns paths with per-hop confidence scores and total path confidence.`,
         }
       }
 
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            paths_found: paths.length,
-            paths,
-            analysis_status: analysisStatus ?? (paths.length > 0 ? 'found' : 'no_path'),
-            warnings: analysisWarnings,
-          }, null, 2)
-        }]
-      };
+      return toolText({
+        paths_found: paths.length,
+        paths,
+        analysis_status: analysisStatus ?? (paths.length > 0 ? 'found' : 'no_path'),
+        warnings: analysisWarnings,
+      }, { compact });
     })
   );
 }
