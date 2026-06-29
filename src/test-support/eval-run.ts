@@ -115,8 +115,11 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   if (usingFake) { chmodSync(FAKE_CLAUDE, 0o755); process.env.OVERWATCH_FAKE_MODE = scenario.fakeMode; }
   process.env.OVERWATCH_CLAUDE_BINARY = binary;
   // Selects the sub_agent prompt variant the in-process app's get_system_prompt
-  // will render for this run (the A/B arm). Set explicitly every run so an arm
-  // never inherits the previous run's variant.
+  // renders for this run (the A/B arm). The harness is single-process + serial
+  // (one app per run, like the FAKE_MODE/binary env above), so an env selector is
+  // sufficient; set it explicitly every run, and restore it in cleanup so the
+  // arm never leaks into a later in-process get_system_prompt.
+  const prevVariant = process.env.OVERWATCH_PROMPT_VARIANT;
   process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
@@ -181,6 +184,8 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   };
 
   const cleanup = async () => {
+    if (prevVariant === undefined) delete process.env.OVERWATCH_PROMPT_VARIANT;
+    else process.env.OVERWATCH_PROMPT_VARIANT = prevVariant;
     await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
     try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
   };

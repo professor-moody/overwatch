@@ -21,11 +21,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runEvalScenario } from '../test-support/eval-run.js';
-import { gradeRun, compareGrades, type RubricResult } from '../services/eval-rubric.js';
+import { gradeRun, compareGrades, RUBRIC_CRITERIA, type RubricResult } from '../services/eval-rubric.js';
 import { SUBAGENT_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
-  parseArgs, readBaseline, meanGrade, baselinePath,
+  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
   BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
 } from './prompt-eval-lib.js';
 
@@ -81,10 +81,13 @@ async function main(): Promise<void> {
     if (variant === 'control') { console.error('--variant control is the baseline; pass a candidate variant (e.g. lean) or omit --variant.'); process.exit(1); }
   }
 
-  // needsControl uses readBaseline so the planned count matches execution (a
-  // corrupt cache counts as "needs a run"). The candidate arm always runs fresh
-  // (it's the thing under test — never cached).
-  const needsControl = args.scenarios.filter(s => args.refreshBaseline || !readBaseline(baselinePath(s.id, args.model)));
+  // A cached control is reused only if it's A/B-comparable: same trial count
+  // (equal sample size) AND same rubric criteria. Otherwise it's re-run. Both the
+  // plan count and the loop use this so they stay consistent. The candidate arm
+  // always runs fresh (it's the thing under test — never cached).
+  const usableControl = (s: typeof args.scenarios[number]) =>
+    !args.refreshBaseline && isBaselineUsable(readBaseline(baselinePath(s.id, args.model)), args.trials, RUBRIC_CRITERIA);
+  const needsControl = args.scenarios.filter(s => !usableControl(s));
   const controlRuns = needsControl.length * args.trials;
   const candidateRuns = variant ? args.scenarios.length * args.trials : 0;
   const totalRuns = controlRuns + candidateRuns;
@@ -137,11 +140,14 @@ async function main(): Promise<void> {
     const path = baselinePath(scenario.id, args.model);
     console.log(`\n[${scenario.id}]`);
 
-    // Control arm: cached baseline, or run + cache.
-    let control = args.refreshBaseline ? null : readBaseline(path);
-    if (control) {
+    // Control arm: reuse the cache only if it's A/B-comparable, else run + cache.
+    const cachedRec = args.refreshBaseline ? null : readBaseline(path);
+    let control: RubricResult;
+    if (usableControl(scenario) && cachedRec) {
       console.log('  control: cached baseline');
+      control = cachedRec.grade;
     } else {
+      if (cachedRec) console.log('  control: cached baseline not comparable (trial-count or rubric mismatch) — re-running');
       control = await runArm(scenario, 'control');
       mkdirSync(BASELINE_DIR, { recursive: true });
       writeFileSync(path, JSON.stringify({ scenario: scenario.id, model: args.model, trials: args.trials, grade: control }, null, 2) + '\n');

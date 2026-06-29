@@ -293,8 +293,14 @@ function leanBriefSection(state: EngagementState, agent: AgentTask, engine: Grap
     lines.push('- **Objective:** see get_agent_context for your task.');
     lines.push('- **Done when:** the expected discoveries are landed in the graph, or no in-scope path remains (report NO_PATH).');
   }
-  if (agent.subgraph_node_ids?.length) {
-    lines.push(`- **Scope:** ${agent.subgraph_node_ids.join(', ')} — acting outside your scoped nodes is a hard stop.`);
+  const scopeIds = agent.subgraph_node_ids ?? [];
+  if (scopeIds.length) {
+    // Cap the inline list so a scope-wide archetype (hundreds of nodes) can't
+    // balloon the prompt; the full set is always live via get_agent_context.
+    const SCOPE_CAP = 25;
+    const shown = scopeIds.slice(0, SCOPE_CAP).join(', ');
+    const more = scopeIds.length > SCOPE_CAP ? ` … and ${scopeIds.length - SCOPE_CAP} more` : '';
+    lines.push(`- **Scope:** ${shown}${more} — acting outside your scoped nodes is a hard stop.`);
   } else {
     lines.push('- **Scope:** see get_agent_context; acting outside your scoped nodes is a hard stop.');
   }
@@ -305,9 +311,9 @@ function leanBriefSection(state: EngagementState, agent: AgentTask, engine: Grap
   if (agent.skill) lines.push(`- **Skill:** ${agent.skill} — fetch the full methodology with get_skill({ name }).`);
 
   // Concrete properties of the scoped target nodes (≤3) — high-signal, kept.
-  if (engine && agent.subgraph_node_ids?.length) {
+  if (scopeIds.length) {
     const snippets: string[] = [];
-    for (const nid of agent.subgraph_node_ids.slice(0, 3)) {
+    for (const nid of scopeIds.slice(0, 3)) {
       const node = engine.getNode(nid);
       if (!node) continue;
       const props: string[] = [`type=${node.type}`, `label=${node.label}`];
@@ -321,6 +327,7 @@ function leanBriefSection(state: EngagementState, agent: AgentTask, engine: Grap
     if (snippets.length) {
       lines.push('- **Target nodes:**');
       lines.push(...snippets);
+      if (scopeIds.length > snippets.length) lines.push(`  - … and ${scopeIds.length - snippets.length} more in scope`);
     }
   }
 
