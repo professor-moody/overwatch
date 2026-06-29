@@ -48,6 +48,8 @@ describe('app bootstrap', () => {
     expect(toolNames).toContain('open_session');
     expect(toolNames).toContain('create_engagement');
     expect(toolNames).toContain('list_engagements');
+    expect(toolNames).toContain('add_objective');
+    expect(toolNames).toContain('set_opsec');
     expect(toolNames).toContain('close_session');
     expect(toolNames).toContain('update_scope');
     expect(toolNames).toContain('get_system_prompt');

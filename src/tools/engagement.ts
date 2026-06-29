@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { resolve } from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { GraphEngine } from '../services/graph-engine.js';
 import type { EngagementManager, CreateEngagementInput } from '../services/engagement-manager.js';
 import { buildEngagementConfig } from '../services/engagement-builder.js';
 import { withErrorBoundary } from './error-boundary.js';
@@ -14,7 +15,7 @@ import { toolText } from './_tool-output.js';
 // not live until the server is (re)started pointed at it; the result carries the
 // activation steps. No live engine reload (out of scope by design).
 
-export function registerEngagementTools(server: McpServer, engagementManager: EngagementManager): void {
+export function registerEngagementTools(server: McpServer, engine: GraphEngine, engagementManager: EngagementManager): void {
   server.registerTool(
     'create_engagement',
     {
@@ -85,6 +86,108 @@ the built config without writing. Does not touch the currently running engagemen
         active_id: engagementManager.getActiveId(),
         engagements: engagementManager.listEngagements(),
       });
+    }),
+  );
+
+  // --- Configure the ACTIVE engagement (no hand-edited JSON) ---
+
+  server.registerTool(
+    'add_objective',
+    {
+      title: 'Add Objective',
+      description: 'Add an objective (goal) to the ACTIVE engagement. Low-risk — declares a goal; authorizes no targets and does not change scope/OPSEC. Persists immediately.',
+      inputSchema: {
+        description: z.string().min(1).describe('What achieving this objective means (e.g. "Compromise the domain controller")'),
+        target_node_type: z.string().optional().describe('Node type that satisfies it (e.g. credential, host)'),
+        target_criteria: z.record(z.unknown()).optional().describe('Property match for the target node, e.g. {"privileged": true}'),
+        achievement_edge_types: z.array(z.string()).optional().describe('Edge types that count as achieved (default: HAS_SESSION/ADMIN_TO/OWNS_CRED)'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    withErrorBoundary('add_objective', async (params) => {
+      const objective = engine.addObjective({
+        description: params.description,
+        target_node_type: params.target_node_type,
+        target_criteria: params.target_criteria,
+        achievement_edge_types: params.achievement_edge_types,
+      });
+      return toolText({ added: true, objective });
+    }),
+  );
+
+  server.registerTool(
+    'set_opsec',
+    {
+      title: 'Set OPSEC Policy',
+      description: `Update the ACTIVE engagement's OPSEC policy (noise ceiling, enforcement, approval mode, time window, technique blacklist) — no hand-edited config.
+
+**Confirmation gate**: confirm:false (default) returns a before/after diff plus warnings for any LOOSENING change (higher max_noise, disabling enforcement, switching to auto-approve). Set confirm:true to apply + persist. This mutates the LIVE engine, so it changes what the running engagement permits.`,
+      inputSchema: {
+        max_noise: z.number().min(0).max(1).optional().describe('Noise ceiling 0.0–1.0'),
+        enabled: z.boolean().optional().describe('Enable/disable OPSEC enforcement'),
+        approval_mode: z.enum(['auto-approve', 'approve-critical', 'approve-all']).optional().describe('Operator-approval policy'),
+        approval_timeout_ms: z.number().int().min(1000).optional().describe('Approval wait before auto-resolve (ms)'),
+        time_window: z.object({ start_hour: z.number().int().min(0).max(23), end_hour: z.number().int().min(0).max(23) }).nullable().optional().describe('Allowed hours window; null clears it'),
+        blacklisted_techniques: z.array(z.string()).optional().describe('Techniques that are always vetoed'),
+        reason: z.string().min(1).describe('Why (recorded in the activity log for attribution)'),
+        confirm: z.boolean().default(false).describe('Set true to apply. False (default) returns a dry-run diff.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    withErrorBoundary('set_opsec', async (params) => {
+      const opsec = engine.getConfig().opsec;
+      const before = {
+        enabled: opsec.enabled, max_noise: opsec.max_noise, approval_mode: opsec.approval_mode,
+        approval_timeout_ms: opsec.approval_timeout_ms, time_window: opsec.time_window,
+        blacklisted_techniques: opsec.blacklisted_techniques,
+      };
+
+      const after: Record<string, unknown> = { ...before };
+      const warnings: string[] = [];
+      if (params.max_noise !== undefined) {
+        after.max_noise = params.max_noise;
+        if (params.max_noise > (before.max_noise ?? 0)) warnings.push(`max_noise raised ${before.max_noise} → ${params.max_noise} (louder ceiling).`);
+      }
+      if (params.enabled !== undefined) {
+        after.enabled = params.enabled;
+        if (params.enabled === false && before.enabled !== false) warnings.push('OPSEC enforcement DISABLED — actions will not be noise/scope-vetoed.');
+      }
+      if (params.approval_mode !== undefined) {
+        after.approval_mode = params.approval_mode;
+        if (params.approval_mode === 'auto-approve' && before.approval_mode !== 'auto-approve') warnings.push('approval_mode → auto-approve — no operator gate on actions.');
+      }
+      if (params.approval_timeout_ms !== undefined) after.approval_timeout_ms = params.approval_timeout_ms;
+      if (params.time_window !== undefined) after.time_window = params.time_window ?? undefined;
+      if (params.blacklisted_techniques !== undefined) after.blacklisted_techniques = params.blacklisted_techniques;
+
+      if (!params.confirm) {
+        return toolText({
+          mode: 'preview',
+          message: 'Dry-run. Set confirm: true to apply this OPSEC change.',
+          reason: params.reason,
+          before,
+          after,
+          ...(warnings.length ? { weakening_warnings: warnings } : {}),
+        });
+      }
+
+      // Apply in place (canonical handleUpdateSettings merge) + persist.
+      if (params.max_noise !== undefined) opsec.max_noise = params.max_noise;
+      if (params.enabled !== undefined) opsec.enabled = params.enabled;
+      if (params.approval_mode !== undefined) opsec.approval_mode = params.approval_mode;
+      if (params.approval_timeout_ms !== undefined) opsec.approval_timeout_ms = params.approval_timeout_ms;
+      if (params.time_window !== undefined) opsec.time_window = params.time_window ?? undefined;
+      if (params.blacklisted_techniques !== undefined) opsec.blacklisted_techniques = params.blacklisted_techniques;
+      engine.persist();
+      engine.logActionEvent({
+        description: `OPSEC policy updated: ${params.reason}`,
+        event_type: 'system',
+        category: 'system',
+        result_classification: 'success',
+        details: { before, after, reason: params.reason, weakening_warnings: warnings },
+      });
+
+      return toolText({ applied: true, reason: params.reason, before, after, ...(warnings.length ? { weakening_warnings: warnings } : {}) });
     }),
   );
 }

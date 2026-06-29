@@ -198,7 +198,7 @@ export function registerAllTools(
   registerRemediationTools(s, deps.engine);
   registerSessionTools(s, deps.sessionManager, deps.engine);
   registerScopeTools(s, deps.engine);
-  registerEngagementTools(s, deps.engagementManager);
+  registerEngagementTools(s, deps.engine, deps.engagementManager);
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
   registerTokenReplayTool(s, deps.engine);

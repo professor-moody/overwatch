@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { registerEngagementTools } from '../engagement.js';
 import type { EngagementManager, EngagementSummary } from '../../services/engagement-manager.js';
+import type { GraphEngine } from '../../services/graph-engine.js';
 
 // Capture the tool handlers registered against a fake MCP server.
-function register(mgr: Partial<EngagementManager>) {
+function register(mgr: Partial<EngagementManager>, engine: Partial<GraphEngine> = {}) {
   const handlers: Record<string, (args: any) => Promise<any>> = {};
   const server = {
     registerTool(name: string, _cfg: unknown, cb: (args: any) => Promise<any>) {
@@ -11,7 +12,7 @@ function register(mgr: Partial<EngagementManager>) {
       return { enable() {}, disable() {}, enabled: true };
     },
   } as any;
-  registerEngagementTools(server, mgr as EngagementManager);
+  registerEngagementTools(server, engine as GraphEngine, mgr as EngagementManager);
   return handlers;
 }
 
@@ -57,5 +58,52 @@ describe('create_engagement tool', () => {
     const out = await parse(h.list_engagements, {});
     expect(out.active_id).toBe('b');
     expect(out.engagements).toHaveLength(2);
+  });
+});
+
+describe('add_objective tool', () => {
+  it('adds an objective to the active engine', async () => {
+    let added: any;
+    const h = register({}, { addObjective: (o: any) => { added = o; return { id: 'obj-1', ...o, achieved: false }; } } as any);
+    const out = await parse(h.add_objective, { description: 'Get DA', target_node_type: 'credential' });
+    expect(added.description).toBe('Get DA');
+    expect(out.added).toBe(true);
+    expect(out.objective.id).toBe('obj-1');
+  });
+});
+
+describe('set_opsec tool', () => {
+  const fakeEngine = (opsec: any) => {
+    let persisted = false; const events: any[] = [];
+    const engine = {
+      getConfig: () => ({ opsec }),
+      persist: () => { persisted = true; },
+      logActionEvent: (e: any) => { events.push(e); },
+    } as any;
+    return { engine, opsec, persisted: () => persisted, events };
+  };
+
+  it('dry-run returns a before/after diff + weakening warning, does NOT persist', async () => {
+    const f = fakeEngine({ name: 'pentest', enabled: true, max_noise: 0.5, approval_mode: 'approve-critical' });
+    const h = register({}, f.engine);
+    const out = await parse(h.set_opsec, { max_noise: 0.9, reason: 'go loud' });
+    expect(out.mode).toBe('preview');
+    expect(out.before.max_noise).toBe(0.5);
+    expect(out.after.max_noise).toBe(0.9);
+    expect(out.weakening_warnings.join(' ')).toMatch(/max_noise raised/);
+    expect(f.persisted()).toBe(false);
+    expect(f.opsec.max_noise).toBe(0.5); // unchanged
+  });
+
+  it('confirm applies in place, persists, and logs the reason', async () => {
+    const f = fakeEngine({ name: 'pentest', enabled: true, max_noise: 0.5, approval_mode: 'approve-critical' });
+    const h = register({}, f.engine);
+    const out = await parse(h.set_opsec, { enabled: false, approval_mode: 'auto-approve', reason: 'lab, no gate', confirm: true });
+    expect(out.applied).toBe(true);
+    expect(f.opsec.enabled).toBe(false);
+    expect(f.opsec.approval_mode).toBe('auto-approve');
+    expect(f.persisted()).toBe(true);
+    expect(f.events[0].description).toMatch(/lab, no gate/);
+    expect(out.weakening_warnings.length).toBeGreaterThanOrEqual(2); // disabled + auto-approve
   });
 });
