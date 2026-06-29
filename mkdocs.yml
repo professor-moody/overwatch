@@ -92,6 +92,7 @@ nav:
     - Drivers (Decision Record): deployment-architecture.md
     - Tape Recording: tape-recording.md
     - Architecture Review: architecture-review.md
+    - Prompt Architecture Review: prompt-architecture-review.md
   - Tool Reference:
     - tools/index.md
     - State & Health:
