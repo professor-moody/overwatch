@@ -62,16 +62,32 @@ export function parseArgs(argv: string[]): Args {
   };
 }
 
-/** Read + validate a cached baseline; returns the grade or null if absent,
- *  corrupt, or an old/unknown shape (so the caller re-runs rather than crashing). */
-export function readBaseline(path: string): RubricResult | null {
+export interface CachedBaseline {
+  /** Trial count the baseline was averaged over (for fair-N A/B comparison). */
+  trials: number;
+  grade: RubricResult;
+}
+
+/** Read + validate a cached baseline; returns it or null if absent, corrupt, or
+ *  an old/unknown shape (so the caller re-runs rather than crashing). */
+export function readBaseline(path: string): CachedBaseline | null {
   if (!existsSync(path)) return null;
   try {
-    const d = JSON.parse(readFileSync(path, 'utf-8')) as { grade?: RubricResult };
-    return Array.isArray(d?.grade?.criteria) ? d.grade! : null;
+    const d = JSON.parse(readFileSync(path, 'utf-8')) as { trials?: number; grade?: RubricResult };
+    if (!Array.isArray(d?.grade?.criteria)) return null;
+    return { trials: typeof d.trials === 'number' ? d.trials : 0, grade: d.grade! };
   } catch {
     return null;
   }
+}
+
+/** A cached baseline is only A/B-comparable if it used the SAME trial count
+ *  (equal sample size) AND the SAME rubric criteria (not recorded under an older
+ *  rubric). Otherwise the caller must re-run control. */
+export function isBaselineUsable(rec: CachedBaseline | null, trials: number, criteria: readonly string[]): boolean {
+  if (!rec || rec.trials !== trials) return false;
+  const got = rec.grade.criteria.map(c => c.criterion);
+  return got.length === criteria.length && criteria.every((c, i) => got[i] === c);
 }
 
 export function baselinePath(scenarioId: string, model: string): string {

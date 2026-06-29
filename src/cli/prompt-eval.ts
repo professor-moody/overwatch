@@ -21,10 +21,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runEvalScenario } from '../test-support/eval-run.js';
-import { gradeRun, type RubricResult } from '../services/eval-rubric.js';
+import { gradeRun, compareGrades, RUBRIC_CRITERIA, type RubricResult } from '../services/eval-rubric.js';
+import { SUBAGENT_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
-  parseArgs, readBaseline, meanGrade, baselinePath,
+  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
   BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
 } from './prompt-eval-lib.js';
 
@@ -69,76 +70,104 @@ async function main(): Promise<void> {
   if (!args.real) { printUsage(); return; }
   if (!args.scenarios.length) { console.error('No matching scenarios. Known: ' + EVAL_SCENARIOS.map(s => s.id).join(', ')); process.exit(1); }
 
-  if (args.variant) {
-    console.error(`--variant "${args.variant}": candidate prompt variants require prompt step (b)'s variant seam, which is not built yet.`);
-    console.error('Run without --variant to establish/refresh the control baseline now; the A/B activates when step (b) lands.');
-    process.exit(1);
+  // --variant selects the candidate arm to A/B against control. 'control' itself
+  // is the baseline, not a candidate.
+  const variant = args.variant;
+  if (variant) {
+    if (!SUBAGENT_PROMPT_VARIANTS.includes(variant as never)) {
+      console.error(`Unknown --variant "${variant}". Known: ${SUBAGENT_PROMPT_VARIANTS.join(', ')}.`);
+      process.exit(1);
+    }
+    if (variant === 'control') { console.error('--variant control is the baseline; pass a candidate variant (e.g. lean) or omit --variant.'); process.exit(1); }
   }
 
-  // needsControl + the per-scenario decision below both use readBaseline, so the
-  // planned run count matches what actually executes (a corrupt cache counts as
-  // "needs a run", consistently).
-  const needsControl = args.scenarios.filter(s => args.refreshBaseline || !readBaseline(baselinePath(s.id, args.model)));
+  // A cached control is reused only if it's A/B-comparable: same trial count
+  // (equal sample size) AND same rubric criteria. Otherwise it's re-run. Both the
+  // plan count and the loop use this so they stay consistent. The candidate arm
+  // always runs fresh (it's the thing under test — never cached).
+  const usableControl = (s: typeof args.scenarios[number]) =>
+    !args.refreshBaseline && isBaselineUsable(readBaseline(baselinePath(s.id, args.model)), args.trials, RUBRIC_CRITERIA);
+  const needsControl = args.scenarios.filter(s => !usableControl(s));
   const controlRuns = needsControl.length * args.trials;
-  const estTokens = controlRuns * EST_TOKENS_PER_RUN;
+  const candidateRuns = variant ? args.scenarios.length * args.trials : 0;
+  const totalRuns = controlRuns + candidateRuns;
+  const estTokens = totalRuns * EST_TOKENS_PER_RUN;
 
-  console.log(`Plan: ${controlRuns} real-model run(s) on model "${args.model}" (${needsControl.length} scenario(s) × ${args.trials} trial(s)).`);
+  const mode = variant ? `A/B "${variant}" vs control` : 'control baseline';
+  console.log(`Plan: ${mode} — ${totalRuns} real-model run(s) on "${args.model}" (${controlRuns} control + ${candidateRuns} candidate).`);
   console.log(`Cost guard: budget ${args.budget} tok · rough est ~${estTokens} tok · per-run cap ${args.maxTurns} turns.`);
-  if (!needsControl.length) console.log('All requested baselines are cached — nothing to run (use --refresh-baseline to re-run).');
+  if (totalRuns === 0) { console.log('All requested baselines are cached and no candidate to run (use --refresh-baseline or --variant).'); return; }
 
-  if (controlRuns > 0 && !args.yes) {
-    const ok = await confirm(`Proceed with up to ${controlRuns} real-model runs (rough est ~${estTokens} tokens) on "${args.model}"? [y/N] `);
+  if (!args.yes) {
+    const ok = await confirm(`Proceed with up to ${totalRuns} real-model runs (rough est ~${estTokens} tokens) on "${args.model}"? [y/N] `);
     if (!ok) { console.log('Aborted (pass --yes to skip this prompt).'); process.exit(0); }
   }
 
-  let usedTokens = 0;
-  let usedCostUsd = 0;
-  let maxRunSeen = 0;
-  // The budget is enforced two ways: a pre-run gate that adapts its per-run
-  // estimate up to the heaviest run seen so far (so after one heavy run it stops
-  // optimistically launching more), and a hard post-run stop the moment ACTUAL
-  // cumulative spend reaches the budget. A run already in flight is bounded only
-  // by --max-turns, so total spend can exceed --budget by at most one run.
-  const estPerRun = () => Math.max(EST_TOKENS_PER_RUN, maxRunSeen);
-  const wouldExceed = () => usedTokens + estPerRun() > args.budget;
+  // Budget enforced two ways: a pre-run gate whose per-run estimate adapts up to
+  // the heaviest run seen (so after one heavy run it stops launching more), and a
+  // hard post-run stop the moment ACTUAL cumulative spend reaches the budget. A
+  // run in flight is bounded only by --max-turns, so total spend can exceed
+  // --budget by at most one run.
+  const budget = { used: 0, cost: 0, maxRun: 0 };
+  const wouldExceed = () => budget.used + Math.max(EST_TOKENS_PER_RUN, budget.maxRun) > args.budget;
 
-  for (const scenario of args.scenarios) {
-    const path = baselinePath(scenario.id, args.model);
-    const cached = args.refreshBaseline ? null : readBaseline(path);
-    if (cached) {
-      console.log(`\n[${scenario.id}] cached baseline:`);
-      printGrade('control', cached);
-      continue;
-    }
-
+  // Run `args.trials` runs of one arm (variant) → mean grade. Honors the budget
+  // (exits the process on breach, like the baseline-only path).
+  const runArm = async (scenario: typeof args.scenarios[number], arm: string): Promise<RubricResult> => {
     const grades: RubricResult[] = [];
     for (let t = 0; t < args.trials; t++) {
       if (wouldExceed()) {
-        console.error(`\nBUDGET STOP before [${scenario.id}] trial ${t + 1}: ${usedTokens}/${args.budget} tokens used; next run (est ~${estPerRun()}) would exceed the budget.`);
+        console.error(`\nBUDGET STOP before [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; next run would exceed the budget.`);
         process.exit(2);
       }
-      const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns });
-      usedTokens += run.usageTokens;
-      maxRunSeen = Math.max(maxRunSeen, run.usageTokens);
-      if (run.costUsd) usedCostUsd += run.costUsd;
+      const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, variant: arm });
+      budget.used += run.usageTokens;
+      budget.maxRun = Math.max(budget.maxRun, run.usageTokens);
+      if (run.costUsd) budget.cost += run.costUsd;
       const grade = gradeRun(run.record, scenario.rubric);
       grades.push(grade);
       await run.cleanup();
-      console.log(`[${scenario.id}] trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${run.usageTokens} tok · status ${run.record.taskStatus}`);
-      if (usedTokens >= args.budget) {
-        console.error(`\nBUDGET REACHED after [${scenario.id}] trial ${t + 1}: ${usedTokens}/${args.budget} tokens used; stopping (no baseline cached for this scenario).`);
+      console.log(`[${scenario.id}] ${arm} trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${run.usageTokens} tok · status ${run.record.taskStatus}`);
+      if (budget.used >= args.budget) {
+        console.error(`\nBUDGET REACHED after [${scenario.id}] ${arm} trial ${t + 1}: ${budget.used}/${args.budget} tokens used; stopping.`);
         process.exit(2);
       }
     }
+    return meanGrade(grades);
+  };
 
-    const baseline = meanGrade(grades);
-    mkdirSync(BASELINE_DIR, { recursive: true });
-    writeFileSync(path, JSON.stringify({ scenario: scenario.id, model: args.model, trials: args.trials, grade: baseline }, null, 2) + '\n');
-    console.log(`[${scenario.id}] cached baseline → ${path}`);
-    printGrade('control (mean)', baseline);
+  for (const scenario of args.scenarios) {
+    const path = baselinePath(scenario.id, args.model);
+    console.log(`\n[${scenario.id}]`);
+
+    // Control arm: reuse the cache only if it's A/B-comparable, else run + cache.
+    const cachedRec = args.refreshBaseline ? null : readBaseline(path);
+    let control: RubricResult;
+    if (usableControl(scenario) && cachedRec) {
+      console.log('  control: cached baseline');
+      control = cachedRec.grade;
+    } else {
+      if (cachedRec) console.log('  control: cached baseline not comparable (trial-count or rubric mismatch) — re-running');
+      control = await runArm(scenario, 'control');
+      mkdirSync(BASELINE_DIR, { recursive: true });
+      writeFileSync(path, JSON.stringify({ scenario: scenario.id, model: args.model, trials: args.trials, grade: control }, null, 2) + '\n');
+      console.log(`  cached baseline → ${path}`);
+    }
+    printGrade('control', control);
+
+    // Candidate arm (always fresh) + A/B comparison.
+    if (variant) {
+      const candidate = await runArm(scenario, variant);
+      printGrade(variant, candidate);
+      const cmp = compareGrades(control, candidate);
+      const flag = cmp.regressions.length
+        ? `REGRESSIONS — ${cmp.regressions.map(r => `${r.criterion} ${r.control.toFixed(2)}→${r.candidate.toFixed(2)}`).join(', ')}`
+        : 'no per-criterion regressions';
+      console.log(`  A/B ${variant} vs control: overall ${control.overall.toFixed(3)} → ${candidate.overall.toFixed(3)} (Δ ${cmp.delta >= 0 ? '+' : ''}${cmp.delta.toFixed(3)}) · ${flag}`);
+    }
   }
 
-  console.log(`\nDone. ${usedTokens} tokens used (budget ${args.budget})${usedCostUsd ? ` · ~$${usedCostUsd.toFixed(4)}` : ''}.`);
+  console.log(`\nDone. ${budget.used} tokens used (budget ${args.budget})${budget.cost ? ` · ~$${budget.cost.toFixed(4)}` : ''}.`);
 }
 
 // Only run when invoked directly (not when imported by a test).

@@ -22,6 +22,23 @@ export interface GeneratePromptOptions {
   include_state?: boolean;
   include_tools?: boolean;
   max_prompt_tokens?: number;
+  /** Sub_agent prompt variant for the behavior-eval A/B (control = current,
+   *  lean = step-(b) context-first restructure). Resolved from this option, then
+   *  the OVERWATCH_PROMPT_VARIANT env, then 'control'. */
+  variant?: PromptVariant;
+}
+
+// Sub_agent prompt variants. 'control' is the shipped prompt; 'lean' is the
+// step-(b) context-first restructure piloted through the behavior-eval harness.
+export type PromptVariant = 'control' | 'lean';
+export const SUBAGENT_PROMPT_VARIANTS: readonly PromptVariant[] = ['control', 'lean'];
+const KNOWN_VARIANTS: readonly string[] = SUBAGENT_PROMPT_VARIANTS;
+
+export function resolveSubAgentVariant(options: GeneratePromptOptions): PromptVariant {
+  if (options.variant && KNOWN_VARIANTS.includes(options.variant)) return options.variant;
+  const env = process.env.OVERWATCH_PROMPT_VARIANT;
+  if (env && KNOWN_VARIANTS.includes(env)) return env as PromptVariant;
+  return 'control';
 }
 
 // ============================================================
@@ -172,34 +189,38 @@ function summarizeSection(section: PrioritizedSection): string {
 // Sub-agent prompt
 // ============================================================
 
+// Scoped sub-agent tool subset — must stay in sync with the sub-agent workflow
+// section (and the AGENTS.md sub-agent tool list). Shared by both prompt variants.
+const SUBAGENT_TOOL_NAMES = new Set([
+  'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
+  'run_bash', 'run_tool',
+  'parse_output', 'report_finding', 'research_cve', 'propose_plan', 'submit_agent_transcript',
+  'agent_heartbeat', 'acknowledge_agent_directive', 'ask_operator',
+  'query_graph', 'get_skill',
+  'open_session', 'write_session', 'read_session', 'send_to_session',
+  'list_sessions', 'close_session', 'resize_session', 'signal_session',
+  'update_session', 'get_evidence',
+]);
+
 function generateSubAgentPrompt(
   state: EngagementState,
   tools: ToolEntry[],
   options: GeneratePromptOptions,
   engine: GraphEngine,
 ): string {
-  const sections: string[] = [];
-
-  // Identity
   const agentContext = options.agent_id
     ? state.active_agents.find(a => a.id === options.agent_id || a.agent_id === options.agent_id)
     : undefined;
+  const scopedTools = tools.filter(t => SUBAGENT_TOOL_NAMES.has(t.name));
 
+  // Step (b): the 'lean' context-first restructure, piloted via the behavior-eval
+  // harness. 'control' is the shipped linear assembly below.
+  if (resolveSubAgentVariant(options) === 'lean') {
+    return generateLeanSubAgentPrompt(state, scopedTools, options, engine, agentContext);
+  }
+
+  const sections: string[] = [];
   sections.push(generateSubAgentIdentitySection(state.config, agentContext));
-
-  // Scoped tool subset — must stay in sync with the sub-agent workflow
-  // section below (and the AGENTS.md sub-agent tool list).
-  const subAgentToolNames = new Set([
-    'get_agent_context', 'validate_action', 'log_action_event', 'log_thought',
-    'run_bash', 'run_tool',
-    'parse_output', 'report_finding', 'research_cve', 'propose_plan', 'submit_agent_transcript',
-    'agent_heartbeat', 'acknowledge_agent_directive', 'ask_operator',
-    'query_graph', 'get_skill',
-    'open_session', 'write_session', 'read_session', 'send_to_session',
-    'list_sessions', 'close_session', 'resize_session', 'signal_session',
-    'update_session', 'get_evidence',
-  ]);
-  const scopedTools = tools.filter(t => subAgentToolNames.has(t.name));
 
   if (options.include_tools !== false) {
     sections.push(generateToolTableSection(scopedTools));
@@ -213,6 +234,167 @@ function generateSubAgentPrompt(
   }
 
   return sections.join('\n\n');
+}
+
+// ============================================================
+// Step (b) — 'lean' context-first sub-agent prompt
+// ============================================================
+// Same affordances, restructured: lead with the brief (objective/done-when/
+// scope), replace the 0..12 step list with 5 named loop phases, one motivated
+// guardrails block, a worked trace, trimmed tactics. Preserves the five
+// structural-guard literals (get_agent_context, validate_action, parse_output,
+// report_finding, submit_agent_transcript). Piloted via the eval harness.
+
+const CREDENTIAL_ARCHETYPES = new Set(['credential_operator', 'post_exploit', 'cloud_cartographer']);
+
+function generateLeanSubAgentPrompt(
+  state: EngagementState,
+  scopedTools: ToolEntry[],
+  options: GeneratePromptOptions,
+  engine: GraphEngine,
+  agent?: AgentTask,
+): string {
+  const sections: string[] = [
+    leanIdentitySection(),
+  ];
+  if (options.include_state !== false && agent) {
+    sections.push(leanBriefSection(state, agent, engine));
+  }
+  if (options.include_tools !== false) {
+    sections.push(generateToolTableSection(scopedTools));
+  }
+  sections.push(leanLoopSection());
+  sections.push(leanGuardrailsSection());
+  sections.push(leanSteeringSection());
+  sections.push(leanExampleSection());
+  sections.push(leanTacticsSection(agent));
+  return sections.join('\n\n');
+}
+
+function leanIdentitySection(): string {
+  return `# Overwatch sub-agent
+
+You run one scoped task in an authorized offensive engagement. Your memory is the Overwatch graph — orient from it, and land every result back into it. Anything you only describe in prose is invisible to the rest of the engagement.`;
+}
+
+function leanBriefSection(state: EngagementState, agent: AgentTask, engine: GraphEngine): string {
+  const frontierItem = agent.frontier_item_id ? state.frontier.find(f => f.id === agent.frontier_item_id) : undefined;
+  const lines = [
+    '## Brief',
+    '',
+    `- **Engagement:** ${state.config.name}`,
+    `- **Agent / Task:** ${agent.agent_id} · frontier ${agent.frontier_item_id ?? '(none)'}`,
+  ];
+  if (agent.archetype) lines.push(`- **Archetype:** ${agent.archetype}`);
+  if (frontierItem) {
+    lines.push(`- **Objective:** ${frontierItem.description}`);
+    lines.push(`- **Done when:** the expected discoveries for this ${frontierItem.type} are landed as graph nodes/edges, or you have confirmed no in-scope path remains (report NO_PATH). Don't keep going past that.`);
+  } else {
+    lines.push('- **Objective:** see get_agent_context for your task.');
+    lines.push('- **Done when:** the expected discoveries are landed in the graph, or no in-scope path remains (report NO_PATH).');
+  }
+  const scopeIds = agent.subgraph_node_ids ?? [];
+  if (scopeIds.length) {
+    // Cap the inline list so a scope-wide archetype (hundreds of nodes) can't
+    // balloon the prompt; the full set is always live via get_agent_context.
+    const SCOPE_CAP = 25;
+    const shown = scopeIds.slice(0, SCOPE_CAP).join(', ');
+    const more = scopeIds.length > SCOPE_CAP ? ` … and ${scopeIds.length - SCOPE_CAP} more` : '';
+    lines.push(`- **Scope:** ${shown}${more} — acting outside your scoped nodes is a hard stop.`);
+  } else {
+    lines.push('- **Scope:** see get_agent_context; acting outside your scoped nodes is a hard stop.');
+  }
+  if (frontierItem) {
+    if (frontierItem.graph_metrics.hops_to_objective != null) lines.push(`- **Hops to objective:** ${frontierItem.graph_metrics.hops_to_objective}`);
+    lines.push(`- **Expected noise:** ${(frontierItem.opsec_noise * 100).toFixed(0)}%`);
+  }
+  if (agent.skill) lines.push(`- **Skill:** ${agent.skill} — fetch the full methodology with get_skill({ name }).`);
+
+  // Concrete properties of the scoped target nodes (≤3) — high-signal, kept.
+  if (scopeIds.length) {
+    const snippets: string[] = [];
+    for (const nid of scopeIds.slice(0, 3)) {
+      const node = engine.getNode(nid);
+      if (!node) continue;
+      const props: string[] = [`type=${node.type}`, `label=${node.label}`];
+      if (node.ip) props.push(`ip=${node.ip}`);
+      if (node.hostname) props.push(`hostname=${node.hostname}`);
+      if (node.version) props.push(`version=${node.version}`);
+      if (node.cred_type) props.push(`cred_type=${node.cred_type}`);
+      if (node.credential_status) props.push(`credential_status=${node.credential_status}`);
+      snippets.push(`  - \`${nid}\`: ${props.join(', ')}`);
+    }
+    if (snippets.length) {
+      lines.push('- **Target nodes:**');
+      lines.push(...snippets);
+      if (scopeIds.length > snippets.length) lines.push(`  - … and ${scopeIds.length - snippets.length} more in scope`);
+    }
+  }
+
+  lines.push('');
+  lines.push('get_agent_context is the authoritative live view; the values above are the spawn-time snapshot and may be stale.');
+  return lines.join('\n');
+}
+
+function leanLoopSection(): string {
+  return `## Loop
+
+Reason briefly with \`log_thought\` before each phase; skip a phase only when its precondition is already met.
+
+1. **ORIENT** — call \`get_agent_context\` first for your scoped subgraph + objective. Overwatch tools load on demand (the MCP server can boot \`status: pending\` with zero tools); if a tool you need isn't available, find it with \`ToolSearch\` before assuming it's absent.
+2. **VALIDATE** — call \`validate_action\` before any execute. It returns an \`action_id\` and echoes \`frontier_item_id\` — copy both into the calls that follow; don't invent them.
+3. **EXECUTE** — prefer \`run_tool\` (binary + argv, no shell) or \`run_bash\` (only when you need shell features); both fold validation, the approval gate, action lifecycle logging, and evidence capture into one call. For custom tooling, do the manual \`validate_action\` → \`log_action_event(action_started)\` → execute → \`log_action_event(action_completed|action_failed)\` flow.
+4. **LAND** — record results immediately: \`parse_output\` for supported tool output, \`report_finding\` for manual observations. Pass \`action_id\` + \`frontier_item_id\`. No prose-only findings — an unrecorded discovery doesn't exist.
+5. **WRAP** — when Done-when is met (or you hit a terminal state), call \`submit_agent_transcript({ task_id, summary, key_finding_ids? })\` before the primary closes you out. Closing without it raises an \`instrumentation_warning\`.`;
+}
+
+function leanGuardrailsSection(): string {
+  return `## Guardrails
+
+- **Stay in scope** — act only on your scoped nodes; blast radius is bounded by scope, not by your judgment.
+- **Validate before every execute, with the matching \`action_id\`** — one early \`validate_action\` does not cover later actions; each execute needs its own validated \`action_id\`.
+- **Land results, don't narrate** — the planner reads the graph, not your prose; a finding you describe but never \`report_finding\`/\`parse_output\` is lost.
+- **Heartbeat while long-running** — past ~a minute, call \`agent_heartbeat({ task_id })\` or the watchdog reaps your lease.`;
+}
+
+function leanSteeringSection(): string {
+  return `## Steering & escalation
+
+The \`agent_heartbeat\` response may carry operator steering — call \`acknowledge_agent_directive({ task_id, directive_id })\`, then honor it: \`pause\` (stop new actions, keep beating, poll for \`resume\`) · \`resume\` · \`stop\` (submit transcript, then stop) · \`narrow_scope\` (\`node_ids\` become authoritative scope) · \`skip_types\`/\`prioritize\` (by frontier type) · \`instruct\` (free-text in \`note\` — adjust within scope/OPSEC). Also watch \`pending_answer\` (the reply to an \`ask_operator\` question); act on it only when \`pending_answer.query_id\` matches yours, once.
+
+Report terminal states — don't improvise past them:
+- **NO_PATH** — no in-scope approach remains; say so rather than going out of scope.
+- **BLOCKED** — a concrete barrier (missing tool, credential, or access); report the exact barrier.
+- **AMBIGUOUS / risky-irreversible fork** — call \`ask_operator({ task_id, question, options? })\`, keep heartbeating, act when \`pending_answer.query_id\` matches; if no answer in a few minutes, take the safest in-scope choice and note it. Gate ask-vs-proceed on action class / reversibility / scope, not on how confident you feel.`;
+}
+
+function leanExampleSection(): string {
+  return `## Example
+
+<example>
+get_agent_context(task_id)                      → objective: enumerate services on host h_3 (scope: [h_3])
+log_thought({ kind: "plan", thought: "scan h_3 for services, land them" })
+validate_action({ frontier_item_id: "f_12", action: "nmap -sV h_3" })   → { action_id: "a_7", frontier_item_id: "f_12" }
+run_tool({ action_id: "a_7", frontier_item_id: "f_12", tool: "nmap", args: [...], parse_with: "nmap" })   → 3 services
+parse_output(...)                               → lands 3 service nodes  (report_finding for manual observations)
+log_thought({ kind: "reflection", thought: "3 services landed; objective met" })
+submit_agent_transcript({ task_id, summary: "3 services on h_3", key_finding_ids: [...] })
+</example>`;
+}
+
+function leanTacticsSection(agent?: AgentTask): string {
+  const lines = [
+    '## Tactics',
+    '',
+    '- Check the graph before acting — `query_graph()` to avoid re-scanning a port or re-cracking a hash already recorded; check tool output dirs from prior actions.',
+    '- CVE-first for versioned services: a known CVE on a service+version is lower-noise and higher-reward than brute-force.',
+    '- After a new credential lands, immediately evaluate the auth edges it unlocks (`query_graph`) — don\'t wait for the next cycle.',
+    '- `run_tool` for argv (no shell parsing/injection); `run_bash` only for real shell features. `parse_output` for parser-supported output; `report_finding` for everything else.',
+  ];
+  if (agent?.archetype && CREDENTIAL_ARCHETYPES.has(agent.archetype)) {
+    lines.push('- For captured cloud/SaaS credentials, prefer the playbook tools (`expand_aws_credential`, `expand_github_credential`, `expand_entra_credential`, `expand_oidc_capture`, `exchange_refresh_token`) over re-deriving the recon chain by hand — each returns a numbered plan whose steps still go through the `run_tool`/`run_bash` + approval flow.');
+  }
+  return lines.join('\n');
 }
 
 // ============================================================

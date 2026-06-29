@@ -3,10 +3,10 @@ import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  parseArgs, readBaseline, meanGrade, baselinePath,
+  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
   DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
 } from '../prompt-eval-lib.js';
-import type { RubricResult } from '../../services/eval-rubric.js';
+import { RUBRIC_CRITERIA, type RubricResult } from '../../services/eval-rubric.js';
 
 describe('parseArgs', () => {
   it('applies cheap, bounded defaults', () => {
@@ -40,10 +40,15 @@ describe('parseArgs', () => {
     expect(parseArgs(['--scenarios', 'recon,web']).scenarios.map(s => s.id)).toEqual(['recon', 'web']);
     expect(parseArgs(['--scenarios', 'nope']).scenarios).toHaveLength(0);
   });
+
+  it('parses the candidate --variant for the A/B arm', () => {
+    expect(parseArgs(['--real', '--variant', 'lean']).variant).toBe('lean');
+    expect(parseArgs(['--real']).variant).toBeUndefined();
+  });
 });
 
 describe('readBaseline', () => {
-  it('returns null for missing, corrupt, or wrong-shape files (never throws)', () => {
+  it('returns null for missing, corrupt, or wrong-shape files (never throws); returns {trials,grade} when valid', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ow-baseline-'));
     try {
       expect(readBaseline(join(dir, 'missing.json'))).toBeNull();
@@ -51,11 +56,30 @@ describe('readBaseline', () => {
       expect(readBaseline(corrupt)).toBeNull();
       const wrong = join(dir, 'wrong.json'); writeFileSync(wrong, JSON.stringify({ foo: 1 }));
       expect(readBaseline(wrong)).toBeNull();
-      const valid = join(dir, 'valid.json'); writeFileSync(valid, JSON.stringify({ grade: { overall: 0.5, criteria: [{ criterion: 'completed', score: 1, weight: 1, detail: '' }] } }));
-      expect(readBaseline(valid)?.overall).toBe(0.5);
+      const valid = join(dir, 'valid.json'); writeFileSync(valid, JSON.stringify({ trials: 3, grade: { overall: 0.5, criteria: [{ criterion: 'completed', score: 1, weight: 1, detail: '' }] } }));
+      expect(readBaseline(valid)).toMatchObject({ trials: 3, grade: { overall: 0.5 } });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('isBaselineUsable', () => {
+  const fullCriteria = RUBRIC_CRITERIA.map(criterion => ({ criterion, score: 1, weight: 1 / RUBRIC_CRITERIA.length, detail: '' }));
+  const rec = (trials: number, criteria = fullCriteria) => ({ trials, grade: { overall: 1, criteria } });
+
+  it('accepts a baseline with matching trials + matching rubric criteria', () => {
+    expect(isBaselineUsable(rec(2), 2, RUBRIC_CRITERIA)).toBe(true);
+  });
+  it('rejects null', () => {
+    expect(isBaselineUsable(null, 2, RUBRIC_CRITERIA)).toBe(false);
+  });
+  it('rejects a mismatched trial count (unequal sample size)', () => {
+    expect(isBaselineUsable(rec(1), 5, RUBRIC_CRITERIA)).toBe(false);
+  });
+  it('rejects a baseline recorded under a different rubric', () => {
+    const stale = rec(2, [{ criterion: 'completed', score: 1, weight: 1, detail: '' }]);
+    expect(isBaselineUsable(stale, 2, RUBRIC_CRITERIA)).toBe(false);
   });
 });
 

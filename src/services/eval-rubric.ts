@@ -64,6 +64,17 @@ export interface RubricResult {
   criteria: CriterionScore[];
 }
 
+/** Canonical criteria + order gradeRun emits. A cached baseline whose criteria
+ *  don't match this is stale (the rubric changed) and must not be A/B'd. */
+export const RUBRIC_CRITERIA: readonly RubricCriterion[] = [
+  'starts_with_context',
+  'validate_before_execute',
+  'threads_frontier_item_id',
+  'lands_results',
+  'objective_progress',
+  'completed',
+];
+
 const DEFAULT_WEIGHTS: Record<RubricCriterion, number> = {
   starts_with_context: 1,
   validate_before_execute: 2,   // safety-load-bearing → weighted higher
