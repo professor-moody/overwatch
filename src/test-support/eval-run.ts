@@ -123,6 +123,9 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     stateFilePath: join(tempDir, `state-${config.id}.json`),
     taskExecution: {
       headless: {
+        // Pass the binary through the structured option too (not only the env)
+        // so the run doesn't depend on env-mutation ordering.
+        claudeBinary: binary,
         logDir,
         maxTurns: opts.maxTurns ?? 10,
         extraArgs: opts.model ? ['--model', opts.model] : undefined,
@@ -131,11 +134,15 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   });
   await startHttpApp(app, { port: 0, host: '127.0.0.1' });
 
-  // Seed + snapshot the pre-run node ids so the delta is the agent's work.
+  // Seed, capturing the canonical ids the engine assigned (ids canonicalize on
+  // ingest, and cold-store nodes never appear in exportGraph until promoted), so
+  // the post-run delta is genuinely the agent's work and the scope points at the
+  // real seed nodes.
+  let seededIds = new Set<string>();
   if (scenario.seedNodes?.length) {
-    app.engine.ingestFinding({ id: `seed-${scenario.id}`, agent_id: 'seed', timestamp: new Date().toISOString(), nodes: scenario.seedNodes, edges: [] } as never);
+    const ingest = app.engine.ingestFinding({ id: `seed-${scenario.id}`, agent_id: 'seed', timestamp: new Date().toISOString(), nodes: scenario.seedNodes, edges: [] } as never) as { new_nodes?: string[] };
+    seededIds = new Set(ingest.new_nodes ?? []);
   }
-  const seededIds = new Set(app.engine.exportGraph().nodes.map(n => n.id));
 
   const taskId = `eval-${scenario.id}`;
   const agentId = `agent-${scenario.id}`;

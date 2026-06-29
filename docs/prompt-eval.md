@@ -51,9 +51,15 @@ These are the point of the design — Tier 2 is hard to run expensively by
 accident:
 
 1. **Cheap model by default** — `haiku`; override with `--model`.
-2. **Hard per-run turn cap** — `--max-turns` (default 10) bounds a runaway agent.
-3. **Global token budget** — `--budget` (default 50k) **aborts before** any run
-   that would exceed it (hard ceiling, not advisory).
+2. **Per-run turn cap** — `--max-turns` (default 10) bounds a runaway agent (this
+   is the only *per-run* bound — there is no mid-run token cap).
+3. **Global token budget** — `--budget` (default 50k), enforced two ways: a
+   pre-run gate whose per-run estimate adapts up to the heaviest run seen (so
+   after one heavy run it stops optimistically launching more), and a **hard
+   post-run stop** the moment *actual* cumulative spend reaches the budget. A run
+   already in flight is bounded only by `--max-turns`, so total spend can exceed
+   `--budget` by at most one run's cost — it is a tight bound, not a per-token
+   hard ceiling.
 4. **Tiny defaults** — 3 scenarios, `--trials 2`.
 5. **Pre-run estimate + confirm** — prints the run count + token estimate and
    requires interactive `y` or `--yes`.

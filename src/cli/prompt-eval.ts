@@ -8,75 +8,25 @@
 // same machinery A/Bs candidate-vs-control and flags regressions (compareGrades).
 //
 // NEVER runs in CI. Spends nothing until invoked with --real, and even then is
-// bounded by: a cheap default model, a hard per-run turn cap, a global token
-// budget that aborts BEFORE a run that would exceed it, tiny defaults, a pre-run
-// estimate + confirmation, and a baseline cache so iterating doesn't repay for
-// control.
+// bounded by: a cheap default model, a per-run turn cap, a global token budget
+// enforced as an adaptive pre-run gate PLUS a hard post-run stop (so overshoot is
+// bounded by one run's --max-turns cost), tiny defaults, a pre-run estimate +
+// confirmation, and a baseline cache so iterating doesn't repay for control.
 //
 //   npm run prompt-eval                       # usage (no spend)
 //   npm run prompt-eval -- --real --yes       # establish/refresh control baselines
 //   npm run prompt-eval -- --real --scenarios recon --trials 1 --budget 20000 --yes
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runEvalScenario } from '../test-support/eval-run.js';
 import { gradeRun, type RubricResult } from '../services/eval-rubric.js';
-import { EVAL_SCENARIOS, getScenario, type EvalScenario } from '../test-support/eval-scenarios.js';
-
-const BASELINE_DIR = 'eval-baselines';
-const EST_TOKENS_PER_RUN = 15_000; // rough per-run estimate, for budgeting only
-const DEFAULT_MODEL = 'haiku';     // cheap by default; override with --model
-const DEFAULT_TRIALS = 2;
-const DEFAULT_BUDGET = 50_000;     // hard token ceiling
-const DEFAULT_MAX_TURNS = 10;
-
-interface Args {
-  real: boolean;
-  yes: boolean;
-  refreshBaseline: boolean;
-  variant?: string;
-  model: string;
-  trials: number;
-  budget: number;
-  maxTurns: number;
-  scenarios: EvalScenario[];
-}
-
-function parseArgs(argv: string[]): Args {
-  const get = (flag: string) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
-  const has = (flag: string) => argv.includes(flag);
-  const scnArg = get('--scenarios');
-  const scenarios = scnArg
-    ? scnArg.split(',').map(s => s.trim()).filter(Boolean).map(getScenario).filter((s): s is EvalScenario => !!s)
-    : EVAL_SCENARIOS;
-  return {
-    real: has('--real'),
-    yes: has('--yes'),
-    refreshBaseline: has('--refresh-baseline'),
-    variant: get('--variant'),
-    model: get('--model') ?? DEFAULT_MODEL,
-    trials: Math.max(1, Number(get('--trials') ?? DEFAULT_TRIALS)),
-    budget: Math.max(0, Number(get('--budget') ?? DEFAULT_BUDGET)),
-    maxTurns: Math.max(1, Number(get('--max-turns') ?? DEFAULT_MAX_TURNS)),
-    scenarios,
-  };
-}
-
-/** Average per-criterion scores + overall across trials (weights are identical). */
-function meanGrade(grades: RubricResult[]): RubricResult {
-  const first = grades[0];
-  const criteria = first.criteria.map((c, i) => ({
-    ...c,
-    score: grades.reduce((s, g) => s + g.criteria[i].score, 0) / grades.length,
-    detail: `mean of ${grades.length} trial(s)`,
-  }));
-  return { overall: grades.reduce((s, g) => s + g.overall, 0) / grades.length, criteria };
-}
-
-function baselinePath(scenarioId: string, model: string): string {
-  return join(BASELINE_DIR, `${scenarioId}.${model.replace(/[^\w.-]/g, '_')}.json`);
-}
+import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
+import {
+  parseArgs, readBaseline, meanGrade, baselinePath,
+  BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS,
+} from './prompt-eval-lib.js';
 
 function confirm(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) return Promise.resolve(false);
@@ -125,45 +75,60 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const needsControl = args.scenarios.filter(s => args.refreshBaseline || !existsSync(baselinePath(s.id, args.model)));
+  // needsControl + the per-scenario decision below both use readBaseline, so the
+  // planned run count matches what actually executes (a corrupt cache counts as
+  // "needs a run", consistently).
+  const needsControl = args.scenarios.filter(s => args.refreshBaseline || !readBaseline(baselinePath(s.id, args.model)));
   const controlRuns = needsControl.length * args.trials;
   const estTokens = controlRuns * EST_TOKENS_PER_RUN;
 
   console.log(`Plan: ${controlRuns} real-model run(s) on model "${args.model}" (${needsControl.length} scenario(s) × ${args.trials} trial(s)).`);
-  console.log(`Cost guard: budget ${args.budget} tok · est ~${estTokens} tok · per-run cap ${args.maxTurns} turns.`);
+  console.log(`Cost guard: budget ${args.budget} tok · rough est ~${estTokens} tok · per-run cap ${args.maxTurns} turns.`);
   if (!needsControl.length) console.log('All requested baselines are cached — nothing to run (use --refresh-baseline to re-run).');
 
   if (controlRuns > 0 && !args.yes) {
-    const ok = await confirm(`Proceed with up to ${controlRuns} real-model runs (~${estTokens} tokens) on "${args.model}"? [y/N] `);
+    const ok = await confirm(`Proceed with up to ${controlRuns} real-model runs (rough est ~${estTokens} tokens) on "${args.model}"? [y/N] `);
     if (!ok) { console.log('Aborted (pass --yes to skip this prompt).'); process.exit(0); }
   }
 
   let usedTokens = 0;
   let usedCostUsd = 0;
-  const wouldExceed = () => usedTokens + EST_TOKENS_PER_RUN > args.budget;
+  let maxRunSeen = 0;
+  // The budget is enforced two ways: a pre-run gate that adapts its per-run
+  // estimate up to the heaviest run seen so far (so after one heavy run it stops
+  // optimistically launching more), and a hard post-run stop the moment ACTUAL
+  // cumulative spend reaches the budget. A run already in flight is bounded only
+  // by --max-turns, so total spend can exceed --budget by at most one run.
+  const estPerRun = () => Math.max(EST_TOKENS_PER_RUN, maxRunSeen);
+  const wouldExceed = () => usedTokens + estPerRun() > args.budget;
 
   for (const scenario of args.scenarios) {
     const path = baselinePath(scenario.id, args.model);
-    if (!args.refreshBaseline && existsSync(path)) {
-      const cached = JSON.parse(readFileSync(path, 'utf-8')) as { grade: RubricResult };
+    const cached = args.refreshBaseline ? null : readBaseline(path);
+    if (cached) {
       console.log(`\n[${scenario.id}] cached baseline:`);
-      printGrade('control', cached.grade);
+      printGrade('control', cached);
       continue;
     }
 
     const grades: RubricResult[] = [];
     for (let t = 0; t < args.trials; t++) {
       if (wouldExceed()) {
-        console.error(`\nBUDGET STOP before [${scenario.id}] trial ${t + 1}: ${usedTokens}/${args.budget} tokens used; a run would exceed the budget.`);
+        console.error(`\nBUDGET STOP before [${scenario.id}] trial ${t + 1}: ${usedTokens}/${args.budget} tokens used; next run (est ~${estPerRun()}) would exceed the budget.`);
         process.exit(2);
       }
       const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns });
       usedTokens += run.usageTokens;
+      maxRunSeen = Math.max(maxRunSeen, run.usageTokens);
       if (run.costUsd) usedCostUsd += run.costUsd;
       const grade = gradeRun(run.record, scenario.rubric);
       grades.push(grade);
       await run.cleanup();
       console.log(`[${scenario.id}] trial ${t + 1}/${args.trials}: overall ${grade.overall.toFixed(3)} · ${run.usageTokens} tok · status ${run.record.taskStatus}`);
+      if (usedTokens >= args.budget) {
+        console.error(`\nBUDGET REACHED after [${scenario.id}] trial ${t + 1}: ${usedTokens}/${args.budget} tokens used; stopping (no baseline cached for this scenario).`);
+        process.exit(2);
+      }
     }
 
     const baseline = meanGrade(grades);
@@ -176,4 +141,7 @@ async function main(): Promise<void> {
   console.log(`\nDone. ${usedTokens} tokens used (budget ${args.budget})${usedCostUsd ? ` · ~$${usedCostUsd.toFixed(4)}` : ''}.`);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+// Only run when invoked directly (not when imported by a test).
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}

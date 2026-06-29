@@ -76,11 +76,17 @@ const DEFAULT_WEIGHTS: Record<RubricCriterion, number> = {
 const CONTEXT_TOOLS = new Set(['get_state', 'get_agent_context']);
 const EXECUTE_TOOLS = new Set(['run_tool', 'run_bash']);
 const LAND_TOOLS = new Set(['parse_output', 'report_finding']);
+// Preamble calls that precede orientation and don't count as the "first
+// meaningful call": tool discovery (ToolSearch), skill lookup (get_skill), and
+// get_system_prompt — the headless bootstrap explicitly instructs every
+// sub-agent to load its instructions via get_system_prompt BEFORE
+// get_agent_context, so a compliant agent's first real call is the latter.
+const PREAMBLE_TOOLS = new Set(['ToolSearch', 'get_skill', 'get_system_prompt']);
 
 /** First criterion: the agent should orient before acting — its first tool call
- *  (ignoring tool discovery) is get_state / get_agent_context. */
+ *  (ignoring preamble) is get_state / get_agent_context. */
 function scoreStartsWithContext(r: RunRecord): { score: number; detail: string } {
-  const meaningful = r.toolCalls.filter(c => c.tool !== 'ToolSearch' && c.tool !== 'get_skill');
+  const meaningful = r.toolCalls.filter(c => !PREAMBLE_TOOLS.has(c.tool));
   if (meaningful.length === 0) return { score: 0, detail: 'no tool calls' };
   const first = meaningful[0].tool;
   return CONTEXT_TOOLS.has(first)
@@ -89,26 +95,24 @@ function scoreStartsWithContext(r: RunRecord): { score: number; detail: string }
 }
 
 /** Every execute (run_tool/run_bash) should be preceded by a validate_action for
- *  the same action_id (or, if action_ids are absent, by at least one prior
- *  validate_action). */
+ *  the SAME action_id. An execute that carries no action_id, or whose action_id
+ *  was never validated, is not gated — there is deliberately no "any prior
+ *  validate" fallback, which would let one early validate launder N unrelated
+ *  unvalidated executes. (The prompt instructs threading action_id, so requiring
+ *  it is part of the compliance this criterion measures.) */
 function scoreValidateBeforeExecute(r: RunRecord): { score: number; detail: string } {
   const executes = r.toolCalls.filter(c => EXECUTE_TOOLS.has(c.tool));
   if (executes.length === 0) return { score: 1, detail: 'no executes to gate' };
   const validatedActionIds = new Set<string>();
-  let sawAnyValidate = false;
   let ok = 0;
   for (const c of r.toolCalls) {
     if (c.tool === 'validate_action') {
-      sawAnyValidate = true;
       if (c.action_id) validatedActionIds.add(c.action_id);
       continue;
     }
-    if (EXECUTE_TOOLS.has(c.tool)) {
-      const gated = c.action_id ? validatedActionIds.has(c.action_id) : sawAnyValidate;
-      if (gated) ok++;
-    }
+    if (EXECUTE_TOOLS.has(c.tool) && c.action_id && validatedActionIds.has(c.action_id)) ok++;
   }
-  return { score: ok / executes.length, detail: `${ok}/${executes.length} executes had a prior validate_action` };
+  return { score: ok / executes.length, detail: `${ok}/${executes.length} executes had a matching prior validate_action` };
 }
 
 /** Action lifecycle events should carry frontier_item_id for retrospective
@@ -128,7 +132,8 @@ function scoreLandsResults(r: RunRecord, scenario: ScenarioRubric): { score: num
   const landed = r.toolCalls.some(c => LAND_TOOLS.has(c.tool))
     || r.activity.some(e => e.event_type === 'finding_reported' || e.event_type === 'finding_ingested' || e.event_type === 'parse_output');
   if (!scenario.expectedNodeTypes?.length) {
-    return { score: landed ? 1 : 1, detail: landed ? 'landed results' : 'no discovery expected' };
+    // No discovery expected → automatic pass regardless of landing.
+    return { score: 1, detail: landed ? 'landed results' : 'no discovery expected' };
   }
   return landed ? { score: 1, detail: 'landed results via parse_output/report_finding' } : { score: 0, detail: 'discovery expected but nothing landed (prose-only drift)' };
 }
