@@ -36,6 +36,7 @@ describe('app bootstrap', () => {
       skills: app.skills,
       processTracker: app.processTracker,
       sessionManager: app.sessionManager,
+      engagementManager: app.engagementManager,
       getDashboardStatus: () => ({ enabled: false, running: false }),
     });
 
@@ -45,6 +46,8 @@ describe('app bootstrap', () => {
     expect(toolNames).toContain('run_retrospective');
     expect(toolNames).toContain('generate_report');
     expect(toolNames).toContain('open_session');
+    expect(toolNames).toContain('create_engagement');
+    expect(toolNames).toContain('list_engagements');
     expect(toolNames).toContain('close_session');
     expect(toolNames).toContain('update_scope');
     expect(toolNames).toContain('get_system_prompt');

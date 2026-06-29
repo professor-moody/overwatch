@@ -50,6 +50,8 @@ import { registerReportingTools } from './tools/reporting.js';
 import { registerRemediationTools } from './tools/remediation.js';
 import { registerSessionTools } from './tools/sessions.js';
 import { registerScopeTools } from './tools/scope.js';
+import { registerEngagementTools } from './tools/engagement.js';
+import { EngagementManager } from './services/engagement-manager.js';
 import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
 import { registerTokenReplayTool } from './tools/token-replay.js';
@@ -113,6 +115,7 @@ export type OverwatchApp = {
   skills: SkillIndex;
   processTracker: ProcessTracker;
   sessionManager: SessionManager;
+  engagementManager: EngagementManager;
   server: McpServer;
   dashboard: DashboardServer | null;
   taskExecution: TaskExecutionService;
@@ -159,6 +162,7 @@ export function registerAllTools(
     skills: SkillIndex;
     processTracker: ProcessTracker;
     sessionManager: SessionManager;
+    engagementManager: EngagementManager;
     getDashboardStatus: DashboardStatusProvider;
   },
 ): ToolEntry[] {
@@ -194,6 +198,7 @@ export function registerAllTools(
   registerRemediationTools(s, deps.engine);
   registerSessionTools(s, deps.sessionManager, deps.engine);
   registerScopeTools(s, deps.engine);
+  registerEngagementTools(s, deps.engagementManager);
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
   registerTokenReplayTool(s, deps.engine);
@@ -270,11 +275,17 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     dashboard.attachSkills(skills);
   }
 
+  // File-backed engagement manager for the create_engagement / list_engagements
+  // tools. Stateless over engagements/ (no in-memory cache), so this instance is
+  // equivalent to the dashboard's own — no need to share a single object.
+  const engagementManager = new EngagementManager(configPath);
+
   const registeredTools = registerAllTools(server, {
     engine,
     skills,
     processTracker,
     sessionManager,
+    engagementManager,
     getDashboardStatus: () => ({
       enabled: dashboard !== null,
       running: dashboard?.running ?? false,
@@ -299,6 +310,7 @@ export function createOverwatchApp(options: CreateOverwatchAppOptions = {}): Ove
     skills,
     processTracker,
     sessionManager,
+    engagementManager,
     server,
     dashboard,
     taskExecution,
@@ -415,6 +427,7 @@ export async function startHttpApp(app: OverwatchApp, options: StartHttpAppOptio
       skills: app.skills,
       processTracker: app.processTracker,
       sessionManager: app.sessionManager,
+      engagementManager: app.engagementManager,
       getDashboardStatus: () => ({
         enabled: app.dashboard !== null,
         running: app.dashboard?.running ?? false,
