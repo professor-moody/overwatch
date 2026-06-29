@@ -35,6 +35,7 @@
     "demo:dashboard": "npx tsx scripts/demo-dashboard.ts",
     "demo:daemon": "npx tsx scripts/demo-daemon.ts",
     "report:qa": "npx tsx scripts/report-qa.ts",
+    "prompt-eval": "npx tsx src/cli/prompt-eval.ts",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
     "start": "node dist/index.js",

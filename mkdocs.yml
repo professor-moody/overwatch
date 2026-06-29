@@ -187,5 +187,6 @@ nav:
     - Multi-Agent Roadmap: multi-agent-roadmap.md
     - Bedrock Integration Plan: bedrock-integration-plan.md
     - Development: development.md
+    - Prompt Behavior-Eval: prompt-eval.md
     - Development Timeline: development-timeline.md
     - Contributing: contributing.md
