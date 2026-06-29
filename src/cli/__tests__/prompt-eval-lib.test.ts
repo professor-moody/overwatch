@@ -40,6 +40,11 @@ describe('parseArgs', () => {
     expect(parseArgs(['--scenarios', 'recon,web']).scenarios.map(s => s.id)).toEqual(['recon', 'web']);
     expect(parseArgs(['--scenarios', 'nope']).scenarios).toHaveLength(0);
   });
+
+  it('parses the candidate --variant for the A/B arm', () => {
+    expect(parseArgs(['--real', '--variant', 'lean']).variant).toBe('lean');
+    expect(parseArgs(['--real']).variant).toBeUndefined();
+  });
 });
 
 describe('readBaseline', () => {

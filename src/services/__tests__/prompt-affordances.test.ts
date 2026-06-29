@@ -62,3 +62,44 @@ describe('sub_agent prompt affordances (Tier-1 structural guard)', () => {
     expect(REQUIRED_SUBAGENT_AFFORDANCES.length).toBeGreaterThan(0);
   });
 });
+
+describe('lean variant (step b) — context-first restructure', () => {
+  beforeEach(cleanup);
+  afterEach(cleanup);
+
+  const genFor = (archetype: string, variant: 'control' | 'lean') => {
+    const engine = new GraphEngine(config, STATE);
+    const agentId = `agent-${archetype}`;
+    engine.registerAgent({
+      id: `task-${archetype}`, agent_id: agentId, assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], backend: 'headless_mcp', archetype,
+    } as AgentTask);
+    return generateSystemPrompt(engine, TOOLS, { role: 'sub_agent', agent_id: agentId, variant });
+  };
+
+  for (const scenario of EVAL_SCENARIOS) {
+    it(`${scenario.id}: lean prompt keeps affordances, fits budget, and is leaner than control`, () => {
+      const control = genFor(scenario.archetype, 'control');
+      const lean = genFor(scenario.archetype, 'lean');
+      expect(checkPromptAffordances(lean).missing, `missing affordances in lean ${scenario.id}`).toEqual([]);
+      expect(estimateTokens(lean)).toBeLessThanOrEqual(DEFAULT_MAX_PROMPT_TOKENS);
+      expect(estimateTokens(lean)).toBeLessThan(estimateTokens(control));
+    });
+  }
+
+  it('keeps the five affordance literals even for a read-only archetype (cve_researcher)', () => {
+    expect(checkPromptAffordances(genFor('cve_researcher', 'lean')).ok).toBe(true);
+  });
+
+  it('leads with the Brief (objective/scope) before the Loop — not a persona paragraph', () => {
+    const lean = genFor('recon_scanner', 'lean');
+    expect(lean).toContain('## Brief');
+    expect(lean.indexOf('## Brief')).toBeLessThan(lean.indexOf('## Loop'));
+    expect(lean).not.toContain('You are an Overwatch sub-agent working a specific task'); // control's persona line
+  });
+
+  it('includes the credential playbook only for credential-class archetypes', () => {
+    expect(genFor('cloud_cartographer', 'lean')).toContain('expand_aws_credential');
+    expect(genFor('recon_scanner', 'lean')).not.toContain('expand_aws_credential');
+  });
+});

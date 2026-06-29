@@ -77,5 +77,7 @@ archetype + objective + rubric, kept small so a real run stays cheap.
 
 - It does not judge offensive **quality** (an LLM judge — parked; rubric-only
   first).
-- The `--variant` candidate A/B is wired but inert until prompt step (b) adds the
-  variant seam.
+
+The `--variant` candidate A/B is live as of [step (b)](prompt-stepb-design.md):
+`npm run prompt-eval -- --real --variant lean` runs the `lean` arm vs the cached
+`control` baseline per scenario and flags per-criterion regressions.

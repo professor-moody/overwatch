@@ -93,6 +93,7 @@ nav:
     - Tape Recording: tape-recording.md
     - Architecture Review: architecture-review.md
     - Prompt Architecture Review: prompt-architecture-review.md
+    - Prompt Step (b) — Lean Sub-Agent: prompt-stepb-design.md
   - Tool Reference:
     - tools/index.md
     - Engagement Setup:

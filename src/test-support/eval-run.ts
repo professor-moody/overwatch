@@ -25,6 +25,8 @@ export interface EvalRunOptions {
   model?: string;
   /** Hard turn cap (cost bound for real runs). Default 10. */
   maxTurns?: number;
+  /** Sub_agent prompt variant ('control' | 'lean') — the A/B arm. Default 'control'. */
+  variant?: string;
   timeoutMs?: number;
 }
 
@@ -112,6 +114,10 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
   const usingFake = binary === FAKE_CLAUDE;
   if (usingFake) { chmodSync(FAKE_CLAUDE, 0o755); process.env.OVERWATCH_FAKE_MODE = scenario.fakeMode; }
   process.env.OVERWATCH_CLAUDE_BINARY = binary;
+  // Selects the sub_agent prompt variant the in-process app's get_system_prompt
+  // will render for this run (the A/B arm). Set explicitly every run so an arm
+  // never inherits the previous run's variant.
+  process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ow-prompt-eval-'));
   const logDir = join(tempDir, 'agents');
