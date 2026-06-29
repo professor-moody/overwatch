@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
 export function registerScoringTools(server: McpServer, engine: GraphEngine): void {
 
@@ -42,7 +43,8 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
           .describe('Also return items that were filtered out, with reasons'),
         group_by: z.enum(['individual', 'campaign'])
           .default('individual')
-          .describe('Return individual frontier items or group them into campaigns (credential spray, enumeration, post-exploitation)')
+          .describe('Return individual frontier items or group them into campaigns (credential spray, enumeration, post-exploitation)'),
+        compact: z.boolean().default(false).describe(COMPACT_PARAM_DESCRIPTION)
       },
       annotations: {
         readOnlyHint: false,
@@ -51,7 +53,7 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
         openWorldHint: false
       }
     },
-    withErrorBoundary('next_task', async ({ max_items, include_filtered, group_by }) => {
+    withErrorBoundary('next_task', async ({ max_items, include_filtered, group_by, compact }) => {
       const frontier = engine.computeFrontier();
       const { passed, filtered } = engine.filterFrontier(frontier);
 
@@ -95,9 +97,7 @@ Returns: Array of FrontierItem objects with graph metrics, plus any items that w
         result.filtered = filtered.slice(0, 20);
       }
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
-      };
+      return toolText(result, { compact });
     })
   );
 

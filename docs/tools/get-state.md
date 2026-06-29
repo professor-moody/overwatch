@@ -26,6 +26,7 @@ The frontier items are pre-filtered by the deterministic layer (scope, dedup, ha
 | `include_reasoning` | `boolean` | `false` | Include `event_type=thought` / `category=reasoning` entries in `recent_activity`. |
 | `include_system` | `boolean` | `true` | Include `category=system` entries in `recent_activity`. |
 | `snapshot` | `boolean` | `false` | **Phase H**: persist a copy of the returned state to the evidence store and emit a `system` event so the retrospective can reconstruct exactly what the agent saw. **Defaults to `false`** so the tool is genuinely read-only — pass `true` at session bootstrap or when you want the snapshot for retrospective fidelity. De-duplicated within a 5s window when the state body is unchanged. |
+| `compact` | `boolean` | `false` | Return compact JSON (no indentation) to save tokens. Identical payload — only whitespace differs. The evidence snapshot stays pretty-printed. |
 
 ## Returns
 

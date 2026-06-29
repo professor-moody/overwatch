@@ -7,6 +7,7 @@ import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { verifyChain } from '../services/activity-chain.js';
 import { computeChangesSince } from '../services/changes-since.js';
+import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
 type StateToolOptions = {
   getDashboardStatus?: () => { enabled: boolean; running: boolean; address?: string };
@@ -62,6 +63,7 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
           .describe('Persist a copy of the returned state to the evidence store and log a `system` event so the retrospective can reconstruct exactly what the agent saw when it made each decision. De-duplicated within a 5s window when the state body is unchanged. **Phase H**: defaults to false so the tool is genuinely read-only; pass true at session bootstrap or when you want the snapshot for retrospective fidelity.'),
         since: z.string().optional()
           .describe('ISO timestamp of your last get_state call. When set, the response adds a `changes_since` summary — new findings + which sub-agents completed since then + a recommendation — so a dispatching primary sees at a glance whether to re-synthesize without scanning recent_activity. Unparseable values are ignored.'),
+        compact: z.boolean().default(false).describe(COMPACT_PARAM_DESCRIPTION),
       },
       annotations: {
         readOnlyHint: true,
@@ -70,7 +72,7 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         openWorldHint: false
       }
     },
-    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count, include_reasoning, include_system, snapshot, since }) => {
+    withErrorBoundary('get_state', async ({ include_full_frontier, activity_count, include_reasoning, include_system, snapshot, since, compact }) => {
       const state = engine.getState({
         activityCount: activity_count,
         includeReasoning: include_reasoning,
@@ -145,9 +147,9 @@ Returns: EngagementState object with graph_summary, objectives, frontier, active
         }
         engine.persist();
       }
-      return {
-        content: [{ type: 'text', text: stateText }]
-      };
+      // Evidence snapshot above stays pretty (stateText); only the model-facing
+      // response compacts when requested.
+      return toolText(state, { compact });
     })
   );
 
