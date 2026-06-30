@@ -887,6 +887,8 @@ describe('prompt-generator', () => {
       // Tight orchestration loop replaces the 12-step Core Loop.
       expect(prompt).toContain('## Orchestration loop');
       expect(prompt).not.toContain('## Core Loop');
+      // Orient-first is emphasized (the A/B showed a Bash-first slip without it).
+      expect(prompt).toContain('ORIENT (always your first action)');
       // Context-first ordering: the live state snapshot precedes the loop.
       const stateIdx = prompt.indexOf('## Current State Snapshot');
       const loopIdx = prompt.indexOf('## Orchestration loop');
