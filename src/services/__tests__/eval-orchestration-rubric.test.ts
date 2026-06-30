@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { gradeOrchestration, ORCH_CRITERIA, type OrchRunRecord } from '../eval-orchestration-rubric.js';
+import { gradeOrchestration, compareOrchGrades, ORCH_CRITERIA, type OrchRunRecord } from '../eval-orchestration-rubric.js';
 
 // A clean, efficient, adaptive orchestrator run: orient → reason → dispatch matched
 // children at DISTINCT targets → re-orient (synthesize) → re-dispatch (adapt), findings
@@ -93,5 +93,28 @@ describe('gradeOrchestration', () => {
 
   it('does not gate on completed status (no such criterion)', () => {
     expect(ORCH_CRITERIA).not.toContain('completed');
+  });
+});
+
+describe('compareOrchGrades', () => {
+  const lowEfficiency: OrchRunRecord = { ...goodRun, toolCalls: [
+    { tool: 'get_state' }, { tool: 'get_state' }, { tool: 'log_thought' }, { tool: 'next_task' },
+    { tool: 'get_state' }, { tool: 'log_thought' }, { tool: 'register_agent' }, { tool: 'get_state' }, { tool: 'register_agent' },
+  ] };
+
+  it('reports overall delta + per-criterion regressions', () => {
+    const control = gradeOrchestration(goodRun);            // orient_efficiency 1.0
+    const candidate = gradeOrchestration(lowEfficiency);    // orient_efficiency 0.4
+    const cmp = compareOrchGrades(control, candidate);
+    expect(cmp.delta).toBeLessThan(0);
+    expect(cmp.regressions.map(r => r.criterion)).toContain('orient_efficiency');
+  });
+
+  it('reports no regressions + positive delta when the candidate improves', () => {
+    const control = gradeOrchestration(lowEfficiency);
+    const candidate = gradeOrchestration(goodRun);
+    const cmp = compareOrchGrades(control, candidate);
+    expect(cmp.delta).toBeGreaterThan(0);
+    expect(cmp.regressions).toHaveLength(0);
   });
 });
