@@ -259,6 +259,21 @@ export function listArchetypes(): AgentArchetype[] {
   return Object.values(ARCHETYPES);
 }
 
+/** The sub-agent archetype catalog rendered as markdown, derived from the
+ *  registry (label / id / target-facing-ness / description / done-test). This is
+ *  the single source for the AGENTS.md "Sub-agent archetypes" section — a
+ *  drift-check test asserts the checked-in section equals this, and
+ *  `npm run gen:docs` regenerates it. Keeps the offline fallback in sync with the
+ *  registry without hand-editing (the CLAUDE.md prompt-generator↔AGENTS.md triad). */
+export function generateSubAgentArchetypeReference(): string {
+  return listArchetypes()
+    .map((a) => {
+      const readOnly = isTargetFacing(a.id) ? '' : ' _(read-only)_';
+      return `- **${a.label}** (\`${a.id}\`)${readOnly} — ${a.description} _Done when:_ ${doneTestFor(a.id)}.`;
+    })
+    .join('\n');
+}
+
 export function getArchetype(id: string | undefined | null): AgentArchetype {
   return (id && ARCHETYPES[id as AgentArchetypeId]) || ARCHETYPES.default;
 }

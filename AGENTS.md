@@ -112,6 +112,28 @@ Sub-agents may run in a specialized **role** with a deliberately restricted (all
 - **`research`** — web search + graph read; records candidate CVEs via `research_cve`. No target execution.
 - **`planner`** — graph read + `propose_plan` only. Translates a free-form operator command into a confirmable plan of ops (directives / scope / approvals); it **proposes**, the operator **confirms**, the dashboard **executes**. Never touches targets or mutates the graph.
 
+### Sub-agent archetypes
+
+Dispatch assigns each agent a typed **archetype** (bounded tool surface + mission + done-test). Generated from the registry (`src/services/agent-archetypes.ts`) — run `npm run gen:docs` after changing it; a CI drift-check keeps this in sync.
+
+<!-- BEGIN:archetypes -->
+- **General agent** (`default`) — Full Overwatch surface. Use when no specialized type fits, or when a narrow type is too tight. _Done when:_ the scoped objective is satisfied and every useful discovery is in the graph (parse_output/report_finding), not just prose.
+- **Recon / scanner** (`recon_scanner`) — Network + service discovery: sweep a CIDR/IP, enumerate hosts, ports, and services. No shells, no credential handling. _Done when:_ every live host/service in scope is a graph node with its ports/services recorded via report_finding — nothing left only in stdout.
+- **Web app tester** (`web_tester`) — Web application testing: fuzz endpoints, probe auth, find web vulns. Can open sessions for exploitation. _Done when:_ the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.
+- **Credential operator** (`credential_operator`) — Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC). Focused on credential lifecycle, not broad recon. _Done when:_ each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).
+- **Post-exploitation** (`post_exploit`) — Work from a foothold: interactive sessions, lateral movement, local enumeration from compromised hosts. _Done when:_ the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings.
+- **CVE researcher** (`cve_researcher`) _(read-only)_ — Read the public web for CVEs/PoCs and record findings. Never executes against targets. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
+- **Pathfinder** (`pathfinder`) _(read-only)_ — Read-only attack-path analysis: find gaps and next hops to objectives, propose plans. Never executes. _Done when:_ a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists).
+- **Report scribe** (`report_scribe`) _(read-only)_ — Read-only: turn confirmed graph state + evidence into draft report sections. Never executes against targets. _Done when:_ the requested report sections are drafted from confirmed findings and evidence via generate_report.
+- **Cloud cartographer** (`cloud_cartographer`) — Enumerate cloud + identity (AWS/Entra/GitHub/OIDC): expand captured credentials, map federation and cloud-to-on-prem pivots. _Done when:_ each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings.
+- **OPSEC sentinel** (`opsec_sentinel`) _(read-only)_ — Read-only OPSEC monitor: track the noise budget + defensive signals, flag risk, and recommend an approach. Never executes. _Done when:_ the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) is reported for the operator.
+- **Session shepherd** (`session_shepherd`) _(read-only)_ — Watch interactive sessions: read buffers, surface stale/orphaned sessions and their ownership. Read-only — no new target execution. _Done when:_ each open session's state and ownership is reported, with stale/orphaned ones flagged.
+- **Evidence auditor** (`evidence_auditor`) _(read-only)_ — Read-only: audit findings + their evidence chains for proof readiness; surface gaps before reporting. Never executes. _Done when:_ each finding's proof readiness is assessed and the gaps are reported for the operator.
+- **OSINT recon** (`osint_recon`) _(read-only)_ — Passive external-recon: map the attack surface (subdomains, DNS, netblocks/ASNs, orgs, emails) from PUBLIC sources via run_tool (subfinder/amass/crt.sh/whois) + web research. No shells, no sessions, no credential tools. _Done when:_ the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — nothing left only in stdout.
+- **Research (legacy role)** (`research`) _(read-only)_ — Legacy research role — web research + finding recording, no target execution. _Done when:_ research_cve has been called for the service (with candidates, or an empty list if none apply).
+- **Planner (legacy role)** (`planner`) _(read-only)_ — Legacy planner role — read state and propose plans, never executes or mutates. _Done when:_ a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.
+<!-- END:archetypes -->
+
 ## Tool Reference
 
 **70+ MCP tools** are registered by the server. When the MCP connection is available, prefer **`get_system_prompt(role="primary")`** — it embeds the **live** tool table (the authoritative count + set), engagement briefing, and OPSEC constraints. This static table is the **offline fallback** (e.g. no MCP) and may lag the live set; treat the generated prompt as source of truth. Per-tool parameters and examples: [docs/tools/index.md](docs/tools/index.md).
