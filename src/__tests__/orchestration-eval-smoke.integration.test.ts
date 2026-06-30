@@ -28,11 +28,16 @@ describe.skipIf(!supportsLocalListen)('orchestration eval pipeline smoke (fake)'
 
   it('a fake primary dispatches a matched child that lands findings; the record grades', async () => {
     last = await runOrchestrationScenario();
-    // Pipeline: the primary dispatched >= 1 child...
+    // Pipeline (one chain): the primary dispatched >= 1 child...
     expect(last.record.dispatches.length).toBeGreaterThanOrEqual(1);
-    // ...with a frontier-appropriate (typed, non-default) archetype...
+    // ...with a typed, non-default archetype. (The fake primary dispatches without a
+    // frontier_item_id, so matchedFrontier here is the "picked a real specialty"
+    // heuristic; the frontierType+nodeType resolution path is exercised by the real run.)
     expect(last.record.dispatches.every(d => d.matchedFrontier)).toBe(true);
-    // ...which landed findings into the graph.
+    // ...which landed findings into the graph. The fake primary writes NO nodes itself
+    // (it only orchestrates), so newNodeCount > 0 can ONLY come from the dispatched
+    // child — i.e. this asserts the child actually ran end-to-end, not just that a
+    // dispatch record exists.
     expect(last.record.newNodeCount).toBeGreaterThan(0);
 
     const g = gradeOrchestration(last.record);

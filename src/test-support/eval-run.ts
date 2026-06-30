@@ -270,13 +270,9 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     variant: process.env.OVERWATCH_PROMPT_VARIANT,
     actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
   };
-  // 'auto': primary (no archetype) orchestrates; children (archetype) land findings.
-  // Runner default = fake so dispatched children are cheap; the primary task overrides
-  // to the real binary for the A/B.
-  process.env.OVERWATCH_FAKE_MODE = 'auto';
-  process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
-  process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
-  if (!usingFakePrimary) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
+  // restoreEnv closes over `prev` (captured above) and only RESTORES, so it's safe to
+  // define before the mutations — the mutations live inside the try so any throw (incl.
+  // mkdtemp/createOverwatchApp) is caught and the env never leaks to a later in-process run.
   const restoreEnv = () => {
     const set = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
     set('OVERWATCH_FAKE_MODE', prev.mode);
@@ -285,10 +281,19 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
   };
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'ow-orch-eval-'));
-  const logDir = join(tempDir, 'agents');
+  let tempDir: string | undefined;
   let app: ReturnType<typeof createOverwatchApp> | undefined;
   try {
+    // 'auto': primary (no archetype) orchestrates; children (archetype) land findings.
+    // Runner default = fake so dispatched children are cheap; the primary task overrides
+    // to the real binary for the A/B.
+    process.env.OVERWATCH_FAKE_MODE = 'auto';
+    process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
+    process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
+    if (!usingFakePrimary) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
+
+    tempDir = mkdtempSync(join(tmpdir(), 'ow-orch-eval-'));
+    const logDir = join(tempDir, 'agents');
     const config = parseEngagementConfig(rawConfig);
     config.opsec = { ...config.opsec, approval_timeout_ms: 3000 } as typeof config.opsec;
     app = createOverwatchApp({
@@ -320,8 +325,18 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
 
     const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
     await waitFor(() => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, deadline);
-    // Let any dispatched children settle so their findings land before we grade.
-    await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, Math.min(deadline, 60000));
+    // Settle: wait until no headless process is active AND no child task is still
+    // non-terminal. The second clause matters because a child dispatched past the
+    // concurrency cap is queued (non-terminal) but not yet a running process, so
+    // activeHeadlessCount() alone would read 0 and we'd grade before it lands.
+    // Load-bearing invariant: register_agent launches children SYNCHRONOUSLY (engine
+    // fireUpdateCallbacks → drainHeadless → registry.register), so by the time the
+    // primary flips to a terminal status its dispatched children are already
+    // registered here — if that launch path ever becomes async, add an explicit
+    // "saw >=1 child" gate or this can return before children attach.
+    const childrenSettled = () => app!.taskExecution.activeHeadlessCount() === 0
+      && app!.engine.getAgentTasks().every(t => t.id === taskId || ['completed', 'failed', 'interrupted'].includes(t.status));
+    await waitFor(childrenSettled, Math.min(deadline, 60000));
 
     const logPath = join(logDir, `${taskId}.ndjson`);
     const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
@@ -333,27 +348,41 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // headless at runtime when an endpoint is set — so don't filter on it.)
     const children = app.engine.getAgentTasks().filter(t => t.id !== taskId);
     const dispatches = children.map(c => {
+      // Best-effort: did the child's archetype match what the production dispatch
+      // resolver (resolveDispatchArchetype → recommendArchetype{frontierType,nodeType})
+      // would pick for its frontier item? The frontier is RE-RESOLVED here at grading
+      // time, so if the item has since been satisfied/dropped we fall back to "is a
+      // typed (non-default) archetype" — the orchestrator did pick a real specialty.
       let matchedFrontier = !!c.archetype && isArchetypeId(c.archetype) && c.archetype !== 'default';
       if (c.frontier_item_id) {
         const fi = app!.engine.getFrontierItem(c.frontier_item_id);
-        if (fi) matchedFrontier = c.archetype === recommendArchetype({ frontierType: fi.type });
+        if (fi) {
+          const nodeType = fi.node_id ? app!.engine.getNode(fi.node_id)?.type : undefined;
+          matchedFrontier = c.archetype === recommendArchetype({ frontierType: fi.type, nodeType });
+        }
       }
       return { archetype: c.archetype ?? 'default', matchedFrontier };
     });
 
+    // newNodeCount = graph delta over the run. In the fake smoke the only post-seed
+    // writer is the dispatched child, so this == children's findings; for a REAL
+    // primary it also counts nodes the primary lands directly — i.e. it measures
+    // "the engagement graph advanced", not "children specifically progressed it".
+    // Orchestration-specific credit comes from the dispatch criteria, not this one.
     const afterCount = app.engine.exportGraph().nodes.length;
     const record: OrchRunRecord = { toolCalls, dispatches, newNodeCount: Math.max(0, afterCount - beforeCount) };
 
+    const captured = { app, tempDir };
     const cleanup = async () => {
       restoreEnv();
-      await shutdownOverwatchApp(app!).catch(() => { /* ignore */ });
-      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      await shutdownOverwatchApp(captured.app).catch(() => { /* ignore */ });
+      try { rmSync(captured.tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
     return { record, usageTokens: tokens, costUsd, cleanup };
   } catch (err) {
     restoreEnv();
     if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
-    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (tempDir) { try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ } }
     throw err;
   }
 }

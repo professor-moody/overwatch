@@ -30,7 +30,10 @@ export interface OrchRunRecord {
   toolCalls: OrchToolCall[];
   /** Children the primary dispatched. */
   dispatches: DispatchRecord[];
-  /** Graph nodes added during the run (children's landed findings). */
+  /** Graph nodes added during the run (the engagement advanced). Source-agnostic:
+   *  in the fake smoke the only post-seed writer is the dispatched child, but a real
+   *  primary can also land nodes directly — so this is a coarse "objective advanced"
+   *  signal, not proof children did it. Orchestration credit comes from `dispatches`. */
   newNodeCount: number;
 }
 
