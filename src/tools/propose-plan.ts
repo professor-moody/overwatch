@@ -19,6 +19,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import type { OperatorOp } from '../services/command-interpreter.js';
 import type { AgentDirectiveKind } from '../types.js';
+import { previewScopeChange, mergeScopeAdds, type ScopePreview } from '../services/scope-preview.js';
 import { withErrorBoundary } from './error-boundary.js';
 
 const DIRECTIVE_KINDS: readonly AgentDirectiveKind[] = [
@@ -35,8 +36,27 @@ export interface ProposePlanArgs {
 }
 
 export type ProposePlanResult =
-  | { ok: true; plan_id: string; ops_count: number; summary: string }
+  | { ok: true; plan_id: string; ops_count: number; summary: string; scope_preview?: ScopePreview }
   | { ok: false; error: string; rejected?: { op: OperatorOp; reason: string }[] };
+
+/** Dry-run scope-impact preview for a plan's scope op(s) — which existing nodes
+ *  transition in/out of scope if the plan is confirmed. Null when the plan has no
+ *  scope ops. Pure read of current scope + the live graph; never mutates. */
+export function computeScopePreview(engine: GraphEngine, ops: OperatorOp[]): ScopePreview | undefined {
+  const adds = mergeScopeAdds(ops);
+  if (!adds) return undefined;
+  const scope = engine.getConfig().scope;
+  const exported = engine.exportGraph();
+  // Include COLD-store hosts (alive ping-sweep responders with no services/edges live
+  // outside the graphology graph) — they're part of the inventory + exactly what a scope
+  // change moves in/out.
+  const cold = (exported.cold_nodes ?? []).map(c => ({ id: c.id, properties: { ip: c.ip, hostname: c.hostname, label: c.label } }));
+  return previewScopeChange(
+    [...exported.nodes, ...cold],
+    { cidrs: scope.cidrs, domains: scope.domains, exclusions: scope.exclusions },
+    adds,
+  );
+}
 
 /**
  * Validate every op against live engine state. Returns the list of rejections
@@ -84,6 +104,7 @@ export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): 
     return { ok: false, error: `${rejected.length} op(s) could not be resolved against live state`, rejected };
   }
 
+  const scope_preview = computeScopePreview(engine, ops);
   const plan = engine.getProposedPlanStore().add({
     command: command ?? '',
     ops,
@@ -91,6 +112,7 @@ export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): 
     rationale,
     source_task_id: task_id,
     source_agent_id: agent_id,
+    scope_preview,
   });
 
   engine.logActionEvent({
@@ -103,7 +125,7 @@ export function recordProposedPlan(engine: GraphEngine, args: ProposePlanArgs): 
     details: { reason: 'plan_proposed', plan_id: plan.plan_id, command: command ?? '', summary, ops },
   });
 
-  return { ok: true, plan_id: plan.plan_id, ops_count: ops.length, summary };
+  return { ok: true, plan_id: plan.plan_id, ops_count: ops.length, summary, ...(scope_preview ? { scope_preview } : {}) };
 }
 
 const opSchema = z.discriminatedUnion('op', [
