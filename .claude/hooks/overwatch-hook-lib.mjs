@@ -133,10 +133,29 @@ export function readRecentTranscript(input, maxLines = TRANSCRIPT_SCAN_LINES) {
   }
 }
 
-export function transcriptHasRecentOverwatchTool(linesOrInput) {
+// A real Overwatch tool call: an `mcp__overwatch__*` reference, or a JSON `name`/`tool_name`
+// field equal to a core tool. Requiring the JSON field (not a bare word) avoids matching a
+// tool name merely quoted in prose.
+const OVERWATCH_TOOL_RE = /mcp__overwatch__|"(?:tool_name|name)"\s*:\s*"(?:get_state|next_task|validate_action|run_tool|run_bash|parse_output|report_finding|query_graph|send_to_session)"/i;
+
+// A genuine human prompt line — a user/human turn that is NOT a tool-result carrier (Claude
+// Code records tool results as `role:"user"` messages, which must not count as a turn start).
+function isHumanPromptLine(line) {
+  if (!line.includes('"user"') && !line.includes('"human"')) return false;
+  if (line.includes('"tool_result"')) return false;
+  return true;
+}
+
+// Did the CURRENT turn use an Overwatch tool? Turn-scoped: only lines since the last genuine
+// human prompt are considered, so a tool call from an earlier turn can't suppress the drift
+// block on a later "answered from memory" turn (the old whole-transcript scan's hole).
+export function transcriptHasOverwatchToolThisTurn(linesOrInput) {
   const lines = Array.isArray(linesOrInput) ? linesOrInput : readRecentTranscript(linesOrInput);
-  const recent = lines.join('\n');
-  return /mcp__overwatch__|"(?:tool_name|name)"\s*:\s*"(?:get_state|next_task|validate_action|run_tool|run_bash|parse_output|report_finding|query_graph|send_to_session)"/i.test(recent);
+  let start = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isHumanPromptLine(lines[i])) { start = i + 1; break; }
+  }
+  return OVERWATCH_TOOL_RE.test(lines.slice(start).join('\n'));
 }
 
 export function getRecentUserPrompt(linesOrInput) {
