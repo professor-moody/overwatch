@@ -234,7 +234,7 @@ describe('prompt-generator', () => {
   describe('sub_agent prompt', () => {
     it('generates sub-agent identity section', () => {
       const engine = createTestEngine();
-      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent', variant: 'control' });
 
       expect(prompt).toContain('# Overwatch — Sub-Agent Instructions');
       expect(prompt).toContain('sub-agent');
@@ -257,7 +257,7 @@ describe('prompt-generator', () => {
 
     it('includes workflow instructions', () => {
       const engine = createTestEngine();
-      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent', variant: 'control' });
 
       expect(prompt).toContain('## Workflow');
       expect(prompt).toContain('get_agent_context');
@@ -286,6 +286,7 @@ describe('prompt-generator', () => {
 
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, {
         role: 'sub_agent',
+        variant: 'control',
         agent_id: 'agent-abc',
       });
 
@@ -326,11 +327,37 @@ describe('prompt-generator', () => {
 
     it('tells sub-agents to submit transcripts by task_id and heartbeat long tasks', () => {
       const engine = createTestEngine();
-      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'sub_agent' });
+      const prompt = generateSystemPrompt(engine, ALL_REGISTERED_TOOLS, { role: 'sub_agent', variant: 'control' });
 
       expect(prompt).toContain('agent_heartbeat({ task_id })');
       expect(prompt).toContain('submit_agent_transcript({ task_id, summary');
       expect(prompt).toContain('Use `agent_id` only as a legacy fallback');
+    });
+
+    it('defaults to the lean variant; control remains reachable via the option', () => {
+      const engine = createTestEngine();
+      // Isolate from an ambient OVERWATCH_PROMPT_VARIANT (env beats the default in
+      // resolveSubAgentVariant), so this asserts the code default, not the shell.
+      const prevVariant = process.env.OVERWATCH_PROMPT_VARIANT;
+      delete process.env.OVERWATCH_PROMPT_VARIANT;
+      try {
+        // Default is now lean (step-(b) promotion): the named "## Loop", not control's
+        // "## Workflow". (The "## Brief" section only renders with an agent context.)
+        const def = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
+        expect(def).toContain('## Loop');
+        expect(def).not.toContain('## Workflow');
+        // The shipping default still carries the wrap/heartbeat close-out (control's
+        // copy is covered by the variant:'control'-pinned test above).
+        expect(def).toContain('agent_heartbeat({ task_id })');
+        expect(def).toContain('submit_agent_transcript({ task_id, summary');
+        // control is still selectable as a rollback.
+        const control = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent', variant: 'control' });
+        expect(control).toContain('## Workflow');
+        expect(control).not.toContain('## Loop');
+      } finally {
+        if (prevVariant === undefined) delete process.env.OVERWATCH_PROMPT_VARIANT;
+        else process.env.OVERWATCH_PROMPT_VARIANT = prevVariant;
+      }
     });
   });
 
@@ -419,7 +446,7 @@ describe('prompt-generator', () => {
 
     it('includes tactical section in sub-agent prompt too', () => {
       const engine = createTestEngine();
-      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent' });
+      const prompt = generateSystemPrompt(engine, MOCK_TOOLS, { role: 'sub_agent', variant: 'control' });
 
       expect(prompt).toContain('## Tactical Methodology');
       expect(prompt).toContain('CVE-first');
@@ -579,6 +606,7 @@ describe('prompt-generator', () => {
 
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, {
         role: 'sub_agent',
+        variant: 'control',
         agent_id: 'agent-detail-1',
       });
 
@@ -613,6 +641,7 @@ describe('prompt-generator', () => {
 
       const prompt = generateSystemPrompt(engine, MOCK_TOOLS, {
         role: 'sub_agent',
+        variant: 'control',
         agent_id: 'agent-tgt-1',
       });
 

@@ -104,7 +104,9 @@ When dispatching agents, give them these instructions. The **scoped tool list** 
 > - `resize_session`, `signal_session`, `update_session` — session control
 > - `get_evidence` — retrieve full-fidelity evidence by ID
 >
-> Work your assigned task. Validate first, log execution start, execute, parse/report findings, then log completion or failure. When done, your task will be marked complete by the primary session.
+> Work the loop: **ORIENT** (`get_agent_context` first — your scope + objective live there, not just this list), **VALIDATE** (`validate_action` before each execute, threading its `action_id`/`frontier_item_id`), **EXECUTE** (`run_tool`/`run_bash`), **LAND** (`parse_output`/`report_finding` — never leave a finding in prose), **WRAP** (`submit_agent_transcript` before you're closed out). Stay in scope; heartbeat if you run long. When done, your task will be marked complete by the primary session.
+
+(This mirrors the default `lean` sub-agent prompt that `get_system_prompt(role="sub_agent")` generates; `OVERWATCH_PROMPT_VARIANT=control` selects the prior prompt as a one-release rollback. See [Prompt Step (b)](docs/prompt-stepb-design.md).)
 
 Sub-agents may run in a specialized **role** with a deliberately restricted (allowlist-enforced) toolset:
 - **`research`** — web search + graph read; records candidate CVEs via `research_cve`. No target execution.

@@ -24,26 +24,30 @@ registry refactor) lands as a separate follow-up; an explicit decision-policy
 layer (named exit-states + ask-gate) is added only if the eval shows the lean
 shape under-constrains long-running/ambiguous tasks.
 
-## Enabling `lean`
+## Status: `lean` is now the default
 
-`control` is the **default** — `lean` is opt-in:
+After the real-model A/B + the orient-first fix (see Results), **`lean` was promoted
+to the default** sub-agent prompt. `control` is kept as a **one-release rollback**:
 
-- **Eval A/B:** `npm run prompt-eval -- --real --variant lean --yes` (the supported way to evaluate it; see [Prompt Behavior-Eval](prompt-eval.md)).
-- **Whole server:** `export OVERWATCH_PROMPT_VARIANT=lean` before starting, and every sub-agent's `get_system_prompt(role="sub_agent")` renders `lean`.
-- **In code:** `generateSystemPrompt(engine, tools, { role: 'sub_agent', variant: 'lean' })`.
-
-Nothing changes at runtime until you opt in; promotion to default happens only on a clean real A/B (see Results below).
+- **Default (lean):** `get_system_prompt(role="sub_agent")` renders `lean` for every
+  dispatched sub-agent — no flag needed.
+- **Rollback to control:** `export OVERWATCH_PROMPT_VARIANT=control` (or
+  `generateSystemPrompt(…, { variant: 'control' })`).
+- **Eval either arm:** `npm run prompt-eval -- --real --variant lean --yes` A/Bs a
+  variant vs the cached control baseline (see [Prompt Behavior-Eval](prompt-eval.md)).
 
 ## What `lean` is
 
-A second sub-agent prompt variant selected via `generateSystemPrompt({ variant })`
-(resolved from the option, then `OVERWATCH_PROMPT_VARIANT`, then `control`).
-`control` is the shipped prompt and **stays the default**. The `lean` shape:
+The sub-agent prompt variant selected via `generateSystemPrompt({ variant })`
+(resolved from the option, then `OVERWATCH_PROMPT_VARIANT`, then the default `lean`).
+The `lean` shape:
 
 1. **Identity** — one orienting line, no persona paragraph.
-2. **Brief** (promoted to the top) — objective, **done-when**, scope (hard stop),
-   archetype, expected noise, skill (by reference), and concrete target-node
-   properties. Closes by noting `get_agent_context` is the authoritative live view.
+2. **Brief** (promoted to the top) — objective, **done-when**, scope-by-id (hard
+   stop), archetype, expected noise, skill (by reference). It deliberately does
+   *not* inline the nodes' properties (the orient-first fix removed that — it made
+   the agent feel pre-oriented and skip `get_agent_context`); the Brief is framed as
+   a stale snapshot whose first instruction is to call `get_agent_context`.
 3. **Tools** — the scoped tool table, kept behind `include_tools` for the first
    A/B (so the ~tool-table cut can be measured before hard-removing).
 4. **Loop** — 5 named phases (ORIENT / VALIDATE / EXECUTE / LAND / WRAP), each a
@@ -75,10 +79,10 @@ and runs **~43–46% leaner** than control (tool table kept).
    criteria (validate-before-execute, lands-results) are the hard gates.
 4. **Self-validation** — before trusting the result, A/B `lean` vs a deliberately
    degraded run to confirm the rubric still flags a regression.
-5. **Promotion** — on a clean A/B, make `lean` the default and update AGENTS.md +
-   `docs/tools/index.md` in lockstep (control stays behind the flag for one
-   release as rollback). Until then **control remains the default**, so the
-   offline fallbacks are unchanged.
+5. **Promotion** — **done.** On the clean A/B + orient-first fix, `lean` became the
+   default (`resolveSubAgentVariant`) and AGENTS.md's sub-agent workflow was updated
+   in lockstep; `control` stays behind `OVERWATCH_PROMPT_VARIANT=control` for one
+   release as rollback.
 
 ## Results
 
@@ -148,12 +152,16 @@ control (~$1.67):
 
 **Verdict — lean (with the orient-first fix) is net-positive on all three scenarios**
 (web +0.09, cloud +0.16, recon tied/better-on-real-criteria), wins the 2×-weighted
-safety criterion everywhere, and no longer carries the big regression. It is a
-defensible **promote** candidate. Residual: web `starts_with_context` is 0.60, not
-1.00 — but it's a 1×-weight criterion and arguably partly inherent (for a single-URL
-web target the agent rationally jumps to acting). Options: promote now, or do one
-more web-specific orientation tweak first. Promotion (flip the default + AGENTS.md /
-docs lockstep) remains a separate, deliberate step.
+safety criterion everywhere, and no longer carries the big regression. **It was
+promoted to the default.**
+
+A further web-specific tweak was tried (an explicit "orient before you act" guardrail
++ an "even when the objective names a target" ORIENT clause) and **reverted** — at
+n=5 it nudged web `starts_with_context` up (0.60→0.80) but knocked cloud *down*
+(1.00→0.80), a net wash within noise that didn't justify diluting the four-invariant
+guardrail block. The residual web `starts_with_context` ≈ 0.60 is left as-is: a
+1×-weight criterion, partly inherent (for a single-URL web target the agent rationally
+jumps straight to it), and not worth chasing further on these synthetic scenarios.
 
 ## Known weak spots (carried, not hidden)
 

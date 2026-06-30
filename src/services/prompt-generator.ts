@@ -22,23 +22,28 @@ export interface GeneratePromptOptions {
   include_state?: boolean;
   include_tools?: boolean;
   max_prompt_tokens?: number;
-  /** Sub_agent prompt variant for the behavior-eval A/B (control = current,
-   *  lean = step-(b) context-first restructure). Resolved from this option, then
-   *  the OVERWATCH_PROMPT_VARIANT env, then 'control'. */
+  /** Sub_agent prompt variant (lean = the promoted default context-first prompt;
+   *  control = the prior prompt, kept as a rollback). Resolved from this option,
+   *  then the OVERWATCH_PROMPT_VARIANT env, then DEFAULT_SUBAGENT_VARIANT ('lean'). */
   variant?: PromptVariant;
 }
 
-// Sub_agent prompt variants. 'control' is the shipped prompt; 'lean' is the
-// step-(b) context-first restructure piloted through the behavior-eval harness.
+// Sub_agent prompt variants. 'lean' is the step-(b) context-first restructure and
+// is now the DEFAULT (promoted after a real-model behavior-eval A/B: it wins the
+// 2×-weighted validate_before_execute criterion across scenarios + threading, net-
+// positive overall — see docs/prompt-stepb-design.md). 'control' is the prior
+// shipped prompt, kept reachable as a one-release rollback via
+// OVERWATCH_PROMPT_VARIANT=control (or options.variant).
 export type PromptVariant = 'control' | 'lean';
 export const SUBAGENT_PROMPT_VARIANTS: readonly PromptVariant[] = ['control', 'lean'];
+export const DEFAULT_SUBAGENT_VARIANT: PromptVariant = 'lean';
 const KNOWN_VARIANTS: readonly string[] = SUBAGENT_PROMPT_VARIANTS;
 
 export function resolveSubAgentVariant(options: GeneratePromptOptions): PromptVariant {
   if (options.variant && KNOWN_VARIANTS.includes(options.variant)) return options.variant;
   const env = process.env.OVERWATCH_PROMPT_VARIANT;
   if (env && KNOWN_VARIANTS.includes(env)) return env as PromptVariant;
-  return 'control';
+  return DEFAULT_SUBAGENT_VARIANT;
 }
 
 // ============================================================

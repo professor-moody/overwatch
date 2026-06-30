@@ -273,12 +273,12 @@ export class HeadlessMcpRunner {
       `and get_agent_context(task_id="${task.id}") for your scoped subgraph and objective.`,
     ];
     const mission = bootstrapMission(task.archetype ?? task.role);
-    // Point the agent at its methodology skill. The full text is inlined in the
-    // get_system_prompt(role="sub_agent") result it's told to fetch first, and
-    // available on demand via get_skill — so a pointer here, not a duplicate snippet.
+    // Point the agent at its methodology skill. The default ('lean') sub-agent
+    // prompt references the skill by name (not inlined), so the full text is
+    // fetched on demand via get_skill — a pointer here, not a duplicate snippet.
     const skillId = getArchetype(task.archetype ?? task.role).defaultSkill ?? task.skill;
     const skill = skillId
-      ? `Your methodology skill is "${skillId}" — it's inlined in your get_system_prompt(role="sub_agent") result, or call get_skill(skill_id="${skillId}") for the full text.`
+      ? `Your methodology skill is "${skillId}" — call get_skill(skill_id="${skillId}") for the full text.`
       : '';
     const objective = task.objective ? `OBJECTIVE: ${task.objective}` : '';
     const close = `When done — or if you cannot proceed — call submit_agent_transcript, then update_agent(task_id="${task.id}", status="completed").`;
