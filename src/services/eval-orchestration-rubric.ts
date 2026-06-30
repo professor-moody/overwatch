@@ -19,10 +19,13 @@ export interface OrchToolCall {
 
 /** A sub-agent the primary dispatched. `matchedFrontier` = the chosen archetype
  *  suited the frontier item it was dispatched for (computed by the harness via the
- *  archetype recommender), so the rubric stays a pure comparison. */
+ *  archetype recommender), so the rubric stays a pure comparison. `target` is the
+ *  frontier item id it was dispatched against (for the dispatch-precision criterion;
+ *  undefined for ad-hoc dispatches with no frontier item). */
 export interface DispatchRecord {
   archetype: string;
   matchedFrontier: boolean;
+  target?: string;
 }
 
 export interface OrchRunRecord {
@@ -38,12 +41,21 @@ export interface OrchRunRecord {
 }
 
 export type OrchCriterion =
+  // Floor / regression-guard criteria — binary, a competent primary aces them
+  // (the first real-model calibration scored all 6 at 1.0). They catch a regression
+  // but can't measure an improvement.
   | 'orients'
   | 'externalizes_decisions'
   | 'dispatches'
   | 'archetype_match'
   | 'synthesizes'
-  | 'objective_progress';
+  | 'objective_progress'
+  // Discriminating criteria — CONTINUOUS, with headroom, so a prompt change shows a
+  // fractional delta instead of a stuck-at-1.0 binary. Added after the calibration
+  // run revealed the floor saturates (Move 3c finding).
+  | 'dispatch_precision'    // didn't re-dispatch the same frontier item (no spam)
+  | 'orient_efficiency'     // tight orientation — few meaningful calls before acting
+  | 'adaptive_synthesis';   // closed the loop — re-dispatched on children's findings
 
 export interface OrchCriterionScore {
   criterion: OrchCriterion;
@@ -58,16 +70,22 @@ export interface OrchRubricResult {
 }
 
 const ORCH_WEIGHTS: Record<OrchCriterion, number> = {
+  // Floor (8 total)
   orients: 1,
   externalizes_decisions: 1,
   dispatches: 1,
   archetype_match: 2,   // picking the right type per frontier item — core orchestration
   synthesizes: 2,       // re-orienting after a child completes — core orchestration
   objective_progress: 1,
+  // Discriminating (6 total — ~43% of the score, so a prompt change moves `overall`)
+  dispatch_precision: 2,
+  orient_efficiency: 2,
+  adaptive_synthesis: 2,
 };
 
 export const ORCH_CRITERIA: readonly OrchCriterion[] = [
   'orients', 'externalizes_decisions', 'dispatches', 'archetype_match', 'synthesizes', 'objective_progress',
+  'dispatch_precision', 'orient_efficiency', 'adaptive_synthesis',
 ];
 
 const ORIENT_TOOLS = new Set(['get_state', 'get_agent_context']);
@@ -118,6 +136,42 @@ function scoreSynthesizes(r: OrchRunRecord): { score: number; detail: string } {
     : { score: 0, detail: 'no re-orientation after dispatching (fire-and-forget)' };
 }
 
+/** Dispatch precision: of dispatches that targeted a frontier item, the fraction that
+ *  hit DISTINCT items — penalizes re-dispatching the same item (wasted agents). Neutral
+ *  (1.0) when no dispatch carried a target, since there's nothing to over-spam. */
+function scoreDispatchPrecision(r: OrchRunRecord): { score: number; detail: string } {
+  const targeted = r.dispatches.filter(d => d.target);
+  if (targeted.length === 0) return { score: 1, detail: 'no targeted dispatches to assess (neutral)' };
+  const distinct = new Set(targeted.map(d => d.target)).size;
+  return { score: distinct / targeted.length, detail: `${distinct}/${targeted.length} dispatches hit distinct frontier items` };
+}
+
+/** Orient efficiency: meaningful (non-preamble) tool-calls before the FIRST dispatch.
+ *  Orient → reason → dispatch (~2-3) is tight; full credit up to 3, decaying to 0 by 8.
+ *  Penalizes dawdling/over-orienting before acting. */
+function scoreOrientEfficiency(r: OrchRunRecord): { score: number; detail: string } {
+  const firstDispatchIdx = r.toolCalls.findIndex(c => DISPATCH_TOOLS.has(c.tool));
+  if (firstDispatchIdx < 0) return { score: 0, detail: 'never dispatched' };
+  const preamble = r.toolCalls.slice(0, firstDispatchIdx).filter(c => !PREAMBLE_TOOLS.has(c.tool)).length;
+  const score = Math.max(0, Math.min(1, 1 - (preamble - 3) / 5));
+  return { score, detail: `${preamble} meaningful call(s) before first dispatch` };
+}
+
+/** Adaptive synthesis: did the primary close the loop — re-orient after dispatching AND
+ *  then dispatch AGAIN (adapting to what children found)? 0 = fire-and-forget; 0.5 =
+ *  re-oriented but didn't act on it; 1 = re-dispatched after synthesizing. */
+function scoreAdaptiveSynthesis(r: OrchRunRecord): { score: number; detail: string } {
+  const firstDispatchIdx = r.toolCalls.findIndex(c => DISPATCH_TOOLS.has(c.tool));
+  if (firstDispatchIdx < 0) return { score: 0, detail: 'never dispatched' };
+  const afterFirst = r.toolCalls.slice(firstDispatchIdx + 1);
+  const reorientIdx = afterFirst.findIndex(c => ORIENT_TOOLS.has(c.tool));
+  if (reorientIdx < 0) return { score: 0, detail: 'no re-orientation after dispatching (fire-and-forget)' };
+  const redispatched = afterFirst.slice(reorientIdx + 1).some(c => DISPATCH_TOOLS.has(c.tool));
+  return redispatched
+    ? { score: 1, detail: 're-dispatched after synthesizing (closed adaptive loop)' }
+    : { score: 0.5, detail: 're-oriented after dispatch but did not adapt (no further dispatch)' };
+}
+
 export function gradeOrchestration(run: OrchRunRecord): OrchRubricResult {
   const raw: Array<{ criterion: OrchCriterion; score: number; detail: string }> = [
     { criterion: 'orients', ...scoreOrients(run) },
@@ -126,6 +180,9 @@ export function gradeOrchestration(run: OrchRunRecord): OrchRubricResult {
     { criterion: 'archetype_match', ...scoreArchetypeMatch(run) },
     { criterion: 'synthesizes', ...scoreSynthesizes(run) },
     { criterion: 'objective_progress', score: run.newNodeCount > 0 ? 1 : 0, detail: `${run.newNodeCount} new graph node(s)` },
+    { criterion: 'dispatch_precision', ...scoreDispatchPrecision(run) },
+    { criterion: 'orient_efficiency', ...scoreOrientEfficiency(run) },
+    { criterion: 'adaptive_synthesis', ...scoreAdaptiveSynthesis(run) },
   ];
   const totalWeight = raw.reduce((s, c) => s + ORCH_WEIGHTS[c.criterion], 0) || 1;
   const criteria: OrchCriterionScore[] = raw.map(c => ({
