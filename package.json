@@ -36,6 +36,7 @@
     "demo:daemon": "npx tsx scripts/demo-daemon.ts",
     "report:qa": "npx tsx scripts/report-qa.ts",
     "prompt-eval": "npx tsx src/cli/prompt-eval.ts",
+    "orch-eval": "npx tsx src/cli/orch-eval.ts",
     "gen:docs": "npx tsx scripts/gen-agents-md.ts",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
