@@ -7,10 +7,21 @@ import { describe, expect, it, afterEach } from 'vitest';
 const HOOK_DIR = resolve('.claude/hooks');
 const tmpPaths: string[] = [];
 
-function runHook(script: string, input: unknown) {
+// The hooks are engagement controls gated on isEngagementActive(). Tests simulate an
+// active engagement by default (OVERWATCH_ENGAGEMENT_ACTIVE=1); pass { active: false } to
+// assert the dev-checkout behavior where every hook stays silent.
+function runHook(script: string, input: unknown, { active = true }: { active?: boolean } = {}) {
+  const env = { ...process.env };
+  if (active) {
+    env.OVERWATCH_ENGAGEMENT_ACTIVE = '1';
+  } else {
+    env.OVERWATCH_ENGAGEMENT_ACTIVE = '';
+    delete env.OVERWATCH_CONFIG;
+  }
   const result = spawnSync(process.execPath, [join(HOOK_DIR, script)], {
     input: JSON.stringify(input),
     encoding: 'utf8',
+    env,
   });
   if (result.error) throw result.error;
   return result;
@@ -146,5 +157,70 @@ describe('Claude Code Overwatch hooks', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
+  });
+
+  // The active-engagement gate: on a dev checkout (no OVERWATCH_ENGAGEMENT_ACTIVE /
+  // OVERWATCH_CONFIG) every hook stays silent, so developing Overwatch itself doesn't
+  // trip the engagement controls (kills the alarm-fatigue false positives).
+  describe('engagement-active gate (dev checkout → all hooks silent)', () => {
+    it('does not inject grounding when no engagement is active', () => {
+      const result = runHook('overwatch-user-context.mjs', {
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'what should we scan next on the target?',
+      }, { active: false });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    });
+
+    it('does not block target-facing Bash when no engagement is active', () => {
+      const result = runHook('overwatch-bash-guard.mjs', {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'nmap -sV 10.0.0.5' },
+      }, { active: false });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    });
+
+    it('does not nudge after discovery output when no engagement is active', () => {
+      const result = runHook('overwatch-post-bash.mjs', {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'cat nmap.txt' },
+        tool_response: { stdout: 'Nmap scan report for 10.0.0.5\nPORT STATE SERVICE\n22/tcp open ssh' },
+      }, { active: false });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    });
+
+    it('does not block stop on engagement-looking drift when no engagement is active', () => {
+      const transcript = writeTranscript([
+        { role: 'user', content: 'What should we scan next on the target?' },
+        { role: 'assistant', content: 'We should probably scan the host from memory.' },
+      ]);
+      const result = runHook('overwatch-stop-check.mjs', {
+        hook_event_name: 'Stop',
+        transcript_path: transcript,
+        stop_hook_active: false,
+        last_assistant_message: 'We should probably scan the target next.',
+      }, { active: false });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    });
+
+    it('OVERWATCH_CONFIG pointing at an existing file also arms the hooks', () => {
+      const result = runHook('overwatch-bash-guard.mjs', {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'nmap -sV 10.0.0.5' },
+      }, { active: false });
+      expect(result.stdout.trim()).toBe(''); // baseline: silent on dev
+      const armed = spawnSync(process.execPath, [join(HOOK_DIR, 'overwatch-bash-guard.mjs')], {
+        input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'nmap -sV 10.0.0.5' } }),
+        encoding: 'utf8',
+        env: { ...process.env, OVERWATCH_ENGAGEMENT_ACTIVE: '', OVERWATCH_CONFIG: resolve('engagement.example.json') },
+      });
+      expect(JSON.parse(armed.stdout.trim()).hookSpecificOutput.permissionDecision).toBe('deny');
+    });
   });
 });

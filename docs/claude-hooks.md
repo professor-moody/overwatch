@@ -94,6 +94,38 @@ Use absolute paths for MCP config whether it lives in `.mcp.json` or `.claude/se
 
 The Bash guard is intentionally narrow. It should not block normal repo work such as `git status`, `rg`, `npm test`, `npx tsc --noEmit`, or `mkdocs build --strict`.
 
+## When the hooks fire (engagement-active gate)
+
+The hooks are **engagement controls, not dev controls.** Every one of them AND-gates on
+`isEngagementActive()` — so on a checkout where you're *developing Overwatch itself* they
+stay completely silent. This matters because the drift heuristics are text patterns, and
+this codebase is saturated with the very words they look for (`mcp`, `session`, `finding`,
+`target`, `scan`). Without the gate, all four fire constantly during normal development,
+which trains you to ignore them — so by the time a real engagement runs, the reminders are
+noise. The gate keeps them quiet until there's something real to protect.
+
+An engagement is considered active when **either**:
+
+- `OVERWATCH_ENGAGEMENT_ACTIVE` is set to `1`/`true`/`yes`/`on` in the Claude Code
+  environment (explicit toggle — always wins), **or**
+- `OVERWATCH_CONFIG` points at an existing engagement config file in the Claude Code
+  environment.
+
+> **Important:** the `OVERWATCH_CONFIG` in your `.mcp.json` is set for the MCP **server**
+> subprocess, which the hooks do **not** inherit. To arm the hooks, export the signal in
+> the shell you launch Claude Code from for an engagement:
+>
+> ```bash
+> export OVERWATCH_ENGAGEMENT_ACTIVE=1   # simplest; or: export OVERWATCH_CONFIG=/abs/path/engagement.json
+> ```
+>
+> Leave it unset on dev checkouts (the default) and the hooks stay silent.
+
+The soft reminders (`UserPromptSubmit`, `PostToolUse`) and the `Stop` block fail **open**
+under the gate — a missed reminder is harmless. The `Bash` deny is best-effort regardless;
+the real "never touch targets outside Overwatch" boundary is the MCP/engine layer (sole
+credentials + egress control), not this regex.
+
 ## Verify hooks are active
 
 1. Restart Claude Code after editing `.claude/settings.json`.
@@ -103,7 +135,7 @@ The Bash guard is intentionally narrow. It should not block normal repo work suc
    - `PostToolUse` with matcher `Bash`
    - `Stop`
 3. Ask Claude to run a harmless repo command like `git status`; it should work.
-4. Ask Claude to run raw target-facing Bash like `nmap 10.0.0.5`; it should be blocked and redirected to Overwatch tools.
+4. With the engagement-active gate armed (`export OVERWATCH_ENGAGEMENT_ACTIVE=1`), ask Claude to run raw target-facing Bash like `nmap 10.0.0.5`; it should be blocked and redirected to Overwatch tools. (Without the gate armed — a plain dev checkout — it is intentionally allowed.)
 
 You can smoke-test the scripts outside Claude Code:
 
@@ -111,17 +143,18 @@ You can smoke-test the scripts outside Claude Code:
 npm run hooks:smoke
 ```
 
-Or run the underlying hook directly:
+Or run the underlying hook directly. The hooks are gated on an active engagement, so set
+`OVERWATCH_ENGAGEMENT_ACTIVE=1` to exercise the firing path:
 
 ```bash
 printf '%s' '{"tool_input":{"command":"nmap -sV 10.0.0.5"}}' \
-  | node .claude/hooks/overwatch-bash-guard.mjs
+  | OVERWATCH_ENGAGEMENT_ACTIVE=1 node .claude/hooks/overwatch-bash-guard.mjs
 
 printf '%s' '{"tool_input":{"command":"rg hooks docs"}}' \
-  | node .claude/hooks/overwatch-bash-guard.mjs
+  | OVERWATCH_ENGAGEMENT_ACTIVE=1 node .claude/hooks/overwatch-bash-guard.mjs
 ```
 
-The first command should print a JSON denial. The second should print nothing and exit successfully.
+The first command should print a JSON denial. The second should print nothing and exit successfully. (Without `OVERWATCH_ENGAGEMENT_ACTIVE=1`, both print nothing — the gate keeps the hooks silent on dev checkouts.)
 
 Hooks are local Claude Code behavior. Tape attribution is server-side Overwatch behavior: when the in-process recorder starts, `/api/tape` and the activity log show `started_by` as `env`, `config`, or `dashboard`.
 

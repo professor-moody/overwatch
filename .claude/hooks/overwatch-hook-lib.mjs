@@ -31,6 +31,31 @@ const ENGAGEMENT_TERMS_RE = /\b(frontier|objective|target|recon|scan|exploit|cre
 const DEV_TERMS_RE = /\b(commit|push|git|docs?|markdown|typescript|codebase|refactor|test|build|tsc|mkdocs|package\.json|settings\.json|claude\.md|agents\.md|hook|file|repo|diff|branch)\b/i;
 const TRANSCRIPT_SCAN_LINES = 500;
 
+/**
+ * Is an Overwatch ENGAGEMENT actually active right now? The anti-drift hooks are
+ * engagement controls, not dev controls — on a checkout where you're *developing*
+ * Overwatch every text heuristic false-positives (this codebase is saturated with
+ * `mcp`/`session`/`finding`/`target`/`scan`), which trains the operator to ignore the
+ * reminders. So every hook AND-gates on this: silent unless an engagement is live.
+ *
+ * Signals (cheap + synchronous): an explicit `OVERWATCH_ENGAGEMENT_ACTIVE` toggle wins;
+ * otherwise we treat the server's own config pointer (`OVERWATCH_CONFIG` → an existing
+ * file) as "an engagement is configured." A dev checkout sets neither in the Claude Code
+ * env (the example .mcp.json sets OVERWATCH_CONFIG for the SERVER subprocess, not the
+ * shell), so the hooks stay quiet. Operators running an engagement export one of them
+ * (see docs/claude-hooks.md). NB the soft reminders + the Stop block fail-OPEN here (a
+ * missed reminder is harmless); the Bash deny is best-effort either way — the real
+ * "never touch targets outside Overwatch" boundary is the MCP/engine layer (sole creds +
+ * egress), not this regex.
+ */
+export function isEngagementActive() {
+  const flag = process.env.OVERWATCH_ENGAGEMENT_ACTIVE;
+  if (flag != null && flag !== '') return /^(1|true|yes|on)$/i.test(flag);
+  const cfg = process.env.OVERWATCH_CONFIG;
+  if (cfg && existsSync(cfg)) return true;
+  return false;
+}
+
 export async function readHookInput() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
@@ -140,6 +165,8 @@ function extractToolResponseText(value) {
 }
 
 export function shouldInjectUserContext(input) {
+  // Engagement control: stay silent entirely on a dev checkout (no active engagement).
+  if (!isEngagementActive()) return false;
   const prompt = getUserPrompt(input);
   if (!prompt) return true;
   if (isLikelyEngagementPrompt(prompt)) return true;
