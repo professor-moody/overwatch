@@ -7,7 +7,7 @@ import type { GraphEngine } from './graph-engine.js';
 import type { EngagementConfig, EngagementState, AgentTask, LabProfile } from '../types.js';
 import { inferProfile } from '../types.js';
 import { timeToExpiry } from './credential-utils.js';
-import { doneTestFor } from './agent-archetypes.js';
+import { doneTestFor, isArchetypeId } from './agent-archetypes.js';
 import type { TechniqueStats } from './knowledge-base.js';
 
 interface PromptContext {
@@ -294,13 +294,16 @@ function leanBriefSection(state: EngagementState, agent: AgentTask): string {
   if (agent.archetype) lines.push(`- **Archetype:** ${agent.archetype}`);
   lines.push(`- **Objective:** ${frontierItem ? frontierItem.description : 'see get_agent_context for your task.'}`);
   // Prefer the archetype's registry-sourced success criterion; fall back to a
-  // generic frontier-type-synthesized one only when no archetype is set.
-  const doneCriterion = agent.archetype
+  // generic frontier-type-synthesized one when the archetype is absent OR an
+  // unknown id (don't silently render the default archetype's criterion).
+  const doneCriterion = isArchetypeId(agent.archetype)
     ? doneTestFor(agent.archetype)
     : (frontierItem
       ? `the expected discoveries for this ${frontierItem.type} are landed as graph nodes/edges`
       : 'the expected discoveries are landed in the graph');
-  lines.push(`- **Done when:** ${doneCriterion}, or you have confirmed no in-scope path remains (report NO_PATH). Don't keep going past that.`);
+  // NO_PATH escape is its own sentence — several done-tests already carry an
+  // "or …" alternative, so chaining another "or" here would double it.
+  lines.push(`- **Done when:** ${doneCriterion}. If no in-scope path remains, report NO_PATH rather than pushing past it.`);
   const scopeIds = agent.subgraph_node_ids ?? [];
   if (scopeIds.length) {
     // Cap the inline list so a scope-wide archetype (hundreds of nodes) can't
