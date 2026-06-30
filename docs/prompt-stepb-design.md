@@ -29,7 +29,7 @@ shape under-constrains long-running/ambiguous tasks.
 After the real-model A/B + the orient-first fix (see Results), **`lean` was promoted
 to the default** sub-agent prompt. `control` is kept as a **one-release rollback**:
 
-- **Default (lean):** `get_agent_context(role="sub_agent")` renders `lean` for every
+- **Default (lean):** `get_system_prompt(role="sub_agent")` renders `lean` for every
   dispatched sub-agent — no flag needed.
 - **Rollback to control:** `export OVERWATCH_PROMPT_VARIANT=control` (or
   `generateSystemPrompt(…, { variant: 'control' })`).

@@ -22,9 +22,9 @@ export interface GeneratePromptOptions {
   include_state?: boolean;
   include_tools?: boolean;
   max_prompt_tokens?: number;
-  /** Sub_agent prompt variant for the behavior-eval A/B (control = current,
-   *  lean = step-(b) context-first restructure). Resolved from this option, then
-   *  the OVERWATCH_PROMPT_VARIANT env, then 'control'. */
+  /** Sub_agent prompt variant (lean = the promoted default context-first prompt;
+   *  control = the prior prompt, kept as a rollback). Resolved from this option,
+   *  then the OVERWATCH_PROMPT_VARIANT env, then DEFAULT_SUBAGENT_VARIANT ('lean'). */
   variant?: PromptVariant;
 }
 
