@@ -46,6 +46,23 @@ async function main() {
     if (parsed.archetype) childArchetype = parsed.archetype;
   } catch { /* context optional for the fake */ }
 
+  if (mode === 'auto' && !childArchetype) {
+    // PRIMARY orchestrator (orchestrator task → no archetype): scripted loop for the
+    // deterministic plumbing smoke — orient → externalize a decision → dispatch a
+    // matched child → re-orient (synthesize) → close. The dispatched child runs as a
+    // fake 'auto' child (it HAS an archetype) and lands type-appropriate findings, so
+    // the whole orchestration pipeline is exercised without a real model.
+    await client.callTool({ name: 'get_state', arguments: {} });
+    await client.callTool({ name: 'log_thought', arguments: { kind: 'decision', thought: 'orchestrate: dispatch recon for the host frontier' } });
+    await client.callTool({ name: 'register_agent', arguments: { agent_id: `child-${taskId}`, archetype: 'recon_scanner' } });
+    await client.callTool({ name: 'get_state', arguments: {} }); // synthesize: re-orient after dispatching
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: 'fake orchestration: dispatched 1 recon child' } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: 'fake orchestration done' } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
+
   if (mode === 'auto') {
     // Orchestration-eval child: land findings matched to THIS child's archetype
     // (read from get_agent_context above) so a real PRIMARY's dispatch→synthesize

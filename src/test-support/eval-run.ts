@@ -13,6 +13,8 @@ import { createOverwatchApp, startHttpApp, shutdownOverwatchApp } from '../app.j
 import { parseEngagementConfig } from '../config.js';
 import type { AgentTask } from '../types.js';
 import type { RunRecord, ToolCall, ActivityLite } from '../services/eval-rubric.js';
+import type { OrchRunRecord } from '../services/eval-orchestration-rubric.js';
+import { recommendArchetype, isArchetypeId } from '../services/agent-archetypes.js';
 import type { EvalScenario } from './eval-scenarios.js';
 
 const FAKE_CLAUDE = resolve('./src/test-support/fake-claude.mjs');
@@ -213,6 +215,138 @@ export async function runEvalScenario(scenario: EvalScenario, opts: EvalRunOptio
     const cleanup = async () => {
       restoreEnv();
       await shutdownOverwatchApp(runningApp).catch(() => { /* ignore */ });
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    };
+    return { record, usageTokens: tokens, costUsd, cleanup };
+  } catch (err) {
+    restoreEnv();
+    if (app) await shutdownOverwatchApp(app).catch(() => { /* ignore */ });
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+// ============================================================
+// Orchestration eval — run a PRIMARY orchestrator (Move 3)
+// ============================================================
+// Boots an app whose runner default binary is fake-claude (so dispatched children
+// are fake + cheap), seeds a multi-frontier graph, and runs ONE orchestrator task.
+// The primary's binary overrides to the real `claude` for the A/B (default fake for
+// the deterministic plumbing smoke). 'auto' fake mode: the primary (no archetype)
+// orchestrates; children (archetype) land type-matched findings. Returns an
+// OrchRunRecord for gradeOrchestration().
+
+const ORCH_SEED_NODES: Array<Record<string, unknown>> = [
+  { id: 'orch-host-a', type: 'host', label: '10.10.30.1', ip: '10.10.30.1', alive: true },
+  { id: 'orch-host-b', type: 'host', label: '10.10.30.2', ip: '10.10.30.2', alive: true },
+  { id: 'orch-web', type: 'webapp', label: 'http://10.10.30.3', url: 'http://10.10.30.3' },
+  { id: 'orch-cred', type: 'credential', label: 'aws-key-orch', cred_type: 'token', cred_material_kind: 'token' },
+];
+
+export interface OrchEvalOptions {
+  /** The PRIMARY's binary. Default fake-claude (deterministic smoke); pass 'claude' for the real A/B. */
+  claudeBinary?: string;
+  model?: string;
+  maxTurns?: number;
+  variant?: string;
+  timeoutMs?: number;
+}
+
+export interface OrchEvalResult {
+  record: OrchRunRecord;
+  usageTokens: number;
+  costUsd?: number;
+  cleanup: () => Promise<void>;
+}
+
+export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Promise<OrchEvalResult> {
+  const primaryBinary = opts.claudeBinary ?? FAKE_CLAUDE;
+  const usingFakePrimary = primaryBinary === FAKE_CLAUDE;
+  chmodSync(FAKE_CLAUDE, 0o755);
+
+  const prev = {
+    mode: process.env.OVERWATCH_FAKE_MODE,
+    bin: process.env.OVERWATCH_CLAUDE_BINARY,
+    variant: process.env.OVERWATCH_PROMPT_VARIANT,
+    actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
+  };
+  // 'auto': primary (no archetype) orchestrates; children (archetype) land findings.
+  // Runner default = fake so dispatched children are cheap; the primary task overrides
+  // to the real binary for the A/B.
+  process.env.OVERWATCH_FAKE_MODE = 'auto';
+  process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
+  process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
+  if (!usingFakePrimary) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
+  const restoreEnv = () => {
+    const set = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+    set('OVERWATCH_FAKE_MODE', prev.mode);
+    set('OVERWATCH_CLAUDE_BINARY', prev.bin);
+    set('OVERWATCH_PROMPT_VARIANT', prev.variant);
+    set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
+  };
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'ow-orch-eval-'));
+  const logDir = join(tempDir, 'agents');
+  let app: ReturnType<typeof createOverwatchApp> | undefined;
+  try {
+    const config = parseEngagementConfig(rawConfig);
+    config.opsec = { ...config.opsec, approval_timeout_ms: 3000 } as typeof config.opsec;
+    app = createOverwatchApp({
+      config,
+      skillDir: resolve('./skills'),
+      dashboardPort: 0,
+      stateFilePath: join(tempDir, `state-${config.id}.json`),
+      taskExecution: {
+        headless: {
+          claudeBinary: FAKE_CLAUDE,
+          logDir,
+          maxTurns: opts.maxTurns ?? 14,
+          permissionMode: usingFakePrimary ? undefined : 'bypassPermissions',
+          extraArgs: opts.model ? ['--model', opts.model] : undefined,
+        },
+      },
+    });
+    await startHttpApp(app, { port: 0, host: '127.0.0.1' });
+
+    app.engine.ingestFinding({ id: 'seed-orch', agent_id: 'seed', timestamp: new Date().toISOString(), nodes: ORCH_SEED_NODES, edges: [] } as never);
+    const beforeCount = app.engine.exportGraph().nodes.length;
+
+    const taskId = 'eval-orch';
+    app.engine.registerAgent({
+      id: taskId, agent_id: 'agent-orch', assigned_at: new Date().toISOString(), status: 'running',
+      subgraph_node_ids: [], backend: 'headless_mcp', orchestrator: true, claudeBinary: primaryBinary,
+      objective: 'Manage the engagement: score the frontier, dispatch the right agents, synthesize findings, progress the objectives.',
+    } as AgentTask);
+
+    const deadline = opts.timeoutMs ?? (usingFakePrimary ? 30000 : 600000);
+    await waitFor(() => { const s = app!.engine.getTask(taskId)?.status; return s === 'completed' || s === 'failed' || s === 'interrupted'; }, deadline);
+    // Let any dispatched children settle so their findings land before we grade.
+    await waitFor(() => app!.taskExecution.activeHeadlessCount() === 0, Math.min(deadline, 60000));
+
+    const logPath = join(logDir, `${taskId}.ndjson`);
+    const ndjson = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+    const { tokens, costUsd } = parseUsage(ndjson);
+    const toolCalls = extractToolCalls(ndjson).map(c => ({ tool: c.tool }));
+
+    // Dispatched children = every agent task other than the primary. (Children
+    // registered via register_agent carry no persisted `backend` — it resolves to
+    // headless at runtime when an endpoint is set — so don't filter on it.)
+    const children = app.engine.getAgentTasks().filter(t => t.id !== taskId);
+    const dispatches = children.map(c => {
+      let matchedFrontier = !!c.archetype && isArchetypeId(c.archetype) && c.archetype !== 'default';
+      if (c.frontier_item_id) {
+        const fi = app!.engine.getFrontierItem(c.frontier_item_id);
+        if (fi) matchedFrontier = c.archetype === recommendArchetype({ frontierType: fi.type });
+      }
+      return { archetype: c.archetype ?? 'default', matchedFrontier };
+    });
+
+    const afterCount = app.engine.exportGraph().nodes.length;
+    const record: OrchRunRecord = { toolCalls, dispatches, newNodeCount: Math.max(0, afterCount - beforeCount) };
+
+    const cleanup = async () => {
+      restoreEnv();
+      await shutdownOverwatchApp(app!).catch(() => { /* ignore */ });
       try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
     return { record, usageTokens: tokens, costUsd, cleanup };
