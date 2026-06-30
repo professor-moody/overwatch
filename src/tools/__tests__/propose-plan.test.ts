@@ -47,6 +47,34 @@ describe('propose_plan — validation + recording', () => {
     expect(events).toHaveLength(1);
   });
 
+  it('attaches a scope-impact preview for a plan with a scope op', () => {
+    // Seed an in-scope host, then preview an exclusion that would push it out.
+    engine.ingestFinding({
+      id: 'f1', agent_id: 'a1', timestamp: new Date().toISOString(),
+      nodes: [{ id: 'host-10-10-10-50', type: 'host', label: '10.10.10.50', ip: '10.10.10.50', alive: true, discovered_at: new Date().toISOString(), confidence: 1.0 }], edges: [],
+    } as never);
+    const r = recordProposedPlan(engine, {
+      summary: 'tighten scope', ops: [{ op: 'scope', add_exclusions: ['10.10.10.50'] }],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.scope_preview).toBeDefined();
+      // the seeded in-scope host transitions OUT under the proposed exclusion
+      expect(r.scope_preview?.newly_excluded_count).toBeGreaterThanOrEqual(1);
+      // the preview is persisted on the stored plan (the confirm UI reads it)
+      expect(engine.getProposedPlanStore().get(r.plan_id)?.scope_preview?.newly_excluded_count).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('omits scope_preview for a plan with no scope ops', () => {
+    engine.registerAgent(runningTask('task-1', 'a1'));
+    const r = recordProposedPlan(engine, {
+      summary: 'pause', ops: [{ op: 'directive', task_id: 'task-1', agent_label: 'a1', kind: 'pause' }],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.scope_preview).toBeUndefined();
+  });
+
   it('REJECTS the whole plan when a directive targets a non-existent task', () => {
     const r = recordProposedPlan(engine, {
       summary: 'pause ghost', ops: [{ op: 'directive', task_id: 'ghost', agent_label: '?', kind: 'pause' }],

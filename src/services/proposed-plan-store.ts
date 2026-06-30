@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'crypto';
 import type { OperatorOp } from './command-interpreter.js';
+import type { ScopePreview } from './scope-preview.js';
 
 export type ProposedPlanStatus = 'open' | 'confirmed' | 'denied' | 'expired';
 
@@ -29,6 +30,8 @@ export interface ProposedPlan {
   /** The planner task/agent that produced this plan (for correlation + console attribution). */
   source_task_id?: string;
   source_agent_id?: string;
+  /** Dry-run scope-impact preview, present when the plan has scope op(s). */
+  scope_preview?: ScopePreview;
   created_at: number;
   status: ProposedPlanStatus;
 }
@@ -40,6 +43,7 @@ export interface AddProposedPlanArgs {
   rationale?: string;
   source_task_id?: string;
   source_agent_id?: string;
+  scope_preview?: ScopePreview;
   /** Injectable clock (ms) for deterministic tests. Defaults to Date.now(). */
   now?: number;
 }
@@ -73,6 +77,7 @@ export class ProposedPlanStore {
       rationale: args.rationale,
       source_task_id: args.source_task_id,
       source_agent_id: args.source_agent_id,
+      scope_preview: args.scope_preview,
       created_at: now,
       status: 'open',
     };
