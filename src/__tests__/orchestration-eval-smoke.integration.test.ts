@@ -13,7 +13,7 @@ import { resolve } from 'path';
 import { chmodSync } from 'fs';
 import { createServer } from 'net';
 import { runOrchestrationScenario, type OrchEvalResult } from '../test-support/eval-run.js';
-import { gradeOrchestration } from '../services/eval-orchestration-rubric.js';
+import { gradeOrchestration, ORCH_CRITERIA } from '../services/eval-orchestration-rubric.js';
 
 const supportsLocalListen = await new Promise<boolean>((res) => {
   const srv = createServer();
@@ -41,7 +41,7 @@ describe.skipIf(!supportsLocalListen)('orchestration eval pipeline smoke (fake)'
     expect(last.record.newNodeCount).toBeGreaterThan(0);
 
     const g = gradeOrchestration(last.record);
-    expect(g.criteria).toHaveLength(6);
+    expect(g.criteria).toHaveLength(ORCH_CRITERIA.length);
     expect(g.criteria.find(c => c.criterion === 'dispatches')!.score).toBe(1);
     expect(g.criteria.find(c => c.criterion === 'archetype_match')!.score).toBe(1);
     expect(g.criteria.find(c => c.criterion === 'objective_progress')!.score).toBe(1);

@@ -361,7 +361,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
           matchedFrontier = c.archetype === recommendArchetype({ frontierType: fi.type, nodeType });
         }
       }
-      return { archetype: c.archetype ?? 'default', matchedFrontier };
+      return { archetype: c.archetype ?? 'default', matchedFrontier, target: c.frontier_item_id };
     });
 
     // newNodeCount = graph delta over the run. In the fake smoke the only post-seed
