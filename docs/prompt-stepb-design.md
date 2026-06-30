@@ -120,18 +120,40 @@ What the data actually says:
   targets and carry little signal — a fuller eval needs targets agents can actually
   act on.
 
-**Verdict — do NOT promote lean as-is.** It's directionally positive (wins the
-safety criterion everywhere; net-positive on 2 of 3 scenarios) but carries one
-confirmed, concrete regression. **Next step:** iterate the lean prompt to fix
-orient-first — strengthen ORIENT / require `get_agent_context` before acting, or
-trim the Brief's inline target-node detail so the agent still needs the tool — then
-re-eval. The fix is local; lean already wins on validate/threading, so removing the
-orientation regression would likely make it a clear win.
-
 > Run notes: one web trial ran away to ~2.6M tokens (vs ~450k typical), which spiked
 > the budget guard's **max-based** adaptive estimate and truncated the first n=5 batch
 > early (cloud was completed in a follow-up run). A percentile-based estimate would
 > be more robust to a single outlier.
+
+### Orient-first fix + re-eval
+
+The diagnosis above drove a targeted lean change: **remove the inline target-node
+property dump from the Brief** (the redundant bit — those details come from
+`get_agent_context`) and make **ORIENT explicitly "always your first action."** The
+Brief keeps its context-first framing (objective / done-when / scope-ids on top) but
+no longer substitutes for the orientation call. Re-ran lean at n=5 vs the same cached
+control (~$1.67):
+
+| Scenario | control | lean (pre-fix) | lean (**fixed**) | Δ vs control | `starts_with_context` |
+|----------|---------|----------------|------------------|--------------|----------------------|
+| recon | 0.501 | 0.444 | **0.497** | −0.004 (tied) | 1.00 |
+| web | 0.120 | 0.183 | **0.214** | **+0.094** | 0.40 → **0.60** |
+| cloud | 0.378 | 0.511 | **0.533** | **+0.156** | 0.80 → **1.00** ✓ |
+
+- **The cloud regression is eliminated** (`starts_with_context` 0.80→1.00; cloud now
+  has *no* per-criterion regressions) and **web more than halved** it (0.40→0.60).
+- **All overalls improved**, and the validate/threading gains held.
+- **recon is now tied** (−0.004) — and on the real criteria it's *better* (validate
+  0.16→0.47, threading 0→0.14); the gap is the noisy `objective_progress` again.
+
+**Verdict — lean (with the orient-first fix) is net-positive on all three scenarios**
+(web +0.09, cloud +0.16, recon tied/better-on-real-criteria), wins the 2×-weighted
+safety criterion everywhere, and no longer carries the big regression. It is a
+defensible **promote** candidate. Residual: web `starts_with_context` is 0.60, not
+1.00 — but it's a 1×-weight criterion and arguably partly inherent (for a single-URL
+web target the agent rationally jumps to acting). Options: promote now, or do one
+more web-specific orientation tweak first. Promotion (flip the default + AGENTS.md /
+docs lockstep) remains a separate, deliberate step.
 
 ## Known weak spots (carried, not hidden)
 

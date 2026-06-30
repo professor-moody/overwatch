@@ -251,14 +251,14 @@ function generateLeanSubAgentPrompt(
   state: EngagementState,
   scopedTools: ToolEntry[],
   options: GeneratePromptOptions,
-  engine: GraphEngine,
+  _engine: GraphEngine,
   agent?: AgentTask,
 ): string {
   const sections: string[] = [
     leanIdentitySection(),
   ];
   if (options.include_state !== false && agent) {
-    sections.push(leanBriefSection(state, agent, engine));
+    sections.push(leanBriefSection(state, agent));
   }
   if (options.include_tools !== false) {
     sections.push(generateToolTableSection(scopedTools));
@@ -277,7 +277,7 @@ function leanIdentitySection(): string {
 You run one scoped task in an authorized offensive engagement. Your memory is the Overwatch graph — orient from it, and land every result back into it. Anything you only describe in prose is invisible to the rest of the engagement.`;
 }
 
-function leanBriefSection(state: EngagementState, agent: AgentTask, engine: GraphEngine): string {
+function leanBriefSection(state: EngagementState, agent: AgentTask): string {
   const frontierItem = agent.frontier_item_id ? state.frontier.find(f => f.id === agent.frontier_item_id) : undefined;
   const lines = [
     '## Brief',
@@ -310,29 +310,13 @@ function leanBriefSection(state: EngagementState, agent: AgentTask, engine: Grap
   }
   if (agent.skill) lines.push(`- **Skill:** ${agent.skill} — fetch the full methodology with get_skill({ name }).`);
 
-  // Concrete properties of the scoped target nodes (≤3) — high-signal, kept.
-  if (scopeIds.length) {
-    const snippets: string[] = [];
-    for (const nid of scopeIds.slice(0, 3)) {
-      const node = engine.getNode(nid);
-      if (!node) continue;
-      const props: string[] = [`type=${node.type}`, `label=${node.label}`];
-      if (node.ip) props.push(`ip=${node.ip}`);
-      if (node.hostname) props.push(`hostname=${node.hostname}`);
-      if (node.version) props.push(`version=${node.version}`);
-      if (node.cred_type) props.push(`cred_type=${node.cred_type}`);
-      if (node.credential_status) props.push(`credential_status=${node.credential_status}`);
-      snippets.push(`  - \`${nid}\`: ${props.join(', ')}`);
-    }
-    if (snippets.length) {
-      lines.push('- **Target nodes:**');
-      lines.push(...snippets);
-      if (scopeIds.length > snippets.length) lines.push(`  - … and ${scopeIds.length - snippets.length} more in scope`);
-    }
-  }
-
+  // NOTE: this Brief deliberately lists scope by id but NOT the nodes' properties.
+  // An earlier revision inlined the target-node details here, and the real-model
+  // A/B showed it suppressed orient-first — the agent felt it already had its
+  // context and skipped get_agent_context. Keeping the node details out (they come
+  // from get_agent_context) forces a genuine orientation step.
   lines.push('');
-  lines.push('get_agent_context is the authoritative live view; the values above are the spawn-time snapshot and may be stale.');
+  lines.push('**This Brief is only the spawn-time snapshot** — it names your scope by id but not the nodes\' properties or live state. Your **first action is `get_agent_context`** (loads the actual subgraph + the authoritative, current objective); do not act on this Brief alone.');
   return lines.join('\n');
 }
 
@@ -341,7 +325,7 @@ function leanLoopSection(): string {
 
 Reason briefly with \`log_thought\` before each phase; skip a phase only when its precondition is already met.
 
-1. **ORIENT** — call \`get_agent_context\` first for your scoped subgraph + objective. Overwatch tools load on demand (the MCP server can boot \`status: pending\` with zero tools); if a tool you need isn't available, find it with \`ToolSearch\` before assuming it's absent.
+1. **ORIENT (always your first action)** — call \`get_agent_context\` before anything else. The Brief only lists your scope by id; this is where you load the actual node details, full subgraph, and current objective. Do not start with an execute. (Overwatch tools load on demand — the MCP server can boot \`status: pending\` with zero tools; if a tool you need isn't available, find it with \`ToolSearch\` before assuming it's absent.)
 2. **VALIDATE** — call \`validate_action\` before any execute. It returns an \`action_id\` and echoes \`frontier_item_id\` — copy both into the calls that follow; don't invent them.
 3. **EXECUTE** — prefer \`run_tool\` (binary + argv, no shell) or \`run_bash\` (only when you need shell features); both fold validation, the approval gate, action lifecycle logging, and evidence capture into one call. For custom tooling, do the manual \`validate_action\` → \`log_action_event(action_started)\` → execute → \`log_action_event(action_completed|action_failed)\` flow.
 4. **LAND** — record results immediately: \`parse_output\` for supported tool output, \`report_finding\` for manual observations. Pass \`action_id\` + \`frontier_item_id\`. No prose-only findings — an unrecorded discovery doesn't exist.
