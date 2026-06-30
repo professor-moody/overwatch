@@ -2,6 +2,7 @@
 
 import {
   getRecentUserPrompt,
+  isEngagementActive,
   isLikelyEngagementPrompt,
   readHookInput,
   readRecentTranscript,
@@ -12,6 +13,12 @@ import {
 const input = await readHookInput();
 
 if (input?.stop_hook_active === true) {
+  process.exit(0);
+}
+
+// Engagement control only — don't block turn completion while developing Overwatch
+// itself (the text heuristics below match this codebase's own vocabulary).
+if (!isEngagementActive()) {
   process.exit(0);
 }
 

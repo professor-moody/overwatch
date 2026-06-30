@@ -3,6 +3,7 @@
 import {
   denyPreToolUse,
   getBashCommand,
+  isEngagementActive,
   isLikelyTargetFacingCommand,
   readHookInput,
   suggestedOverwatchRoute,
@@ -12,7 +13,8 @@ import {
 const input = await readHookInput();
 const command = getBashCommand(input);
 
-if (isLikelyTargetFacingCommand(command)) {
+// Engagement control only — never block raw Bash while developing Overwatch itself.
+if (isEngagementActive() && isLikelyTargetFacingCommand(command)) {
   writeHookOutput(denyPreToolUse([
     'Target-facing raw Bash is blocked for Overwatch engagements.',
     'Route this through Overwatch run_tool/run_bash or open_session/send_to_session so scope validation, action logging, evidence capture, and parse/report follow-up are preserved.',
