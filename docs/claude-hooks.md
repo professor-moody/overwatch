@@ -126,6 +126,30 @@ under the gate — a missed reminder is harmless. The `Bash` deny is best-effort
 the real "never touch targets outside Overwatch" boundary is the MCP/engine layer (sole
 credentials + egress control), not this regex.
 
+## Known gaps (assessed, deferred)
+
+An adversarial red-team of these hooks (28 findings) confirmed the gate above is the
+highest-value fix; the following gaps were assessed and **deliberately deferred** — they
+are not yet addressed:
+
+- **The `Bash` deny is porous.** `TARGET_TOOL_RE` is a closed allowlist beaten by a path
+  prefix (`/usr/bin/nmap`), a quote, command substitution, a target hidden in a variable
+  or an `-iL` file, or a tool not on the list (e.g. evil-winrm, hydra, responder, dig).
+  Treat it as a speed bump, not a boundary — the real control is the MCP/engine egress
+  layer (sole creds + scope validation), so chasing every regex bypass has low ROI.
+- **No coverage of the highest-leverage drift surfaces.** There is no matcher for the host
+  runtime's Task/subagent tool (delegating a whole step bypasses the frontier/lease/scope),
+  nor for `Write` or `WebFetch` (recon-to-disk / fetch off-graph).
+- **The `Stop` check is not turn-scoped.** It substring-scans the last ~500 transcript
+  lines, so a single `get_state()` (or even the literal `report_finding` quoted in prose)
+  suppresses the block for many later turns — the canonical "answered from memory" drift
+  can slip through. It should key on structured `tool_use` events for the current turn.
+- **No `SessionStart` / `PreCompact` hook.** CLAUDE.md's "call `get_system_prompt` at
+  session start and after compaction" mandate is enforced nowhere.
+
+If you pick these up, AND-gate each on `isEngagementActive()` (same as the rest) and add
+regression tests in `src/__tests__/claude-hooks.test.ts`.
+
 ## Verify hooks are active
 
 1. Restart Claude Code after editing `.claude/settings.json`.
