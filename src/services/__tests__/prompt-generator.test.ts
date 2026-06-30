@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolve } from 'path';
 import { existsSync, unlinkSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
-import { generateSystemPrompt, estimateTokens, DEFAULT_MAX_PROMPT_TOKENS, type ToolEntry } from '../prompt-generator.js';
+import { generateSystemPrompt, estimateTokens, resolvePrimaryVariant, DEFAULT_MAX_PROMPT_TOKENS, type ToolEntry } from '../prompt-generator.js';
 import { loadEngagementConfigFile } from '../../config.js';
 
 const config = loadEngagementConfigFile(resolve('./engagement.example.json'));
@@ -862,6 +862,50 @@ describe('prompt-generator', () => {
           expect(tight).toContain('compressed');
         }
       }
+    });
+  });
+
+  describe('contextfirst primary variant (Move 4)', () => {
+    const withEnv = (val: string | undefined, fn: () => void) => {
+      const prev = process.env.OVERWATCH_PRIMARY_VARIANT;
+      if (val === undefined) delete process.env.OVERWATCH_PRIMARY_VARIANT; else process.env.OVERWATCH_PRIMARY_VARIANT = val;
+      try { fn(); } finally {
+        if (prev === undefined) delete process.env.OVERWATCH_PRIMARY_VARIANT; else process.env.OVERWATCH_PRIMARY_VARIANT = prev;
+      }
+    };
+
+    it('control stays the default (no env, no option) — Core Loop, not the orchestration loop', () => {
+      withEnv(undefined, () => {
+        const prompt = generateSystemPrompt(createTestEngine(), MOCK_TOOLS, { role: 'primary' });
+        expect(prompt).toContain('## Core Loop');
+        expect(prompt).not.toContain('## Orchestration loop');
+      });
+    });
+
+    it('contextfirst leads with live state and uses the tight orchestration loop', () => {
+      const prompt = generateSystemPrompt(createTestEngine(), MOCK_TOOLS, { role: 'primary', primaryVariant: 'contextfirst' });
+      // Tight orchestration loop replaces the 12-step Core Loop.
+      expect(prompt).toContain('## Orchestration loop');
+      expect(prompt).not.toContain('## Core Loop');
+      // Context-first ordering: the live state snapshot precedes the loop.
+      const stateIdx = prompt.indexOf('## Current State Snapshot');
+      const loopIdx = prompt.indexOf('## Orchestration loop');
+      expect(stateIdx).toBeGreaterThan(0);
+      expect(stateIdx).toBeLessThan(loopIdx);
+      // Keeps the orchestrator's key affordances + motivated guardrails.
+      for (const tool of ['get_state', 'next_task', 'log_thought', 'dispatch_agents', 'validate_action', 'report_finding']) {
+        expect(prompt).toContain(tool);
+      }
+      expect(prompt).toContain('## Guardrails');
+    });
+
+    it('resolvePrimaryVariant resolves option > env > default', () => {
+      withEnv(undefined, () => expect(resolvePrimaryVariant({ role: 'primary' })).toBe('control'));
+      withEnv('contextfirst', () => {
+        expect(resolvePrimaryVariant({ role: 'primary' })).toBe('contextfirst');           // env
+        expect(resolvePrimaryVariant({ role: 'primary', primaryVariant: 'control' })).toBe('control'); // option wins
+      });
+      withEnv('bogus', () => expect(resolvePrimaryVariant({ role: 'primary' })).toBe('control')); // unknown env ignored
     });
   });
 });

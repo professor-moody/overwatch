@@ -27,6 +27,11 @@ export interface GeneratePromptOptions {
    *  control = the prior prompt, kept as a rollback). Resolved from this option,
    *  then the OVERWATCH_PROMPT_VARIANT env, then DEFAULT_SUBAGENT_VARIANT ('lean'). */
   variant?: PromptVariant;
+  /** PRIMARY/orchestrator prompt variant ('contextfirst' = the Move 4 context-first
+   *  restructure under A/B; 'control' = the shipped prompt, still the default).
+   *  Resolved from this option, then OVERWATCH_PRIMARY_VARIANT env, then
+   *  DEFAULT_PRIMARY_VARIANT ('control'). Separate from the sub_agent seam above. */
+  primaryVariant?: PrimaryPromptVariant;
 }
 
 // Sub_agent prompt variants. 'lean' is the step-(b) context-first restructure and
@@ -46,6 +51,30 @@ export function resolveSubAgentVariant(options: GeneratePromptOptions): PromptVa
   if (env && KNOWN_VARIANTS.includes(env)) return env as PromptVariant;
   return DEFAULT_SUBAGENT_VARIANT;
 }
+
+// PRIMARY/orchestrator prompt variants. 'contextfirst' is the Move 4 restructure
+// (lead with engagement state, a tight ORIENT→SCORE→DISPATCH→SYNTHESIZE loop, and
+// motivated guardrails — the same context-first approach the sub_agent 'lean' prompt
+// validated). Piloted via the orchestration behavior-eval (npm run orch-eval); 'control'
+// stays the DEFAULT until a clean A/B + operator sign-off promote it. Separate seam from
+// the sub_agent one so the two prompts move independently.
+export type PrimaryPromptVariant = 'control' | 'contextfirst';
+export const PRIMARY_PROMPT_VARIANTS: readonly PrimaryPromptVariant[] = ['control', 'contextfirst'];
+export const DEFAULT_PRIMARY_VARIANT: PrimaryPromptVariant = 'control';
+const KNOWN_PRIMARY_VARIANTS: readonly string[] = PRIMARY_PROMPT_VARIANTS;
+
+export function resolvePrimaryVariant(options: GeneratePromptOptions): PrimaryPromptVariant {
+  if (options.primaryVariant && KNOWN_PRIMARY_VARIANTS.includes(options.primaryVariant)) return options.primaryVariant;
+  const env = process.env.OVERWATCH_PRIMARY_VARIANT;
+  if (env && KNOWN_PRIMARY_VARIANTS.includes(env)) return env as PrimaryPromptVariant;
+  return DEFAULT_PRIMARY_VARIANT;
+}
+// NB the get_system_prompt MCP tool does NOT forward a variant, so at runtime the ENV
+// branch is the live selector (the headless primary calls get_system_prompt itself —
+// there's no option to thread through that boundary). The `options.primaryVariant` arm
+// exists for in-process unit tests; if a future caller routes the A/B arm via the option
+// instead of OVERWATCH_PRIMARY_VARIANT, expose a variant input on get_system_prompt too,
+// or both arms silently render control. This mirrors the sub_agent seam.
 
 // ============================================================
 // Token estimation — chars/4 heuristic (good enough for budgeting)
@@ -106,6 +135,12 @@ function generatePrimaryPrompt(
   options: GeneratePromptOptions,
   engine: GraphEngine,
 ): string {
+  // Move 4: the 'contextfirst' restructure, piloted via the orchestration eval.
+  // 'control' is the shipped prioritized assembly below.
+  if (resolvePrimaryVariant(options) === 'contextfirst') {
+    return generateContextFirstPrimaryPrompt(state, tools, options, engine);
+  }
+
   const profile = inferProfile(state.config);
   const ctx: PromptContext = { state, engine };
   const maxTokens = options.max_prompt_tokens ?? state.config.max_prompt_tokens ?? DEFAULT_MAX_PROMPT_TOKENS;
@@ -133,6 +168,80 @@ function generatePrimaryPrompt(
   }
 
   return assembleSectionsWithinBudget(prioritized, maxTokens);
+}
+
+// ============================================================
+// Move 4 — 'contextfirst' primary/orchestrator prompt
+// ============================================================
+// Same affordances + engagement briefing, restructured the way the sub_agent 'lean'
+// prompt was: lead with the live engagement state (so the orchestrator scores a real
+// frontier, not an abstract loop), replace the 12-step linear Core Loop with a tight
+// 5-phase ORIENT→SCORE→DISPATCH→SYNTHESIZE→REPEAT loop framed around the orchestrator's
+// actual job (dispatch + synthesis, not hands-on execution), and one motivated
+// guardrails block in place of the generic key-principles. Piloted via the orchestration
+// behavior-eval (npm run orch-eval -- --variant contextfirst); control stays default.
+function generateContextFirstPrimaryPrompt(
+  state: EngagementState,
+  tools: ToolEntry[],
+  options: GeneratePromptOptions,
+  engine: GraphEngine,
+): string {
+  const ctx: PromptContext = { state, engine };
+  const profile = inferProfile(state.config);
+  // Authored order (like 'lean'): briefing → live state → tools → loop → guardrails →
+  // tactics → profile → anti-patterns. Direct join keeps the context-first ORDER the
+  // priority assembler would otherwise re-sort away.
+  // PROMOTION-BLOCKER: unlike the control path, this does NOT run
+  // assembleSectionsWithinBudget, so on a large engagement the prompt can exceed
+  // max_prompt_tokens (the eval seed state is small, so it doesn't bite the A/B). Add
+  // order-preserving budget trimming here before making 'contextfirst' the default.
+  const sections: string[] = [generateIdentitySection(state.config)];
+
+  if (options.include_state !== false) {
+    sections.push(generateStateSnapshotSection(state));
+    const situational = generateSituationalSection(ctx);
+    if (situational) sections.push(situational);
+  }
+  if (options.include_tools !== false) {
+    sections.push(generateToolTableSection(tools));
+  }
+  sections.push(cfPrimaryLoopSection(!!state.config.opsec?.enabled));
+  sections.push(cfPrimaryGuardrailsSection());
+
+  const tactical = generateTacticalSection();
+  if (tactical) sections.push(tactical);
+  const profileHints = getProfileHints(profile);
+  if (profileHints) sections.push(`## Profile guidance (${profile})\n\n${profileHints}`);
+  const antiPatterns = generateAntiPatternsSection(ctx);
+  if (antiPatterns) sections.push(antiPatterns);
+
+  return sections.join('\n\n');
+}
+
+function cfPrimaryLoopSection(opsecEnabled: boolean): string {
+  const scoreNoise = opsecEnabled ? ', is worth the noise for our OPSEC profile' : '';
+  const vetoNote = opsecEnabled ? 'out-of-scope, duplicate, and OPSEC-vetoed items already removed' : 'out-of-scope and duplicate items already removed';
+  return `## Orchestration loop
+
+Run this loop. Reason briefly with \`log_thought\` before each decision; skip a phase only when its precondition already holds.
+
+1. **ORIENT** — start every session (and every resume after compaction) with \`get_state()\`. It is the whole briefing from the graph — scope, discoveries, access, objectives, and the scored frontier. Reason from it, never from memory of a prior turn. (Overwatch tools load on demand; if one you need isn't present, find it with \`ToolSearch\` before assuming it's gone.)
+2. **SCORE** — call \`next_task()\` for the candidate frontier (${vetoNote}) and rank what's left: which item opens a multi-step chain, fits the target's posture, must sequence before others${scoreNoise}, and moves an objective closer. **Externalize the choice** — \`log_thought({ kind: "decision", thought, frontier_item_id, considered_alternatives })\` before you commit — it's how the engagement remembers *why*, and how that survives compaction. Use \`query_graph()\` when the frontier misses a pattern you can see.
+3. **DISPATCH** — send work in parallel with \`dispatch_agents()\` (\`register_agent()\` for a one-off). **You don't pick the tool surface — dispatch does:** each agent is auto-assigned the right archetype from its frontier item (recon_scanner for network/host, web_tester for webapps, credential_operator for credential/identity, post_exploit for pivots, cve_researcher for CVEs, osint_recon for passive external recon); pass \`archetype\` only to override. Prefer Overwatch dispatch over the host runtime's Task tool — only Overwatch agents carry a frontier_item_id, lease, and dashboard surface. (\`credential_test\` items with a \`cred_value\` auto-resolve via the scripted runner when the dashboard runs — don't dispatch those unless they need real reasoning.)
+4. **SYNTHESIZE** — dispatch is fire-and-forget, so poll \`get_state({ since: <last poll ts> })\`; its \`changes_since\` digest shows how many findings landed and which agents finished. **The moment an agent completes** (an \`agent_transcript_submitted\` event, or status \`completed\`/\`interrupted\`), read its \`result_summary\` + landed findings, fold them in, **re-rank the frontier**, and re-dispatch or report — *now*, the way you act on a fresh credential, not next cycle. A newly-achievable objective is worth acting on immediately. An \`interrupted\` agent's partial work is salvaged to evidence (a \`salvaged\` transcript) — read it before re-dispatching the same item, so you build on it instead of repeating it.
+5. **REPEAT** until all objectives are met or the operator redirects.
+
+If you execute directly instead of dispatching: \`validate_action()\` (pass \`frontier_item_id\`) → \`run_tool\`/\`run_bash\` (these fold in the approval gate, action lifecycle logging, and evidence capture) → \`parse_output\`/\`report_finding\` (pass \`action_id\` + \`frontier_item_id\`). For custom tooling, do the manual \`validate_action\` → \`log_action_event(action_started)\` → execute → \`log_action_event(action_completed|action_failed)\` flow so the work links causally. Never leave a discovery in prose — the graph is what every other agent reads.`;
+}
+
+function cfPrimaryGuardrailsSection(): string {
+  return `## Guardrails
+
+- **Synthesize immediately — don't fire-and-forget.** A completed agent's findings have already reshaped the frontier; the highest-value moment is *now*, not next cycle. Polling and folding results in is the core of the job, not an afterthought.
+- **Dispatch the right archetype.** Let the frontier item pick it; a mismatched surface (recon on a webapp, web on a credential) wastes the agent and the turn.
+- **Externalize decisions before you commit.** A choice you don't \`log_thought\` is invisible to retrospective and lost on compaction — the reasoning, not just the action, is the record.
+- **Stay in scope and honor OPSEC.** The deterministic layer pre-filters the frontier, but the judgment call is yours; acting out of scope is a hard stop, not a risk trade.
+- **Land everything in the graph** — findings, decisions, outcomes. Prose-only is invisible to the rest of the engagement; the graph is the single source of truth.`;
 }
 
 function assembleSectionsWithinBudget(sections: PrioritizedSection[], maxTokens: number): string {

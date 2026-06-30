@@ -22,7 +22,8 @@
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import { runOrchestrationScenario } from '../test-support/eval-run.js';
-import { gradeOrchestration, type OrchRubricResult } from '../services/eval-orchestration-rubric.js';
+import { gradeOrchestration, compareOrchGrades, type OrchRubricResult } from '../services/eval-orchestration-rubric.js';
+import { PRIMARY_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { percentile, EST_TOKENS_PER_RUN, DEFAULT_MODEL } from './prompt-eval-lib.js';
 
 // An orchestrator's loop (orient → dispatch several children → synthesize) is heavier
@@ -39,6 +40,8 @@ export interface OrchArgs {
   budget: number;
   maxTurns: number;
   timeoutMs: number;
+  /** Candidate primary variant to A/B vs control (e.g. 'contextfirst'); undefined = single-arm calibration. */
+  variant?: string;
 }
 
 /** NaN-safe arg parsing (a bad --budget must not silently disable the guard). */
@@ -53,6 +56,7 @@ export function parseOrchArgs(argv: string[]): OrchArgs {
     budget: num(get('--budget'), DEFAULT_ORCH_BUDGET),
     maxTurns: num(get('--max-turns'), DEFAULT_ORCH_MAX_TURNS),
     timeoutMs: num(get('--timeout-ms'), DEFAULT_ORCH_TIMEOUT_MS),
+    variant: get('--variant'),
   };
 }
 
@@ -69,6 +73,7 @@ function printGrade(g: OrchRubricResult): void {
 
 /** Mean of a list of orchestration grades (criteria are in fixed order). */
 export function meanOrchGrade(grades: OrchRubricResult[]): OrchRubricResult {
+  if (grades.length === 0) throw new Error('meanOrchGrade: no trials (an arm ran zero trials — budget too small for the plan)');
   if (grades.length === 1) return grades[0];
   const n = grades.length;
   const criteria = grades[0].criteria.map((c, i) => ({
@@ -87,17 +92,19 @@ function printUsage(): void {
   orchestration rubric. Single-arm calibration today; Move 4 adds the A/B.
 
   Usage:
-    npm run orch-eval                            # this help (no spend)
-    npm run orch-eval -- --real [options]        # run (spends tokens)
+    npm run orch-eval                                  # this help (no spend)
+    npm run orch-eval -- --real [options]              # calibration (control only)
+    npm run orch-eval -- --real --variant contextfirst --trials 5 --yes   # A/B
 
   Options:
     --real              actually run a real-model primary (required to spend)
     --yes               skip the interactive cost confirmation
     --model <id>        primary model (default: ${DEFAULT_MODEL} — cheap)
-    --trials N          primary runs (default: 1)
+    --trials N          primary runs per arm (default: 1; A/B wants ~5 — high variance)
     --budget <tokens>   hard token ceiling; aborts before exceeding (default: ${DEFAULT_ORCH_BUDGET})
     --max-turns N       per-run turn cap (default: ${DEFAULT_ORCH_MAX_TURNS})
     --timeout-ms N      per-run wall-clock cap (default: ${DEFAULT_ORCH_TIMEOUT_MS})
+    --variant <name>    candidate primary prompt to A/B vs control: ${PRIMARY_PROMPT_VARIANTS.filter(v => v !== 'control').join(', ')}
 
   Children always run fake-claude (cheap). Only the primary spends real tokens.`);
 }
@@ -106,47 +113,74 @@ async function main(): Promise<void> {
   const args = parseOrchArgs(process.argv.slice(2));
   if (!args.real) { printUsage(); return; }
 
-  console.log(`Plan: orchestration calibration — up to ${args.trials} real PRIMARY run(s) on "${args.model}" (children fake).`);
+  if (args.variant) {
+    if (!PRIMARY_PROMPT_VARIANTS.includes(args.variant as never)) {
+      console.error(`Unknown --variant "${args.variant}". Known: ${PRIMARY_PROMPT_VARIANTS.join(', ')}.`);
+      process.exit(1);
+    }
+    if (args.variant === 'control') { console.error('--variant control is the baseline; pass a candidate (e.g. contextfirst) or omit --variant.'); process.exit(1); }
+  }
+
+  const arms = args.variant ? ['control', args.variant] : ['control'];
+  const totalRuns = arms.length * args.trials;
+  const mode = args.variant ? `A/B "${args.variant}" vs control` : 'control calibration';
+  console.log(`Plan: orchestration ${mode} — up to ${totalRuns} real PRIMARY run(s) on "${args.model}" (children fake; ${args.trials}/arm).`);
   console.log(`Cost guard: budget ${args.budget} tok · per-run cap ${args.maxTurns} turns · timeout ${args.timeoutMs}ms.`);
   if (!args.yes) {
-    const ok = await confirm(`Proceed with up to ${args.trials} real primary run(s) on "${args.model}"? [y/N] `);
+    const ok = await confirm(`Proceed with up to ${totalRuns} real primary run(s) on "${args.model}"? [y/N] `);
     if (!ok) { console.log('Aborted (pass --yes to skip this prompt).'); process.exit(0); }
   }
 
   // Budget: adaptive pre-run gate (p75 of observed runs, so one runaway can't strand
-  // the rest) + a hard post-run stop. A run in flight is bounded only by --max-turns,
-  // so total spend can exceed --budget by at most one run.
+  // the rest) + a hard post-run stop. A run in flight is bounded only by --max-turns.
+  // The budget is split EQUALLY per arm so the first arm (control) can't starve the
+  // candidate — an A/B with control n=5 / candidate n=2 would be unfair. An arm that
+  // exhausts its share BREAKS (keeps its trials) rather than process.exit, so the A/B
+  // comparison still prints for whatever each arm completed.
   const budget = { used: 0, cost: 0, runs: [] as number[] };
+  const perArmBudget = Math.floor(args.budget / arms.length);
   const estPerRun = (): number => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
 
-  const grades: OrchRubricResult[] = [];
-  for (let t = 0; t < args.trials; t++) {
-    if (budget.used + estPerRun() > args.budget) {
-      console.error(`\nBUDGET STOP before trial ${t + 1}: ${budget.used}/${args.budget} tokens used; next run would exceed the budget.`);
-      process.exit(2);
+  // Run one arm `args.trials` times → mean grade, bounded by its own per-arm budget share.
+  const runArm = async (arm: string): Promise<OrchRubricResult> => {
+    const grades: OrchRubricResult[] = [];
+    let armUsed = 0;
+    for (let t = 0; t < args.trials; t++) {
+      if (armUsed + estPerRun() > perArmBudget) {
+        console.error(`\nBUDGET STOP for [${arm}] before trial ${t + 1}: arm used ${armUsed}/${perArmBudget} (of ${args.budget} total); stopping this arm with ${grades.length} trial(s).`);
+        break;
+      }
+      const res = await runOrchestrationScenario({ claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, timeoutMs: args.timeoutMs, variant: arm });
+      armUsed += res.usageTokens;
+      budget.used += res.usageTokens;
+      budget.runs.push(res.usageTokens);
+      if (res.costUsd) budget.cost += res.costUsd;
+      const g = gradeOrchestration(res.record);
+      grades.push(g);
+      const r = res.record;
+      console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${res.usageTokens} tok · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
+      printGrade(g);
+      await res.cleanup();
     }
-    const res = await runOrchestrationScenario({ claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, timeoutMs: args.timeoutMs });
-    budget.used += res.usageTokens;
-    budget.runs.push(res.usageTokens);
-    if (res.costUsd) budget.cost += res.costUsd;
-    const g = gradeOrchestration(res.record);
-    grades.push(g);
-    // Calibration insight: the raw record tells us whether a real primary actually
-    // orients/dispatches/synthesizes (the deferred rubric-threshold questions).
-    const r = res.record;
-    console.log(`\ntrial ${t + 1}/${args.trials}: ${res.usageTokens} tok · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
-    printGrade(g);
-    await res.cleanup();
-    if (budget.used >= args.budget) {
-      console.error(`\nBUDGET REACHED after trial ${t + 1}: ${budget.used}/${args.budget} tokens used; stopping.`);
-      break;
-    }
+    if (grades.length < args.trials) console.error(`[${arm}] completed ${grades.length}/${args.trials} trials (budget-limited) — interpret the A/B with that asymmetry in mind.`);
+    return meanOrchGrade(grades);
+  };
+
+  const control = await runArm('control');
+  console.log(`\n=== control mean (${args.trials} trials) ===`);
+  printGrade(control);
+
+  if (args.variant) {
+    const candidate = await runArm(args.variant);
+    console.log(`\n=== ${args.variant} mean (${args.trials} trials) ===`);
+    printGrade(candidate);
+    const cmp = compareOrchGrades(control, candidate);
+    const flag = cmp.regressions.length
+      ? `REGRESSIONS — ${cmp.regressions.map(r => `${r.criterion} ${r.control.toFixed(2)}→${r.candidate.toFixed(2)}`).join(', ')}`
+      : 'no per-criterion regressions';
+    console.log(`\nA/B ${args.variant} vs control: overall ${control.overall.toFixed(3)} → ${candidate.overall.toFixed(3)} (Δ ${cmp.delta >= 0 ? '+' : ''}${cmp.delta.toFixed(3)}) · ${flag}`);
   }
 
-  if (grades.length > 1) {
-    console.log(`\nMean over ${grades.length} trials:`);
-    printGrade(meanOrchGrade(grades));
-  }
   console.log(`\nDone. ${budget.used} tokens used (budget ${args.budget})${budget.cost ? ` · ~$${budget.cost.toFixed(4)}` : ''}.`);
 }
 

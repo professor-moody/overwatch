@@ -193,3 +193,19 @@ export function gradeOrchestration(run: OrchRunRecord): OrchRubricResult {
   }));
   return { overall: criteria.reduce((s, c) => s + c.score * c.weight, 0), criteria };
 }
+
+export interface OrchComparison {
+  delta: number;
+  regressions: Array<{ criterion: OrchCriterion; control: number; candidate: number }>;
+}
+
+/** A/B a candidate orchestration grade against control: overall delta + per-criterion
+ *  regressions (candidate worse by more than `epsilon`, to ignore float noise). Mirrors
+ *  the sub-agent rubric's compareGrades. */
+export function compareOrchGrades(control: OrchRubricResult, candidate: OrchRubricResult, epsilon = 1e-9): OrchComparison {
+  const byCriterion = new Map(control.criteria.map(c => [c.criterion, c.score]));
+  const regressions = candidate.criteria
+    .filter(c => { const base = byCriterion.get(c.criterion); return base != null && c.score < base - epsilon; })
+    .map(c => ({ criterion: c.criterion, control: byCriterion.get(c.criterion)!, candidate: c.score }));
+  return { delta: candidate.overall - control.overall, regressions };
+}

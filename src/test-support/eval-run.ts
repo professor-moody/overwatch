@@ -268,6 +268,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     mode: process.env.OVERWATCH_FAKE_MODE,
     bin: process.env.OVERWATCH_CLAUDE_BINARY,
     variant: process.env.OVERWATCH_PROMPT_VARIANT,
+    primaryVariant: process.env.OVERWATCH_PRIMARY_VARIANT,
     actionTimeout: process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS,
   };
   // restoreEnv closes over `prev` (captured above) and only RESTORES, so it's safe to
@@ -278,6 +279,7 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     set('OVERWATCH_FAKE_MODE', prev.mode);
     set('OVERWATCH_CLAUDE_BINARY', prev.bin);
     set('OVERWATCH_PROMPT_VARIANT', prev.variant);
+    set('OVERWATCH_PRIMARY_VARIANT', prev.primaryVariant);
     set('OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS', prev.actionTimeout);
   };
 
@@ -289,7 +291,11 @@ export async function runOrchestrationScenario(opts: OrchEvalOptions = {}): Prom
     // to the real binary for the A/B.
     process.env.OVERWATCH_FAKE_MODE = 'auto';
     process.env.OVERWATCH_CLAUDE_BINARY = FAKE_CLAUDE;
-    process.env.OVERWATCH_PROMPT_VARIANT = opts.variant ?? 'control';
+    // opts.variant drives the PRIMARY prompt (the thing under test). Children are fake
+    // and never read a prompt, so the sub_agent variant is irrelevant here — pin it to
+    // 'control' for determinism and route the A/B arm to the primary seam.
+    process.env.OVERWATCH_PROMPT_VARIANT = 'control';
+    process.env.OVERWATCH_PRIMARY_VARIANT = opts.variant ?? 'control';
     if (!usingFakePrimary) process.env.OVERWATCH_DEFAULT_ACTION_TIMEOUT_MS = '20000';
 
     tempDir = mkdtempSync(join(tmpdir(), 'ow-orch-eval-'));
