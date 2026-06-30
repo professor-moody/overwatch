@@ -227,7 +227,7 @@ export class EngineContext {
     this.chainCheckpoints = [];
     this.chainEventsSinceCheckpoint = 0;
     this.checkpointOptions = {};
-    this.checkpointSigningKey = loadCheckpointSigningKey(process.env, this.config.engagement_signing_key_id);
+    this.checkpointSigningKey = loadCheckpointSigningKey(process.env);
     this.deterministicSeq = 0;
     this.frontierLeases = new FrontierLeases();
     // P2.1: WAL is opt-in via engagement_nonce — same migration boundary
@@ -387,11 +387,17 @@ export class EngineContext {
           });
           // Sign when a key is configured; otherwise emit unsigned (an unsigned
           // checkpoint carries no signing_key_id so it can't masquerade as signed).
-          this.chainCheckpoints.push(
-            this.checkpointSigningKey
-              ? signCheckpoint(checkpoint, this.checkpointSigningKey.privateKeyPem, this.checkpointSigningKey.keyId)
-              : checkpoint,
-          );
+          // Signing is wrapped fail-OPEN: a crypto error must never break the activity-log
+          // hot path — we fall back to an unsigned checkpoint rather than throwing.
+          let toPush = checkpoint;
+          if (this.checkpointSigningKey) {
+            try {
+              toPush = signCheckpoint(checkpoint, this.checkpointSigningKey.privateKeyPem, this.checkpointSigningKey.keyId);
+            } catch {
+              toPush = checkpoint; // fail-open: emit unsigned
+            }
+          }
+          this.chainCheckpoints.push(toPush);
           this.chainEventsSinceCheckpoint = 0;
         }
       } else {

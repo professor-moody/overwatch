@@ -5,7 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { checkAllTools } from '../services/tool-check.js';
 import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { verifyChain, verifyCheckpointSignatures, loadCheckpointKeyring } from '../services/activity-chain.js';
+import { verifyChain, verifyCheckpointSignatures, attestCheckpointSignatures, loadCheckpointKeyring } from '../services/activity-chain.js';
 import { computeChangesSince } from '../services/changes-since.js';
 import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
@@ -435,23 +435,39 @@ When \`hash_chain_enabled\` is false in the engagement config, returns valid:tru
         };
       }
       const result = verifyChain(engine.getFullHistory());
-      // When a verifier public key is configured, also verify checkpoint signatures
-      // (attribution on top of the hash-chain tamper-evidence). A signed checkpoint
-      // whose signature fails is a hard error; unsigned/unverifiable ones are reported
-      // but don't fail the chain (the hash chain already covers tamper-evidence).
+      // When a verifier public key is configured, attest checkpoint signatures on top of
+      // the hash-chain tamper-evidence. STRICT: every checkpoint must be signed AND
+      // verified — otherwise an unsigned run, a bad signature, or a checkpoint signed by an
+      // unknown/forged key (which lands in `unverifiable`) would pass silently and give
+      // false assurance. Without a configured verifier key, behavior is unchanged
+      // (hash-only verify). NB this attests the signatures; binding each checkpoint's
+      // event_index/hash back to the log is a separate (deferred) check — the activityLog
+      // is tier-truncated so indices don't survive, needing event_id lookup not index.
       const keyring = loadCheckpointKeyring();
+      const keyringConfigured = Object.keys(keyring).length > 0;
       const checkpoints = engine.getChainCheckpoints();
-      let signatures: ReturnType<typeof verifyCheckpointSignatures> | undefined;
-      if (Object.keys(keyring).length > 0 && checkpoints.length > 0) {
+      let signatures: ReturnType<typeof verifyCheckpointSignatures> | null = null;
+      let attestationOk = true;
+      let attestationReason: string | null = null;
+      if (keyringConfigured && checkpoints.length > 0) {
         signatures = verifyCheckpointSignatures(checkpoints, keyring);
+        const attestation = attestCheckpointSignatures(signatures);
+        attestationOk = attestation.ok;
+        attestationReason = attestation.reason;
       }
-      const sigFailed = !!signatures && signatures.failed.length > 0;
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ ...result, chain_disabled: false, checkpoint_signatures: signatures ?? null }, null, 2),
+          text: JSON.stringify({
+            ...result,
+            chain_disabled: false,
+            checkpoint_signatures: signatures,
+            checkpoint_attestation: keyringConfigured
+              ? { configured: true, ok: attestationOk, reason: attestationReason }
+              : { configured: false },
+          }, null, 2),
         }],
-        isError: !result.valid || sigFailed,
+        isError: !result.valid || (keyringConfigured && !attestationOk),
       };
     }),
   );

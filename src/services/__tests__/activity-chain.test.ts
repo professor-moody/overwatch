@@ -331,13 +331,23 @@ describe('checkpoint signing (Ed25519)', () => {
     const { generateCheckpointKeypair, loadCheckpointSigningKey, loadCheckpointKeyring } = await import('../activity-chain.js');
     const kp = generateCheckpointKeypair();
     const b64 = (pem: string) => Buffer.from(pem, 'utf8').toString('base64');
-    expect(loadCheckpointSigningKey({}, undefined)).toBeNull();
+    expect(loadCheckpointSigningKey({})).toBeNull();
     expect(loadCheckpointKeyring({})).toEqual({});
-    const loaded = loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: b64(kp.privateKeyPem) } as NodeJS.ProcessEnv, undefined);
+    const loaded = loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: b64(kp.privateKeyPem) } as NodeJS.ProcessEnv);
     expect(loaded?.keyId).toBe(kp.keyId);
+    // Signer + independent verifier derive the SAME key id from the same key (symmetry).
     const ring = loadCheckpointKeyring({ OVERWATCH_CHECKPOINT_PUBLIC_KEY: b64(kp.publicKeyPem) } as NodeJS.ProcessEnv);
     expect(ring[kp.keyId]).toContain('BEGIN PUBLIC KEY');
-    expect(loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: 'not-a-key' } as NodeJS.ProcessEnv, undefined)).toBeNull(); // malformed → null
+    expect(loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: 'not-a-key' } as NodeJS.ProcessEnv)).toBeNull(); // malformed → null
+  });
+
+  it('attestCheckpointSignatures is STRICT: unsigned / failed / unverifiable all fail', async () => {
+    const { attestCheckpointSignatures } = await import('../activity-chain.js');
+    expect(attestCheckpointSignatures({ total: 3, signed: 3, verified: 3, failed: [], unverifiable: [] }).ok).toBe(true);
+    expect(attestCheckpointSignatures({ total: 3, signed: 2, verified: 2, failed: [], unverifiable: [] }).ok).toBe(false); // one unsigned
+    expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [1], unverifiable: [] }).ok).toBe(false); // one failed
+    expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [], unverifiable: [1] }).ok).toBe(false); // forged/unknown key
+    expect(attestCheckpointSignatures({ total: 0, signed: 0, verified: 0, failed: [], unverifiable: [] }).ok).toBe(true);  // nothing to attest
   });
 
   it('engine signs emitted checkpoints when a signing key is configured', async () => {

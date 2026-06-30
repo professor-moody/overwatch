@@ -167,7 +167,11 @@ export function verifyChain(
 // adds attribution / non-repudiation on top). Key management is operator-provided:
 // generate a keypair (`npm run gen:checkpoint-key`), set the private key via
 // OVERWATCH_CHECKPOINT_SIGNING_KEY to sign, and distribute the public key (verifiers
-// set OVERWATCH_CHECKPOINT_PUBLIC_KEY). Rotation/HSM are out of scope.
+// set OVERWATCH_CHECKPOINT_PUBLIC_KEY). The key id is always DERIVED from the public key
+// (checkpointKeyId), so signer + verifier agree without extra config. When a verifier key
+// is configured, the verify tool requires EVERY checkpoint to be signed + verified — an
+// unsigned run, or a checkpoint signed by an unknown/forged key, fails the attestation.
+// Rotation/HSM are out of scope.
 
 export interface ChainCheckpoint {
   event_index: number;        // index in the activity log of the checkpointed event
@@ -336,14 +340,30 @@ export function verifyCheckpointSignatures(
   return report;
 }
 
+/** STRICT attestation decision over a signature report: with a verifier key configured,
+ *  EVERY checkpoint must be signed AND verified. Unsigned (signed < total), failed, or
+ *  unverifiable (signed by an unknown/forged key) all fail — none may pass silently. */
+export function attestCheckpointSignatures(report: CheckpointSignatureReport): { ok: boolean; reason: string | null } {
+  if (report.signed !== report.total) {
+    return { ok: false, reason: `${report.total - report.signed}/${report.total} checkpoint(s) unsigned` };
+  }
+  if (report.verified !== report.signed) {
+    return { ok: false, reason: `${report.failed.length} signature(s) failed, ${report.unverifiable.length} signed by an unknown key` };
+  }
+  return { ok: true, reason: null };
+}
+
 /** Resolve a PEM key from a raw value: an inline PEM, a file path, or base64-encoded
  *  PEM. Returns null if it can't be resolved. */
 function resolvePem(raw: string): string | null {
   try {
     if (raw.includes('-----BEGIN')) return raw;
-    if (existsSync(raw)) return readFileSync(raw, 'utf8');
+    // base64 BEFORE file path: a base64-encoded key that happens to collide with a
+    // filename in CWD must decode, not be read as a file.
     const decoded = Buffer.from(raw, 'base64').toString('utf8');
-    return decoded.includes('-----BEGIN') ? decoded : null;
+    if (decoded.includes('-----BEGIN')) return decoded;
+    if (existsSync(raw)) return readFileSync(raw, 'utf8');
+    return null;
   } catch {
     return null;
   }
@@ -354,7 +374,6 @@ function resolvePem(raw: string): string | null {
  *  key means unsigned checkpoints, not a halted engine. */
 export function loadCheckpointSigningKey(
   env: NodeJS.ProcessEnv = process.env,
-  configKeyId?: string,
 ): { privateKeyPem: string; keyId: string } | null {
   const raw = env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
   if (!raw) return null;
@@ -363,15 +382,19 @@ export function loadCheckpointSigningKey(
   try {
     const priv = createPrivateKey(pem);
     const pub = createPublicKey(priv).export({ type: 'spki', format: 'pem' }).toString();
-    const keyId = env.OVERWATCH_CHECKPOINT_KEY_ID || configKeyId || checkpointKeyId(pub);
-    return { privateKeyPem: pem, keyId };
+    // Always DERIVE the key id from the public key — so the signer and an independent
+    // verifier (loadCheckpointKeyring) compute the SAME id from the same key. A
+    // configurable id would let the two sides diverge and silently mis-match every
+    // signature.
+    return { privateKeyPem: pem, keyId: checkpointKeyId(pub) };
   } catch {
     return null;
   }
 }
 
 /** Load the verifier keyring (keyId → publicKeyPem) from the environment, deriving
- *  the key id from each public key. Supports OVERWATCH_CHECKPOINT_PUBLIC_KEY (one key). */
+ *  the key id from each public key (same derivation as the signer). Supports
+ *  OVERWATCH_CHECKPOINT_PUBLIC_KEY (one key). */
 export function loadCheckpointKeyring(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const raw = env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
   if (!raw) return {};
@@ -379,8 +402,7 @@ export function loadCheckpointKeyring(env: NodeJS.ProcessEnv = process.env): Rec
   if (!pem) return {};
   try {
     const normalized = createPublicKey(pem).export({ type: 'spki', format: 'pem' }).toString();
-    const id = env.OVERWATCH_CHECKPOINT_KEY_ID || checkpointKeyId(normalized);
-    return { [id]: normalized };
+    return { [checkpointKeyId(normalized)]: normalized };
   } catch {
     return {};
   }
