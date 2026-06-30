@@ -18,7 +18,7 @@ import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
 import type { DurableApprovalRecord } from './pending-action-queue.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
-import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
+import { computeEventHash, shouldChainEntry, GENESIS_HASH, buildCheckpoint, signCheckpoint, loadCheckpointSigningKey, shouldEmitCheckpoint, type ChainCheckpoint, type CheckpointEmitOptions } from './activity-chain.js';
 import { eventIdOrUuid } from './deterministic-id.js';
 import { FrontierLeases } from './frontier-leases.js';
 import { MutationJournal, type MutationType } from './mutation-journal.js';
@@ -172,6 +172,9 @@ export class EngineContext {
   chainCheckpoints: ChainCheckpoint[];
   chainEventsSinceCheckpoint: number;        // chained-event count since the last checkpoint
   checkpointOptions: CheckpointEmitOptions;  // per-engagement override (env or config)
+  // Ed25519 signing key for checkpoints, loaded from OVERWATCH_CHECKPOINT_SIGNING_KEY
+  // at boot (null → emit unsigned, hash-chain tamper-evidence still applies).
+  checkpointSigningKey: { privateKeyPem: string; keyId: string } | null;
   // P1.2: monotonic sequence counter used to derive deterministic IDs
   // (one per call, always increases). Persisted with state. Only consulted
   // when `config.engagement_nonce` is set; legacy engagements ignore it.
@@ -224,6 +227,7 @@ export class EngineContext {
     this.chainCheckpoints = [];
     this.chainEventsSinceCheckpoint = 0;
     this.checkpointOptions = {};
+    this.checkpointSigningKey = loadCheckpointSigningKey(process.env);
     this.deterministicSeq = 0;
     this.frontierLeases = new FrontierLeases();
     // P2.1: WAL is opt-in via engagement_nonce — same migration boundary
@@ -374,14 +378,26 @@ export class EngineContext {
           has_previous_checkpoint: !!previous,
         }, this.checkpointOptions);
         if (shouldEmit) {
-          this.chainCheckpoints.push(buildCheckpoint({
+          const checkpoint = buildCheckpoint({
             event_index: this.activityLog.length, // index after push (current length BEFORE push = new index)
             event_id: entry.event_id,
             event_hash: entry.event_hash,
             events_since_previous: this.chainEventsSinceCheckpoint,
             emitted_at: entry.timestamp,
-            signing_key_id: this.config.engagement_signing_key_id,
-          }));
+          });
+          // Sign when a key is configured; otherwise emit unsigned (an unsigned
+          // checkpoint carries no signing_key_id so it can't masquerade as signed).
+          // Signing is wrapped fail-OPEN: a crypto error must never break the activity-log
+          // hot path — we fall back to an unsigned checkpoint rather than throwing.
+          let toPush = checkpoint;
+          if (this.checkpointSigningKey) {
+            try {
+              toPush = signCheckpoint(checkpoint, this.checkpointSigningKey.privateKeyPem, this.checkpointSigningKey.keyId);
+            } catch {
+              toPush = checkpoint; // fail-open: emit unsigned
+            }
+          }
+          this.chainCheckpoints.push(toPush);
           this.chainEventsSinceCheckpoint = 0;
         }
       } else {

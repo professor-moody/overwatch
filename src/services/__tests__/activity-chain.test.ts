@@ -285,3 +285,89 @@ describe('activity-chain P0.2 (checkpoints)', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('checkpoint signing (Ed25519)', () => {
+  const baseCp = (): import('../activity-chain.js').ChainCheckpoint => ({
+    event_index: 7, event_id: 'evt-7', event_hash: 'deadbeef', events_since_previous: 7, emitted_at: '2026-06-30T00:00:00.000Z',
+  });
+
+  it('generateCheckpointKeypair produces a stable key id + sign/verify roundtrip', async () => {
+    const { generateCheckpointKeypair, checkpointKeyId, signCheckpoint, verifyCheckpointSignature } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    expect(kp.keyId).toMatch(/^ed25519:[0-9a-f]{16}$/);
+    expect(checkpointKeyId(kp.publicKeyPem)).toBe(kp.keyId); // stable
+    const signed = signCheckpoint(baseCp(), kp.privateKeyPem, kp.keyId);
+    expect(signed.signing_key_id).toBe(kp.keyId);
+    expect(typeof signed.signature).toBe('string');
+    expect(verifyCheckpointSignature(signed, kp.publicKeyPem)).toBe(true);
+  });
+
+  it('detects tamper and wrong-key; unsigned verifies false', async () => {
+    const { generateCheckpointKeypair, signCheckpoint, verifyCheckpointSignature } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const other = generateCheckpointKeypair();
+    const signed = signCheckpoint(baseCp(), kp.privateKeyPem, kp.keyId);
+    expect(verifyCheckpointSignature({ ...signed, event_hash: 'tampered' }, kp.publicKeyPem)).toBe(false); // tamper
+    expect(verifyCheckpointSignature(signed, other.publicKeyPem)).toBe(false); // wrong key
+    expect(verifyCheckpointSignature(baseCp(), kp.publicKeyPem)).toBe(false);  // unsigned
+  });
+
+  it('verifyCheckpointSignatures: batch report (verified / unverifiable / failed; unsigned ignored)', async () => {
+    const { generateCheckpointKeypair, signCheckpoint, verifyCheckpointSignatures } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const ok = signCheckpoint({ ...baseCp(), event_index: 1 }, kp.privateKeyPem, kp.keyId);
+    const tampered = { ...signCheckpoint({ ...baseCp(), event_index: 2 }, kp.privateKeyPem, kp.keyId), event_hash: 'x' };
+    const unknownKey = signCheckpoint({ ...baseCp(), event_index: 3 }, generateCheckpointKeypair().privateKeyPem, 'ed25519:unknownkeyid000');
+    const unsigned = { ...baseCp(), event_index: 4 };
+    const rep = verifyCheckpointSignatures([ok, tampered, unknownKey, unsigned], { [kp.keyId]: kp.publicKeyPem });
+    expect(rep.total).toBe(4);
+    expect(rep.signed).toBe(3);          // unsigned ignored
+    expect(rep.verified).toBe(1);        // ok
+    expect(rep.failed).toEqual([2]);     // tampered
+    expect(rep.unverifiable).toEqual([3]); // unknown key id
+  });
+
+  it('loadCheckpointSigningKey / loadCheckpointKeyring read env (base64 PEM); unset → null/{}', async () => {
+    const { generateCheckpointKeypair, loadCheckpointSigningKey, loadCheckpointKeyring } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const b64 = (pem: string) => Buffer.from(pem, 'utf8').toString('base64');
+    expect(loadCheckpointSigningKey({})).toBeNull();
+    expect(loadCheckpointKeyring({})).toEqual({});
+    const loaded = loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: b64(kp.privateKeyPem) } as NodeJS.ProcessEnv);
+    expect(loaded?.keyId).toBe(kp.keyId);
+    // Signer + independent verifier derive the SAME key id from the same key (symmetry).
+    const ring = loadCheckpointKeyring({ OVERWATCH_CHECKPOINT_PUBLIC_KEY: b64(kp.publicKeyPem) } as NodeJS.ProcessEnv);
+    expect(ring[kp.keyId]).toContain('BEGIN PUBLIC KEY');
+    expect(loadCheckpointSigningKey({ OVERWATCH_CHECKPOINT_SIGNING_KEY: 'not-a-key' } as NodeJS.ProcessEnv)).toBeNull(); // malformed → null
+  });
+
+  it('attestCheckpointSignatures is STRICT: unsigned / failed / unverifiable all fail', async () => {
+    const { attestCheckpointSignatures } = await import('../activity-chain.js');
+    expect(attestCheckpointSignatures({ total: 3, signed: 3, verified: 3, failed: [], unverifiable: [] }).ok).toBe(true);
+    expect(attestCheckpointSignatures({ total: 3, signed: 2, verified: 2, failed: [], unverifiable: [] }).ok).toBe(false); // one unsigned
+    expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [1], unverifiable: [] }).ok).toBe(false); // one failed
+    expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [], unverifiable: [1] }).ok).toBe(false); // forged/unknown key
+    expect(attestCheckpointSignatures({ total: 0, signed: 0, verified: 0, failed: [], unverifiable: [] }).ok).toBe(true);  // nothing to attest
+  });
+
+  it('engine signs emitted checkpoints when a signing key is configured', async () => {
+    const { generateCheckpointKeypair, verifyCheckpointSignature } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const prev = process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
+    process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
+    const stateFile = './state-test-activity-chain-signed.json';
+    try {
+      const signedEngine = new GraphEngine(makeConfig(true), stateFile);
+      signedEngine.logActionEvent({ description: 'agent action', event_type: 'action_started', provenance: 'agent' });
+      const cps = signedEngine.getChainCheckpoints();
+      expect(cps.length).toBeGreaterThan(0);
+      const cp = cps[0];
+      expect(cp.signature).toBeTruthy();
+      expect(cp.signing_key_id).toBe(kp.keyId);
+      expect(verifyCheckpointSignature(cp, kp.publicKeyPem)).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY; else process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = prev;
+      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
+    }
+  });
+});

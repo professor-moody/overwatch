@@ -5,7 +5,8 @@
 // reasoning events don't break the chain.
 // ============================================================
 
-import { createHash } from 'crypto';
+import { createHash, generateKeyPairSync, sign as edSign, verify as edVerify, createPrivateKey, createPublicKey } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
 import type { ActivityLogEntry, ActivityProvenance } from './engine-context.js';
 
 /**
@@ -160,9 +161,17 @@ export function verifyChain(
 // Verifiers can walk *forward* from a checkpoint instead of replaying the
 // entire log from genesis — useful for dashboards and incremental audit.
 //
-// Signing slot is reserved (`signature` + `signing_key_id`) but actual key
-// management is out of scope for this pass; the runtime emits unsigned
-// checkpoints today and signed ones become a flag-flip later.
+// Checkpoints are Ed25519-signed when a signing key is configured (see
+// loadCheckpointSigningKey / signCheckpoint below); otherwise the runtime emits
+// unsigned checkpoints (hash-chain tamper-evidence still applies — the signature
+// adds attribution / non-repudiation on top). Key management is operator-provided:
+// generate a keypair (`npm run gen:checkpoint-key`), set the private key via
+// OVERWATCH_CHECKPOINT_SIGNING_KEY to sign, and distribute the public key (verifiers
+// set OVERWATCH_CHECKPOINT_PUBLIC_KEY). The key id is always DERIVED from the public key
+// (checkpointKeyId), so signer + verifier agree without extra config. When a verifier key
+// is configured, the verify tool requires EVERY checkpoint to be signed + verified — an
+// unsigned run, or a checkpoint signed by an unknown/forged key, fails the attestation.
+// Rotation/HSM are out of scope.
 
 export interface ChainCheckpoint {
   event_index: number;        // index in the activity log of the checkpointed event
@@ -252,4 +261,149 @@ export function verifyCheckpoints(
     if (cp.event_index > latest_valid_index) latest_valid_index = cp.event_index;
   }
   return { valid: mismatches.length === 0, latest_valid_index, mismatches };
+}
+
+// ============================================================
+// Ed25519 checkpoint signing (attribution / non-repudiation)
+// ============================================================
+
+/** Canonical signable bytes for a checkpoint — the tamper-bound fields plus the
+ *  signing key id (so a signature can't be re-labelled to another key). Excludes
+ *  `signature` itself. Stable JSON array (fixed field order) for deterministic signing. */
+export function canonicalCheckpoint(cp: ChainCheckpoint): string {
+  return JSON.stringify([
+    cp.event_index, cp.event_id, cp.event_hash, cp.events_since_previous, cp.emitted_at,
+    cp.signing_key_id ?? null,
+  ]);
+}
+
+/** Stable key id from a public key: `ed25519:<first 16 hex of sha256(spki der)>`.
+ *  Lets a verifier match a checkpoint's `signing_key_id` to a known public key. */
+export function checkpointKeyId(publicKeyPem: string): string {
+  const der = createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' }) as Buffer;
+  return 'ed25519:' + createHash('sha256').update(der).digest('hex').slice(0, 16);
+}
+
+export interface CheckpointKeypair { keyId: string; publicKeyPem: string; privateKeyPem: string; }
+
+/** Generate a fresh Ed25519 keypair for checkpoint signing (PEM-encoded). */
+export function generateCheckpointKeypair(): CheckpointKeypair {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  return { keyId: checkpointKeyId(publicKeyPem), publicKeyPem, privateKeyPem };
+}
+
+/** Sign a checkpoint: stamps `signing_key_id` then attaches a detached base64
+ *  Ed25519 `signature` over canonicalCheckpoint(). Returns a new object. */
+export function signCheckpoint(cp: ChainCheckpoint, privateKeyPem: string, keyId: string): ChainCheckpoint {
+  const signed: ChainCheckpoint = { ...cp, signing_key_id: keyId };
+  const signature = edSign(null, Buffer.from(canonicalCheckpoint(signed)), createPrivateKey(privateKeyPem)).toString('base64');
+  return { ...signed, signature };
+}
+
+/** Verify one checkpoint's Ed25519 signature against a public key. False if the
+ *  checkpoint is unsigned, the key is malformed, or the signature doesn't match. */
+export function verifyCheckpointSignature(cp: ChainCheckpoint, publicKeyPem: string): boolean {
+  if (!cp.signature || !cp.signing_key_id) return false;
+  try {
+    return edVerify(null, Buffer.from(canonicalCheckpoint(cp)), createPublicKey(publicKeyPem), Buffer.from(cp.signature, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
+export interface CheckpointSignatureReport {
+  total: number;
+  signed: number;
+  verified: number;
+  failed: number[];        // event_index of checkpoints whose signature failed verification
+  unverifiable: number[];  // event_index of signed checkpoints whose key id we don't have
+}
+
+/** Batch-verify checkpoint signatures against a keyring (keyId → publicKeyPem).
+ *  Unsigned checkpoints are ignored; signed ones with an unknown key id are
+ *  reported as `unverifiable` (not a hard failure — the hash chain still stands). */
+export function verifyCheckpointSignatures(
+  checkpoints: ChainCheckpoint[],
+  keyring: Record<string, string>,
+): CheckpointSignatureReport {
+  const report: CheckpointSignatureReport = { total: checkpoints.length, signed: 0, verified: 0, failed: [], unverifiable: [] };
+  for (const cp of checkpoints) {
+    if (!cp.signature) continue;
+    report.signed += 1;
+    const pub = cp.signing_key_id ? keyring[cp.signing_key_id] : undefined;
+    if (!pub) { report.unverifiable.push(cp.event_index); continue; }
+    if (verifyCheckpointSignature(cp, pub)) report.verified += 1;
+    else report.failed.push(cp.event_index);
+  }
+  return report;
+}
+
+/** STRICT attestation decision over a signature report: with a verifier key configured,
+ *  EVERY checkpoint must be signed AND verified. Unsigned (signed < total), failed, or
+ *  unverifiable (signed by an unknown/forged key) all fail — none may pass silently. */
+export function attestCheckpointSignatures(report: CheckpointSignatureReport): { ok: boolean; reason: string | null } {
+  if (report.signed !== report.total) {
+    return { ok: false, reason: `${report.total - report.signed}/${report.total} checkpoint(s) unsigned` };
+  }
+  if (report.verified !== report.signed) {
+    return { ok: false, reason: `${report.failed.length} signature(s) failed, ${report.unverifiable.length} signed by an unknown key` };
+  }
+  return { ok: true, reason: null };
+}
+
+/** Resolve a PEM key from a raw value: an inline PEM, a file path, or base64-encoded
+ *  PEM. Returns null if it can't be resolved. */
+function resolvePem(raw: string): string | null {
+  try {
+    if (raw.includes('-----BEGIN')) return raw;
+    // base64 BEFORE file path: a base64-encoded key that happens to collide with a
+    // filename in CWD must decode, not be read as a file.
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    if (decoded.includes('-----BEGIN')) return decoded;
+    if (existsSync(raw)) return readFileSync(raw, 'utf8');
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Load the checkpoint signing key from the environment. Returns null (→ emit
+ *  unsigned, never crash) when unset or malformed. Fail-open for SIGNING: a missing
+ *  key means unsigned checkpoints, not a halted engine. */
+export function loadCheckpointSigningKey(
+  env: NodeJS.ProcessEnv = process.env,
+): { privateKeyPem: string; keyId: string } | null {
+  const raw = env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
+  if (!raw) return null;
+  const pem = resolvePem(raw);
+  if (!pem) return null;
+  try {
+    const priv = createPrivateKey(pem);
+    const pub = createPublicKey(priv).export({ type: 'spki', format: 'pem' }).toString();
+    // Always DERIVE the key id from the public key — so the signer and an independent
+    // verifier (loadCheckpointKeyring) compute the SAME id from the same key. A
+    // configurable id would let the two sides diverge and silently mis-match every
+    // signature.
+    return { privateKeyPem: pem, keyId: checkpointKeyId(pub) };
+  } catch {
+    return null;
+  }
+}
+
+/** Load the verifier keyring (keyId → publicKeyPem) from the environment, deriving
+ *  the key id from each public key (same derivation as the signer). Supports
+ *  OVERWATCH_CHECKPOINT_PUBLIC_KEY (one key). */
+export function loadCheckpointKeyring(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const raw = env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
+  if (!raw) return {};
+  const pem = resolvePem(raw);
+  if (!pem) return {};
+  try {
+    const normalized = createPublicKey(pem).export({ type: 'spki', format: 'pem' }).toString();
+    return { [checkpointKeyId(normalized)]: normalized };
+  } catch {
+    return {};
+  }
 }
