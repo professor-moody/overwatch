@@ -346,7 +346,7 @@ export class HeadlessMcpRunner {
       content: captured,
     });
     this.engine.logActionEvent({
-      description: `Salvaged run log from interrupted sub-agent ${task.agent_id} (${captured.length} bytes${truncated ? ', tail-truncated' : ''})`,
+      description: `Salvaged run log from interrupted ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id} (${captured.length} bytes${truncated ? ', tail-truncated' : ''})`,
       event_type: 'agent_transcript_submitted',
       category: 'agent',
       provenance: 'agent',
