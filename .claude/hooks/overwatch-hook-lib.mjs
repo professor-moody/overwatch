@@ -138,12 +138,27 @@ export function readRecentTranscript(input, maxLines = TRANSCRIPT_SCAN_LINES) {
 // tool name merely quoted in prose.
 const OVERWATCH_TOOL_RE = /mcp__overwatch__|"(?:tool_name|name)"\s*:\s*"(?:get_state|next_task|validate_action|run_tool|run_bash|parse_output|report_finding|query_graph|send_to_session)"/i;
 
-// A genuine human prompt line — a user/human turn that is NOT a tool-result carrier (Claude
-// Code records tool results as `role:"user"` messages, which must not count as a turn start).
+// A genuine human prompt line — the start of a new turn. STRUCTURAL, not substring-based:
+// Claude Code records tool results as `role:"user"` messages (sometimes BUNDLED on the same
+// line as a new human prompt on interrupt/resume), so a substring check on "tool_result"
+// both misses real turn-starts (mixed lines) and can mis-anchor. We parse the line and
+// require a user/human role WITH a genuine non-empty text block (a bare string, or a
+// content[] entry of type "text"); a pure tool-result carrier has no text block.
 function isHumanPromptLine(line) {
-  if (!line.includes('"user"') && !line.includes('"human"')) return false;
-  if (line.includes('"tool_result"')) return false;
-  return true;
+  const parsed = safeJson(line);
+  if (!parsed) {
+    // Unparseable line: fall back to the cheap heuristic (user/human, not a tool-result carrier).
+    return (line.includes('"user"') || line.includes('"human"')) && !line.includes('"tool_result"');
+  }
+  const msg = (parsed.message && typeof parsed.message === 'object') ? parsed.message : parsed;
+  const role = msg.role ?? parsed.role ?? parsed.type;
+  if (role !== 'user' && role !== 'human') return false;
+  const content = msg.content;
+  if (typeof content === 'string') return content.trim().length > 0;
+  if (Array.isArray(content)) {
+    return content.some(b => b && b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0);
+  }
+  return false;
 }
 
 // Did the CURRENT turn use an Overwatch tool? Turn-scoped: only lines since the last genuine
@@ -151,6 +166,10 @@ function isHumanPromptLine(line) {
 // block on a later "answered from memory" turn (the old whole-transcript scan's hole).
 export function transcriptHasOverwatchToolThisTurn(linesOrInput) {
   const lines = Array.isArray(linesOrInput) ? linesOrInput : readRecentTranscript(linesOrInput);
+  // No human prompt in the window (resumed/compacted session, or a very long tool-only run)
+  // → start=0 scans the whole window. This is an intentional fail-OPEN (toward "a tool was
+  // used"), consistent with this hook's stance that a missed block is harmless and the real
+  // boundary is the MCP/engine layer — a 500-line tool-only window is not "answered from memory".
   let start = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (isHumanPromptLine(lines[i])) { start = i + 1; break; }
