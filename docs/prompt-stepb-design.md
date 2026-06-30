@@ -175,3 +175,36 @@ jumps straight to it), and not worth chasing further on these synthetic scenario
   include a long-running scenario before `lean` is promoted.
 - **De-emphasis is model-sensitive** — correct for the Opus-4.x runtime backing
   sub-agents; revisit if sub-agents ever run on a weaker/peer model.
+
+## Move 4 — context-first PRIMARY prompt (TESTED NEGATIVE RESULT)
+
+After `lean` was promoted, the same context-first restructure was applied to the
+**primary/orchestrator** prompt (`contextfirst`: lead with live engagement state, a tight
+ORIENT→SCORE→DISPATCH→SYNTHESIZE loop, motivated guardrails) and A/B'd through the
+**orchestration eval** built for it — a real `claude` primary that dispatches *fake*
+children (`npm run orch-eval`), graded by `eval-orchestration-rubric.ts` (9 criteria: a
+binary floor + the continuous discriminators dispatch_precision / orient_efficiency /
+adaptive_synthesis, added after the floor saturated at 1.0 on the first calibration).
+
+**Result: `control` won — `contextfirst` was not promoted.** Two real-model A/Bs on haiku
+(~$4.6):
+
+- A/B v1 (5 control / 4 contextfirst, budget-limited): mean Δ +0.10, but a *tie by median*
+  (0.939 vs 0.929) — the gap was one catastrophic control trial (oriented, then dispatched
+  zero). contextfirst slipped orient-first in 1/4 trials (opened with `Bash`, not `get_state`).
+- Orient-first fix (mirroring lean's): made ORIENT "always your first action," get_state
+  before any execute.
+- A/B v2 (equal 5v5, orient-fixed): **control 0.944 vs contextfirst 0.900, Δ −0.044.** The
+  fix did *not* close the slip — contextfirst still opened with `Bash` in 2/5 trials.
+
+**Finding: context-first does not transfer from sub-agent to orchestrator.** The
+orchestrator's "context" is the *live frontier*, which it must re-fetch with `get_state`
+(for freshness, and the rubric rewards it). Leading with the state snapshot makes the model
+feel pre-oriented, so it skips the orient call — a *structural* effect a text-only emphasis
+can't fix (the lean analogue was fixed by *removing* inlined detail, which would gut the
+"lead with state" thesis here). contextfirst also over-dispatched (lower dispatch_precision).
+`control` never slips orient because the live frontier isn't in its prompt.
+
+The `contextfirst` variant is kept behind `OVERWATCH_PRIMARY_VARIANT` as a reproducible
+negative-result reference; the orchestration eval harness (Move 3) is the durable asset —
+it stopped a plausible-by-analogy change from regressing the most load-bearing prompt.

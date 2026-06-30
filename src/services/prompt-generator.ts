@@ -55,9 +55,15 @@ export function resolveSubAgentVariant(options: GeneratePromptOptions): PromptVa
 // PRIMARY/orchestrator prompt variants. 'contextfirst' is the Move 4 restructure
 // (lead with engagement state, a tight ORIENT→SCORE→DISPATCH→SYNTHESIZE loop, and
 // motivated guardrails — the same context-first approach the sub_agent 'lean' prompt
-// validated). Piloted via the orchestration behavior-eval (npm run orch-eval); 'control'
-// stays the DEFAULT until a clean A/B + operator sign-off promote it. Separate seam from
-// the sub_agent one so the two prompts move independently.
+// validated). Piloted via the orchestration behavior-eval (npm run orch-eval).
+//
+// TESTED NEGATIVE RESULT (do NOT promote without a fresh clean A/B): two real-model A/Bs
+// on haiku (~$4.6 total) found 'control' wins — equal-n (5v5) overall 0.944 vs 0.900
+// (Δ -0.044). The context-first approach that won for sub-agents does NOT transfer to the
+// orchestrator: leading with the live state snapshot makes the model feel pre-oriented, so
+// it skips the orient-first get_state ~40% of trials (a text-only "always your first
+// action" fix did not close it — the slip is structural). 'contextfirst' is kept flagged
+// as a reproducible negative-result reference. See docs/prompt-stepb-design.md (Move 4).
 export type PrimaryPromptVariant = 'control' | 'contextfirst';
 export const PRIMARY_PROMPT_VARIANTS: readonly PrimaryPromptVariant[] = ['control', 'contextfirst'];
 export const DEFAULT_PRIMARY_VARIANT: PrimaryPromptVariant = 'control';
