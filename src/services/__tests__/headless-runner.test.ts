@@ -59,6 +59,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
   let svc: TaskExecutionService;
   let spawned: FakeChild[];
   let spawnedArgs: string[][];
+  let spawnedCmds: string[];
   let logDir: string;
   let nextPid: number;
 
@@ -67,7 +68,8 @@ describe('Headless runner mechanics (injected spawn)', () => {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
       headless: {
         logDir,
-        spawnFn: (_cmd: string, args: string[]) => {
+        spawnFn: (cmd: string, args: string[]) => {
+          spawnedCmds.push(cmd);
           spawnedArgs.push(args);
           const child = new FakeChild(4_000_000_000 + (nextPid++));
           spawned.push(child);
@@ -83,6 +85,7 @@ describe('Headless runner mechanics (injected spawn)', () => {
     engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     spawned = [];
     spawnedArgs = [];
+    spawnedCmds = [];
     nextPid = 1;
   });
 
@@ -109,6 +112,39 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
     expect(svc.activeHeadlessCount()).toBe(1);
     expect(spawned).toHaveLength(1);
+  });
+
+  it('runs an orchestrator task with the full tool surface + a primary bootstrap, and honors a per-task binary override', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent({
+      id: 'h-primary', agent_id: 'a-primary', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], backend: 'headless_mcp',
+      orchestrator: true, claudeBinary: '/fake/real-claude',
+    } as AgentTask);
+    await settle();
+    expect(spawned).toHaveLength(1);
+    // Per-task binary override is used (not the runner default).
+    expect(spawnedCmds[0]).toBe('/fake/real-claude');
+    const args = spawnedArgs[0];
+    // Full surface, like 'default' (not a scoped sub-agent allowlist).
+    expect(args).toContain(allowedToolsFor('default'));
+    // Primary orchestration bootstrap, not the sub-agent brief.
+    const prompt = args[args.indexOf('-p') + 1];
+    expect(prompt).toContain('PRIMARY orchestrator');
+    expect(prompt).toContain('get_system_prompt(role="primary")');
+    expect(prompt).toContain('dispatch_agents');
+    expect(prompt).not.toContain('role="sub_agent"');
+  });
+
+  it('a normal (non-orchestrator) task uses the runner default binary', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-default-bin' }));
+    await settle();
+    expect(spawnedCmds[0]).toBe(process.env.OVERWATCH_CLAUDE_BINARY ?? 'claude');
   });
 
   it('grants a launched headless agent a generous cold-start heartbeat TTL', async () => {

@@ -113,9 +113,12 @@ export class HeadlessMcpRunner {
     const configPath = this.writeMcpConfig(task.id, endpoint);
     const args = this.buildArgs(task, configPath);
 
+    // Per-task binary override (eval-only) — lets a real primary dispatch children
+    // that inherit the runner's (fake) default. Falls back to the runner default.
+    const binary = task.claudeBinary ?? this.opts.claudeBinary;
     let child: ChildProcess;
     try {
-      child = this.spawnFn(this.opts.claudeBinary, args, {
+      child = this.spawnFn(binary, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         // Own process group so killTree can reap grandchildren (POSIX).
         detached: process.platform !== 'win32',
@@ -224,7 +227,7 @@ export class HeadlessMcpRunner {
     this.processTracker.register({
       id: `headless-${task.id}`,
       pid: child.pid,
-      command: `${this.opts.claudeBinary} -p (headless sub-agent ${task.agent_id})`,
+      command: `${binary} -p (headless ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id})`,
       description: `Headless sub-agent for task ${task.id}`,
       agent_id: task.agent_id,
     });
@@ -246,11 +249,13 @@ export class HeadlessMcpRunner {
 
   private buildArgs(task: AgentTask, configPath: string): string[] {
     // An explicit archetype wins; else fall back to the legacy role; else default.
+    // The PRIMARY orchestrator (eval-only) gets the full surface, like 'default'.
     const archetype = getArchetype(task.archetype ?? task.role);
+    const allowedTools = task.orchestrator ? allowedToolsFor('default') : allowedToolsFor(archetype.id);
     const args = [
       '-p', this.bootstrapPrompt(task),
       '--mcp-config', configPath,
-      '--allowedTools', allowedToolsFor(archetype.id),
+      '--allowedTools', allowedTools,
       '--output-format', 'stream-json',
       '--verbose',
     ];
@@ -261,6 +266,21 @@ export class HeadlessMcpRunner {
   }
 
   private bootstrapPrompt(task: AgentTask): string {
+    // PRIMARY orchestrator (eval-only): fetch the primary prompt + run the
+    // frontier→dispatch→synthesize loop, rather than a scoped sub-agent brief.
+    if (task.orchestrator) {
+      return [
+        `You are the Overwatch PRIMARY orchestrator (your agent task_id is "${task.id}").`,
+        `First use ToolSearch to find the "overwatch" MCP tools, then call get_system_prompt(role="primary")`,
+        `for your full operating instructions and get_state() for the engagement briefing.`,
+        `Then run the loop: next_task() to score the frontier, log_thought({ kind: "decision" }) before you commit,`,
+        `validate_action() + run_tool/run_bash for direct work, dispatch_agents()/register_agent() to parallelize,`,
+        `and synthesize each completed sub-agent (get_state({ since })) before re-ranking. Repeat until the`,
+        `objectives are met or no in-scope frontier remains.`,
+        task.objective ? `OBJECTIVE: ${task.objective}` : '',
+        `When done, call submit_agent_transcript then update_agent(task_id="${task.id}", status="completed").`,
+      ].filter(Boolean).join(' ');
+    }
     // The mission is per-archetype (decoupled from the legacy role bucket), so a
     // specialized type gets a brief that matches its real tools + job. The
     // objective is appended for EVERY type (raw quick-deploys carry the target
@@ -326,7 +346,7 @@ export class HeadlessMcpRunner {
       content: captured,
     });
     this.engine.logActionEvent({
-      description: `Salvaged run log from interrupted sub-agent ${task.agent_id} (${captured.length} bytes${truncated ? ', tail-truncated' : ''})`,
+      description: `Salvaged run log from interrupted ${task.orchestrator ? 'primary' : 'sub-agent'} ${task.agent_id} (${captured.length} bytes${truncated ? ', tail-truncated' : ''})`,
       event_type: 'agent_transcript_submitted',
       category: 'agent',
       provenance: 'agent',

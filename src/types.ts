@@ -942,6 +942,17 @@ export interface AgentTask {
   // its bootstrap prompt). The 'planner' role carries the operator's free-form
   // command + a snapshot of steerable state here so it can propose a plan.
   objective?: string;
+  // Behavior-eval only — NOT exposed in any MCP tool input schema, so a dispatched
+  // agent cannot set these; only internal/harness code does:
+  //  - orchestrator: run this task as the PRIMARY orchestrator (full tool surface
+  //    + a primary bootstrap that fetches get_system_prompt(role="primary") and runs
+  //    the frontier→dispatch→synthesize loop), not a scoped sub-agent. The
+  //    orchestration eval uses this to grade the primary prompt.
+  //  - claudeBinary: per-task binary override for the headless spawn, so the eval can
+  //    run the primary on the real `claude` while its dispatched children inherit the
+  //    runner's (fake) default — "real primary, fake children".
+  orchestrator?: boolean;
+  claudeBinary?: string;
 }
 
 export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
