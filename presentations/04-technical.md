@@ -35,9 +35,10 @@ source_of_truth: ./00-message-spine.md
 
 ## Slide 3 — The knowledge graph
 
-- Directed property graph (graphology): **23 node types** (host, service, credential,
-  user, domain, cloud identity/resource/policy, certificate/CA/template, webapp, …),
-  **73 edge types** (ADMIN_TO, HAS_SESSION, VALID_ON, RELAY_TARGET, ESC*, …).
+- Directed property graph (graphology): **30 node types** (host, service, credential,
+  user, domain, cloud identity/resource/policy, certificate/CA/template, webapp, idp/
+  idp_application/idp_principal, subdomain/asn/organization/email, …),
+  **90 edge types** (ADMIN_TO, HAS_SESSION, VALID_ON, RELAY_TARGET, ESC1–ESC15, …).
 - Confidence (0.0–1.0) on every node/edge. Persisted on every change. Survives compaction.
 - **Speaker notes:** Confidence drives prioritization (low-confidence edges are the most
   valuable to test). Note community detection (Louvain) for graph structure.
@@ -45,8 +46,9 @@ source_of_truth: ./00-message-spine.md
 
 ## Slide 4 — The frontier (what-to-do-next)
 
-- 6 deterministic item types: incomplete nodes, untested edges, inferred edges, network
-  discovery, network pivots, credential tests.
+- 11 item types (9 generated today): incomplete nodes, untested edges, inferred edges,
+  network discovery, network pivots, credential tests, MFA-bypass candidates, CVE research,
+  domain enumeration — plus IdP enumeration + cross-tier pivot (declared, generation deferred).
 - The deterministic layer **filters** out-of-scope / duplicate / over-noise / dead-host
   items; the **LLM scores** what's left. The frontier is a menu, not a decree.
 - Items carry graph metrics (hops-to-objective, fan-out, degree) and are **leased**.
@@ -58,7 +60,7 @@ source_of_truth: ./00-message-spine.md
 
 - **63 built-in declarative rules** across AD, ADCS (ESC1–ESC13), Linux privesc, web,
   MSSQL, cloud. Fire on node ingest; **edge-triggered** rules re-evaluate endpoints when
-  edges arrive. Produce hypothesis edges (0.3–0.7 confidence) → new frontier items.
+  edges arrive. Produce hypothesis edges (0.3–1.0 confidence, weighted 0.6–0.8) → new frontier items.
 - Example: `smb_signing:false` host → `RELAY_TARGET` edges to all compromised hosts.
 - Custom rules at runtime via `suggest_inference_rule`. Source of truth:
   `src/services/builtin-inference-rules.ts`.
@@ -78,10 +80,10 @@ source_of_truth: ./00-message-spine.md
 
 ## Slide 7 — Agent archetypes
 
-- **13 data-driven archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester,
+- **15 data-driven archetypes** (`agent-archetypes.ts`): recon_scanner, web_tester,
   credential_operator, post_exploit, cve_researcher, pathfinder, report_scribe,
-  cloud_cartographer, opsec_sentinel, session_shepherd, evidence_auditor + default/
-  research/planner.
+  cloud_cartographer, opsec_sentinel, session_shepherd, evidence_auditor, osint_recon
+  + default/research/planner.
 - Each = a tool-surface boundary (real `--allowedTools` allowlist) + backend + default
   skill + scope strategy + suitability. `recommendArchetype` auto-picks; operator can
   override.
@@ -186,9 +188,11 @@ source_of_truth: ./00-message-spine.md
 
 - **Inference rules** — `suggest_inference_rule` at runtime; built-ins in
   `builtin-inference-rules.ts`.
-- **Skills** — 34-skill RAG methodology library (`get_skill`).
+- **Skills** — 43-skill RAG methodology library (`get_skill`).
 - **Archetypes** — data-driven; add a type = tool surface + backend + skill + scope.
-- **Parsers** — 50 output parsers (`parse_output`); re-parse + promote workflow.
+- **Parsers** — 114 parser aliases / 56 functions (`parse_output`); re-parse + promote workflow.
+- **Tool surface** — 78 purpose-built MCP tools across agent lifecycle, engagement,
+  graph, credentials, sessions, and retrospective analysis.
 - **Drivers** — engine is transport-agnostic; MCP is one driver (a non-MCP CLI driver is
   on the roadmap).
 - **Speaker notes:** Most extension points are data/config, not core surgery — that's
