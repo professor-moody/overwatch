@@ -27,6 +27,13 @@ export type NodeType = typeof NODE_TYPES[number];
 export const nodeTypeSchema = z.enum(NODE_TYPES);
 const nonEmptyString = z.string().min(1);
 
+/** Epistemic provenance of a graph element, for report honesty:
+ *  - observed:  directly confirmed (confidence 1.0 / confirmed, or a tool-tested success)
+ *  - asserted:  recorded but not yet confirmed (discovered/claimed, unverified)
+ *  - inferred:  hypothesized by an inference rule (not directly seen)
+ *  Derived on read (see services/source-trust.ts); never stored. */
+export type SourceTrust = 'observed' | 'asserted' | 'inferred';
+
 export interface NodeProperties {
   // Common
   id: string;
@@ -39,6 +46,7 @@ export interface NodeProperties {
   confirmed_at?: string;        // node-level direct confirmation time
   sources?: string[];           // unique agents that contributed to this node
   confidence: number;           // 0.0 - 1.0
+  source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   notes?: string;
   identity_status?: 'canonical' | 'unresolved' | 'superseded';
   identity_family?: string;
@@ -437,6 +445,7 @@ export const edgeTypeSchema = z.enum(EDGE_TYPES);
 export interface EdgeProperties {
   type: EdgeType;
   confidence: number;           // 0.0 = hypothesis, 1.0 = confirmed
+  source_trust?: SourceTrust;   // derived on export (services/source-trust.ts); not stored
   discovered_by?: string;
   discovered_at: string;
   tested?: boolean;

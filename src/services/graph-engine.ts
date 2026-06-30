@@ -17,6 +17,7 @@ import { InferenceEngine } from './inference-engine.js';
 import { PathAnalyzer } from './path-analyzer.js';
 import type { PathOptimize, PathResult } from './path-analyzer.js';
 import { FrontierComputer } from './frontier.js';
+import { sourceTrust } from './source-trust.js';
 import { ChainScorer } from './chain-scorer.js';
 import { CampaignPlanner } from './campaign-planner.js';
 import { getCredentialDisplayKind, isCredentialUsableForAuth } from './credential-utils.js';
@@ -2830,15 +2831,20 @@ export class GraphEngine {
     this.ctx.trackedProcesses = processes;
   }
 
-  exportGraph(options?: { includeSuperseded?: boolean; includeCold?: boolean }): ExportedGraph {
+  exportGraph(options?: { includeSuperseded?: boolean; includeCold?: boolean; sourceTrust?: boolean }): ExportedGraph {
     const includeSuperseded = options?.includeSuperseded ?? false;
     const includeCold = options?.includeCold ?? true;
+    // Opt-in: derive source_trust (observed/asserted/inferred) onto a shallow copy of
+    // each element's properties. OFF by default so the canonical export (and the
+    // golden-master replay hash that pins it) is unaffected by this presentation label —
+    // report/dashboard surfaces pass { sourceTrust: true } to get the honesty labels.
+    const withTrust = options?.sourceTrust ?? false;
     const nodes: ExportedGraph['nodes'] = [];
     const edges: ExportedGraph['edges'] = [];
 
     this.ctx.graph.forEachNode((id, attrs) => {
       if (!includeSuperseded && attrs.identity_status === 'superseded') return;
-      nodes.push({ id, properties: attrs });
+      nodes.push({ id, properties: withTrust ? { ...attrs, source_trust: sourceTrust(attrs) } : attrs });
     });
 
     this.ctx.graph.forEachEdge((edgeId, attrs, source, target) => {
@@ -2847,7 +2853,7 @@ export class GraphEngine {
         const tgtAttrs = this.ctx.graph.getNodeAttributes(target);
         if (srcAttrs?.identity_status === 'superseded' || tgtAttrs?.identity_status === 'superseded') return;
       }
-      edges.push({ id: edgeId, source, target, properties: attrs });
+      edges.push({ id: edgeId, source, target, properties: withTrust ? { ...attrs, source_trust: sourceTrust(attrs) } : attrs });
     });
 
     // P3.2: include cold-store hosts in exports so reports and downstream

@@ -3646,7 +3646,10 @@ export class DashboardServer {
   // ---- Graph export endpoint ----
 
   private handleGraphExport(res: ServerResponse): void {
-    const graph = this.engine.exportGraph();
+    // Explicit export for downstream tooling / reports — include source_trust
+    // (observed/asserted/inferred) so consumers can distinguish confirmed from
+    // hypothesized graph elements.
+    const graph = this.engine.exportGraph({ sourceTrust: true });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(graph));
   }

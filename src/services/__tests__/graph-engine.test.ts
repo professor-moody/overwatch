@@ -259,6 +259,19 @@ describe('GraphEngine', () => {
       expect(graph.edges.some(edge => edge.source === 'user-test-local-jsmith' && edge.target === 'host-10-10-10-2' && edge.properties.type === 'HAS_SESSION')).toBe(true);
     });
 
+    it('exportGraph populates source_trust only when opted in (default omits it)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'host-10-10-10-9', type: 'host', label: '10.10.10.9', ip: '10.10.10.9', alive: true }],
+      }));
+      const labeled = engine.exportGraph({ sourceTrust: true });
+      expect(labeled.nodes.length).toBeGreaterThan(0);
+      for (const n of labeled.nodes) expect(['observed', 'asserted', 'inferred']).toContain(n.properties.source_trust);
+      // Default export is unchanged (keeps the canonical replay hash pristine).
+      const plain = engine.exportGraph();
+      for (const n of plain.nodes) expect(n.properties.source_trust).toBeUndefined();
+    });
+
     it('reverse-merges hostname-only host into existing IP-based host via FQDN short name', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
