@@ -6,7 +6,7 @@ import {
   isLikelyEngagementPrompt,
   readHookInput,
   readRecentTranscript,
-  transcriptHasRecentOverwatchTool,
+  transcriptHasOverwatchToolThisTurn,
   writeHookOutput,
 } from './overwatch-hook-lib.mjs';
 
@@ -29,7 +29,7 @@ const looksEngagementRelated = isLikelyEngagementPrompt(recentPrompt) || (
   isLikelyEngagementPrompt(lastAssistant) && /\b(frontier|graph|target|credential|finding|objective)\b/i.test(lastAssistant)
 );
 
-if (looksEngagementRelated && !transcriptHasRecentOverwatchTool(transcriptLines)) {
+if (looksEngagementRelated && !transcriptHasOverwatchToolThisTurn(transcriptLines)) {
   writeHookOutput({
     decision: 'block',
     reason: [

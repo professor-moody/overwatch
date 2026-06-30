@@ -129,7 +129,7 @@ describe('Claude Code Overwatch hooks', () => {
     expect(output.reason).toContain('get_state()');
   });
 
-  it('does not block stop when recent transcript contains an Overwatch tool call beyond 250 lines', () => {
+  it('does not block stop when the CURRENT turn used an Overwatch tool', () => {
     const filler = Array.from({ length: 300 }, (_, i) => ({ role: 'tool_result', content: `line ${i}` }));
     const transcript = writeTranscript([
       { role: 'user', content: 'What should we scan next on the target?' },
@@ -142,6 +142,89 @@ describe('Claude Code Overwatch hooks', () => {
       transcript_path: transcript,
       stop_hook_active: false,
       last_assistant_message: 'The target scan result is in the graph.',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  // Turn-scoping regression: a tool call from a PRIOR turn must not suppress the block on a
+  // later "answered from memory" turn (the old whole-transcript scan's hole).
+  it('blocks when the only Overwatch tool call was in a prior turn', () => {
+    const transcript = writeTranscript([
+      { role: 'user', content: 'Scan the target for services.' },
+      { role: 'assistant', name: 'get_state', content: 'oriented' },   // prior turn used a tool
+      { role: 'assistant', content: 'Found ssh on the host.' },
+      { role: 'user', content: 'What should we scan next on the target?' },  // CURRENT turn
+      { role: 'assistant', content: 'We should probably scan the host from memory.' }, // no tool this turn
+    ]);
+    const result = runHook('overwatch-stop-check.mjs', {
+      hook_event_name: 'Stop',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      last_assistant_message: 'We should probably scan the target next.',
+    });
+
+    expect(result.status).toBe(0);
+    const output = parseStdout(result);
+    expect(output.decision).toBe('block');
+    expect(output.reason).toContain('get_state()');
+  });
+
+  // Structural turn-boundary regression (review-found, HIGH): Claude Code bundles a leftover
+  // tool_result block WITH a new human text prompt on the same `role:"user"` line (interrupt/
+  // resume). A substring check on "tool_result" would mis-skip that genuine turn-start and
+  // regress the boundary past it, pulling the prior turn's tool in → no block. The structural
+  // check sees the text block and treats it as the turn-start, so the block still fires.
+  it('blocks on a mixed user line (tool_result + new prompt) that answered from memory', () => {
+    const transcript = writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'Scan the target for services.' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'mcp__overwatch__get_state', input: {} }] } },
+      { type: 'user', message: { role: 'user', content: [
+        { type: 'tool_result', content: 'graph state returned' },
+        { type: 'text', text: 'What should we scan on the target next?' },
+      ] } }, // CURRENT turn: a new human prompt bundled with a leftover tool_result
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'The host is probably vulnerable, from memory.' }] } },
+    ]);
+    const result = runHook('overwatch-stop-check.mjs', {
+      hook_event_name: 'Stop',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      last_assistant_message: 'We should probably scan the target next.',
+    });
+    expect(result.status).toBe(0);
+    const output = parseStdout(result);
+    expect(output.decision).toBe('block');
+  });
+
+  it('does not treat a structured tool_result-only user line as a turn boundary', () => {
+    const transcript = writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'Check the frontier on the target.' } }, // current turn prompt
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'mcp__overwatch__next_task', input: {} }] } }, // current turn tool
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'frontier: 3 items' }] } }, // tool result, NOT a new turn
+    ]);
+    const result = runHook('overwatch-stop-check.mjs', {
+      hook_event_name: 'Stop',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      last_assistant_message: 'The frontier has three credential tests queued.',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(''); // tool was used this turn → no block
+  });
+
+  it('does not block when the current turn used a tool, even after a prior tool-less turn', () => {
+    const transcript = writeTranscript([
+      { role: 'user', content: 'What should we do about the target?' },
+      { role: 'assistant', content: 'Let me think about the target.' },  // prior turn: no tool
+      { role: 'user', content: 'Go ahead and check the frontier.' },     // current turn
+      { role: 'assistant', name: 'next_task', content: 'pulled the frontier' }, // current turn: tool
+    ]);
+    const result = runHook('overwatch-stop-check.mjs', {
+      hook_event_name: 'Stop',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      last_assistant_message: 'The frontier has three credential tests queued.',
     });
 
     expect(result.status).toBe(0);
