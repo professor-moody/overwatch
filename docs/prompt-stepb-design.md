@@ -82,36 +82,56 @@ and runs **~43–46% leaner** than control (tool table kept).
 
 ## Results
 
-First real-model A/B — `haiku`, 3 scenarios, **1 trial/cell** (6 runs), **~$0.63**
-total (2.45M tokens, mostly cheap cache-reads). Overall scores (lean vs control):
+Real-model A/B on `haiku`, **5 trials/cell**, 3 scenarios (~35 runs total, ~$1.8).
+A first **n=1** pass looked like a clean sweep for lean (+0.18/+0.17/+0.33) — but
+**n=5 shows that was mostly noise.** Per-scenario overall (lean vs control):
 
-| Scenario | control | lean | Δ | flag |
-|----------|---------|------|------|------|
-| recon | 0.378 | 0.556 | **+0.18** | — |
-| web | 0.167 | 0.333 | **+0.17** | ⚠ `starts_with_context` 1.00→0.00 |
-| cloud | 0.333 | 0.667 | **+0.33** | — |
+| Scenario | control | lean | Δ |
+|----------|---------|------|------|
+| recon | 0.501 | 0.444 | −0.06 |
+| web | 0.120 | 0.183 | +0.06 |
+| cloud | 0.378 | 0.511 | +0.13 |
 
-**Lean improved overall on all three scenarios.** The gains concentrate where the
-restructure aimed: the 2×-weighted **`validate_before_execute`** criterion jumped
-(recon 0.20→1.00, web 0.25→1.00, cloud 0.00→1.00 — the explicit "validate before
-every execute, with the matching action_id" guardrail working) and
-**`threads_frontier_item_id`** improved (web/cloud 0→1.00 — the worked-trace example).
-No regression on the two 2×-weighted hard-gate criteria.
+Per-criterion (the criteria that actually carry signal here):
 
-Caveats, stated plainly:
+| Criterion (weight) | recon c→l | web c→l | cloud c→l |
+|--------------------|-----------|---------|-----------|
+| `validate_before_execute` (2×) | 0.16→**0.50** | 0.04→**0.20** | 0.60→**1.00** |
+| `threads_frontier_item_id` (1×) | 0→0 | 0→**0.45** | 0.40→**0.60** |
+| `starts_with_context` (1×) | 1.00→1.00 | **1.00→0.40** | **1.00→0.80** |
 
-- **`objective_progress` and `completed` were 0 for every run, both arms.** The
-  synthetic targets are unreachable, so no services are found and the agent hits
-  `--max-turns` before WRAP (`status: interrupted`). Those criteria carry no signal
-  here; the result rests on the loop-compliance criteria.
-- **The harness flagged a real regression** on web (`starts_with_context` 1.00→0.00:
-  lean's agent didn't orient with `get_agent_context` first). This is exactly the
-  signal the A/B exists to surface — but at **n=1 it may be noise**.
-- **n=1 per cell is noisy.** This is a promising first pass, not a verdict.
+What the data actually says:
 
-**Recommendation:** lean is a real, consistent improvement and worth promoting —
-but confirm first with **2–3 trials** (especially the web orientation regression)
-before flipping the default. Promotion remains a separate, deliberate step.
+- **Lean reliably improves the load-bearing safety criterion.**
+  `validate_before_execute` (2×-weighted) is up in all three scenarios — the explicit
+  "validate before every execute, with the matching action_id" guardrail works. It
+  also improves `threads_frontier_item_id` on web/cloud (the worked-trace example).
+- **One real regression: orient-first.** `starts_with_context` drops on web
+  (1.00→0.40) and cloud (1.00→0.80) — confirmed across n=5, not the n=1 fluke it
+  could have been. **Likely cause:** lean's context-rich **Brief** front-loads
+  objective + scope + target-node properties, so the agent feels it already has its
+  context and skips the `get_agent_context` call the LOOP tells it to make first. A
+  context-first brief can *suppress* the orient-first tool call it's meant to support.
+- **recon's −0.06 is an artifact of a noisy criterion.** It's entirely
+  `objective_progress` (control 0.60 vs lean 0.00) — but on an unreachable host
+  "finding a service" is the agent reporting a node from partial output, i.e. luck,
+  not skill. Discounting `objective_progress`, recon lean is *better* (the validate
+  gain). `objective_progress` + `completed` are ~0/noisy for both arms on synthetic
+  targets and carry little signal — a fuller eval needs targets agents can actually
+  act on.
+
+**Verdict — do NOT promote lean as-is.** It's directionally positive (wins the
+safety criterion everywhere; net-positive on 2 of 3 scenarios) but carries one
+confirmed, concrete regression. **Next step:** iterate the lean prompt to fix
+orient-first — strengthen ORIENT / require `get_agent_context` before acting, or
+trim the Brief's inline target-node detail so the agent still needs the tool — then
+re-eval. The fix is local; lean already wins on validate/threading, so removing the
+orientation regression would likely make it a clear win.
+
+> Run notes: one web trial ran away to ~2.6M tokens (vs ~450k typical), which spiked
+> the budget guard's **max-based** adaptive estimate and truncated the first n=5 batch
+> early (cloud was completed in a follow-up run). A percentile-based estimate would
+> be more robust to a single outlier.
 
 ## Known weak spots (carried, not hidden)
 
