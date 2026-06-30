@@ -2532,6 +2532,11 @@ export class GraphEngine {
     return this.ctx.opsecTracker;
   }
 
+  /** Signed/unsigned chain checkpoints emitted so far (for verification). */
+  getChainCheckpoints(): import('./activity-chain.js').ChainCheckpoint[] {
+    return this.ctx.chainCheckpoints;
+  }
+
   /** True when OPSEC enforcement is enabled (drives the hard noise ceiling).
    * P4.1: honors the active phase's `opsec_overrides.enabled` if set. */
   isOpsecEnforcementEnabled(): boolean {

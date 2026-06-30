@@ -5,7 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { checkAllTools } from '../services/tool-check.js';
 import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { verifyChain } from '../services/activity-chain.js';
+import { verifyChain, verifyCheckpointSignatures, loadCheckpointKeyring } from '../services/activity-chain.js';
 import { computeChangesSince } from '../services/changes-since.js';
 import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
@@ -435,12 +435,23 @@ When \`hash_chain_enabled\` is false in the engagement config, returns valid:tru
         };
       }
       const result = verifyChain(engine.getFullHistory());
+      // When a verifier public key is configured, also verify checkpoint signatures
+      // (attribution on top of the hash-chain tamper-evidence). A signed checkpoint
+      // whose signature fails is a hard error; unsigned/unverifiable ones are reported
+      // but don't fail the chain (the hash chain already covers tamper-evidence).
+      const keyring = loadCheckpointKeyring();
+      const checkpoints = engine.getChainCheckpoints();
+      let signatures: ReturnType<typeof verifyCheckpointSignatures> | undefined;
+      if (Object.keys(keyring).length > 0 && checkpoints.length > 0) {
+        signatures = verifyCheckpointSignatures(checkpoints, keyring);
+      }
+      const sigFailed = !!signatures && signatures.failed.length > 0;
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ ...result, chain_disabled: false }, null, 2),
+          text: JSON.stringify({ ...result, chain_disabled: false, checkpoint_signatures: signatures ?? null }, null, 2),
         }],
-        isError: !result.valid,
+        isError: !result.valid || sigFailed,
       };
     }),
   );

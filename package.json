@@ -38,6 +38,7 @@
     "prompt-eval": "npx tsx src/cli/prompt-eval.ts",
     "orch-eval": "npx tsx src/cli/orch-eval.ts",
     "gen:docs": "npx tsx scripts/gen-agents-md.ts",
+    "gen:checkpoint-key": "npx tsx scripts/gen-checkpoint-key.ts",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
     "start": "node dist/index.js",
