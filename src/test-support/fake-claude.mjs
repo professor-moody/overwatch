@@ -35,13 +35,55 @@ async function main() {
   await client.connect(transport);
   emit({ type: 'system', subtype: 'init', task_id: taskId, mode });
 
-  // Discover scope + agent identity.
+  // Discover scope + agent identity + (for the 'auto' orchestration-child mode)
+  // this child's archetype, so it can land type-appropriate findings.
   let agentId = 'fake-agent';
+  let childArchetype = '';
   try {
     const ctx = await client.callTool({ name: 'get_agent_context', arguments: { task_id: taskId } });
     const parsed = JSON.parse(ctx.content[0].text);
     if (parsed.agent_id) agentId = parsed.agent_id;
+    if (parsed.archetype) childArchetype = parsed.archetype;
   } catch { /* context optional for the fake */ }
+
+  if (mode === 'auto') {
+    // Orchestration-eval child: land findings matched to THIS child's archetype
+    // (read from get_agent_context above) so a real PRIMARY's dispatch→synthesize
+    // loop sees plausible, type-appropriate progress — not a canned blob. Unique
+    // ids per task avoid collisions when the primary dispatches many children.
+    const u = (s) => `${s}-${taskId}`;
+    let nodes;
+    let edges = [];
+    if (childArchetype === 'web_tester') {
+      nodes = [
+        { id: u('web'), type: 'webapp', label: `http://10.10.20.9/${taskId}`, properties: { url: `http://10.10.20.9/${taskId}` } },
+        { id: u('vuln'), type: 'vulnerability', label: 'reflected XSS', properties: { vuln_type: 'xss', severity: 'medium' } },
+      ];
+      edges = [{ source: u('web'), target: u('vuln'), type: 'VULNERABLE_TO', confidence: 0.8 }];
+    } else if (childArchetype === 'cloud_cartographer' || childArchetype === 'credential_operator' || childArchetype === 'post_exploit') {
+      nodes = [
+        { id: u('cid'), type: 'cloud_identity', label: `arn:aws:iam::1111:user/${taskId}`, principal_type: 'user', provider: 'aws' },
+        { id: u('role'), type: 'cloud_identity', label: `arn:aws:iam::1111:role/Admin-${taskId}`, principal_type: 'role', provider: 'aws' },
+      ];
+      edges = [{ source: u('cid'), target: u('role'), type: 'ASSUMES_ROLE', confidence: 0.9 }];
+    } else if (childArchetype === 'osint_recon') {
+      nodes = [{ id: u('dom'), type: 'domain', label: `sub-${taskId}.example.com`, properties: {} }];
+    } else {
+      // recon_scanner / default / others: a live host + service.
+      const oct = (taskId.length % 250) + 1;
+      nodes = [
+        { id: u('host'), type: 'host', label: `10.10.10.${oct}`, properties: { ip: `10.10.10.${oct}`, alive: true } },
+        { id: u('svc'), type: 'service', label: 'ssh/22', properties: { port: 22, protocol: 'tcp', service_name: 'ssh' } },
+      ];
+      edges = [{ source: u('host'), target: u('svc'), type: 'RUNS', confidence: 1 }];
+    }
+    await client.callTool({ name: 'report_finding', arguments: { agent_id: agentId, nodes, edges } });
+    await client.callTool({ name: 'submit_agent_transcript', arguments: { task_id: taskId, summary: `fake ${childArchetype || 'auto'} child: ${nodes.length} nodes` } });
+    await client.callTool({ name: 'update_agent', arguments: { task_id: taskId, status: 'completed', summary: `fake ${childArchetype || 'auto'} done` } });
+    emit({ type: 'result', subtype: 'success', is_error: false });
+    await client.close();
+    process.exit(0);
+  }
 
   if (mode === 'hang') {
     // Connect and idle forever — the test cancels us.

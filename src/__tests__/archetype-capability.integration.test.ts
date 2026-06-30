@@ -167,4 +167,23 @@ describe.skipIf(!supportsLocalListen)('Archetype capability evals (fake claude)'
     );
     expect(drafted).toBe(true);
   });
+
+  // Orchestration-eval fidelity: the 'auto' fake mode reads its OWN archetype from
+  // get_agent_context and lands type-appropriate findings (so a real primary's
+  // dispatched fake children look real). This is the fake-child-fidelity crux.
+  it("'auto' mode lands web findings for a web_tester child (archetype-aware)", async () => {
+    result = await runArchetype({ archetype: 'web_tester', fakeMode: 'auto' });
+    expect(result.task?.status).toBe('completed');
+    expect(result.app.engine.getNodesByType('vulnerability').length).toBeGreaterThan(0);
+    expect(result.app.engine.getNodesByType('webapp').length).toBeGreaterThan(0);
+    // It did NOT land recon-shaped findings — it matched its archetype.
+    expect(result.app.engine.getNodesByType('service').length).toBe(0);
+  });
+
+  it("'auto' mode lands recon findings for a recon_scanner child (archetype-aware)", async () => {
+    result = await runArchetype({ archetype: 'recon_scanner', fakeMode: 'auto' });
+    expect(result.task?.status).toBe('completed');
+    expect(result.app.engine.getNodesByType('service').length).toBeGreaterThan(0);
+    expect(result.app.engine.getNodesByType('vulnerability').length).toBe(0);
+  });
 });

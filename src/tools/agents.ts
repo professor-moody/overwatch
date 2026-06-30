@@ -377,6 +377,11 @@ auto-computed from the frontier item's target node(s).`,
             agent_id: task.agent_id,
             frontier_item_id: task.frontier_item_id,
             skill: task.skill,
+            // archetype + objective complete the context on the common (subgraph)
+            // path too — the discovery / empty-subgraph branches already include
+            // them, so the agent always knows its type + job.
+            archetype: task.archetype,
+            objective: task.objective,
             subgraph,
             message: `Subgraph context: ${subgraph.nodes.length} nodes, ${subgraph.edges.length} edges`
           }, null, 2)
