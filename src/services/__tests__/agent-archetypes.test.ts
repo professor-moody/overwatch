@@ -8,6 +8,7 @@ import {
   isTargetFacing,
   recommendArchetype,
   bootstrapMission,
+  doneTestFor,
 } from '../agent-archetypes.js';
 import { SkillIndex } from '../skill-index.js';
 
@@ -62,6 +63,16 @@ describe('agent-archetypes: skill wiring + success criteria', () => {
     for (const a of listArchetypes()) {
       expect(bootstrapMission(a.id).toLowerCase(), `mission for ${a.id}`).toContain('done');
     }
+  });
+
+  it('every archetype has a registry-sourced doneTest (for the sub-agent Brief)', () => {
+    for (const a of listArchetypes()) {
+      expect(doneTestFor(a.id), `doneTest for ${a.id}`).toBeTruthy();
+      expect(doneTestFor(a.id).length, `doneTest for ${a.id}`).toBeGreaterThan(10);
+    }
+    // Unknown ids fall back to the default archetype's doneTest, never undefined.
+    expect(doneTestFor('nope')).toBe(doneTestFor('default'));
+    expect(doneTestFor(undefined)).toBe(doneTestFor('default'));
   });
 });
 

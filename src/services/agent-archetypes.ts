@@ -225,6 +225,36 @@ export function bootstrapMission(idOrRole: string | undefined | null): string {
   return MISSIONS[getArchetype(idOrRole).id];
 }
 
+// Per-archetype success criterion — the structured "done when" the agent should
+// stop at. Mirrors each mission's closing "Done when …" clause, but as data the
+// sub-agent prompt's Brief can render directly (so lean stops synthesizing a
+// generic done-test from the frontier-item type — its known weak spot). Authored
+// to match the missions above; keep them in sync. (Full consolidation onto the
+// AgentArchetype record + AGENTS.md generation is a deferred follow-up.)
+const DONE_TESTS: Record<AgentArchetypeId, string> = {
+  default: 'the scoped objective is satisfied and every useful discovery is in the graph (parse_output/report_finding), not just prose',
+  recon_scanner: 'every live host/service in scope is a graph node with its ports/services recorded via report_finding — nothing left only in stdout',
+  web_tester: "the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence",
+  credential_operator: "each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid)",
+  post_exploit: "the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings",
+  cve_researcher: 'research_cve has been called for the service (with candidates, or an empty list if none apply)',
+  pathfinder: 'a proposed plan of the highest-value next hops is submitted via propose_plan (or the transcript explains why no viable path exists)',
+  report_scribe: 'the requested report sections are drafted from confirmed findings and evidence via generate_report',
+  cloud_cartographer: "each cloud credential's reachable resources, roles, and federation edges are recorded as graph findings",
+  opsec_sentinel: 'the current OPSEC posture and any risk (budget near exhaustion, active defensive signals) is reported for the operator',
+  session_shepherd: "each open session's state and ownership is reported, with stale/orphaned ones flagged",
+  evidence_auditor: "each finding's proof readiness is assessed and the gaps are reported for the operator",
+  osint_recon: 'the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — nothing left only in stdout',
+  research: 'research_cve has been called for the service (with candidates, or an empty list if none apply)',
+  planner: "a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed",
+};
+
+/** The structured success criterion for an archetype id or legacy role id —
+ *  registry-sourced, for the sub-agent prompt's "Done when" line. */
+export function doneTestFor(idOrRole: string | undefined | null): string {
+  return DONE_TESTS[getArchetype(idOrRole).id];
+}
+
 export function listArchetypes(): AgentArchetype[] {
   return Object.values(ARCHETYPES);
 }

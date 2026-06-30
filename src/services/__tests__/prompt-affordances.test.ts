@@ -102,4 +102,11 @@ describe('lean variant (step b) — context-first restructure', () => {
     expect(genFor('cloud_cartographer', 'lean')).toContain('expand_aws_credential');
     expect(genFor('recon_scanner', 'lean')).not.toContain('expand_aws_credential');
   });
+
+  it("Brief's Done-when uses the archetype's registry done-test (not a generic frontier synthesis)", () => {
+    // cloud_cartographer's registry doneTest mentions federation edges; recon's
+    // mentions ports/services — each archetype gets its own success criterion.
+    expect(genFor('cloud_cartographer', 'lean')).toContain('federation edges');
+    expect(genFor('recon_scanner', 'lean')).toContain('ports/services');
+  });
 });

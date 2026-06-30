@@ -97,6 +97,16 @@ export function baselinePath(scenarioId: string, model: string): string {
   return join(BASELINE_DIR, `${scenarioId}.${model.replace(/[^\w.-]/g, '_')}.json`);
 }
 
+/** Nearest-rank percentile of a numeric sample (p in [0,1]); 0 for an empty
+ *  sample. Used for the budget guard's per-run estimate so ONE runaway run can't
+ *  spike a max-based estimate and strand the rest of the batch. */
+export function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * sorted.length)));
+  return sorted[idx];
+}
+
 /** Average per-criterion scores + overall across trials (weights are identical). */
 export function meanGrade(grades: RubricResult[]): RubricResult {
   const first = grades[0];

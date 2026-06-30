@@ -25,7 +25,7 @@ import { gradeRun, compareGrades, RUBRIC_CRITERIA, type RubricResult } from '../
 import { SUBAGENT_PROMPT_VARIANTS } from '../services/prompt-generator.js';
 import { EVAL_SCENARIOS } from '../test-support/eval-scenarios.js';
 import {
-  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
+  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
   BASELINE_DIR, EST_TOKENS_PER_RUN, DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from './prompt-eval-lib.js';
 
@@ -109,8 +109,11 @@ async function main(): Promise<void> {
   // hard post-run stop the moment ACTUAL cumulative spend reaches the budget. A
   // run in flight is bounded only by --max-turns, so total spend can exceed
   // --budget by at most one run.
-  const budget = { used: 0, cost: 0, maxRun: 0 };
-  const wouldExceed = () => budget.used + Math.max(EST_TOKENS_PER_RUN, budget.maxRun) > args.budget;
+  const budget = { used: 0, cost: 0, runs: [] as number[] };
+  // Per-run estimate adapts to the p75 of observed runs (not the max) so a single
+  // runaway run can't spike the estimate and strand the rest of the batch.
+  const estPerRun = () => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
+  const wouldExceed = () => budget.used + estPerRun() > args.budget;
 
   // Run `args.trials` runs of one arm (variant) → mean grade. Honors the budget
   // (exits the process on breach, like the baseline-only path).
@@ -123,7 +126,7 @@ async function main(): Promise<void> {
       }
       const run = await runEvalScenario(scenario, { claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, variant: arm, timeoutMs: args.timeoutMs });
       budget.used += run.usageTokens;
-      budget.maxRun = Math.max(budget.maxRun, run.usageTokens);
+      budget.runs.push(run.usageTokens);
       if (run.costUsd) budget.cost += run.costUsd;
       const grade = gradeRun(run.record, scenario.rubric);
       grades.push(grade);

@@ -3,7 +3,7 @@ import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath,
+  parseArgs, readBaseline, isBaselineUsable, meanGrade, baselinePath, percentile,
   DEFAULT_MODEL, DEFAULT_TRIALS, DEFAULT_BUDGET, DEFAULT_MAX_TURNS, DEFAULT_TIMEOUT_MS,
 } from '../prompt-eval-lib.js';
 import { RUBRIC_CRITERIA, type RubricResult } from '../../services/eval-rubric.js';
@@ -95,6 +95,23 @@ describe('meanGrade', () => {
     const m = meanGrade([mk(1), mk(0)]);
     expect(m.overall).toBe(0.5);
     expect(m.criteria[0].score).toBe(0.5);
+  });
+});
+
+describe('percentile (budget guard estimate)', () => {
+  it('returns 0 for an empty sample', () => {
+    expect(percentile([], 0.75)).toBe(0);
+  });
+  it('p75 is robust to a single runaway outlier (vs max)', () => {
+    // Nine ~450k runs + one 2.6M outlier: p75 stays near the typical run, max would
+    // spike the estimate and strand the batch.
+    const runs = [440, 450, 455, 448, 452, 460, 445, 449, 451, 2600].map(n => n * 1000);
+    const p75 = percentile(runs, 0.75);
+    expect(p75).toBeLessThan(500_000);          // not dominated by the 2.6M outlier
+    expect(Math.max(...runs)).toBe(2_600_000);  // max would have been
+  });
+  it('p100 equals the max', () => {
+    expect(percentile([10, 20, 30], 1)).toBe(30);
   });
 });
 
