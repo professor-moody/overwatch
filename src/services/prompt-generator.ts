@@ -69,6 +69,12 @@ export function resolvePrimaryVariant(options: GeneratePromptOptions): PrimaryPr
   if (env && KNOWN_PRIMARY_VARIANTS.includes(env)) return env as PrimaryPromptVariant;
   return DEFAULT_PRIMARY_VARIANT;
 }
+// NB the get_system_prompt MCP tool does NOT forward a variant, so at runtime the ENV
+// branch is the live selector (the headless primary calls get_system_prompt itself —
+// there's no option to thread through that boundary). The `options.primaryVariant` arm
+// exists for in-process unit tests; if a future caller routes the A/B arm via the option
+// instead of OVERWATCH_PRIMARY_VARIANT, expose a variant input on get_system_prompt too,
+// or both arms silently render control. This mirrors the sub_agent seam.
 
 // ============================================================
 // Token estimation — chars/4 heuristic (good enough for budgeting)
@@ -184,8 +190,11 @@ function generateContextFirstPrimaryPrompt(
   const profile = inferProfile(state.config);
   // Authored order (like 'lean'): briefing → live state → tools → loop → guardrails →
   // tactics → profile → anti-patterns. Direct join keeps the context-first ORDER the
-  // priority assembler would otherwise re-sort away. (Budget-trimming is deferred to
-  // promotion — the candidate is gated behind the flag + an operator checkpoint.)
+  // priority assembler would otherwise re-sort away.
+  // PROMOTION-BLOCKER: unlike the control path, this does NOT run
+  // assembleSectionsWithinBudget, so on a large engagement the prompt can exceed
+  // max_prompt_tokens (the eval seed state is small, so it doesn't bite the A/B). Add
+  // order-preserving budget trimming here before making 'contextfirst' the default.
   const sections: string[] = [generateIdentitySection(state.config)];
 
   if (options.include_state !== false) {
@@ -222,7 +231,7 @@ Run this loop. Reason briefly with \`log_thought\` before each decision; skip a 
 4. **SYNTHESIZE** — dispatch is fire-and-forget, so poll \`get_state({ since: <last poll ts> })\`; its \`changes_since\` digest shows how many findings landed and which agents finished. **The moment an agent completes** (an \`agent_transcript_submitted\` event, or status \`completed\`/\`interrupted\`), read its \`result_summary\` + landed findings, fold them in, **re-rank the frontier**, and re-dispatch or report — *now*, the way you act on a fresh credential, not next cycle. A newly-achievable objective is worth acting on immediately. An \`interrupted\` agent's partial work is salvaged to evidence (a \`salvaged\` transcript) — read it before re-dispatching the same item, so you build on it instead of repeating it.
 5. **REPEAT** until all objectives are met or the operator redirects.
 
-If you execute directly instead of dispatching: \`validate_action()\` (pass \`frontier_item_id\`) → \`run_tool\`/\`run_bash\` (these fold in the approval gate, action logging, and evidence capture) → \`parse_output\`/\`report_finding\` (pass \`action_id\` + \`frontier_item_id\`). Never leave a discovery in prose — the graph is what every other agent reads.`;
+If you execute directly instead of dispatching: \`validate_action()\` (pass \`frontier_item_id\`) → \`run_tool\`/\`run_bash\` (these fold in the approval gate, action lifecycle logging, and evidence capture) → \`parse_output\`/\`report_finding\` (pass \`action_id\` + \`frontier_item_id\`). For custom tooling, do the manual \`validate_action\` → \`log_action_event(action_started)\` → execute → \`log_action_event(action_completed|action_failed)\` flow so the work links causally. Never leave a discovery in prose — the graph is what every other agent reads.`;
 }
 
 function cfPrimaryGuardrailsSection(): string {

@@ -73,6 +73,7 @@ function printGrade(g: OrchRubricResult): void {
 
 /** Mean of a list of orchestration grades (criteria are in fixed order). */
 export function meanOrchGrade(grades: OrchRubricResult[]): OrchRubricResult {
+  if (grades.length === 0) throw new Error('meanOrchGrade: no trials (an arm ran zero trials — budget too small for the plan)');
   if (grades.length === 1) return grades[0];
   const n = grades.length;
   const criteria = grades[0].criteria.map((c, i) => ({
@@ -131,20 +132,26 @@ async function main(): Promise<void> {
   }
 
   // Budget: adaptive pre-run gate (p75 of observed runs, so one runaway can't strand
-  // the rest) + a hard post-run stop. A run in flight is bounded only by --max-turns,
-  // so total spend can exceed --budget by at most one run.
+  // the rest) + a hard post-run stop. A run in flight is bounded only by --max-turns.
+  // The budget is split EQUALLY per arm so the first arm (control) can't starve the
+  // candidate — an A/B with control n=5 / candidate n=2 would be unfair. An arm that
+  // exhausts its share BREAKS (keeps its trials) rather than process.exit, so the A/B
+  // comparison still prints for whatever each arm completed.
   const budget = { used: 0, cost: 0, runs: [] as number[] };
+  const perArmBudget = Math.floor(args.budget / arms.length);
   const estPerRun = (): number => Math.max(EST_TOKENS_PER_RUN, percentile(budget.runs, 0.75));
 
-  // Run one arm `args.trials` times → mean grade. Honors the budget (exits on breach).
+  // Run one arm `args.trials` times → mean grade, bounded by its own per-arm budget share.
   const runArm = async (arm: string): Promise<OrchRubricResult> => {
     const grades: OrchRubricResult[] = [];
+    let armUsed = 0;
     for (let t = 0; t < args.trials; t++) {
-      if (budget.used + estPerRun() > args.budget) {
-        console.error(`\nBUDGET STOP before [${arm}] trial ${t + 1}: ${budget.used}/${args.budget} tokens used; next run would exceed the budget.`);
-        process.exit(2);
+      if (armUsed + estPerRun() > perArmBudget) {
+        console.error(`\nBUDGET STOP for [${arm}] before trial ${t + 1}: arm used ${armUsed}/${perArmBudget} (of ${args.budget} total); stopping this arm with ${grades.length} trial(s).`);
+        break;
       }
       const res = await runOrchestrationScenario({ claudeBinary: 'claude', model: args.model, maxTurns: args.maxTurns, timeoutMs: args.timeoutMs, variant: arm });
+      armUsed += res.usageTokens;
       budget.used += res.usageTokens;
       budget.runs.push(res.usageTokens);
       if (res.costUsd) budget.cost += res.costUsd;
@@ -154,11 +161,8 @@ async function main(): Promise<void> {
       console.log(`\n[${arm}] trial ${t + 1}/${args.trials}: ${res.usageTokens} tok · ${r.toolCalls.length} primary tool-calls · ${r.dispatches.length} dispatch(es) [${r.dispatches.map(d => `${d.archetype}${d.matchedFrontier ? '✓' : '✗'}`).join(', ')}] · +${r.newNodeCount} nodes`);
       printGrade(g);
       await res.cleanup();
-      if (budget.used >= args.budget) {
-        console.error(`\nBUDGET REACHED after [${arm}] trial ${t + 1}: ${budget.used}/${args.budget} tokens used; stopping.`);
-        break;
-      }
     }
+    if (grades.length < args.trials) console.error(`[${arm}] completed ${grades.length}/${args.trials} trials (budget-limited) — interpret the A/B with that asymmetry in mind.`);
     return meanOrchGrade(grades);
   };
 
