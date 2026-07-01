@@ -41,37 +41,100 @@ export interface IAMEvalResult {
 }
 
 /**
- * Match an action string against an action pattern (supports wildcards).
- * e.g., "s3:GetObject" matches "s3:*", "*", "s3:Get*"
+ * Linear wildcard matcher supporting `*` (any run) and `?` (one char).
+ * Iterative with backtrack-to-last-star — O(n·m) worst case and, crucially,
+ * NO exponential blowup. The previous approach built a regex by turning each
+ * `*` into a dot-star, which catastrophically backtracked on a many-`*` ARN
+ * pattern (e.g. `arn:*:*:*:*:*:*`) tested against a long non-matching
+ * resource (ReDoS). This two-pointer scan has no such failure mode.
  */
-function matchAction(pattern: string, action: string): boolean {
-  const pLower = pattern.toLowerCase();
-  const aLower = action.toLowerCase();
-  if (pLower === '*' || pLower === '*:*') return true;
-  if (pLower === aLower) return true;
-  // Wildcard at end: "s3:*" matches "s3:getobject"
-  if (pLower.endsWith('*')) {
-    return aLower.startsWith(pLower.slice(0, -1));
+function globMatch(pat: string, text: string): boolean {
+  let p = 0, t = 0, star = -1, mark = 0;
+  while (t < text.length) {
+    if (p < pat.length && (pat[p] === '?' || pat[p] === text[t])) { p++; t++; }
+    else if (p < pat.length && pat[p] === '*') { star = p++; mark = t; }
+    else if (star !== -1) { p = star + 1; t = ++mark; }
+    else return false;
   }
-  return false;
+  while (p < pat.length && pat[p] === '*') p++;
+  return p === pat.length;
 }
 
 /**
- * Match a resource ARN/ID against a resource pattern (supports wildcards).
+ * Match a string against an IAM pattern with star/question wildcards ANYWHERE,
+ * not just as a trailing star — AWS allows mid-string wildcards like
+ * `s3:*Object`, `iam:Get*Policy`, or a bucket key glob with a star in the
+ * middle of the path.
+ */
+function matchGlob(pattern: string, value: string): boolean {
+  const p = pattern.toLowerCase();
+  const v = value.toLowerCase();
+  if (p === '*') return true;
+  if (p === v) return true;
+  const hasStar = p.includes('*');
+  const hasQuestion = p.includes('?');
+  if (!hasStar && !hasQuestion) return false;
+  // Fast path: a single trailing `*` with no other wildcard is a prefix test.
+  if (hasStar && !hasQuestion && p.indexOf('*') === p.length - 1) {
+    return v.startsWith(p.slice(0, -1));
+  }
+  return globMatch(p, v);
+}
+
+/**
+ * Match an action string against an action pattern (wildcards anywhere).
+ * e.g. "s3:GetObject" matches "s3:*", "*", "s3:Get*", "s3:*Object".
+ */
+function matchAction(pattern: string, action: string): boolean {
+  // `*:*` is the AWS "all services, all actions" form — an ACTION-only idiom
+  // (not a resource pattern; resources use plain `*` / ARNs).
+  if (pattern.toLowerCase() === '*:*') return true;
+  return matchGlob(pattern, action);
+}
+
+/**
+ * Match a resource ARN/ID against a resource pattern (wildcards anywhere).
  */
 function matchResource(pattern: string, resource: string): boolean {
-  const pLower = pattern.toLowerCase();
-  const rLower = resource.toLowerCase();
-  if (pLower === '*') return true;
-  if (pLower === rLower) return true;
-  if (pLower.endsWith('*')) {
-    return rLower.startsWith(pLower.slice(0, -1));
-  }
-  // ARN glob matching with ? and *
-  const regex = new RegExp(
-    '^' + pLower.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$'
-  );
-  return regex.test(rLower);
+  return matchGlob(pattern, resource);
+}
+
+/**
+ * Evaluate a statement's Action/NotAction (or Resource/NotResource) list pair
+ * against a query value. AWS uses Action XOR NotAction, but if both are present
+ * (invalid, but be safe) BOTH must be satisfied. A NotAction/NotResource means
+ * "everything EXCEPT these", so a match-all query (`*` / empty — the "can P do A
+ * anywhere?" placeholder) can NOT be affirmatively covered by an exclusion
+ * statement (it always excludes a subset). Treat it as non-matching — the same
+ * way a scoped positive list fails a `*` query — so a NotResource statement no
+ * longer answers a blanket "yes" (or, for a deny, a blanket "no").
+ */
+function matchWithNot(
+  positive: string[],
+  negative: string[],
+  value: string,
+  valueIsAll: boolean,
+  matcher: (pattern: string, value: string) => boolean,
+): boolean {
+  const hasPos = positive.length > 0;
+  const hasNeg = negative.length > 0;
+  if (!hasPos && !hasNeg) return false;
+  // For a match-all ("anywhere") query, a positive statement satisfies it only
+  // if it is genuinely blanket (`*` / `*:*`) — a scoped pattern that merely
+  // glob-matches the literal one-char string `*` (e.g. `?`) must not answer
+  // "anywhere? yes". Keeps the positive and negative branches consistent about
+  // what "all" means.
+  const posOk = hasPos
+    ? (valueIsAll ? positive.some(isMatchAllPattern) : positive.some(p => matcher(p, value)))
+    : true;
+  const negOk = hasNeg ? (!valueIsAll && !negative.some(p => matcher(p, value))) : true;
+  return posOk && negOk;
+}
+
+/** True for the genuinely "everything" IAM patterns (`*` and the AWS `*:*`). */
+function isMatchAllPattern(pattern: string): boolean {
+  const p = pattern.trim().toLowerCase();
+  return p === '*' || p === '*:*';
 }
 
 /**
@@ -270,12 +333,26 @@ function evaluateAWS(
 
   for (const { id, node } of policies) {
     const policyActions = (node.actions as string[]) || [];
+    // `|| ['*']` only fills in when `resources` is UNDEFINED (a source that
+    // omits it → match-all, preserving prior behavior). A present-but-empty `[]`
+    // (a NotResource statement, or the unparsed-policy fallback node) stays empty
+    // so the NotResource branch / implicit-deny path below handles it.
     const policyResources = (node.resources as string[]) || ['*'];
+    const policyNotActions = (node.not_actions as string[]) || [];
+    const policyNotResources = (node.not_resources as string[]) || [];
     const effect = node.effect || 'allow';
     const policyName = node.policy_name || node.label || id;
 
-    const actionMatch = policyActions.some(a => matchAction(a, action));
-    const resourceMatch = policyResources.some(r => matchResource(r, resource));
+    // AWS uses Action XOR NotAction (and Resource XOR NotResource). NotAction
+    // means "every action EXCEPT these"; ignoring it turned a broad "Allow
+    // NotAction: iam:*" into an empty allow, and a "Deny NotAction: …" into a
+    // no-op deny (over-permissive). matchWithNot applies the correct semantics,
+    // including treating a `*`/empty "anywhere" query as non-matching against an
+    // exclusion statement (so it can't answer a blanket allow/deny).
+    const actionIsAll = action === '*' || action === '*:*' || action === '';
+    const resourceIsAll = resource === '*' || resource === '';
+    const actionMatch = matchWithNot(policyActions, policyNotActions, action, actionIsAll, matchAction);
+    const resourceMatch = matchWithNot(policyResources, policyNotResources, resource, resourceIsAll, matchResource);
 
     if (actionMatch && resourceMatch) {
       if (effect === 'deny') {

@@ -167,7 +167,20 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
           const effect = String(stmt.Effect || 'Allow').toLowerCase();
           if (effect !== 'allow' && effect !== 'deny') continue;
           const actions = Array.isArray(stmt.Action) ? stmt.Action : (stmt.Action ? [stmt.Action] : []);
-          const resources = Array.isArray(stmt.Resource) ? stmt.Resource : (stmt.Resource ? [stmt.Resource] : ['*']);
+          // NotAction / NotResource: the statement covers everything EXCEPT
+          // these. Dropping them (as before) turned "Allow NotAction: iam:*"
+          // into an empty allow (silently under-permissive) and, worse, a
+          // "Deny NotAction: …" into a no-op deny (over-permissive). Capture
+          // them so the simulator can apply the inverse-match semantics.
+          const notActions = Array.isArray(stmt.NotAction) ? stmt.NotAction : (stmt.NotAction ? [stmt.NotAction] : []);
+          const notResources = Array.isArray(stmt.NotResource) ? stmt.NotResource : (stmt.NotResource ? [stmt.NotResource] : []);
+          // Default Resource to '*' when NEITHER Resource nor NotResource is
+          // present — a NotResource statement must not also carry resources:['*'].
+          // An explicit empty `Resource: []` (malformed AWS) is treated the same
+          // as absent, not passed through as [] — otherwise the statement would
+          // match nothing, silently dropping a Deny (fail-open).
+          const resourceList = Array.isArray(stmt.Resource) ? stmt.Resource : (stmt.Resource ? [stmt.Resource] : []);
+          const resources = resourceList.length > 0 ? resourceList : (notResources.length ? [] : ['*']);
           const conditions = stmt.Condition ? [JSON.stringify(stmt.Condition)] : undefined;
           const stmtId = statements.length === 1 ? nodeId : cloudPolicyId('aws', `${arn || policyName}:statement:${index}:${effect}`);
           policyNodes.push(stmtId);
@@ -177,6 +190,8 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
             discovered_at: now, discovered_by: agentId, confidence: 1.0,
             provider: 'aws', policy_name: policyName, arn,
             effect, actions, resources,
+            ...(notActions.length ? { not_actions: notActions } : {}),
+            ...(notResources.length ? { not_resources: notResources } : {}),
             ...(conditions ? { conditions } : {}),
           } as Finding['nodes'][0]);
         }

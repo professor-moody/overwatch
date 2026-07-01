@@ -213,6 +213,117 @@ describe('IAM Simulator', () => {
       expect(result.allowed).toBe(false);
       expect(result.deny_policies).toContain('DenySecret');
     });
+
+    it('matches an action with a MID-string wildcard (s3:*Object)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'MidStar', effect: 'allow', actions: ['s3:*Object'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      // Suffix-only matching would have missed this — s3:GetObject ends in "Object".
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
+      expect(evaluateIAM('user-1', 's3:ListBucket', 'arn:aws:s3:::b', ctx).allowed).toBe(false);
+    });
+
+    it('applies NotAction: allows everything EXCEPT the excluded actions', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      // Allow all actions except iam:* (an "Allow NotAction: iam:*" statement).
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotIam', effect: 'allow', not_actions: ['iam:*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
+      expect(evaluateIAM('user-1', 'iam:CreateUser', '*', ctx).allowed).toBe(false);
+    });
+
+    it('applies NotResource: allows the action EXCEPT on the excluded resource', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotSecret', effect: 'allow', actions: ['s3:*'], not_resources: ['arn:aws:s3:::secret/*'], resources: [] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::public/f', ctx).allowed).toBe(true);
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::secret/key', ctx).allowed).toBe(false);
+    });
+
+    it('a Deny NotAction is no longer a no-op (denies everything except the listed actions)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'allow', { type: 'cloud_policy', policy_name: 'AllowAll', effect: 'allow', actions: ['*'], resources: ['*'] });
+      // Deny everything EXCEPT s3:* — so ec2:* must be denied.
+      addNode(graph, 'deny', { type: 'cloud_policy', policy_name: 'DenyNotS3', effect: 'deny', not_actions: ['s3:*'], resources: ['*'] });
+      addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'deny', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      expect(evaluateIAM('user-1', 'ec2:RunInstances', '*', ctx).allowed).toBe(false);
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true);
+    });
+
+    it('an Allow NotResource statement does NOT answer a blanket "anywhere" (*) query with yes', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'NotSecret', effect: 'allow', actions: ['s3:*'], not_resources: ['arn:aws:s3:::secret/*'], resources: [] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      // "can P GetObject anywhere?" — must NOT be a blanket allow (secret/* is excluded).
+      expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(false);
+      // but a concrete non-excluded resource is still allowed.
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::public/f', ctx).allowed).toBe(true);
+    });
+
+    it('a Deny NotResource statement does NOT fire on a blanket "anywhere" (*) query', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'allow', { type: 'cloud_policy', policy_name: 'AllowAll', effect: 'allow', actions: ['*'], resources: ['*'] });
+      // Deny everything except public/* — must not blanket-deny a '*' query.
+      addNode(graph, 'deny', { type: 'cloud_policy', policy_name: 'DenyNotPublic', effect: 'deny', actions: ['*'], not_resources: ['arn:aws:s3:::public/*'], resources: [] });
+      addEdge(graph, 'user-1', 'allow', 'HAS_POLICY');
+      addEdge(graph, 'user-1', 'deny', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      // '*' query: the scoped deny doesn't fire, so the blanket allow governs.
+      expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(true);
+      // concrete excluded resource: deny still correctly skips (public/* excluded from deny).
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::public/f', ctx).allowed).toBe(true);
+      // concrete non-excluded resource: deny fires.
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::other/f', ctx).allowed).toBe(false);
+    });
+
+    it('a *:* pattern matches actions but a resource *:* still requires the ARN shape', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      // actions '*:*' = all actions; resources '*:*' is non-idiomatic and must NOT
+      // blanket-match a resource with no colon.
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'Weird', effect: 'allow', actions: ['*:*'], resources: ['*:*'] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(true); // colon-bearing ARN
+      expect(evaluateIAM('user-1', 's3:GetObject', 'plainname', ctx).allowed).toBe(false); // no colon → not matched
+    });
+
+    it('a one-char glob (?) resource does NOT answer an "anywhere" (*) query as a match-all', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'OneChar', effect: 'allow', actions: ['s3:*'], resources: ['?'] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      // '?' glob-matches the literal 1-char string '*' but is NOT match-all.
+      expect(evaluateIAM('user-1', 's3:GetObject', '*', ctx).allowed).toBe(false);
+      expect(evaluateIAM('user-1', 's3:GetObject', 'arn:aws:s3:::b/f', ctx).allowed).toBe(false);
+    });
+
+    it('a many-wildcard resource pattern evaluates in linear time (no ReDoS)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-1', { type: 'user', arn: 'arn:aws:iam::1:user/u' });
+      addNode(graph, 'policy-1', { type: 'cloud_policy', policy_name: 'Globby', effect: 'allow', actions: ['s3:*'], resources: ['arn:*:*:*:*:*:*:*:*:*x'] });
+      addEdge(graph, 'user-1', 'policy-1', 'HAS_POLICY');
+      const ctx = new EngineContext(graph, makeConfig(), './test.json');
+      // A long resource that does NOT end in 'x' is the classic ReDoS trigger.
+      const longResource = 'arn:aws:s3:::' + 'a'.repeat(5000);
+      const start = Date.now();
+      const result = evaluateIAM('user-1', 's3:GetObject', longResource, ctx);
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(result.allowed).toBe(false); // pattern requires a trailing 'x'
+    });
   });
 
   describe('Azure evaluation', () => {

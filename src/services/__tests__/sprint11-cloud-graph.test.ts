@@ -458,6 +458,40 @@ describe('11.4 — Pacu parser', () => {
     expect(finding.edges.some(e => e.properties.type === 'HAS_POLICY')).toBe(true);
   });
 
+  it('captures NotAction / NotResource into not_actions / not_resources (was dropped)', () => {
+    const data = {
+      IAMPolicies: [{
+        PolicyName: 'NotActionPolicy',
+        Arn: 'arn:aws:iam::123:policy/NotActionPolicy',
+        PolicyDocument: { Statement: [{ Effect: 'Allow', NotAction: ['iam:*'], NotResource: ['arn:aws:s3:::secret/*'] }] },
+        AttachedEntities: [{ Arn: 'arn:aws:iam::123:user/admin' }],
+      }]
+    };
+    const finding = parsePacu(JSON.stringify(data));
+    const policyNode = finding.nodes.find(n => n.type === 'cloud_policy')!;
+    expect(policyNode.not_actions).toEqual(['iam:*']);
+    expect(policyNode.not_resources).toEqual(['arn:aws:s3:::secret/*']);
+    // A NotResource statement must NOT also carry a default resources: ['*'].
+    expect(policyNode.resources).toEqual([]);
+  });
+
+  it('treats an explicit empty Resource:[] like an absent Resource (defaults to *), so a Deny is not dropped', () => {
+    const data = {
+      IAMPolicies: [{
+        PolicyName: 'EmptyResourceDeny',
+        Arn: 'arn:aws:iam::123:policy/EmptyResourceDeny',
+        PolicyDocument: { Statement: [{ Effect: 'Deny', Action: ['s3:*'], Resource: [] }] },
+        AttachedEntities: [{ Arn: 'arn:aws:iam::123:user/admin' }],
+      }]
+    };
+    const finding = parsePacu(JSON.stringify(data));
+    const policyNode = finding.nodes.find(n => n.type === 'cloud_policy')!;
+    // Explicit [] with no NotResource must NOT pass through as [] (which matches
+    // nothing → silently drops the Deny). It defaults to '*' like an absent Resource.
+    expect(policyNode.resources).toEqual(['*']);
+    expect(policyNode.effect).toBe('deny');
+  });
+
   it('parses S3 buckets', () => {
     const data = { S3Buckets: [{ Name: 'my-data', Region: 'us-east-1' }] };
     const finding = parsePacu(JSON.stringify(data));
