@@ -88,6 +88,27 @@ describe('ingestSessionResult success path', () => {
     expect(sessionEdge!.properties.discovered_by).toBe('session-manager');
   });
 
+  it('keeps the HAS_SESSION edge live when one of two concurrent sessions closes (ref-count)', () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    seedHostAndUser(engine);
+    const base = { success: true, confirmed: true, target_node: 'host-10-10-10-1', principal_node: 'user-root' };
+    engine.ingestSessionResult({ ...base, session_id: 'sess-A' });
+    engine.ingestSessionResult({ ...base, session_id: 'sess-B' });
+
+    const liveEdge = () => engine.exportGraph().edges.find(e => e.properties.type === 'HAS_SESSION')!;
+    expect(liveEdge().properties.session_live).toBe(true);
+
+    // Close A — B is still live, so the shared (principal→target) edge stays live.
+    engine.onSessionClosed('sess-A', 'host-10-10-10-1', 'user-root');
+    expect(liveEdge().properties.session_live).toBe(true);
+    expect((liveEdge().properties as { live_session_ids?: string[] }).live_session_ids).toEqual(['sess-B']);
+
+    // Close B — now no live sessions remain, so the edge goes historical.
+    engine.onSessionClosed('sess-B', 'host-10-10-10-1', 'user-root');
+    expect(liveEdge().properties.session_live).toBe(false);
+    expect(liveEdge().properties.session_closed_at).toBeDefined();
+  });
+
   it('logs session_access_confirmed with correct top-level action_id and frontier_item_id', () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     seedHostAndUser(engine);

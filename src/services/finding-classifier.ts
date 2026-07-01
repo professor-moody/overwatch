@@ -305,11 +305,25 @@ export function classifyFinding(
     }
   }
 
-  // 2. Heuristic from finding title/description
+  // 2. Heuristic from finding title/description.
+  //
+  // Whole-word match with an optional plural/possessive suffix, NOT a bare
+  // substring. Bare `includes` let short vuln_type keys ('rce','lfi','idor')
+  // hit INSIDE unrelated words ('resource','corridor'); a plain `\bKEY\b`
+  // over-corrected — it MISSES inflected forms ('RCEs', "rce's"), and because
+  // this loop is first-match-wins over insertion order, a missed short key lets
+  // a LATER unrelated key win (e.g. 'RCEs … deserialization' → wrong CWE-502).
+  // `\bKEY(?:s|es|'s)?\b` matches the token and its plural/possessive only.
   if (!cweId) {
     const text = `${finding.title} ${finding.description}`.toLowerCase();
+    const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     for (const [vtype, mapped] of Object.entries(VULN_TYPE_TO_CWE)) {
-      if (text.includes(vtype.replace(/_/g, ' ')) || text.includes(vtype)) {
+      // vtype keys are [a-z0-9_]; underscores read as spaces in prose. Match
+      // both the spaced and raw forms (escaped defensively).
+      const spaced = vtype.replace(/_/g, ' ');
+      const variants = spaced === vtype ? [spaced] : [spaced, vtype];
+      const matched = variants.some(v => new RegExp(`\\b${escapeRe(v)}(?:s|es|'s)?\\b`).test(text));
+      if (matched) {
         cweId = mapped.cwe; cweName = mapped.name; break;
       }
     }

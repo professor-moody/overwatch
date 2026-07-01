@@ -47,6 +47,9 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   // IAM Users
   if (Array.isArray(data.IAMUsers)) {
     for (const user of data.IAMUsers) {
+      // A null/non-object element would throw on property access and, via the
+      // dispatcher catch, discard the whole import; skip it instead.
+      if (!user || typeof user !== 'object') continue;
       const arn = user.Arn || user.arn || '';
       if (!arn) continue;
       const nodeId = cloudIdentityId(arn);
@@ -66,6 +69,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   // IAM Roles
   if (Array.isArray(data.IAMRoles)) {
     for (const role of data.IAMRoles) {
+      if (!role || typeof role !== 'object') continue;
       const arn = role.Arn || role.arn || '';
       if (!arn) continue;
       const nodeId = cloudIdentityId(arn);
@@ -150,6 +154,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   // IAM Policies
   if (Array.isArray(data.IAMPolicies)) {
     for (const policy of data.IAMPolicies) {
+      if (!policy || typeof policy !== 'object') continue;
       const arn = policy.Arn || policy.arn || '';
       const policyName = policy.PolicyName || policy.policy_name || '';
       if (!policyName) continue;
@@ -164,6 +169,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       const statements = doc?.Statement ? (Array.isArray(doc.Statement) ? doc.Statement : [doc.Statement]) : [];
       if (doc?.Statement) {
         for (const [index, stmt] of statements.entries()) {
+          if (!stmt || typeof stmt !== 'object') continue;
           const effect = String(stmt.Effect || 'Allow').toLowerCase();
           if (effect !== 'allow' && effect !== 'deny') continue;
           const actions = Array.isArray(stmt.Action) ? stmt.Action : (stmt.Action ? [stmt.Action] : []);
@@ -211,6 +217,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       // HAS_POLICY edges from attached entities
       const attached = policy.AttachedEntities || policy.attached_entities || [];
       for (const entity of Array.isArray(attached) ? attached : []) {
+        if (entity == null) continue; // string entity is valid (it IS the arn); only null throws
         const entityArn = entity.Arn || entity.arn || entity;
         if (typeof entityArn !== 'string') continue;
         const entityId = cloudIdentityId(entityArn);
@@ -237,6 +244,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   // S3 Buckets
   if (Array.isArray(data.S3Buckets)) {
     for (const bucket of data.S3Buckets) {
+      if (!bucket || typeof bucket !== 'object') continue;
       const bucketName = bucket.Name || bucket.name || '';
       if (!bucketName) continue;
       const bucketArn = `arn:aws:s3:::${bucketName}`;
@@ -269,6 +277,7 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
   // EC2 Instances
   if (Array.isArray(data.EC2Instances)) {
     for (const inst of data.EC2Instances) {
+      if (!inst || typeof inst !== 'object') continue;
       const instanceId = inst.InstanceId || inst.instance_id || '';
       if (!instanceId) continue;
       const instArn = inst.Arn || inst.arn || `arn:aws:ec2:${inst.Region || inst.region || 'unknown'}:${accountId}:instance/${instanceId}`;
@@ -313,7 +322,10 @@ export function parsePacu(output: string, agentId: string = 'pacu-parser', conte
       if (profile) {
         const profileArn = profile.Arn || profile.arn || '';
         const roles = Array.isArray(profile.Roles) ? profile.Roles : (Array.isArray(profile.roles) ? profile.roles : []);
-        const roleArn = roles.length > 0 ? (roles[0].Arn || roles[0].arn || '') : '';
+        // Guard the nested element too — a null/non-object Roles[0] would throw
+        // on property access and (no internal try/catch) discard the whole import.
+        const r0 = roles.length > 0 ? roles[0] : undefined;
+        const roleArn = (r0 && typeof r0 === 'object') ? (r0.Arn || r0.arn || '') : '';
         const resolvedArn = roleArn || profileArn;
         if (resolvedArn) {
           const principalType = roleArn ? 'role' : 'instance_profile';

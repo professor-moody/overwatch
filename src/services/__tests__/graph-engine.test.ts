@@ -3336,6 +3336,30 @@ describe('GraphEngine', () => {
       expect(engine2.getState().access_summary.compromised_hosts).toHaveLength(0);
     });
 
+    it('a post-restart session can drain the edge even though a stale live_session_id was reconciled', () => {
+      const now = new Date().toISOString();
+      const engine1 = trackedEngine(makeConfig({ engagement_nonce: 'd'.repeat(64) }), TEST_STATE_FILE);
+      engine1.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: now, confidence: 1.0 });
+      engine1.addNode({ id: 'user-op', type: 'user', label: 'operator', discovered_at: now, confidence: 1.0 });
+      engine1.ingestSessionResult({ success: true, confirmed: true, target_node: 'host-10-10-10-1', principal_node: 'user-op', session_id: 'sess-pre-restart' });
+      engine1.persist();
+      engine1.flushNow();
+      engine1.dispose();
+
+      // Restart → reconcile marks the edge historical AND clears the stale ref-count.
+      const engine2 = trackedEngine(makeConfig({ engagement_nonce: 'd'.repeat(64) }), TEST_STATE_FILE);
+      // A NEW session on the same principal→target.
+      engine2.ingestSessionResult({ success: true, confirmed: true, target_node: 'host-10-10-10-1', principal_node: 'user-op', session_id: 'sess-B' });
+      let edge = engine2.queryGraph({ edge_type: 'HAS_SESSION' }).edges[0];
+      expect(edge.properties.session_live).toBe(true);
+      expect(edge.properties.live_session_ids).toEqual(['sess-B']); // stale pre-restart id gone
+
+      // Closing B must drain to not-live — it would be stuck true if the stale id remained.
+      engine2.onSessionClosed('sess-B', 'host-10-10-10-1', 'user-op');
+      edge = engine2.queryGraph({ edge_type: 'HAS_SESSION' }).edges[0];
+      expect(edge.properties.session_live).toBe(false);
+    });
+
     it('access_summary still reports host via ADMIN_TO edge regardless of session_live', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

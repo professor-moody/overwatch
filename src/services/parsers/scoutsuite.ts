@@ -77,17 +77,26 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
   }
 
   for (const [serviceName, serviceData] of Object.entries(services)) {
+    // Every element loop below guards its element: a null/non-object entry
+    // (valid JSON in a truncated/partial scan) would throw on the first property
+    // access and, via the dispatcher catch, discard the ENTIRE ScoutSuite import.
+    if (!serviceData || typeof serviceData !== 'object') continue;
     // --- Process findings (flagged security checks) ---
     const findings = serviceData.findings as Record<string, Record<string, unknown>> | undefined;
     if (findings) {
       for (const [findingKey, finding] of Object.entries(findings)) {
+        if (!finding || typeof finding !== 'object') continue;
         const flagged = Number(finding.flagged_items ?? 0);
         if (flagged === 0) continue;
         const level = String(finding.level || 'warning');
         if (level === 'good') continue;
 
-        // Flagged items list may contain dot-paths to resources
-        const items = Array.isArray(finding.items) ? finding.items as string[] : [];
+        // Flagged items list may contain dot-paths to resources. Keep only the
+        // string entries — a non-string element would throw on `.split('.')`
+        // below and, via the dispatcher catch, drop the ENTIRE ScoutSuite import.
+        const items = Array.isArray(finding.items)
+          ? (finding.items as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
         for (const itemPath of items) {
           // Build a resource reference from the flagged item path
           const resArn = `${providerCode}:${accountId}:${serviceName}:${itemPath}`;
@@ -125,6 +134,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const users = (serviceData.users as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (users) {
         for (const user of Object.values(users)) {
+          if (!user || typeof user !== 'object') continue;
           const arn = String(user.arn || '');
           if (!arn) continue;
           const nodeId = cloudIdentityId(arn);
@@ -140,6 +150,9 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
           // User policies
           const userPolicies = Array.isArray(user.policies) ? user.policies : [];
           for (const pol of userPolicies) {
+            // A null/non-object policy element would throw on property access
+            // and, via the dispatcher catch, discard the whole ScoutSuite import.
+            if (!pol || typeof pol !== 'object') continue;
             const pArn = String((pol as Record<string, unknown>).arn || (pol as Record<string, unknown>).PolicyArn || '');
             const pName = String((pol as Record<string, unknown>).name || (pol as Record<string, unknown>).PolicyName || pArn);
             if (!pName) continue;
@@ -161,6 +174,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const roles = (serviceData.roles as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (roles) {
         for (const role of Object.values(roles)) {
+          if (!role || typeof role !== 'object') continue;
           const arn = String(role.arn || '');
           if (!arn) continue;
           const nodeId = cloudIdentityId(arn);
@@ -227,6 +241,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const instances = (serviceData.instances as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (instances) {
         for (const inst of Object.values(instances)) {
+          if (!inst || typeof inst !== 'object') continue;
           const instId = String(inst.instance_id || inst.id || '');
           if (!instId) continue;
           const arn = String(inst.arn || `arn:aws:ec2:${inst.region || 'unknown'}:${accountId}:instance/${instId}`);
@@ -248,6 +263,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const sgs = (serviceData.security_groups as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (sgs) {
         for (const sg of Object.values(sgs)) {
+          if (!sg || typeof sg !== 'object') continue;
           const sgId = String(sg.id || sg.GroupId || '');
           if (!sgId) continue;
           const arn = String(sg.arn || `arn:aws:ec2:${sg.region || 'unknown'}:${accountId}:security-group/${sgId}`);
@@ -256,11 +272,16 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
           const ingress: string[] = [];
           const rules = Array.isArray(sg.rules) ? sg.rules : (Array.isArray(sg.IpPermissions) ? sg.IpPermissions : []);
           for (const rule of rules) {
+            if (!rule || typeof rule !== 'object') continue;
             const proto = String((rule as Record<string, unknown>).protocol || (rule as Record<string, unknown>).IpProtocol || 'tcp');
             const port = String((rule as Record<string, unknown>).port || (rule as Record<string, unknown>).FromPort || '*');
-            const grants = Array.isArray((rule as Record<string, unknown>).grants || (rule as Record<string, unknown>).IpRanges) ?
-              ((rule as Record<string, unknown>).grants || (rule as Record<string, unknown>).IpRanges) as Record<string, unknown>[] : [];
+            // Prefer whichever field is actually an array — a `||` selector would
+            // let a truthy-but-non-array `grants` shadow a valid `IpRanges`.
+            const rr = rule as Record<string, unknown>;
+            const grants = (Array.isArray(rr.grants) ? rr.grants
+              : (Array.isArray(rr.IpRanges) ? rr.IpRanges : [])) as Record<string, unknown>[];
             for (const grant of grants) {
+              if (!grant || typeof grant !== 'object') continue;
               const cidr = String(grant.value || grant.CidrIp || '*');
               ingress.push(`${proto}:${port}:${cidr}`);
             }
@@ -281,6 +302,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const buckets = (serviceData.buckets as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (buckets) {
         for (const bucket of Object.values(buckets)) {
+          if (!bucket || typeof bucket !== 'object') continue;
           const name = String(bucket.name || '');
           if (!name) continue;
           const arn = String(bucket.arn || `arn:aws:s3:::${name}`);
@@ -303,6 +325,7 @@ export function parseScoutSuite(output: string, agentId: string = 'scoutsuite-pa
       const functions = (serviceData.functions as Record<string, Record<string, unknown>> | undefined)?.items as Record<string, Record<string, unknown>> | undefined;
       if (functions) {
         for (const fn of Object.values(functions)) {
+          if (!fn || typeof fn !== 'object') continue;
           const fnName = String(fn.name || fn.FunctionName || '');
           const arn = String(fn.arn || '');
           if (!fnName && !arn) continue;

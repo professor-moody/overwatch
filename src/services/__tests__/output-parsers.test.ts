@@ -3250,6 +3250,86 @@ describe('Output Parsers', () => {
       const finding = parseScoutSuite('not json');
       expect(finding.nodes.length).toBe(0);
     });
+
+    it('survives null elements across every resource loop (findings, users, sgs, buckets)', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          s3: {
+            findings: { f_bad: null, f_ok: { level: 'danger', flagged_items: 1, items: ['buckets.b1'] } },
+            buckets: { items: { b_bad: null, b_ok: { name: 'real-bucket' } } },
+          },
+          iam: { users: { items: { u_bad: null, u_ok: { arn: 'arn:aws:iam::123:user/real', name: 'real' } } } },
+          ec2: {
+            security_groups: { items: { sg_bad: null, sg_ok: { id: 'sg-1', rules: [null, { protocol: 'tcp', port: '22', grants: [null, { value: '0.0.0.0/0' }] }] } } },
+          },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      // Every VALID element still parsed — no single null discarded the import.
+      expect(finding.nodes.some(n => n.type === 'cloud_resource' && (n as Record<string, unknown>).resource_type === 's3_bucket' && n.label === 'real-bucket')).toBe(true);
+      expect(finding.nodes.some(n => n.type === 'cloud_identity' && n.arn === 'arn:aws:iam::123:user/real')).toBe(true);
+      expect(finding.nodes.some(n => n.type === 'cloud_network')).toBe(true);
+      expect(finding.nodes.some(n => n.type === 'vulnerability')).toBe(true);
+    });
+
+    it('reads SG grants from IpRanges when grants is a non-array (no || shadowing)', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: { ec2: { security_groups: { items: {
+          sg1: { id: 'sg-x', IpPermissions: [{ IpProtocol: 'tcp', FromPort: '443', grants: {}, IpRanges: [{ CidrIp: '10.0.0.0/8' }] }] },
+        } } } },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const net = finding.nodes.find(n => n.type === 'cloud_network')!;
+      expect(net).toBeDefined();
+      // A truthy non-array `grants` must not shadow the valid IpRanges CIDR.
+      expect(JSON.stringify((net as Record<string, unknown>).ingress_rules)).toContain('10.0.0.0/8');
+    });
+
+    it('skips a null policy element in a user policies array without dropping the import', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          iam: {
+            users: {
+              items: {
+                u1: {
+                  arn: 'arn:aws:iam::123:user/alice', name: 'alice',
+                  policies: [null, { name: 'AdminPolicy', arn: 'arn:aws:iam::aws:policy/Admin' }],
+                },
+              },
+            },
+          },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      // The valid policy still parses; the null element didn't nuke the import.
+      expect(finding.nodes.some(n => n.type === 'cloud_policy' && n.policy_name === 'AdminPolicy')).toBe(true);
+      expect(finding.nodes.some(n => n.type === 'cloud_identity' && n.arn === 'arn:aws:iam::123:user/alice')).toBe(true);
+    });
+
+    it('skips non-string flagged items instead of throwing (keeps the import)', () => {
+      const data = {
+        provider_code: 'aws', account_id: '123',
+        services: {
+          s3: {
+            findings: {
+              'bucket-bad': {
+                level: 'danger', flagged_items: 3, description: 'Bad buckets',
+                // A non-string item (null / object) would throw on .split('.').
+                items: ['buckets.good-one', null, { nested: 'x' }, 'buckets.good-two'],
+              },
+            },
+          },
+        },
+      };
+      const finding = parseScoutSuite(JSON.stringify(data));
+      const resources = finding.nodes.filter(n => n.type === 'cloud_resource');
+      // The two valid string items still produce resources; import not discarded.
+      expect(resources.length).toBe(2);
+      expect(finding.nodes.some(n => n.type === 'vulnerability')).toBe(true);
+    });
   });
 
   // ===========================================================================
