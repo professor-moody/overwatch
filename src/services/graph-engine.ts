@@ -189,7 +189,9 @@ export class GraphEngine {
     // Attempt to load existing state
     if (existsSync(this.ctx.stateFilePath)) {
       try {
-        this.persistence.loadState();
+        // Pass the engine's guarded mutators so WAL replay re-applies state via
+        // the same code path (guards) as the live write, not a raw-graph copy.
+        this.persistence.loadState(this);
         this.log('Resumed engagement from persisted state', undefined, { category: 'system', event_type: 'system' });
       } catch (err) {
         console.error(`Failed to load state file: ${err instanceof Error ? err.message : String(err)}`);
@@ -286,10 +288,6 @@ export class GraphEngine {
     // for `add_node` (new) vs `merge_node_attrs` (update) so replay can
     // call the same code path the original write took.
     const isUpdate = this.ctx.graph.hasNode(props.id);
-    this.ctx.journalMutation(
-      isUpdate ? 'merge_node_attrs' : 'add_node',
-      { props },
-    );
     if (isUpdate) {
       // P2.1: type-guard on merge. Previously, a second writer (e.g. an
       // AzureHound role assignment) could overwrite an existing node's
@@ -303,25 +301,32 @@ export class GraphEngine {
       const merged: Partial<NodeProperties> = { ...props };
       if (existing.type && props.type && existing.type !== props.type) {
         delete (merged as { type?: NodeProperties['type'] }).type;
-        try {
-          this.logActionEvent({
-            description: `Refused type change on merge: node ${props.id} kept type "${existing.type}", incoming "${props.type}" dropped`,
-            event_type: 'instrumentation_warning',
-            category: 'system',
-            details: {
-              node_id: props.id,
-              existing_type: existing.type,
-              incoming_type: props.type,
-              incoming_discovered_by: props.discovered_by,
-            },
-          });
-        } catch {
-          // Don't let logging failure block ingestion.
+        if (!this.ctx.suppressMutationEvents) {
+          try {
+            this.logActionEvent({
+              description: `Refused type change on merge: node ${props.id} kept type "${existing.type}", incoming "${props.type}" dropped`,
+              event_type: 'instrumentation_warning',
+              category: 'system',
+              details: {
+                node_id: props.id,
+                existing_type: existing.type,
+                incoming_type: props.type,
+                incoming_discovered_by: props.discovered_by,
+              },
+            });
+          } catch {
+            // Don't let logging failure block ingestion.
+          }
         }
       }
+      // Journal the GUARDED result (post type-strip), so WAL replay records what
+      // was actually applied — not the raw incoming props whose conflicting type
+      // the live path refused. (updateNode already journals post-guard.)
+      this.ctx.journalMutation('merge_node_attrs', { props: merged });
       this.ctx.graph.mergeNodeAttributes(props.id, merged);
       this.invalidateHealthReport();
     } else {
+      this.ctx.journalMutation('add_node', { props });
       this.ctx.graph.addNode(props.id, props);
       this.invalidatePathGraph();
       this.invalidateAllCaches();
@@ -352,7 +357,9 @@ export class GraphEngine {
       // Detect confirmation of inferred edge
       if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
         props = { ...props, confirmed_at: this.ctx.nowIso() };
-        this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+        if (!this.ctx.suppressMutationEvents) {
+          this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+        }
       }
       // Update existing edge — property-only change, no topology change
       this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
@@ -440,8 +447,11 @@ export class GraphEngine {
       ...nextNode,
       ...normalizeNodeProvenance(nextNode),
     };
-    // Journal the patch before applying so a crash-before-flush can replay it.
-    this.ctx.journalMutation('merge_node_attrs', { props: nextAttrs });
+    // Journal as a REPLACE (not merge) so replay reproduces the full-node
+    // semantics of patch — including REMOVING keys cleared via unsetProperties.
+    // A merge_node_attrs replay could only add/overwrite keys, leaving a cleared
+    // key stale after crash recovery.
+    this.ctx.journalMutation('replace_node_attrs', { props: nextAttrs });
     this.ctx.graph.replaceNodeAttributes(nodeId, nextAttrs as NodeProperties);
     this.invalidateAllCaches();
     return this.ctx.graph.getNodeAttributes(nodeId);

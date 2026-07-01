@@ -17,11 +17,19 @@ import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry
 import { normalizeActivityLogEntry } from './engine-context.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
-import type { InferenceRule, NodeProperties } from '../types.js';
+import type { InferenceRule, NodeProperties, EdgeProperties } from '../types.js';
 import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
 
 export const MAX_SNAPSHOTS = 5;
+
+/** The guarded engine mutators WAL replay routes through, so replay re-applies
+ *  state via the SAME code path (and guards) as the live write instead of a
+ *  parallel raw-graph reimplementation. GraphEngine satisfies this structurally. */
+export interface ReplayMutators {
+  addNode(props: NodeProperties): string;
+  addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean };
+}
 
 // --- Coalescing configuration ---
 export const FLUSH_DEBOUNCE_MS = 100;   // Wait 100ms of quiet before flushing
@@ -494,7 +502,7 @@ export class StatePersistence {
     return typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
   }
 
-  loadState(): void {
+  loadState(mutators?: ReplayMutators): void {
     const raw = readFileSync(this.ctx.stateFilePath, 'utf-8');
     const data = JSON.parse(raw);
     this.ctx.config = data.config;
@@ -544,29 +552,33 @@ export class StatePersistence {
     if (this.ctx.mutationJournal) {
       const snapshotSeq = typeof data.journalSnapshotSeq === 'number' ? data.journalSnapshotSeq : 0;
       this.ctx.mutationJournal.setNextSeq(snapshotSeq);
-      const replay = this.ctx.mutationJournal.replay(this.makeMutationApplier(), snapshotSeq);
-      if (replay.read > 0) {
+      const replay = this.ctx.mutationJournal.replay(this.makeMutationApplier(mutators), snapshotSeq);
+      if (replay.read > 0 || replay.truncated) {
         const parts: string[] = [`applied ${replay.applied}`];
         if (replay.skipped > 0) parts.push(`skipped ${replay.skipped}`);
         if (replay.failed > 0) parts.push(`FAILED ${replay.failed}`);
+        if (replay.truncated) parts.push('TRUNCATED (durable tail dropped)');
         this.ctx.logEvent({
           description: `WAL replay: ${parts.join(', ')} of ${replay.read} mutation(s)`,
           event_type: 'system',
           category: 'system',
-          outcome: replay.failed > 0 ? 'failure' : replay.skipped > 0 ? 'neutral' : 'success',
+          outcome: (replay.failed > 0 || replay.truncated) ? 'failure' : replay.skipped > 0 ? 'neutral' : 'success',
           details: {
             read: replay.read,
             applied: replay.applied,
             skipped: replay.skipped,
             failed: replay.failed,
+            truncated: replay.truncated,
             skipped_reasons: replay.skipped_reasons,
             failed_reasons: replay.failed_reasons,
           },
         });
-        // Only truncate the journal when every entry was applied successfully.
-        // If any entry failed, preserve the journal file so the operator can
-        // inspect and recover manually — truncating would destroy the evidence (P2).
-        if (replay.failed === 0 && replay.skipped === 0) {
+        // Only truncate the journal when every entry applied cleanly AND the
+        // read wasn't itself truncated. A failure, skip, or a dropped durable
+        // tail means recovery is incomplete — preserve the journal file so the
+        // operator can inspect and recover manually (truncating destroys the
+        // evidence).
+        if (replay.failed === 0 && replay.skipped === 0 && !replay.truncated) {
           this.persistImmediate();
           this.ctx.mutationJournal.truncate();
           this.ctx.mutationJournal.setNextSeq(this.ctx.mutationJournal.peekSeq());
@@ -585,26 +597,43 @@ export class StatePersistence {
    * temporarily suppressed (via `mutationJournal: null`) so we don't
    * double-record entries during replay.
    */
-  private makeMutationApplier(): import('./mutation-journal.js').MutationApplier {
+  private makeMutationApplier(mutators?: ReplayMutators): import('./mutation-journal.js').MutationApplier {
     const ctx = this.ctx;
     return {
       apply(entry) {
-        // Suppress nested journaling during replay.
+        // During replay: suppress nested journaling (mutationJournal=null) AND
+        // the guarded mutators' edge-case events (suppressMutationEvents), so we
+        // re-apply state without double-recording or double-logging.
         const savedJournal = ctx.mutationJournal;
+        const savedSuppress = ctx.suppressMutationEvents;
         ctx.mutationJournal = null;
+        ctx.suppressMutationEvents = true;
         try {
           switch (entry.type) {
-            case 'add_node': {
+            // ROOT FIX: route node/edge replay through the SAME guarded engine
+            // mutators the live write took (type-integrity guard, scope-aware
+            // edge keying + dedup) instead of a parallel raw-graphology
+            // reimplementation that had drifted. addNode re-determines
+            // add-vs-merge; addEdge re-derives the scoped edge key.
+            case 'add_node':
+            case 'merge_node_attrs': {
               const props = (entry.payload as { props: NodeProperties }).props;
-              if (!ctx.graph.hasNode(props.id)) {
+              if (mutators) {
+                mutators.addNode(props);
+              } else if (ctx.graph.hasNode(props.id)) {
+                ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
+              } else {
                 ctx.graph.addNode(props.id, props);
               }
               return { status: 'applied' };
             }
-            case 'merge_node_attrs': {
+            case 'replace_node_attrs': {
+              // Full-node replace (from patch_node): removes keys the live path
+              // cleared via unsetProperties. mergeNodeAttributes could not remove
+              // keys, so a merge-based replay would leave a cleared key stale.
               const props = (entry.payload as { props: NodeProperties }).props;
               if (ctx.graph.hasNode(props.id)) {
-                ctx.graph.mergeNodeAttributes(props.id, props as Partial<NodeProperties>);
+                ctx.graph.replaceNodeAttributes(props.id, props);
               } else {
                 ctx.graph.addNode(props.id, props);
               }
@@ -615,19 +644,23 @@ export class StatePersistence {
               if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) {
                 return { status: 'skipped', reason: `missing endpoint(s): ${p.source} -> ${p.target}` };
               }
-              const existingEdges = ctx.graph.edges(p.source, p.target);
-              let merged = false;
-              for (const eid of existingEdges) {
-                const ea = ctx.graph.getEdgeAttributes(eid);
-                if (ea.type === p.props.type) {
-                  ctx.graph.mergeEdgeAttributes(eid, p.props as Partial<import('../types.js').EdgeProperties>);
-                  merged = true;
-                  break;
+              if (mutators) {
+                mutators.addEdge(p.source, p.target, p.props);
+              } else {
+                const existingEdges = ctx.graph.edges(p.source, p.target);
+                let merged = false;
+                for (const eid of existingEdges) {
+                  const ea = ctx.graph.getEdgeAttributes(eid);
+                  if (ea.type === p.props.type) {
+                    ctx.graph.mergeEdgeAttributes(eid, p.props as Partial<import('../types.js').EdgeProperties>);
+                    merged = true;
+                    break;
+                  }
                 }
-              }
-              if (!merged) {
-                const baseKey = `${p.source}--${p.props.type}--${p.target}`;
-                try { ctx.graph.addEdgeWithKey(baseKey, p.source, p.target, p.props); } catch { /* edge already exists */ }
+                if (!merged) {
+                  const baseKey = `${p.source}--${p.props.type}--${p.target}`;
+                  try { ctx.graph.addEdgeWithKey(baseKey, p.source, p.target, p.props); } catch { /* edge already exists */ }
+                }
               }
               return { status: 'applied' };
             }
@@ -654,6 +687,7 @@ export class StatePersistence {
           }
         } finally {
           ctx.mutationJournal = savedJournal;
+          ctx.suppressMutationEvents = savedSuppress;
         }
       },
     };
