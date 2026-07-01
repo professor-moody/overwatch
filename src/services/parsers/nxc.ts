@@ -16,6 +16,12 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
   const hostMeta = new Map<string, { hostname?: string; domain?: string; os?: string; signing?: boolean; smbv1?: boolean; nullAuth?: boolean }>();
   // Track whether we're inside a user enumeration table for a given IP
   let userTableIp: string | undefined;
+  // Track WHICH hosts are inside an NXC "Dumping LSA secrets" block — a Set, not
+  // a scalar, because NXC runs targets concurrently and interleaves output, so
+  // two hosts can have open blocks at once. Each host's block only promotes its
+  // OWN subsequent secret rows; another host's marker never closes it. (An
+  // arbitrary colon-bearing SMB line still must NOT fabricate a credential.)
+  const lsaSectionIps = new Set<string>();
 
   function addEdgeOnce(source: string, target: string, type: EdgeType, confidence: number, extra?: Record<string, unknown>): void {
     const edgeKey = `${source}--${type}--${target}`;
@@ -305,6 +311,10 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     const infoMatch = rest.match(/^\[\*\]\s*(.*)/);
     if (infoMatch) {
       const infoMsg = infoMatch[1];
+      // A `[*]` info line for this host means we've moved past its LSA-secrets
+      // block (NXC does not interleave `[*]` lines with a host's own secret
+      // rows). Clears only THIS host's block — another host's dump stays open.
+      lsaSectionIps.delete(ip);
 
       // "Enumerated N local users: DOMAIN" — end of user table
       if (/Enumerated\s+\d+/i.test(infoMsg)) {
@@ -375,6 +385,12 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
     if (statusMatch) {
       userTableIp = undefined;
       const [, status, message] = statusMatch;
+      // Enter THIS host's LSA-secrets block on its marker; any other status line
+      // for the SAME host (its auth result, the "Dumped N LSA secrets" end
+      // marker, a SAM/NTDS dump) closes it. Secret rows are plain (non-bracketed)
+      // so they never reset this, and another host's status never touches it.
+      if (/Dumping LSA secrets/i.test(message)) lsaSectionIps.add(ip);
+      else lsaSectionIps.delete(ip);
       const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
 
       // Check for Pwn3d! (admin access)
@@ -560,28 +576,64 @@ export function parseNxc(output: string, agentId: string = 'nxc-parser', context
       const lsaMatch = rest.match(/^([^:]+):(.*)/);
       if (lsaMatch && !rest.includes('-Username-') && !rest.startsWith('[') && userTableIp !== ip) {
         const [, rawAccount, secret] = lsaMatch;
-        // Skip known non-credential lines
-        if (secret && secret.length > 0 && !rawAccount.startsWith('NL$KM') && !rawAccount.startsWith('dpapi_')) {
-          // DefaultPassword or cleartext password
-          const isDefault = rawAccount.toLowerCase().includes('defaultpassword');
+        const account = rawAccount.trim();
+        // Promote a line to a credential only when it is EITHER inside THIS
+        // host's "Dumping LSA secrets" block, OR carries an unambiguous
+        // machine$/DOMAIN\account/known-LSA-secret shape. Both require a
+        // whitespace-free account. This admits a bare local account
+        // (`Administrator:pw`) inside a real LSA dump while rejecting free-text
+        // colon lines ("Server time: 12:30:45", "Error connecting: refused")
+        // that previously fabricated a credential from their raw substring.
+        const inLsaSection = lsaSectionIps.has(ip);
+        const hasLsaAccountShape = account.includes('\\')            // DOMAIN\account
+          || /\$$/.test(account)                                     // machine account HOST$
+          || /^(?:\$machine\.acc|nl\$km)/i.test(account)            // machine cleartext / cached key
+          || /^(?:_sc_|dpapi_|aad_)/i.test(account)                 // service / DPAPI / AAD secret
+          || /^defaultpassword$/i.test(account);                    // autologon default password
+        const looksLikeLsaAccount = account.length > 0 && !/\s/.test(account) && (inLsaSection || hasLsaAccountShape);
+        const secretVal = secret.trim();
+        // Skip known non-credential rows (case-insensitively, on the trimmed
+        // account) + opaque encrypted blobs (`0x…` / raw DPAPI material is
+        // ciphertext, not a usable secret).
+        if (looksLikeLsaAccount && secretVal.length > 0
+            && !/^(?:nl\$km|dpapi_)/i.test(account)
+            && !/^0x/i.test(secretVal)) {
+          const isDefault = /defaultpassword/i.test(account);
           const parts = rawAccount.split('\\');
           const username = parts.length > 1 ? parts[1] : parts[0];
           const domain = parts.length > 1 ? resolveDomainName(parts[0], context?.domain_aliases) : hostMeta.get(ip)?.domain;
 
-          if (username && secret.trim().length > 0) {
+          // Classify material by shape, but ONLY for machine accounts: their LSA
+          // secret is the computer NTLM hash (32-hex NT, 64-hex LM+NT, or
+          // `LM:NT`), not a password. Machine accounts appear as `DOMAIN\HOST$`
+          // (ends `$`) AND as the literal `$MACHINE.ACC` key (ends `C`). A
+          // regular account's LSA secret is its actual cleartext — even if it is
+          // coincidentally hex — so it must never be relabelled or truncated.
+          const isMachineAccount = username.endsWith('$') || /^\$machine\.acc$/i.test(username);
+          let credKind: 'plaintext_password' | 'ntlm_hash' = 'plaintext_password';
+          let credType: 'plaintext' | 'ntlm' = 'plaintext';
+          let credMaterial = secretVal;
+          if (isMachineAccount) {
+            const colonLmNt = secretVal.match(/^([a-f0-9]{32}):([a-f0-9]{32})$/i);
+            if (colonLmNt) { credKind = 'ntlm_hash'; credType = 'ntlm'; credMaterial = colonLmNt[2]; }
+            else if (/^[a-f0-9]{64}$/i.test(secretVal)) { credKind = 'ntlm_hash'; credType = 'ntlm'; credMaterial = secretVal.slice(32); }
+            else if (/^[a-f0-9]{32}$/i.test(secretVal)) { credKind = 'ntlm_hash'; credType = 'ntlm'; credMaterial = secretVal; }
+          }
+
+          if (username && credMaterial.length > 0) {
             const { hostNodeId: resolvedHostId } = ensureSmbContext(ip);
-            const credNodeId = credentialId('plaintext_password', secret.trim(), username, domain);
+            const credNodeId = credentialId(credKind, credMaterial, username, domain);
 
             if (!seenNodes.has(credNodeId)) {
               nodes.push({
                 id: credNodeId,
                 type: 'credential',
                 label: `${username} LSA secret`,
-                cred_type: 'plaintext',
-                cred_material_kind: 'plaintext_password',
+                cred_type: credType,
+                cred_material_kind: credKind,
                 cred_usable_for_auth: true,
                 cred_evidence_kind: 'dump',
-                cred_value: secret.trim(),
+                cred_value: credMaterial,
                 cred_user: username,
                 cred_domain: domain,
                 cred_is_default_guess: isDefault || undefined,

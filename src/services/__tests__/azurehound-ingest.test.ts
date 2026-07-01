@@ -455,5 +455,82 @@ describe('AzureHound Ingest', () => {
       expect(result.warnings.some(w => /could not infer AzureHound kind/i.test(w))).toBe(true);
       expect(result.finding.nodes.length).toBe(0);
     });
+
+    // -----------------------------------------------------------------
+    // Robustness — malformed input must degrade, never crash the parse
+    // -----------------------------------------------------------------
+    describe('robustness', () => {
+      it('tolerates a non-array data/value field instead of throwing "not iterable"', () => {
+        // A supported kind whose `data` is a bare object (malformed export).
+        const data = { kind: 'azusers', data: { Properties: { id: 'x' } } };
+        const result = parseAzureHoundFile(JSON.stringify(data), 'users.json');
+        expect(result.finding.nodes.length).toBe(0);
+        expect(result.warnings.some(w => /expected an array/i.test(w))).toBe(true);
+      });
+
+      it('drops a single malformed record but keeps the rest (per-item fault tolerance)', () => {
+        const data = {
+          kind: 'azusers',
+          data: [
+            { Properties: { id: 'good-1', displayName: 'Good One', tenantId: 't1' } },
+            null, // malformed element — deref of item.Properties would throw
+            { Properties: { id: 'good-2', displayName: 'Good Two', tenantId: 't1' } },
+          ],
+        };
+        const { finding, ingest_summary } = parseAzureHoundFile(JSON.stringify(data), 'users.json');
+        const ids = finding.nodes.map(n => n.arn).sort();
+        expect(ids).toEqual(['good-1', 'good-2']);
+        expect(ingest_summary.dropped_by_reason.item_parse_error).toBe(1);
+      });
+
+      it('keys an app WITHOUT an appId under the shared object-id namespace, not a fake app id', () => {
+        const data = {
+          kind: 'azapps',
+          data: [{ Properties: { id: 'obj-only-1', displayName: 'No AppId App', tenantId: 't1' } }],
+        };
+        const { finding } = parseAzureHoundFile(JSON.stringify(data), 'apps.json');
+        const app = finding.nodes.find(n => n.principal_type === 'app')!;
+        expect(app).toBeDefined();
+        // Shared object-id namespace (`azure-<objectId>`), NOT `azure:app:<objectId>`.
+        expect(app.id).toBe('azure-obj-only-1');
+        expect(app.id).not.toContain('azure:app:');
+      });
+
+      it('still keys an app WITH an appId under the app namespace (SP cross-link intact)', () => {
+        const data = {
+          kind: 'azapps',
+          data: [{ Properties: { appId: 'client-123', id: 'obj-456', displayName: 'Real App' } }],
+        };
+        const { finding } = parseAzureHoundFile(JSON.stringify(data), 'apps.json');
+        const app = finding.nodes.find(n => n.principal_type === 'app')!;
+        expect(app.arn).toBe('client-123');
+        expect(app.id).toContain('client-123');
+      });
+
+      it('rolls back a seenNodes id registered BEFORE its node push (add-before-push gap)', () => {
+        // Record 1: a numeric roleName makes expandAzureRole(42) throw AFTER the
+        // policy id is registered in seenNodes but BEFORE the node is pushed.
+        // Record 2 is valid and — because `${42}` and `${'42'}` stringify the
+        // same — resolves to the SAME policy id. If rollback failed to un-register
+        // the id, record 2 would skip node creation yet still emit a HAS_POLICY
+        // edge pointing at a non-existent node (dangling ref).
+        const data = {
+          kind: 'azroleassignments',
+          data: [
+            { Properties: { principalId: 'p1', roleDefinitionName: 42 } },
+            { Properties: { principalId: 'p1', roleDefinitionName: '42' } },
+          ],
+        };
+        const { finding, ingest_summary } = parseAzureHoundFile(JSON.stringify(data), 'roles.json');
+        const policies = finding.nodes.filter(n => n.type === 'cloud_policy');
+        expect(policies).toHaveLength(1); // recreated by the valid record
+        expect(ingest_summary.dropped_by_reason.item_parse_error).toBe(1);
+        // Every HAS_POLICY edge must target a materialized node — no dangling ref.
+        const nodeIds = new Set(finding.nodes.map(n => n.id));
+        const hasPolicy = finding.edges.filter(e => e.properties.type === 'HAS_POLICY');
+        expect(hasPolicy.length).toBeGreaterThan(0);
+        for (const e of hasPolicy) expect(nodeIds.has(e.target)).toBe(true);
+      });
+    });
   });
 });

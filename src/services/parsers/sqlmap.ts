@@ -71,6 +71,9 @@ function parseSqlmapText(
   type DumpPhase = 'idle' | 'awaiting-border' | 'awaiting-header' | 'header-seen' | 'reading-rows';
   type DumpState = { phase: DumpPhase; table: string | null; userIdx: number; pwdIdx: number };
   let dump: DumpState = { phase: 'idle', table: null, userIdx: -1, pwdIdx: -1 };
+  // Set once the "[INFO] fetching database users" marker is seen; gates the
+  // `[*] <user>` extraction below to the users section (see note at that site).
+  let inDbUsersSection = false;
   const isBorder = (s: string) => /^\+[-+]+\+$/.test(s);
   const splitRow = (s: string): string[] => s.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
   const USER_COL_RE = /^(user(name)?|login|email|account|mail)$/i;
@@ -181,9 +184,34 @@ function parseSqlmapText(
       if (u && !dbUsers.includes(u)) dbUsers.push(u);
     }
 
+    // Track the DB-users section with a running flag. ENTER on the users marker;
+    // LEAVE on the next phase/section marker. sqlmap emits `--users` before
+    // `--dbs`, and its `[*] <name>` list shape is identical for "available
+    // databases", so a one-way latch would capture every database name as a
+    // user; and matching had to be anchored to the real `[INFO] fetching
+    // database users` line (not a bare substring that an echoed payload could
+    // trip). The old `output.indexOf(line)` gate also mis-located a `[*]` token
+    // duplicated above the marker and re-scanned the buffer per line (O(n^2)).
+    if (/\[INFO\]\s*fetching database users\b/i.test(line) || /^database management system users\b/i.test(line)) {
+      inDbUsersSection = true;
+    } else if (/^available databases\b/i.test(line)
+        // End-of-run footer that follows the LAST enumeration: `[INFO] fetched
+        // data logged …` (note: "fetched", not "fetching") and the trailing
+        // `[*] ending @ …` / `[*] shutting down …` banner. Without closing here,
+        // the `[*] ending` banner is captured as a bogus DB user named "ending".
+        || /\[INFO\]\s*fetched\b/i.test(line)
+        || /^\[\*\]\s+(?:ending|shutting down)\b/i.test(line)
+        // A different-phase `[INFO] fetching …` marker leaves the section — but
+        // NOT sqlmap's own in-section progress lines (`fetching number of
+        // database users`, emitted before the list in blind/inference modes),
+        // which would otherwise drop the entire user list.
+        || (/\[INFO\]\s*fetching\b/i.test(line) && !/fetching\s+number\s+of/i.test(line))) {
+      inDbUsersSection = false;
+    }
+
     // Individual user lines from --users output
     const userLineMatch = line.match(/^\[\*\]\s+'?([^'@\s]+)/);
-    if (userLineMatch && /fetching database users/i.test(output.slice(0, output.indexOf(line)))) {
+    if (userLineMatch && inDbUsersSection) {
       const u = userLineMatch[1];
       if (u && !dbUsers.includes(u)) dbUsers.push(u);
     }

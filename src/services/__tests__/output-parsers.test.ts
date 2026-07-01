@@ -584,6 +584,121 @@ describe('Output Parsers', () => {
       expect(creds[0].cred_user).toBe('svc_backup');
     });
 
+    it('does NOT fabricate an LSA credential from an arbitrary colon-bearing line', () => {
+      // Any non-bracketed SMB line with a colon used to be promoted to a usable
+      // plaintext credential. The LSA-account anchor now rejects free-text like
+      // "Server time: 12:30:45" while still accepting DOMAIN\account:secret.
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        'SMB         10.3.10.11      445    WINTERFELL       Server time: 12:30:45',
+        'SMB         10.3.10.11      445    WINTERFELL       Error connecting: connection refused',
+        'SMB         10.3.10.11      445    WINTERFELL       NORTH\\svc_backup:BackupP@ss!',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential' && n.cred_evidence_kind === 'dump');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_user).toBe('svc_backup');
+      // The free-text colon lines must not have become credentials.
+      expect(finding.nodes.some(n => n.cred_user === 'Server time')).toBe(false);
+      expect(finding.nodes.some(n => n.cred_user === 'Error connecting')).toBe(false);
+    });
+
+    it('accepts a bare local-account LSA secret when inside a Dumping LSA secrets block', () => {
+      // A non-domain-qualified account (no `\`, `$`, or prefix) is still a real
+      // LSA secret when it appears under the dump marker — must not be dropped.
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        'SMB         10.3.10.11      445    WINTERFELL       Administrator:LocalP@ss1',
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumped 1 LSA secrets to /tmp/nxc',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const cred = finding.nodes.find(n => n.type === 'credential' && n.cred_evidence_kind === 'dump');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_user).toBe('Administrator');
+      expect(cred!.cred_value).toBe('LocalP@ss1');
+      expect(cred!.cred_type).toBe('plaintext');
+    });
+
+    it('classifies a machine-account LSA secret as an ntlm_hash, not usable plaintext', () => {
+      // NXC prints a machine account's LSA secret as LM+NT hex — NOT cleartext.
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        'SMB         10.3.10.11      445    WINTERFELL       NORTH\\WINTERFELL$:aad3b435b51404eeaad3b435b51404ee31d6cfe0d16ae931b73c59d7e0c089c0',
+        'SMB         10.3.10.11      445    WINTERFELL       $MACHINE.ACC:0x1a2b3c4d5e6f7890abcdef',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const machineCred = finding.nodes.find(n => n.type === 'credential' && n.cred_user === 'WINTERFELL$');
+      expect(machineCred).toBeDefined();
+      expect(machineCred!.cred_material_kind).toBe('ntlm_hash');
+      expect(machineCred!.cred_type).toBe('ntlm');
+      // NT half only (last 32 hex of the LM+NT concatenation).
+      expect(machineCred!.cred_value).toBe('31d6cfe0d16ae931b73c59d7e0c089c0');
+      // Opaque 0x LSA blob must not be promoted to a usable secret at all.
+      expect(finding.nodes.some(n => (n.cred_value as string)?.startsWith('0x'))).toBe(false);
+    });
+
+    it('classifies a $MACHINE.ACC LM:NT secret as an ntlm_hash (account ends in C, not $)', () => {
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        'SMB         10.3.10.11      445    WINTERFELL       $MACHINE.ACC:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const cred = finding.nodes.find(n => n.type === 'credential' && n.cred_user === '$MACHINE.ACC');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_material_kind).toBe('ntlm_hash');
+      expect(cred!.cred_type).toBe('ntlm');
+      expect(cred!.cred_value).toBe('31d6cfe0d16ae931b73c59d7e0c089c0'); // NT half of the LM:NT pair
+    });
+
+    it('does NOT truncate or relabel a hex-looking cleartext secret for a NON-machine account', () => {
+      // A 64-hex-char cleartext (e.g. an autologon DefaultPassword) must be kept
+      // intact as plaintext — only machine accounts ($) carry NTLM-hash material.
+      const hex64 = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const output = [
+        'SMB         10.3.10.11      445    WINTERFELL       [+] Dumping LSA secrets',
+        `SMB         10.3.10.11      445    WINTERFELL       DefaultPassword:${hex64}`,
+      ].join('\n');
+      const finding = parseNxc(output);
+      const cred = finding.nodes.find(n => n.type === 'credential' && n.cred_user === 'DefaultPassword');
+      expect(cred).toBeDefined();
+      expect(cred!.cred_type).toBe('plaintext');
+      expect(cred!.cred_material_kind).toBe('plaintext_password');
+      expect(cred!.cred_value).toBe(hex64); // full value, NOT truncated to 32
+    });
+
+    it('does not leak one host LSA block to another host in interleaved output', () => {
+      // lsaSectionIp binds the block to a single host; a free-text colon line
+      // from a DIFFERENT host must not be promoted just because host A is dumping.
+      const output = [
+        'SMB         10.0.0.1        445    HOSTA            [+] Dumping LSA secrets',
+        'SMB         10.0.0.2        445    HOSTB            Server time: 12:30:45',
+        'SMB         10.0.0.1        445    HOSTA            NORTH\\svc_a:RealSecret1',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential' && n.cred_evidence_kind === 'dump');
+      expect(creds).toHaveLength(1);
+      expect(creds[0].cred_user).toBe('svc_a');
+      expect(finding.nodes.some(n => n.cred_user === 'Server time')).toBe(false);
+    });
+
+    it('keeps each hosts LSA block open independently when two hosts dump concurrently', () => {
+      // NXC interleaves concurrent-target output. A scalar section-flag would let
+      // host B's marker close host A's block, dropping host A's bare-local secret;
+      // the per-host Set keeps both open so both local Administrator secrets land.
+      const output = [
+        'SMB         10.0.0.1        445    HOSTA            [+] Dumping LSA secrets',
+        'SMB         10.0.0.2        445    HOSTB            [+] Dumping LSA secrets',
+        'SMB         10.0.0.1        445    HOSTA            Administrator:HostA_LocalPw',
+        'SMB         10.0.0.2        445    HOSTB            Administrator:HostB_LocalPw',
+      ].join('\n');
+      const finding = parseNxc(output);
+      const values = finding.nodes
+        .filter(n => n.type === 'credential' && n.cred_evidence_kind === 'dump')
+        .map(n => n.cred_value)
+        .sort();
+      expect(values).toEqual(['HostA_LocalPw', 'HostB_LocalPw']);
+    });
+
     it('extracts spider_plus file listings', () => {
       const output = [
         'SMB         10.3.10.11      445    WINTERFELL       [*] Windows 10 / Server 2019 Build 17763 x64 (name:WINTERFELL) (domain:north.sevenkingdoms.local) (signing:True) (SMBv1:False)',
@@ -3891,6 +4006,100 @@ Table: accounts
       const finding = parseSqlmap(sampleSqlmapText);
       const exploits = finding.edges.filter(e => e.properties.type === 'EXPLOITS');
       expect(exploits.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('extracts a --users db-user even when its [*] token also appears above the marker (no indexOf mis-slice)', () => {
+      // sqlmap uses `[*]` generically (e.g. "available databases"). The old
+      // `output.indexOf(line)` gate located the FIRST textual occurrence, so a
+      // token duplicated above the "fetching database users" marker dropped the
+      // real user; the running section flag fixes it.
+      const output = [
+        "[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'",
+        '[INFO] the back-end DBMS is MySQL',
+        '[INFO] fetching database names',
+        '[*] information_schema',
+        '[*] admin', // generic [*] token duplicated ABOVE the users marker
+        '[12:00:10] [INFO] fetching database users',
+        '[*] admin', // the real db user — must NOT be dropped
+        '[*] root',
+      ].join('\n');
+      const finding = parseSqlmap(output);
+      const names = finding.nodes
+        .filter(n => n.type === 'user' && (n as Record<string, unknown>).db_user === true)
+        .map(n => n.label)
+        .sort();
+      expect(names).toContain('admin');
+      expect(names).toContain('root');
+      // The above-marker database name must NOT be promoted to a db user.
+      expect(names).not.toContain('information_schema');
+    });
+
+    it('does NOT capture database names as users in a combined --users --dbs run (latch resets)', () => {
+      // sqlmap emits users BEFORE dbs; both use the identical `[*] <name>` shape.
+      // A one-way latch would misclassify every database name as a DB user.
+      const output = [
+        "[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'",
+        '[INFO] the back-end DBMS is MySQL',
+        '[12:00:10] [INFO] fetching database users',
+        'database management system users [2]:',
+        '[*] app_user',
+        '[*] root',
+        '[12:00:15] [INFO] fetching database names',
+        'available databases [3]:',
+        '[*] information_schema',
+        '[*] mysql',
+        '[*] app',
+      ].join('\n');
+      const finding = parseSqlmap(output);
+      const names = finding.nodes
+        .filter(n => n.type === 'user' && (n as Record<string, unknown>).db_user === true)
+        .map(n => n.label)
+        .sort();
+      expect(names).toEqual(['app_user', 'root']);
+      expect(names).not.toContain('information_schema');
+      expect(names).not.toContain('mysql');
+    });
+
+    it('does not capture the end-of-run footer banner as a DB user', () => {
+      // When the user list is the LAST enumeration, the footer `[*] ending @ …`
+      // (preceded only by `[INFO] fetched data logged …`) must not be captured.
+      const output = [
+        "[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'",
+        '[INFO] the back-end DBMS is MySQL',
+        '[12:00:10] [INFO] fetching database users',
+        'database management system users [2]:',
+        "[*] 'app_user'@'%'",
+        "[*] 'root'@'localhost'",
+        "[12:00:12] [INFO] fetched data logged to text files under '/root/.local/share/sqlmap/output/10.10.10.9'",
+        '[*] ending @ 12:00:13 /2026-01-01/',
+      ].join('\n');
+      const finding = parseSqlmap(output);
+      const names = finding.nodes
+        .filter(n => n.type === 'user' && (n as Record<string, unknown>).db_user === true)
+        .map(n => n.label)
+        .sort();
+      expect(names).toEqual(['app_user', 'root']);
+      expect(names).not.toContain('ending');
+    });
+
+    it('keeps the users section open across sqlmaps own in-section progress line', () => {
+      // In blind/inference modes sqlmap prints "[INFO] fetching number of
+      // database users" between the marker and the list; that must NOT leave the
+      // section and drop the header-less `[*]` user list.
+      const output = [
+        "[INFO] testing URL 'http://10.10.10.9/vulnerable.php?id=1'",
+        '[INFO] the back-end DBMS is MySQL',
+        '[12:00:10] [INFO] fetching database users',
+        '[12:00:11] [INFO] fetching number of database users',
+        "[*] 'app_user'@'%'",
+        "[*] 'root'@'localhost'",
+      ].join('\n');
+      const finding = parseSqlmap(output);
+      const names = finding.nodes
+        .filter(n => n.type === 'user' && (n as Record<string, unknown>).db_user === true)
+        .map(n => n.label)
+        .sort();
+      expect(names).toEqual(['app_user', 'root']);
     });
 
     it('creates VULNERABLE_TO edges', () => {

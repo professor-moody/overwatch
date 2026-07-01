@@ -53,6 +53,12 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
   const droppedByReason: Record<string, number> = {};
   const now = new Date().toISOString();
   const seenNodes = new Set<string>();
+  // Ids registered in seenNodes during the CURRENT item, so a mid-record throw
+  // can un-register them on rollback (seenNodes.add often runs BEFORE the
+  // matching nodes.push, so truncating `nodes` alone would leak the id and
+  // orphan a later record that reuses it).
+  let itemAddedIds: string[] = [];
+  const markSeen = (id: string): void => { seenNodes.add(id); itemAddedIds.push(id); };
 
   const makeSummary = (kind: string, processedRecords: number) => ({
     filename,
@@ -79,7 +85,14 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
     };
   }
 
-  const items = data.data || data.value || (Array.isArray(data) ? data : []);
+  const rawItems = data.data || data.value || (Array.isArray(data) ? data : []);
+  // Guard: a supported `kind` whose data/value field is a non-array object would
+  // otherwise throw "items is not iterable" and abort the whole parse. Coerce to
+  // an empty list + warn so malformed input degrades to a skip, not a crash.
+  const items: any[] = Array.isArray(rawItems) ? rawItems : [];
+  if (!Array.isArray(rawItems)) {
+    warnings.push(`${filename}: expected an array under 'data'/'value' but got ${typeof rawItems}; skipping file`);
+  }
   const kind = (data.kind || inferKindFromFilename(filename)).toLowerCase();
 
   const SUPPORTED_KINDS = new Set([
@@ -108,6 +121,16 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
   }
 
   for (const item of items) {
+    // Fault-tolerant per element: a single malformed record (unexpected shape,
+    // null-field deref) drops just that record instead of throwing out of the
+    // loop and discarding every node parsed so far via the dispatcher catch.
+    // Snapshot node/edge counts so a throw MID-record (e.g. a group that pushed
+    // its node + some members before a later member deref throws) rolls back to
+    // a clean boundary instead of leaving a half-ingested entity.
+    const nodeMark = nodes.length;
+    const edgeMark = edges.length;
+    itemAddedIds = [];
+    try {
     const props = item.Properties || item.properties || item;
 
     switch (kind) {
@@ -119,7 +142,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const displayName = props.displayName || upn || objectId;
         const nodeId = azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
-        seenNodes.add(nodeId);
+        markSeen(nodeId);
         nodes.push({
           id: nodeId, type: 'cloud_identity',
           label: displayName,
@@ -141,7 +164,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const displayName = props.displayName || objectId;
         const nodeId = azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
-        seenNodes.add(nodeId);
+        markSeen(nodeId);
         nodes.push({
           id: nodeId, type: 'group',
           label: displayName,
@@ -160,7 +183,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           const memberNodeId = azureObjectNodeId(memberId);
 
           if (!seenNodes.has(memberNodeId)) {
-            seenNodes.add(memberNodeId);
+            markSeen(memberNodeId);
             nodes.push({
               id: memberNodeId,
               type: memberType.includes('group') ? 'group' : 'cloud_identity',
@@ -182,19 +205,25 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       case 'azapps':
       case 'apps':
       case 'applications': {
-        // Apps use appId (different from SP objectId), so keep a separate namespace
-        const appId = props.appId || props.id || item.ObjectIdentifier || '';
-        if (!appId) { drop('azapps.missing_app_id'); break; }
-        const displayName = props.displayName || appId;
-        const nodeId = cloudIdentityId(`azure:app:${appId}`);
+        // Apps cross-reference via appId (the clientId) — a DIFFERENT UUID from
+        // the directory objectId. Only mint an app-namespace id when we actually
+        // have an appId; without one, key under the shared object-id namespace
+        // (same as every other principal) so the node merges with a role
+        // assignment that carries the same objectId, rather than orphaning under
+        // a fabricated `azure:app:{objectId}` id nothing else will reference.
+        const appId = props.appId || '';
+        const objectId = props.id || item.ObjectIdentifier || '';
+        if (!appId && !objectId) { drop('azapps.missing_app_id'); break; }
+        const displayName = props.displayName || appId || objectId;
+        const nodeId = appId ? cloudIdentityId(`azure:app:${appId}`) : azureObjectNodeId(objectId);
         if (seenNodes.has(nodeId)) break;
-        seenNodes.add(nodeId);
+        markSeen(nodeId);
         nodes.push({
           id: nodeId, type: 'cloud_identity',
           label: displayName,
           discovered_at: now, discovered_by: AGENT_ID, confidence: 1.0,
           provider: 'azure', principal_type: 'app',
-          arn: appId,
+          arn: appId || objectId,
           cloud_account: props.tenantId || '',
         } as Finding['nodes'][0]);
         break;
@@ -207,7 +236,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const displayName = props.displayName || spId;
         const nodeId = azureObjectNodeId(spId);
         if (seenNodes.has(nodeId)) break;
-        seenNodes.add(nodeId);
+        markSeen(nodeId);
         nodes.push({
           id: nodeId, type: 'cloud_identity',
           label: displayName,
@@ -223,7 +252,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           const appNodeId = cloudIdentityId(`azure:app:${appId}`);
           // Emit stub app node if not already seen so the edge target is valid
           if (!seenNodes.has(appNodeId)) {
-            seenNodes.add(appNodeId);
+            markSeen(appNodeId);
             nodes.push({
               id: appNodeId, type: 'cloud_identity',
               label: props.displayName ? `${props.displayName} (App)` : String(appId),
@@ -267,7 +296,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const policyDiscriminator = `${roleName}--${normalizeKeyPart(principalId)}--${scopeHash}`;
         const policyNodeId = cloudPolicyId('azure', policyDiscriminator);
         if (!seenNodes.has(policyNodeId)) {
-          seenNodes.add(policyNodeId);
+          markSeen(policyNodeId);
           const expansion = expandAzureRole(roleName);
           const policyNode: Record<string, unknown> = {
             id: policyNodeId, type: 'cloud_policy',
@@ -299,7 +328,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const appNodeId = cloudIdentityId(`azure:app:${principalId}`);
         const principalNodeId = seenNodes.has(appNodeId) ? appNodeId : azureObjectNodeId(principalId);
         if (!seenNodes.has(principalNodeId)) {
-          seenNodes.add(principalNodeId);
+          markSeen(principalNodeId);
           nodes.push({
             id: principalNodeId, type: 'cloud_identity',
             label: principalId,
@@ -314,7 +343,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         if (scope) {
           const resNodeId = cloudResourceId(scope);
           if (!seenNodes.has(resNodeId)) {
-            seenNodes.add(resNodeId);
+            markSeen(resNodeId);
             const label = scope.split('/').filter(Boolean).pop() || scope;
             nodes.push({
               id: resNodeId, type: 'cloud_resource',
@@ -360,7 +389,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
         const tgtId = azureObjectNodeId(resourceId);
 
         if (!seenNodes.has(srcId)) {
-          seenNodes.add(srcId);
+          markSeen(srcId);
           nodes.push({
             id: srcId, type: 'cloud_identity',
             label: principalId,
@@ -369,7 +398,7 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
           } as Finding['nodes'][0]);
         }
         if (!seenNodes.has(tgtId)) {
-          seenNodes.add(tgtId);
+          markSeen(tgtId);
           nodes.push({
             id: tgtId, type: 'cloud_identity',
             label: resourceId,
@@ -388,6 +417,17 @@ export function parseAzureHoundFile(content: string, filename: string): AzureHou
       default:
         drop('unsupported_kind');
         break;
+    }
+    } catch {
+      // Roll back this record's partial mutations. Delete EVERY id this item
+      // registered (tracked in itemAddedIds), not just those of pushed nodes —
+      // seenNodes.add can run before the matching nodes.push, so an id may be
+      // registered with no node behind it. This prevents a later record that
+      // reuses the id from skipping node creation yet emitting a dangling edge.
+      for (const id of itemAddedIds) seenNodes.delete(id);
+      nodes.length = nodeMark;
+      edges.length = edgeMark;
+      drop('item_parse_error');
     }
   }
 

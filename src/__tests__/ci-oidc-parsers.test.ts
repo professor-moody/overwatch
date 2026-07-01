@@ -125,6 +125,65 @@ describe('parseGitHubActionsOidc', () => {
     expect(app.sub_claim_pattern).toBe('repo:*');
   });
 
+  it('emits a node + ISSUES_TOKENS_FOR edge for EVERY subject in a `:sub` array (wildcard not dropped)', () => {
+    // A StringLike `:sub` condition is commonly an array; the old pickCondition
+    // returned only v[0], hiding a wide-open `repo:*` alongside a narrow pattern.
+    const trust = {
+      Role: {
+        RoleName: 'MultiSubRole',
+        Arn: 'arn:aws:iam::444:role/MultiSubRole',
+        AssumeRolePolicyDocument: {
+          Statement: [{
+            Effect: 'Allow',
+            Principal: { Federated: 'arn:aws:iam::444:oidc-provider/token.actions.githubusercontent.com' },
+            Condition: {
+              StringLike: {
+                'token.actions.githubusercontent.com:sub': [
+                  'repo:acme/webapp:ref:refs/heads/main',
+                  'repo:*',
+                ],
+              },
+            },
+          }],
+        },
+      },
+    };
+    const finding = parseGitHubActionsOidc(JSON.stringify(trust));
+
+    const apps = finding.nodes.filter(n => n.type === 'idp_application');
+    const patterns = apps.map(a => a.sub_claim_pattern).sort();
+    expect(patterns).toEqual(['repo:*', 'repo:acme/webapp:ref:refs/heads/main']);
+
+    // The wildcard app must have its own ISSUES_TOKENS_FOR edge to the role so
+    // the CI_TRUST_WILDCARD rule can see it.
+    const issues = finding.edges.filter(e => e.properties.type === 'ISSUES_TOKENS_FOR');
+    expect(issues.map(e => e.properties.sub_claim_pattern).sort())
+      .toEqual(['repo:*', 'repo:acme/webapp:ref:refs/heads/main']);
+    // Exactly one role node, regardless of subject count.
+    expect(finding.nodes.filter(n => n.type === 'cloud_identity')).toHaveLength(1);
+  });
+
+  it('does not crash on a malformed Condition operator mapping to null', () => {
+    const trust = {
+      Role: {
+        RoleName: 'MalformedRole',
+        Arn: 'arn:aws:iam::555:role/MalformedRole',
+        AssumeRolePolicyDocument: {
+          Statement: [{
+            Effect: 'Allow',
+            Principal: { Federated: 'arn:aws:iam::555:oidc-provider/token.actions.githubusercontent.com' },
+            Condition: { StringLike: null, StringEquals: { 'token.actions.githubusercontent.com:sub': 'repo:acme/app:ref:refs/heads/main' } },
+          }],
+        },
+      },
+    };
+    // Must not throw (Object.keys(null) guard) and still parse the valid operator.
+    const finding = parseGitHubActionsOidc(JSON.stringify(trust));
+    const app = finding.nodes.find(n => n.type === 'idp_application');
+    expect(app).toBeDefined();
+    expect(app!.client_id).toBe('acme/app');
+  });
+
   it('returns empty for non-GHA trust (Federated is not GitHub Actions)', () => {
     const trust = {
       Role: {

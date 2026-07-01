@@ -80,17 +80,26 @@ function tryParseRepoCustomization(output: string, _context?: ParseContext): { r
   }
 }
 
-function pickCondition(stmt: IamStatement): string | undefined {
+function pickConditions(stmt: IamStatement): string[] {
   const cond = stmt.Condition ?? {};
+  const out: string[] = [];
   for (const op of Object.keys(cond)) {
     const fields = cond[op];
+    // A malformed trust policy can map a condition operator to null/undefined/a
+    // scalar; Object.keys(null) would throw and abort the whole parse.
+    if (!fields || typeof fields !== 'object') continue;
     for (const k of Object.keys(fields)) {
       if (k.toLowerCase() !== 'token.actions.githubusercontent.com:sub') continue;
       const v = fields[k];
-      return Array.isArray(v) ? v[0] : v;
+      // Capture EVERY allowed subject, not just v[0] — a StringLike `:sub`
+      // condition is commonly an array like ["repo:acme/app:...", "repo:*"], and
+      // dropping all but the first hides the wide-open `repo:*` from the
+      // CI_TRUST_WILDCARD rule.
+      if (Array.isArray(v)) out.push(...v.filter((x): x is string => typeof x === 'string'));
+      else if (typeof v === 'string') out.push(v);
     }
   }
-  return undefined;
+  return out;
 }
 
 function extractRepo(subPattern: string | undefined): string | undefined {
@@ -139,33 +148,13 @@ export function parseGitHubActionsOidc(output: string, agentId: string = 'github
       const federated = Array.isArray(fed) ? fed.find(f => GHA_FEDERATED_PRINCIPAL.test(f)) : (typeof fed === 'string' && GHA_FEDERATED_PRINCIPAL.test(fed) ? fed : undefined);
       if (!federated) continue;
       ensureIdp();
-      const subPattern = pickCondition(stmt);
-      const repo = extractRepo(subPattern) ?? trust.RoleName ?? 'unknown';
-      const appNodeId = idpApplicationId('ci_github_actions', 'public', repo);
-      if (!seenNodes.has(appNodeId)) {
-        nodes.push({
-          id: appNodeId,
-          type: 'idp_application',
-          label: `gha:${repo}`,
-          client_id: repo,
-          app_name: repo,
-          audience: GHA_ISSUER,
-          idp_id: idpNodeId,
-          sub_claim_pattern: subPattern,
-          discovered_at: now,
-          confidence: 1.0,
-        });
-        seenNodes.add(appNodeId);
-        edges.push({
-          source: appNodeId,
-          target: idpNodeId,
-          properties: { type: 'TRUSTS' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
-        });
-      }
-      // cloud_identity (the role) + ISSUES_TOKENS_FOR edge.
+
+      // The role (cloud_identity) these workflows can assume — created once per
+      // statement, independent of how many subjects the condition allows.
       const arn = trust.Arn;
+      let cloudId: string | undefined;
       if (arn) {
-        const cloudId = cloudIdentityId(arn);
+        cloudId = cloudIdentityId(arn);
         if (!seenNodes.has(cloudId)) {
           nodes.push({
             id: cloudId,
@@ -180,11 +169,48 @@ export function parseGitHubActionsOidc(output: string, agentId: string = 'github
           });
           seenNodes.add(cloudId);
         }
-        edges.push({
-          source: appNodeId,
-          target: cloudId,
-          properties: { type: 'ISSUES_TOKENS_FOR' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId, sub_claim_pattern: subPattern },
-        });
+      }
+
+      // Emit an idp_application per allowed subject so each trusted repo — and a
+      // wide-open `repo:*` — lands as its own node (the wildcard would otherwise
+      // be dropped when v[0] was a narrow pattern), each with its own TRUSTS and
+      // ISSUES_TOKENS_FOR edge carrying that subject's sub_claim_pattern.
+      const subPatterns = pickConditions(stmt);
+      for (const subPattern of subPatterns.length > 0 ? subPatterns : [undefined]) {
+        const repo = extractRepo(subPattern) ?? trust.RoleName ?? 'unknown';
+        const appNodeId = idpApplicationId('ci_github_actions', 'public', repo);
+        if (!seenNodes.has(appNodeId)) {
+          nodes.push({
+            id: appNodeId,
+            type: 'idp_application',
+            label: `gha:${repo}`,
+            client_id: repo,
+            app_name: repo,
+            audience: GHA_ISSUER,
+            idp_id: idpNodeId,
+            sub_claim_pattern: subPattern,
+            discovered_at: now,
+            confidence: 1.0,
+          });
+          seenNodes.add(appNodeId);
+          edges.push({
+            source: appNodeId,
+            target: idpNodeId,
+            properties: { type: 'TRUSTS' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId },
+          });
+        }
+        // Dedup the ISSUES_TOKENS_FOR edge: two subjects that differ only by
+        // ref/environment collapse to the same repo (hence the same appNodeId),
+        // and we must not emit a duplicate app→role edge for each.
+        const issuesKey = `${appNodeId}->${cloudId}`;
+        if (cloudId && !seenNodes.has(issuesKey)) {
+          seenNodes.add(issuesKey);
+          edges.push({
+            source: appNodeId,
+            target: cloudId,
+            properties: { type: 'ISSUES_TOKENS_FOR' as EdgeType, confidence: 1.0, discovered_at: now, discovered_by: agentId, sub_claim_pattern: subPattern },
+          });
+        }
       }
     }
   }
