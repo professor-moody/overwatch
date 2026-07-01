@@ -233,7 +233,7 @@ The activity log also captures **`mock_service_registered`** / **`mock_service_r
 
 Every qualifying activity event (provenance ∈ `{agent, system}`, excluding `thought` and `heartbeat`) gets a `prev_hash` and `event_hash`, forming a tamper-evident chain. `verify_activity_chain` walks the chain and confirms it's intact.
 
-**Signed checkpoints** are emitted every 500 events / 30 minutes (configurable). Verifiers can resume from the latest checkpoint instead of replaying from genesis — O(events_since_checkpoint) instead of O(n). Checkpoints carry an optional `signing_key_id` slot for Ed25519-signed audit deliverables (signing implementation is staged for follow-up).
+**Signed checkpoints** are emitted every 500 events / 30 minutes (configurable). Verifiers can resume from the latest checkpoint instead of replaying from genesis — O(events_since_checkpoint) instead of O(n). Checkpoints carry an optional `signing_key_id` slot for Ed25519-signed audit deliverables. Signing is opt-in: set `OVERWATCH_CHECKPOINT_SIGNING_KEY` (generate a keypair with `npm run gen:checkpoint-key`) and checkpoints are Ed25519-signed, with the key id derived from the public key so signer and verifier agree automatically. Without a key, checkpoints stay unsigned and the hash chain is still tamper-evident — the signature adds attribution/non-repudiation on top. When a verifier public key is configured, `verify_activity_chain` verifies checkpoint signatures strictly.
 
 If anyone — the AI itself, a bug, a malicious operator — modifies an old entry, the chain breaks and the system can prove it. Ingested events (from external transcripts) get `chain_excluded: true` so they don't pollute the live chain.
 

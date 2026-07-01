@@ -51,6 +51,15 @@ guard in CI, and an on-demand, cost-bounded real-model A/B (`npm run prompt-eval
 Next: promote `lean` to default only on a clean real A/B, then the archetype-aware
 registry refactor it unblocks.
 
+## Completed: Source-Trust Labels
+
+Graph elements now carry a derived `source_trust` label — `observed` (tool-observed:
+confidence ≥ 1.0, confirmed, or tested-success), `asserted` (target-asserted, the
+conservative default), or `inferred` (rule-inferred) — so reports can distinguish
+tool-observed findings from target-asserted data and inferred edges. The label is
+derived on read (never stored, no migration) and is opt-in via
+`exportGraph({ sourceTrust: true })`, which the `/api/graph/export` endpoint honors.
+
 ## Completed: Graph And Evidence Context
 
 Every operator click in the graph and evidence surfaces now lands on actionable
@@ -76,8 +85,6 @@ These remain important but are not the active dashboard-polish sprint.
 
 - **Playbook checkpointing:** track cloud/SaaS expansion steps as planned,
   running, parsed, failed, or skipped.
-- **Source-trust labels:** distinguish tool-observed findings, target-asserted
-  data, inferred edges, manual analyst input, and external imports.
 - **Anti-canary detection:** flag honey credentials or canary-like target output
   before it drives the frontier.
 - **Transport drivers / no-MCP internal mode:** Overwatch's engine is
