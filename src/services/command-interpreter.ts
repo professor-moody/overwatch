@@ -95,20 +95,47 @@ export function interpretCommand(text: string, state: InterpreterState): Interpr
     return finalize(ops, unresolved);
   }
 
-  // --- scope (scan / add scope / target) ---
-  const scope = raw.match(/^(scan|add scope|add to scope|target)\s+(.+)$/i);
+  // --- scope (scan / add scope / target / exclude) ---
+  // Supports an exclusion tail ("add scope 10.0.0.0/24 except 10.0.0.5") and
+  // dedicated exclude verbs. Without this, an "except/not/exclude" qualifier was
+  // silently dropped and the intended-excluded IP was ADDED to scope — a
+  // scope-broadening authorization bug.
+  const scope = raw.match(/^(scan|add scope|add to scope|target|exclude|unscope|descope|remove scope|remove from scope)\s+(.+)$/i);
   if (scope) {
-    const tokens = scope[2].split(/[\s,]+/).filter(Boolean);
+    const isExcludeVerb = /^(exclude|unscope|descope|remove scope|remove from scope)$/i.test(scope[1].trim());
+    // Split on an exclusion keyword anchored at START-of-arg OR whitespace, so a
+    // LEADING keyword ("add scope except 10.0.0.5") is honored too — otherwise
+    // the excluded target would fall through to add_cidrs (scope-broadening).
+    // Everything before the first keyword is added; everything after is excluded.
+    const halves = scope[2].split(/(?:^|\s+)(?:except(?:\s+for)?|excluding|exclude|but\s+not|not|minus|without|omit(?:ting)?|drop|skip|apart\s+from|other\s+than)\s+/i);
+    const addSpec = isExcludeVerb ? '' : halves[0];
+    // For an exclude verb the whole arg is exclusions (keywords already dropped
+    // by the split above); otherwise exclusions are everything after the keyword.
+    const exclSpec = isExcludeVerb ? halves.join(' ') : halves.slice(1).join(' ');
+
     const add_cidrs: string[] = [];
     const add_domains: string[] = [];
-    for (const tok of tokens) {
+    const add_exclusions: string[] = [];
+    for (const tok of addSpec.split(/[\s,]+/).filter(Boolean)) {
       if (CIDR_RE.test(tok)) add_cidrs.push(tok);
       else if (IP_RE.test(tok)) add_cidrs.push(`${tok}/32`);
       else if (DOMAIN_RE.test(tok)) add_domains.push(tok.toLowerCase());
       else unresolved.push({ text: tok, reason: 'not a CIDR/IP/domain' });
     }
-    if (add_cidrs.length || add_domains.length) {
-      ops.push({ op: 'scope', add_cidrs: add_cidrs.length ? add_cidrs : undefined, add_domains: add_domains.length ? add_domains : undefined });
+    for (const tok of exclSpec.split(/[\s,]+/).filter(Boolean)) {
+      // Exclusions are stored verbatim (bare IP or CIDR) — isIpInScope matches a
+      // bare exclusion by equality and a `/`-form by CIDR containment.
+      if (CIDR_RE.test(tok) || IP_RE.test(tok)) add_exclusions.push(tok);
+      else if (DOMAIN_RE.test(tok)) add_exclusions.push(tok.toLowerCase());
+      else unresolved.push({ text: tok, reason: 'not a CIDR/IP/domain' });
+    }
+    if (add_cidrs.length || add_domains.length || add_exclusions.length) {
+      ops.push({
+        op: 'scope',
+        add_cidrs: add_cidrs.length ? add_cidrs : undefined,
+        add_domains: add_domains.length ? add_domains : undefined,
+        add_exclusions: add_exclusions.length ? add_exclusions : undefined,
+      });
     }
     return finalize(ops, unresolved);
   }
@@ -169,7 +196,14 @@ export function buildPlannerObjective(command: string, state: InterpreterState):
 function describeOp(op: OperatorOp): string {
   switch (op.op) {
     case 'directive': return `${op.kind} → ${op.agent_label}`;
-    case 'scope': return `add scope: ${[...(op.add_cidrs ?? []), ...(op.add_domains ?? [])].join(', ')}`;
+    case 'scope': {
+      const adds = [...(op.add_cidrs ?? []), ...(op.add_domains ?? [])];
+      const excls = op.add_exclusions ?? [];
+      return [
+        adds.length ? `add scope: ${adds.join(', ')}` : '',
+        excls.length ? `exclude: ${excls.join(', ')}` : '',
+      ].filter(Boolean).join('; ') || 'scope: (none)';
+    }
     case 'approve': return `approve ${op.action_id}`;
     case 'deny': return `deny ${op.action_id}`;
   }

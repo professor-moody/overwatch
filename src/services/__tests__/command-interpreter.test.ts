@@ -77,6 +77,43 @@ describe('interpretCommand (grammar)', () => {
     expect(r.unresolved.some(u => u.text === 'notanaddress')).toBe(true);
   });
 
+  it('"add scope X except Y" routes Y to add_exclusions, not add_cidrs (scope-broadening fix)', () => {
+    const r = interpretCommand('add scope 10.0.0.0/24 except 10.0.0.5', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_cidrs: ['10.0.0.0/24'], add_exclusions: ['10.0.0.5'] });
+    expect((r.ops[0] as { add_cidrs?: string[] }).add_cidrs).not.toContain('10.0.0.5/32');
+  });
+
+  it('"scan X but not Y" honors the exclusion qualifier', () => {
+    const r = interpretCommand('scan 10.50.0.0/16 but not 10.50.0.9', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_cidrs: ['10.50.0.0/16'], add_exclusions: ['10.50.0.9'] });
+  });
+
+  it('"exclude Y Z" (dedicated verb) produces an exclusion-only scope op', () => {
+    const r = interpretCommand('exclude 10.10.10.9 10.10.20.0/24', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_exclusions: ['10.10.10.9', '10.10.20.0/24'] });
+    expect((r.ops[0] as { add_cidrs?: string[] }).add_cidrs).toBeUndefined();
+  });
+
+  it('"add scope except Y" (keyword LEADS, no add part) still excludes — not adds', () => {
+    const r = interpretCommand('add scope except 10.0.0.5', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_exclusions: ['10.0.0.5'] });
+    expect((r.ops[0] as { add_cidrs?: string[] }).add_cidrs).toBeUndefined();
+    // "except" must not surface as a spurious unresolved token.
+    expect(r.unresolved.some(u => /except/i.test(u.text))).toBe(false);
+  });
+
+  it('"target not Y" (leading keyword) routes Y to exclusions', () => {
+    const r = interpretCommand('target not 10.0.0.9', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_exclusions: ['10.0.0.9'] });
+    expect((r.ops[0] as { add_cidrs?: string[] }).add_cidrs).toBeUndefined();
+  });
+
+  it('"exclude Y except Z" (exclude verb + embedded keyword) excludes both, no bogus unresolved', () => {
+    const r = interpretCommand('exclude 10.0.0.5 except 10.0.0.6', state([]));
+    expect(r.ops[0]).toMatchObject({ op: 'scope', add_exclusions: ['10.0.0.5', '10.0.0.6'] });
+    expect(r.unresolved.some(u => /except/i.test(u.text))).toBe(false);
+  });
+
   it('"approve <action>" resolves a pending action id (incl. unique prefix)', () => {
     const r = interpretCommand('approve act-123 looks good', state([], ['act-123-full']));
     expect(r.ops[0]).toMatchObject({ op: 'approve', action_id: 'act-123-full', notes: 'looks good' });
