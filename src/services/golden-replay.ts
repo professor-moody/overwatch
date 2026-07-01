@@ -46,7 +46,13 @@ export interface GoldenTape {
  */
 function canonicalJson(value: unknown): string {
   if (value === null) return 'null';
-  if (typeof value === 'number' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    // JSON.stringify(NaN|Infinity|-Infinity) === 'null', which collides with a
+    // real null and would let a corrupt numeric value hash-equal a null one.
+    // Emit a distinct token for a non-finite number so it can't mask a change.
+    return Number.isFinite(value) ? JSON.stringify(value) : `"__nonfinite:${String(value)}__"`;
+  }
+  if (typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'string') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (typeof value === 'object') {
@@ -63,25 +69,37 @@ export function hashGraph(graph: ExportedGraph): string {
   // composite of (source, target, type) which is itself stable.
   const edgeKey = (e: ExportedGraph['edges'][number]) =>
     e.id ?? `${e.source}|${e.target}|${e.properties.type}`;
-  const nodes = [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id));
-  const edges = [...graph.edges].sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
-  const cold = graph.cold_nodes ? [...graph.cold_nodes].sort((a, b) => a.id.localeCompare(b.id)) : undefined;
+  // Code-point comparison, NOT localeCompare — localeCompare is ICU-locale /
+  // ICU-version dependent, so the "stable" ordering (and thus the golden hash)
+  // could differ across environments/CI runners for the same graph.
+  const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  const nodes = [...graph.nodes].sort((a, b) => cmp(a.id, b.id));
+  const edges = [...graph.edges].sort((a, b) => cmp(edgeKey(a), edgeKey(b)));
+  const cold = graph.cold_nodes ? [...graph.cold_nodes].sort((a, b) => cmp(a.id, b.id)) : undefined;
   const canonical = canonicalJson({ nodes, edges, ...(cold ? { cold_nodes: cold } : {}) });
   return createHash('sha256').update(canonical).digest('hex');
 }
 
 /**
- * Hash of the activity log AFTER stripping volatile fields that would
- * differ run-to-run even with deterministic IDs (e.g., wall-clock-pinned
- * timestamps that the tape doesn't pin). With proper P1.3 clock pinning
- * this is identical across replays.
+ * Hash of the activity log over its DETERMINISTIC descriptor fields. The `event_id,
+ * event_type, description` projection was too narrow — most state regressions
+ * (a changed classification, category, outcome, technique, tool, provenance)
+ * never moved the digest, self-masking real drift. We now include those stable
+ * descriptors while still EXCLUDING the wall-clock `timestamp` (which the tape
+ * pins per-op but which we keep out of the digest so it stays the structural
+ * "what happened", not "when"), and volatile ids the tape may not pin.
  */
-export function hashActivity(history: Array<{ event_id: string; event_type?: string; description: string }>): string {
-  const projected = history.map(e => ({
-    event_id: e.event_id,
-    event_type: e.event_type,
-    description: e.description,
-  }));
+const ACTIVITY_DIGEST_KEYS = [
+  'event_id', 'event_type', 'category', 'result_classification', 'outcome',
+  'technique', 'tool_name', 'provenance', 'source_kind', 'description',
+] as const;
+
+export function hashActivity(history: Array<Record<string, unknown>>): string {
+  const projected = history.map(e => {
+    const o: Record<string, unknown> = {};
+    for (const k of ACTIVITY_DIGEST_KEYS) if (e[k] !== undefined) o[k] = e[k];
+    return o;
+  });
   return createHash('sha256').update(canonicalJson(projected)).digest('hex');
 }
 
