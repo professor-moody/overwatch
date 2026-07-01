@@ -120,7 +120,7 @@ export class InferenceEngine {
   private static readonly RULE_ORDER_CACHE_MS = 60_000;
 
   private getSortedRules(): InferenceRule[] {
-    const now = Date.now();
+    const now = Date.now(); // clock-ok: rule-order cache TTL (perf only; never persisted/hashed)
     if (this.ruleOrderCache && now - this.ruleOrderCache.ts < InferenceEngine.RULE_ORDER_CACHE_MS) {
       // Return cached order but use current rule set (rules may have been added)
       if (this.ruleOrderCache.rules.length === this.ctx.inferenceRules.length) {
@@ -209,7 +209,7 @@ export class InferenceEngine {
 
   private applyRuleProductions(rule: InferenceRule, triggerNodeId: string): string[] {
     const inferred: string[] = [];
-    const now = new Date().toISOString();
+    const now = this.ctx.nowIso(); // injected-clock: inferred-edge timestamps land in the golden hash
     for (const production of rule.produces) {
       const sources = this.resolveSelector(production.source_selector, triggerNodeId, rule);
       const targets = this.resolveSelector(production.target_selector, triggerNodeId, rule);

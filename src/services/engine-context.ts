@@ -278,7 +278,7 @@ export class EngineContext {
    * otherwise falls through to `new Date().toISOString()`.
    */
   nowIso(): string {
-    return this.injectedNow ?? new Date().toISOString();
+    return this.injectedNow ?? new Date().toISOString(); // clock-ok: THE canonical clock source (honors withClock injection)
   }
 
   /**
@@ -479,7 +479,7 @@ export function normalizeActivityLogEntry(
   const operatorModel = entry.operator_model || (resolvedSourceKind === 'primary' ? process.env.OVERWATCH_OPERATOR_MODEL : undefined);
   return {
     event_id: entry.event_id || uuidv4(),
-    timestamp: entry.timestamp || new Date().toISOString(),
+    timestamp: entry.timestamp || new Date().toISOString(), // clock-ok: defensive fallback; the deterministic caller (logEvent) sets timestamp via nowIso() upstream
     description: entry.description,
     agent_id: entry.agent_id,
     source_kind: resolvedSourceKind,
