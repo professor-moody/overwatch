@@ -492,6 +492,37 @@ describe('11.4 — Pacu parser', () => {
     expect(policyNode.effect).toBe('deny');
   });
 
+  it('skips a null/non-object element in a Pacu array instead of discarding the import', () => {
+    const data = {
+      IAMUsers: [
+        { Arn: 'arn:aws:iam::123:user/alice', UserName: 'alice' },
+        null, // a non-object element would throw on property access
+        'not-an-object',
+        { Arn: 'arn:aws:iam::123:user/bob', UserName: 'bob' },
+      ],
+    };
+    const finding = parsePacu(JSON.stringify(data));
+    const identities = finding.nodes.filter(n => n.type === 'cloud_identity');
+    expect(identities.map(n => n.arn).sort()).toEqual([
+      'arn:aws:iam::123:user/alice',
+      'arn:aws:iam::123:user/bob',
+    ]);
+  });
+
+  it('survives a null element in an EC2 IamInstanceProfile.Roles array', () => {
+    const data = {
+      EC2Instances: [{
+        InstanceId: 'i-abc', Region: 'us-east-1',
+        IamInstanceProfile: { Arn: 'arn:aws:iam::123:instance-profile/p', Roles: [null] },
+      }],
+      S3Buckets: [{ Name: 'still-parsed' }],
+    };
+    const finding = parsePacu(JSON.stringify(data));
+    // Import not discarded: the S3 bucket after the malformed instance still parses.
+    expect(finding.nodes.some(n => (n as Record<string, unknown>).resource_type === 's3_bucket')).toBe(true);
+    expect(finding.nodes.some(n => (n as Record<string, unknown>).resource_type === 'ec2')).toBe(true);
+  });
+
   it('parses S3 buckets', () => {
     const data = { S3Buckets: [{ Name: 'my-data', Region: 'us-east-1' }] };
     const finding = parsePacu(JSON.stringify(data));

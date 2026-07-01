@@ -133,6 +133,39 @@ describe('classifyFinding', () => {
     expect(result.owasp_category).toBeDefined();
   });
 
+  it('does NOT misclassify "resource" as rce (CWE-94) via bare-substring match', () => {
+    const finding = makeFinding({
+      category: 'vulnerability',
+      title: 'Publicly readable cloud resource',
+      description: 'An S3 resource is exposed to the public internet',
+    });
+    const result = classifyFinding(finding, new Map(), makeGraph());
+    // 'rce' must NOT match inside 'resource'.
+    expect(result.cwe).not.toBe('CWE-94');
+  });
+
+  it('classifies a real "rce" token as CWE-94 (word boundary)', () => {
+    const finding = makeFinding({
+      category: 'vulnerability',
+      title: 'Finding',
+      description: 'operator achieved rce on the target host',
+    });
+    const result = classifyFinding(finding, new Map(), makeGraph());
+    expect(result.cwe).toBe('CWE-94');
+  });
+
+  it('matches a PLURAL vuln-type token ("RCEs") and does not fall through to a later key', () => {
+    // \bKEY\b would miss the plural and, first-match-wins over insertion order,
+    // hand the win to the later 'deserialization' key (CWE-502) — the wrong CWE.
+    const finding = makeFinding({
+      category: 'vulnerability',
+      title: 'RCEs possible via unsafe deserialization',
+      description: '',
+    });
+    const result = classifyFinding(finding, new Map(), makeGraph());
+    expect(result.cwe).toBe('CWE-94'); // rce, not CWE-502 deserialization
+  });
+
   it('assigns CWE-522 fallback for credential findings', () => {
     const finding = makeFinding({
       category: 'credential',

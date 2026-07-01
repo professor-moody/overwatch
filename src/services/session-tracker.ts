@@ -44,6 +44,17 @@ export function ingestSessionResult(
       const validSourceTypes = new Set(['user', 'group', 'credential']);
       if (validSourceTypes.has(principalAttrs.type)) {
         sessionEdgeCreated = true;
+        // The HAS_SESSION edge is keyed per (principal, target) and SHARED by
+        // every session between that pair, so track the set of live session ids
+        // (a reference count). onSessionClosed only clears session_live when the
+        // set drains — otherwise closing one session would falsely mark the host
+        // as no-longer-accessible while another session is still live.
+        //
+        // Invariant: a confirmed session carries a session_id (every caller in
+        // session-manager assigns a uuid). An id-LESS session can't be
+        // ref-counted (it would stay in `[]`); this is not reachable in
+        // production, so we accept it rather than fabricate a synthetic id
+        // (which would pull a non-deterministic value into hashed state).
         const edgeId = `session-${principal_node}-${target_node}`;
         if (!host.ctx.graph.hasEdge(edgeId)) {
           host.ctx.graph.addEdgeWithKey(edgeId, principal_node, target_node, {
@@ -56,19 +67,27 @@ export function ingestSessionResult(
             confirmed_at: new Date().toISOString(),
             session_live: true,
             session_id,
+            live_session_ids: session_id ? [session_id] : [],
           });
           host.invalidateFrontierCache();
           host.invalidatePathGraph();
         } else {
-          host.ctx.graph.mergeEdgeAttributes(edgeId, {
+          const existing = host.ctx.graph.getEdgeAttributes(edgeId);
+          const liveIds = new Set<string>((existing.live_session_ids as string[]) || []);
+          if (session_id) liveIds.add(session_id);
+          const mergeProps: Record<string, unknown> = {
             confidence: 1.0,
             tested: true,
             test_result: 'success',
             confirmed_at: new Date().toISOString(),
             session_live: true,
-            session_id,
+            live_session_ids: [...liveIds],
             session_unconfirmed: undefined,
-          });
+          };
+          // Only overwrite the scalar session_id when this open carries one —
+          // an id-less re-open must not clobber a valid recorded session_id.
+          if (session_id) mergeProps.session_id = session_id;
+          host.ctx.graph.mergeEdgeAttributes(edgeId, mergeProps);
         }
       }
     }
@@ -137,10 +156,13 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
   host.ctx.graph.forEachEdge((_edgeId, attrs, source, target) => {
     if (attrs.type !== 'HAS_SESSION') return;
     if (target !== targetNode) return;
-    if (principalNode) {
-      if (source !== principalNode) return;
-    } else {
-      // No principal — only match by recorded session_id.
+    if (principalNode && source !== principalNode) return;
+    const liveIds = (attrs as { live_session_ids?: string[] }).live_session_ids;
+    if (Array.isArray(liveIds) && liveIds.length > 0) {
+      // Ref-counted edge: only the edge that actually tracked THIS session.
+      if (!liveIds.includes(sessionId)) return;
+    } else if (!principalNode) {
+      // Legacy edge with no ref-count and no principal — match by session_id.
       const edgeSessionId = (attrs as { session_id?: string }).session_id;
       if (!edgeSessionId || edgeSessionId !== sessionId) return;
     }
@@ -148,10 +170,28 @@ export function onSessionClosed(host: SessionTrackerHost, sessionId: string, tar
   });
 
   for (const edgeId of edgesToDowngrade) {
-    const props = {
-      session_live: false,
-      session_closed_at: new Date().toISOString(),
+    const attrs = host.ctx.graph.getEdgeAttributes(edgeId);
+    const liveIds = new Set<string>((attrs.live_session_ids as string[]) || []);
+    liveIds.delete(sessionId);
+    // Only mark the edge not-live once the LAST live session on it has closed —
+    // a still-live concurrent session (same principal→target) keeps it live.
+    const stillLive = liveIds.size > 0;
+    const props: Record<string, unknown> = {
+      live_session_ids: [...liveIds],
+      session_live: stillLive,
     };
+    if (stillLive) {
+      // Keep the scalar session_id pointing at a session that is actually still
+      // live, not the one we just closed.
+      props.session_id = [...liveIds][0];
+    } else {
+      // Fully drained. Leave the scalar session_id as the last session id (a
+      // historical marker) — do NOT set it to `undefined`: mutation-journal
+      // JSON-strips undefined keys, so replay could not clear it and the
+      // replayed graph would diverge from the live one. session_live=false is
+      // what gates liveness; the scalar is cosmetic on a historical edge.
+      props.session_closed_at = new Date().toISOString();
+    }
     host.ctx.journalMutation('merge_edge_attrs', { edge_id: edgeId, props });
     host.ctx.graph.mergeEdgeAttributes(edgeId, props);
   }
@@ -176,9 +216,14 @@ export function reconcileSessionEdgesOnStartup(host: SessionTrackerHost): void {
     // Only downgrade edges that are still marked as live (or have no session_live flag,
     // meaning they were created before this feature and never closed properly)
     if (attrs.session_live !== false) {
+      // Clear the ref-count too: the pre-restart session ids are dead runtime
+      // sessions that will never emit a close. Leaving them would let a NEW
+      // session merge onto stale ids so the edge could never drain to
+      // session_live=false again.
       const props = {
         session_live: false,
         session_closed_at: attrs.session_closed_at || new Date().toISOString(),
+        live_session_ids: [] as string[],
       };
       host.ctx.journalMutation('merge_edge_attrs', { edge_id: _edgeId, props });
       host.ctx.graph.mergeEdgeAttributes(_edgeId, props);
