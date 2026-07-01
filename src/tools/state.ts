@@ -5,7 +5,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { checkAllTools } from '../services/tool-check.js';
 import { runLabPreflight } from '../services/lab-preflight.js';
 import { withErrorBoundary } from './error-boundary.js';
-import { verifyChain, verifyCheckpointSignatures, attestCheckpointSignatures, loadCheckpointKeyring } from '../services/activity-chain.js';
+import { verifyChain, verifyCheckpoints, verifyCheckpointSignatures, attestCheckpointSignatures, checkpointsBindToEngagement, loadCheckpointKeyring, deriveChainSeed } from '../services/activity-chain.js';
 import { computeChangesSince } from '../services/changes-since.js';
 import { toolText, COMPACT_PARAM_DESCRIPTION } from './_tool-output.js';
 
@@ -236,7 +236,10 @@ Use this when you want the full health report instead of the summarized warnings
       // Phase 6: when hash chain is enabled, surface chain breaks alongside graph health.
       const config = engine.getState().config;
       if (config.hash_chain_enabled) {
-        const chain = verifyChain(engine.getFullHistory());
+        const healthLog = engine.getFullHistory();
+        // Seed from the rolling-window boundary (same as verify_activity_chain)
+        // so a truncated-but-intact chain doesn't report a phantom break here.
+        const chain = verifyChain(healthLog, deriveChainSeed(healthLog));
         report.activity_chain = {
           enabled: true,
           valid: chain.valid,
@@ -434,26 +437,63 @@ When \`hash_chain_enabled\` is false in the engagement config, returns valid:tru
           }],
         };
       }
-      const result = verifyChain(engine.getFullHistory());
-      // When a verifier public key is configured, attest checkpoint signatures on top of
-      // the hash-chain tamper-evidence. STRICT: every checkpoint must be signed AND
-      // verified — otherwise an unsigned run, a bad signature, or a checkpoint signed by an
-      // unknown/forged key (which lands in `unverifiable`) would pass silently and give
-      // false assurance. Without a configured verifier key, behavior is unchanged
-      // (hash-only verify). NB this attests the signatures; binding each checkpoint's
-      // event_index/hash back to the log is a separate (deferred) check — the activityLog
-      // is tier-truncated so indices don't survive, needing event_id lookup not index.
+      const log = engine.getFullHistory();
+      // Seed verification from the rolling-window boundary: after tieredTruncate
+      // the earliest chained entry's prev_hash points at an aged-out entry rather
+      // than genesis. Adopting it validates the surviving contiguous sub-chain
+      // (tampering is still caught by the recomputed event_hash + binding/sigs).
+      const result = verifyChain(log, deriveChainSeed(log));
+      const checkpoints = engine.getChainCheckpoints();
+
+      // (1) BIND checkpoints to the actual log — resolve by event_id (indices
+      // don't survive tieredTruncate). This catches a tampered-then-rehashed log
+      // ONLY when the attacker did not also recompute the checkpoints (a full
+      // rehash + checkpoint-recompute passes binding but fails signatures, which
+      // need the private key). Checked regardless of whether a key is configured.
+      const binding = verifyCheckpoints(log, checkpoints);
+
+      // (2) When a verifier key is configured, STRICT attestation: every
+      // checkpoint must be signed AND verified AND bind to THIS engagement
+      // (nonce + schema). A configured key with ZERO checkpoints is a HARD
+      // failure — attestCheckpointSignatures([]) would otherwise pass silently.
+      //
+      // Anti-splice nonce anchoring: config.engagement_nonce lives in the SAME
+      // persisted state an attacker with write access controls, so comparing
+      // checkpoints to it is only self-consistency (catches a naive splice that
+      // forgot to rewrite config, NOT a full-state-write transplant). For real
+      // anti-splice, the verifier supplies the expected nonce OUT-OF-BAND via
+      // OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE; when set it is authoritative — the
+      // config nonce AND every checkpoint must match it. NB the anchor is only
+      // enforced when a verifier KEY is configured (below): unsigned checkpoints
+      // are forgeable, so anti-splice adds nothing without signatures.
+      const externalNonce = (process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE || '').trim() || null;
       const keyring = loadCheckpointKeyring();
       const keyringConfigured = Object.keys(keyring).length > 0;
-      const checkpoints = engine.getChainCheckpoints();
       let signatures: ReturnType<typeof verifyCheckpointSignatures> | null = null;
       let attestationOk = true;
       let attestationReason: string | null = null;
-      if (keyringConfigured && checkpoints.length > 0) {
-        signatures = verifyCheckpointSignatures(checkpoints, keyring);
-        const attestation = attestCheckpointSignatures(signatures);
-        attestationOk = attestation.ok;
-        attestationReason = attestation.reason;
+      if (keyringConfigured) {
+        if (checkpoints.length === 0) {
+          attestationOk = false;
+          attestationReason = 'no checkpoints to attest — a verifier key is configured but the run emitted none';
+        } else {
+          signatures = verifyCheckpointSignatures(checkpoints, keyring);
+          const sigAttest = attestCheckpointSignatures(signatures);
+          const configNonce = config.engagement_nonce ?? null;
+          const anchor = externalNonce ?? configNonce;
+          const configMatchesAnchor = externalNonce === null || configNonce === externalNonce;
+          const nonceAttest = configMatchesAnchor
+            ? checkpointsBindToEngagement(checkpoints, anchor)
+            : { ok: false, reason: 'config engagement_nonce does not match the external anchor (persisted state may be tampered)' };
+          attestationOk = sigAttest.ok && nonceAttest.ok && binding.valid;
+          attestationReason = !sigAttest.ok
+            ? sigAttest.reason
+            : !nonceAttest.ok
+              ? nonceAttest.reason
+              : !binding.valid
+                ? `${binding.mismatches.length} checkpoint(s) do not match the log`
+                : null;
+        }
       }
       return {
         content: [{
@@ -462,12 +502,19 @@ When \`hash_chain_enabled\` is false in the engagement config, returns valid:tru
             ...result,
             chain_disabled: false,
             checkpoint_signatures: signatures,
+            checkpoint_binding: {
+              valid: binding.valid,
+              latest_valid_index: binding.latest_valid_index,
+              mismatch_count: binding.mismatches.length,
+              aged_out_count: binding.aged_out.length,
+            },
             checkpoint_attestation: keyringConfigured
               ? { configured: true, ok: attestationOk, reason: attestationReason }
               : { configured: false },
           }, null, 2),
         }],
-        isError: !result.valid || (keyringConfigured && !attestationOk),
+        // Binding is a tamper check regardless of signing; attestation only with a key.
+        isError: !result.valid || !binding.valid || (keyringConfigured && !attestationOk),
       };
     }),
   );

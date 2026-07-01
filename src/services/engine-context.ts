@@ -384,6 +384,7 @@ export class EngineContext {
             event_hash: entry.event_hash,
             events_since_previous: this.chainEventsSinceCheckpoint,
             emitted_at: entry.timestamp,
+            engagement_nonce: this.config.engagement_nonce ?? null, // anti-splice binding
           });
           // Sign when a key is configured; otherwise emit unsigned (an unsigned
           // checkpoint carries no signing_key_id so it can't masquerade as signed).
@@ -409,6 +410,13 @@ export class EngineContext {
     });
     if (this.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
       this.activityLog = tieredTruncate(this.activityLog, MAX_ACTIVITY_LOG_ENTRIES);
+      // Prune checkpoints whose checkpointed event aged out of the window, so
+      // verify_activity_chain's binding stays valid — a checkpoint pointing at a
+      // dropped event would otherwise report as a (spurious) mismatch.
+      if (this.chainCheckpoints.length > 0) {
+        const liveIds = new Set(this.activityLog.map(e => e.event_id));
+        this.chainCheckpoints = this.chainCheckpoints.filter(cp => liveIds.has(cp.event_id));
+      }
     }
     // Frontier linkage observation: update status for items this event touches.
     // Guarded so legacy code paths that initialise EngineContext indirectly
@@ -605,25 +613,26 @@ export function isMilestoneEntry(entry: ActivityLogEntry): boolean {
 export function tieredTruncate(log: ActivityLogEntry[], budget: number): ActivityLogEntry[] {
   if (log.length <= budget) return log;
 
-  const milestones: ActivityLogEntry[] = [];
-  const ephemeral: ActivityLogEntry[] = [];
-
-  for (const entry of log) {
-    if (isMilestoneEntry(entry)) {
-      milestones.push(entry);
-    } else {
-      ephemeral.push(entry);
+  // Bounded rolling window that preserves chain integrity: keep the MOST-RECENT
+  // entries up to `budget`, prioritising chained (event_hash) > milestone >
+  // ephemeral, and emit survivors in ORIGINAL order (never re-sort — that could
+  // reorder chained entries and break the hash chain). The chained entries we
+  // keep are the most-recent ones, so the surviving chained subsequence stays
+  // contiguous (we only ever drop the OLDEST chained PREFIX) — verifyChain seeds
+  // from the window's first prev_hash and checkpoints for aged-out events are
+  // pruned by the caller. This bounds growth (the old code kept ALL chained
+  // entries → unbounded) while never dropping a chained entry from the middle.
+  const keep = new Array(log.length).fill(false);
+  let kept = 0;
+  const fill = (pred: (e: ActivityLogEntry) => boolean): void => {
+    for (let i = log.length - 1; i >= 0 && kept < budget; i -= 1) {
+      if (keep[i]) continue;
+      if (pred(log[i])) { keep[i] = true; kept += 1; }
     }
-  }
+  };
+  fill(e => e.event_hash !== undefined); // most-recent chained first (contiguous suffix)
+  fill(isMilestoneEntry);                 // then recent milestones
+  fill(() => true);                       // then recent ephemeral to fill the budget
 
-  if (milestones.length >= budget) {
-    return milestones.slice(milestones.length - budget);
-  }
-
-  const ephemeralBudget = budget - milestones.length;
-  const keptEphemeral = ephemeral.slice(ephemeral.length - ephemeralBudget);
-
-  const result = [...milestones, ...keptEphemeral];
-  result.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-  return result;
+  return log.filter((_, i) => keep[i]);
 }
