@@ -428,6 +428,28 @@ describe('BloodHound Ingestion', () => {
       expect(related!.target).toBe('domain-corp-local');
     });
 
+    it('derives pki_store metaType from the filename in the SID map when meta.type is absent', () => {
+      // resolveCanonicalId distinguishes ntauthstore/issuancepolicy stores by
+      // metaType. buildBloodHoundSidMap must derive metaType with the SAME
+      // filename fallback parseBloodHoundFile uses; otherwise the store's SID
+      // maps to a fallback id here that never matches the per-file canonical id.
+      const stores = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-STORE-1',
+          Properties: { name: 'NTAuthCertificates', domain: 'corp.local' },
+          Aces: [],
+        }],
+        meta: { count: 1, version: 5 }, // NOTE: no `type` — must come from filename
+      });
+      const { sidMap } = buildBloodHoundSidMap([{ raw: stores, filename: 'ntauthstores.json' }]);
+      const parsed = parseBloodHoundFile(stores, 'ntauthstores.json');
+      const storeNode = parsed.finding!.nodes.find(n => n.type === 'pki_store');
+      expect(storeNode).toBeDefined();
+      // The SID map must resolve to the SAME canonical id the per-file parse made.
+      expect(sidMap.get('S-1-5-21-STORE-1')).toBe(storeNode!.id);
+      expect(sidMap.get('S-1-5-21-STORE-1')).not.toMatch(/^bh-pki-store-/); // not a fallback id
+    });
+
     it('resolves typed ADCS relation refs canonically without a shared SID map', () => {
       const templates = JSON.stringify({
         data: [{
@@ -586,6 +608,49 @@ describe('BloodHound Ingestion', () => {
       const result = parseBloodHoundFile(computers, 'computers.json', { sidMap });
       const sessionEdge = result.finding!.edges.find(e => e.properties.type === 'HAS_SESSION');
 
+      expect(sessionEdge).toBeDefined();
+      expect(sessionEdge!.source).toBe('user-corp-local-jsmith');
+      expect(sessionEdge!.target).toBe('host-ws01-corp-local');
+    });
+
+    it('resolves cross-file references for SharpHound CE (PascalCase) files', () => {
+      // Regression (H-12): buildBloodHoundSidMap must normalize CE BEFORE
+      // resolving canonical IDs. Without it, PascalCase `SAMAccountName`/`Domain`
+      // are invisible to the resolver, so the SID maps to a SID-fallback id that
+      // never matches the per-file canonical id, orphaning every cross-file edge.
+      const users = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1105',
+          Properties: {
+            Name: 'JSMITH@CORP.LOCAL',
+            SAMAccountName: 'jsmith',
+            Domain: 'corp.local',
+          },
+          Aces: [],
+        }],
+        meta: { type: 'users', count: 1, version: 6 },
+      });
+      const computers = JSON.stringify({
+        data: [{
+          ObjectIdentifier: 'S-1-5-21-1234-5678-9012-1001',
+          Properties: { Name: 'WS01.CORP.LOCAL', Domain: 'corp.local' },
+          Sessions: [
+            { UserSID: 'S-1-5-21-1234-5678-9012-1105', ComputerSID: 'S-1-5-21-1234-5678-9012-1001' },
+          ],
+          Aces: [],
+        }],
+        meta: { type: 'computers', count: 1, version: 6 },
+      });
+
+      const { sidMap } = buildBloodHoundSidMap([
+        { raw: computers, filename: 'computers.json' },
+        { raw: users, filename: 'users.json' },
+      ]);
+      // The CE user's SID must map to the canonical id, not a SID fallback.
+      expect(sidMap.get('S-1-5-21-1234-5678-9012-1105')).toBe('user-corp-local-jsmith');
+
+      const result = parseBloodHoundFile(computers, 'computers.json', { sidMap });
+      const sessionEdge = result.finding!.edges.find(e => e.properties.type === 'HAS_SESSION');
       expect(sessionEdge).toBeDefined();
       expect(sessionEdge!.source).toBe('user-corp-local-jsmith');
       expect(sessionEdge!.target).toBe('host-ws01-corp-local');

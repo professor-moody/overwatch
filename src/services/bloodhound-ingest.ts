@@ -294,16 +294,25 @@ export function buildBloodHoundSidMap(files: Array<{ raw: string; filename: stri
   const errors: string[] = [];
 
   for (const file of files) {
-    const document = parseBloodHoundDocument(file.raw, file.filename);
+    // Normalize SharpHound CE (PascalCase) FIRST — same as parseBloodHoundFile.
+    // Without this, CE files resolve to SID-fallback ids here that then win over
+    // the per-file canonical ids, orphaning every cross-file edge (missing_node_reference).
+    const ceResult = normalizeSharpHoundCE(file.raw, file.filename);
+    const document = parseBloodHoundDocument(ceResult.normalized, file.filename);
     errors.push(...document.errors);
     if (!document.parsed || !document.nodeType) continue;
 
+    // Derive metaType with the SAME filename fallback parseBloodHoundFile uses
+    // (line ~335). If they diverge, a file lacking meta.type resolves to a
+    // different canonical id here than in the per-file parse — re-orphaning the
+    // very cross-file edges this map exists to connect.
+    const metaType = (document.parsed.meta?.type || file.filename.replace(/\.json$/i, '')).toLowerCase();
     for (const obj of document.parsed.data) {
       const sid = obj.ObjectIdentifier;
       if (!sid) continue;
       sidMap.set(
         sid,
-        resolveCanonicalId(sid, document.nodeType, obj.Properties || {}, document.parsed.meta?.type?.toLowerCase()),
+        resolveCanonicalId(sid, document.nodeType, obj.Properties || {}, metaType),
       );
     }
   }
