@@ -31,12 +31,39 @@ On success:
 { "ok": true, "plan_id": "uuid", "ops_count": 1, "summary": "pause the apache agent" }
 ```
 
+When the plan contains a **scope** op, the result also carries a `scope_preview` (see [Scope-Impact Preview](#scope-impact-preview)):
+
+```json
+{ "ok": true, "plan_id": "uuid", "ops_count": 1, "summary": "add 10.0.0.0/24 to scope",
+  "scope_preview": {
+    "newly_in_scope_count": 3,
+    "newly_excluded_count": 0,
+    "newly_in_scope": [{ "id": "host:10.0.0.7", "label": "10.0.0.7" }],
+    "newly_excluded": []
+  } }
+```
+
 On rejection (returns `isError: true`):
 
 ```json
 { "ok": false, "error": "1 op(s) could not be resolved against live state",
   "rejected": [{ "op": { "op": "directive", "task_id": "ghost", "kind": "pause" }, "reason": "no agent task with id \"ghost\"" }] }
 ```
+
+## Scope-Impact Preview
+
+A scope op doesn't ingest anything, but it **reshapes what's in play**: existing graph nodes transition in or out of scope, which is what drives the frontier. When a proposed plan contains a scope op, `propose_plan` runs a pure dry-run — no mutation — of that transition and includes a `scope_preview` in the result **and** on the stored `ProposedPlan.scope_preview`. *See the impact before you confirm.*
+
+The preview merges the net scope change across **all** scope ops in the plan, then evaluates every existing node — including cold-store hosts — against the current scope versus the plan's post-confirm scope:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `newly_in_scope` | `{ id, label }[]` | Sample of nodes that would come **into** scope (capped) |
+| `newly_excluded` | `{ id, label }[]` | Sample of nodes that would drop **out of** scope (capped) |
+| `newly_in_scope_count` | `number` | **Exact** count of nodes coming into scope |
+| `newly_excluded_count` | `number` | **Exact** count of nodes dropping out of scope |
+
+The sample lists are capped for payload size; the counts are always exact. Nodes without an `ip` or `hostname` have no scope identity and are ignored. Plans without a scope op carry no `scope_preview`.
 
 ## Side Effects
 
