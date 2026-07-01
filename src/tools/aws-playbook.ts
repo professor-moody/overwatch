@@ -25,6 +25,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth } from '../services/credential-utils.js';
+import { safePlaybookArg } from './_playbook-utils.js';
 
 // Credential material kinds we'll accept as "AWS-shaped". The Token-D
 // AWS STS replay parser mints assumed-role temp creds as
@@ -111,14 +112,19 @@ This tool returns the plan; it does not execute it. Run each step via
       // The engagement scope schema doesn't currently carry an
       // aws_regions field; when omitted we default to us-east-1 (most
       // common). Operators can override via the `regions` arg.
-      const effectiveRegions = regions && regions.length > 0 ? regions : ['us-east-1'];
+      // Sanitize every value interpolated into an emitted command string: the
+      // region/profile are operator-supplied and the principal is derived from a
+      // PARSED credential (attacker-influenced), so fence them against shell
+      // injection into a suggested run_bash step. Placeholders keep their angle
+      // brackets because the fallback is applied AFTER sanitizing the real value.
+      const effectiveRegions = (regions && regions.length > 0 ? regions : ['us-east-1']).map(safePlaybookArg);
 
       // Build the plan. AWS CLI invocations expect AWS_PROFILE to be set
       // by the operator; we describe the command rather than hard-code
       // credential injection (the credential value lives in the graph
       // node, not in the recon plan).
-      const profile = (cred.aws_profile as string | undefined) ?? '<your-profile>';
-      const principal = (cred.cred_user as string | undefined) ?? credential_id;
+      const profile = safePlaybookArg((cred.aws_profile as string | undefined) ?? '') || '<your-profile>';
+      const principal = safePlaybookArg((cred.cred_user as string | undefined) ?? credential_id ?? '') || '<principal>';
 
       const steps: PlaybookStep[] = [];
       let n = 0;
@@ -126,7 +132,7 @@ This tool returns the plan; it does not execute it. Run each step via
       steps.push({
         step: ++n,
         description: 'Confirm the credential\'s caller identity (account, ARN, principal type).',
-        command: `aws --profile ${profile} sts get-caller-identity --output json`,
+        command: `aws --profile '${profile}' sts get-caller-identity --output json`,
         parse_with: 'aws-sts-identity',
         technique: 'recon_cloud_identity',
         est_noise: 0.05,
@@ -137,7 +143,7 @@ This tool returns the plan; it does not execute it. Run each step via
       steps.push({
         step: ++n,
         description: 'Pull a fast account-level summary (user/group/role counts, MFA posture, password policy summary).',
-        command: `aws --profile ${profile} iam get-account-summary --output json`,
+        command: `aws --profile '${profile}' iam get-account-summary --output json`,
         parse_with: 'aws-iam-summary',
         technique: 'recon_cloud_identity',
         est_noise: 0.05,
@@ -147,7 +153,7 @@ This tool returns the plan; it does not execute it. Run each step via
       steps.push({
         step: ++n,
         description: 'List attached managed policies for the caller principal. Substitute --user-name or --role-name based on the caller-identity result from step 1.',
-        command: `aws --profile ${profile} iam list-attached-user-policies --user-name ${principal} --output json`,
+        command: `aws --profile '${profile}' iam list-attached-user-policies --user-name '${principal}' --output json`,
         parse_with: 'cloudfox',
         technique: 'recon_cloud_identity',
         est_noise: 0.1,
@@ -158,7 +164,7 @@ This tool returns the plan; it does not execute it. Run each step via
         steps.push({
           step: ++n,
           description: 'Run a CloudFox inventory pass — quickly catalogues EC2/Lambda/RDS/S3/IAM across regions.',
-          command: `cloudfox aws --profile ${profile} all-checks ${effectiveRegions.map(r => `--regions ${r}`).join(' ')}`,
+          command: `cloudfox aws --profile '${profile}' all-checks ${effectiveRegions.map(r => `--regions '${r}'`).join(' ')}`,
           parse_with: 'cloudfox',
           technique: 'recon_cloud_resources',
           est_noise: 0.4,
@@ -169,7 +175,7 @@ This tool returns the plan; it does not execute it. Run each step via
       steps.push({
         step: ++n,
         description: 'List S3 buckets visible to the credential. After this lands, follow up per-bucket with list-objects-v2 for the buckets the operator wants to investigate.',
-        command: `aws --profile ${profile} s3api list-buckets --output json`,
+        command: `aws --profile '${profile}' s3api list-buckets --output json`,
         parse_with: 'cloudfox',
         technique: 'recon_cloud_resources',
         est_noise: 0.1,
@@ -180,7 +186,7 @@ This tool returns the plan; it does not execute it. Run each step via
         steps.push({
           step: ++n,
           description: `List Lambda functions in ${region}. Look for environment variables that contain secrets or cross-account assume-role references.`,
-          command: `aws --profile ${profile} --region ${region} lambda list-functions --output json`,
+          command: `aws --profile '${profile}' --region '${region}' lambda list-functions --output json`,
           parse_with: 'cloudfox',
           technique: 'recon_cloud_resources',
           est_noise: 0.1,
@@ -195,7 +201,7 @@ This tool returns the plan; it does not execute it. Run each step via
         steps.push({
           step: ++n,
           description: 'OPTIONAL: dry-run create-access-key against the caller user (AWS rejects --dry-run for IAM mutations, so this remains an explicit-opt-in audit hint, not a real probe). Use only with operator approval.',
-          command: `# write probe — requires explicit approval; commented out by default\n# aws --profile ${profile} iam create-access-key --user-name ${principal}`,
+          command: `# write probe — requires explicit approval; commented out by default\n# aws --profile '${profile}' iam create-access-key --user-name '${principal}'`,
           technique: 'cred_create',
           est_noise: 0.7,
           expected: 'NEW credential node on success; AccessDenied or LimitExceeded otherwise.',

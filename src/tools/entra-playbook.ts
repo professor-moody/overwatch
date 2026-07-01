@@ -26,6 +26,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialUsableForAuth, isTokenCredential } from '../services/credential-utils.js';
+import { safePlaybookArg } from './_playbook-utils.js';
 
 interface PlaybookStep {
   step: number;
@@ -92,18 +93,21 @@ source credential is marked credential_status: 'expired'.`,
         return errorResponse(`Credential ${credential_id} is ${status}; cannot exchange`);
       }
 
-      const tenant = tenant_id ?? (cred.cred_issuer as string | undefined)?.match(/login\.microsoftonline\.com\/([^/]+)/)?.[1] ?? 'common';
+      // Fence every value interpolated into the emitted curl command: tenant is
+      // derived from a parsed credential issuer, and client_id/scope are
+      // operator-supplied — none may inject shell into a suggested run_bash step.
+      const tenant = safePlaybookArg(tenant_id ?? (cred.cred_issuer as string | undefined)?.match(/login\.microsoftonline\.com\/([^/]+)/)?.[1] ?? 'common');
       const tokenUrl = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
 
       // The refresh_token value lives in the credential node; the
       // operator passes it explicitly. We do NOT inline it here so the
       // recon plan stays safe to log/audit/share.
       const command = [
-        `curl -sS -X POST ${tokenUrl}`,
+        `curl -sS -X POST '${tokenUrl}'`,
         `-H 'Content-Type: application/x-www-form-urlencoded'`,
         `--data-urlencode 'grant_type=refresh_token'`,
-        `--data-urlencode "client_id=${client_id}"`,
-        `--data-urlencode "scope=${scope}"`,
+        `--data-urlencode "client_id=${safePlaybookArg(client_id)}"`,
+        `--data-urlencode "scope=${safePlaybookArg(scope)}"`,
         `--data-urlencode "refresh_token=$REFRESH_TOKEN"`,
       ].join(' \\\n  ');
 

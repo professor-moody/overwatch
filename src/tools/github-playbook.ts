@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
+import { safePlaybookArg } from './_playbook-utils.js';
 import { isCredentialUsableForAuth } from '../services/credential-utils.js';
 
 interface PlaybookStep {
@@ -134,12 +135,14 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
 
       // Per-repo expansion when an explicit list is provided.
       if (repoList) {
-        for (const repo of repoList) {
+        for (const rawRepo of repoList) {
+          // Fence the operator-supplied repo before it lands in `gh api /repos/'${repo}'/…`.
+          const repo = safePlaybookArg(rawRepo);
           const owner = repo.split('/')[0];
           steps.push({
             step: ++n,
             description: `List Actions secrets for ${repo}.`,
-            command: `gh api /repos/${repo}/actions/secrets`,
+            command: `gh api /repos/'${repo}'/actions/secrets`,
             parse_with: 'gh-api-secrets',
             parser_context: { repo_full_name: repo, source_credential_id: credential_id },
             technique: 'recon_credential',
@@ -149,7 +152,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
           steps.push({
             step: ++n,
             description: `Pull branch protection for ${repo}'s default branch (main/master).`,
-            command: `gh api /repos/${repo}/branches/main/protection`,
+            command: `gh api /repos/'${repo}'/branches/main/protection`,
             parse_with: 'gh-api-branch-protection',
             parser_context: { repo_full_name: repo, branch_name: 'main' },
             technique: 'recon_idp_application',
@@ -159,7 +162,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
           steps.push({
             step: ++n,
             description: `List deploy keys for ${repo}. Read-write keys with private-half capture become lateral-move candidates.`,
-            command: `gh api /repos/${repo}/keys`,
+            command: `gh api /repos/'${repo}'/keys`,
             parse_with: 'gh-api-deploy-keys',
             parser_context: { repo_full_name: repo },
             technique: 'recon_credential',
@@ -169,7 +172,7 @@ expansion at \`max_repos\` to stay tractable on large orgs.`,
           steps.push({
             step: ++n,
             description: `Capture Actions OIDC subject-claim customization for ${repo}. Misconfigured patterns are flagged by the CI_TRUST_WILDCARD inference rule once ingested.`,
-            command: `gh api /repos/${repo}/actions/oidc-customization/sub`,
+            command: `gh api /repos/'${repo}'/actions/oidc-customization/sub`,
             parse_with: 'github-actions-oidc',
             parser_context: { repo_full_name: repo, owner },
             technique: 'recon_idp_application',

@@ -209,7 +209,8 @@ describe('expand_github_credential plan shape', () => {
     const payload = JSON.parse(captured!.content[0].text);
     // One pre-expanded repo should yield 4 per-repo steps (secrets,
     // branch-protection, deploy-keys, oidc-customization).
-    const perRepo = payload.steps.filter((s: any) => /repos\/acme\/webapp/.test(s.command));
+    // Repo is single-quoted in the emitted path (injection fencing): /repos/'acme/webapp'/…
+    const perRepo = payload.steps.filter((s: any) => /repos\/'acme\/webapp'/.test(s.command));
     expect(perRepo).toHaveLength(4);
   });
 });
