@@ -198,6 +198,10 @@ export class EngineContext {
   // continue to rely on debounced snapshots only.
   mutationJournal: MutationJournal | null;
   journalSnapshotSeq: number;        // last seq that's already in the persisted snapshot
+  /** Set during WAL replay so the guarded mutators (addNode/addEdge) re-apply
+   *  state without re-emitting their edge-case events (the type-conflict warning
+   *  + inferred-edge-confirmation log) into the already-restored activity log. */
+  suppressMutationEvents = false;
 
   constructor(graph: OverwatchGraph, config: EngagementConfig, stateFilePath: string) {
     this.graph = graph;

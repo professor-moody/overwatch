@@ -35,6 +35,7 @@ import { dirname, join, basename } from 'path';
 export type MutationType =
   | 'add_node'
   | 'merge_node_attrs'
+  | 'replace_node_attrs'   // full-node replace (patch with unsets) — removes keys, unlike merge
   | 'drop_node'
   | 'add_edge'
   | 'merge_edge_attrs'
@@ -64,6 +65,10 @@ export interface MutationReplayResult {
   applied: number;
   skipped: number;
   failed: number;
+  /** True when readSince stopped on a malformed line mid-file and dropped a
+   *  durable tail — the recovered state is INCOMPLETE and the caller must NOT
+   *  compact/truncate the journal (evidence should be preserved). */
+  truncated: boolean;
   skipped_reasons: Array<{ seq: number; type: string; reason: string }>;
   failed_reasons: Array<{ seq: number; type: string; reason: string }>;
 }
@@ -137,25 +142,64 @@ export class MutationJournal {
    * partial line). Stops at the first malformed line and returns what it
    * read; the caller can decide whether to truncate.
    */
+  /** Set by the most recent readSince() when it stopped early on a malformed
+   *  line (a crash mid-write) BEFORE reaching end-of-file — i.e. a durable tail
+   *  was dropped. Read by replay() so the loss is surfaced loudly rather than
+   *  silently treated as "replay complete". */
+  private lastReadTruncated = false;
+
+  wasLastReadTruncated(): boolean { return this.lastReadTruncated; }
+
+  /** Highest parseable seq PHYSICALLY present in the journal file, including
+   *  entries stranded AFTER a malformed line. After a truncated read the corrupt
+   *  journal is preserved (evidence), so a fresh append must start above this to
+   *  avoid reusing a seq that still lives orphaned past the corruption barrier. */
+  highestSeqOnDisk(): number {
+    if (!existsSync(this.journalPath)) return 0;
+    const raw = readFileSync(this.journalPath, 'utf-8');
+    let max = 0;
+    for (const line of raw.split('\n')) {
+      if (!line) continue;
+      try {
+        const e = JSON.parse(line) as MutationEntry;
+        if (typeof e.seq === 'number' && e.seq > max) max = e.seq;
+      } catch { /* skip malformed */ }
+    }
+    return max;
+  }
+
   readSince(fromSeq: number): MutationEntry[] {
+    this.lastReadTruncated = false;
     if (!existsSync(this.journalPath)) return [];
     const raw = readFileSync(this.journalPath, 'utf-8');
     if (!raw) return [];
     const out: MutationEntry[] = [];
     const lines = raw.split('\n');
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
       if (!line) continue;
       try {
         const entry = JSON.parse(line) as MutationEntry;
-        if (typeof entry.seq !== 'number' || typeof entry.type !== 'string') break;
+        if (typeof entry.seq !== 'number' || typeof entry.type !== 'string') { this.markTruncated(lines, i); break; }
         if (entry.seq > fromSeq) out.push(entry);
       } catch {
-        // Malformed line — likely a crash mid-write. Stop here; the
-        // caller should snapshot+truncate to recover.
+        // Malformed line — likely a crash mid-write. Stop here; the caller
+        // should snapshot+truncate to recover. Flag the truncation so it is
+        // reported (not silently swallowed).
+        this.markTruncated(lines, i);
         break;
       }
     }
     return out;
+  }
+
+  /** True when there is any non-empty line AFTER index `i` — i.e. we stopped on
+   *  a malformed line mid-file and dropped a durable tail (vs a lone partial
+   *  trailing line, which is the benign crash-mid-write case). */
+  private markTruncated(lines: string[], i: number): void {
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j]) { this.lastReadTruncated = true; return; }
+    }
   }
 
   /**
@@ -254,7 +298,16 @@ export class MutationJournal {
     if (entries.length > 0) {
       this.nextSeq = Math.max(this.nextSeq, entries[entries.length - 1].seq);
     }
-    return { read: entries.length, applied, skipped, failed, skipped_reasons, failed_reasons };
+    const truncated = this.wasLastReadTruncated();
+    if (truncated) {
+      // The orphaned tail past the malformed line stays in the (preserved)
+      // journal, so advance nextSeq above the HIGHEST seq on disk — otherwise a
+      // fresh append could reuse a seq that still lives orphaned in the file.
+      this.nextSeq = Math.max(this.nextSeq, this.highestSeqOnDisk());
+      // eslint-disable-next-line no-console
+      console.warn(`[mutation-journal] replay stopped on a malformed line mid-journal — a durable mutation tail was DROPPED (recovered state is incomplete; journal preserved for inspection)`);
+    }
+    return { read: entries.length, applied, skipped, failed, truncated, skipped_reasons, failed_reasons };
   }
 
   /** Path to the journal file. Useful for tests + diagnostics. */

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, unlinkSync, rmSync, readFileSync } from 'fs';
+import { existsSync, unlinkSync, rmSync, readFileSync, appendFileSync } from 'fs';
 import { GraphEngine } from '../graph-engine.js';
 import { MutationJournal } from '../mutation-journal.js';
 import type { EngagementConfig } from '../../types.js';
@@ -169,6 +169,111 @@ describe('MutationJournal (P2.1)', () => {
       expect(replayEvent?.details).toMatchObject({ skipped: 3, failed: 0 });
       expect((replayEvent?.details as any).read).toBeGreaterThanOrEqual(3);
       expect(String(JSON.stringify(replayEvent?.details))).toContain('unsupported mutation type');
+    });
+
+    it('ROOT FIX: WAL replay applies the type-integrity guard (no type flip)', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'n1', type: 'group', label: 'g', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      eng.dispose();
+      // A post-snapshot merge that tries to FLIP the type — as a drifted/raw
+      // writer (or a pre-fix journal) would record.
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      j.append({ type: 'merge_node_attrs', payload: { props: { id: 'n1', type: 'cloud_identity', label: 'g2' } } });
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      // Guard held on replay: the type was NOT flipped, but the non-type merge applied.
+      expect(eng2.getNode('n1')?.type).toBe('group');
+      expect(eng2.getNode('n1')?.label).toBe('g2');
+    });
+
+    it('ROOT FIX: WAL replay keeps scope-aware RBAC edges distinct (scoped keying)', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'p', type: 'cloud_identity', label: 'p', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.addNode({ id: 'r', type: 'cloud_resource', label: 'r', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      eng.dispose();
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      // Two HAS_POLICY edges at DIFFERENT scopes — must not collapse into one.
+      for (const scope of ['/subscriptions/A', '/subscriptions/B']) {
+        j.append({ type: 'add_edge', payload: { source: 'p', target: 'r', props: { type: 'HAS_POLICY', confidence: 1, discovered_at: '2026-01-01T00:00:00Z', scope } } });
+      }
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      const hasPolicy = eng2.exportGraph().edges.filter(e => e.source === 'p' && e.target === 'r' && e.properties.type === 'HAS_POLICY');
+      expect(hasPolicy).toHaveLength(2); // distinct per scope — the raw applier collapsed them to 1
+    });
+
+    it('ROOT FIX: WAL replay flags a dropped durable tail (truncation) + preserves the journal', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'baseline', type: 'host', label: 'baseline', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      eng.dispose();
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      j.append({ type: 'add_node', payload: { props: { id: 'kept', type: 'host', label: 'kept', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+      // A malformed line MID-journal, then a valid line after it (a durable tail
+      // that readSince will drop — this must be surfaced, not silently swallowed).
+      appendFileSync(JOURNAL_PATH, 'THIS IS NOT JSON\n');
+      appendFileSync(JOURNAL_PATH, JSON.stringify({ seq: 99999, type: 'add_node', payload: { props: { id: 'lost', type: 'host', label: 'lost', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } }) + '\n');
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      const replayEvent = eng2.getFullHistory().find(e => e.description.startsWith('WAL replay:'));
+      expect((replayEvent?.details as any).truncated).toBe(true);
+      expect(eng2.getNode('kept')).toBeDefined();     // pre-malformed entry applied
+      expect(eng2.getNode('lost')).toBeFalsy();       // post-malformed durable tail dropped
+      expect(existsSync(JOURNAL_PATH)).toBe(true);    // journal preserved (evidence, not compacted)
+    });
+
+    it('ROOT FIX: patch_node unset survives crash recovery (replace, not merge)', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'n1', type: 'host', label: 'n1', ip: '10.10.10.1', credential_status: 'active', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } as any);
+      eng.flushNow();
+      eng.dispose();
+      // A post-snapshot patch that UNSET credential_status journals a full-node
+      // replace WITHOUT that key (as patchNodeProperties now does).
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      j.append({ type: 'replace_node_attrs', payload: { props: { id: 'n1', type: 'host', label: 'n1', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      // The cleared key must NOT linger after recovery (merge-replay left it stale pre-fix).
+      expect((eng2.getNode('n1') as any)?.credential_status).toBeFalsy();
+    });
+
+    it('ROOT FIX: a fresh append after a truncated replay does not reuse an orphaned seq', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'baseline', type: 'host', label: 'baseline', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      eng.dispose();
+      const state = JSON.parse(readFileSync(TEST_STATE, 'utf-8'));
+      const j = new MutationJournal(TEST_STATE);
+      j.setNextSeq(typeof state.journalSnapshotSeq === 'number' ? state.journalSnapshotSeq : 0);
+      j.append({ type: 'add_node', payload: { props: { id: 'kept', type: 'host', label: 'kept', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 } } });
+      appendFileSync(JOURNAL_PATH, 'CORRUPT NOT JSON\n');
+      appendFileSync(JOURNAL_PATH, JSON.stringify({ seq: 99999, type: 'add_node', payload: { props: { id: 'orphan' } } }) + '\n');
+
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng2.addNode({ id: 'fresh', type: 'host', label: 'fresh', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      // The fresh append must sit ABOVE the orphaned 99999 in the preserved file.
+      expect(new MutationJournal(TEST_STATE).highestSeqOnDisk()).toBeGreaterThan(99999);
+    });
+
+    it('suppressMutationEvents does not leak past replay (type-conflict warning still fires after recovery)', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.addNode({ id: 'g1', type: 'group', label: 'g1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });
+      eng.flushNow();
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE); // load → replay path toggles the flag
+      const before = eng2.getFullHistory().filter(e => e.event_type === 'instrumentation_warning').length;
+      eng2.addNode({ id: 'g1', type: 'cloud_identity', label: 'g1b', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 }); // type conflict → warning
+      const after = eng2.getFullHistory().filter(e => e.event_type === 'instrumentation_warning').length;
+      expect(after).toBeGreaterThan(before); // flag was restored after loadState — event NOT suppressed
     });
 
     it('legacy engagement keeps the empty manifest assertion (no journal field)', () => {
