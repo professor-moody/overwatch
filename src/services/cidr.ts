@@ -36,6 +36,12 @@ export function expandCidrDetailed(cidr: string): CidrExpansionResult {
   if (mask < 0 || mask > 32) return { ips: [base], truncated: false };
   if (mask === 32) return { ips: [base], truncated: false };
 
+  // Fail closed on a malformed base. Without this, `256/24` or `10.0/24`
+  // would flow into 32-bit math with out-of-range/undefined octets and yield
+  // a bogus network address. Treat an unparseable base as a non-expandable
+  // literal rather than enumerating a garbage range.
+  if (!isIPv4(base)) return { ips: [base], truncated: false };
+
   const parts = base.split('.').map(Number);
   const ip = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
 
@@ -388,6 +394,17 @@ export function isCloudResourceInScope(
 }
 
 function ipToNum(ip: string): number {
-  const parts = ip.split('.').map(Number);
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+  // Defensive: callers pre-validate with isIPv4, but never fold a malformed
+  // address into 32-bit math (NaN octets coerce to 0 and produce a bogus
+  // number that could false-match a scope range). Return 0 (0.0.0.0) for
+  // anything that isn't four in-range octets.
+  const parts = ip.split('.');
+  if (parts.length !== 4) return 0;
+  let num = 0;
+  for (const p of parts) {
+    const octet = Number(p);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return 0;
+    num = ((num << 8) | octet) >>> 0;
+  }
+  return num >>> 0;
 }
