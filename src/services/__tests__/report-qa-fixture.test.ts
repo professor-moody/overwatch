@@ -129,7 +129,10 @@ describe('report QA fixture outputs', () => {
     }
   });
 
-  it.skipIf(!isPdfRenderingAvailable().available)('renders the client HTML fixture to a PDF buffer', async () => {
+  // Puppeteer render can exceed 30s under CI load (cold Chromium + parallel
+  // suites). Give it headroom + one retry so a transient slow render doesn't
+  // fail the run; a genuine hang still fails after the retry.
+  it.skipIf(!isPdfRenderingAvailable().available)('renders the client HTML fixture to a PDF buffer', { timeout: 60_000, retry: 1 }, async () => {
     const qa = fixture();
     const clientHtml = assembleReport(qa.engine, qa.skills, {
       format: 'html',
@@ -140,5 +143,5 @@ describe('report QA fixture outputs', () => {
     const pdf = await renderReportPdf(clientHtml, { format: 'A4', printBackground: true });
     expect(pdf.byteLength).toBeGreaterThan(1024);
     expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
-  }, 30_000);
+  });
 });

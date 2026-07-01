@@ -41,7 +41,9 @@ describe('report-pdf', () => {
     expect(status.executable).toBeDefined();
   });
 
-  it.skipIf(!shouldRunRenderSmoke)('renders a minimal HTML through puppeteer-core into a PDF buffer', async () => {
+  // Cold Chromium launch + render can exceed 30s under CI load; 60s + one
+  // retry absorbs a transient slow render without masking a real hang.
+  it.skipIf(!shouldRunRenderSmoke)('renders a minimal HTML through puppeteer-core into a PDF buffer', { timeout: 60_000, retry: 1 }, async () => {
     const { renderReportPdf } = await import('../services/report-pdf.js');
     const buf = await renderReportPdf(HTML, { format: 'A4', printBackground: true });
     expect(Buffer.isBuffer(buf)).toBe(true);
@@ -50,5 +52,5 @@ describe('report-pdf', () => {
     // 5–20 KB.
     expect(buf.byteLength).toBeGreaterThan(1024);
     expect(buf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
-  }, 30_000);
+  });
 });
