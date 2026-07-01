@@ -242,6 +242,11 @@ export interface NodeProperties {
   effect?: 'allow' | 'deny';
   actions?: string[];
   resources?: string[];
+  // AWS NotAction / NotResource (and Azure NotActions): the statement matches
+  // every action/resource EXCEPT these. Kept separate from actions/resources
+  // so the simulator can apply the inverse-match semantics correctly.
+  not_actions?: string[];
+  not_resources?: string[];
   conditions?: string[];
 
   // Cloud Network (VPC, security group, subnet, firewall rule)
