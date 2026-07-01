@@ -92,9 +92,9 @@ export function redactSecretKeys<T>(value: T, opts: RedactionOptions): T {
 }
 
 const SECRET_KEYS = new Set([
-  'cred_value', 'password', 'secret', 'token', 'bearer', 'api_key',
+  'cred_value', 'cred_hash', 'password', 'secret', 'token', 'bearer', 'api_key',
   'private_key', 'priv_key', 'session_key', 'aes_key', 'rc4_key',
-  'ntlm', 'nt_hash', 'lm_hash', 'aes256_hash', 'aes128_hash',
+  'ntlm', 'nt_hash', 'lm_hash', 'ntlmv2_hash', 'aes256_hash', 'aes128_hash', 'krb5_hash',
   'tgt', 'tgs', 'st',
 ]);
 
@@ -113,13 +113,25 @@ const COMMAND_KEYS = new Set(['command', 'command_repr', 'cmd', 'argv_str']);
  */
 export function redactInlineCredentials(text: string): string {
   return text
-    // scheme://user:pass@host  and  user:pass@host. The password group allows
-    // colons so credentials that contain them (NTLM `lm:nt`, colon passwords) are
-    // still redacted; it stops at the `@` host separator.
-    .replace(/([a-zA-Z][\w.+-]*:\/\/)?([^\s:/@]+):([^@\s]+)@/g,
-      (_m, scheme, user) => `${scheme || ''}${user}:${REDACTED_PLACEHOLDER}@`)
+    // scheme://user:pass@host, user:pass@host, and user:pass@ (no host). Match
+    // the whole `user:<rest-of-token>` then find the password span in a callback
+    // via lastIndexOf('@') — the password runs from the first `:` to the LAST
+    // `@`, so a password containing `@` (p@ss@host) is fully redacted AND a
+    // credential with no trailing host still redacts. Using the callback (not a
+    // greedy `\S+@host` regex) also avoids the O(n²) backtracking a long
+    // colon-bearing token (e.g. `sha256:AAAA…`) would otherwise trigger (ReDoS).
+    // The scheme + user groups are LENGTH-CAPPED so the engine can't re-scan a
+    // long colon-less run (`Z…Z`, a base64/hex blob) at every start position —
+    // that would be O(n²) (ReDoS). The user class also excludes quotes/braces/
+    // commas so JSON/CSV blobs aren't mistaken for `user:…@…` credentials.
+    .replace(/([a-zA-Z][\w.+-]{0,64}:\/\/)?([^\s:/@"'{},]{1,255}):([^\s]*)/g, (m, scheme, user, rest) => {
+      const at = (rest as string).lastIndexOf('@');
+      if (at === -1) return m; // no `@` → not a user:pass@host credential; leave as-is
+      return `${scheme || ''}${user}:${REDACTED_PLACEHOLDER}${(rest as string).slice(at)}`;
+    })
     .replace(/(Authorization:\s*Bearer\s+)(\S+)/gi, `$1${REDACTED_PLACEHOLDER}`)
-    .replace(/(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/g, `$1${REDACTED_PLACEHOLDER}`);
+    // Case-insensitive: a lowercase `bearer <token>` leaks otherwise.
+    .replace(/(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi, `$1${REDACTED_PLACEHOLDER}`);
 }
 
 /**

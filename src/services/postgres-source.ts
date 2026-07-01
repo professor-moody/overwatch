@@ -128,5 +128,18 @@ export class PostgresSource {
 }
 
 export function redactDsn(dsn: string): string {
-  return dsn.replace(/(:\/\/[^:]*:)[^@]*(@)/, '$1[redacted]$2');
+  return dsn
+    // URI form: postgres://user:PASSWORD@host (or @, no host). Redact from the
+    // first `:` after the user to the LAST `@` via a callback — fully redacts a
+    // password containing `@`, still redacts a host-less `user:pass@`, and
+    // avoids the greedy-`\S+@` backtracking (ReDoS) a long token would trigger.
+    .replace(/(:\/\/[^:/@\s]{1,255}:)([^\s]*)/g, (m, pre, rest) => {
+      const at = (rest as string).lastIndexOf('@');
+      if (at === -1) return m;
+      return `${pre}[redacted]${(rest as string).slice(at)}`;
+    })
+    // libpq key/value form: `password=SECRET` / `password='SECRET'` — was left
+    // entirely UNREDACTED. The bare value stops at whitespace or a `;`/`&`
+    // delimiter so it doesn't swallow the following key/value pairs. Covers pgpassword.
+    .replace(/\b((?:pg)?password)\s*=\s*('[^']*'|"[^"]*"|[^\s;&]+)/gi, '$1=[redacted]');
 }

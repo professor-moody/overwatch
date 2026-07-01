@@ -140,6 +140,45 @@ describe('report-redaction primitives', () => {
     expect(out).toContain('db:5432'); // host:port after @ untouched
   });
 
+  it('redactInlineCredentials fully redacts a password containing @ (no tail leak)', () => {
+    const out = redactInlineCredentials('psql mysql://svc:P@ss@w0rd@db.corp.local:5432/x');
+    expect(out).not.toMatch(/ss@w0rd/);           // the @-containing password tail must NOT leak
+    expect(out).not.toContain('P@ss@w0rd');
+    expect(out).toContain('svc:<redacted>@');
+    expect(out).toContain('db.corp.local');       // host preserved
+  });
+
+  it('redactInlineCredentials redacts a lowercase `bearer <token>`', () => {
+    const out = redactInlineCredentials('header authorization: bearer abcdef0123456789xyz');
+    expect(out).not.toContain('abcdef0123456789xyz');
+    expect(out).toContain('<redacted>');
+  });
+
+  it('redactInlineCredentials redacts a credential with NO trailing host (user:pass@)', () => {
+    for (const s of ['postgres://user:supersecret@', 'connect user:secret@\nnext', 'db://svc:pw@/var/run/pg']) {
+      const out = redactInlineCredentials(s);
+      expect(out).not.toMatch(/supersecret|:secret@|:pw@\/?/);
+      expect(out).toContain(':<redacted>@');
+    }
+  });
+
+  it('redactInlineCredentials does not ReDoS on long tokens (colon-bearing AND colon-less)', () => {
+    // Length-capped groups make this linear (~ms). The pre-fix O(n²) form took
+    // ~9s for 100k chars, so a generous 2s ceiling cleanly catches a regression
+    // without flaking on a slow/loaded CI runner.
+    const start = process.hrtime.bigint();
+    for (const input of ['sha256:' + 'A'.repeat(100000), 'Z'.repeat(100000), 'Bearer ' + 'A'.repeat(100000)]) {
+      redactInlineCredentials(input);
+    }
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    expect(ms).toBeLessThan(2000);
+  }, 10000);
+
+  it('redactInlineCredentials does not mangle a JSON string value (quotes/braces excluded from user group)', () => {
+    const out = redactInlineCredentials('{"a":"x@y.example","b":"c"}');
+    expect(out).toBe('{"a":"x@y.example","b":"c"}'); // untouched — not a credential shape
+  });
+
   it('redactSecretKeys redacts credentials embedded in a command field (not just secret keys)', () => {
     const input = {
       evidence: [{ claim: 'auth', command: 'nxc smb 10.0.0.1 -u admin -p Secret123' }],
