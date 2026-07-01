@@ -113,7 +113,7 @@ function findIdpAppsForLink(ctx: EngineContext, link: CrossTierLink): Array<{ id
 export function runCrossTierCorrelator(host: CrossTierCorrelatorHost, agentId: string = 'cross-tier-correlator'): { backed_by_added: number; authenticates_via_added: number } {
   const links = host.ctx.config.scope.cross_tier_links ?? [];
   if (links.length === 0) return { backed_by_added: 0, authenticates_via_added: 0 };
-  const now = new Date().toISOString();
+  const now = host.ctx.nowIso(); // injected-clock: BACKED_BY/AUTHENTICATES_VIA discovered_at lands in the golden hash
   let backedBy = 0;
   let authVia = 0;
 

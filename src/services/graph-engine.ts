@@ -351,7 +351,7 @@ export class GraphEngine {
       }
       // Detect confirmation of inferred edge
       if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
-        props = { ...props, confirmed_at: new Date().toISOString() };
+        props = { ...props, confirmed_at: this.ctx.nowIso() };
         this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
       }
       // Update existing edge — property-only change, no topology change
@@ -470,7 +470,7 @@ export class GraphEngine {
 
   ingestFinding(finding: Finding): { new_nodes: string[]; new_edges: string[]; updated_nodes: string[]; updated_edges: string[]; inferred_edges: string[]; deduplicated?: boolean } {
     // --- Finding Deduplication (7.8) ---
-    const now = Date.now();
+    const now = Date.now(); // clock-ok: dedup-window elapsed-time check (transient cache; not a stored timestamp)
 
     // Prune stale entries outside the dedup window
     for (const [hash, ts] of this.ctx.recentFindingHashes) {
@@ -1300,7 +1300,7 @@ export class GraphEngine {
       // passive recon (off-target, invisible to defenders).
       if (effectiveOpsec.time_window && !passiveRecon) {
         const { start_hour, end_hour } = effectiveOpsec.time_window;
-        const now = new Date();
+        const now = new Date(); // clock-ok: OPSEC time-window check is a real-time policy check (produces a warning, writes no state)
         if (!isInTimeWindow(start_hour, end_hour, now)) {
           const hour = now.getHours();
           warnings.push(`Outside approved time window (${start_hour}:00-${end_hour}:00), current hour: ${hour}`);
@@ -1720,7 +1720,7 @@ export class GraphEngine {
             ...(operation.properties || {}),
             type: edgeType,
             confidence: operation.confidence ?? previousAttrs?.confidence ?? 1.0,
-            discovered_at: previousAttrs?.discovered_at || new Date().toISOString(),
+            discovered_at: previousAttrs?.discovered_at || this.ctx.nowIso(),
             discovered_by: previousAttrs?.discovered_by,
           };
           const { id: newEdgeId } = this.addEdge(sourceId, targetId, nextProps);
@@ -2569,13 +2569,13 @@ export class GraphEngine {
   }
 
   recordApprovalRequest(action: Omit<PendingAction, 'status' | 'submitted_at' | 'timeout_at'>): DurableApprovalRecord {
-    const now = new Date();
+    const now = new Date(); // clock-ok: approval submitted_at/timeout_at is real-time (approval records aren't in the graph hash)
     const timeoutMs = this.ctx.config.opsec.approval_timeout_ms ?? 300_000;
     const record: DurableApprovalRecord = {
       ...action,
       status: 'pending',
       submitted_at: now.toISOString(),
-      timeout_at: new Date(now.getTime() + timeoutMs).toISOString(),
+      timeout_at: new Date(now.getTime() + timeoutMs).toISOString(), // clock-ok: derived from the marked approval `now` (real-time; not in the graph hash)
     };
     this.ctx.approvalRequests.set(action.action_id, record);
     this.persist();
@@ -2642,7 +2642,7 @@ export class GraphEngine {
    */
   reconcilePendingApprovalsOnStartup(): number {
     let count = 0;
-    const now = new Date().toISOString();
+    const now = new Date().toISOString(); // clock-ok: startup reconciliation timestamp (daemon restart; not on the replay path)
     for (const [id, rec] of this.ctx.approvalRequests) {
       if (rec.status !== 'pending') continue;
       this.ctx.approvalRequests.set(id, {
@@ -2661,13 +2661,13 @@ export class GraphEngine {
   }
 
   getApprovalRequests(options?: { includeResolved?: boolean; resolvedSinceMs?: number }): DurableApprovalRecord[] {
-    const now = Date.now();
+    const now = Date.now(); // clock-ok: read-only query filter (resolvedSinceMs window; writes no state)
     return [...this.ctx.approvalRequests.values()]
       .filter(record => {
         if (record.status === 'pending') return true;
         if (options?.includeResolved) return true;
         if (options?.resolvedSinceMs == null || !record.resolved_at) return false;
-        return now - new Date(record.resolved_at).getTime() <= options.resolvedSinceMs;
+        return now - new Date(record.resolved_at).getTime() <= options.resolvedSinceMs; // clock-ok: parses a STORED timestamp for a read-only filter (not a clock read)
       })
       .sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
   }

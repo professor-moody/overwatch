@@ -85,7 +85,7 @@ function inbound(ctx: EngineContext, target: string): Array<{ edge: string; sour
 // =============================================
 
 function ssrfReachesImds(host: CrossTierInferenceHost, agentId: string): number {
-  const now = new Date().toISOString();
+  const now = host.ctx.nowIso();
   let added = 0;
   // Find webapp → VULNERABLE_TO → vulnerability where vuln_type indicates SSRF.
   for (const w of nodesByType(host.ctx, 'webapp')) {
@@ -153,9 +153,15 @@ function ssrfReachesImds(host: CrossTierInferenceHost, agentId: string): number 
 export function matchesSubjectPattern(credSubject: string | undefined, pattern: string | undefined): boolean {
   if (!pattern) return true;
   if (!credSubject) return false;
+  // The pattern comes from an untrusted OIDC trust policy. Cap the length and
+  // COALESCE runs of `*` before translating, then use a NON-overlapping `.*`
+  // (not `.+`), so adjacent wildcards can't build a catastrophic-backtracking
+  // regex (`.+.+…`) that stalls the single-executor event loop (ReDoS).
+  if (pattern.length > 256 || credSubject.length > 1024) return false;
   const escaped = pattern
-    .replace(/([.+?^${}()|[\]\\])/g, '\\$1')
-    .replace(/\*/g, '.+');
+    .replace(/\*+/g, '*')                    // coalesce adjacent wildcards
+    .replace(/([.+?^${}()|[\]\\])/g, '\\$1') // escape regex metacharacters (not `*`)
+    .replace(/\*/g, '.*');                   // wildcard → non-overlapping .*
   try {
     return new RegExp(`^${escaped}$`).test(credSubject);
   } catch {
@@ -164,7 +170,7 @@ export function matchesSubjectPattern(credSubject: string | undefined, pattern: 
 }
 
 function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): number {
-  const now = new Date().toISOString();
+  const now = host.ctx.nowIso();
   let added = 0;
   for (const app of nodesByType(host.ctx, 'idp_application')) {
     // Find ISSUES_TOKENS_FOR → cloud_identity edges from this app.
@@ -230,7 +236,7 @@ function oidcFederationPivot(host: CrossTierInferenceHost, agentId: string): num
 // =============================================
 
 function hybridIdentityPivot(host: CrossTierInferenceHost, agentId: string): number {
-  const now = new Date().toISOString();
+  const now = host.ctx.nowIso();
   let added = 0;
   // Find idp ↔ domain via FEDERATES_WITH (either direction).
   const federations: Array<{ idp_id: string; domain_name: string; tenant_id?: string; idp_kind?: string }> = [];
@@ -365,7 +371,7 @@ function ciTrustWildcard(host: CrossTierInferenceHost, agentId: string): number 
  * Gated on isCredentialUsableForAuth (assertion expiry / MFA).
  */
 function samlRoundTrip(host: CrossTierInferenceHost, agentId: string): number {
-  const now = new Date().toISOString();
+  const now = host.ctx.nowIso();
   let added = 0;
   for (const cred of nodesByType(host.ctx, 'credential')) {
     const kind = cred.attrs.cred_material_kind as string | undefined;

@@ -223,7 +223,7 @@ in the graph or be created by an earlier mapping in the same call.
         };
       }
 
-      const now = new Date().toISOString();
+      const now = engine.now(); // injected-clock: ingested node/edge discovered_at lands in the golden hash
       const discoveredBy = agent_id || 'json-ingest';
       const warnings: string[] = [];
       const mappingErrors: string[] = [];
