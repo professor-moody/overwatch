@@ -306,4 +306,39 @@ describe('Claude Code Overwatch hooks', () => {
       expect(JSON.parse(armed.stdout.trim()).hookSpecificOutput.permissionDecision).toBe('deny');
     });
   });
+
+  // The anti-drift hook trio (closes the documented Known-gaps surfaces). All gated on an
+  // active engagement (silent on a dev checkout).
+  describe('anti-drift hook trio', () => {
+    it('task-guard denies host-subagent delegation during an engagement', () => {
+      const result = runHook('overwatch-task-guard.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: {} });
+      expect(result.status).toBe(0);
+      const out = parseStdout(result);
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain('dispatch_agents');
+    });
+
+    it('task-guard is silent on a dev checkout', () => {
+      const result = runHook('overwatch-task-guard.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Task' }, { active: false });
+      expect(result.stdout.trim()).toBe('');
+    });
+
+    it('write/fetch nudge reminds to land results in the graph (fetched vs wrote); silent on dev', () => {
+      const wrote = parseStdout(runHook('overwatch-write-fetch-nudge.mjs', { hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: {} }));
+      expect(wrote.hookSpecificOutput.additionalContext).toContain('report_finding');
+      expect(wrote.hookSpecificOutput.additionalContext).toContain('wrote');
+      const fetched = parseStdout(runHook('overwatch-write-fetch-nudge.mjs', { hook_event_name: 'PostToolUse', tool_name: 'WebFetch' }));
+      expect(fetched.hookSpecificOutput.additionalContext).toContain('fetched');
+      expect(runHook('overwatch-write-fetch-nudge.mjs', { tool_name: 'Write' }, { active: false }).stdout.trim()).toBe('');
+    });
+
+    it('session-bootstrap injects a get_system_prompt reminder on SessionStart/PreCompact; silent on dev', () => {
+      const ss = parseStdout(runHook('overwatch-session-bootstrap.mjs', { hook_event_name: 'SessionStart' }));
+      expect(ss.hookSpecificOutput.hookEventName).toBe('SessionStart');
+      expect(ss.hookSpecificOutput.additionalContext).toContain('get_system_prompt');
+      const pc = parseStdout(runHook('overwatch-session-bootstrap.mjs', { hook_event_name: 'PreCompact' }));
+      expect(pc.hookSpecificOutput.hookEventName).toBe('PreCompact');
+      expect(runHook('overwatch-session-bootstrap.mjs', { hook_event_name: 'SessionStart' }, { active: false }).stdout.trim()).toBe('');
+    });
+  });
 });

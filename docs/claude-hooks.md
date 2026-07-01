@@ -89,8 +89,11 @@ Use absolute paths for MCP config whether it lives in `.mcp.json` or `.claude/se
 |------|----------|
 | `UserPromptSubmit` | Adds a short Overwatch grounding reminder before each user prompt is processed. |
 | `PreToolUse` on `Bash` | Blocks obvious target-facing raw Bash such as `nmap 10.0.0.5` or `curl http://target` and redirects Claude to Overwatch `run_tool`, `run_bash`, or session tools. |
+| `PreToolUse` on `Task` | Blocks delegating to a host-runtime subagent (which escapes every Overwatch control at once) and redirects to Overwatch `dispatch_agents` / `register_agent`. |
 | `PostToolUse` on `Bash` | Reminds Claude to turn discovery-looking output into graph state with `parse_output`, `report_finding`, or `ingest_json`. |
-| `Stop` | Conservatively catches likely engagement drift when a turn did not use Overwatch tools and tells Claude to refresh with `get_state`. |
+| `PostToolUse` on `Write` / `WebFetch` | Reminds Claude to land anything written to disk or fetched from the web into the graph (not left off-graph). |
+| `SessionStart` / `PreCompact` | Injects a reminder to (re)call `get_system_prompt(role="primary")` + `get_state()` — the dynamic prompt is the source of truth, especially after compaction. |
+| `Stop` | Turn-scoped: catches likely engagement drift when the **current turn** used no Overwatch tool, and tells Claude to refresh with `get_state`. |
 
 The Bash guard is intentionally narrow. It should not block normal repo work such as `git status`, `rg`, `npm test`, `npx tsc --noEmit`, or `mkdocs build --strict`.
 
@@ -126,37 +129,38 @@ under the gate — a missed reminder is harmless. The `Bash` deny is best-effort
 the real "never touch targets outside Overwatch" boundary is the MCP/engine layer (sole
 credentials + egress control), not this regex.
 
-## Known gaps (assessed, deferred)
+## Closed gaps + what remains
 
-An adversarial red-team of these hooks (28 findings) confirmed the gate above is the
-highest-value fix; the following gaps were assessed and **deliberately deferred** — they
-are not yet addressed:
+An adversarial red-team of these hooks (28 findings) surfaced the surface below. Most are
+now closed:
 
-- **The `Bash` deny is porous.** `TARGET_TOOL_RE` is a closed allowlist beaten by a path
-  prefix (`/usr/bin/nmap`), a quote, command substitution, a target hidden in a variable
-  or an `-iL` file, or a tool not on the list (e.g. evil-winrm, hydra, responder, dig).
-  Treat it as a speed bump, not a boundary — the real control is the MCP/engine egress
-  layer (sole creds + scope validation), so chasing every regex bypass has low ROI.
-- **No coverage of the highest-leverage drift surfaces.** There is no matcher for the host
-  runtime's Task/subagent tool (delegating a whole step bypasses the frontier/lease/scope),
-  nor for `Write` or `WebFetch` (recon-to-disk / fetch off-graph).
-- **The `Stop` check is not turn-scoped.** It substring-scans the last ~500 transcript
-  lines, so a single `get_state()` (or even the literal `report_finding` quoted in prose)
-  suppresses the block for many later turns — the canonical "answered from memory" drift
-  can slip through. It should key on structured `tool_use` events for the current turn.
-- **No `SessionStart` / `PreCompact` hook.** CLAUDE.md's "call `get_system_prompt` at
-  session start and after compaction" mandate is enforced nowhere.
+- ✅ **Highest-leverage drift surfaces covered.** `PreToolUse` on `Task` denies host-subagent
+  delegation; `PostToolUse` on `Write`/`WebFetch` nudges results back into the graph.
+- ✅ **The `Stop` check is turn-scoped.** It now keys on structured `tool_use` events since
+  the last genuine human prompt, so a tool call from an earlier turn no longer suppresses the
+  block on a later "answered from memory" turn.
+- ✅ **`SessionStart` / `PreCompact` bootstrap.** Injects the `get_system_prompt(role="primary")`
+  + `get_state()` reminder so the model reloads the dynamic prompt after compaction.
 
-If you pick these up, AND-gate each on `isEngagementActive()` (same as the rest) and add
-regression tests in `src/__tests__/claude-hooks.test.ts`.
+Still deliberately **not** addressed:
+
+- **The `Bash` deny is porous** (and, by design, a speed bump not a boundary). `TARGET_TOOL_RE`
+  is a closed allowlist beaten by a path prefix (`/usr/bin/nmap`), a quote, command
+  substitution, a target hidden in a variable or an `-iL` file, or a tool not on the list.
+  The real control is the MCP/engine egress layer (sole creds + scope validation), so chasing
+  every regex bypass has low ROI — don't. (The `Task` deny is the meaningful enforcement.)
+
+All hooks AND-gate on `isEngagementActive()` (silent on a dev checkout); add any new hook the
+same way with a regression test in `src/__tests__/claude-hooks.test.ts`.
 
 ## Verify hooks are active
 
 1. Restart Claude Code after editing `.claude/settings.json`.
 2. Run `/hooks` in Claude Code and confirm these hooks are listed:
    - `UserPromptSubmit`
-   - `PreToolUse` with matcher `Bash`
-   - `PostToolUse` with matcher `Bash`
+   - `PreToolUse` with matchers `Bash` and `Task`
+   - `PostToolUse` with matchers `Bash` and `Write|WebFetch`
+   - `SessionStart`, `PreCompact`
    - `Stop`
 3. Ask Claude to run a harmless repo command like `git status`; it should work.
 4. With the engagement-active gate armed (`export OVERWATCH_ENGAGEMENT_ACTIVE=1`), ask Claude to run raw target-facing Bash like `nmap 10.0.0.5`; it should be blocked and redirected to Overwatch tools. (Without the gate armed — a plain dev checkout — it is intentionally allowed.)
