@@ -21,6 +21,16 @@
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-bash-guard.mjs"]
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-task-guard.mjs"]
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -31,6 +41,38 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-post-bash.mjs"]
+          }
+        ]
+      },
+      {
+        "matcher": "Write|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-write-fetch-nudge.mjs"]
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-session-bootstrap.mjs"]
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/overwatch-session-bootstrap.mjs"]
           }
         ]
       }
