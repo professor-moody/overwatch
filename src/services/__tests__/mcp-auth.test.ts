@@ -24,6 +24,21 @@ describe('isLoopbackHost', () => {
       expect(isLoopbackHost(h)).toBe(false);
     }
   });
+  it('recognizes non-canonical IPv6 loopback forms', () => {
+    for (const h of ['0:0:0:0:0:0:0:1', '0000::0001', '::0001', '[0:0:0:0:0:0:0:1]', '0000:0000:0000:0000:0000:0000:0000:0001']) {
+      expect(isLoopbackHost(h)).toBe(true);
+    }
+  });
+  it('rejects non-loopback IPv6 addresses', () => {
+    for (const h of ['::2', 'fe80::1', '2001:db8::1', '::']) {
+      expect(isLoopbackHost(h)).toBe(false);
+    }
+  });
+  it('rejects embedded-IPv4 addresses that superficially look like ::1 (e.g. ::1.2.3.4)', () => {
+    for (const h of ['::1.2.3.4', '[::1.2.3.4]', '::1.99.99.99', '::0:1.2.3.4']) {
+      expect(isLoopbackHost(h)).toBe(false);
+    }
+  });
 });
 
 describe('createMcpAuthMiddleware', () => {
@@ -71,6 +86,18 @@ describe('createMcpAuthMiddleware', () => {
     mw(wrong.req, wrong.res as any, wrong.next);
     expect(wrong.next).not.toHaveBeenCalled();
     expect(wrong.res.statusCode).toBe(401);
+  });
+
+  it('constant-time compare handles a DIFFERENT-LENGTH bearer without throwing (401, not a crash)', () => {
+    const mw = createMcpAuthMiddleware({ host: '127.0.0.1', getToken: () => 'a-long-secret-token' });
+    const short = makeReqRes({ authorization: 'Bearer x' });
+    expect(() => mw(short.req, short.res as any, short.next)).not.toThrow();
+    expect(short.next).not.toHaveBeenCalled();
+    expect(short.res.statusCode).toBe(401);
+    // exact match still succeeds
+    const okReq = makeReqRes({ authorization: 'Bearer a-long-secret-token' });
+    mw(okReq.req, okReq.res as any, okReq.next);
+    expect(okReq.next).toHaveBeenCalledOnce();
   });
 
   it('non-loopback + matching token → next()', () => {

@@ -924,7 +924,7 @@ export class DashboardServer {
       } else if (reportDetailMatch && method === 'GET') {
         this.serveReportDownload(reportDetailMatch[1], url, res);
       } else if (reportDetailMatch && method === 'DELETE') {
-        this.handleReportDelete(reportDetailMatch[1], res);
+        this.handleReportDelete(reportDetailMatch[1], req, res);
       } else {
         this.serveStaticFile(url, res);
       }
@@ -3807,7 +3807,10 @@ export class DashboardServer {
   }
 
   /** DELETE /api/reports/:id — remove from manifest + filesystem. */
-  private handleReportDelete(id: string, res: ServerResponse): void {
+  private handleReportDelete(id: string, req: IncomingMessage, res: ServerResponse): void {
+    // DELETE is a mutation — enforce the same CSRF/Origin + token gate every
+    // other mutation does (this endpoint previously skipped it).
+    if (!this.checkMutationAuth(req, res)) return;
     const archive = this.engine.getReportArchive();
     const ok = archive.delete(id);
     res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
