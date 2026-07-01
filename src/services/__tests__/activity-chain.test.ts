@@ -175,6 +175,115 @@ describe('activity-chain (Phase 6)', () => {
     expect(payload.breaks.length).toBeGreaterThan(0);
   });
 
+  it('verify_activity_chain hard-fails when a verifier key is configured but checkpoints were STRIPPED', async () => {
+    const { generateCheckpointKeypair } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const prev = process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
+    process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
+    const stateFile = './state-test-ac-empty.json';
+    const e3 = new GraphEngine(makeConfig(true), stateFile);
+    const h3: Record<string, any> = {};
+    registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { h3[n] = fn; } } as unknown as McpServer, e3);
+    try {
+      e3.logActionEvent({ description: 'a', event_type: 'action_started', provenance: 'agent' });
+      // Attacker strips every checkpoint from the (signed) run to dodge attestation.
+      e3.getChainCheckpoints().length = 0;
+      const payload = JSON.parse((await h3.verify_activity_chain({})).content[0].text);
+      expect(payload.checkpoint_attestation).toMatchObject({ configured: true, ok: false });
+      expect(payload.checkpoint_attestation.reason).toMatch(/no checkpoints/i);
+    } finally {
+      if (prev === undefined) delete process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY; else process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = prev;
+      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
+    }
+  });
+
+  it('tieredTruncate bounds the log AND keeps the surviving chain contiguous + verifiable', async () => {
+    const { tieredTruncate } = await import('../engine-context.js');
+    const { verifyChain, computeEventHash, GENESIS_HASH } = await import('../activity-chain.js');
+    // Build a long, fully-chained log (every entry chains) exceeding the budget.
+    const log: any[] = [];
+    let prev = GENESIS_HASH;
+    for (let i = 0; i < 50; i += 1) {
+      const e: any = { event_id: `e${i}`, event_type: 'action_started', timestamp: `2026-06-30T00:00:${String(i).padStart(2, '0')}.000Z`, provenance: 'agent', description: `d${i}`, prev_hash: prev };
+      e.event_hash = computeEventHash(e, prev);
+      prev = e.event_hash;
+      log.push(e);
+    }
+    const budget = 20;
+    const out = tieredTruncate(log, budget);
+    expect(out.length).toBeLessThanOrEqual(budget);       // bounded (was unbounded before)
+    expect(out.length).toBeGreaterThan(0);
+    // Kept entries are the most-recent, contiguous, in original order.
+    expect(out[out.length - 1].event_id).toBe('e49');
+    // Seed verify from the window's first prev_hash → the surviving sub-chain verifies clean.
+    const seed = { event_index: -1, event_hash: out[0].prev_hash! };
+    const r = verifyChain(out, seed);
+    expect(r.breaks).toHaveLength(0);
+  });
+
+  it('OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE external anchor is authoritative and rejects a config-nonce mismatch', async () => {
+    const { generateCheckpointKeypair } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const prevPub = process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
+    const prevSign = process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
+    const prevNonce = process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE;
+    process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
+    process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
+    const stateFile = './state-test-ac-anchor.json';
+    // Engagement with a specific nonce; the external anchor will DISAGREE (splice).
+    const cfg = makeConfig(true);
+    (cfg as any).engagement_nonce = 'engagement-A';
+    const eA = new GraphEngine(cfg, stateFile);
+    const hA: Record<string, any> = {};
+    registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { hA[n] = fn; } } as unknown as McpServer, eA);
+    try {
+      eA.logActionEvent({ description: 'x', event_type: 'action_started', provenance: 'agent' });
+      // Verifier expects engagement-B out-of-band → config/checkpoints are A → reject.
+      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = 'engagement-B';
+      const bad = JSON.parse((await hA.verify_activity_chain({})).content[0].text);
+      expect(bad.checkpoint_attestation.ok).toBe(false);
+      expect(bad.checkpoint_attestation.reason).toMatch(/anchor|nonce/i);
+      // Correct anchor → attests.
+      process.env.OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE = 'engagement-A';
+      const good = JSON.parse((await hA.verify_activity_chain({})).content[0].text);
+      expect(good.checkpoint_attestation.ok).toBe(true);
+    } finally {
+      const restore = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+      restore('OVERWATCH_CHECKPOINT_PUBLIC_KEY', prevPub);
+      restore('OVERWATCH_CHECKPOINT_SIGNING_KEY', prevSign);
+      restore('OVERWATCH_CHECKPOINT_ENGAGEMENT_NONCE', prevNonce);
+      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
+    }
+  });
+
+  it('verify_activity_chain attests + binds a signed run with a matching verifier key', async () => {
+    const { generateCheckpointKeypair } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const prevSign = process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY;
+    const prevPub = process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY;
+    process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = Buffer.from(kp.privateKeyPem, 'utf8').toString('base64');
+    process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = Buffer.from(kp.publicKeyPem, 'utf8').toString('base64');
+    const stateFile = './state-test-ac-signed-verify.json';
+    const e4 = new GraphEngine(makeConfig(true), stateFile);
+    const h4: Record<string, any> = {};
+    registerStateTools({ registerTool(n: string, _c: unknown, fn: any) { h4[n] = fn; } } as unknown as McpServer, e4);
+    try {
+      e4.logActionEvent({ description: 'a', event_type: 'action_started', provenance: 'agent' });
+      e4.logActionEvent({ description: 'b', event_type: 'action_completed', provenance: 'agent' });
+      expect(e4.getChainCheckpoints().length).toBeGreaterThan(0);
+      const res = await h4.verify_activity_chain({});
+      const payload = JSON.parse(res.content[0].text);
+      expect(payload.valid).toBe(true);
+      expect(payload.checkpoint_binding.valid).toBe(true);
+      expect(payload.checkpoint_attestation).toMatchObject({ configured: true, ok: true });
+      expect(res.isError).toBeFalsy();
+    } finally {
+      if (prevSign === undefined) delete process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY; else process.env.OVERWATCH_CHECKPOINT_SIGNING_KEY = prevSign;
+      if (prevPub === undefined) delete process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY; else process.env.OVERWATCH_CHECKPOINT_PUBLIC_KEY = prevPub;
+      try { if (existsSync(stateFile)) unlinkSync(stateFile); } catch {}
+    }
+  });
+
   it('run_graph_health surfaces activity_chain when enabled', async () => {
     engine.logActionEvent({ description: 'hp-1', event_type: 'action_started', provenance: 'agent' });
     const result = await handlers.run_graph_health({});
@@ -288,7 +397,8 @@ describe('activity-chain P0.2 (checkpoints)', () => {
 
 describe('checkpoint signing (Ed25519)', () => {
   const baseCp = (): import('../activity-chain.js').ChainCheckpoint => ({
-    event_index: 7, event_id: 'evt-7', event_hash: 'deadbeef', events_since_previous: 7, emitted_at: '2026-06-30T00:00:00.000Z',
+    schema_version: 1, event_index: 7, event_id: 'evt-7', event_hash: 'deadbeef',
+    events_since_previous: 7, emitted_at: '2026-06-30T00:00:00.000Z', engagement_nonce: null,
   });
 
   it('generateCheckpointKeypair produces a stable key id + sign/verify roundtrip', async () => {
@@ -348,6 +458,55 @@ describe('checkpoint signing (Ed25519)', () => {
     expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [1], unverifiable: [] }).ok).toBe(false); // one failed
     expect(attestCheckpointSignatures({ total: 2, signed: 2, verified: 1, failed: [], unverifiable: [1] }).ok).toBe(false); // forged/unknown key
     expect(attestCheckpointSignatures({ total: 0, signed: 0, verified: 0, failed: [], unverifiable: [] }).ok).toBe(true);  // nothing to attest
+  });
+
+  it('verifyCheckpoints binds by event_id and survives log reindexing (truncation)', async () => {
+    const { verifyCheckpoints } = await import('../activity-chain.js');
+    // Log where the checkpointed event_id 'evt-7' has moved to a DIFFERENT index
+    // (as tieredTruncate would do). Index-based lookup would validate the wrong
+    // entry; event_id lookup finds it.
+    const log = [
+      { event_id: 'evt-3', event_hash: 'h3' },
+      { event_id: 'evt-5', event_hash: 'h5' },
+      { event_id: 'evt-7', event_hash: 'deadbeef' }, // index 2, but cp.event_index says 7
+    ] as any[];
+    const cp = baseCp(); // event_index: 7, event_id: 'evt-7', event_hash: 'deadbeef'
+    expect(verifyCheckpoints(log, [cp]).valid).toBe(true);
+    // Tamper the log entry's hash → binding fails (present event, wrong hash).
+    const tamperedLog = [{ event_id: 'evt-7', event_hash: 'REHASHED' }] as any[];
+    const r = verifyCheckpoints(tamperedLog, [cp]);
+    expect(r.valid).toBe(false);
+    expect(r.mismatches).toHaveLength(1);
+    // Checkpointed event no longer in the (bounded) log → AGED-OUT, not a tamper:
+    // a malicious drop+rehash is caught by later checkpoints / verifyChain, and
+    // flagging it here would false-positive on the rolling window + legacy state.
+    const aged = verifyCheckpoints([{ event_id: 'evt-9', event_hash: 'h9' }] as any[], [cp]);
+    expect(aged.valid).toBe(true);
+    expect(aged.aged_out).toHaveLength(1);
+    expect(aged.mismatches).toHaveLength(0);
+  });
+
+  it('checkpointsBindToEngagement rejects a spliced (wrong-nonce) or wrong-schema checkpoint', async () => {
+    const { checkpointsBindToEngagement } = await import('../activity-chain.js');
+    const cpA = { ...baseCp(), engagement_nonce: 'nonce-A' };
+    expect(checkpointsBindToEngagement([cpA], 'nonce-A').ok).toBe(true);
+    // Spliced into engagement B (same operator key, different engagement) → rejected.
+    expect(checkpointsBindToEngagement([cpA], 'nonce-B').ok).toBe(false);
+    // Downgrade / unknown schema → rejected.
+    expect(checkpointsBindToEngagement([{ ...cpA, schema_version: 0 }], 'nonce-A').ok).toBe(false);
+    // Legacy (null nonce) matches a legacy engagement.
+    expect(checkpointsBindToEngagement([{ ...baseCp(), engagement_nonce: null }], null).ok).toBe(true);
+  });
+
+  it('a checkpoint signed for engagement A verifies its OWN bytes but does not bind to B (anti-splice)', async () => {
+    const { generateCheckpointKeypair, signCheckpoint, verifyCheckpointSignature, checkpointsBindToEngagement } = await import('../activity-chain.js');
+    const kp = generateCheckpointKeypair();
+    const cpA = signCheckpoint({ ...baseCp(), engagement_nonce: 'engagement-A' }, kp.privateKeyPem, kp.keyId);
+    // The signature is valid over its own (nonce-bound) canonical bytes...
+    expect(verifyCheckpointSignature(cpA, kp.publicKeyPem)).toBe(true);
+    // ...but the engagement-binding check rejects reuse in engagement B.
+    expect(checkpointsBindToEngagement([cpA], 'engagement-B').ok).toBe(false);
+    expect(checkpointsBindToEngagement([cpA], 'engagement-A').ok).toBe(true);
   });
 
   it('engine signs emitted checkpoints when a signing key is configured', async () => {

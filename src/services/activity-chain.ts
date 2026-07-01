@@ -173,12 +173,22 @@ export function verifyChain(
 // unsigned run, or a checkpoint signed by an unknown/forged key, fails the attestation.
 // Rotation/HSM are out of scope.
 
+/** Bumped whenever the signed canonical form changes. A HARD break: a verifier
+ *  rejects any checkpoint whose schema_version differs (no dual-path). v1 added
+ *  engagement-nonce binding + domain separation to the signed bytes. */
+export const CHECKPOINT_SCHEMA_VERSION = 1;
+/** Domain-separation tag mixed into the signed bytes so a checkpoint signature
+ *  can't be reused across a different protocol/context. */
+const CHECKPOINT_DOMAIN = 'overwatch-checkpoint-v1';
+
 export interface ChainCheckpoint {
-  event_index: number;        // index in the activity log of the checkpointed event
-  event_id: string;           // event_id at that index (for cross-validation)
+  schema_version: number;     // canonical/signing schema version (hard-break on change)
+  event_index: number;        // index in the activity log at emit time (informational; verify resolves by event_id)
+  event_id: string;           // event_id at that index — the STABLE key verify binds on (survives truncation)
   event_hash: string;         // chain tail at this checkpoint
   events_since_previous: number; // chained-event count since previous checkpoint
   emitted_at: string;         // ISO timestamp when the checkpoint was emitted
+  engagement_nonce: string | null; // binds the checkpoint to ONE engagement (anti-splice); null for legacy
   signing_key_id?: string;    // identifier of the signing key (when signed)
   signature?: string;         // base64 detached signature over canonical(checkpoint)
 }
@@ -227,15 +237,21 @@ export function buildCheckpoint(args: {
   event_id: string;
   event_hash: string;
   events_since_previous: number;
-  emitted_at?: string;
+  // Required: emitted_at is part of the SIGNED canonical bytes, so it must be the
+  // deterministic event timestamp (never a wall-clock fallback that would make the
+  // signed bytes non-reproducible).
+  emitted_at: string;
+  engagement_nonce?: string | null;
   signing_key_id?: string;
 }): ChainCheckpoint {
   return {
+    schema_version: CHECKPOINT_SCHEMA_VERSION,
     event_index: args.event_index,
     event_id: args.event_id,
     event_hash: args.event_hash,
     events_since_previous: args.events_since_previous,
-    emitted_at: args.emitted_at ?? new Date().toISOString(),
+    emitted_at: args.emitted_at,
+    engagement_nonce: args.engagement_nonce ?? null,
     ...(args.signing_key_id ? { signing_key_id: args.signing_key_id } : {}),
   };
 }
@@ -249,18 +265,63 @@ export function buildCheckpoint(args: {
 export function verifyCheckpoints(
   log: ActivityLogEntry[],
   checkpoints: ChainCheckpoint[],
-): { valid: boolean; latest_valid_index: number; mismatches: ChainCheckpoint[] } {
-  const mismatches: ChainCheckpoint[] = [];
+): { valid: boolean; latest_valid_index: number; mismatches: ChainCheckpoint[]; aged_out: ChainCheckpoint[] } {
+  // Resolve each checkpoint to its log entry BY event_id, not by event_index —
+  // tieredTruncate reindexes the log so a stored event_index goes stale, and an
+  // index-based lookup would silently validate the WRONG entry.
+  const idxById = new Map<string, number>();
+  log.forEach((e, i) => { if (e.event_id) idxById.set(e.event_id, i); });
+  const mismatches: ChainCheckpoint[] = [];  // event PRESENT but recomputed hash differs → tamper
+  const aged_out: ChainCheckpoint[] = [];    // event no longer in the window (rolled off / legacy orphan)
   let latest_valid_index = -1;
   for (const cp of checkpoints) {
-    const entry = log[cp.event_index];
-    if (!entry || entry.event_id !== cp.event_id || entry.event_hash !== cp.event_hash) {
+    const idx = idxById.get(cp.event_id);
+    if (idx === undefined) {
+      // The checkpointed event isn't in the (bounded) log. NOT treated as a
+      // tamper: legitimately-aged-out events have their checkpoints pruned, and
+      // a malicious DROP+rehash is caught by the SUBSEQUENT checkpoints (whose
+      // present event_hash then diverges) and/or verifyChain. Flagging it here
+      // would false-positive on rolling-window / legacy state.
+      aged_out.push(cp);
+      continue;
+    }
+    if (log[idx].event_hash !== cp.event_hash) {
       mismatches.push(cp);
       continue;
     }
-    if (cp.event_index > latest_valid_index) latest_valid_index = cp.event_index;
+    if (idx > latest_valid_index) latest_valid_index = idx;
   }
-  return { valid: mismatches.length === 0, latest_valid_index, mismatches };
+  return { valid: mismatches.length === 0, latest_valid_index, mismatches, aged_out };
+}
+
+/** Seed for verifyChain that tolerates a truncated rolling window: adopt the
+ *  first surviving chained entry's prev_hash when it isn't genesis, so the
+ *  contiguous surviving sub-chain verifies instead of reporting a phantom break
+ *  at the window boundary. Returns undefined for a full (genesis-anchored) log.
+ *  Shared by verify_activity_chain and run_graph_health so both stay consistent. */
+export function deriveChainSeed(log: ActivityLogEntry[]): { event_index: number; event_hash: string } | undefined {
+  const first = log.find(e => e.event_hash !== undefined && e.prev_hash !== undefined);
+  return first && first.prev_hash && first.prev_hash !== GENESIS_HASH
+    ? { event_index: -1, event_hash: first.prev_hash }
+    : undefined;
+}
+
+/** Attest that every checkpoint binds to THIS engagement + the current schema:
+ *  a checkpoint minted for a different engagement (spliced in, same operator
+ *  key) or under an older/newer schema version does not attest this run. */
+export function checkpointsBindToEngagement(
+  checkpoints: ChainCheckpoint[],
+  engagementNonce: string | null,
+): { ok: boolean; reason: string | null } {
+  for (const cp of checkpoints) {
+    if ((cp.schema_version ?? 0) !== CHECKPOINT_SCHEMA_VERSION) {
+      return { ok: false, reason: `checkpoint schema_version ${cp.schema_version ?? 'missing'} != ${CHECKPOINT_SCHEMA_VERSION}` };
+    }
+    if ((cp.engagement_nonce ?? null) !== (engagementNonce ?? null)) {
+      return { ok: false, reason: 'checkpoint engagement_nonce does not match this engagement (possible splice)' };
+    }
+  }
+  return { ok: true, reason: null };
 }
 
 // ============================================================
@@ -272,7 +333,10 @@ export function verifyCheckpoints(
  *  `signature` itself. Stable JSON array (fixed field order) for deterministic signing. */
 export function canonicalCheckpoint(cp: ChainCheckpoint): string {
   return JSON.stringify([
+    CHECKPOINT_DOMAIN,
+    cp.schema_version ?? null,
     cp.event_index, cp.event_id, cp.event_hash, cp.events_since_previous, cp.emitted_at,
+    cp.engagement_nonce ?? null,
     cp.signing_key_id ?? null,
   ]);
 }
