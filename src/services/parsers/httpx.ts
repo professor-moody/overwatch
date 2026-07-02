@@ -1,11 +1,14 @@
 import type { Finding, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { webappOriginId } from '../parser-utils.js';
+import { hostId, serviceIdFromUrl, webappOriginId } from '../parser-utils.js';
 
 // --- httpx Parser (Phase 2C) ---
 // Input: `httpx -json` JSON-lines — {"url":"https://api.example.com",
 // "status_code":200,"title":"...","tech":["nginx","php"],"webserver":"nginx"}.
-// Light-active: probes in-scope hosts. Emits webapp nodes with detected tech.
+// Light-active: probes in-scope hosts. Emits a webapp node with detected tech,
+// PLUS the backing host → RUNS → service(http/https) → HOSTS → webapp chain (as
+// nuclei/nikto/burp/zap do) so the discovered web target participates in scope,
+// service enumeration, and credential coverage — not just a bare webapp node.
 
 export function parseHttpx(output: string, agentId: string = 'httpx-parser', _context?: ParseContext): Finding {
   const nodes: Finding['nodes'] = [];
@@ -38,6 +41,45 @@ export function parseHttpx(output: string, agentId: string = 'httpx-parser', _co
       ...(technology ? { technology } : {}),
       ...(typeof rec.status_code === 'number' ? { http_status: rec.status_code } : {}),
     } as Finding['nodes'][number]);
+
+    // Backing host → service chain (shared serviceIdFromUrl so httpx + nuclei
+    // converge on one service node per origin). A malformed url still yields the
+    // webapp node above; we just skip the chain.
+    try {
+      const parsed = new URL(url);
+      const port = parseInt(parsed.port, 10) || (parsed.protocol === 'https:' ? 443 : 80);
+      const proto = parsed.protocol === 'https:' ? 'https' : 'http';
+      const svcId = serviceIdFromUrl(url);
+      if (!seen.has(svcId)) {
+        seen.add(svcId);
+        nodes.push({
+          id: svcId, type: 'service', label: `${proto}/${port}`,
+          discovered_at: now, confidence: 1.0,
+          port, protocol: 'tcp', service_name: proto,
+        } as Finding['nodes'][number]);
+      }
+      const rawHost = parsed.hostname.replace(/^\[|\]$/g, '');
+      const hId = hostId(rawHost);
+      if (!seen.has(hId)) {
+        seen.add(hId);
+        const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(rawHost) || rawHost.includes(':');
+        nodes.push({
+          id: hId, type: 'host', label: rawHost,
+          discovered_at: now, confidence: 1.0,
+          ...(isIp ? { ip: rawHost } : { hostname: rawHost }),
+        } as Finding['nodes'][number]);
+      }
+      const runsKey = `${hId}->${svcId}`;
+      if (!seen.has(runsKey)) {
+        seen.add(runsKey);
+        edges.push({ source: hId, target: svcId, properties: { type: 'RUNS', confidence: 1.0, discovered_at: now } });
+      }
+      const hostsKey = `${svcId}->${id}`;
+      if (!seen.has(hostsKey)) {
+        seen.add(hostsKey);
+        edges.push({ source: svcId, target: id, properties: { type: 'HOSTS', confidence: 1.0, discovered_at: now } });
+      }
+    } catch { /* malformed url — webapp node already emitted */ }
   }
 
   return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };

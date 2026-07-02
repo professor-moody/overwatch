@@ -95,6 +95,25 @@ describe('CredentialCoverageTracker', () => {
       expect(result.top_untested[0].target).toBe('host-1');
     });
 
+    it('surfaces an http/https service (web target) for credential testing', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-a', { type: 'user', username: 'jdoe' });
+      addNode(graph, 'cred-web', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true, cred_user: 'jdoe' });
+      addEdge(graph, 'user-a', 'cred-web', 'OWNS_CRED');
+      // httpx-shaped web target: host → RUNS → service(https) → HOSTS → webapp.
+      // The https service is what surfaces as the credential-test target so web
+      // creds get frontier pressure (http/https are in AUTH_SERVICES).
+      addNode(graph, 'host-web', { type: 'host', hostname: 'app.acme.com' });
+      addNode(graph, 'svc-https', { type: 'service', service_name: 'https', port: 443 });
+      addNode(graph, 'webapp-app', { type: 'webapp', url: 'https://app.acme.com' });
+      addEdge(graph, 'host-web', 'svc-https', 'RUNS');
+      addEdge(graph, 'svc-https', 'webapp-app', 'HOSTS');
+
+      const { tracker } = buildTracker(graph);
+      const result = tracker.compute();
+      expect(result.untested_pairs.map(p => p.target_id)).toContain('svc-https');
+    });
+
     it('marks pairs as tested via TESTED_CRED edge', () => {
       const graph = makeGraph();
       addNode(graph, 'user-1', { type: 'user', username: 'jdoe', domain: 'test.local' });
