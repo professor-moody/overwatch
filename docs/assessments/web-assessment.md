@@ -53,6 +53,9 @@ Get your subdomains and IPs into the graph so the frontier has something to work
 
     > **"Ingest these subdomains as nodes: app.acme.com, api.acme.com, legacy.acme.com."**
 
+!!! tip "Dangling CNAMEs surface for free"
+    Resolving subdomains with `dnsx -a -cname` (keep A-record resolution on) captures each `CNAME` alongside its addresses; a subdomain whose CNAME points at a **claimable provider** (S3, GitHub Pages, Heroku, …) but resolves to **no address** is flagged `takeover_candidate` — the classic subdomain-takeover signal. Run a `nuclei` takeover template against flagged names to confirm.
+
 From here, `nuclei` tech-detection and a dir bruteforcer fill in `technology`, `framework`, `auth_type`, and discovered paths (`has_login_form` on the service).
 
 ## 3. Add your test credentials
@@ -114,7 +117,7 @@ On a successful authenticated session, re-scan post-auth — the `web_app` profi
 
 Drive the scanners and ingest everything through `parse_output`:
 
-- `nuclei` / `nikto` → `vulnerability` nodes (CVE IDs, severity) + `VULNERABLE_TO` edges
+- `nuclei` / `nikto` → `vulnerability` nodes (CVE IDs, severity) + `VULNERABLE_TO` edges. A `nuclei` **takeover** result (`takeover` tag) becomes a `subdomain_takeover` vulnerability (classified CWE-16) and flags the affected `subdomain` node `takeover_candidate`.
 - `sqlmap` on a confirmed injection → dumps **credential** nodes (feed them back to step 4 — spray loop)
 - `wpscan` → WordPress users + plugin/theme CVEs
 - `testssl.sh` → TLS/cert weaknesses

@@ -121,6 +121,17 @@ describe('classifyFinding', () => {
     expect(result.pci_requirements.length).toBeGreaterThan(0);
   });
 
+  it('maps subdomain_takeover to CWE-16 (Configuration), not the unrelated CWE-350', () => {
+    const nodes: ExportedGraph['nodes'] = [
+      { id: 'vuln-t', properties: { type: 'vulnerability', vuln_type: 'subdomain_takeover', label: 'Subdomain Takeover' } as NodeProperties },
+    ];
+    const graph = makeGraph(nodes);
+    const finding = makeFinding({ affected_assets: ['vuln-t'] });
+    const result = classifyFinding(finding, makeNodeMap(nodes), graph);
+    expect(result.cwe).toBe('CWE-16');
+    expect(result.cwe).not.toBe('CWE-350');
+  });
+
   it('detects CWE from description heuristics', () => {
     const finding = makeFinding({
       title: 'Cross-site scripting in login page',

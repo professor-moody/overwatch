@@ -24,7 +24,7 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **Rubeus** | `rubeus` | Kerberoast/AS-REP/monitor output | User + credential nodes, `OWNS_CRED` edges (TGT/TGS detection) |
 | **Web Dir Enum** | `gobuster`, `feroxbuster`, `ffuf`, `dirbuster` | Text or JSON | Service node enrichment with `discovered_paths`, login form detection |
 | **Linpeas** | `linpeas`, `linenum`, `linpeas.sh` | Text output | Host enrichment: kernel version, SUID binaries, docker socket, capabilities, cron jobs |
-| **Nuclei** | `nuclei` | JSON, JSONL, or text output | Vulnerability + webapp nodes, `VULNERABLE_TO` edges. Text format: `[template-id] [protocol] [severity] url` |
+| **Nuclei** | `nuclei` | JSON, JSONL, or text output | Vulnerability + webapp nodes, `VULNERABLE_TO` edges. A `takeover`-tagged result → `subdomain_takeover` vuln + `takeover_candidate` on the affected subdomain. Text format: `[template-id] [protocol] [severity] url` |
 | **Nikto** | `nikto` | Text or JSON output | Per-path web vulnerability findings with `affected_path` metadata |
 | **TestSSL** | `testssl`, `testssl.sh`, `sslscan` | Text or JSON output | TLS enrichment: version, cipher suites, certificate details |
 | **Pacu** | `pacu` | JSON output | Cloud identity + resource + policy nodes, `HAS_POLICY` / `ASSUMES_ROLE` edges |
@@ -40,7 +40,7 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **subfinder** | `subfinder` | Text or JSON-lines hosts | Subdomain + domain nodes, `SUBDOMAIN_OF` edges (passive OSINT) |
 | **whois** | `whois` | whois text (domain or IP) | Organization + domain + asn nodes, `OWNS_ASSET` edges (passive OSINT) |
 | **amass** | `amass` | `amass enum -json` JSON-lines | Subdomain + domain + host + asn nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` / `IN_NETBLOCK` edges |
-| **dnsx** | `dnsx` | `dnsx -json` JSON-lines | Subdomain + domain + resolved host nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` edges (light-active) |
+| **dnsx** | `dnsx` | `dnsx -json` JSON-lines | Subdomain + domain + resolved host nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` edges (light-active). Captures `CNAME` → `dns_records`; a dangling CNAME (no A/AAAA) to a claimable provider flags `takeover_candidate` |
 | **httpx** | `httpx` | `httpx -json` JSON-lines | Webapp nodes with detected technology + HTTP status (light-active) |
 | **theHarvester** | `theharvester` | theHarvester JSON (`-f`) | Email nodes + harvested subdomain/domain nodes (passive OSINT) |
 

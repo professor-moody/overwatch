@@ -430,6 +430,154 @@ describe('10.4 — Nuclei parser', () => {
     const result = parseNuclei(input);
     expect(result.nodes.length).toBeGreaterThan(0);
   });
+
+  it('recognizes a takeover result (tag) → subdomain_takeover vuln + VULNERABLE_TO + connected takeover_candidate subdomain', () => {
+    const input = JSON.stringify({
+      'template-id': 'aws-bucket-takeover',
+      type: 'http',
+      host: 'https://legacy.acme.com',
+      'matched-at': 'https://legacy.acme.com',
+      info: { name: 'AWS S3 Bucket Takeover', severity: 'high', tags: ['takeover', 'aws'] },
+    });
+    const result = parseNuclei(input);
+    const vuln = result.nodes.find(n => n.type === 'vulnerability')!;
+    expect(vuln.vuln_type).toBe('subdomain_takeover');
+    expect(vuln.exploitable).toBe(true);
+    const edgeTypes = result.edges.map(e => e.properties.type);
+    expect(edgeTypes).toContain('VULNERABLE_TO');
+    const sub = result.nodes.find(n => n.type === 'subdomain');
+    expect(sub?.subdomain_name).toBe('legacy.acme.com');
+    expect((sub as Record<string, unknown>).takeover_candidate).toBe(true);
+    // The subdomain is connected (SUBDOMAIN_OF its domain + RESOLVES_TO the host)
+    // so it sits in the same component as the vulnerability, not an island.
+    expect(result.nodes.some(n => n.type === 'domain' && n.label === 'acme.com')).toBe(true);
+    expect(edgeTypes).toContain('SUBDOMAIN_OF');
+    const resolves = result.edges.find(e => e.properties.type === 'RESOLVES_TO' && e.source === sub!.id);
+    expect(resolves).toBeDefined();
+    expect(result.nodes.some(n => n.id === resolves!.target && n.type === 'host')).toBe(true);
+  });
+
+  it('connects the takeover subdomain even when the FQDN carries a trailing dot (host id drift)', () => {
+    const input = JSON.stringify({
+      'template-id': 'aws-bucket-takeover', type: 'http',
+      host: 'https://legacy.acme.com.', 'matched-at': 'https://legacy.acme.com.',
+      info: { name: 'Takeover', severity: 'high', tags: ['takeover'] },
+    });
+    const result = parseNuclei(input);
+    const sub = result.nodes.find(n => n.type === 'subdomain')!;
+    const resolves = result.edges.find(e => e.properties.type === 'RESOLVES_TO' && e.source === sub.id);
+    expect(resolves).toBeDefined();
+    expect(result.nodes.some(n => n.id === resolves!.target && n.type === 'host')).toBe(true);
+  });
+
+  it('empty host / non-HTTP takeover degrades gracefully: subdomain connects via SUBDOMAIN_OF, no dangling edge', () => {
+    for (const input of [
+      // Empty host (no HTTP host node → no RESOLVES_TO, but still connected to domain).
+      JSON.stringify({ 'template-id': 'aws-bucket-takeover', type: 'http', host: '', 'matched-at': 'https://legacy.acme.com', info: { name: 'T', severity: 'high', tags: ['takeover'] } }),
+      // Non-HTTP takeover (dns) — RESOLVES_TO is gated on the HTTP host node.
+      JSON.stringify({ 'template-id': 'cname-fingerprint', type: 'dns', host: 'legacy.acme.com', 'matched-at': 'legacy.acme.com', info: { name: 'T', severity: 'high', tags: ['takeover'] } }),
+    ]) {
+      const result = parseNuclei(input);
+      const sub = result.nodes.find(n => n.type === 'subdomain')!;
+      expect((sub as Record<string, unknown>).takeover_candidate).toBe(true);
+      expect(result.edges.some(e => e.properties.type === 'SUBDOMAIN_OF' && e.source === sub.id)).toBe(true);
+      // No dangling edge: every edge endpoint is a node in the finding.
+      const ids = new Set(result.nodes.map(n => n.id));
+      for (const e of result.edges) {
+        expect(ids.has(e.source)).toBe(true);
+        expect(ids.has(e.target)).toBe(true);
+      }
+    }
+  });
+
+  it('a schemeless matched-at (unparseable service) emits no dangling HOSTS/RUNS edge', () => {
+    const input = JSON.stringify({
+      'template-id': 'aws-bucket-takeover', type: 'http', host: 'legacy.acme.com', 'matched-at': 'legacy.acme.com',
+      info: { name: 'T', severity: 'high', tags: ['takeover'] },
+    });
+    const result = parseNuclei(input);
+    const ids = new Set(result.nodes.map(n => n.id));
+    for (const e of result.edges) {
+      expect(ids.has(e.source)).toBe(true);
+      expect(ids.has(e.target)).toBe(true);
+    }
+  });
+
+  it('does NOT classify an unrelated "takeover"-named template (account-takeover) as a subdomain takeover', () => {
+    const input = JSON.stringify({
+      'template-id': 'account-takeover-via-oauth',
+      type: 'http', host: 'https://app.acme.com', 'matched-at': 'https://app.acme.com/login',
+      info: { name: 'OAuth account takeover check', severity: 'info', tags: ['oauth', 'auth'] },
+    });
+    const result = parseNuclei(input);
+    // info severity + no `takeover` tag + no takeovers/ path → suppressed, no vuln, no subdomain.
+    expect(result.nodes.some(n => n.type === 'vulnerability')).toBe(false);
+    expect(result.nodes.some(n => n.type === 'subdomain')).toBe(false);
+  });
+
+  it('recognizes a takeover template even at severity=info (path-based) and still emits the vuln', () => {
+    const input = JSON.stringify({
+      'template-id': 'http/takeovers/github-takeover',
+      type: 'http',
+      host: 'https://docs.acme.com',
+      'matched-at': 'https://docs.acme.com',
+      info: { name: 'GitHub Pages Takeover', severity: 'info', tags: ['detect'] },
+    });
+    const result = parseNuclei(input);
+    const vuln = result.nodes.find(n => n.type === 'vulnerability');
+    expect(vuln?.vuln_type).toBe('subdomain_takeover');
+  });
+
+  it('a non-takeover result on a hostname target is unaffected (no takeover_candidate subdomain)', () => {
+    // Uses a HOSTNAME target so "no subdomain node" proves the takeover path
+    // didn't fire (not merely that the host was an IP).
+    const input = JSON.stringify({
+      'template-id': 'xss-detection',
+      type: 'http', host: 'http://sub.acme.com', 'matched-at': 'http://sub.acme.com/p',
+      info: { name: 'XSS', severity: 'medium', tags: 'xss' },
+    });
+    const result = parseNuclei(input);
+    expect(result.nodes.some(n => n.type === 'subdomain')).toBe(false);
+    // No takeover semantics leak onto a normal vuln: type stays xss and no
+    // RESOLVES_TO edge is synthesized (that only happens on the takeover path).
+    const vuln = result.nodes.find(n => n.type === 'vulnerability')!;
+    expect(vuln.vuln_type).toBe('xss');
+    expect(result.edges.some(e => e.properties.type === 'RESOLVES_TO')).toBe(false);
+  });
+
+  it('a non-HTTP result with an empty host is skipped (no phantom svc-unknown, no dangling VULNERABLE_TO)', () => {
+    const input = JSON.stringify({
+      'template-id': 'redis-unauth', type: 'tcp', host: '',
+      info: { name: 'Redis Unauth', severity: 'high', tags: 'redis' },
+    });
+    const result = parseNuclei(input);
+    // No identifiable target → nothing emitted (rather than a colliding svc-unknown).
+    expect(result.nodes).toHaveLength(0);
+    expect(result.edges).toHaveLength(0);
+  });
+
+  it('a non-HTTP result WITH a host:port emits a service + VULNERABLE_TO with a resolvable source', () => {
+    const input = JSON.stringify({
+      'template-id': 'redis-unauth', type: 'tcp', host: '10.10.10.5:6379',
+      info: { name: 'Redis Unauth', severity: 'high', tags: 'redis' },
+    });
+    const result = parseNuclei(input);
+    const vEdge = result.edges.find(e => e.properties.type === 'VULNERABLE_TO')!;
+    expect(result.nodes.some(n => n.id === vEdge.source && n.type === 'service')).toBe(true);
+  });
+
+  it('does not emit a subdomain node when the takeover target is an apex domain or an IP', () => {
+    const apex = parseNuclei(JSON.stringify({
+      'template-id': 'takeover-x', type: 'http', host: 'https://acme.com', 'matched-at': 'https://acme.com',
+      info: { name: 'Takeover', severity: 'high', tags: ['takeover'] },
+    }));
+    expect(apex.nodes.some(n => n.type === 'subdomain')).toBe(false);
+    const ip = parseNuclei(JSON.stringify({
+      'template-id': 'takeover-x', type: 'http', host: 'https://203.0.113.5', 'matched-at': 'https://203.0.113.5',
+      info: { name: 'Takeover', severity: 'high', tags: ['takeover'] },
+    }));
+    expect(ip.nodes.some(n => n.type === 'subdomain')).toBe(false);
+  });
 });
 
 // ============================================================

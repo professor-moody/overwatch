@@ -195,6 +195,11 @@ const VULN_TYPE_TO_CWE: Record<string, { cwe: string; name: string }> = {
   'missing_encryption': { cwe: 'CWE-311', name: 'Missing Encryption' },
   'information_disclosure': { cwe: 'CWE-200', name: 'Information Exposure' },
   'misconfiguration': { cwe: 'CWE-16', name: 'Configuration' },
+  // Subdomain takeover has no dedicated MITRE weakness; industry scanners
+  // (Tenable, Acunetix) classify it under CWE-16 (Configuration), matching the
+  // generic `misconfiguration` mapping above. (NOT CWE-350, which is about
+  // reliance on reverse-DNS for auth — an unrelated weakness.)
+  'subdomain_takeover': { cwe: 'CWE-16', name: 'Configuration' },
 };
 
 // Edge type → ATT&CK technique (pentest-relevant mappings)

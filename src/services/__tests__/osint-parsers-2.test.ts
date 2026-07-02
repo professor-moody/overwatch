@@ -52,6 +52,47 @@ describe('OSINT parsers — phase 2C-2', () => {
     expect(nodesOf(ptr).some(n => n.type === 'subdomain')).toBe(false);
   });
 
+  it('dnsx dangling CNAME to a claimable provider (no A/AAAA) → takeover_candidate + dns_records; no host node', () => {
+    const out = '{"host":"legacy.example.com","cname":["acme-legacy.s3.amazonaws.com."]}';
+    const f = parseDnsx(out, 'a');
+    const sub = nodesOf(f).find(n => n.type === 'subdomain') as AnyNode;
+    expect(sub?.takeover_candidate).toBe(true);
+    expect(sub?.dns_records).toEqual(['CNAME acme-legacy.s3.amazonaws.com']);
+    expect(sub?.resolved_ips).toBeUndefined();
+    expect(nodesOf(f).some(n => n.type === 'host')).toBe(false);
+  });
+
+  it('dnsx dangling CNAME to a NON-claimable (internal) target is NOT flagged', () => {
+    const out = '{"host":"legacy.example.com","cname":["oldbox.internal.example.com"]}';
+    const f = parseDnsx(out, 'a');
+    const sub = nodesOf(f).find(n => n.type === 'subdomain') as AnyNode;
+    expect(sub?.takeover_candidate).toBeUndefined();
+    expect(sub?.dns_records).toEqual(['CNAME oldbox.internal.example.com']);
+  });
+
+  it('dnsx S3 matcher: flags regional/website S3 endpoints but NOT an amazonaws.com lookalike', () => {
+    const regional = parseDnsx('{"host":"a.example.com","cname":["b.s3-website-us-east-1.amazonaws.com"]}', 'a');
+    expect((nodesOf(regional).find(n => n.type === 'subdomain') as AnyNode)?.takeover_candidate).toBe(true);
+    const dualstack = parseDnsx('{"host":"c.example.com","cname":["b.s3.us-east-1.amazonaws.com"]}', 'a');
+    expect((nodesOf(dualstack).find(n => n.type === 'subdomain') as AnyNode)?.takeover_candidate).toBe(true);
+    // Attacker-registrable lookalike domain — must NOT match the AWS S3 zone.
+    const lookalike = parseDnsx('{"host":"d.example.com","cname":["bucket.s3.evilamazonaws.com"]}', 'a');
+    expect((nodesOf(lookalike).find(n => n.type === 'subdomain') as AnyNode)?.takeover_candidate).toBeUndefined();
+    // Non-S3 AWS (ELB) is not re-claimable → not flagged.
+    const elb = parseDnsx('{"host":"e.example.com","cname":["x.elb.us-east-1.amazonaws.com"]}', 'a');
+    expect((nodesOf(elb).find(n => n.type === 'subdomain') as AnyNode)?.takeover_candidate).toBeUndefined();
+  });
+
+  it('dnsx CNAME that DOES resolve is not flagged (records kept, resolved_ips set)', () => {
+    const out = '{"host":"cdn.example.com","cname":["acme.netlify.app"],"a":["13.32.1.1"]}';
+    const f = parseDnsx(out, 'a');
+    const sub = nodesOf(f).find(n => n.type === 'subdomain') as AnyNode;
+    expect(sub?.takeover_candidate).toBeUndefined();
+    expect(sub?.dns_records).toEqual(['CNAME acme.netlify.app']);
+    expect(sub?.resolved_ips).toEqual(['13.32.1.1']);
+    expect(edgeTypes(f)).toContain('RESOLVES_TO');
+  });
+
   it('httpx JSONL → origin-level webapp node with merged tech + status', () => {
     const out = '{"url":"https://api.example.com","status_code":200,"title":"API","tech":["php"],"webserver":"nginx"}';
     const f = parseHttpx(out, 'a');
