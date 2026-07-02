@@ -60,6 +60,17 @@ describe('OSINT parsers — phase 2C-2', () => {
     expect(app?.technology).toBe('php, nginx');
     expect(app?.http_status).toBe(200);
     expect(String(app.id).startsWith('webapp-')).toBe(true);
+
+    // Now also models the backing host → RUNS → service(https) → HOSTS → webapp,
+    // so the discovered web target participates in scope + credential coverage.
+    const svc = nodesOf(f).find(n => n.type === 'service') as AnyNode;
+    expect(svc?.service_name).toBe('https');
+    expect(svc?.port).toBe(443);
+    const host = nodesOf(f).find(n => n.type === 'host') as AnyNode;
+    expect(host?.hostname).toBe('api.example.com');
+    const edges = (f as { edges: Array<{ properties: { type: string } }> }).edges;
+    expect(edges.some(e => e.properties.type === 'RUNS')).toBe(true);
+    expect(edges.some(e => e.properties.type === 'HOSTS')).toBe(true);
   });
 
   it('theHarvester JSON → email nodes + harvested subdomains (ip suffix + IP-literal stripped)', () => {

@@ -170,6 +170,31 @@ export function webappOriginId(url: string): string {
   }
 }
 
+/**
+ * Deterministic service node id for a URL (or bare `host:port`). Shared by the
+ * web parsers (nuclei, httpx, …) so they converge on the SAME `service` node
+ * for one origin rather than splitting per-parser.
+ */
+export function serviceIdFromUrl(urlStr: string): string {
+  try {
+    const url = new URL(urlStr);
+    const ip = url.hostname;
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+    return `svc-${hostId(ip).replace(/^host-/, '')}-${port}`;
+  } catch {
+    // Handle plain host:port (e.g. 10.10.10.5:6379 or [::1]:6379 from non-HTTP tools)
+    const bracketMatch = urlStr.match(/^\[([^\]]+)\]:(\d+)$/);
+    if (bracketMatch) {
+      return `svc-${hostId(bracketMatch[1]).replace(/^host-/, '')}-${bracketMatch[2]}`;
+    }
+    const hostPortMatch = urlStr.match(/^([\d.]+|[\w.-]+):(\d+)$/);
+    if (hostPortMatch) {
+      return `svc-${hostId(hostPortMatch[1]).replace(/^host-/, '')}-${hostPortMatch[2]}`;
+    }
+    return `svc-unknown-http`;
+  }
+}
+
 export function vulnerabilityId(identifier: string, targetNodeId: string): string {
   const idPart = normalizeKeyPart(identifier);
   const targetPart = normalizeKeyPart(targetNodeId);
