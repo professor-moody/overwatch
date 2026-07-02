@@ -55,6 +55,7 @@ import { EngagementManager } from './services/engagement-manager.js';
 import { registerRunBashTool } from './tools/run-bash.js';
 import { registerRunToolTool } from './tools/run-tool.js';
 import { registerTokenReplayTool } from './tools/token-replay.js';
+import { registerTestWebappCredentialTool } from './tools/test-webapp-credential.js';
 import { registerAwsPlaybookTool } from './tools/aws-playbook.js';
 import { registerGithubPlaybookTool } from './tools/github-playbook.js';
 import { registerCicdOidcPlaybookTool } from './tools/cicd-oidc-playbook.js';
@@ -205,6 +206,7 @@ export function registerAllTools(
   registerRunBashTool(s, deps.engine);
   registerRunToolTool(s, deps.engine);
   registerTokenReplayTool(s, deps.engine);
+  registerTestWebappCredentialTool(s, deps.engine);
   registerAwsPlaybookTool(s, deps.engine);
   registerGithubPlaybookTool(s, deps.engine);
   registerCicdOidcPlaybookTool(s, deps.engine);

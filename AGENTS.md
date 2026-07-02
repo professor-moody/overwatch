@@ -177,6 +177,7 @@ Dispatch assigns each agent a typed **archetype** (bounded tool surface + missio
 | `get_timeline` | Read-only temporal scrubber: what was true at time T | Time-travel debugging; phase reconstruction |
 | `explain_action` | Per-action introspection: linked frontier item, alternatives, validation, approval, outcome | Click-through from a graph node/edge |
 | `validate_token_credential` | Live token replay: confirm a token credential still works and emit VALID_FOR_APP / ASSUMES_ROLE edges | When a token-shaped credential lands and you want to confirm reachability (automatic for credential_test items when dashboard is running) |
+| `test_webapp_credential` | Test a credential against a web app (form / basic / bearer / cookie) and stamp AUTHENTICATED_AS + VALID_ON on success | For `credential_test` items on http/https services — ordinary web auth (non-IdP), where `validate_token_credential` doesn't apply |
 | `expand_aws_credential` | Generate AWS recon plan from a captured access key / STS session | As soon as an AWS credential lands |
 | `expand_github_credential` | Generate GitHub recon plan from a captured PAT or token | As soon as a GitHub credential lands |
 | `expand_oidc_capture` | Generate OIDC token replay plan for CI/CD-captured tokens | For GitHub Actions / GitLab CI / CircleCI OIDC tokens |

@@ -4,7 +4,37 @@ import {
   STREAM_HARD_CAP,
   STREAM_HEAD_KEEP,
   STREAM_TAIL_KEEP,
+  scrubSecretsFromText,
+  REDACTED_SECRET,
+  TRUNCATION_MARKER,
 } from '../_process-runner.js';
+
+describe('scrubSecretsFromText', () => {
+  it('replaces every occurrence of each secret', () => {
+    const out = scrubSecretsFromText('login as admin with hunter2 (hunter2)', ['hunter2']);
+    expect(out).not.toContain('hunter2');
+    expect(out.split(REDACTED_SECRET).length - 1).toBe(2);
+  });
+
+  it('scrubs the url-encoded form of a secret (reflected form body)', () => {
+    const out = scrubSecretsFromText('echo: p%40ss%20word', ['p@ss word', 'p%40ss%20word']);
+    expect(out).not.toContain('p%40ss%20word');
+  });
+
+  it('scrubs a secret split across the inline-truncation marker (no partial leak)', () => {
+    const secret = 'S3cr3tPassw0rd';
+    const straddled = secret.slice(0, 5) + TRUNCATION_MARKER + secret.slice(5); // head|marker|tail
+    const out = scrubSecretsFromText(`before ${straddled} after`, [secret]);
+    expect(out).not.toContain(secret.slice(0, 5)); // no head fragment
+    expect(out).not.toContain(secret.slice(5));    // no tail fragment
+    expect(out).toContain(TRUNCATION_MARKER);       // truncation signal preserved
+  });
+
+  it('is a no-op with no secrets or empty text', () => {
+    expect(scrubSecretsFromText('nothing here', [])).toBe('nothing here');
+    expect(scrubSecretsFromText('', ['x'])).toBe('');
+  });
+});
 
 describe('BoundedStreamBuffer', () => {
   it('retains everything below the hard cap', () => {

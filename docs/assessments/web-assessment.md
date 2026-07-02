@@ -98,9 +98,13 @@ How each credential type is tested:
 
     > **"Validate the captured Entra access token with `validate_token_credential`."**
 
-- **Generic web-app API tokens / session cookies** (a custom `api.acme.com` bearer, a `PHPSESSID`) → tested manually: Claude runs a scope-checked `curl` with the `Authorization`/`Cookie` header (secret auto-redacted from the activity log) and records the result. No dedicated replay tool for non-IdP APIs — see [below](#note-web-form-auth).
+- **Generic web-app API tokens / session cookies** (a custom `api.acme.com` bearer, a `PHPSESSID`) → the `test_webapp_credential` tool with `method: bearer` (or `cookie`). It sends the scope-checked request, redacts the secret from the activity log, and on success stamps `AUTHENTICATED_AS` + `VALID_ON` — retiring the coverage item and firing authenticated re-scan. Give it a `success` criterion (e.g. `body_contains` a field only an authenticated response has) since a bare `200` is ambiguous for APIs. Set `header_name` for a custom API-key header or cookie name.
 
-- **Web form logins (username/password)** → same driven-but-manual path: an authenticated `nuclei` scan or a `curl` login flow, result recorded. There's no one-tool web-form auth yet.
+    > **"Test the `api.acme.com` bearer token against `https://api.acme.com/v1/me`, success = body contains my username."**
+
+- **Web form logins (username/password)** → the same `test_webapp_credential` tool with `method: form`. Point it at the login endpoint (`login_path`) and give it a `success` criterion — a redirect target or a body string — so a 200-that-re-renders-the-login-page isn't mistaken for a win.
+
+    > **"Test `dev@acme.com` against `https://app.acme.com`, form POST to `/login`, success is a redirect to `/dashboard`."**
 
 - **Reused AD/service passwords** → the same plaintext credential is also tested against any in-scope non-web services (SMB/SSH/RDP) it pairs with — password-reuse falls out of the coverage matrix for free.
 
@@ -127,9 +131,14 @@ Inference rules chain these automatically (SQLi→RCE, login-form→spray-candid
 
 ---
 
-## Note: web-form auth {#note-web-form-auth}
+## Note: web auth tools {#note-web-form-auth}
 
-Overwatch surfaces web credential tests on the frontier and has a first-class replay tool for **IdP / cloud SSO tokens** (`validate_token_credential`, limited to Entra/Microsoft Graph, AWS STS, Okta, GitHub). But testing a **web-app form login** or a **generic (non-IdP) API token / session cookie** is still assembled from primitives — a scope-checked `nuclei`/`curl` step Claude drives and records. A dedicated `test_webapp_credential` tool (form-post / basic / bearer against any web app in one call) is a known enhancement, not yet built.
+Overwatch has two first-class credential-test tools for the web tier:
+
+- [`validate_token_credential`](../tools/token-credential.md) — live replay for **IdP / cloud SSO tokens** (Entra/Microsoft Graph, AWS STS, Okta, GitHub). Knows each provider's API; stamps `VALID_FOR_APP` / `ASSUMES_ROLE`.
+- [`test_webapp_credential`](../tools/test-webapp-credential.md) — **ordinary web auth** in one call: `form` (POST login), `basic`, `bearer` (incl. custom API-key headers), and `cookie` (session replay) against any in-scope web app. Stamps `AUTHENTICATED_AS` + `VALID_ON` on a confirmed success, retiring coverage and firing authenticated re-scan.
+
+Between them, form logins, generic API tokens, and session cookies are all tested with a single scope-checked call — no hand-assembled `curl` step required. (Deeper post-auth work — authenticated crawl with a session jar, headless-Chromium screenshots — is still driven manually.)
 
 ## See also
 

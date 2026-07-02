@@ -162,6 +162,7 @@ nav:
       - PostgreSQL: tools/postgres.md
     - Cloud & Tokens:
       - validate_token_credential: tools/token-credential.md
+      - test_webapp_credential: tools/test-webapp-credential.md
       - Cloud Playbooks: tools/cloud-playbooks.md
     - Remediation:
       - correct_graph: tools/correct-graph.md

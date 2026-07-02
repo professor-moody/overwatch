@@ -37,6 +37,9 @@ const TARGET_FACING_TECHNIQUES = new Set([
   // APIs. Quiet by default but always target-facing — the curl
   // invocation always carries an explicit endpoint URL.
   'token_replay',
+  // Web track: single authenticated request against a web app / API to
+  // confirm a credential. Always target-facing — carries an explicit URL.
+  'web_credential_test',
 ]);
 
 // Phase D: network-capable binaries that aren't unambiguously target-facing
@@ -467,8 +470,57 @@ export const STREAM_TAIL_KEEP = 4 * 1024 * 1024;       // 4 MiB tail
  * risking the MCP server's heap on a runaway capture.
  */
 export const EVIDENCE_PARSE_MAX_BYTES = 50 * 1024 * 1024; // 50 MiB
-const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
+export const TRUNCATION_MARKER = '\n…[output truncated; full output stored in evidence]…\n';
 const HARD_CAP_DROPPED_MARKER = '\n…[output exceeded in-memory cap; middle bytes dropped]…\n';
+
+/** Replacement written in place of a caller-supplied secret reflected in captured output. */
+export const REDACTED_SECRET = '<redacted:reflected-secret>';
+
+/**
+ * Scrub caller-supplied secret strings from captured stdout/stderr — for tools
+ * (token replay, web credential test) that submit a secret and don't want a
+ * target that reflects it back to surface the plaintext in the parser input,
+ * the tool response, or a parser-exception echo. Also catches a secret split
+ * across an inline-truncation marker (head|marker|tail), which a plain
+ * whole-string replace would miss. Operates on the already-materialized text,
+ * so it doesn't affect the stored evidence blob (which reports redact
+ * separately).
+ */
+export function scrubSecretsFromText(text: string, secrets: string[] | undefined): string {
+  if (!secrets || secrets.length === 0 || !text) return text;
+  let out = text;
+  for (const secret of secrets) {
+    if (!secret) continue;
+    if (out.includes(secret)) out = out.split(secret).join(REDACTED_SECRET);
+    // Catch a secret split across a truncation marker (head|marker|tail). Uses an
+    // O(len) overlap test (no O(len²) per-prefix scan) and handles every marker
+    // occurrence (combined streams can carry more than one).
+    for (const marker of [TRUNCATION_MARKER, HARD_CAP_DROPPED_MARKER]) {
+      let from = 0;
+      for (;;) {
+        const idx = out.indexOf(marker, from);
+        if (idx === -1) break;
+        const before = out.slice(0, idx);
+        const after = out.slice(idx + marker.length);
+        // The secret can straddle by at most len-1 chars on each side.
+        const tail = before.slice(Math.max(0, before.length - (secret.length - 1)));
+        const head = after.slice(0, secret.length - 1);
+        const pos = (tail + head).indexOf(secret);
+        // A real straddle spans the join point (tail | head).
+        if (pos !== -1 && pos < tail.length && pos + secret.length > tail.length) {
+          const headFrag = tail.length - pos;             // secret chars at end of `before`
+          const tailFrag = secret.length - headFrag;      // secret chars at start of `after`
+          const prefix = before.slice(0, before.length - headFrag);
+          out = prefix + REDACTED_SECRET + marker + after.slice(tailFrag);
+          from = prefix.length + REDACTED_SECRET.length + marker.length;
+        } else {
+          from = idx + marker.length;
+        }
+      }
+    }
+  }
+  return out;
+}
 
 // Per-technique noise defaults (0–1 ratio, same scale as opsec.max_noise).
 // Used only when the caller does not provide an explicit noise_estimate;
@@ -511,6 +563,9 @@ const TECHNIQUE_NOISE_DEFAULTS: Record<string, number> = {
   asreproast: 0.2,
   // Track D: token replay is a single quiet HTTPS call per invocation.
   token_replay: 0.05,
+  // Web track: one authenticated request; a failed login can trip account
+  // lockout / WAF, so slightly noisier than a read-only token replay.
+  web_credential_test: 0.15,
 };
 const UNKNOWN_TECHNIQUE_DEFAULT_NOISE = 0.1;
 
@@ -777,6 +832,21 @@ export interface InstrumentedProcessOpts {
   target_url?: string;
   cloud_resource?: string;
   validate?: boolean;
+  /**
+   * When true, the raw `args` array is NOT written to the action-lifecycle
+   * events (details.args) or the tool response — only the caller-supplied
+   * `command_repr` (which the caller must pre-redact) represents the command.
+   * Set this (as test_webapp_credential does) for tools whose argv carries a
+   * secret so the plaintext secret never lands in the persisted activity log.
+   * The real argv is still used to spawn the process.
+   */
+  redact_args_in_log?: boolean;
+  /**
+   * Secret strings to scrub from the captured stdout/stderr before they feed
+   * the parser, the tool response, or a parser-exception echo — defends against
+   * a target that reflects a submitted credential back in its response body.
+   */
+  redact_secrets?: string[];
   /** Operator override: skip the fail-closed check for unverified host/service/share targets. */
   allow_unverified_scope?: boolean;
   /** Local operator infrastructure helper command (listeners, bridges, port cleanup). */
@@ -845,10 +915,18 @@ export async function runInstrumentedProcess(
     parser_context,
     parse_stream,
     noise_estimate: noiseOverride,
+    redact_args_in_log,
+    redact_secrets,
     allow_unverified_scope,
     operator_infra,
     abortSignal,
   } = opts;
+
+  // When redaction is requested the raw argv (which may carry a secret) is
+  // withheld from the persisted events + tool response; command_repr (which
+  // the caller pre-redacts) is the sole command representation. The real
+  // `args` is still passed to spawn().
+  const loggedArgs = redact_args_in_log ? undefined : args;
 
   // Auto-register a synthetic running task for this agent_id if none
   // exists. Lets sub-agents that bypass `register_agent` /
@@ -1238,7 +1316,7 @@ export async function runInstrumentedProcess(
     details: {
       command: command_repr,
       binary,
-      args,
+      args: loggedArgs,
       cwd,
       timeout_ms: effectiveTimeout,
       invoking_tool: opts.invoking_tool,
@@ -1287,11 +1365,20 @@ export async function runInstrumentedProcess(
     timeout_ms: effectiveTimeout,
     stdoutSink,
     stderrSink,
-    onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', c),
-    onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', c),
+    // Scrub reflected secrets from the live dashboard tee too (per-chunk; a
+    // secret straddling a chunk boundary in the live stream is a documented
+    // residual — the persisted response/parser paths scrub the full text).
+    onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
+    onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
   });
   const stdoutInfo = joinAndCap(result.stdout, STREAM_INLINE_CAP);
   const stderrInfo = joinAndCap(result.stderr, STREAM_INLINE_CAP);
+  // Scrub caller-supplied secrets from the text that reaches the tool response
+  // (the stored evidence blob is redacted separately at report time).
+  if (redact_secrets?.length) {
+    stdoutInfo.text = scrubSecretsFromText(stdoutInfo.text, redact_secrets);
+    stderrInfo.text = scrubSecretsFromText(stderrInfo.text, redact_secrets);
+  }
 
   // ---- 4. Finalize evidence ----
   // The streaming sinks always emit a manifest record (so action lifecycle
@@ -1377,7 +1464,7 @@ export async function runInstrumentedProcess(
       reason: failureReason,
       command: command_repr,
       binary,
-      args,
+      args: loggedArgs,
       invoking_tool: opts.invoking_tool,
       operator_infra: operator_infra || undefined,
     },
@@ -1511,6 +1598,12 @@ export async function runInstrumentedProcess(
           ? (fullStdout.trim().length > 0 ? 'stdout' : 'stderr')
           : stream;
 
+      // NB: parserInput is deliberately NOT scrubbed here. A secret substring
+      // that collides with a parser's own control tokens (e.g. a short/numeric
+      // cred_value overlapping test_webapp_credential's trailing status marker)
+      // would corrupt parsing. Parsers that carry a secret (test_webapp_credential)
+      // must not emit it into their finding, and the response stdout/stderr the
+      // operator sees is scrubbed above — so the plaintext still can't surface.
       const finding = parseOutput(parse_with, parserInput, agent_id, ctx);
       if (!finding) {
         parse_summary = { error: `Parser '${parse_with}' returned no finding` };
@@ -1638,7 +1731,7 @@ export async function runInstrumentedProcess(
         action_id: normalizedActionId,
         executed: true,
         binary,
-        args,
+        args: loggedArgs,
         exit_code: result.exit_code,
         signal: result.signal,
         duration_ms: result.duration_ms,
