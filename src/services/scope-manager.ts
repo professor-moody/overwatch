@@ -254,6 +254,16 @@ export function previewScopeChange(
     if (!wasIn && nowIn) entering++;
     if (wasIn && !nowIn) leaving++;
   });
+  // Cold-store hosts that updateScope would PROMOTE also enter scope — count
+  // them here too, or the preview undercounts what the apply will do. (Mirrors
+  // the cold-store promotion loop in updateScope; cold hosts only enter, never
+  // leave — they are already out of scope.)
+  host.ctx.coldStore.forEach((record) => {
+    if (!record.ip) return;
+    const wasIn = isIpInScope(record.ip, before.cidrs, before.exclusions);
+    const nowIn = isIpInScope(record.ip, after.cidrs, after.exclusions);
+    if (!wasIn && nowIn) entering++;
+  });
 
   const suggestions = collectScopeSuggestions(host);
   const resolved: string[] = [];

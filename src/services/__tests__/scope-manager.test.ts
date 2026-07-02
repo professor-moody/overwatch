@@ -411,6 +411,20 @@ describe('scope-manager', () => {
       expect(ctx.config.scope.cidrs).toEqual(cidrsBefore);
     });
 
+    it('counts COLD-STORE hosts the change would promote (preview == apply)', () => {
+      const graph = makeGraph();
+      addHost(graph, 'host-live', '10.9.9.5'); // one live host entering
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const host = makeHost(graph, ctx);
+      // A cold-store host that also enters scope on this change — updateScope
+      // would promote it, so the preview must count it too (was undercounted).
+      ctx.coldStore.add({ id: 'cold-host', type: 'host', label: '10.9.9.9', ip: '10.9.9.9', discovered_at: now, last_seen_at: now, alive: true });
+
+      const preview = previewScopeChange(host, { add_cidrs: ['10.9.9.0/24'] });
+      // 1 live + 1 cold = 2 entering.
+      expect(preview.nodes_entering_scope).toBe(2);
+    });
+
     it('counts nodes leaving scope when removing a CIDR', () => {
       const graph = makeGraph();
       addHost(graph, 'host-10-10-10-1', '10.10.10.1');

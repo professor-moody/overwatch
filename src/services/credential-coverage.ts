@@ -84,14 +84,21 @@ export class CredentialCoverageTracker {
           continue;
         }
 
-        // Skip if credential's domain doesn't match target's domain (cross-domain noise)
-        if (cred.domain && target.domain && cred.domain !== target.domain) continue;
+        // Skip if credential's domain doesn't match target's domain (cross-domain
+        // noise). Compare case-INSENSITIVELY — cred domains arrive raw from
+        // hashcat/responder (often uppercase NetBIOS) while host domain_name is
+        // lowercased, so a strict `!==` dropped exactly the in-domain pairs that
+        // matter most. (Aligns with cross-tier-inference.ts / objective-manager.ts,
+        // which already lowercase on compare. Does not resolve NetBIOS-vs-FQDN.)
+        const credDomain = cred.domain?.toLowerCase();
+        const targetDomain = target.domain?.toLowerCase();
+        if (credDomain && targetDomain && credDomain !== targetDomain) continue;
 
         const credWeight = CRED_TYPE_WEIGHT[getCredentialMaterialKind(cred.node) || ''] ?? 0.5;
         const svcWeight = SERVICE_WEIGHT[target.service_name || ''] ?? 0.5;
         const hops = hopsToObjective ? (hopsToObjective(target.id) ?? 10) : 10;
         const hopsFactor = Math.max(0.1, 1 - (hops / 20));
-        const domainBoost = cred.domain && cred.domain === target.domain ? 1.3 : 1.0;
+        const domainBoost = credDomain && credDomain === targetDomain ? 1.3 : 1.0;
 
         const priority = parseFloat(
           (credWeight * svcWeight * hopsFactor * domainBoost * 10).toFixed(2)

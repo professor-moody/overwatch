@@ -384,6 +384,22 @@ describe('CredentialCoverageTracker', () => {
       expect(untestedTargetIds).not.toContain('svc-smb-o');
     });
 
+    it('treats a case-mismatched domain as the SAME domain (uppercase cred vs lowercase host)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'user-a', { type: 'user', username: 'jdoe', domain_name: 'acme.local' });
+      // cred_domain arrives UPPERCASE (NetBIOS/hashcat); host domain_name is lowercase.
+      addNode(graph, 'cred-a', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true, cred_domain: 'ACME.LOCAL' });
+      addEdge(graph, 'user-a', 'cred-a', 'OWNS_CRED');
+      addNode(graph, 'host-acme', { type: 'host', alive: true, ip: '10.10.10.5', domain_name: 'acme.local' });
+      addNode(graph, 'svc-smb-a', { type: 'service', service_name: 'smb', port: 445 });
+      addEdge(graph, 'host-acme', 'svc-smb-a', 'RUNS');
+
+      const { tracker } = buildTracker(graph);
+      const result = tracker.compute();
+      // The in-domain pair must NOT be dropped as cross-domain over a case diff.
+      expect(result.untested_pairs.map(p => p.target_id)).toContain('svc-smb-a');
+    });
+
     it('does not duplicate credential_test when inferred_edge already exists for same pair', () => {
       const graph = makeGraph();
       addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_usable_for_auth: true, label: 'jdoe:pass' });

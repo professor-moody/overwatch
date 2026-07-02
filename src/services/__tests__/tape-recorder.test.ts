@@ -133,4 +133,16 @@ describe('tape-recorder TapeWriter + processChunk', () => {
     const lines = readFileSync(tapePath, 'utf-8').trim().split('\n');
     expect(lines.length).toBe(1);
   });
+
+  it('absorbs a stream error instead of crashing the process', () => {
+    const w = new TapeWriter(tapePath);
+    // With no 'error' listener, emitting 'error' on the stream would throw as an
+    // uncaught exception (crashing the proxy). The constructor's handler absorbs it.
+    const stream = (w as unknown as { stream: { emit: (e: string, err: Error) => boolean } }).stream;
+    expect(() => stream.emit('error', new Error('EBADF'))).not.toThrow();
+    expect(w.error).toBeInstanceOf(Error);
+    // Further writes become safe no-ops once the writer has failed.
+    expect(() => w.write({ ts: 't', direction: 'client_to_server', parsed: { id: 3 } })).not.toThrow();
+    expect(w.count).toBe(0);
+  });
 });
