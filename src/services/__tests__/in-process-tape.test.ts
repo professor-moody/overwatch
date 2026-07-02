@@ -63,6 +63,15 @@ describe('InProcessTapeController', () => {
     expect(s.path).toBeUndefined();
   });
 
+  it('surfaces a writer stream error in getStatus (silent tape loss is observable)', () => {
+    const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
+    c.enable();
+    // Simulate the underlying WriteStream failing mid-session (e.g. ENOSPC).
+    const writer = (c as unknown as { writer: { stream: { emit: (e: string, err: Error) => boolean } } }).writer;
+    writer.stream.emit('error', new Error('ENOSPC: no space left'));
+    expect(c.getStatus().error).toContain('ENOSPC');
+  });
+
   it('passes frames through transparently when disabled', async () => {
     const c = new InProcessTapeController(engine, { defaultDir: tmpDir });
     const fake = new FakeTransport();

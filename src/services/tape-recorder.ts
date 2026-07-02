@@ -91,10 +91,24 @@ export class TapeWriter {
   private stream: WriteStream;
   private closed = false;
   private writeCount = 0;
+  private streamError?: Error;
 
   constructor(public readonly path: string) {
     mkdirSync(dirname(path), { recursive: true });
     this.stream = createWriteStream(path, { flags: 'a' });
+    // A WriteStream with no 'error' listener throws its 'error' event as an
+    // UNCAUGHT exception, crashing the proxy process. Handle it: record the
+    // failure and mark the writer closed so further writes become no-ops
+    // (tape recording is best-effort — a bad FD must not take down the proxy).
+    this.stream.on('error', (err: Error) => {
+      this.streamError = err;
+      this.closed = true;
+    });
+  }
+
+  /** The stream error, if the tape writer has failed. */
+  get error(): Error | undefined {
+    return this.streamError;
   }
 
   write(record: TapeRecord): void {

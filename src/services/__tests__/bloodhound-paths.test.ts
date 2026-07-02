@@ -68,6 +68,30 @@ describe('BloodHound Path Enricher', () => {
       expect(bob!.reason).toContain('Member of');
     });
 
+    it('journals each HVT tag via merge_node_attrs so it is WAL-durable', () => {
+      const graph = makeGraph();
+      addNode(graph, 'grp-da', { type: 'group', label: 'Domain Admins', sid: 'S-1-5-21-1234-512' });
+      addNode(graph, 'user-bob', { type: 'user', label: 'bob' });
+      addEdge(graph, 'user-bob', 'grp-da', 'MEMBER_OF');
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const journaled: Array<{ id?: unknown; hvt?: unknown; hvt_reason?: unknown }> = [];
+      const orig = ctx.journalMutation.bind(ctx);
+      ctx.journalMutation = ((type: string, payload: Record<string, unknown>, sid?: string) => {
+        if (type === 'merge_node_attrs') journaled.push((payload as { props: Record<string, unknown> }).props);
+        return orig(type as never, payload, sid);
+      }) as typeof ctx.journalMutation;
+
+      const enricher = new BloodHoundPathEnricher(ctx);
+      const hvts = enricher.computeHighValueTargets();
+
+      expect(hvts.length).toBeGreaterThan(0);
+      // Enrichment runs once post-ingest (not on load), so each tag MUST be
+      // journaled or it is lost on crash-before-snapshot.
+      const hvtMerges = journaled.filter(p => p.hvt === true);
+      expect(hvtMerges.length).toBe(hvts.length);
+      expect(hvtMerges.every(p => typeof p.id === 'string' && !!p.hvt_reason)).toBe(true);
+    });
+
     it('tags users with DCSync rights as HVT', () => {
       const graph = makeGraph();
       addNode(graph, 'user-evil', { type: 'user', label: 'evil-admin' });

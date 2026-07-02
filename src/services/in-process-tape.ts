@@ -59,6 +59,9 @@ export interface TapeStatus {
   started_at?: string;
   /** What caused this tape recording session to start. */
   started_by?: TapeStartSource;
+  /** Set when the tape writer's stream failed (e.g. ENOSPC) — recording is
+   *  silently stopped, so surface it here rather than leaving it invisible. */
+  error?: string;
 }
 
 function autoTapePath(dir: string, sessionId?: string): string {
@@ -97,6 +100,8 @@ export class InProcessTapeController {
       frame_count: this.writer?.count ?? 0,
       started_at: this.startedAt,
       started_by: this.currentStartedBy,
+      // Surface a writer stream failure so silent tape loss is observable.
+      ...(this.writer?.error ? { error: this.writer.error.message } : {}),
     };
   }
 

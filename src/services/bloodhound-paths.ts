@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { EngineContext } from './engine-context.js';
-import type { EdgeType, NodeProperties } from '../types.js';
+import type { EdgeType, EdgeProperties, NodeProperties } from '../types.js';
 import type { PathAnalyzer, PathResult, PathOptimize } from './path-analyzer.js';
 
 // --- High-Value Target Identification ---
@@ -230,6 +230,11 @@ export class BloodHoundPathEnricher {
 
       if (reasons.length > 0) {
         const reason = reasons.join('; ');
+        // Journal the tag so it is WAL-durable (this enrichment runs once
+        // post-ingest, not on load, so a raw mergeNodeAttributes would be lost
+        // on crash-before-snapshot). Mirrors the graph-engine merge_node_attrs
+        // pattern; replay re-applies via the guarded mutator.
+        this.ctx.journalMutation('merge_node_attrs', { props: { id, hvt: true, hvt_reason: reason } });
         this.ctx.graph.mergeNodeAttributes(id, { hvt: true, hvt_reason: reason });
         hvts.push({ node_id: id, reason });
         taggedIds.add(id);
@@ -242,15 +247,21 @@ export class BloodHoundPathEnricher {
       if (attrs.type !== 'group') continue;
 
       this.ctx.graph.forEachInEdge(hvt.node_id, (e: string, _ea, source: string) => {
+        // Only the edge-attr read is best-effort (a malformed edge is skipped).
+        // The journal + merge stay OUTSIDE the swallow so a WAL-write failure
+        // propagates like the first HVT pass, rather than silently degrading the
+        // tag back to in-memory-only.
+        let ep: EdgeProperties;
         try {
-          const ep = this.ctx.graph.getEdgeAttributes(e);
-          if (ep.type === 'MEMBER_OF' && !taggedIds.has(source)) {
-            const memberReason = `Member of ${attrs.label || hvt.node_id}`;
-            this.ctx.graph.mergeNodeAttributes(source, { hvt: true, hvt_reason: memberReason });
-            hvts.push({ node_id: source, reason: memberReason });
-            taggedIds.add(source);
-          }
-        } catch { /* skip */ }
+          ep = this.ctx.graph.getEdgeAttributes(e) as EdgeProperties;
+        } catch { return; }
+        if (ep.type === 'MEMBER_OF' && !taggedIds.has(source)) {
+          const memberReason = `Member of ${attrs.label || hvt.node_id}`;
+          this.ctx.journalMutation('merge_node_attrs', { props: { id: source, hvt: true, hvt_reason: memberReason } });
+          this.ctx.graph.mergeNodeAttributes(source, { hvt: true, hvt_reason: memberReason });
+          hvts.push({ node_id: source, reason: memberReason });
+          taggedIds.add(source);
+        }
       });
     }
 
