@@ -72,8 +72,18 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
   };
 
   // Parse certipy find output (JSON format)
+  let jsonParsed = false;
   try {
     const data = JSON.parse(output);
+    jsonParsed = true;
+
+    // A bare scalar / `null` JSON document has no certipy structure — return an
+    // empty finding (consistent with `{}`/`[]`) instead of dereferencing it
+    // below and tripping the post-parse re-throw. That re-throw is for genuine
+    // node/edge CONSTRUCTION bugs, not unhandled top-level input shapes.
+    if (data === null || typeof data !== 'object') {
+      return { id: uuidv4(), agent_id: agentId, timestamp: new Date().toISOString(), nodes, edges };
+    }
 
     // S3-A3: shape sanity check. Certipy 4.x/5.x both produce JSON with
     // top-level "Certificate Authorities" and/or "Certificate Templates"
@@ -336,7 +346,13 @@ export function parseCertipy(output: string, agentId: string = 'certipy-parser')
         }
       }
     }
-  } catch {
+  } catch (err) {
+    // A failure AFTER JSON.parse succeeded is a real node/edge construction bug,
+    // NOT "text output" — re-throw so the dispatcher surfaces it as a parse
+    // error instead of silently discarding the structured graph and falling
+    // back to the lossy line-based text path (which only extracts template
+    // names).
+    if (jsonParsed) throw err;
     // Not JSON — try line-based parsing for certipy text output
     const lines = output.split('\n');
     for (const line of lines) {

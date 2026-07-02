@@ -231,8 +231,14 @@ export function parseEvilginx(output: string, agentId: string = 'evilginx-parser
       }
     }
 
-    // OAuth / OIDC tokens captured during the flow.
-    const tokens = (session.tokens ?? session.body_tokens ?? {}) as Record<string, unknown>;
+    // OAuth / OIDC tokens captured during the flow. Merge BOTH sources — a
+    // present-but-empty `tokens: {}` must not shadow populated `body_tokens`
+    // (nullish `??` only guards null/undefined, so it dropped body_tokens
+    // whenever `tokens` existed as an empty object). `tokens` wins per key.
+    const tokens: Record<string, unknown> = {};
+    for (const src of [session.body_tokens, session.tokens]) {
+      if (src && typeof src === 'object') Object.assign(tokens, src);
+    }
     for (const [tokenName, tokenVal] of Object.entries(tokens)) {
       if (typeof tokenVal !== 'string' || tokenVal.length === 0) continue;
       // F4: decode JWT claims so cred_audience / cred_issuer /

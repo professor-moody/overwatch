@@ -30,67 +30,50 @@ export function parseResponder(output: string, agentId: string = 'responder-pars
   const seenNodes = new Set<string>();
   const now = new Date().toISOString();
 
-  // Field accumulator keyed by client IP — collects fields as they appear
-  const pending = new Map<string, {
-    clientIp?: string;
-    domain?: string;
-    username?: string;
-    hash?: string;
-    version?: 'ntlmv2' | 'ntlmv1';
-  }>();
-
   const completed: ResponderStanza[] = [];
 
+  // Responder prints each capture as a CONTIGUOUS block: the `Client` line
+  // (which carries the IP) is immediately followed by that capture's `Username`
+  // and `Hash` lines (which do NOT carry the IP). So correlate POSITIONALLY —
+  // a `Client` line opens the current stanza and the following Username/Hash
+  // attach to it. The old approach scanned a Map "for the most recent entry
+  // missing that field", which is Map INSERTION order, not recency, so under
+  // concurrent captures it mis-paired a hash with the wrong client/user.
+  let current: { clientIp: string; version: 'ntlmv2' | 'ntlmv1'; domain?: string; username?: string } | undefined;
+
   for (const line of output.split('\n')) {
-    // NTLMv2 or NTLMv1 Client line
+    // NTLMv2 or NTLMv1 Client line — opens a fresh stanza.
     const clientMatch = line.match(/NTLM(v[12])-SSP Client\s*:\s*(\S+)/i);
     if (clientMatch) {
       const version = clientMatch[1].toLowerCase() === 'v2' ? 'ntlmv2' as const : 'ntlmv1' as const;
-      const clientIp = clientMatch[2];
-      const key = `${clientIp}-${version}`;
-      if (!pending.has(key)) pending.set(key, {});
-      const p = pending.get(key)!;
-      p.clientIp = clientIp;
-      p.version = version;
+      current = { clientIp: clientMatch[2], version };
       continue;
     }
 
-    // Username line
+    // Username line — belongs to the current stanza.
     const userMatch = line.match(/NTLM(?:v[12])-SSP Username\s*:\s*(.+)/i);
     if (userMatch) {
       const parsed = parseUsername(userMatch[1].trim());
-      if (parsed) {
-        // Find the most recent pending entry missing a username
-        for (const [, p] of pending) {
-          if (!p.username && p.clientIp) {
-            p.domain = parsed.domain;
-            p.username = parsed.username;
-            break;
-          }
-        }
+      if (parsed && current && !current.username) {
+        current.domain = parsed.domain;
+        current.username = parsed.username;
       }
       continue;
     }
 
-    // Hash line
+    // Hash line — completes the current stanza.
     const hashMatch = line.match(/NTLM(?:v[12])-SSP Hash\s*:\s*(.+)/i);
     if (hashMatch) {
       const hash = hashMatch[1].trim();
-      // Find the most recent pending entry missing a hash
-      for (const [key, p] of pending) {
-        if (!p.hash && p.clientIp && p.username) {
-          p.hash = hash;
-          // Stanza complete
-          completed.push({
-            clientIp: p.clientIp,
-            domain: p.domain!,
-            username: p.username,
-            hash: p.hash,
-            version: p.version || 'ntlmv2',
-          });
-          pending.delete(key);
-          break;
-        }
+      if (current && current.username) {
+        completed.push({
+          clientIp: current.clientIp,
+          domain: current.domain!,
+          username: current.username,
+          hash,
+          version: current.version,
+        });
+        current = undefined;
       }
       continue;
     }
