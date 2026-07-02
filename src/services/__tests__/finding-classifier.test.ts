@@ -88,6 +88,8 @@ describe('FindingClassifier mapping tables', () => {
   it('VULN_TO_ATTACK maps vuln types to techniques', () => {
     expect(VULN_TO_ATTACK['sqli']).toBeDefined();
     expect(VULN_TO_ATTACK['ssrf']).toBeDefined();
+    // A leaked JS secret classifies as "Credentials In Files", not the generic fallback.
+    expect(VULN_TO_ATTACK['hardcoded_secret']).toEqual({ id: 'T1552.001', name: 'Credentials In Files' });
   });
 
   it('CATEGORY_TO_ATTACK has fallbacks for all categories', () => {

@@ -60,6 +60,7 @@ export { parseAmass } from './amass.js';
 export { parseDnsx } from './dnsx.js';
 export { parseHttpx } from './httpx.js';
 export { parseTestWebappCredential } from './test-webapp-credential.js';
+export { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
@@ -118,6 +119,7 @@ import { parseAmass } from './amass.js';
 import { parseDnsx } from './dnsx.js';
 import { parseHttpx } from './httpx.js';
 import { parseTestWebappCredential } from './test-webapp-credential.js';
+import { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -245,6 +247,10 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'theharvester': parseTheHarvester,
   // Web track: test_webapp_credential live auth-attempt response parser.
   'test_webapp_credential': parseTestWebappCredential,
+  // Web track: JS secret + endpoint scanners.
+  'trufflehog': parseTrufflehog,
+  'secretfinder': parseSecretfinder,
+  'linkfinder': parseLinkfinder,
 };
 
 export function getSupportedParsers(): string[] {
@@ -279,6 +285,8 @@ export const PARSER_ACCEPTABLE_EXIT_CODES: Record<string, ReadonlySet<number>> =
   dirbuster: new Set([0, 1]),
   nikto: new Set([0, 1]),
   wpscan: new Set([0, 4]),
+  // trufflehog exits 183 when it finds verified secrets (with --fail).
+  trufflehog: new Set([0, 183]),
 };
 
 export function isAcceptableParserExit(toolName: string, exitCode: number | null): boolean {

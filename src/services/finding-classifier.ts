@@ -189,6 +189,7 @@ const VULN_TYPE_TO_CWE: Record<string, { cwe: string; name: string }> = {
   'deserialization': { cwe: 'CWE-502', name: 'Insecure Deserialization' },
   'auth_bypass': { cwe: 'CWE-287', name: 'Improper Authentication' },
   'default_credentials': { cwe: 'CWE-798', name: 'Hard-coded Credentials' },
+  'hardcoded_secret': { cwe: 'CWE-798', name: 'Hard-coded Credentials' },
   'weak_password': { cwe: 'CWE-521', name: 'Weak Password Requirements' },
   'cleartext_storage': { cwe: 'CWE-256', name: 'Plaintext Storage of Password' },
   'cleartext_transmission': { cwe: 'CWE-319', name: 'Cleartext Transmission' },
@@ -267,6 +268,7 @@ const VULN_TO_ATTACK: Record<string, AttackTechnique> = {
   'lfi':        { id: 'T1005', name: 'Data from Local System' },
   'path_traversal': { id: 'T1005', name: 'Data from Local System' },
   'default_credentials': { id: 'T1078.001', name: 'Default Accounts' },
+  'hardcoded_secret': { id: 'T1552.001', name: 'Credentials In Files' },
 };
 
 // Finding category → ATT&CK technique fallback

@@ -43,6 +43,9 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **dnsx** | `dnsx` | `dnsx -json` JSON-lines | Subdomain + domain + resolved host nodes, `SUBDOMAIN_OF` / `RESOLVES_TO` edges (light-active). Captures `CNAME` → `dns_records`; a dangling CNAME (no A/AAAA) to a claimable provider flags `takeover_candidate` |
 | **httpx** | `httpx` | `httpx -json` JSON-lines | Webapp nodes with detected technology + HTTP status (light-active) |
 | **theHarvester** | `theharvester` | theHarvester JSON (`-f`) | Email nodes + harvested subdomain/domain nodes (passive OSINT) |
+| **trufflehog** | `trufflehog` | `trufflehog filesystem … --json` JSON-lines (v3) | `credential` nodes for leaked secrets (`cred_evidence_kind: dump`; verified ⇒ usable), attached to the source webapp via a `hardcoded_secret` vuln + `EXPLOITS`. trufflehog scans files/git — download the JS first, then pass the app URL as `source_host` |
+| **secretfinder** | `secretfinder` | Normalized secrets JSON `{url, results:[{name, matches}]}` | Same node/edge shape as trufflehog, keyed off the per-record `url`. SecretFinder has no native JSON — map its output to this shape (or use `ingest_json`) |
+| **LinkFinder** | `linkfinder` | `-o cli` plaintext (one endpoint per line); also a JSON array / `{endpoints:[…]}` | `api_endpoint` nodes (`path`, query/fragment stripped) + `HAS_ENDPOINT` from the source webapp (sets `has_api`); off-origin links are dropped. Pass the scanned URL as `source_host` |
 
 (Plus cloud/identity parsers — `pacu`, `scoutsuite`, `cloudfox`, `roadrecon`, `okta`, the `msgraph-*` / `gh-api-*` / `token_replay_*` families, and more. Use `list_parsers: true` for the authoritative live list.)
 

@@ -121,6 +121,9 @@ Drive the scanners and ingest everything through `parse_output`:
 - `sqlmap` on a confirmed injection → dumps **credential** nodes (feed them back to step 4 — spray loop)
 - `wpscan` → WordPress users + plugin/theme CVEs
 - `testssl.sh` → TLS/cert weaknesses
+- `trufflehog` over the app's JS → **credential** nodes for hardcoded secrets (verified ones become spray-loop candidates); LinkFinder → `api_endpoint` nodes. trufflehog scans files/git, so pull the bundles down first (e.g. `wget`/`curl`), scan the directory, and pass the app URL as `source_host` so findings attach to the webapp.
+
+    > **"Download app.acme.com's JS bundles, run `trufflehog filesystem` over them and ingest with source_host https://app.acme.com; then LinkFinder for endpoints."**
 
 Inference rules chain these automatically (SQLi→RCE, login-form→spray-candidate, admin-panel default-creds, authenticated-rescan). Ask for a path when you want the picture:
 
