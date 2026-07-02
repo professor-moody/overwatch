@@ -152,6 +152,29 @@ describe('parseRoadrecon', () => {
     const mfaEdges = finding.edges.filter(e => e.properties.type === 'MFA_REQUIRED_FOR');
     expect(mfaEdges.length).toBe(1);
   });
+
+  it('honors excludeApplications under an `All` policy (excluded app not MFA-stamped)', () => {
+    const bundle = {
+      tenant: { tenantId: 'tenant-1' },
+      applications: [
+        { appId: 'app-in', displayName: 'Included App' },
+        { appId: 'app-out', displayName: 'Excluded App' },
+      ],
+      conditionalaccess: [
+        {
+          displayName: 'MFA for all except one',
+          grantControls: { builtInControls: ['mfa'] },
+          conditions: { applications: { includeApplications: ['All'], excludeApplications: ['app-out'] } },
+        },
+      ],
+    };
+    const finding = parseRoadrecon(JSON.stringify(bundle));
+    // `All` over 2 apps minus 1 excluded → exactly one MFA edge + one stamped app.
+    const mfaEdges = finding.edges.filter(e => e.properties.type === 'MFA_REQUIRED_FOR');
+    expect(mfaEdges.length).toBe(1);
+    const stamped = finding.nodes.filter(n => n.type === 'idp_application' && (n as Record<string, unknown>).app_mfa_required === true);
+    expect(stamped.length).toBe(1);
+  });
 });
 
 // =============================================
@@ -276,5 +299,18 @@ describe('parseEvilginx', () => {
 
     const idp = finding.nodes.find(n => n.type === 'idp')!;
     expect(idp.idp_kind).toBe('entra'); // o365 phishlet → entra
+  });
+
+  it('retains body_tokens when tokens is a present-but-empty object', () => {
+    // `tokens: {}` is present (not null), so nullish `??` used to shadow
+    // body_tokens and drop the captured OAuth token entirely.
+    const session = {
+      id: 2, phishlet: 'o365', username: 'bob@acme.com',
+      tokens: {},
+      body_tokens: { access_token: 'eyJfake.body.token' },
+    };
+    const finding = parseEvilginx(JSON.stringify([session]));
+    const accessToken = finding.nodes.find(n => n.type === 'credential' && n.cred_material_kind === 'oidc_access_token');
+    expect(accessToken).toBeDefined();
   });
 });

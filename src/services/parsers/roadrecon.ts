@@ -176,21 +176,34 @@ export function parseRoadrecon(output: string, agentId: string = 'roadrecon-pars
       Array.isArray(grantControls?.builtInControls) &&
       grantControls!.builtInControls.some(v => String(v).toLowerCase() === 'mfa');
     if (!requiresMfa) continue;
-    const conditions = ca.conditions as { applications?: { includeApplications?: unknown[] } } | undefined;
+    const conditions = ca.conditions as { applications?: { includeApplications?: unknown[]; excludeApplications?: unknown[] } } | undefined;
     const rawAppIds = (conditions?.applications?.includeApplications ?? []) as unknown[];
     const appIds = rawAppIds.map(v => String(v));
     const policyLabel = String(ca.displayName ?? ca.id ?? '');
     const isOrgWide = appIds.some(aid => aid === 'All');
 
+    // Apps the policy explicitly carves out must NOT be stamped MFA-required,
+    // even under an `All` include — otherwise an excluded app looks gated when
+    // the policy deliberately exempts it.
+    const excludeAppIds = (conditions?.applications?.excludeApplications ?? []) as unknown[];
+    const excludedNodeIds = new Set(
+      excludeAppIds
+        .map(v => String(v))
+        .filter(aid => aid !== 'All' && aid !== 'None')
+        .map(aid => idpApplicationId('entra', tenantId || 'unknown', aid)),
+    );
+
     // Resolve the target set:
     //  - `All` → every idp_application emitted earlier in this bundle
     //  - otherwise → each named app id, looked up in seenNodes.
-    const targetAppNodeIds: string[] = isOrgWide
+    // Then subtract any excluded apps.
+    const targetAppNodeIds: string[] = (isOrgWide
       ? nodes.filter(n => n.type === 'idp_application').map(n => n.id)
       : appIds
           .filter(aid => aid !== 'All' && aid !== 'None')
           .map(aid => idpApplicationId('entra', tenantId || 'unknown', aid))
-          .filter(id => seenNodes.has(id));
+          .filter(id => seenNodes.has(id))
+    ).filter(id => !excludedNodeIds.has(id));
 
     for (const appNodeId of targetAppNodeIds) {
       // Stamp the gate on the application node itself so OIDC pivot

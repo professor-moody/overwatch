@@ -1027,6 +1027,16 @@ describe('Output Parsers', () => {
       expect(finding.nodes.length).toBe(0);
     });
 
+    it('returns an empty finding (no throw) for a bare scalar/null JSON document', () => {
+      // These parse successfully but have no certipy structure; they must degrade
+      // like `{}`, not trip the post-parse construction re-throw.
+      for (const input of ['null', '5', '"just text"', 'true']) {
+        const finding = parseCertipy(input);
+        expect(finding.nodes.length).toBe(0);
+        expect(finding.edges.length).toBe(0);
+      }
+    });
+
     // Phase J: tolerate stringy booleans + single-string EKU on cert templates
     it('coerces stringy "Enrollee Supplies Subject" booleans on templates', () => {
       const data = {
@@ -1922,6 +1932,26 @@ describe('Output Parsers', () => {
       const users = finding.nodes.filter(n => n.type === 'user');
       expect(users.length).toBe(2);
       expect(users.map(u => u.username).sort()).toEqual(['jdoe', 'svc_backup']);
+    });
+
+    it('pairs a hash with the correct client/user when captures interleave (positional, not Map-order)', () => {
+      // .5 opens a stanza that never receives a hash; .6 opens next and completes.
+      // The old "first pending entry missing that field" (Map INSERTION order)
+      // scan would attach .6's hash to .5/alice — a mis-paired credential.
+      const output = [
+        '[SMB] NTLMv2-SSP Client   : 10.0.0.5',
+        '[SMB] NTLMv2-SSP Username : ACME\\alice',
+        '[SMB] NTLMv2-SSP Client   : 10.0.0.6',
+        '[SMB] NTLMv2-SSP Username : ACME\\bob',
+        '[SMB] NTLMv2-SSP Hash     : bob::ACME:1122334455667788:aabbccddee:0101000000',
+      ].join('\n');
+      const finding = parseResponder(output);
+      const creds = finding.nodes.filter(n => n.type === 'credential');
+      expect(creds.length).toBe(1); // only bob's capture completed
+      const users = finding.nodes.filter(n => n.type === 'user');
+      expect(users.map(u => u.username)).toEqual(['bob']);
+      // alice's incomplete capture (no hash) must NOT surface, and must NOT own bob's hash.
+      expect(finding.nodes.some(n => n.type === 'user' && n.username === 'alice')).toBe(false);
     });
 
     it('extracts host nodes from client IPs', () => {
