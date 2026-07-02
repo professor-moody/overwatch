@@ -165,6 +165,11 @@ engine.addNode({
   cred_type: 'token',
   cred_material_kind: 'oidc_access_token',
   cred_audience: 'sts.amazonaws.com',
+  // Must match the idp_application's sub_claim_pattern below, or the S4-A2
+  // subject-claim validation in OIDC_FEDERATION_PIVOT skips this token and the
+  // seeded attack path (host-jumpbox → cred-oidc-gha → cloud-id-poweruser)
+  // never renders. (Seed drifted after S4-A2 added subject validation.)
+  cred_subject: 'repo:acme-corp/webapp:ref:refs/heads/main',
   cred_issuer: 'https://token.actions.githubusercontent.com',
   cred_evidence_kind: 'capture',
   credential_status: 'active',
