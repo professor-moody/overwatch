@@ -3,7 +3,7 @@
 This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. Anything not strictly required for that path is in [Advanced Setup](#advanced-setup) at the bottom.
 
 !!! tip "Already past setup?"
-    Jump to the [Operator Playbook](playbook/index.md) for what to actually do once Overwatch is running, or the [End-to-End Walkthrough](playbook/walkthrough.md) for a narrated lab engagement.
+    Jump to the [Operator Playbook](playbook/index.md) for what to actually do once Overwatch is running, or the [End-to-End Walkthrough](playbook/walkthrough.md) for a narrated lab engagement. Working a specific engagement type? Start from an **Assessment Guide**: [Web Assessment](assessments/web-assessment.md) or [Internal AD / Network](assessments/internal-ad-network.md).
 
 ---
 

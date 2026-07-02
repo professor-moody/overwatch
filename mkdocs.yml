@@ -87,6 +87,9 @@ nav:
       - Operator Infrastructure: playbook/operator-infra.md
       - parse_output vs report_finding: playbook/parse-vs-report.md
       - Retrospectives: playbook/retrospective.md
+  - Assessment Guides:
+    - Web Assessment: assessments/web-assessment.md
+    - Internal AD / Network: assessments/internal-ad-network.md
   - Architecture:
     - Overview: architecture.md
     - Drivers (Decision Record): deployment-architecture.md
