@@ -362,7 +362,7 @@ Every edge has these base properties:
 
 ## Inference Rules
 
-Sixty-three built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints. The sections below document the major rule families; the complete, current list lives in `src/services/builtin-inference-rules.ts`.
+Sixty-four built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints. The sections below document the major rule families; the complete, current list lives in `src/services/builtin-inference-rules.ts`.
 
 #### AD & Service Rules (21)
 
@@ -435,6 +435,7 @@ Sixty-three built-in declarative rules fire automatically when matching nodes ar
 | SQLi → RCE Escalation | Vulnerability with `vuln_type=sqli` + stacked queries | `EXPLOITS` edge to parent host |
 | Token → Webapp Auth | Credential with `cred_type=token` + `AUTHENTICATED_AS` edge on webapp | `VALID_ON` edge from credential to webapp service (confidence 0.75) |
 | Auth Bypass Escalation | Vulnerability with `AUTH_BYPASS` edge to webapp | `EXPLOITS` edge from vulnerability to webapp host (confidence 0.8) |
+| Subdomain Takeover | Subdomain with `takeover_candidate: true` (dangling CNAME to a claimable provider) | `PATH_TO_OBJECTIVE` to nearest objective (confidence 0.8) |
 
 #### MSSQL Rules (2)
 

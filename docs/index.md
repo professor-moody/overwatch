@@ -17,7 +17,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 ## Key Features
 
 - **[Graph-based state](graph-model.md)** — 30 node types, 90 edge types. Every attack path is a traversable route through the engagement graph, not a list of notes.
-- **[Inference engine](architecture.md#inference-rules)** — 63 built-in rules that fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity"). Surfaces follow-on opportunities as scored frontier items automatically.
+- **[Inference engine](architecture.md#inference-rules)** — 64 built-in rules that fire when findings land (e.g., "OIDC audience matches AWS STS → probable AssumeRoleWithWebIdentity"). Surfaces follow-on opportunities as scored frontier items automatically.
 - **[Credential lifecycle intelligence](concepts.md#credential-lifecycle)** — Captured tokens track status (active/stale/expired), reachability via confirmed edges, expiry estimation, and provenance. The Credentials dashboard tab shows all of this at a glance.
 - **[70+ MCP tools](tools/index.md)** — State management, action logging, graph queries, BloodHound/AzureHound ingestion, 50+ output parsers, persistent interactive sessions, credential playbooks, and pentest report generation. (The live count + set come from `get_system_prompt`.)
 - **[Credential-driven playbooks](tools/index.md)** — Five tools (`expand_aws_credential`, `expand_github_credential`, `expand_oidc_capture`, `exchange_refresh_token`, `expand_entra_credential`) that turn a captured credential into a sequenced recon plan queued through the approval gate.

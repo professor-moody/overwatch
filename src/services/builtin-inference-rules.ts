@@ -866,4 +866,22 @@ export const BUILTIN_RULES: InferenceRule[] = [
     }],
     self_confirming: true
   },
+  {
+    // Activates the `takeover_candidate` flag (set by the dnsx/nuclei parsers on
+    // a dangling CNAME to a claimable third-party service) — otherwise inert, no
+    // consumer reads it. A claimable subdomain lets an attacker serve content on
+    // the target's own domain (phishing, cookie/session theft), so surface it as
+    // a PATH_TO_OBJECTIVE for frontier scoring + attack-path analysis.
+    id: 'rule-subdomain-takeover',
+    name: 'Dangling subdomain is takeover-able',
+    description: 'A subdomain with takeover_candidate=true has a dangling CNAME to a claimable third-party service and can be claimed by an attacker; emit PATH_TO_OBJECTIVE so engagement-objective surfaces + path analysis react.',
+    trigger: { node_type: 'subdomain', property_match: { takeover_candidate: true } },
+    produces: [{
+      edge_type: 'PATH_TO_OBJECTIVE',
+      source_selector: 'trigger_node',
+      target_selector: 'nearest_objective',
+      confidence: 0.8
+    }],
+    self_confirming: true
+  },
 ];

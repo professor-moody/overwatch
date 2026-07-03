@@ -4,6 +4,7 @@ import type { NodeProperties, EdgeProperties, InferenceRule } from '../../types.
 import type { OverwatchGraph } from '../engine-context.js';
 import { EngineContext } from '../engine-context.js';
 import { InferenceEngine } from '../inference-engine.js';
+import { BUILTIN_RULES } from '../builtin-inference-rules.js';
 
 function makeGraph(): OverwatchGraph {
   return new (Graph as any)({ multi: true, type: 'directed', allowSelfLoops: true }) as OverwatchGraph;
@@ -1938,6 +1939,53 @@ describe('InferenceEngine', () => {
       const engine = buildEngine(graph, [RULE]);
       const inferred = engine.runRules('webapp-1');
       expect(inferred.length).toBe(0);
+    });
+  });
+
+  // =============================================
+  // rule-subdomain-takeover (the shipped builtin)
+  // =============================================
+  describe('rule-subdomain-takeover', () => {
+    const RULE = BUILTIN_RULES.find(r => r.id === 'rule-subdomain-takeover')!;
+
+    it('is registered and triggers on subdomain.takeover_candidate → PATH_TO_OBJECTIVE', () => {
+      expect(RULE).toBeDefined();
+      expect(RULE.trigger).toEqual({ node_type: 'subdomain', property_match: { takeover_candidate: true } });
+      expect(RULE.produces[0].edge_type).toBe('PATH_TO_OBJECTIVE');
+    });
+
+    it('emits PATH_TO_OBJECTIVE subdomain -> objective when takeover_candidate is true', () => {
+      const graph = makeGraph();
+      addNode(graph, 'sub-app', { type: 'subdomain', subdomain_name: 'app.acme.com', takeover_candidate: true });
+      addNode(graph, 'obj-1', { type: 'objective', objective_description: 'Compromise external surface' });
+
+      const engine = buildEngine(graph, [RULE]);
+      const inferred = engine.runRules('sub-app');
+
+      expect(inferred.length).toBe(1);
+      const attrs = graph.getEdgeAttributes(inferred[0]);
+      expect(attrs.type).toBe('PATH_TO_OBJECTIVE');
+      expect(attrs.confidence).toBe(0.8);
+      expect(graph.source(inferred[0])).toBe('sub-app');
+      expect(graph.target(inferred[0])).toBe('obj-1');
+    });
+
+    it('does NOT fire when takeover_candidate is absent or false', () => {
+      const graph = makeGraph();
+      addNode(graph, 'sub-plain', { type: 'subdomain', subdomain_name: 'www.acme.com' });
+      addNode(graph, 'sub-false', { type: 'subdomain', subdomain_name: 'x.acme.com', takeover_candidate: false });
+      addNode(graph, 'obj-1', { type: 'objective', objective_description: 'obj' });
+
+      const engine = buildEngine(graph, [RULE]);
+      expect(engine.runRules('sub-plain').length).toBe(0);
+      expect(engine.runRules('sub-false').length).toBe(0);
+    });
+
+    it('produces no edge when no objective exists (safe no-op)', () => {
+      const graph = makeGraph();
+      addNode(graph, 'sub-app', { type: 'subdomain', subdomain_name: 'app.acme.com', takeover_candidate: true });
+      const engine = buildEngine(graph, [RULE]);
+      expect(engine.runRules('sub-app').length).toBe(0);
     });
   });
 });
