@@ -171,6 +171,41 @@ export function webappOriginId(url: string): string {
 }
 
 /**
+ * Scheme-safe origin resolution for a source URL / host. An explicit http(s)
+ * URL is used as-is; a non-http scheme (ftp:, ssh:, file:, mailto:, javascript:,
+ * data:, …) is rejected rather than mangled into a fabricated https origin; a
+ * schemeless value — including a bare `host:port`, which `new URL` would
+ * otherwise misparse as a scheme — is treated as an authority and given https.
+ * Returns the canonical origin + hostname, or undefined. Shared by the web/JS
+ * parsers (js-secrets, api-schema) so they resolve the source webapp identically.
+ */
+export function resolveWebappOrigin(raw: string | undefined): { origin: string; hostname: string } | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  let candidate: string;
+  if (/^https?:\/\//i.test(trimmed)) {
+    candidate = trimmed;
+  } else {
+    // A leading `token:` may be a real scheme (reject) OR a `host:port` authority
+    // (`app.acme.com:8080`, `localhost:8080`). Real URL schemes have no dots, so a
+    // dotted "scheme" or a numeric remainder (a port) means it is an authority.
+    const m = trimmed.match(/^([a-z][a-z0-9+.-]*):(.*)$/i);
+    if (m && !(m[1].includes('.') || /^\d+([/?#]|$)/.test(m[2]))) return undefined;
+    candidate = `https://${trimmed}`;
+  }
+  let u: URL;
+  try { u = new URL(candidate); } catch { return undefined; }
+  if (!/^https?:$/.test(u.protocol) || !u.host) return undefined;
+  return { origin: `${u.protocol}//${u.host}`, hostname: u.hostname };
+}
+
+/** Deterministic api_endpoint node id, keyed by owning webapp + a path/operation key. */
+export function apiEndpointId(waId: string | undefined, key: string): string {
+  const digest = createHash('sha1').update(`${waId || ''}|${key}`).digest('hex').slice(0, 12);
+  return `apiendpoint-${digest}`;
+}
+
+/**
  * Deterministic service node id for a URL (or bare `host:port`). Shared by the
  * web parsers (nuclei, httpx, …) so they converge on the SAME `service` node
  * for one origin rather than splitting per-parser.

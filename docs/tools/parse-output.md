@@ -46,6 +46,8 @@ Deterministically parses tool output into structured findings and (optionally) i
 | **trufflehog** | `trufflehog` | `trufflehog filesystem … --json` JSON-lines (v3) | `credential` nodes for leaked secrets (`cred_evidence_kind: dump`; verified ⇒ usable), attached to the source webapp via a `hardcoded_secret` vuln + `EXPLOITS`. trufflehog scans files/git — download the JS first, then pass the app URL as `source_host` |
 | **secretfinder** | `secretfinder` | Normalized secrets JSON `{url, results:[{name, matches}]}` | Same node/edge shape as trufflehog, keyed off the per-record `url`. SecretFinder has no native JSON — map its output to this shape (or use `ingest_json`) |
 | **LinkFinder** | `linkfinder` | `-o cli` plaintext (one endpoint per line); also a JSON array / `{endpoints:[…]}` | `api_endpoint` nodes (`path`, query/fragment stripped) + `HAS_ENDPOINT` from the source webapp (sets `has_api`); off-origin links are dropped. Pass the scanned URL as `source_host` |
+| **OpenAPI / Swagger** | `openapi`, `swagger` | OpenAPI 3 / Swagger 2 JSON | One `api_endpoint` per path × method (`method`, `auth_required` from `security`, `response_type`) + `HAS_ENDPOINT` from the server webapp (`has_api`). Origin from the schema's `servers`/`host`, else `source_host` |
+| **GraphQL introspection** | `graphql`, `graphql_introspection` | `{data:{__schema:…}}` introspection JSON | One `api_endpoint` per query/mutation field (POST to the GraphQL path) + `HAS_ENDPOINT` (subscriptions are WebSocket, not modeled). Pass the endpoint URL as `source_host` |
 
 (Plus cloud/identity parsers — `pacu`, `scoutsuite`, `cloudfox`, `roadrecon`, `okta`, the `msgraph-*` / `gh-api-*` / `token_replay_*` families, and more. Use `list_parsers: true` for the authoritative live list.)
 

@@ -22,8 +22,7 @@
 
 import type { Finding, NodeProperties, ParseContext } from '../../types.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createHash } from 'crypto';
-import { credentialId, vulnerabilityId, webappOriginId } from '../parser-utils.js';
+import { apiEndpointId, credentialId, resolveWebappOrigin, vulnerabilityId, webappOriginId } from '../parser-utils.js';
 
 type Kind = NonNullable<NodeProperties['cred_material_kind']>;
 
@@ -81,33 +80,14 @@ function addEdge(ctx: Ctx, source: string, target: string, type: string, confide
  */
 function ensureWebapp(ctx: Ctx, recordUrl: string | undefined): { id: string; origin: string; hostname: string } | undefined {
   const raw = recordUrl || (typeof ctx.context?.source_host === 'string' ? ctx.context.source_host : undefined);
-  if (!raw || typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  let candidate: string;
-  if (/^https?:\/\//i.test(trimmed)) {
-    candidate = trimmed;
-  } else {
-    // A leading `token:` may be a real scheme (reject) OR a `host:port`
-    // authority (`app.acme.com:8080`, `localhost:8080`). Real URL schemes have
-    // no dots, so a dotted "scheme" or a numeric remainder (a port) means it is
-    // actually an authority — otherwise it is a non-http scheme we reject.
-    const m = trimmed.match(/^([a-z][a-z0-9+.-]*):(.*)$/i);
-    if (m) {
-      const isAuthority = m[1].includes('.') || /^\d+([/?#]|$)/.test(m[2]);
-      if (!isAuthority) return undefined;
-    }
-    candidate = `https://${trimmed}`;
-  }
-  let u: URL;
-  try { u = new URL(candidate); } catch { return undefined; }
-  if (!/^https?:$/.test(u.protocol) || !u.host) return undefined;
-  const origin = `${u.protocol}//${u.host}`;
-  const id = webappOriginId(origin);
+  const resolved = resolveWebappOrigin(raw);
+  if (!resolved) return undefined;
+  const id = webappOriginId(resolved.origin);
   if (!ctx.seen.has(id)) {
     ctx.seen.add(id);
-    pushNode(ctx, { id, type: 'webapp', label: origin, url: origin, discovered_at: ctx.now, confidence: 1.0 } as NodeProperties);
+    pushNode(ctx, { id, type: 'webapp', label: resolved.origin, url: resolved.origin, discovered_at: ctx.now, confidence: 1.0 } as NodeProperties);
   }
-  return { id, origin, hostname: u.hostname };
+  return { id, origin: resolved.origin, hostname: resolved.hostname };
 }
 
 /** Emit a leaked-secret credential (+ source-webapp vuln/EXPLOITS when known). */
@@ -164,11 +144,6 @@ function emitSecret(ctx: Ctx, value: string | undefined, detector: string | unde
     addEdge(ctx, wa.id, vId, 'VULNERABLE_TO', 0.8);
     addEdge(ctx, vId, cId, 'EXPLOITS', 0.8);
   }
-}
-
-function apiEndpointId(waId: string | undefined, path: string): string {
-  const digest = createHash('sha1').update(`${waId || ''}|${path}`).digest('hex').slice(0, 12);
-  return `apiendpoint-${digest}`;
 }
 
 /** Path-only, canonical form: drop query + fragment, collapse duplicate + trailing slashes. */

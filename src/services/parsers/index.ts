@@ -61,6 +61,7 @@ export { parseDnsx } from './dnsx.js';
 export { parseHttpx } from './httpx.js';
 export { parseTestWebappCredential } from './test-webapp-credential.js';
 export { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
+export { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
@@ -120,6 +121,7 @@ import { parseDnsx } from './dnsx.js';
 import { parseHttpx } from './httpx.js';
 import { parseTestWebappCredential } from './test-webapp-credential.js';
 import { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
+import { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -251,6 +253,11 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'trufflehog': parseTrufflehog,
   'secretfinder': parseSecretfinder,
   'linkfinder': parseLinkfinder,
+  // Web track: API-schema enumeration.
+  'openapi': parseOpenapi,
+  'swagger': parseOpenapi,
+  'graphql': parseGraphqlSchema,
+  'graphql_introspection': parseGraphqlSchema,
 };
 
 export function getSupportedParsers(): string[] {

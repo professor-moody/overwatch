@@ -122,6 +122,9 @@ Drive the scanners and ingest everything through `parse_output`:
 - `wpscan` → WordPress users + plugin/theme CVEs
 - `testssl.sh` → TLS/cert weaknesses
 - `trufflehog` over the app's JS → **credential** nodes for hardcoded secrets (verified ones become spray-loop candidates); LinkFinder → `api_endpoint` nodes. trufflehog scans files/git, so pull the bundles down first (e.g. `wget`/`curl`), scan the directory, and pass the app URL as `source_host` so findings attach to the webapp.
+- An **OpenAPI/Swagger** doc (`/openapi.json`, `/swagger.json`) or a **GraphQL introspection** dump → `api_endpoint` nodes (method, `auth_required`, `response_type`) via `parse_output` (`openapi` / `graphql`). This maps the API surface — unauthenticated endpoints and mutations to probe next.
+
+    > **"Fetch app.acme.com/openapi.json and ingest it as `openapi`; then run introspection on /graphql and ingest as `graphql`."**
 
     > **"Download app.acme.com's JS bundles, run `trufflehog filesystem` over them and ingest with source_host https://app.acme.com; then LinkFinder for endpoints."**
 
