@@ -62,6 +62,7 @@ export { parseHttpx } from './httpx.js';
 export { parseTestWebappCredential } from './test-webapp-credential.js';
 export { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 export { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
+export { parseSecurityHeaders } from './security-headers.js';
 export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
@@ -122,6 +123,7 @@ import { parseHttpx } from './httpx.js';
 import { parseTestWebappCredential } from './test-webapp-credential.js';
 import { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 import { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
+import { parseSecurityHeaders } from './security-headers.js';
 import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -258,6 +260,8 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'swagger': parseOpenapi,
   'graphql': parseGraphqlSchema,
   'graphql_introspection': parseGraphqlSchema,
+  'security-headers': parseSecurityHeaders,
+  'security_headers': parseSecurityHeaders,
 };
 
 export function getSupportedParsers(): string[] {

@@ -107,6 +107,7 @@ const CWE_TO_OWASP: Record<string, string> = {
   'CWE-937':  'A06:2021 Vulnerable and Outdated Components',
   'CWE-611':  'A05:2021 Security Misconfiguration',
   'CWE-776':  'A05:2021 Security Misconfiguration',
+  'CWE-942':  'A05:2021 Security Misconfiguration',
 };
 
 // CWE → NIST 800-53 control families
@@ -138,6 +139,7 @@ const CWE_TO_NIST: Record<string, string[]> = {
   'CWE-330':  ['SC-13'],
   'CWE-916':  ['SC-13', 'IA-5'],
   'CWE-16':   ['CM-6', 'CM-7'],
+  'CWE-942':  ['SC-7', 'AC-4'],
   'CWE-209':  ['SI-11'],
   'CWE-532':  ['AU-3', 'AU-9'],
   'CWE-778':  ['AU-2', 'AU-12'],
@@ -201,6 +203,12 @@ const VULN_TYPE_TO_CWE: Record<string, { cwe: string; name: string }> = {
   // generic `misconfiguration` mapping above. (NOT CWE-350, which is about
   // reliance on reverse-DNS for auth — an unrelated weakness.)
   'subdomain_takeover': { cwe: 'CWE-16', name: 'Configuration' },
+  // Permissive CORS (ACAO `*`/`null`) → CWE-942. Missing baseline security
+  // headers (HSTS/CSP/XFO/…) → CWE-16 (Configuration): CWE-693 is a discouraged
+  // Pillar and is NOT a member of OWASP A05, whereas CWE-16 is (and already
+  // carries full OWASP/NIST/PCI mappings). Both land under A05 Misconfiguration.
+  'cors_misconfig': { cwe: 'CWE-942', name: 'Permissive Cross-domain Security Policy with Untrusted Domains' },
+  'missing_security_header': { cwe: 'CWE-16', name: 'Configuration' },
 };
 
 // Edge type → ATT&CK technique (pentest-relevant mappings)
@@ -269,6 +277,8 @@ const VULN_TO_ATTACK: Record<string, AttackTechnique> = {
   'path_traversal': { id: 'T1005', name: 'Data from Local System' },
   'default_credentials': { id: 'T1078.001', name: 'Default Accounts' },
   'hardcoded_secret': { id: 'T1552.001', name: 'Credentials In Files' },
+  'cors_misconfig': { id: 'T1190', name: 'Exploit Public-Facing Application' },
+  'missing_security_header': { id: 'T1190', name: 'Exploit Public-Facing Application' },
 };
 
 // Finding category → ATT&CK technique fallback
