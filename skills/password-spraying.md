@@ -66,6 +66,13 @@ nxc smb TARGETS -u validuser -p validpass --continue-on-success
 | 18200 | AS-REP | `hashcat -m 18200 asrep.txt wordlist -r OneRuleToRuleThemAll.rule` |
 | 5600 | NTLMv2 (NetNTLM) | `hashcat -m 5600 ntlmv2.txt wordlist` |
 
+## Web App Logins
+The tooling above sprays AD / SMB / Kerberos / OWA. For a credential against an **`http`/`https` web
+app** (a login form, HTTP Basic, a bearer token, or a session cookie), use the `test_webapp_credential`
+tool instead — pass an explicit `success` criterion (status code, redirect target, or body marker). It
+records `AUTHENTICATED_AS` + `VALID_ON` on success (retiring the `credential_test` frontier item) and
+`TESTED_CRED` on failure. This is also where JS-secret / config-leaked credentials get validated.
+
 ## Graph Reporting
 - **Credential nodes**: for valid username/password combos (`cred_type: plaintext`)
 - **VALID_ON edges**: credential → user node

@@ -58,6 +58,25 @@ curl -s http://target/api-docs
 curl -s http://target/graphql
 curl -s http://target/api/v1/
 ```
+Don't just eyeball the schema — **ingest it** so each operation becomes an `api_endpoint` node
+(`method`, `response_type`, plus `auth_required` on the OpenAPI/Swagger path). Probe the
+unauthenticated (`auth_required: false`) operations first:
+```bash
+# OpenAPI/Swagger JSON  →  parse_output as `openapi` (or `swagger`), context.source_host = http://target
+curl -s http://target/openapi.json
+# GraphQL introspection  →  parse_output as `graphql`, context.source_host = http://target
+curl -s http://target/graphql -X POST -H 'Content-Type: application/json' \
+  -d '{"query":"query{__schema{queryType{name} mutationType{name} types{name fields{name}}}}"}'
+```
+
+### Client-side JS: secrets + endpoints
+Mine the app's JavaScript — leaked secrets become **credential** nodes (verified ones feed the spray
+loop and `credential_test` frontier), extracted URLs become `api_endpoint` nodes:
+```bash
+wget -r -l2 -A js http://target -P js_bundles/          # grab the bundles (trufflehog scans files, not URLs)
+trufflehog filesystem js_bundles/ --json                # →  parse_output as `trufflehog`, context.source_host = http://target
+linkfinder -i 'http://target/app.js' -o cli             # →  parse_output as `linkfinder`, context.source_host = http://target
+```
 
 ### Sensitive File Checks
 ```bash
@@ -73,11 +92,17 @@ Targets: `.git/`, `.svn/`, `.env`, `web.config`, backup files (`.bak`, `.old`, `
 - **Tomcat Manager**: `tomcat/tomcat`, `admin/admin`
 - **Jenkins**: check for unauthenticated access at `/script`
 - **WordPress**: enumerate users at `/wp-json/wp/v2/users`
+- **Test a credential against the app**: use the `test_webapp_credential` tool (method `form` /
+  `basic` / `bearer` / `cookie`) with an explicit `success` criterion (a status code, a redirect
+  target, or a body marker). On success it records `AUTHENTICATED_AS` + `VALID_ON` and retires the
+  `credential_test` frontier item; on failure it records `TESTED_CRED` so the pair isn't retried.
 
 ## Graph Reporting
 - **Enrich service nodes**: technology stack, framework, version, server software
 - **New service nodes**: for each vhost discovered
-- **Credential nodes**: for default/leaked credentials found
+- **Credential nodes**: for default/leaked credentials found (JS secrets included)
+- **api_endpoint nodes**: for each ingested API operation (`HAS_ENDPOINT` from the webapp)
+- **AUTHENTICATED_AS / VALID_ON edges**: when a credential validates against the app
 - **HAS_SESSION edges**: if admin access obtained via default creds
 
 ## OPSEC Notes

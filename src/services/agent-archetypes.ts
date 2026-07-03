@@ -92,14 +92,14 @@ const ARCHETYPES: Record<AgentArchetypeId, AgentArchetype> = {
     description: 'Web application testing: fuzz endpoints, probe auth, find web vulns. Can open sessions for exploitation.',
     defaultObjective: 'Test the web surface of {target} for exposed endpoints, auth weaknesses, and web vulnerabilities.',
     suitableFor: { frontierTypes: ['incomplete_node', 'untested_edge'], nodeTypes: ['webapp', 'url', 'service'] },
-    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...SESSIONS]) },
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...SESSIONS, 'test_webapp_credential']) },
   },
   credential_operator: {
     id: 'credential_operator', label: 'Credential operator', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'password-spraying',
     description: 'Validate, spray, and expand credentials/tokens (AWS/Entra/GitHub/OIDC). Focused on credential lifecycle, not broad recon.',
     defaultObjective: 'Validate and expand the credentials around {target}; map what access they unlock.',
     suitableFor: { frontierTypes: ['credential_test', 'inferred_edge'], nodeTypes: ['credential'] },
-    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED]) },
+    tools: { full: false, native: ['ToolSearch'], overwatch: uniq([...BASE, ...EXECUTE, ...CRED, 'test_webapp_credential']) },
   },
   post_exploit: {
     id: 'post_exploit', label: 'Post-exploitation', role: 'default', scopeStrategy: 'subgraph', defaultSkill: 'post-exploitation',
@@ -195,9 +195,9 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
   recon_scanner:
     `YOUR ROLE IS RECON & SERVICE DISCOVERY. Sweep and enumerate the target's hosts, ports, and services using run_tool/run_bash (call validate_action first), then turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions or credential tools — discovery only. Done when every live host/service in scope is a graph node with its ports/services recorded via report_finding — leave nothing only in stdout.`,
   web_tester:
-    `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. Record findings with parse_output/report_finding. Done when the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.`,
+    `YOUR ROLE IS WEB APPLICATION TESTING. Probe the target's web surface — endpoints, auth, and web vulnerabilities — via validate_action + run_tool/run_bash, and open_session/send_to_session for interactive exploitation when warranted. To test a credential against a web app (form / basic / bearer / cookie), use test_webapp_credential with an explicit success criterion. Record findings with parse_output/report_finding. Done when the target's endpoints and auth surface are mapped as nodes/edges and each candidate weakness is a finding with evidence.`,
   credential_operator:
-    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens (validate_token_credential + the expand_* tools), and map the access they unlock. Record findings with report_finding. You have NO interactive sessions — credential lifecycle only. Done when each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).`,
+    `YOUR ROLE IS CREDENTIAL OPERATIONS. Validate, spray, and expand credentials and tokens, and map the access they unlock. Match the tool to the target: IdP / cloud SSO tokens → validate_token_credential + the expand_* tools; a credential against a web app (http/https) → test_webapp_credential (with an explicit success criterion). Record findings with report_finding. You have NO interactive sessions — credential lifecycle only. Done when each credential's validity and the access it unlocks is recorded as findings/edges (or the credential is marked invalid).`,
   post_exploit:
     `YOUR ROLE IS POST-EXPLOITATION FROM A FOOTHOLD. Work interactively via open_session/send_to_session: enumerate locally, move laterally, and capture credentials and reachable assets. Route execution through validate_action and record findings with report_finding. Done when the foothold's reachable assets, captured credentials, and lateral edges are recorded as graph findings.`,
   cve_researcher: CVE_MISSION,
