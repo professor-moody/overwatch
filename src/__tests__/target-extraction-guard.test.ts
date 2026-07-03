@@ -66,6 +66,27 @@ describe('Scope guard — implicit target extraction', () => {
     expect((payload.errors || []).join(' ')).toMatch(/target\.example\.com/);
   });
 
+  it('does NOT treat a curl -c/-b cookie-jar file path as an implicit target host', async () => {
+    // Regression: a `session_jar_id` login spawns `curl -c <jar> -b <jar> <url>`.
+    // The jar path (session-jars/sess-1.jar) must NOT be scope-scanned as a host,
+    // else every jar login is refused as out-of-scope. Use an out-of-scope URL so
+    // validation fails on the URL (no real curl spawn) and assert the ONLY flagged
+    // host is the URL — never the jar filename.
+    const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const res = await runInstrumentedProcess(engine, {
+      binary: 'curl',
+      args: ['-c', './session-jars/sess-1.jar', '-b', './session-jars/sess-1.jar', 'https://evil.example.com/'],
+      command_repr: 'curl -c ./session-jars/sess-1.jar -b ./session-jars/sess-1.jar https://evil.example.com/',
+      technique: 'note',
+      invoking_tool: 'run_bash',
+    });
+    const payload = JSON.parse(res.content[0].text);
+    const errs = (payload.errors || []).join(' ');
+    expect(errs).toMatch(/evil\.example\.com/); // the URL is still scope-checked
+    expect(errs).not.toMatch(/sess-1\.jar/);    // the jar path is NOT
+    expect(errs).not.toMatch(/session-jars/);
+  });
+
   it('scope-blocks an out-of-scope IP passed to a network-capable binary', async () => {
     const engine = new GraphEngine(makeConfig(), TEST_STATE_FILE);
     const res = await runInstrumentedProcess(engine, {

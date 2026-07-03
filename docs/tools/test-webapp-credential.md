@@ -21,6 +21,10 @@ The secret (password / token / cookie value) is **never** written to the activit
 | `bearer` | `Authorization: Bearer <token>`. Set `header_name` (e.g. `X-API-Key`) to send the raw value under a custom header instead. |
 | `cookie` | `Cookie: <name>=<value>` replay. `header_name` is the cookie name (default `session`). |
 
+## Session persistence
+
+Pass `session_jar_id` (a name, `1–64` chars of `[A-Za-z0-9_-]`) to persist the login's session: the call adds `curl -c <jar> -b <jar>`, so the response `Set-Cookie` is saved to a named cookie-jar file under the engagement state dir (`session-jars/<id>.jar`) and any already-saved cookies are replayed. Reuse the **same** id with the authenticated-crawl tool to crawl the app as the logged-in user. The jar holds a live session cookie (a secret), so it lives beside evidence in the operator-local state dir and is never logged (only the jar **path** appears in `command_repr`). Omit `session_jar_id` for a stateless one-shot test.
+
 ## Success detection
 
 You **must** pass a `success` criterion — there is no status-only default, because every status-only heuristic (a form `302`, an API `200`, even a Basic `2xx` on a path that ignores the header) is target-controlled and can't distinguish real access from a benign or crafted response.

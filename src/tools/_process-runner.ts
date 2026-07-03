@@ -211,7 +211,10 @@ const DROP_VALUE_GLOBAL = new Set([
   '--script', '--script-args', '--script-args-file',
 ]);
 const DROP_VALUE_BY_BIN: Record<string, Set<string>> = {
-  curl: new Set(['-H', '-e', '-A', '-b', '-d', '-F', '-o', '-w']),
+  // `-c` (cookie-jar write) + `-b` (cookie read) take a FILE path, never a
+  // target — drop their value so a `session-jars/<id>.jar` path isn't mistaken
+  // for an out-of-scope host and the request refused.
+  curl: new Set(['-H', '-e', '-A', '-b', '-c', '-d', '-F', '-o', '-w']),
   wget: new Set(['-U', '-o', '-O']),
   nmap: new Set(['-oA', '-oN', '-oX', '-oG', '-oS', '-iL', '-iR', '-D', '-g', '-S', '--data', '--data-string']),
   masscan: new Set(['-oL', '-oJ', '-oX', '-oG', '--rate']),

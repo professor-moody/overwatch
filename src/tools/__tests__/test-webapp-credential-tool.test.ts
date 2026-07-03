@@ -20,6 +20,7 @@ function buildHandlers(credential: Record<string, unknown> | null) {
   } as unknown as McpServer;
   const engine = {
     getNode: vi.fn((id: string) => (credential && id === credential.id ? credential : null)),
+    getStateFilePath: vi.fn(() => '/tmp/ow-test-state/state.json'),
   };
   registerTestWebappCredentialTool(fakeServer, engine as any);
   return { handlers, engine };
@@ -174,5 +175,55 @@ describe('test_webapp_credential tool', () => {
     const { handlers } = buildHandlers(null);
     const res = await handlers.test_webapp_credential({ credential_id: 'nope', target_url: 'https://app.acme.com', method: 'bearer' });
     expect(res.isError).toBe(true);
+  });
+
+  it('session_jar_id adds curl -c/-b <jar> so the login persists its session', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form', login_path: '/login',
+      success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
+    });
+    const opts = lastOpts();
+    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    // -c saves Set-Cookie, -b replays saved cookies; the path is in both the
+    // real argv and the redacted repr (it isn't a secret).
+    expect(opts.args).toContain('-c');
+    expect(opts.args).toContain('-b');
+    expect(opts.args).toContain(jar);
+    expect(opts.command_repr).toContain(jar);
+  });
+
+  it('cookie method with a jar gets -c (save) but NOT a second -b (would shadow the tested cookie)', async () => {
+    const { handlers } = buildHandlers(usableCred({ cred_material_kind: 'session_cookie' }));
+    await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'cookie',
+      success: { status: 200 }, session_jar_id: 'sess-1',
+    });
+    const opts = lastOpts();
+    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    expect(opts.args).toContain('-c');
+    expect(opts.args).toContain(jar); // -c <jar> present
+    // The only -b value is the tested cookie (name=value), never the jar path.
+    const bIdxs = opts.args.reduce((acc: number[], a: string, i: number) => (a === '-b' ? [...acc, i] : acc), []);
+    for (const i of bIdxs) expect(opts.args[i + 1]).not.toBe(jar);
+  });
+
+  it('omitting session_jar_id spawns no cookie-jar args', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    await handlers.test_webapp_credential({ credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'bearer' });
+    const opts = lastOpts();
+    expect(opts.args).not.toContain('-c');
+    expect(opts.args.some((a: string) => a.includes('session-jars'))).toBe(false);
+  });
+
+  it('rejects an unsafe session_jar_id before spawning (path-traversal guard), flagged isError', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    const res = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'bearer', session_jar_id: '../../etc/evil',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Invalid session_jar_id');
+    // No spawn happened.
+    expect(vi.mocked(runInstrumentedProcess)).not.toHaveBeenCalled();
   });
 });

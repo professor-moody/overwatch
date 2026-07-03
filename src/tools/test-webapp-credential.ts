@@ -41,6 +41,7 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isCredentialMfaBlocked, isCredentialUsableForAuth } from '../services/credential-utils.js';
 import { runInstrumentedProcess, MAX_TIMEOUT_MS } from './_process-runner.js';
+import { sessionJarPath } from '../services/http-session-jar.js';
 
 const METHODS = ['form', 'basic', 'bearer', 'cookie'] as const;
 type Method = typeof METHODS[number];
@@ -59,6 +60,7 @@ interface WebCredParams {
     body_excludes?: string;
     redirect_contains?: string;
   };
+  session_jar_id?: string;
   // Lifecycle threading.
   action_id?: string;
   frontier_item_id?: string;
@@ -114,6 +116,7 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
         username_field: z.string().optional().describe("form only: username form field name (default 'username')."),
         password_field: z.string().optional().describe("form only: password form field name (default 'password')."),
         header_name: z.string().optional().describe("bearer: custom header to carry the raw token (e.g. 'X-API-Key'); default 'Authorization: Bearer <token>'. cookie: the cookie name (default 'session')."),
+        session_jar_id: z.string().optional().describe("Persist this login's session in a named cookie jar (curl -c/-b): the response Set-Cookie is saved so the authenticated-crawl tool can reuse the session. Reuse the SAME id there. 1–64 chars of [A-Za-z0-9_-]. Omit for a stateless one-shot test."),
         success: z.object({
           status: z.union([z.number().int(), z.array(z.number().int())]).optional().describe('HTTP status(es) that mean success.'),
           body_contains: z.string().optional().describe('Substring that must appear in the response body.'),
@@ -183,6 +186,26 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       // (below) so curl times out cleanly first (emitting a 000 marker).
       const reqSeconds = params.timeout_ms ? Math.max(1, Math.ceil(params.timeout_ms / 1000)) : 20;
       const base = ['-sS', '-i', '--max-time', String(reqSeconds), '-w', `\n[OWSTATUS:%{http_code}:${nonce}]`];
+
+      // Optional session persistence: `-c <jar>` saves the response Set-Cookie
+      // so the authenticated-crawl tool can reuse this login's session. `-b <jar>`
+      // replays any already-saved cookies — but NOT for the `cookie` method,
+      // whose own `-b <name>=<secret>` is the exact cookie under test; a second
+      // `-b <jar>` could send a stale same-named cookie and shadow it, flipping
+      // the verdict. The jar path isn't secret → it goes into args AND the repr.
+      if (params.session_jar_id !== undefined) {
+        let jarPath: string;
+        try {
+          jarPath = sessionJarPath(engine.getStateFilePath(), params.session_jar_id);
+        } catch (e) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2) }],
+          };
+        }
+        base.push('-c', jarPath);
+        if (params.method !== 'cookie') base.push('-b', jarPath);
+      }
 
       // Build the real argv AND its redacted mirror in lockstep, so the
       // secret is redacted precisely where it sits (never a blind global
