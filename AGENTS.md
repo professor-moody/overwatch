@@ -39,7 +39,7 @@ For captured cloud / SaaS credentials, prefer the **playbook tools** over re-der
 - **`exchange_refresh_token({ credential_id, client_id })`** — exchanges an Entra refresh token for a fresh access token. Approval-gated by default. Set `REFRESH_TOKEN` env var before running the emitted curl.
 - **`expand_entra_credential({ credential_id })`** — /me → /users → /applications → /servicePrincipals → /groups. CONSENT_ABUSE inference fires after /applications lands.
 
-> **Scripted runner:** simple `credential_test` frontier items (token validation via curl) are automatically executed by the dashboard runner — you only need playbook tools for the multi-step enumeration phases.
+> **Scripted runner:** simple `credential_test` frontier items (token validation via curl) are automatically executed by the dashboard runner — you only need playbook tools for the multi-step enumeration phases. Only **token** credentials auto-run; a non-token web credential_test (a plaintext password against an http/https login form) is skipped — test it yourself with `test_webapp_credential`.
 
 ### Reporting
 
