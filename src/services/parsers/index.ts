@@ -63,6 +63,7 @@ export { parseTestWebappCredential } from './test-webapp-credential.js';
 export { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 export { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 export { parseSecurityHeaders } from './security-headers.js';
+export { parseGowitness } from './gowitness.js';
 export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
@@ -124,6 +125,7 @@ import { parseTestWebappCredential } from './test-webapp-credential.js';
 import { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secrets.js';
 import { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 import { parseSecurityHeaders } from './security-headers.js';
+import { parseGowitness } from './gowitness.js';
 import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -262,6 +264,8 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'graphql_introspection': parseGraphqlSchema,
   'security-headers': parseSecurityHeaders,
   'security_headers': parseSecurityHeaders,
+  'gowitness': parseGowitness,
+  'aquatone': parseGowitness,
 };
 
 export function getSupportedParsers(): string[] {
