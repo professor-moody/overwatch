@@ -125,6 +125,10 @@ Drive the scanners and ingest everything through `parse_output`:
 - An **OpenAPI/Swagger** doc (`/openapi.json`, `/swagger.json`) or a **GraphQL introspection** dump → `api_endpoint` nodes (method, `auth_required`, `response_type`) via `parse_output` (`openapi` / `graphql`). This maps the API surface — unauthenticated endpoints and mutations to probe next.
 - **Response headers** (`curl -sI <url>`, or an httpx `-json` line) → `parse_output` (`security-headers`) surfaces `cors_misconfig` (permissive `Access-Control-Allow-Origin`) and `missing_security_header` (HSTS/CSP/X-Frame-Options/…) as `vulnerability` nodes on the webapp. For raw `curl -I` text, pass the app URL as `source_host` (the header dump carries no URL).
 - **Screenshots** (`gowitness scan …` / `aquatone`) → `parse_output` (`gowitness` / `aquatone`) enriches each webapp with its title, status, technology, and a `screenshot_path` reference — a fast visual triage of the web estate. (The parser records the path; the image bytes stay on disk.)
+- **Authenticated crawl** — log in with `test_webapp_credential` passing a `session_jar_id` (the response `Set-Cookie` is saved to `session-jars/<id>.jar`, a plaintext Netscape cookie file), then crawl the app **with that session** and ingest the result:
+    > **"Log in to app.acme.com with `test_webapp_credential` (session_jar_id `acme`), then crawl it authenticated and ingest the endpoints."**
+
+    Carry the session into the crawler through `run_tool` (scope + OPSEC gated) — either point a Netscape-jar-aware tool at the jar (`wget --load-cookies session-jars/acme.jar -r …`), or read the cookie out of the jar and pass it to katana (`katana -u https://app.acme.com -H "Cookie: <name>=<value>" -jsonl`). Then `parse_output` (`katana`) → an `api_endpoint` per discovered URL under the webapp (off-site links are dropped). This surfaces the **post-login** surface that unauthenticated dir-enum misses.
 
     > **"Fetch app.acme.com/openapi.json and ingest it as `openapi`; then run introspection on /graphql and ingest as `graphql`."**
 

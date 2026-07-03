@@ -64,6 +64,7 @@ export { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secret
 export { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 export { parseSecurityHeaders } from './security-headers.js';
 export { parseGowitness } from './gowitness.js';
+export { parseKatana } from './katana.js';
 export { parseTheHarvester } from './theharvester.js';
 
 import { parseNmapXml, parseNmapGrepable, parseNmap } from './nmap.js';
@@ -126,6 +127,7 @@ import { parseTrufflehog, parseSecretfinder, parseLinkfinder } from './js-secret
 import { parseOpenapi, parseGraphqlSchema } from './api-schema.js';
 import { parseSecurityHeaders } from './security-headers.js';
 import { parseGowitness } from './gowitness.js';
+import { parseKatana } from './katana.js';
 import { parseTheHarvester } from './theharvester.js';
 
 const PARSERS: Record<string, (output: string, agentId?: string, context?: ParseContext) => Finding> = {
@@ -266,6 +268,10 @@ const PARSERS: Record<string, (output: string, agentId?: string, context?: Parse
   'security_headers': parseSecurityHeaders,
   'gowitness': parseGowitness,
   'aquatone': parseGowitness,
+  'katana': parseKatana,
+  'hakrawler': parseKatana,
+  'gau': parseKatana,
+  'waybackurls': parseKatana,
 };
 
 export function getSupportedParsers(): string[] {
