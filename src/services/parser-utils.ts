@@ -113,12 +113,56 @@ export function organizationId(name: string): string {
   return `organization-${normalizeKeyPart(name)}`;
 }
 
-/** Best-effort registrable domain (eTLD+1) from an FQDN — the last two labels.
- *  No Public Suffix List, so multi-part TLDs (e.g. co.uk) are approximate; good
- *  enough to anchor a subdomain to its apex for SUBDOMAIN_OF edges. */
+/**
+ * A curated subset of the Public Suffix List: common MULTI-LABEL public suffixes
+ * (ccTLD second levels) under which registrations happen, so the registrable
+ * domain is the label BEFORE them (e.g. `bbc.co.uk`, not `co.uk`). Not exhaustive
+ * — a full PSL would be a runtime dependency we deliberately avoid for a
+ * grouping/scoping helper; any suffix not listed here falls back to the last-two
+ * labels (identical to the prior behavior, so no regression). Entries carry no
+ * leading dot and are the well-known, unambiguous ones a pentest is likely to hit.
+ */
+const MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
+  // UK (NB: `sch.uk` is `*.sch.uk` in the PSL and `mod.uk` isn't a public suffix — omitted)
+  'co.uk', 'org.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk', 'ac.uk', 'gov.uk', 'nhs.uk', 'police.uk',
+  // Australia / New Zealand
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'asn.au', 'id.au',
+  'co.nz', 'net.nz', 'org.nz', 'govt.nz', 'ac.nz', 'school.nz',
+  // Japan / Korea / China / Taiwan / Hong Kong
+  'co.jp', 'ne.jp', 'or.jp', 'go.jp', 'ac.jp', 'ad.jp', 'ed.jp', 'gr.jp', 'lg.jp',
+  'co.kr', 'ne.kr', 'or.kr', 'go.kr', 're.kr', 'ac.kr',
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+  'com.tw', 'org.tw', 'gov.tw', 'edu.tw',
+  'com.hk', 'org.hk', 'gov.hk', 'edu.hk', 'idv.hk',
+  // South Africa
+  'co.za', 'org.za', 'net.za', 'gov.za', 'ac.za', 'web.za',
+  // Latin America
+  'com.br', 'net.br', 'org.br', 'gov.br', 'edu.br',
+  'com.mx', 'gob.mx', 'com.ar', 'com.co', 'com.pe',
+  // India / SE Asia / Middle East / other common
+  'co.in', 'net.in', 'org.in', 'gen.in', 'ind.in', 'gov.in', 'ac.in', 'edu.in', 'res.in',
+  'com.sg', 'net.sg', 'org.sg', 'gov.sg', 'edu.sg', 'com.my', 'com.ph', 'com.vn', 'co.id', 'co.th', 'or.th', 'in.th',
+  'com.tr', 'gov.tr', 'edu.tr',
+  'co.il', 'org.il', 'gov.il', 'ac.il',
+  'com.sa', 'net.sa', 'org.sa', 'gov.sa', 'edu.sa',
+  'com.eg', 'com.ua', 'com.pl', 'net.pl', 'org.pl', 'gov.pl', 'edu.pl', 'com.ru', 'com.ng',
+]);
+
+/** Registrable domain (eTLD+1) from an FQDN. Uses a curated multi-label
+ *  public-suffix set so `app.acme.co.uk` → `acme.co.uk` (not `co.uk`); anything
+ *  under a plain TLD (or an unlisted suffix) falls back to the last two labels. */
 export function apexDomain(host: string): string {
-  const labels = host.trim().toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
-  return labels.length <= 2 ? labels.join('.') : labels.slice(-2).join('.');
+  const trimmed = host.trim().replace(/\.$/, '');
+  // An IP literal has no registrable domain — return it unchanged rather than
+  // mangling `10.10.10.5` → `10.5`. (Consumers already gate IPs upstream; this
+  // is defense in depth.)
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(trimmed) || trimmed.includes(':')) return trimmed;
+  const labels = trimmed.toLowerCase().split('.').filter(Boolean);
+  if (labels.length <= 2) return labels.join('.');
+  // When the last two labels are a known multi-label public suffix, the
+  // registrable domain includes the label before it (last three); else last two.
+  const take = MULTI_LABEL_PUBLIC_SUFFIXES.has(labels.slice(-2).join('.')) ? 3 : 2;
+  return labels.slice(-take).join('.');
 }
 
 /** Canonical email id. Splits on the LAST '@' and normalizes local-part and

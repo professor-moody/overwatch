@@ -1,5 +1,50 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount, resolveDomainName } from '../parser-utils.js';
+import { normalizeKeyPart, domainId, userId, credentialId, hostId, caId, certTemplateId, pkiStoreId, splitQualifiedAccount, resolveDomainName, apexDomain } from '../parser-utils.js';
+
+describe('apexDomain', () => {
+  it('plain TLD → last two labels (unchanged from the naive version)', () => {
+    expect(apexDomain('app.acme.com')).toBe('acme.com');
+    expect(apexDomain('a.b.c.acme.com')).toBe('acme.com');
+    expect(apexDomain('acme.com')).toBe('acme.com');
+    expect(apexDomain('localhost')).toBe('localhost');
+  });
+
+  it('multi-label public suffix → registrable domain is the label before it', () => {
+    expect(apexDomain('app.acme.co.uk')).toBe('acme.co.uk');
+    expect(apexDomain('www.bbc.co.uk')).toBe('bbc.co.uk');
+    expect(apexDomain('acme.com.au')).toBe('acme.com.au');
+    expect(apexDomain('a.b.corp.co.jp')).toBe('corp.co.jp');
+    expect(apexDomain('shop.example.com.br')).toBe('example.com.br');
+  });
+
+  it('two unrelated sites under the same multi-label suffix stay distinct', () => {
+    expect(apexDomain('a.foo.co.uk')).not.toBe(apexDomain('b.bar.co.uk'));
+    expect(apexDomain('a.foo.co.uk')).toBe('foo.co.uk');
+    expect(apexDomain('b.bar.co.uk')).toBe('bar.co.uk');
+  });
+
+  it('a bare public suffix (no registration) returns itself; unlisted suffix falls back', () => {
+    expect(apexDomain('co.uk')).toBe('co.uk');                 // 2 labels → as-is
+    expect(apexDomain('sub.example.xyzcc')).toBe('example.xyzcc'); // unlisted → last two
+  });
+
+  it('normalizes case + trailing dot', () => {
+    expect(apexDomain('APP.Acme.CO.UK.')).toBe('acme.co.uk');
+  });
+
+  it('returns an IP literal unchanged (no mangling to 10.5)', () => {
+    expect(apexDomain('10.10.10.5')).toBe('10.10.10.5');
+    expect(apexDomain('192.168.0.1')).toBe('192.168.0.1');
+    expect(apexDomain('::1')).toBe('::1');
+    expect(apexDomain('2001:db8::1')).toBe('2001:db8::1');
+  });
+
+  it('non-PSL suffixes fall back to last-two (sch.uk is *.sch.uk; mod.uk not a suffix)', () => {
+    // We intentionally do NOT list sch.uk/mod.uk, so these use the last-two fallback.
+    expect(apexDomain('school.camden.sch.uk')).toBe('sch.uk');
+    expect(apexDomain('host.dept.mod.uk')).toBe('mod.uk');
+  });
+});
 
 describe('Parser Utilities', () => {
 
