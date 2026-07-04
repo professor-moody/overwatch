@@ -21,6 +21,12 @@ curl -sI http://target | grep -i 'server\|x-powered-by\|x-aspnet'
 ```
 Check default error pages, `/robots.txt`, `/sitemap.xml`, `/.well-known/`.
 
+**Analyze the response headers** — don't just eyeball them: `curl -sI https://target` →
+`parse_output as \`security-headers\`` (`context.source_host = https://target`) surfaces
+`cors_misconfig` (permissive `Access-Control-Allow-Origin`) and `missing_security_header`
+(HSTS / CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy) as `vulnerability` nodes
+on the webapp.
+
 ### Directory and File Enumeration (OPSEC: 0.7)
 ```bash
 # Gobuster — directory bruteforce
@@ -78,6 +84,14 @@ trufflehog filesystem js_bundles/ --json                # →  parse_output as `
 linkfinder -i 'http://target/app.js' -o cli             # →  parse_output as `linkfinder`, context.source_host = http://target
 ```
 
+### Visual Triage (Screenshots)
+Screenshot the web estate to prioritize by eye — leftover admin panels, default installs, error pages:
+```bash
+gowitness scan single -u https://target --write-jsonl   # writes ./gowitness.jsonl; or `aquatone` over a host list
+```
+`parse_output as \`gowitness\`` (or `aquatone`) enriches each webapp with its title, HTTP status,
+technology, and a `screenshot_path` reference (the image bytes stay on disk).
+
 ### Sensitive File Checks
 ```bash
 # Check for exposed source control, configs, backups
@@ -97,11 +111,28 @@ Targets: `.git/`, `.svn/`, `.env`, `web.config`, backup files (`.bak`, `.old`, `
   target, or a body marker). On success it records `AUTHENTICATED_AS` + `VALID_ON` and retires the
   `credential_test` frontier item; on failure it records `TESTED_CRED` so the pair isn't retried.
 
+### Authenticated Crawl
+The **post-login** surface is where the interesting endpoints live — unauthenticated dir-enum can't see
+it. Log in once, keep the session, and crawl with it:
+1. `test_webapp_credential` with a `session_jar_id` (e.g. `acme`) — the login's `Set-Cookie` is saved to
+   a cookie jar and the tool's response prints the jar path (the jar holds the authenticated session
+   only if the login actually succeeded — check the result).
+2. Crawl **with that session** through `run_tool` (`wget --load-cookies` reads the jar natively):
+   ```bash
+   wget --load-cookies '<jar-path-from-step-1>' --recursive --level=2 --spider --no-verbose https://target 2>&1 \
+     | grep -oE 'https?://[^ ]+' | sort -u          # or `katana -u https://target -H "Cookie: …" -jsonl`
+   ```
+3. `parse_output as \`katana\`` (or `hakrawler`) → an `api_endpoint` per discovered URL under the webapp
+   (`context.source_host = https://target`; kept to the same registrable domain — sibling subdomains
+   like `api.target` stay, off-site links like CDNs/trackers are dropped).
+
 ## Graph Reporting
 - **Enrich service nodes**: technology stack, framework, version, server software
 - **New service nodes**: for each vhost discovered
 - **Credential nodes**: for default/leaked credentials found (JS secrets included)
-- **api_endpoint nodes**: for each ingested API operation (`HAS_ENDPOINT` from the webapp)
+- **api_endpoint nodes**: for each ingested API operation / crawled URL (`HAS_ENDPOINT` from the webapp)
+- **vulnerability nodes**: `cors_misconfig` / `missing_security_header` from response-header analysis
+- **Webapp enrichment**: `screenshot_path` from visual triage
 - **AUTHENTICATED_AS / VALID_ON edges**: when a credential validates against the app
 - **HAS_SESSION edges**: if admin access obtained via default creds
 

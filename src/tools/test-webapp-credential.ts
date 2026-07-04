@@ -193,18 +193,18 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
       // whose own `-b <name>=<secret>` is the exact cookie under test; a second
       // `-b <jar>` could send a stale same-named cookie and shadow it, flipping
       // the verdict. The jar path isn't secret → it goes into args AND the repr.
+      let sessionJarFilePath: string | undefined;
       if (params.session_jar_id !== undefined) {
-        let jarPath: string;
         try {
-          jarPath = sessionJarPath(engine.getStateFilePath(), params.session_jar_id);
+          sessionJarFilePath = sessionJarPath(engine.getStateFilePath(), params.session_jar_id);
         } catch (e) {
           return {
             isError: true,
             content: [{ type: 'text', text: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }, null, 2) }],
           };
         }
-        base.push('-c', jarPath);
-        if (params.method !== 'cookie') base.push('-b', jarPath);
+        base.push('-c', sessionJarFilePath);
+        if (params.method !== 'cookie') base.push('-b', sessionJarFilePath);
       }
 
       // Build the real argv AND its redacted mirror in lockstep, so the
@@ -250,7 +250,7 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
         ? (Array.isArray(params.success.status) ? params.success.status : [params.success.status])
         : undefined;
 
-      return runInstrumentedProcess(engine, {
+      const result = await runInstrumentedProcess(engine, {
         binary: 'curl',
         args,
         command_repr: commandRepr,
@@ -290,6 +290,26 @@ Architecture: subprocess via curl. Goes through the standard action lifecycle (v
         timeout_ms: params.timeout_ms ? Math.min(MAX_TIMEOUT_MS, params.timeout_ms + 5000) : undefined,
         invoking_tool: 'run_tool',
       });
+
+      // Crawl handoff: when a jar was written and curl ran, surface the jar FILE
+      // PATH (not the cookie — that stays protected) so a follow-up authenticated
+      // crawl can target it. The note fires on transport success, not the auth
+      // verdict (a 401 still exits curl 0), so it says "if the login succeeded" —
+      // the jar holds the authenticated session only then. `wget --load-cookies`
+      // reads the curl Netscape jar natively; feed its URL list to parse_output.
+      if (sessionJarFilePath && !result.isError) {
+        const jar = quoteArg(sessionJarFilePath);
+        result.content = [
+          ...result.content,
+          {
+            type: 'text',
+            text: `Cookie jar written to ${jar}. If the login succeeded, it holds the session — crawl authenticated: `
+              + `wget --load-cookies ${jar} --recursive --level=2 --spider --no-verbose <target> 2>&1 | grep -oE 'https?://[^ ]+' | sort -u`
+              + ` (or katana with the cookie), then parse_output as \`katana\` (or \`hakrawler\`).`,
+          },
+        ];
+      }
+      return result;
     }),
   );
 }

@@ -23,7 +23,16 @@ The secret (password / token / cookie value) is **never** written to the activit
 
 ## Session persistence
 
-Pass `session_jar_id` (a name, `1–64` chars of `[A-Za-z0-9_-]`) to persist the login's session: the call adds `curl -c <jar> -b <jar>`, so the response `Set-Cookie` is saved to a named cookie-jar file under the engagement state dir (`session-jars/<id>.jar`) and any already-saved cookies are replayed. Reuse the **same** id with the authenticated-crawl tool to crawl the app as the logged-in user. The jar holds a live session cookie (a secret), so it lives beside evidence in the operator-local state dir and is never logged (only the jar **path** appears in `command_repr`). Omit `session_jar_id` for a stateless one-shot test.
+Pass `session_jar_id` (a name, `1–64` chars of `[A-Za-z0-9_-]`) to persist the login's session: the call adds `curl -c <jar> -b <jar>`, so the response `Set-Cookie` is saved to a named cookie-jar file under the engagement state dir (`session-jars/<id>.jar`) and any already-saved cookies are replayed. The jar holds a live session cookie (a secret), so it lives beside evidence in the operator-local state dir and is never logged (only the jar **path** appears in `command_repr`). Omit `session_jar_id` for a stateless one-shot test.
+
+**Crawl handoff.** When `session_jar_id` is set and the request ran, the response includes the jar **path** (not the cookie — that stays protected); the jar holds the authenticated session if the login succeeded. Point an authenticated crawl at it and ingest the result:
+
+```bash
+wget --load-cookies '<jar-path-from-response>' --recursive --level=2 --spider --no-verbose https://target 2>&1 \
+  | grep -oE 'https?://[^ ]+' | sort -u        # → parse_output as `katana` (or `hakrawler`)
+```
+
+`wget --load-cookies` reads the curl Netscape jar natively (no cookie extraction, no secret in logs). This reaches the **post-login** endpoint surface that unauthenticated crawling misses.
 
 ## Success detection
 

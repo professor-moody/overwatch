@@ -208,12 +208,39 @@ describe('test_webapp_credential tool', () => {
     for (const i of bIdxs) expect(opts.args[i + 1]).not.toBe(jar);
   });
 
-  it('omitting session_jar_id spawns no cookie-jar args', async () => {
+  it('surfaces the jar PATH (not the cookie) in the response so an auth crawl can target it', async () => {
     const { handlers } = buildHandlers(usableCred());
-    await handlers.test_webapp_credential({ credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'bearer' });
+    const res = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form', login_path: '/login',
+      success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
+    });
+    const jar = '/tmp/ow-test-state/session-jars/sess-1.jar';
+    // The handoff note the tool appends (the mock echoes opts separately; the
+    // real runner redacts those args — covered by the redact_secrets test).
+    const handoff = res.content.find((c: { text: string }) => c.text.includes('--load-cookies'));
+    expect(handoff).toBeDefined();
+    expect(handoff!.text).toContain(jar);        // path surfaced for the crawl handoff
+    expect(handoff!.text).toContain('parse_output');
+    expect(handoff!.text).not.toContain('p@ss word'); // the note never carries the secret
+  });
+
+  it('does NOT append the handoff note when the run errored (isError:true)', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    vi.mocked(runInstrumentedProcess).mockResolvedValueOnce({ content: [{ type: 'text', text: 'boom' }], isError: true });
+    const res = await handlers.test_webapp_credential({
+      credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'form', login_path: '/login',
+      success: { redirect_contains: '/dashboard' }, session_jar_id: 'sess-1',
+    });
+    expect(res.content.some((c: { text: string }) => c.text.includes('--load-cookies'))).toBe(false);
+  });
+
+  it('omitting session_jar_id spawns no cookie-jar args and adds no handoff note', async () => {
+    const { handlers } = buildHandlers(usableCred());
+    const res = await handlers.test_webapp_credential({ credential_id: 'cred-1', target_url: 'https://app.acme.com', method: 'bearer' });
     const opts = lastOpts();
     expect(opts.args).not.toContain('-c');
     expect(opts.args.some((a: string) => a.includes('session-jars'))).toBe(false);
+    expect(res.content.map((c: { text: string }) => c.text).join('\n')).not.toContain('session-jars');
   });
 
   it('rejects an unsafe session_jar_id before spawning (path-traversal guard), flagged isError', async () => {
