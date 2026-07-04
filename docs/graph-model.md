@@ -27,6 +27,9 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, etc.) | `resource_type`, `region`, `public`, `encrypted` |
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment | `policy_name`, `effect`, `actions`, `resources` |
 | `cloud_network` | Cloud network construct (VPC, security group) | `network_type`, `ingress_rules`, `egress_rules` |
+| `idp` | An identity provider (Okta org, Entra tenant, generic OIDC/SAML) — the SSO surface | `idp_kind`, `tenant_id`, `issuer_url`, `federation_mode` |
+| `idp_application` | A registered application within an IdP | `client_id`, `app_name`, `app_audiences`, `app_scopes`, `app_mfa_required`, `sub_claim_pattern`, `idp_id` |
+| `idp_principal` | A federated user/group/service identity at the IdP | `idp_user_id`, `idp_principal_kind`, `upn`, `mfa_methods`, `mfa_required`, `assigned_apps` |
 | `api_endpoint` | A web API endpoint | `path`, `method`, `auth_required`, `response_type` |
 | `mock_service` | An **operator-controlled** decoy / listener / relay (Responder, ntlmrelayx, fake LDAP, redirector, reverse-shell catcher, etc.) | `mock_purpose`, `bind_host`, `bind_port`, `protocol`, `opsec_loud`, `started_at`, `stopped_at`, `bound_session_id` |
 | `subdomain` | A DNS name under an in-scope domain (external surface) | `subdomain_name`, `parent_domain`, `resolved_ips`, `dns_records`, `wildcard`, `takeover_candidate` |
@@ -175,6 +178,30 @@ For engagements with `engagement_nonce` populated, action and event IDs are dete
 | `network_type` | `string` | `vpc`, `security_group`, `subnet`, `firewall_rule` |
 | `ingress_rules` | `string[]` | Inbound access rules |
 | `egress_rules` | `string[]` | Outbound access rules |
+
+### Enterprise Identity (IdP / SSO) Properties
+
+The `idp` / `idp_application` / `idp_principal` tier models the SSO surface (Okta, Entra, generic OIDC/SAML, CI OIDC) distinctly from cloud IAM (`cloud_identity`).
+
+| Property | Type | Node | Description |
+|----------|------|------|-------------|
+| `idp_kind` | `string` | `idp` | `okta`, `entra`, `auth0`, `ping`, `generic_oidc`, `generic_saml`, `ci_github_actions`, `ci_gitlab`, `ci_circleci`, `github_org` |
+| `tenant_id` | `string` | `idp` | Tenant / org identifier (Okta org subdomain, Entra tenant GUID) |
+| `issuer_url` | `string` | `idp` | OIDC issuer URL |
+| `federation_mode` | `string` | `idp` | `cloud_only`, `password_hash_sync`, `pass_through_auth`, `federated` |
+| `client_id` | `string` | `idp_application` | OIDC client id |
+| `app_name` | `string` | `idp_application` | Human-readable app name |
+| `app_audiences` | `string[]` | `idp_application` | Token `aud` claim / allowed audiences |
+| `app_scopes` | `string[]` | `idp_application` | Scopes the app may request |
+| `app_mfa_required` | `boolean` | `idp_application` | MFA enforced for sign-in (conditional access) |
+| `sub_claim_pattern` | `string` | `idp_application` | CI/OIDC trust subject-claim pattern (e.g. `repo:acme/*`) |
+| `idp_id` | `string` | `idp_application` | Parent IdP node id |
+| `idp_user_id` | `string` | `idp_principal` | IdP-internal user/group id |
+| `idp_principal_kind` | `string` | `idp_principal` | `user`, `group`, `service_principal`, `app_role` |
+| `upn` | `string` | `idp_principal` | UPN / email claim (correlates with on-prem AD) |
+| `mfa_methods` | `string[]` | `idp_principal` | Configured MFA factors (`totp`, `webauthn`, `sms`, `push`) |
+| `mfa_required` | `boolean` | `idp_principal` | MFA enforced on the principal by IdP policy |
+| `assigned_apps` | `string[]` | `idp_principal` | App ids the principal can sign into |
 
 ### API Endpoint Properties
 
@@ -467,6 +494,7 @@ Sixty-four built-in declarative rules fire automatically when matching nodes are
 | Rule | Trigger | Produces |
 |------|---------|----------|
 | MSSQL Linked Server | MSSQL service with `linked_servers` | `REACHABLE` edges to linked hosts (confidence 0.8) |
+| MSSQL Domain Auth | MSSQL `service` with an inbound `RUNS` from a `domain_joined` host | `POTENTIAL_AUTH` from domain credentials (confidence 0.7) — domain-joined MSSQL likely accepts domain auth |
 
 #### Cloud Rules
 
