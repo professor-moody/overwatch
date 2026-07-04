@@ -7,7 +7,7 @@ import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { correctGraph, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
+import { correctGraph, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -166,6 +166,19 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
             {entries.length === 0 && <EmptyLine>No display properties on this node.</EmptyLine>}
           </div>
         </InspectorSection>
+
+        {nodeType === 'webapp' && typeof props.screenshot_evidence_id === 'string' && props.screenshot_evidence_id && (
+          <InspectorSection title="Screenshot">
+            <a href={evidenceImageUrl(props.screenshot_evidence_id)} target="_blank" rel="noreferrer" className="block">
+              <img
+                src={evidenceImageUrl(props.screenshot_evidence_id)}
+                alt={`Screenshot of ${String(props.url ?? nodeId)}`}
+                loading="lazy"
+                className="w-full max-h-96 object-contain rounded border border-border bg-black/20"
+              />
+            </a>
+          </InspectorSection>
+        )}
 
         <InspectorSection title="Relationships">
           <div className="grid grid-cols-2 gap-2 text-xs">

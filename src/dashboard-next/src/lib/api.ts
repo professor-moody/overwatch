@@ -37,6 +37,11 @@ import type {
 
 const BASE = '';
 
+/** Same-origin URL for a screenshot evidence blob, rendered as an `<img>`. */
+export function evidenceImageUrl(evidenceId: string): string {
+  return `${BASE}/api/evidence/${encodeURIComponent(evidenceId)}/image`;
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
