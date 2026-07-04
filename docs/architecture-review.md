@@ -6,7 +6,7 @@
 
 Overwatch is an MCP (Model Context Protocol) server that acts as the persistent state layer and reasoning substrate for LLM-powered penetration testing. Rather than stuffing engagement state into prompts, the LLM calls into a **persistent graph engine** that tracks every discovery, relationship, and hypothesis. After context compaction, a single `get_state()` call reconstructs a complete operational briefing with zero information loss.
 
-The server exposes **51 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
+The server exposes **79 MCP tools** covering the full engagement lifecycle — from initial reconnaissance through post-engagement retrospective analysis. A **directed property graph** (built on graphology) models the attack surface: hosts, services, credentials, users, groups, AD objects, operator infrastructure, and their relationships. An inference engine generates hypothetical edges, a frontier computer prioritizes next actions, and a path analyzer finds shortest routes to objectives.
 
 ---
 
@@ -31,7 +31,7 @@ The server exposes **51 MCP tools** covering the full engagement lifecycle — f
 │  └──────────────┘  └──────────────┘  └────────────────────┘   │
 │                                                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │              51 MCP Tools (Zod-validated)                  │  │
+│  │              79 MCP Tools (Zod-validated)                  │  │
 │  │  state · findings · scoring · exploration · agents ·       │  │
 │  │  logging · parsing · bloodhound · azurehound · inference   │  │
 │  │  remediation · skills · toolcheck · processes · sessions   │  │
@@ -61,7 +61,7 @@ The server exposes **51 MCP tools** covering the full engagement lifecycle — f
 
 ## Graph Model
 
-### Node Types (21)
+### Node Types (30)
 
 | Type | Description |
 |------|-------------|
@@ -87,7 +87,7 @@ The server exposes **51 MCP tools** covering the full engagement lifecycle — f
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment |
 | `cloud_network` | Cloud network construct (VPC, security group, subnet) |
 
-### Edge Types (63)
+### Edge Types (90)
 
 Organized by domain:
 
@@ -182,7 +182,7 @@ Eight integrity checks:
 
 ### Output Parsers (`src/services/parsers/`)
 
-Twenty-one deterministic parsers with 36 aliases:
+Seventy-five deterministic parsers with 130 `parse_output` keys:
 
 | Parser | Input | Output |
 |--------|-------|--------|
@@ -216,7 +216,7 @@ Full SharpHound v4/v5 JSON parser. Maps all BH object types (computers, users, g
 
 ### Skill Index (`src/services/skill-index.ts`)
 
-Local TF-IDF search over 34 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
+Local TF-IDF search over 43 markdown skill files. No external vector DB — runs entirely locally. Lightweight stemming, tag and name bonuses, ranked results with excerpts.
 
 ### Dashboard Server (`src/services/dashboard-server.ts`)
 
@@ -236,7 +236,7 @@ Three transport implementations: `LocalPtyAdapter` (node-pty spawn), `SshAdapter
 
 ---
 
-## MCP Tools (60+)
+## MCP Tools (79)
 
 All tools are wrapped in `withErrorBoundary` — unhandled errors return structured MCP error responses instead of crashing the server.
 
@@ -257,7 +257,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 |------|---------|
 | `report_finding` | Primary data ingestion — nodes + edges + evidence |
 | `get_evidence` | Retrieve full-fidelity evidence by ID or list stored evidence records |
-| `parse_output` | Deterministic tool output parsing (21 parsers, 36 aliases) |
+| `parse_output` | Deterministic tool output parsing (75 parsers, 130 keys) |
 | `ingest_bloodhound` | SharpHound/bloodhound-python JSON ingestion |
 | `ingest_azurehound` | AzureHound / ROADtools JSON ingestion |
 
@@ -290,7 +290,7 @@ All tools are wrapped in `withErrorBoundary` — unhandled errors return structu
 
 | Tool | Purpose |
 |------|---------|
-| `get_skill` | RAG skill search and retrieval (34 skills) |
+| `get_skill` | RAG skill search and retrieval (43 skills) |
 | `check_tools` | Offensive tool availability detection |
 | `track_process` | Register long-running scan for tracking |
 | `check_processes` | Check tracked process status |
@@ -387,8 +387,8 @@ The `run_retrospective` tool produces five structured outputs:
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (51 tools) |
-| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 51 tools via stdio + HTTP/SSE transport |
+| Bootstrap | `config.test.ts`, `app-bootstrap.test.ts` | Config parsing and transport-neutral app bootstrap (79 tools) |
+| Integration | `mcp-server.integration.test.ts`, `http-transport.integration.test.ts` | All 79 tools via stdio + HTTP/SSE transport |
 | Core Engine | `graph-engine.test.ts` | Seeding, ingestion, inference, persistence, rollback, identity, cold store integration |
 | Services | 24 test files | CIDR, BloodHound, parsers (21), identity resolution, identity reconciliation, health, credentials, credential lifecycle, preflight, retrospective, dashboard, delta accumulator, graph schema, session manager, community detection, prompt generator, report generator, parser utils + sprint test suites (compaction, web surface, hardening, cloud graph, Linux/network, architecture prep) |
 | Tools | 10+ test files | Tool handlers: agents, findings, scoring, state, reporting, instructions, remediation, sessions, parse-output, activity logging, error boundary, processes |
@@ -466,7 +466,7 @@ overwatch/
 │   │   ├── graph-health.ts         # 8 integrity checks + contextual AD filtering
 │   │   ├── credential-utils.ts     # Credential classification + lifecycle
 │   │   ├── credential-coverage.ts  # Credential × target coverage matrix
-│   │   ├── parsers/              # 21 deterministic parsers (36 aliases)
+│   │   ├── parsers/              # 75 deterministic parsers (130 parse_output keys)
 │   │   ├── parser-utils.ts         # Canonical ID helpers
 │   │   ├── provenance-utils.ts     # Node provenance normalization
 │   │   ├── bloodhound-ingest.ts    # SharpHound v4/v5 (CE) JSON parser
@@ -497,7 +497,7 @@ overwatch/
 │       ├── lab-smoke.ts            # Lab smoke test harness
 │       ├── lab-smoke-lib.ts        # Smoke test library
 │       └── retrospective.ts        # CLI retrospective runner
-├── skills/                         # 34 offensive methodology guides
+├── skills/                         # 43 offensive methodology guides
 ├── fixtures/                       # Test fixtures (GOAD synth data)
 ├── engagement.json                 # Example engagement config
 ├── package.json                    # Dependencies + scripts
@@ -514,7 +514,7 @@ overwatch/
 - **Robust validation pipeline** — Multi-stage: finding validation → schema check → identity resolution → reconciliation → inference. Bad data is rejected before it enters the graph.
 - **Sophisticated identity resolution** — Canonical ID generation, marker-based matching, bidirectional merge, provenance preservation. Handles the real-world messiness of BloodHound SIDs + manual findings + parser outputs colliding.
 - **Error resilience** — Every tool handler wrapped in error boundary. Server never crashes on tool errors.
-- **Deterministic parsing** — 21 parsers (36 aliases) covering the core offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
+- **Deterministic parsing** — 75 parsers (130 `parse_output` keys) covering the offensive tool chain. Reduces LLM token cost by handling structured output mechanically.
 - **Action lifecycle correlation** — `action_id` links validate → start → complete → finding. Enables meaningful retrospectives and RLVR trace generation.
 - **Comprehensive health checks** — 8 checks catching real graph integrity issues.
 - **Atomic persistence** — Write-rename with snapshot rotation prevents data corruption on crash.

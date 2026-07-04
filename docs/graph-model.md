@@ -21,8 +21,8 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `ou` | An Organizational Unit | `label` |
 | `subnet` | A network subnet | `subnet_cidr` |
 | `objective` | An engagement objective | `objective_description`, `objective_achieved` |
-| `webapp` | A web application | `url`, `technology`, `framework`, `auth_type` |
-| `vulnerability` | A discovered vulnerability | `cve`, `cvss`, `vuln_type`, `exploitable` |
+| `webapp` | A web application | `url`, `technology`, `framework`, `auth_type`, `has_api`, `http_status`, `title`, `screenshot_path`, `final_url` |
+| `vulnerability` | A discovered vulnerability | `cve`, `cvss`, `vuln_type`, `exploitable`, `affected_component` |
 | `cloud_identity` | Cloud IAM principal (user, role, service account) | `provider`, `arn`, `principal_type`, `mfa_enabled` |
 | `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, etc.) | `resource_type`, `region`, `public`, `encrypted` |
 | `cloud_policy` | Cloud IAM policy or RBAC role assignment | `policy_name`, `effect`, `actions`, `resources` |
@@ -337,6 +337,31 @@ Edges over the external-recon tier (Phase 2A schema; populated by the OSINT capa
 | `OWNS_ASSET` | `organization → domain \| asn` — org ownership of an internet asset. Distinct from the AD `OWNS` (ACL ownership). |
 | `AFFILIATED_WITH` | `email → organization` — a harvested email/person affiliated with an org. |
 
+### Identity, Federation, ADCS & Cloud (extended)
+
+Edges over the enterprise-identity (Entra/Okta/OIDC), ADCS, DCSync, and web↔cloud tiers.
+
+| Edge | Description |
+|------|-------------|
+| `ASSIGNED_TO_APP` | `idp_principal \| user \| group → idp_application` — principal is assigned to an IdP application. |
+| `MFA_REQUIRED_FOR` | `idp_principal \| user \| group \| idp_application → idp_application` — MFA is enforced for the app. |
+| `SERVICE_PRINCIPAL_FOR` | `cloud_identity → cloud_identity` — a service principal / managed identity acts for another identity. |
+| `ISSUES_TOKENS_FOR` | `idp_application → cloud_identity \| cloud_resource` — the app can mint tokens for the target. |
+| `AUTHENTICATES_VIA` | `webapp \| api_endpoint \| cloud_resource → idp_application` — the resource authenticates via the IdP app (SSO). |
+| `FEDERATES_WITH` | `idp \| domain → idp \| domain` — a federation trust between identity providers / domains. |
+| `VALID_FOR_APP` | `credential → idp_application` — the credential authenticates to the app. |
+| `VALID_FOR_IDP_PRINCIPAL` | `credential → idp_principal` — the credential belongs to / authenticates as the IdP principal. |
+| `ISSUED_BY` | `cert_template → ca` — the certificate template is issued by the CA. |
+| `OPERATES_CA` | `domain → ca` — the domain operates the certificate authority. |
+| `MANAGE_CA` | `user \| group → ca` — CA management rights (ADCS ESC7). |
+| `MANAGE_CERTIFICATES` | `user \| group → ca` — certificate management rights (ADCS ESC7). |
+| `ESC15` | `user \| group → cert_template` — ADCS ESC15 / EKUwu (CVE-2024-49019) on a V1 template. |
+| `CAN_GET_CHANGES` | `user \| group → domain` — partial DS-Replication rights (DCSync building block). |
+| `CAN_GET_CHANGES_ALL` | `user \| group → domain` — full DS-Replication-Get-Changes-All (completes DCSync). |
+| `CAN_CAPTURE_TGT_FROM` | `host → user \| group \| credential` — can capture a TGT (e.g. unconstrained delegation). |
+| `BACKED_BY` | `webapp \| api_endpoint → cloud_resource \| host` — the app is backed by a cloud resource / host. |
+| `CAN_REACH` | `webapp \| api_endpoint \| host → cloud_resource \| host` — network reachability to a backend. |
+
 ### Generic
 
 | Edge | Description |
@@ -364,7 +389,7 @@ Every edge has these base properties:
 
 Sixty-four built-in declarative rules fire automatically when matching nodes are ingested. Many rules use **edge-triggered inference** — they require a matching inbound edge (`requires_edge` field) in addition to the node property match. When a new or updated edge arrives, inference re-evaluates its endpoints. The sections below document the major rule families; the complete, current list lives in `src/services/builtin-inference-rules.ts`.
 
-#### AD & Service Rules (21)
+#### AD & Service Rules (22)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -410,7 +435,7 @@ Sixty-four built-in declarative rules fire automatically when matching nodes are
 | ADCS ESC12 | CA with shell access + YubiHSM key storage | `ESC12` from CA host compromised peers (confidence 0.7) |
 | ADCS ESC13 | cert_template with issuance policy OID | `ESC13` from enrollable users with issuance policy (confidence 0.7) |
 
-#### Linux Privilege Escalation Rules
+#### Linux Privilege Escalation Rules (7)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|
@@ -422,7 +447,7 @@ Sixty-four built-in declarative rules fire automatically when matching nodes are
 | Dangerous Capabilities | Host with `has_dangerous_capabilities: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.55) |
 | Writable Cron/Systemd | Host with `writable_cron_or_systemd: true` + `HAS_SESSION` | `ADMIN_TO` from session holders (confidence 0.65) |
 
-#### Web Application Rules (8)
+#### Web Application Rules (10)
 
 | Rule | Trigger | Produces |
 |------|---------|----------|

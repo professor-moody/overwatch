@@ -118,7 +118,7 @@ The LLM isn't restricted to scored frontier items. [`query_graph`](tools/query-g
 | **Golden Replay** | `src/services/golden-replay.ts` | Tape-driven byte-identical replay harness; canonical graph hash for regression detection |
 | **Sub-agent IPC** | `src/services/subagent-ipc.ts`, `src/services/subagent-process-runner.ts` | Typed JSON-over-stdio contract + parent-side runner for the optional `subagent_isolation: 'process'` mode (default `'in_process'`) |
 | **Skill Index** | `src/services/skill-index.ts` | TF-IDF search over skill library |
-| **Output Parsers** | `src/services/parsers/` | 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan |
+| **Output Parsers** | `src/services/parsers/` | 75 parsers / 130 `parse_output` keys: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas/linenum, nuclei, nikto, testssl/sslscan, pacu, prowler, burp, zap, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crtsh, whois, theHarvester, trufflehog, secretfinder, linkfinder, openapi/swagger/graphql, security-headers, gowitness/aquatone, katana/hakrawler/gau, test-webapp-credential, … |
 | **Parser Utils** | `src/services/parser-utils.ts` | Shared parsing helpers and canonical ID generation |
 | **Credential Utils** | `src/services/credential-utils.ts` | Credential normalization, lifecycle, and domain inference |
 | **Provenance Utils** | `src/services/provenance-utils.ts` | Source attribution tracking |

@@ -81,7 +81,7 @@ overwatch/
 │   │   ├── subagent-ipc.ts   # P4.2 — typed JSON-over-stdio sub-agent contract
 │   │   ├── subagent-process-runner.ts # P4.2 — parent-side runner (in-memory or spawn)
 │   │   ├── skill-index.ts    # TF-IDF search over skill library
-│   │   ├── parsers/          # 21 parsers / 36 aliases: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan
+│   │   ├── parsers/          # 75 parsers / 130 parse_output keys: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crtsh, whois, theharvester, trufflehog, secretfinder, linkfinder, openapi/swagger/graphql, security-headers, gowitness/aquatone, katana/hakrawler/gau, test-webapp-credential, …
 │   │   ├── parser-utils.ts   # Shared parsing helpers
 │   │   ├── credential-utils.ts # Credential normalization, lifecycle, and domain inference
 │   │   ├── provenance-utils.ts # Source attribution tracking
@@ -119,7 +119,7 @@ overwatch/
 │       ├── app-bootstrap.test.ts
 │       ├── mcp-server.integration.test.ts
 │       └── http-transport.integration.test.ts
-├── skills/                   # 34 offensive methodology guides
+├── skills/                   # 43 offensive methodology guides
 ├── engagement.json           # Engagement configuration
 ├── mkdocs.yml                # Documentation config
 └── docs/                     # Documentation source
@@ -189,7 +189,7 @@ Test files are co-located with their modules under `__tests__/` directories:
 | `cidr.test.ts` | CIDR parsing, scope matching, hostname resolution |
 | `skill-index.test.ts` | Skill search and indexing |
 | `bloodhound-ingest.test.ts` | BloodHound JSON parsing, SharpHound CE adapter |
-| `output-parsers.test.ts` | All 21 parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan |
+| `output-parsers.test.ts` | Core tool-chain parsers: nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, pacu/prowler, burp, zap, sqlmap, wpscan. Newer web/OSINT/cloud parsers have dedicated files (`js-secrets`, `api-schema`, `security-headers`, `gowitness`, `katana`, `osint-parsers`, `sprint11-cloud-graph`, …) |
 | `parser-utils.test.ts` | Shared parsing utilities, canonical ID generation |
 | `credential-utils.test.ts` | Credential normalization, lifecycle, domain inference |
 | `credential-lifecycle.test.ts` | Credential status, expiry, derivation chains, degradation |

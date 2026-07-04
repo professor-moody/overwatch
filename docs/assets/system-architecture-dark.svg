@@ -40,7 +40,7 @@
 
   <!-- Core engines -->
   <g class="n-amber"><rect x="70" y="200" width="180" height="50" rx="7"/><text class="th" x="160" y="218" text-anchor="middle" dominant-baseline="central">Graph engine</text><text class="ts" x="160" y="234" text-anchor="middle" dominant-baseline="central">graphology</text></g>
-  <g class="n-coral"><rect x="270" y="200" width="180" height="50" rx="7"/><text class="th" x="360" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="360" y="234" text-anchor="middle" dominant-baseline="central">53 rules</text></g>
+  <g class="n-coral"><rect x="270" y="200" width="180" height="50" rx="7"/><text class="th" x="360" y="218" text-anchor="middle" dominant-baseline="central">Inference engine</text><text class="ts" x="360" y="234" text-anchor="middle" dominant-baseline="central">64 rules</text></g>
   <g class="n-pink"><rect x="470" y="200" width="180" height="50" rx="7"/><text class="th" x="560" y="218" text-anchor="middle" dominant-baseline="central">Frontier + leases</text><text class="ts" x="560" y="234" text-anchor="middle" dominant-baseline="central">Next actions, TTL claims</text></g>
   <line x1="250" y1="225" x2="268" y2="225" class="arr" marker-end="url(#arr)"/><line x1="450" y1="225" x2="468" y2="225" class="arr" marker-end="url(#arr)"/>
 
@@ -51,7 +51,7 @@
   <g class="n-teal"><rect x="70" y="318" width="138" height="36" rx="6"/><text class="ts" x="139" y="336" text-anchor="middle" dominant-baseline="central">Path analyzer</text></g>
   <g class="n-teal"><rect x="218" y="318" width="138" height="36" rx="6"/><text class="ts" x="287" y="336" text-anchor="middle" dominant-baseline="central">Identity resolution</text></g>
   <g class="n-teal"><rect x="366" y="318" width="138" height="36" rx="6"/><text class="ts" x="435" y="336" text-anchor="middle" dominant-baseline="central">State persistence</text></g>
-  <g class="n-teal"><rect x="514" y="318" width="138" height="36" rx="6"/><text class="ts" x="583" y="336" text-anchor="middle" dominant-baseline="central">21 parsers</text></g>
+  <g class="n-teal"><rect x="514" y="318" width="138" height="36" rx="6"/><text class="ts" x="583" y="336" text-anchor="middle" dominant-baseline="central">75 parsers</text></g>
 
   <!-- Foundations row -->
   <text class="tx" x="70" y="378" text-anchor="start">Foundations (engagements with engagement_nonce)</text>
