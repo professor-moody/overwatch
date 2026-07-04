@@ -40,6 +40,32 @@ describe('EvidenceStore', () => {
     expect(store.getRawOutput(id)).toBe(rawOutput);
   });
 
+  it('round-trips BINARY content via createBlobStream + getContentBuffer (no UTF-8 corruption)', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    // PNG magic + bytes that do not survive a UTF-8 decode/encode round-trip.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe, 0x80, 0x81, 0x7f]);
+    const sink = store.createBlobStream({ evidence_type: 'screenshot', filename: 'shot.png', kind: 'content' });
+    sink.write(png);
+    await sink.end();
+
+    const back = store.getContentBuffer(sink.evidence_id);
+    expect(Buffer.isBuffer(back)).toBe(true);
+    expect(back!.equals(png)).toBe(true); // byte-identical
+
+    // The UTF-8 reader corrupts the bytes — which is exactly why getContentBuffer exists.
+    const asText = store.getContent(sink.evidence_id);
+    expect(Buffer.from(asText!, 'utf-8').equals(png)).toBe(false);
+
+    const rec = store.getRecord(sink.evidence_id);
+    expect(rec?.evidence_type).toBe('screenshot');
+    expect(rec?.filename).toBe('shot.png');
+  });
+
+  it('getContentBuffer returns null for an unknown id', () => {
+    const store = new EvidenceStore(TEST_STATE);
+    expect(store.getContentBuffer('nope')).toBeNull();
+  });
+
   it('stores both content and raw_output for same evidence', () => {
     const store = new EvidenceStore(TEST_STATE);
     const id = store.store({

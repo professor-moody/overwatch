@@ -43,7 +43,7 @@ Then run `claude`. `.mcp.json` starts Overwatch; `.claude/settings.json` enables
 
 ## Documentation
 
-**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 79 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
+**[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 80 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
 
 ## Disclaimer
 

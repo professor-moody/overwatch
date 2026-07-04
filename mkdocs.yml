@@ -163,6 +163,7 @@ nav:
     - Cloud & Tokens:
       - validate_token_credential: tools/token-credential.md
       - test_webapp_credential: tools/test-webapp-credential.md
+      - ingest_screenshots: tools/ingest-screenshots.md
       - Cloud Playbooks: tools/cloud-playbooks.md
     - Remediation:
       - correct_graph: tools/correct-graph.md

@@ -851,6 +851,7 @@ export class DashboardServer {
       const actionOutputMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/output$/);
       const actionReparseMatch = pathname.match(/^\/api\/actions\/([A-Za-z0-9_-]+)\/reparse$/);
       const evidenceRawMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/raw$/);
+      const evidenceImageMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/image$/);
       // Action ids are `act_<hex>` (deterministic, nonce-bearing engagements) or
       // a uuid — both fall outside [a-f0-9-] because of the `act_` underscore, so
       // a hex-only class silently 404s every real action. Match the full id
@@ -905,6 +906,8 @@ export class DashboardServer {
         this.handleActionReparse(decodeURIComponent(actionReparseMatch[1]), req, res);
       } else if (evidenceRawMatch && method === 'GET') {
         this.serveEvidenceRaw(decodeURIComponent(evidenceRawMatch[1]), url, res);
+      } else if (evidenceImageMatch && method === 'GET') {
+        this.serveEvidenceImage(decodeURIComponent(evidenceImageMatch[1]), res);
       } else if (actionApproveMatch && method === 'POST') {
         this.handleActionApprove(actionApproveMatch[1], req, res);
       } else if (actionDenyMatch && method === 'POST') {
@@ -2204,6 +2207,57 @@ export class DashboardServer {
   }
 
   /** Bounded, paged raw-evidence read by evidence_id or content_hash. */
+  // Raster image types the evidence-image route will serve. Deliberately EXCLUDES
+  // SVG (which can carry scripts) — screenshots are raster.
+  private static readonly IMAGE_MIME_TYPES: Record<string, string> = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  };
+  private static readonly MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
+  /** Serve a `screenshot` evidence blob as raw image bytes (binary-safe). */
+  private serveEvidenceImage(evidenceId: string, res: ServerResponse): void {
+    const store = this.engine.getEvidenceStore();
+    const record = store.getRecord(evidenceId);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `No evidence found for ${evidenceId}` }));
+      return;
+    }
+    const ext = extname(record.filename || '').toLowerCase();
+    // Only serve screenshot-typed evidence as an image; derive the content-type
+    // from the filename, defaulting a screenshot with no/unknown ext to PNG.
+    const mime = DashboardServer.IMAGE_MIME_TYPES[ext] || (record.evidence_type === 'screenshot' ? 'image/png' : '');
+    if (record.evidence_type !== 'screenshot' || !mime) {
+      res.writeHead(415, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Evidence ${evidenceId} is not a viewable image` }));
+      return;
+    }
+    // Bound the read before loading the whole blob into memory (a screenshot-typed
+    // record can be planted with arbitrary size via report_finding). The paired
+    // /raw route caps reads too; keep this route from OOMing the process.
+    if ((record.content_length ?? 0) > DashboardServer.MAX_IMAGE_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Evidence ${evidenceId} exceeds the ${DashboardServer.MAX_IMAGE_BYTES}-byte image cap` }));
+      return;
+    }
+    const buf = store.getContentBuffer(evidenceId);
+    if (!buf) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `No image bytes for ${evidenceId}` }));
+      return;
+    }
+    // `nosniff` + inline disposition: the bytes are operator-controlled, so serve
+    // them as an inert declared image and never let a browser sniff them as HTML.
+    res.writeHead(200, {
+      'Content-Type': mime,
+      'Cache-Control': 'no-cache',
+      'Content-Length': buf.length,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': 'inline',
+    });
+    res.end(buf);
+  }
+
   private serveEvidenceRaw(evidenceId: string, url: string, res: ServerResponse): void {
     const params = new URL(url, 'http://localhost').searchParams;
     const maxBytes = this.clampReadBytes(params.get('max_bytes'));

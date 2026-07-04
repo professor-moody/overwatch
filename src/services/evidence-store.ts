@@ -415,6 +415,20 @@ export class EvidenceStore {
   }
 
   /**
+   * Retrieve full evidence content as RAW BYTES (no UTF-8 decode). Use this for
+   * binary blobs — e.g. a `screenshot` PNG written via `createBlobStream` — where
+   * the text `getContent`/`getRawOutput` readers would corrupt the bytes.
+   */
+  getContentBuffer(idOrHash: string): Buffer | null {
+    const resolved = this.resolveKey(idOrHash);
+    if (!resolved) return null;
+    const safe = sanitizeEvidenceId(resolved);
+    const path = join(this.dir, `${safe}.content`);
+    if (!existsSync(path)) return null;
+    return readFileSync(path);
+  }
+
+  /**
    * Retrieve full raw output by ID or content_hash.
    *
    * Phase E: when `max_bytes` is provided, return null instead of loading

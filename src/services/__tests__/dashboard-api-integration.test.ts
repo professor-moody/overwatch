@@ -732,3 +732,49 @@ describe('routing surface', () => {
     expect(res.headers.get('content-type')).toContain('text/html');
   });
 });
+
+describe('Evidence image route (/api/evidence/<id>/image)', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x2a, 0x80]);
+
+  it('serves a screenshot blob as raw image bytes with the right content-type', async () => {
+    const sink = engine.getEvidenceStore().createBlobStream({ evidence_type: 'screenshot', filename: 'shot.png', kind: 'content' });
+    sink.write(png);
+    await sink.end();
+    const res = await fetch(`${baseUrl}/api/evidence/${sink.evidence_id}/image`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.equals(png)).toBe(true); // binary-safe, byte-identical
+  });
+
+  it('404 for an unknown evidence id', async () => {
+    const res = await fetch(`${baseUrl}/api/evidence/does-not-exist/image`);
+    expect(res.status).toBe(404);
+  });
+
+  it('415 for non-screenshot (text) evidence — not a viewable image', async () => {
+    const id = engine.getEvidenceStore().store({ evidence_type: 'command_output', content: 'not an image' });
+    const res = await fetch(`${baseUrl}/api/evidence/${id}/image`);
+    expect(res.status).toBe(415);
+  });
+
+  it('413 for an oversized screenshot record (bounds the read, no OOM)', async () => {
+    // A screenshot-typed record whose content exceeds the 25MB image cap
+    // (plantable via report_finding); the route must refuse before reading it.
+    const id = engine.getEvidenceStore().store({ evidence_type: 'screenshot', filename: 'huge.png', content: 'x'.repeat(64) });
+    // Force an oversized content_length on the manifest record.
+    const rec = engine.getEvidenceStore().getRecord(id)!;
+    (rec as { content_length: number }).content_length = 26 * 1024 * 1024;
+    const res = await fetch(`${baseUrl}/api/evidence/${id}/image`);
+    expect(res.status).toBe(413);
+  });
+
+  it('serves screenshot bytes with nosniff + inline disposition', async () => {
+    const p = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const sink = engine.getEvidenceStore().createBlobStream({ evidence_type: 'screenshot', filename: 's.png', kind: 'content' });
+    sink.write(p); await sink.end();
+    const res = await fetch(`${baseUrl}/api/evidence/${sink.evidence_id}/image`);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-disposition')).toBe('inline');
+  });
+});

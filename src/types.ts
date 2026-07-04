@@ -199,6 +199,10 @@ export interface NodeProperties {
   auth_type?: string;
   has_api?: boolean;
   cms_type?: string;
+  /** Screenshot filename from a visual-recon report (gowitness/aquatone). */
+  screenshot_path?: string;
+  /** Evidence id of the ingested screenshot PNG (viewable via /api/evidence/<id>/image). */
+  screenshot_evidence_id?: string;
 
   // API Endpoint
   path?: string;

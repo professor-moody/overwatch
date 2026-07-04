@@ -58,6 +58,7 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`ingest_postgres_table`](postgres.md) | Ingest rows from a PostgreSQL table into graph nodes | No |
 | [`validate_token_credential`](token-credential.md) | Replay a token credential against a provider API | No |
 | [`test_webapp_credential`](test-webapp-credential.md) | Test a credential against a web app (form/basic/bearer/cookie) | No |
+| [`ingest_screenshots`](ingest-screenshots.md) | Ingest gowitness/aquatone PNGs as viewable screenshot evidence | No |
 | [`expand_aws_credential`](cloud-playbooks.md) | Generate an AWS recon plan from a captured credential | No |
 | [`expand_github_credential`](cloud-playbooks.md) | Generate a GitHub recon plan from a captured token | No |
 | [`expand_entra_credential`](cloud-playbooks.md) | Generate an Entra ID / Microsoft Graph recon plan | No |
