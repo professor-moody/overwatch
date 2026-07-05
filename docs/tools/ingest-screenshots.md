@@ -31,7 +31,7 @@ Then call `ingest_screenshots` with `report_dir` pointing at that directory.
 
 - Parses the report with the same logic as `parse_output(gowitness)` (so webapp nodes converge by origin with any existing httpx/nuclei/gowitness webapp).
 - For each webapp with a screenshot: resolves `<report_dir>/<file>` (rejecting anything that escapes `report_dir`), reads the PNG, stores it as `screenshot` evidence, and sets `screenshot_evidence_id` on the node.
-- A missing PNG, an oversized file (> 25 MB), or a traversal attempt is **skipped**, not fatal — the summary reports counts.
+- A missing PNG, an oversized file (> 25 MB), or a path-traversal attempt is **skipped**, not fatal — the summary reports counts. (When served, only raster images are returned — SVG is deliberately excluded to avoid script-in-image risks.)
 
 Returns `{ screenshots_stored, skipped, skipped_detail, webapps, new_nodes, updated_nodes }`.
 

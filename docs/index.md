@@ -32,7 +32,7 @@ After a compaction or restart, one call to [`get_state()`](tools/get-state.md) r
 
 | | |
 |---|---|
-| **79** MCP tools | **43** offensive skills |
+| **80** MCP tools | **43** offensive skills |
 | **75** output parsers / **130** `parse_output` keys (nmap, nxc, certipy, secretsdump, kerbrute, hashcat, responder, ldapsearch, enum4linux, rubeus, web dir enum, linpeas, nuclei, nikto, testssl, sqlmap, wpscan, httpx, dnsx, amass, subfinder, crt.sh, whois, theHarvester, trufflehog, linkfinder, openapi/graphql, security-headers, gowitness, katana, and more) | **64** built-in inference rules |
 | **4000+** tests across **220+** files | **30** node types, **90** edge types |
 

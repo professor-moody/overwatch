@@ -85,6 +85,7 @@ Click any node to open the right-side inspector. It shows:
 - Clickable neighbor list (click a neighbor to navigate to it)
 - Clickable service summary items (navigate to service/edge nodes)
 - **Derivation chain** (for credential nodes) — walks `DERIVED_FROM` edges bidirectionally to show the full credential chain with derivation methods
+- **Screenshot** (for webapp nodes with a `screenshot_evidence_id`) — the ingested capture is rendered inline (from `/api/evidence/<id>/image`); click to open full-size
 
 ### Frontier Item Navigation
 
@@ -262,6 +263,7 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
 | `/api/actions/:id/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |
 | `/api/evidence/:id/raw` | GET | Bounded, paged (`offset`/`max_bytes`) raw-evidence read |
+| `/api/evidence/:id/image` | GET | Serve a `screenshot` evidence blob as raw image bytes — raster only (PNG/JPEG/GIF/WebP; SVG excluded), 25 MB cap, `nosniff` + inline disposition. 404 if absent, 415 if not a viewable image |
 | `/api/actions/:id/reparse` | POST | Re-parse a run's output — preview (`ingest:false`) or promote (`ingest:true`) to the graph |
 | `/api/parsers` | GET | Supported parser names for the re-parse picker |
 | `ws://` | WebSocket | Live graph delta + `agent_console_update` / `agent_query` push stream |

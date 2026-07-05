@@ -199,6 +199,12 @@ export interface NodeProperties {
   auth_type?: string;
   has_api?: boolean;
   cms_type?: string;
+  /** HTTP response code (httpx / gowitness). */
+  http_status?: number;
+  /** Page title. */
+  title?: string;
+  /** Post-redirect URL, when it differs from the scanned URL. */
+  final_url?: string;
   /** Screenshot filename from a visual-recon report (gowitness/aquatone). */
   screenshot_path?: string;
   /** Evidence id of the ingested screenshot PNG (viewable via /api/evidence/<id>/image). */

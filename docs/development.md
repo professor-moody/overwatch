@@ -129,7 +129,7 @@ Generated local operator output such as `reports/` and `tapes/` is intentionally
 
 ## Testing
 
-Tests use [Vitest](https://vitest.dev/). The source suite is now **2800+ tests across 140+ source test files**; use the Vitest summary for the exact current count. Tests are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
+Tests use [Vitest](https://vitest.dev/). The source suite is now **4000+ tests across 220+ source test files**; use the Vitest summary for the exact current count. Tests are split between fast source tests and two build-backed integration suites (stdio and HTTP) so local iteration stays fast while release verification exercises both transport paths.
 
 ```bash
 npm test                        # Fast source tests (see Vitest summary for current count)

@@ -21,7 +21,7 @@ Overwatch models engagements as directed property graphs using [graphology](http
 | `ou` | An Organizational Unit | `label` |
 | `subnet` | A network subnet | `subnet_cidr` |
 | `objective` | An engagement objective | `objective_description`, `objective_achieved` |
-| `webapp` | A web application | `url`, `technology`, `framework`, `auth_type`, `has_api`, `http_status`, `title`, `screenshot_path`, `final_url` |
+| `webapp` | A web application | `url`, `technology`, `framework`, `auth_type`, `has_api`, `http_status`, `title`, `screenshot_path`, `screenshot_evidence_id`, `final_url` |
 | `vulnerability` | A discovered vulnerability | `cve`, `cvss`, `vuln_type`, `exploitable`, `affected_component` |
 | `cloud_identity` | Cloud IAM principal (user, role, service account) | `provider`, `arn`, `principal_type`, `mfa_enabled` |
 | `cloud_resource` | Cloud resource (S3 bucket, EC2, Lambda, etc.) | `resource_type`, `region`, `public`, `encrypted` |
@@ -125,6 +125,11 @@ For engagements with `engagement_nonce` populated, action and event IDs are dete
 | `auth_type` | `string` | Authentication type (form, basic, oauth) |
 | `has_api` | `boolean` | Exposes an API |
 | `cms_type` | `string` | CMS type (WordPress, Drupal, etc.) |
+| `http_status` | `number` | HTTP response code (from httpx / gowitness) |
+| `title` | `string` | Page title |
+| `final_url` | `string` | Post-redirect URL (recorded when it differs from the scanned URL) |
+| `screenshot_path` | `string` | Screenshot filename from a visual-recon report (gowitness/aquatone) |
+| `screenshot_evidence_id` | `string` | Evidence id of the ingested screenshot PNG — viewable via `GET /api/evidence/<id>/image` (set by the `ingest_screenshots` tool) |
 
 ### Vulnerability Properties
 

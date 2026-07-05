@@ -90,7 +90,9 @@ Screenshot the web estate to prioritize by eye — leftover admin panels, defaul
 gowitness scan single -u https://target --write-jsonl   # writes ./gowitness.jsonl; or `aquatone` over a host list
 ```
 `parse_output as \`gowitness\`` (or `aquatone`) enriches each webapp with its title, HTTP status,
-technology, and a `screenshot_path` reference (the image bytes stay on disk).
+technology, and a `screenshot_path` reference (the image bytes stay on disk). To make the captures
+**viewable in the dashboard**, run the `ingest_screenshots` tool on the report dir — it stores the PNG
+bytes as evidence and stamps `screenshot_evidence_id` on the webapp (rendered in the node drawer).
 
 ### Sensitive File Checks
 ```bash

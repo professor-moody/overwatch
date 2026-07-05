@@ -383,7 +383,7 @@ The `run_retrospective` tool produces five structured outputs:
 
 ## Testing
 
-**73 test files** across the codebase (see Vitest output for exact test count):
+**220+ test files** across the codebase (see Vitest output for exact test count):
 
 | Area | Files | Coverage |
 |------|-------|----------|
