@@ -29,6 +29,7 @@ The LLM's job is to:
 |-----------|------|---------|-------------|
 | `max_items` | `integer` | `20` | Maximum frontier items to return (1–50) |
 | `include_filtered` | `boolean` | `false` | Also return items that were filtered out, with reasons |
+| `group_by` | `'individual' \| 'campaign'` | `'individual'` | Return individual frontier items, or group them into campaigns (credential spray, enumeration, post-exploitation) |
 | `compact` | `boolean` | `false` | Return compact JSON (no indentation) to save tokens. Identical payload — only whitespace differs. |
 
 ## Returns

@@ -48,11 +48,11 @@ Edges are color-coded by category for quick visual identification:
 |----------|-------|------------|
 | Network | Blue | `REACHABLE`, `RUNS`, `SAME_DOMAIN` |
 | Access | Green | `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE` |
-| Credential | Amber | `VALID_ON`, `OWNS_CRED`, `POTENTIAL_AUTH` |
+| Credential | Amber | `VALID_ON`, `OWNS_CRED`, `TESTED_CRED` |
 | Derivation | Orange | `DERIVED_FROM`, `DUMPED_FROM` |
 | Attack | Red | `CAN_DCSYNC`, `DELEGATES_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`, etc. |
 | Roasting | Red | `AS_REP_ROASTABLE`, `KERBEROASTABLE` |
-| ADCS | Purple | `CAN_ENROLL`, `ESC1`–`ESC8` |
+| ADCS | Purple | `CAN_ENROLL`, `ESC1`–`ESC13`, `ESC15` |
 | Lateral | Pink | `RELAY_TARGET`, `NULL_SESSION` |
 
 ### Path Highlighting
