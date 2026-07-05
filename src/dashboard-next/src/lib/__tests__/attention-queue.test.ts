@@ -20,7 +20,7 @@ describe('buildAttentionQueue', () => {
     const v = buildAttentionQueue({ now: NOW });
     expect(v.total).toBe(0);
     expect(v.items).toEqual([]);
-    expect(v.counts).toEqual({ approval: 0, question: 0, failed: 0, stuck: 0 });
+    expect(v.counts).toEqual({ approval: 0, question: 0, plan: 0, failed: 0, stuck: 0 });
   });
 
   it('merges approvals, questions, and failed agents into one queue with counts', () => {
@@ -32,7 +32,39 @@ describe('buildAttentionQueue', () => {
       // a running agent should NOT appear:
     }, );
     expect(v.total).toBe(3);
-    expect(v.counts).toEqual({ approval: 1, question: 1, failed: 1, stuck: 0 });
+    expect(v.counts).toEqual({ approval: 1, question: 1, plan: 0, failed: 1, stuck: 0 });
+  });
+
+  it('surfaces only OPEN proposed plans (confirm handle + TTL countdown), ranked approval > plan > stuck', () => {
+    const plan = (o: Partial<import('../api').ProposedPlan> = {}): import('../api').ProposedPlan => ({
+      plan_id: 'p1', command: 'what next?', ops: [{ op: 'directive' } as never], summary: 'Prioritize app01 recon',
+      source_agent_id: 'planner-1', created_at: NOW - 60_000, status: 'open', ...o,
+    });
+    // a heartbeating-but-idle running agent (stuck) — same construction as the stuck suite
+    const stuck = agent({
+      id: 'ts', agent_id: 'recon-9', status: 'running',
+      assigned_at: new Date(NOW - 20 * 60_000).toISOString(),
+      current_action_at: new Date(NOW - 20 * 60_000).toISOString(),
+    });
+    const v = buildAttentionQueue({
+      now: NOW,
+      pendingActions: [action()],
+      proposedPlans: [plan(), plan({ plan_id: 'p-expired', status: 'expired' })], // expired must be dropped
+      agents: [stuck],
+    });
+    const planItem = v.items.find(i => i.kind === 'plan');
+    expect(v.counts.plan).toBe(1); // only the open one, not the expired
+    expect(planItem?.id).toBe('plan:p1');
+    expect(planItem?.planId).toBe('p1'); // confirm handle
+    expect(planItem?.detail).toContain('Prioritize app01 recon');
+    expect(planItem?.detail).toContain('1 op');
+    // TTL countdown: ceil((600000 − 60000) / 60000) = 9 minutes left
+    expect(planItem?.detail).toContain('expires in ~9m');
+    // full ordering: approval (80) > plan (70) > stuck (60)
+    const order = v.items.map(i => i.kind);
+    expect(v.counts.stuck).toBe(1);
+    expect(order.indexOf('approval')).toBeLessThan(order.indexOf('plan'));
+    expect(order.indexOf('plan')).toBeLessThan(order.indexOf('stuck'));
   });
 
   it('orders timeout-soon approval > question > high-risk approval > normal approval > failed', () => {

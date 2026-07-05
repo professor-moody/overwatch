@@ -65,6 +65,7 @@ export function AgentsPanel() {
   const [showAddTargets, setShowAddTargets] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [agentQueries, setAgentQueries] = useState<api.AgentQuery[]>([]);
+  const [proposedPlans, setProposedPlans] = useState<api.ProposedPlan[]>([]);
   const { navigateToGraph, navigateToCampaign, navigateToPanel } = useNavigation();
   const setStoreAgents = useEngagementStore((s) => s.setAgents);
 
@@ -76,16 +77,26 @@ export function AgentsPanel() {
       setAgentQueries(queries || []);
     } catch { /* transient */ }
   }, []);
+  // Open planner-proposed plans persist in the Needs-you queue until confirmed/
+  // dismissed/expired — so a plan can't age out unseen (the transient command-bar
+  // card only showed for ~90s and never re-surfaced after a refresh).
+  const loadPlans = useCallback(async () => {
+    try {
+      const { plans } = await api.getProposedPlans();
+      setProposedPlans(plans || []);
+    } catch { /* transient */ }
+  }, []);
   useEffect(() => {
     void loadAgentQueries();
+    void loadPlans();
     const onUpdate = () => void loadAgentQueries();
     window.addEventListener('overwatch-agent-query-update', onUpdate);
-    const timer = setInterval(() => void loadAgentQueries(), POLL.AGENTS_MS);
+    const timer = setInterval(() => { void loadAgentQueries(); void loadPlans(); }, POLL.AGENTS_MS);
     return () => {
       window.removeEventListener('overwatch-agent-query-update', onUpdate);
       clearInterval(timer);
     };
-  }, [loadAgentQueries]);
+  }, [loadAgentQueries, loadPlans]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -363,7 +374,9 @@ export function AgentsPanel() {
           itself when nothing is waiting. */}
       <AttentionQueue
         agentQueries={agentQueries}
+        proposedPlans={proposedPlans}
         onAnswered={loadAgentQueries}
+        onPlanResolved={() => { void loadPlans(); void refreshAgents(); void loadConsole(); }}
         onSelectAgent={(taskId) => setActiveAgentId(taskId)}
         onTriageAll={() => navigateToPanel('actions')}
       />

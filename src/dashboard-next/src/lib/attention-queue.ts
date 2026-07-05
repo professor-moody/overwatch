@@ -1,5 +1,5 @@
 import type { AgentInfo, PendingAction } from './types';
-import type { AgentQuery } from './api';
+import type { AgentQuery, ProposedPlan } from './api';
 import { toConsoleApprovalItem, type ConsoleApprovalItem } from './console-approvals';
 import { isStuck, stuckIdleMinutes } from './agent-mission';
 
@@ -9,7 +9,7 @@ import { isStuck, stuckIdleMinutes } from './agent-mission';
 // shows one item expanded at a time. Stuck-agent detection joins this in Phase 2
 // (the `kind` union is the extension point).
 
-export type AttentionKind = 'approval' | 'question' | 'failed' | 'stuck';
+export type AttentionKind = 'approval' | 'question' | 'plan' | 'failed' | 'stuck';
 
 export interface AttentionItem {
   /** Stable id so the expanded-item selection survives re-renders: `<kind>:<ref>`. */
@@ -29,6 +29,7 @@ export interface AttentionItem {
   /** Distinct agent labels that asked this clustered question. */
   clusterAgentLabels?: string[];
   taskId?: string;     // failed agent
+  planId?: string;     // proposed plan (confirm/dismiss)
   risk?: ConsoleApprovalItem['risk'];
   options?: string[];  // question quick-answers
 }
@@ -47,11 +48,19 @@ const P_TIMEOUT_APPROVAL = 120;
 const P_QUESTION = 100;
 const P_HIGH_APPROVAL = 95;
 const P_APPROVAL = 80;
+// A planner-proposed plan awaits an explicit operator confirm and expires on a
+// 10-min TTL — actionable and time-sensitive, but below a live agent blocked on
+// an approval/question. Above stuck/failed so it can't be buried and aged out
+// unseen (the whole reason this surfaced).
+const P_PLAN = 70;
 // A stuck agent is burning a concurrency slot doing nothing — more actionable
 // than a stale failure sitting in history, but below a live agent explicitly
 // waiting on the operator (approval/question).
 const P_STUCK = 60;
 const P_FAILED = 40;
+
+/** Matches the server's proposed-plan TTL (proposed-plan-store.ts). */
+const PLAN_TTL_MS = 10 * 60_000;
 
 function approvalItem(action: PendingAction, now: number): AttentionItem {
   const a = toConsoleApprovalItem(action, now);
@@ -104,6 +113,21 @@ function questionClusterItem(group: AgentQuery[]): AttentionItem {
   };
 }
 
+function planItem(plan: ProposedPlan, now: number): AttentionItem {
+  const ops = plan.ops?.length ?? 0;
+  const minsLeft = Math.max(0, Math.ceil((PLAN_TTL_MS - (now - plan.created_at)) / 60_000));
+  const meta = `${ops} op${ops === 1 ? '' : 's'}${minsLeft > 0 ? `, expires in ~${minsLeft}m` : ', expiring'}`;
+  return {
+    id: `plan:${plan.plan_id}`,
+    kind: 'plan',
+    priority: P_PLAN,
+    title: 'Plan to confirm',
+    detail: `${plan.summary} (${meta})`,
+    agentLabel: plan.source_agent_id,
+    planId: plan.plan_id,
+  };
+}
+
 function failedItem(agent: AgentInfo): AttentionItem {
   return {
     id: `failed:${agent.id}`,
@@ -136,6 +160,7 @@ function stuckItem(agent: AgentInfo, now: number): AttentionItem {
 export interface AttentionInput {
   pendingActions?: PendingAction[];
   agentQueries?: AgentQuery[];
+  proposedPlans?: ProposedPlan[];
   agents?: AgentInfo[];
   now?: number;
   /** Failed/interrupted agents only stay in the queue this long after finishing,
@@ -169,6 +194,12 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
     if (group) group.push(q); else clusters.set(key, [q]);
   }
   for (const group of clusters.values()) items.push(questionClusterItem(group));
+  // Open planner-proposed plans persist here until confirmed/dismissed/expired,
+  // so a plan can't age out unseen just because the operator wasn't watching the
+  // command bar during the ~90s the transient card showed.
+  for (const plan of input.proposedPlans ?? []) {
+    if (plan.status === 'open') items.push(planItem(plan, now));
+  }
   for (const agent of input.agents ?? []) {
     if (recentlyFailed(agent, now, windowMs)) items.push(failedItem(agent));
     // Stuck is mutually exclusive with blocked (isStuck excludes agents waiting
@@ -181,7 +212,7 @@ export function buildAttentionQueue(input: AttentionInput = {}): AttentionQueueV
 
   items.sort((a, b) => (b.priority - a.priority) || a.id.localeCompare(b.id));
 
-  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, failed: 0, stuck: 0 };
+  const counts: Record<AttentionKind, number> = { approval: 0, question: 0, plan: 0, failed: 0, stuck: 0 };
   for (const it of items) counts[it.kind] += 1;
 
   return { items, total: items.length, counts };

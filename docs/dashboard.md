@@ -214,7 +214,7 @@ The dashboard uses a **console-first IA**: the **Console** is the landing page a
 The Console is a focused **master-detail** workspace:
 
 - a pinned **command bar** (natural-language commands; see the grammar reference below);
-- a **"Needs you" strip** — inline **Approve / Deny** for pending actions plus an **Answer** box for agent questions; it hides when nothing is waiting;
+- a **"Needs you" strip** — inline **Approve / Deny** for pending actions, an **Answer** box for agent questions, and **Confirm & run / Dismiss** for planner-proposed plans; it hides when nothing is waiting;
 - a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream;
 - a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
 

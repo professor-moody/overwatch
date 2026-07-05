@@ -18,20 +18,24 @@ const DISPLAY_CAP = 6;
 
 export function AttentionQueue({
   agentQueries,
+  proposedPlans,
   onAnswered,
+  onPlanResolved,
   onSelectAgent,
   onTriageAll,
 }: {
   agentQueries: api.AgentQuery[];
+  proposedPlans: api.ProposedPlan[];
   onAnswered: () => void;
+  onPlanResolved: () => void;
   onSelectAgent: (taskId: string) => void;
   onTriageAll: () => void;
 }) {
   const pendingActions = useEngagementStore(s => s.pendingActions);
   const agents = useEngagementStore(s => s.agents);
   const view = useMemo(
-    () => buildAttentionQueue({ pendingActions, agentQueries, agents }),
-    [pendingActions, agentQueries, agents],
+    () => buildAttentionQueue({ pendingActions, agentQueries, proposedPlans, agents }),
+    [pendingActions, agentQueries, proposedPlans, agents],
   );
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Compact by default: show only the summary line + the single top-priority item
@@ -58,6 +62,7 @@ export function AttentionQueue({
         <span className="rounded-full bg-warning/20 px-1.5 text-[10px] text-warning">{view.total}</span>
         {view.counts.approval > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.approval} approval{view.counts.approval !== 1 ? 's' : ''}</span>}
         {view.counts.question > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.question} question{view.counts.question !== 1 ? 's' : ''}</span>}
+        {view.counts.plan > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.plan} plan{view.counts.plan !== 1 ? 's' : ''}</span>}
         {view.counts.stuck > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.stuck} stuck</span>}
         {view.counts.failed > 0 && <span className="text-[10px] text-muted-foreground">{view.counts.failed} failed</span>}
         <div className="ml-auto flex items-center gap-3">
@@ -83,6 +88,7 @@ export function AttentionQueue({
             // sentinel collapse wouldn't survive the store/poll re-render anyway.
             onToggle={() => setExpandedId(item.id)}
             onAnswered={onAnswered}
+            onPlanResolved={onPlanResolved}
             onSelectAgent={onSelectAgent}
           />
         ))}
@@ -101,15 +107,17 @@ function AttentionRow({
   expanded,
   onToggle,
   onAnswered,
+  onPlanResolved,
   onSelectAgent,
 }: {
   item: AttentionItem;
   expanded: boolean;
   onToggle: () => void;
   onAnswered: () => void;
+  onPlanResolved: () => void;
   onSelectAgent: (taskId: string) => void;
 }) {
-  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : 'text-accent';
+  const kindTone = item.kind === 'question' ? 'text-warning' : item.kind === 'failed' ? 'text-destructive' : item.kind === 'stuck' ? 'text-warning' : item.kind === 'plan' ? 'text-accent' : 'text-accent';
   return (
     <div className={cn('rounded border bg-surface', expanded ? 'border-accent/40' : 'border-border')}>
       <button onClick={onToggle} className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs">
@@ -128,6 +136,7 @@ function AttentionRow({
           )}
           {item.kind === 'approval' && item.actionId && <ApprovalActions actionId={item.actionId} title={item.title} />}
           {item.kind === 'question' && item.queryIds && item.queryIds.length > 0 && <AnswerActions queryIds={item.queryIds} options={item.options} onAnswered={onAnswered} />}
+          {item.kind === 'plan' && item.planId && <PlanActions planId={item.planId} onResolved={onPlanResolved} />}
           {(item.kind === 'failed' || item.kind === 'stuck') && item.taskId && (
             <ActionButton size="xs" variant="secondary" onClick={() => onSelectAgent(item.taskId!)}>View agent →</ActionButton>
           )}
@@ -186,6 +195,41 @@ function ApprovalActions({ actionId, title }: { actionId: string; title: string 
     <div className="flex gap-1.5">
       <ActionButton size="xs" variant="success" disabled={busy} onClick={approve}>Approve</ActionButton>
       <ActionButton size="xs" variant="danger" disabled={busy} onClick={() => setDenying(true)}>Deny</ActionButton>
+    </div>
+  );
+}
+
+function PlanActions({ planId, onResolved }: { planId: string; onResolved: () => void }) {
+  const addToast = useToastStore(s => s.addToast);
+  const [busy, setBusy] = useState(false);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await api.confirmCommand(planId);
+      addToast({ type: 'success', title: 'Plan confirmed', message: 'Directive applied.' });
+      onResolved();
+    } catch (err) {
+      addToast({ type: 'error', title: 'Confirm failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false);
+    }
+  };
+  const dismiss = async () => {
+    setBusy(true);
+    try {
+      await api.denyCommandPlan(planId);
+      addToast({ type: 'info', title: 'Plan dismissed', message: 'Nothing was applied.' });
+      onResolved();
+    } catch (err) {
+      addToast({ type: 'error', title: 'Dismiss failed', message: err instanceof Error ? err.message : String(err) });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex gap-1.5">
+      <ActionButton size="xs" variant="success" disabled={busy} onClick={confirm}>Confirm &amp; run</ActionButton>
+      <ActionButton size="xs" variant="ghost" disabled={busy} onClick={dismiss}>Dismiss</ActionButton>
     </div>
   );
 }
