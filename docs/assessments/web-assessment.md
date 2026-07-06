@@ -15,7 +15,7 @@
 A web assessment is scoped by **URL patterns** (and optionally domains/CIDRs for the hosts behind them). Start from the `external-assessment` template — it sets `profile: web_app`, an "initial access" objective, and conservative OPSEC with full approval gates:
 
 ```bash
-npm run setup -- --template external-assessment --name "Acme Web"
+npm run setup -- --template external-assessment --name "Acme Web" --domain acme.com --cidr 203.0.113.0/24
 ```
 
 Then fill in the scope with the subdomains and IPs you were given:

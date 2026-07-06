@@ -15,7 +15,7 @@
 Scope by CIDR (and domain, if you know it). Use the `internal-pentest` template (`goad_ad` profile, Domain Admin objectives) when AD is the focus, or set `profile: network` when AD may or may not be present:
 
 ```bash
-npm run setup -- --template internal-pentest --name "Acme Internal"
+npm run setup -- --template internal-pentest --name "Acme Internal" --cidr 10.10.0.0/16 --domain corp.acme.local
 ```
 
 ```jsonc

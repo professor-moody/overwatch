@@ -161,14 +161,30 @@ try {
   writeJson(mcpPath, mcp, opts);
   writeJson(claudeSettingsPath, claudeSettings, opts);
   const statePath = join(root, `state-${engagement.id}.json`);
-  if (!opts.dryRun) {
-    console.log(`\nNext steps:
+  const s = engagement.scope || {};
+  const scopeItems = [...(s.cidrs || []), ...(s.domains || []), ...(s.hosts || [])];
+  console.log(`\n✓ engagement "${engagement.name}" (template: ${opts.template}, id: ${engagement.id})`);
+  if (scopeItems.length === 0) {
+    // The most common first-run confusion: setup succeeds but scope is empty, so
+    // the agent/tools can't touch anything. Say so loudly + how to fix it.
+    console.log(`
+⚠  SCOPE IS EMPTY — this engagement can't touch anything until you add targets.
+   Add scope any of these ways:
+   • Re-run with flags:  npm run setup -- --template ${opts.template} --cidr 10.10.10.0/24 --domain lab.local --force
+   • Edit engagement.json → "scope": { "cidrs": ["10.10.10.0/24"] }
+   • Conversationally (once the session is running) — tell the model:
+       "scope this engagement to 10.10.10.0/24, objective domain-admin, quiet OPSEC"
+   • In the dashboard (daemon mode): the "Add Targets" or "Deploy <ip/cidr>" button`);
+  } else {
+    console.log(`   scope: ${scopeItems.join(', ')}`);
+  }
+  console.log(`
+Next steps:
   npm install
   npm run build
-  npm run doctor
+  npm run doctor${scopeItems.length === 0 ? '        # add scope first — see above' : ''}
 
-State will persist to ${statePath} unless OVERWATCH_STATE_FILE is set.`);
-  }
+State persists to ${statePath} unless OVERWATCH_STATE_FILE is set.`);
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
