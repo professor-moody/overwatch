@@ -180,7 +180,8 @@ function ActionEmptyState({
     : approvalMode === 'auto-approve'
       ? 'Current policy auto-approves actions, so the terminal approval queue is expected to stay empty.'
       : diagnostics?.latest_action_at && !diagnostics.latest_approval_at
-        ? 'Recent actions did not require approval under the current OPSEC policy.'
+        // approve-all / approve-critical DO gate actions — so don't claim they "did not require approval".
+        ? `Nothing is waiting for approval right now under the current OPSEC policy (${approvalMode}).`
         : 'When an action waits for terminal review, it will appear here with copyable approval commands.';
 
   return (

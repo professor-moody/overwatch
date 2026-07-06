@@ -111,6 +111,27 @@ export function OperatorCommandBar() {
     setPhase({ kind: 'idle' });
   }, []);
 
+  // Reconcile the transient "Confirm & run" card against server state: if this
+  // plan was confirmed/dismissed elsewhere (e.g. from the persistent "Needs you"
+  // queue) or aged out its 10-min TTL, drop the stale card so it can't offer
+  // Confirm on a plan that no longer exists. Only runs while the card is showing.
+  useEffect(() => {
+    if (phase.kind !== 'proposed') return;
+    const planId = phase.plan.plan_id;
+    const timer = setInterval(() => {
+      api.getProposedPlans().then(({ plans }) => {
+        if (plans.some(p => p.plan_id === planId)) return;
+        // Functional update: only drop the card if we're STILL showing this exact
+        // proposed plan — so a confirm()/deny() that already moved phase off
+        // 'proposed' isn't clobbered by a late-firing reconcile.
+        setPhase(prev => (prev.kind === 'proposed' && prev.plan.plan_id === planId)
+          ? { kind: 'result', ok: false, text: 'This proposed plan is no longer available — it was resolved elsewhere or expired.' }
+          : prev);
+      }).catch(() => { /* transient — keep the card */ });
+    }, POLL.AGENTS_MS); // gentle reconcile cadence — no need for the fast planner-detection poll
+    return () => clearInterval(timer);
+  }, [phase]);
+
   const reset = useCallback(() => { clearPoll(); setPhase({ kind: 'idle' }); }, [clearPoll]);
 
   const busy = phase.kind === 'previewing' || phase.kind === 'executing';

@@ -144,6 +144,22 @@ describe('executeOps (engine effects)', () => {
     expect(engine.getPendingAgentDirective('task-1')?.kind).toBe('pause');
   });
 
+  it('directive to a manual-backend agent is reported as ADVISORY (no live agent to auto-apply)', () => {
+    engine.registerAgent({ id: 'task-m', agent_id: 'am', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'manual' } as AgentTask);
+    const results = executeOps(engine, [{ op: 'directive', task_id: 'task-m', agent_label: 'am', kind: 'narrow_scope', node_ids: ['h1'] }]);
+    expect(results[0].ok).toBe(true);
+    expect(results[0].detail).toMatch(/advisory/i); // honest: not auto-applied
+    expect(engine.getPendingAgentDirective('task-m')?.kind).toBe('narrow_scope'); // still recorded
+  });
+
+  it('directive to a live headless agent is reported as ISSUED (not advisory)', () => {
+    engine.registerAgent({ id: 'task-h', agent_id: 'ah', assigned_at: new Date().toISOString(), status: 'running', subgraph_node_ids: [], backend: 'headless_mcp' } as AgentTask);
+    const results = executeOps(engine, [{ op: 'directive', task_id: 'task-h', agent_label: 'ah', kind: 'prioritize' }]);
+    expect(results[0].ok).toBe(true);
+    expect(results[0].detail).toMatch(/issued/i);
+    expect(results[0].detail).not.toMatch(/advisory/i);
+  });
+
   it('scope op adds CIDRs/domains through the validated engine path', () => {
     const results = executeOps(engine, [{ op: 'scope', add_cidrs: ['10.99.0.0/24'], add_domains: ['new.example.com'] }]);
     expect(results[0].ok).toBe(true);

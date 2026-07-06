@@ -226,7 +226,12 @@ export function executeOps(engine: GraphEngine, ops: OperatorOp[], issuedBy = 'o
     try {
       if (op.op === 'directive') {
         engine.issueAgentDirective({ task_id: op.task_id, kind: op.kind, node_ids: op.node_ids, frontier_types: op.frontier_types, note: op.note, issued_by: issuedBy });
-        results.push({ op, ok: true, detail: `directive ${op.kind} issued to ${op.agent_label}` });
+        // A directive is only actioned by a LIVE headless agent (which polls it via
+        // acknowledge_agent_directive). For any other backend (manual/scripted) or a
+        // missing task, it's advisory — recorded, not auto-applied — so say so.
+        const target = engine.getTask(op.task_id);
+        const advisory = !target || target.backend !== 'headless_mcp';
+        results.push({ op, ok: true, detail: advisory ? `directive ${op.kind} recorded for ${op.agent_label} (advisory — no live agent)` : `directive ${op.kind} issued to ${op.agent_label}` });
       } else if (op.op === 'scope') {
         const r = engine.updateScope({ add_cidrs: op.add_cidrs, add_domains: op.add_domains, add_exclusions: op.add_exclusions, reason: `operator command (${issuedBy})` });
         if (r.applied) results.push({ op, ok: true, detail: `scope updated (${r.affected_node_count} nodes affected)` });

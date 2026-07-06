@@ -849,12 +849,21 @@ export class GraphEngine {
     };
     list.push(directive);
     this.ctx.agentDirectives.set(params.task_id, list);
+    // A directive is a queued instruction an agent picks up via
+    // `acknowledge_agent_directive` — only a LIVE headless agent does that. For any
+    // other backend (manual/scripted) or a missing task there's no process to
+    // acknowledge it, so it is ADVISORY — recorded for the human operator, not
+    // auto-applied. Say so, instead of implying enforcement.
+    const targetTask = this.getTask(params.task_id);
+    const advisory = !targetTask || targetTask.backend !== 'headless_mcp';
     this.logActionEvent({
-      description: `Directive '${directive.kind}' issued to agent task ${params.task_id}`,
+      description: advisory
+        ? `Directive '${directive.kind}' recorded for ${params.task_id} — advisory (no live agent to auto-apply it)`
+        : `Directive '${directive.kind}' issued to agent task ${params.task_id}`,
       event_type: 'instrumentation_warning',
       category: 'system',
       result_classification: 'neutral',
-      agent_id: this.getTask(params.task_id)?.agent_id,
+      agent_id: targetTask?.agent_id,
       linked_agent_task_id: params.task_id,
       details: {
         reason: 'directive_issued',
@@ -862,6 +871,7 @@ export class GraphEngine {
         kind: directive.kind,
         node_ids: directive.node_ids,
         frontier_types: directive.frontier_types,
+        advisory,
       },
     });
     this.persist();
