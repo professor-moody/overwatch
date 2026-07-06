@@ -5,7 +5,6 @@ import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 import { createConnection, createServer, type Socket } from 'net';
 import { setTimeout as delay } from 'timers/promises';
-import * as pty from 'node-pty';
 
 const ENGAGEMENT_JSON = resolve('./engagement.example.json');
 const SKILLS_DIR = resolve('./skills');
@@ -27,8 +26,13 @@ function hostIpFromCidr(cidr: string, hostOctet: number): string {
   return octets.join('.');
 }
 
-const supportsLocalPty = (() => {
+// node-pty is an OPTIONAL native dependency (absent on fresh clones without native
+// build tools). Load it via a non-literal specifier so this test file COMPILES
+// without it, and skip the local_pty lifecycle test at runtime when it's missing.
+const supportsLocalPty = await (async () => {
   try {
+    const specifier = 'node-pty';
+    const pty = await import(specifier);
     const proc = pty.spawn('/bin/sh', [], {
       name: 'xterm-256color',
       cols: 80,

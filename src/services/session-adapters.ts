@@ -3,12 +3,19 @@
 // SSH, LocalPTY, and Socket adapter implementations
 // ============================================================
 
-// node-pty is an optional native dependency — loaded dynamically
-let pty: typeof import('node-pty') | null = null;
+// node-pty is an OPTIONAL native dependency, loaded dynamically. It is typed
+// LOCALLY (not `typeof import('node-pty')`) and imported through a NON-LITERAL
+// specifier, so `tsc` does not need the package installed to BUILD — a fresh
+// clone without native build tools (a common node-pty compile failure) still
+// compiles. LocalPtyAdapter/SshAdapter throw a clear error at runtime if it's
+// genuinely missing.
+type NodePty = { spawn: (file: string, args: string[] | string, opts: Record<string, unknown>) => any };
+let pty: NodePty | null = null;
 try {
-  pty = await import('node-pty');
+  const specifier = 'node-pty';
+  pty = (await import(specifier)) as unknown as NodePty;
 } catch {
-  // node-pty not installed — LocalPtyAdapter.spawn() will throw at runtime
+  // node-pty not installed — the PTY adapters throw at runtime
 }
 import { createServer, connect, type Server, type Socket } from 'net';
 import type { AdapterHandle, SessionCapabilities } from '../types.js';
