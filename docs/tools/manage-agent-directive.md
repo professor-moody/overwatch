@@ -6,7 +6,7 @@ Steer a running sub-agent by issuing a directive.
 
 ## Description
 
-Issues an operator steering directive to a running sub-agent. The engine only **records** the directive; it is delivered on the agent's next [`agent_heartbeat`](agent-heartbeat.md) as `pending_directive`, and the agent calls [`acknowledge_agent_directive`](acknowledge-agent-directive.md) and honors it. A new directive **supersedes** any still-pending one for the task (latest instruction wins).
+Issues an operator steering directive to a running sub-agent. The engine only **records** the directive; for a live **`headless_mcp`** agent it is delivered on the agent's next [`agent_heartbeat`](agent-heartbeat.md) as `pending_directive`, and the agent calls [`acknowledge_agent_directive`](acknowledge-agent-directive.md) and honors it. For any **other backend** (`manual`/`scripted`) or a task with no live process, the directive is **advisory** — recorded and shown to the operator (the activity log + command result say "recorded … advisory"), but nothing auto-applies it. A new directive **supersedes** any still-pending one for the task (latest instruction wins).
 
 `stop` is the one kind executed by the runtime (`TaskExecutionService` kills the headless process and marks the task interrupted); the rest are agent-observed.
 

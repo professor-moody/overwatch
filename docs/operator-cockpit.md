@@ -57,7 +57,7 @@ Each resolves to one or more `OperatorOp`s, previews, and runs through `executeO
 
 ## Steering — talking to a specific agent {#steering}
 
-The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive.md)) is delivered on the agent's heartbeat as `pending_directive`; the agent calls [`acknowledge_agent_directive`](tools/acknowledge-agent-directive.md) and honors it. The cockpit surfaces it as:
+The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive.md)) is delivered on the agent's heartbeat as `pending_directive`; the agent calls [`acknowledge_agent_directive`](tools/acknowledge-agent-directive.md) and honors it. Only a **live `headless_mcp` agent** acknowledges directives — for any other target (a `manual`/`scripted` backend, or a task with no live process) the directive is **advisory**: it's recorded and shown to the operator, but nothing auto-applies it, and the activity log + command result say so ("recorded … advisory") rather than "issued". The cockpit surfaces it as:
 
 - **Per-agent** Pause / Resume / Stop buttons + a free-text box (`instruct`) on the agent context panel — `POST /api/agents/:id/directive` builds one directive op and runs it through `executeOps`.
 - **Fleet-wide** Pause/Resume/Stop all (optionally one campaign) — `POST /api/fleet/directive` fans out directive ops over the running set.

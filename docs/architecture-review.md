@@ -96,7 +96,7 @@ Organized by domain:
 - **Access** — `ADMIN_TO`, `HAS_SESSION`, `CAN_RDPINTO`, `CAN_PSREMOTE`
 - **Credentials** — `VALID_ON`, `OWNS_CRED`, `DERIVED_FROM`, `DUMPED_FROM`, `POTENTIAL_AUTH`, `TESTED_CRED`, `SHARED_CREDENTIAL`
 - **AD attack paths** — `CAN_DCSYNC`, `DELEGATES_TO`, `CAN_DELEGATE_TO`, `WRITEABLE_BY`, `GENERIC_ALL`, `GENERIC_WRITE`, `WRITE_OWNER`, `WRITE_DACL`, `ADD_MEMBER`, `FORCE_CHANGE_PASSWORD`, `ALLOWED_TO_ACT`, `CAN_READ_LAPS`, `CAN_READ_GMSA`, `RBCD_TARGET`
-- **ADCS** — `CAN_ENROLL`, `ESC1`–`ESC13`, `ISSUED_BY`, `OPERATES_CA`
+- **ADCS** — `CAN_ENROLL`, `ESC1`–`ESC13`, `ESC15`, `ISSUED_BY`, `OPERATES_CA`, `MANAGE_CA`, `MANAGE_CERTIFICATES`
 - **Roasting** — `AS_REP_ROASTABLE`, `KERBEROASTABLE`
 - **Lateral movement** — `RELAY_TARGET`, `NULL_SESSION`
 - **Web application** — `HOSTS`, `AUTHENTICATED_AS`, `VULNERABLE_TO`, `EXPLOITS`
@@ -115,7 +115,7 @@ Rules fire automatically when nodes are ingested. Each rule has:
 
 Example: *"Host has SMB service with signing disabled → create RELAY_TARGET edge to domain hosts"*
 
-Sixty-four built-in rules span Active Directory & services, ADCS (ESC1–ESC13), Linux privilege escalation, web application, MSSQL, and cloud infrastructure. Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference; `src/services/builtin-inference-rules.ts` is the authoritative list.
+Sixty-four built-in rules span Active Directory & services, ADCS (ESC1–ESC13, ESC15), Linux privilege escalation, web application, MSSQL, and cloud infrastructure. Rules can be added at runtime via `suggest_inference_rule` and backfilled against existing graph nodes. See [Graph Model — Inference Rules](graph-model.md#inference-rules) for the full reference; `src/services/builtin-inference-rules.ts` is the authoritative list.
 
 ---
 

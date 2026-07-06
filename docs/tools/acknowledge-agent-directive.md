@@ -6,7 +6,7 @@ A sub-agent confirms it received an operator steering directive.
 
 ## Description
 
-Operator directives are delivered to a running sub-agent on its [`agent_heartbeat`](agent-heartbeat.md) response as `pending_directive`. After seeing one, the sub-agent calls `acknowledge_agent_directive` to confirm receipt, then acts on it (pause, resume, narrow scope, follow a free-text `instruct`, …). Acknowledging marks the directive so it isn't re-delivered on every subsequent heartbeat.
+Only a **live `headless_mcp` agent** calls this tool. Operator directives are delivered to such an agent on its [`agent_heartbeat`](agent-heartbeat.md) response as `pending_directive`. After seeing one, the sub-agent calls `acknowledge_agent_directive` to confirm receipt, then acts on it (pause, resume, narrow scope, follow a free-text `instruct`, …). Acknowledging marks the directive so it isn't re-delivered on every subsequent heartbeat. For any other task backend (`manual`/`scripted`) or a task with no live process, a directive is **advisory** — recorded for the operator, never delivered to an acknowledge handler.
 
 ## Parameters
 
