@@ -80,7 +80,7 @@ export class TaskExecutionService {
       intervalMs: options.watchdogIntervalMs,
       // After each reap, kill any headless process whose task is now terminal
       // and abort its blocked approvals (heartbeat-reap doesn't do either).
-      afterTick: () => this.reconcileTerminatedTasks(),
+      afterTick: () => { this.reconcileTerminatedTasks(); this.reofferStrandedWork(); },
     });
     this.registry = new HeadlessProcessRegistry();
     this.headlessRunner = new HeadlessMcpRunner(engine, this.registry, processTracker, options.headless);
@@ -213,6 +213,9 @@ export class TaskExecutionService {
       const pending = this.engine.getPendingAgentDirective(task.id);
       if (pending?.kind !== 'stop') continue;
       this.engine.acknowledgeAgentDirective(task.id, pending.id);
+      // A stop directive (per-agent or fleet) is a deliberate operator stop —
+      // mark it so the Phase 3.1 re-offer sweep doesn't auto-re-dispatch the work.
+      task.no_retry = true;
       this.cancelHeadless(task.id, `stop directive (${pending.id})`);
     }
   }
@@ -307,6 +310,83 @@ export class TaskExecutionService {
       clearTimeout(timer);
       this.timeoutTimers.delete(taskId);
     }
+  }
+
+  /**
+   * Phase 3.1 resilience. A headless agent that ends ABNORMALLY (wall-clock
+   * timeout / heartbeat-reap / process death / boot reconcile) with unfinished
+   * frontier work used to leave it silently stranded — "the log recovers but
+   * nothing continues". This makes it LOUD: a one-time alert per dead task noting
+   * the work is stranded and back on the frontier for pickup. The frontier lease
+   * was already released on termination, so the item re-surfaces for the operator
+   * — or (Phase 3.2) the persistent orchestrator that consumes this signal — to
+   * redo. We deliberately do NOT auto-spawn a replacement: doing that correctly
+   * over a mutable, id-reusing frontier + OPSEC/dispatch caps is the orchestrator's
+   * job. Runs after every watchdog tick; each dead task is alerted at most once
+   * (durable `reoffered` flag).
+   */
+  private reofferStrandedWork(): void {
+    let changed = false;
+
+    for (const task of this.engine.getAgentTasks()) {
+      // Only abnormal terminations of headless work tied to a frontier item.
+      if (task.status !== 'interrupted' && task.status !== 'failed') continue;
+      if (task.no_retry) continue;                              // deliberate operator stop
+      if (task.reoffered) continue;                             // alert once per dead task (durable)
+      if (!task.frontier_item_id) continue;                     // planner/ad-hoc carry none
+      // Use the STORED backend, not resolveBackend() — the latter re-derives via
+      // scriptedCanHandle over live graph state and could flip a task that ran
+      // headless to 'scripted' post-death, silently skipping a real strand.
+      if (task.backend === 'scripted' || task.backend === 'manual') continue;
+      // Wait until the OS process is confirmed gone (reconcileTerminatedTasks kills
+      // it first each tick) so we don't alert on a task whose `claude -p` might yet
+      // finish. Don't mark reoffered until then.
+      if (this.registry.has(task.id)) continue;
+      // A deliberately-aborted campaign is not "stranded" — record it handled.
+      if (task.campaign_id && this.engine.getCampaign(task.campaign_id)?.status === 'aborted') {
+        task.reoffered = true; changed = true; continue;
+      }
+
+      // Is there still work? The frontier is the source of truth. getFrontierItem
+      // runs computeFrontier(), which can throw on a concurrent graph mutation — a
+      // throw must NOT commit the durable dedup flag (that would permanently
+      // suppress a real strand), so we compute BEFORE marking and skip (retry next
+      // tick) on error, mirroring drainCveResearch's guarded compute.
+      let stillOpen: boolean;
+      try {
+        stillOpen = !!this.engine.getFrontierItem(task.frontier_item_id);
+      } catch {
+        continue; // transient — re-evaluate next tick, reoffered NOT set
+      }
+
+      // Now safe to commit the durable dedup flag.
+      task.reoffered = true; changed = true;
+      if (!stillOpen) continue;                                 // item done/achieved/out-of-scope → nothing stranded
+      // Already being worked by a live task (e.g. a fresh dispatch)? not stranded.
+      const beingWorked = this.engine.getAgentTasks().some(t =>
+        t.frontier_item_id === task.frontier_item_id && (t.status === 'running' || t.status === 'pending'));
+      if (beingWorked) continue;
+
+      // Make the strand LOUD. The frontier lease was released on termination, so
+      // the item is already back on the frontier for pickup — by the operator, or
+      // (Phase 3.2) the persistent orchestrator that consumes this signal. We do
+      // NOT auto-spawn a replacement here: doing so correctly over a mutable,
+      // id-reusing frontier + OPSEC/dispatch caps is the orchestrator's job.
+      this.engine.logActionEvent({
+        description: `Agent ${task.agent_id} ended (${task.status}) with unfinished work — ${task.frontier_item_id} is stranded and back on the frontier for pickup`,
+        event_type: 'instrumentation_warning',
+        category: 'agent',
+        agent_id: task.agent_id,
+        linked_agent_task_id: task.id,
+        frontier_item_id: task.frontier_item_id,
+        result_classification: 'failure',
+        details: { reason: 'work_reoffered', frontier_item_id: task.frontier_item_id },
+      });
+    }
+
+    // The reoffered flags are durable dedup state — flush them so a restart right
+    // after an alert doesn't re-alert the same dead tasks.
+    if (changed) this.engine.persist();
   }
 
   private drainHeadless(): void {

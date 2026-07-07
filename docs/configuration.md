@@ -225,6 +225,12 @@ Headless agents (and the free-form planner) run as `claude -p` sub-processes, so
 
 The chosen model is passed straight through as `claude -p --model <id>`. Pick a model per-deploy in the dashboard's Deploy modal, or set `default_agent_model` to apply one engagement-wide.
 
+### Agent Resilience
+
+A headless agent that ends **abnormally** — wall-clock timeout (30 min), heartbeat-reap, process death, or a boot reconcile after a crash — used to leave its unfinished frontier work **silently** stranded ("the log recovers but nothing continues"). It's now made **loud**: once the dead process is confirmed gone, a one-time activity alert (`work_reoffered`) notes that the item is stranded and **back on the frontier for pickup**. The frontier lease was already released on termination, so the item re-surfaces in `next_task` / `get_state` for the operator — or the persistent orchestrator (Phase 3.2) — to redo.
+
+This is deliberately an **alert + re-offer**, not an autonomous re-spawn: re-dispatching correctly over a mutable, id-reusing frontier plus OPSEC / dispatch caps is the orchestrator's job. A **deliberate** stop (operator cancel/dismiss, stop directive, or a campaign abort) is marked `no_retry` and never surfaced as stranded. No configuration is required.
+
 ### Example: Multi-Domain Engagement
 
 ```json

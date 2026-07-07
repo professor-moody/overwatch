@@ -114,6 +114,9 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
   if (typeof partial.name === 'string' && partial.name.length > 0) draft.name = partial.name;
   if (typeof partial.profile === 'string') draft.profile = partial.profile as EngagementConfig['profile'];
   if (typeof partial.community_resolution === 'number') draft.community_resolution = partial.community_resolution;
+  // Agent model knobs (settable via a config PATCH, not only file edit).
+  if (Array.isArray(partial.available_models)) draft.available_models = (partial.available_models as unknown[]).filter(m => typeof m === 'string') as string[];
+  if (typeof partial.default_agent_model === 'string') draft.default_agent_model = partial.default_agent_model;
 
   // Merge scope (partial merge — only overwrite provided keys)
   if (partial.scope && typeof partial.scope === 'object') {

@@ -2673,6 +2673,9 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: `Agent is ${task.status} — cannot cancel` }));
       return;
     }
+    // Operator cancel is a DELIBERATE stop — mark it so the Phase 3.1 re-offer
+    // sweep doesn't auto-re-dispatch the work the operator just called off.
+    task.no_retry = true;
     let killed = false;
     if (this.taskExecution) {
       // Kills the headless OS process (if any) AND marks the task interrupted

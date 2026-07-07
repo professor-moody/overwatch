@@ -2143,9 +2143,12 @@ export class GraphEngine {
         const abort = this.campaignPlanner.checkAbortConditions(task.campaign_id);
         if (abort.should_abort) {
           this.campaignPlanner.abortCampaign(task.campaign_id);
-          // Cancel remaining running agents for this campaign
+          // Cancel remaining running agents for this campaign. Mark them
+          // no_retry — a campaign abort is a deliberate stop, so the Phase 3.1
+          // re-offer sweep must not auto-re-dispatch their work.
           for (const agent of this.agentMgr.getAll()) {
             if (agent.campaign_id === task.campaign_id && agent.status === 'running' && agent.id !== taskId) {
+              agent.no_retry = true;
               this.agentMgr.updateStatus(agent.id, 'interrupted', `Campaign aborted: ${abort.reason}`);
             }
           }

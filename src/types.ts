@@ -982,6 +982,13 @@ export interface AgentTask {
   // as `claude -p --model <id>`. Unset → the CLI's own default. Validated at
   // dispatch against `EngagementConfig.available_models` when that list is set.
   model?: string;
+  // Phase 3.1 resilience. `no_retry` marks a deliberate operator stop
+  // (cancel/dismiss/stop-directive/campaign-abort) so its unfinished work is NOT
+  // surfaced as stranded. `reoffered` is a DURABLE dedup flag — set once the
+  // re-offer sweep has alerted on this dead task, so a daemon restart can't
+  // re-alert the same persisted task.
+  no_retry?: boolean;
+  reoffered?: boolean;
   // Behavior-eval only — NOT exposed in any MCP tool input schema, so a dispatched
   // agent cannot set these; only internal/harness code does:
   //  - orchestrator: run this task as the PRIMARY orchestrator (full tool surface

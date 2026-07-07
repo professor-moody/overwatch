@@ -12,6 +12,7 @@ Overwatch is operated as a **multi-agent cockpit**: a human operator drives a pr
 
 - **Dispatch.** `register_agent` / `dispatch_agents` / `dispatch_subnet_agents` / `dispatch_campaign_agents` create `AgentTask`s. `TaskExecutionService` routes each to a backend: `scripted` (deterministic in-process), `headless_mcp` (a real `claude -p` reasoning sub-agent connected back to this daemon's `/mcp`), or `manual`.
 - **Liveness.** Sub-agents call [`agent_heartbeat`](tools/agent-heartbeat.md); the watchdog reaps silent tasks past `heartbeat_ttl_seconds` (headless agents get a 300s cold-start grace so spawn + MCP bootstrap can't trip it before the first beat) and a per-task wall-clock timeout (30 min) bounds runaways. Concurrency is capped (default 3 headless agents). When a task is reaped or cancelled, its OS process is killed and any approval it was blocked on is aborted (never executed).
+- **Resilience.** An agent that ends *abnormally* (timeout / reap / process death / boot reconcile) with unfinished frontier work no longer strands it silently: once its process is gone the strand is made **loud** — a one-time `work_reoffered` alert — and the freed frontier item re-surfaces for pickup by the operator (or the Phase 3.2 orchestrator). A *deliberate* stop (cancel/dismiss/stop-directive/campaign-abort) is never surfaced as stranded. See [Agent Resilience](configuration.md#agent-resilience).
 - **Reporting.** Agents record work with `report_finding` / `log_thought` / `parse_output` and close out with `submit_agent_transcript` + `update_agent`.
 
 ### Roles {#roles}

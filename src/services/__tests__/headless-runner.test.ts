@@ -134,6 +134,103 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawnedArgs[0]).not.toContain('--model');
   });
 
+  // ---- Phase 3.1: re-offer (alert) of stranded frontier work ----
+
+  const reofferCount = () =>
+    engine.getFullHistory().filter(e => (e.details as { reason?: string })?.reason === 'work_reoffered').length;
+
+  // Launch a headless agent on a real frontier item, then kill its process so the
+  // runner marks it interrupted AND clears the registry (the sweep only alerts
+  // once the old process is confirmed gone).
+  async function launchThenDie(id: string, agentId: string, extra: Partial<AgentTask> = {}) {
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    expect(disco).toBeDefined();
+    const before = spawned.length;
+    engine.registerAgent(headlessTask({ id, agent_id: agentId, frontier_item_id: disco!.id, ...extra }));
+    await settle();
+    expect(spawned.length).toBe(before + 1);
+    spawned[spawned.length - 1].simulateExit(1, null);   // process died → interrupted + registry cleared
+    spawned[spawned.length - 1].simulateClose(1, null);
+    await settle();
+    expect(engine.getTask(id)?.status).toBe('interrupted');
+    return disco!.id;
+  }
+
+  it('alerts (loudly, once) when a dead headless agent leaves unfinished frontier work', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await launchThenDie('dead-1', 'a-dead');
+    const before = spawned.length;
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(1);                                       // loud alert
+    expect(engine.getAgentTasks().some(t => t.agent_id.startsWith('retry-'))).toBe(false); // no autonomous re-spawn
+    expect(spawned.length).toBe(before);
+    expect(engine.getTask('dead-1')?.reoffered).toBe(true);
+  });
+
+  it('does NOT alert for an operator-stopped (no_retry) agent', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await launchThenDie('stopped-1', 'a-stop', { no_retry: true });
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(0);
+    expect(engine.getTask('stopped-1')?.reoffered).toBeFalsy();
+  });
+
+  it('alerts once — a second tick does not re-alert (durable dedup)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await launchThenDie('dedup-1', 'a-dd');
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(1);
+    svc.tickWatchdog();                              // second tick
+    await settle();
+    expect(reofferCount()).toBe(1);                 // still once
+  });
+
+  it('does NOT alert while the old process is still live (no premature strand)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    engine.registerAgent(headlessTask({ id: 'live-1', agent_id: 'a-live', frontier_item_id: disco!.id }));
+    await settle();
+    // Heartbeat-reap marks it interrupted but the OS process has NOT exited yet
+    // (still in the registry). The sweep must defer until it's confirmed gone.
+    engine.updateAgentStatus('live-1', 'interrupted', 'heartbeat timeout');
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(0);
+    expect(engine.getTask('live-1')?.reoffered).toBeFalsy(); // not evaluated until the process is gone
+  });
+
+  it('does not permanently suppress the alert if the frontier compute throws (transient)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await launchThenDie('throwy-1', 'a-throw');
+    const orig = engine.getFrontierItem.bind(engine);
+    // First tick: computeFrontier throws → no alert, and the durable dedup flag
+    // must NOT be committed (else the strand would be suppressed forever).
+    engine.getFrontierItem = (() => { throw new Error('frontier compute error'); }) as typeof engine.getFrontierItem;
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(0);
+    expect(engine.getTask('throwy-1')?.reoffered).toBeFalsy();
+    // Recovery: the next clean tick finally surfaces the strand.
+    engine.getFrontierItem = orig;
+    svc.tickWatchdog();
+    await settle();
+    expect(reofferCount()).toBe(1);
+    expect(engine.getTask('throwy-1')?.reoffered).toBe(true);
+  });
+
   it('runs an orchestrator task with the full tool surface + a primary bootstrap, and honors a per-task binary override', async () => {
     svc = makeService();
     svc.start();
