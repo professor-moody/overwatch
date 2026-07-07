@@ -64,9 +64,10 @@ describe('Headless runner mechanics (injected spawn)', () => {
   let logDir: string;
   let nextPid: number;
 
-  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine } = {}) {
+  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number } = {}) {
     return new TaskExecutionService(opts.engineOverride ?? engine, new ProcessTracker(), {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
+      orchestratorHealthyMs: opts.orchestratorHealthyMs,
       headless: {
         logDir,
         spawnFn: (cmd: string, args: string[]) => {
@@ -229,6 +230,83 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
     expect(reofferCount()).toBe(1);
     expect(engine.getTask('throwy-1')?.reoffered).toBe(true);
+  });
+
+  // ---- Phase 3.2: persistent orchestrator lifecycle ----
+
+  const runningOrchestrators = () =>
+    engine.getAgentTasks().filter(t => t.role === 'orchestrator' && (t.status === 'running' || t.status === 'pending'));
+
+  it('does NOT start a persistent orchestrator unless opted in', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    expect(runningOrchestrators().length).toBe(0);
+  });
+
+  it('starts exactly one orchestrator when enabled + headless available (idempotent)', async () => {
+    svc = makeService();
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' }); // headless available → reconcileOrchestrator
+    await settle();
+    const orchs = runningOrchestrators();
+    expect(orchs.length).toBe(1);
+    expect(orchs[0].orchestrator).toBe(true);              // primary bootstrap + full tools
+    expect(spawned.length).toBe(1);
+    svc.tickWatchdog(); await settle();
+    svc.tickWatchdog(); await settle();
+    expect(runningOrchestrators().length).toBe(1);         // still exactly one
+    expect(spawned.length).toBe(1);
+  });
+
+  it('backs off (no hot-loop) when the orchestrator dies fast', async () => {
+    svc = makeService(); // default 5-min healthy threshold
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    expect(spawned.length).toBe(1);
+    spawned[0].simulateExit(1, null); spawned[0].simulateClose(1, null); // dies immediately (fast)
+    await settle();
+    svc.tickWatchdog(); await settle();
+    expect(runningOrchestrators().length).toBe(0);         // backing off — NOT respawned
+    expect(spawned.length).toBe(1);
+    expect(engine.getFullHistory().some(e => (e.details as { reason?: string })?.reason === 'orchestrator_restart_backoff')).toBe(true);
+  });
+
+  it('restarts the orchestrator after a healthy run ends', async () => {
+    svc = makeService({ orchestratorHealthyMs: 0 }); // every run counts as healthy → no backoff
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    expect(spawned.length).toBe(1);
+    const first = runningOrchestrators()[0];
+    spawned[0].simulateExit(0, null); spawned[0].simulateClose(0, null);
+    await settle();
+    svc.tickWatchdog(); await settle();
+    const orchs = runningOrchestrators();
+    expect(orchs.length).toBe(1);                          // a fresh one
+    expect(orchs[0].id).not.toBe(first.id);
+    expect(spawned.length).toBe(2);                        // relaunched
+  });
+
+  it('runs the orchestrator OUTSIDE the concurrency cap (no sub-agent starvation)', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1 });      // one sub-agent slot
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    expect(runningOrchestrators().length).toBe(1);
+    expect(spawned.length).toBe(1);                        // orchestrator launched
+    // A sub-agent dispatched alongside it still launches — the orchestrator does
+    // not consume the single sub-agent slot (would deadlock before the fix).
+    const disco = engine.computeFrontier().find(f => f.type === 'network_discovery');
+    engine.registerAgent(headlessTask({ id: 'sub-1', agent_id: 'a-sub', frontier_item_id: disco!.id }));
+    await settle();
+    expect(spawned.length).toBe(2);                        // sub-agent launched too
   });
 
   it('runs an orchestrator task with the full tool surface + a primary bootstrap, and honors a per-task binary override', async () => {

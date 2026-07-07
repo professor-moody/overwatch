@@ -92,6 +92,7 @@ export interface AgentInfo {
   id: string;
   agent_id?: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
+  role?: 'default' | 'research' | 'planner' | 'orchestrator';
   task: string;
   skill?: string;
   scope_node_ids?: string[];

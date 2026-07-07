@@ -249,9 +249,11 @@ export class HeadlessMcpRunner {
 
   private buildArgs(task: AgentTask, configPath: string): string[] {
     // An explicit archetype wins; else fall back to the legacy role; else default.
-    // The PRIMARY orchestrator (eval-only) gets the full surface, like 'default'.
+    // The PRIMARY orchestrator (the eval flag OR a persistent role:'orchestrator'
+    // agent) gets the full surface, like 'default'.
     const archetype = getArchetype(task.archetype ?? task.role);
-    const allowedTools = task.orchestrator ? allowedToolsFor('default') : allowedToolsFor(archetype.id);
+    const isPrimary = task.orchestrator === true || task.role === 'orchestrator';
+    const allowedTools = isPrimary ? allowedToolsFor('default') : allowedToolsFor(archetype.id);
     const args = [
       '-p', this.bootstrapPrompt(task),
       '--mcp-config', configPath,
@@ -268,9 +270,10 @@ export class HeadlessMcpRunner {
   }
 
   private bootstrapPrompt(task: AgentTask): string {
-    // PRIMARY orchestrator (eval-only): fetch the primary prompt + run the
-    // frontier→dispatch→synthesize loop, rather than a scoped sub-agent brief.
-    if (task.orchestrator) {
+    // PRIMARY orchestrator (the eval flag OR a persistent role:'orchestrator'
+    // agent): fetch the primary prompt + run the frontier→dispatch→synthesize
+    // loop, rather than a scoped sub-agent brief.
+    if (task.orchestrator === true || task.role === 'orchestrator') {
       return [
         `You are the Overwatch PRIMARY orchestrator (your agent task_id is "${task.id}").`,
         `First use ToolSearch to find the "overwatch" MCP tools, then call get_system_prompt(role="primary")`,

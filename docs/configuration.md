@@ -83,7 +83,8 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "engagement_signing_key_id": "optional-key-id-for-signed-checkpoints",
   "subagent_isolation": "in_process | process",
   "available_models": ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
-  "default_agent_model": "claude-sonnet-5"
+  "default_agent_model": "claude-sonnet-5",
+  "orchestrator": { "enabled": false }
 }
 ```
 
@@ -230,6 +231,20 @@ The chosen model is passed straight through as `claude -p --model <id>`. Pick a 
 A headless agent that ends **abnormally** — wall-clock timeout (30 min), heartbeat-reap, process death, or a boot reconcile after a crash — used to leave its unfinished frontier work **silently** stranded ("the log recovers but nothing continues"). It's now made **loud**: once the dead process is confirmed gone, a one-time activity alert (`work_reoffered`) notes that the item is stranded and **back on the frontier for pickup**. The frontier lease was already released on termination, so the item re-surfaces in `next_task` / `get_state` for the operator — or the persistent orchestrator (Phase 3.2) — to redo.
 
 This is deliberately an **alert + re-offer**, not an autonomous re-spawn: re-dispatching correctly over a mutable, id-reusing frontier plus OPSEC / dispatch caps is the orchestrator's job. A **deliberate** stop (operator cancel/dismiss, stop directive, or a campaign abort) is marked `no_retry` and never surfaced as stranded. No configuration is required.
+
+### Persistent Orchestrator ("Primary")
+
+By default the dashboard is the orchestrator: you drive it, and each command bar submission spawns a single-shot planner. Opt into a **persistent PRIMARY orchestrator** — a long-lived headless agent that runs the frontier→dispatch→synthesize loop on its own and consumes re-offered work — with:
+
+```json
+"orchestrator": { "enabled": true }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `orchestrator.enabled` | `boolean` | Default **`false`** (opt-in — it drives autonomous dispatch). When `true`, one primary orchestrator is registered at engagement startup and kept alive with **restart-on-crash** (exponential backoff, 30 s → 10 min cap; a run ≥ 5 min resets it). Requires the HTTP/headless runtime + `claude` on PATH. |
+
+The orchestrator's autonomous loop is **prompt-driven** (`get_system_prompt(role="primary")`), and its dispatched sub-agents' actions still pass through the normal OPSEC / approval / scope guards. Steer it live from the command bar's **"Primary"** scope (see [Operator Cockpit](operator-cockpit.md#command-scope)). It's exempt from the 30-min sub-agent wall-clock (it's meant to persist), but the heartbeat watchdog still reaps it if it goes silent — and then restarts it.
 
 ### Example: Multi-Domain Engagement
 

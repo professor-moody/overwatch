@@ -14,11 +14,13 @@ import type { AgentInfo } from './types';
 export type CommandScope =
   | { kind: 'engagement' }
   | { kind: 'all_agents' }
+  | { kind: 'primary' }                       // steer the current orchestrator (id resolved live)
   | { kind: 'agent'; taskId: string; label: string };
 
 export type CommandRoute =
   | { via: 'command' }                       // POST /api/commands — NL preview → confirm (the planner)
   | { via: 'instruct'; taskId: string }      // issueDirective(taskId, 'instruct', { note })
+  | { via: 'instruct_primary' }              // instruct the live orchestrator (id resolved at render)
   | { via: 'instruct_all' };                 // fleetInstruct(note) → every running agent
 
 export const ENGAGEMENT_SCOPE: CommandScope = { kind: 'engagement' };
@@ -44,18 +46,21 @@ export function defaultScopeFor(agent: AgentInfo | null | undefined): CommandSco
 
 export function routeCommand(scope: CommandScope): CommandRoute {
   if (scope.kind === 'agent') return { via: 'instruct', taskId: scope.taskId };
+  if (scope.kind === 'primary') return { via: 'instruct_primary' };
   if (scope.kind === 'all_agents') return { via: 'instruct_all' };
   return { via: 'command' };
 }
 
 export function scopeLabel(scope: CommandScope): string {
   if (scope.kind === 'agent') return scope.label;
+  if (scope.kind === 'primary') return 'Primary';
   if (scope.kind === 'all_agents') return 'All agents';
   return 'Plan';
 }
 
 export function scopePlaceholder(scope: CommandScope): string {
   if (scope.kind === 'agent') return `Command ${scope.label}… e.g. "focus on SMB"`;
+  if (scope.kind === 'primary') return 'Steer the primary orchestrator… e.g. "prioritize the DC", "pause dispatching"';
   if (scope.kind === 'all_agents') return 'Instruct all running agents… e.g. "stop and report what you have"';
   return 'Plan the engagement… e.g. "what should we do next", "scan 10.50.0.0/16"';
 }

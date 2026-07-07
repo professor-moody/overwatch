@@ -44,12 +44,18 @@ describe('command-scope', () => {
     expect(routeCommand(ALL_AGENTS_SCOPE)).toEqual({ via: 'instruct_all' });
   });
 
+  it('routes primary scope to the live-orchestrator instruct (id resolved at render, not pinned)', () => {
+    expect(routeCommand({ kind: 'primary' })).toEqual({ via: 'instruct_primary' });
+  });
+
   it('labels and placeholders reflect the scope', () => {
     expect(scopeLabel(ENGAGEMENT_SCOPE)).toBe('Plan');
     expect(scopeLabel(ALL_AGENTS_SCOPE)).toBe('All agents');
+    expect(scopeLabel({ kind: 'primary' })).toBe('Primary');
     expect(scopeLabel({ kind: 'agent', taskId: 't1', label: 'recon-1' })).toBe('recon-1');
     expect(scopePlaceholder(ENGAGEMENT_SCOPE)).toMatch(/plan/i);
     expect(scopePlaceholder(ALL_AGENTS_SCOPE)).toMatch(/all/i);
+    expect(scopePlaceholder({ kind: 'primary' })).toMatch(/primary/i);
     expect(scopePlaceholder({ kind: 'agent', taskId: 't1', label: 'recon-1' })).toMatch(/recon-1/);
   });
 });

@@ -35,6 +35,7 @@ The operator types plain English in the cockpit; `POST /api/commands` is a **two
 A **scope pill** above the input decides where the text goes — so the planner is a deliberate choice, not a silent default:
 
 - **Plan** (default) — the two-phase NL flow above (the planner).
+- **Primary** — steer the persistent **orchestrator** ([`orchestrator.enabled`](configuration.md#persistent-orchestrator-primary)), when one is running. This is a live `instruct` to the long-lived primary (e.g. "prioritize the DC", "pause dispatching") — the real "talk to the primary", distinct from Plan's single-shot planner.
 - **&lt;focused agent&gt;** — a free-text `instruct` directive to the agent you've selected. Shown for any **commandable** agent: a `running` one acts on its next heartbeat; a `pending` one has the instruction **queued** until it launches. A **terminal** (finished) agent shows a *disabled* pill — dismiss it or pick a live one, rather than silently falling back to the planner.
 - **All agents** — broadcast the instruct to every running agent (`POST /api/fleet/directive` with `kind: 'instruct'`), shown when at least one agent is running.
 

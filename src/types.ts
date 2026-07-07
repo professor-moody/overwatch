@@ -627,6 +627,16 @@ export interface EngagementConfig {
   cve_research?: {
     enabled?: boolean;
   };
+  /**
+   * P3.2: persistent orchestrator ("primary"). When enabled (default OFF for
+   * OPSEC — it drives autonomous dispatch), a long-lived PRIMARY orchestrator
+   * agent is registered at engagement startup, kept alive with restart-on-crash
+   * (exponential backoff), and steerable from the dashboard command bar's
+   * "Primary" scope. Requires the HTTP/headless runtime + `claude` on PATH.
+   */
+  orchestrator?: {
+    enabled?: boolean;
+  };
   /** In-process JSON-RPC tape recorder. Off by default. */
   tape?: {
     enabled?: boolean;
@@ -794,6 +804,8 @@ export const engagementConfigSchema = z.object({
   subagent_isolation: z.enum(['in_process', 'process']).default('in_process'),
   // P2: CVE research toggle. Default enabled; set false for air-gapped engagements.
   cve_research: z.object({ enabled: z.boolean().optional() }).optional(),
+  // P3.2: persistent orchestrator ("primary"). Default OFF (opt-in).
+  orchestrator: z.object({ enabled: z.boolean().optional() }).optional(),
   /**
    * In-process JSON-RPC tape recorder. When `enabled: true` the MCP server
    * captures every wire frame (both directions) into a JSONL tape and
@@ -1003,7 +1015,7 @@ export interface AgentTask {
 }
 
 export type TaskBackend = 'scripted' | 'headless_mcp' | 'manual';
-export type AgentRole = 'default' | 'research' | 'planner';
+export type AgentRole = 'default' | 'research' | 'planner' | 'orchestrator';
 
 // --- Agent directives (operator steering) ---
 

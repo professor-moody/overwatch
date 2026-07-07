@@ -44,21 +44,24 @@ export function ContextualCommandBar({
   const commandable = canScopeToAgent(focusedAgent);
   const terminalFocused = !!focusedAgent && !commandable;
   const hasRunning = (agents ?? []).some(a => a.status === 'running');
+  const primary = (agents ?? []).find(a => a.role === 'orchestrator' && a.status === 'running');
 
   // Follow focus: when the focused AGENT changes, default the scope to it (or
   // Plan). Keyed on id ONLY — a status heartbeat on the same agent must not clobber
-  // a deliberate Plan / All-agents choice the operator made.
+  // a deliberate Plan / All-agents / Primary choice the operator made.
   useEffect(() => {
     setScope(defaultScopeFor(focusedAgent));
   }, [focusedAgent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Guard a stranded scope: if the scope's target stops being valid — the focused
-  // agent went terminal, or the fleet emptied while an "All agents" broadcast was
-  // selected — fall back to Plan so the box never routes into the void.
+  // agent went terminal, the fleet emptied under an "All agents" broadcast, or the
+  // orchestrator stopped under "Primary" — fall back to Plan so the box never
+  // routes into the void.
   useEffect(() => {
     if (scope.kind === 'agent' && !commandable) setScope(ENGAGEMENT_SCOPE);
     else if (scope.kind === 'all_agents' && !hasRunning) setScope(ENGAGEMENT_SCOPE);
-  }, [scope.kind, commandable, hasRunning]);
+    else if (scope.kind === 'primary' && !primary) setScope(ENGAGEMENT_SCOPE);
+  }, [scope.kind, commandable, hasRunning, primary?.id]);
 
   const route = routeCommand(scope);
 
@@ -67,6 +70,14 @@ export function ContextualCommandBar({
       <div className="flex items-center gap-1.5 text-[10px]">
         <span className="uppercase tracking-wider text-muted-foreground">Command</span>
         <ScopePill label="Plan" active={scope.kind === 'engagement'} onClick={() => setScope(ENGAGEMENT_SCOPE)} />
+        {primary && (
+          <ScopePill
+            label="Primary"
+            active={scope.kind === 'primary'}
+            onClick={() => setScope({ kind: 'primary' })}
+            title="Steer the persistent primary orchestrator"
+          />
+        )}
         {focusedAgent && commandable && (
           <ScopePill
             label={focusedAgent.agent_id || focusedAgent.id}
@@ -91,9 +102,15 @@ export function ContextualCommandBar({
         <InstructBar
           taskId={route.taskId}
           placeholder={scopePlaceholder(scope)}
-          pendingNote={focusedAgent?.status === 'pending'}
+          pendingNote={scope.kind === 'agent' && focusedAgent?.status === 'pending'}
           onSent={onAgentCommandSent}
         />
+      )}
+      {route.via === 'instruct_primary' && primary && (
+        // Resolve the orchestrator id LIVE at render, not at click — so a crash +
+        // respawn (a new task id) re-points steering to the healthy orchestrator
+        // instead of 409'ing against the dead one.
+        <InstructBar taskId={primary.id} placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />
       )}
       {route.via === 'instruct_all' && (
         <InstructAllBar placeholder={scopePlaceholder(scope)} onSent={onAgentCommandSent} />

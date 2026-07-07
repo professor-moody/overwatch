@@ -39,6 +39,11 @@ export function resolveTaskBackend(task: AgentTask): TaskBackend {
 
 const DEFAULT_MAX_HEADLESS = 3;
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30 * 60_000; // 30 minutes
+// Persistent orchestrator crash-loop backoff: exponential from 30s, capped at
+// 10 min; a run that lasted this long counts as healthy and resets the backoff.
+const ORCHESTRATOR_BACKOFF_BASE_MS = 30_000;
+const ORCHESTRATOR_BACKOFF_CAP_MS = 10 * 60_000;
+const ORCHESTRATOR_HEALTHY_MS = 5 * 60_000;
 
 export interface TaskExecutionServiceOptions {
   /** Watchdog tick interval (ms). Defaults to the watchdog's own default (30s). */
@@ -47,6 +52,9 @@ export interface TaskExecutionServiceOptions {
   maxConcurrentHeadless?: number;
   /** Per-task wall-clock timeout for headless sub-agents (ms). Default 30 min. */
   headlessTimeoutMs?: number;
+  /** A persistent-orchestrator run lasting at least this long counts as healthy and
+   *  resets the crash-loop backoff. Default 5 min (lowered in tests). */
+  orchestratorHealthyMs?: number;
   /** Options forwarded to HeadlessMcpRunner (claude binary, spawnFn for tests, etc.). */
   headless?: HeadlessMcpRunnerOptions;
 }
@@ -69,9 +77,16 @@ export class TaskExecutionService {
   private deferredLogged = new Set<string>();
   /** cve_research frontier item ids we've already auto-dispatched this session. */
   private cveAttempted = new Set<string>();
+  /** Persistent orchestrator ("primary") lifecycle: the current orchestrator task,
+   *  when it spawned, and crash-loop backoff state. */
+  private orchestratorTaskId: string | null = null;
+  private orchestratorSpawnedAt = 0;
+  private orchestratorFailures = 0;
+  private orchestratorNextSpawnAt = 0;
 
   private maxConcurrentHeadless: number;
   private headlessTimeoutMs: number;
+  private orchestratorHealthyMs: number;
 
   constructor(engine: GraphEngine, processTracker: ProcessTracker, options: TaskExecutionServiceOptions = {}) {
     this.engine = engine;
@@ -80,12 +95,13 @@ export class TaskExecutionService {
       intervalMs: options.watchdogIntervalMs,
       // After each reap, kill any headless process whose task is now terminal
       // and abort its blocked approvals (heartbeat-reap doesn't do either).
-      afterTick: () => { this.reconcileTerminatedTasks(); this.reofferStrandedWork(); },
+      afterTick: () => { this.reconcileTerminatedTasks(); this.reofferStrandedWork(); this.reconcileOrchestrator(); },
     });
     this.registry = new HeadlessProcessRegistry();
     this.headlessRunner = new HeadlessMcpRunner(engine, this.registry, processTracker, options.headless);
     this.maxConcurrentHeadless = options.maxConcurrentHeadless ?? DEFAULT_MAX_HEADLESS;
     this.headlessTimeoutMs = options.headlessTimeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS;
+    this.orchestratorHealthyMs = options.orchestratorHealthyMs ?? ORCHESTRATOR_HEALTHY_MS;
   }
 
   /**
@@ -96,6 +112,7 @@ export class TaskExecutionService {
   setHttpEndpoint(endpoint: HeadlessEndpoint): void {
     this.endpoint = endpoint;
     if (this.running) this.drainHeadless();
+    this.reconcileOrchestrator(); // headless is now available — start the primary if opted in
   }
 
   /**
@@ -127,6 +144,7 @@ export class TaskExecutionService {
     });
     this.drainCveResearch();
     this.drainHeadless();
+    this.reconcileOrchestrator(); // in case the endpoint is already set
   }
 
   /**
@@ -389,6 +407,90 @@ export class TaskExecutionService {
     if (changed) this.engine.persist();
   }
 
+  /**
+   * Phase 3.2. Keep exactly one persistent PRIMARY orchestrator alive while the
+   * engagement opts in (`config.orchestrator.enabled`) and the headless runtime is
+   * available. The orchestrator's autonomous frontier→dispatch→synthesize loop is
+   * prompt-driven (the role:'orchestrator' primary bootstrap); this only owns its
+   * LIFECYCLE — single-instance, and restart-on-crash with exponential backoff so a
+   * broken orchestrator can't hot-loop. Runs at startup, when headless becomes
+   * available, and after every watchdog tick.
+   */
+  private reconcileOrchestrator(): void {
+    if (this.engine.getConfig().orchestrator?.enabled !== true) return; // opt-in
+    if (!this.endpoint) return;                                          // needs headless runtime
+
+    // Did the orchestrator we were tracking die? Update backoff before respawning.
+    if (this.orchestratorTaskId) {
+      const t = this.engine.getTask(this.orchestratorTaskId);
+      const alive = !!t && (t.status === 'running' || t.status === 'pending');
+      if (alive) return;                                                 // still up — nothing to do
+      const ranMs = Date.now() - this.orchestratorSpawnedAt;
+      if (ranMs >= this.orchestratorHealthyMs) {
+        this.orchestratorFailures = 0;                                   // a healthy run resets backoff
+      } else {
+        this.orchestratorFailures = Math.min(this.orchestratorFailures + 1, 8);
+        const backoff = Math.min(ORCHESTRATOR_BACKOFF_BASE_MS * (2 ** (this.orchestratorFailures - 1)), ORCHESTRATOR_BACKOFF_CAP_MS);
+        this.orchestratorNextSpawnAt = Date.now() + backoff;
+        this.engine.logActionEvent({
+          description: `Orchestrator ${t?.agent_id ?? this.orchestratorTaskId} ended after ${Math.round(ranMs / 1000)}s — restarting in ${Math.round(backoff / 1000)}s (failure #${this.orchestratorFailures})`,
+          event_type: 'instrumentation_warning', category: 'agent', result_classification: 'failure',
+          linked_agent_task_id: this.orchestratorTaskId, details: { reason: 'orchestrator_restart_backoff', failures: this.orchestratorFailures, backoff_ms: backoff },
+        });
+      }
+      this.orchestratorTaskId = null;
+    }
+
+    if (Date.now() < this.orchestratorNextSpawnAt) return;               // backing off after a fast death
+    // Adopt an already-running orchestrator (e.g. one still live). Use its real
+    // assigned_at as the spawn time, not now — otherwise a long-lived one that
+    // dies shortly after adoption is misread as a fast crash and needlessly backed off.
+    const existing = this.engine.getAgentTasks().find(t => t.role === 'orchestrator' && (t.status === 'running' || t.status === 'pending'));
+    if (existing) {
+      this.orchestratorTaskId = existing.id;
+      this.orchestratorSpawnedAt = Date.parse(existing.assigned_at) || Date.now();
+      return;
+    }
+
+    const id = uuidv4();
+    const agentId = `orchestrator-${id.slice(0, 8)}`;
+    const reg = this.engine.registerAgent({
+      id,
+      agent_id: agentId,
+      assigned_at: new Date().toISOString(),
+      status: 'running',
+      subgraph_node_ids: [],   // no frontier item → no lease, no dispatch cap
+      backend: 'headless_mcp',
+      role: 'orchestrator',
+      orchestrator: true,      // full tool surface + primary bootstrap
+      // Generous heartbeat TTL: a busy orchestrator (dispatching + synthesizing)
+      // shouldn't be reaped for infrequent beats; if it truly hangs, the watchdog
+      // still reaps it here and reconcileOrchestrator restarts it.
+      heartbeat_ttl_seconds: 600,
+    });
+    if (reg.ok) {
+      this.orchestratorTaskId = id;
+      this.orchestratorSpawnedAt = Date.now();
+      this.engine.logActionEvent({
+        description: `Persistent orchestrator ${agentId} started`,
+        event_type: 'agent_registered', category: 'agent', result_classification: 'neutral',
+        linked_agent_task_id: id, details: { reason: 'orchestrator_start' },
+      });
+      if (this.running) this.drainHeadless();
+    }
+  }
+
+  /** Running headless SUB-agents in the registry, excluding the persistent
+   *  orchestrator (which runs outside the concurrency pool). */
+  private activeSubAgentCount(): number {
+    let n = 0;
+    for (const entry of this.registry.listActive()) {
+      const t = this.engine.getTask(entry.task_id);
+      if (t && t.role !== 'orchestrator' && t.orchestrator !== true) n++;
+    }
+    return n;
+  }
+
   private drainHeadless(): void {
     for (const task of this.engine.getAgentTasks()) {
       if (task.status !== 'running') continue;
@@ -400,7 +502,12 @@ export class TaskExecutionService {
       // headless_mcp
       if (this.launched.has(task.id) || this.registry.has(task.id)) continue;
       if (!this.endpoint) { this.logDeferral(task, 'headless_mcp'); continue; }
-      if (this.registry.size() >= this.maxConcurrentHeadless) {
+      // The persistent orchestrator runs OUTSIDE the concurrency pool — it is
+      // long-lived and dispatches the sub-agents, so counting it against the cap
+      // would starve them (a deadlock at maxConcurrentHeadless=1). Only sub-agents
+      // are capped, and the orchestrator's slot is never counted against them.
+      const isOrchestrator = task.orchestrator === true || task.role === 'orchestrator';
+      if (!isOrchestrator && this.activeSubAgentCount() >= this.maxConcurrentHeadless) {
         // At capacity — a later drain (when a slot frees) will pick it up.
         continue;
       }
@@ -417,6 +524,10 @@ export class TaskExecutionService {
       this.launched.delete(task.id);
       return;
     }
+    // The persistent orchestrator is long-lived — it is NOT bounded by the per-task
+    // wall-clock timeout (that would churn it every 30 min). The heartbeat watchdog
+    // still reaps it if it goes silent, and reconcileOrchestrator restarts it.
+    if (task.orchestrator === true || task.role === 'orchestrator') return;
     // Arm a wall-clock timeout. If it fires while a process is still tracked,
     // kill it. A late timer (task already exited) finds nothing → harmless.
     const timer = setTimeout(() => {
