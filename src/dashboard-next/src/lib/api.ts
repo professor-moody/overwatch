@@ -185,6 +185,17 @@ export async function fleetDirective(
   });
 }
 
+/** Broadcast a free-text instruction to ALL running agents (the "All agents" command scope). */
+export async function fleetInstruct(
+  note: string,
+  campaignId?: string,
+): Promise<{ ok: boolean; applied: number; total: number }> {
+  return fetchJson('/api/fleet/directive', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'instruct', note, campaign_id: campaignId }),
+  });
+}
+
 /** Remove a terminal (completed/failed/interrupted) agent from the roster. 409 if it's still live. */
 export async function dismissAgent(taskId: string): Promise<{ dismissed: boolean; task_id: string }> {
   return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/dismiss`, { method: 'POST' });
@@ -217,8 +228,8 @@ export interface AgentArchetypeSummary {
   suitableFor: { frontierTypes?: string[]; nodeTypes?: string[]; rawTarget?: boolean };
 }
 
-/** The agent-type catalog for the Deploy picker (Phase 5c). */
-export async function getArchetypes(): Promise<{ archetypes: AgentArchetypeSummary[] }> {
+/** The agent-type catalog for the Deploy picker (Phase 5c), plus the model choices. */
+export async function getArchetypes(): Promise<{ archetypes: AgentArchetypeSummary[]; models?: { available: string[]; default?: string } }> {
   return fetchJson('/api/agent-archetypes');
 }
 
@@ -235,7 +246,7 @@ export interface QuickDeployResult {
  *  clean toast; a 400 (e.g. engine scope validation rejecting a CIDR the loose
  *  client regex let through) is normalized to a non-dispatched result with the
  *  server's message; only unexpected statuses throw. */
-export async function quickDeploy(body: { target: string; archetype?: string }): Promise<QuickDeployResult> {
+export async function quickDeploy(body: { target: string; archetype?: string; model?: string }): Promise<QuickDeployResult> {
   const res = await fetch(`${BASE}/api/agents/quick-deploy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -258,6 +269,7 @@ export async function dispatchAgent(body: {
   campaign_id?: string;
   frontier_item_id?: string;
   archetype?: string;
+  model?: string;
 }): Promise<DispatchAgentResult> {
   // The server (handleAgentDispatch) reads `target_node_ids` (400s on empty) and
   // returns 409 with { dispatched:false, reason:'frontier_lease_conflict', ... }

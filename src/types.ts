@@ -641,6 +641,16 @@ export interface EngagementConfig {
   postgres_dsn?: string;
   /** Compiled operator policy: durable approval/dispatch rules the engine consults. */
   operator_policy?: OperatorPolicy;
+  /**
+   * Claude models the operator may pick from when dispatching a headless agent
+   * or running the planner (passed as `claude -p --model <id>`). When set and
+   * non-empty, a dispatch requesting a model outside this list is rejected — so
+   * an org that lacks a model just omits it here. Empty/unset → any model is
+   * allowed and the picker offers a sensible default set.
+   */
+  available_models?: string[];
+  /** Default model for headless agents + the planner when the operator doesn't choose one. */
+  default_agent_model?: string;
 }
 
 export const engagementObjectiveSchema = z.object({
@@ -803,6 +813,8 @@ export const engagementConfigSchema = z.object({
    */
   postgres_dsn: z.string().optional(),
   operator_policy: operatorPolicySchema.optional(),
+  available_models: z.array(z.string()).optional(),
+  default_agent_model: z.string().optional(),
 });
 
 export interface ExportedGraphNode {
@@ -966,6 +978,10 @@ export interface AgentTask {
   // its bootstrap prompt). The 'planner' role carries the operator's free-form
   // command + a snapshot of steerable state here so it can propose a plan.
   objective?: string;
+  // Operator-chosen Claude model for the headless spawn, passed straight through
+  // as `claude -p --model <id>`. Unset → the CLI's own default. Validated at
+  // dispatch against `EngagementConfig.available_models` when that list is set.
+  model?: string;
   // Behavior-eval only — NOT exposed in any MCP tool input schema, so a dispatched
   // agent cannot set these; only internal/harness code does:
   //  - orchestrator: run this task as the PRIMARY orchestrator (full tool surface

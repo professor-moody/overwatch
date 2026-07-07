@@ -6,6 +6,7 @@ import {
   scopeLabel,
   scopePlaceholder,
   ENGAGEMENT_SCOPE,
+  ALL_AGENTS_SCOPE,
 } from '../command-scope';
 import type { AgentInfo } from '../types';
 
@@ -14,20 +15,24 @@ function agent(o: Partial<AgentInfo> = {}): AgentInfo {
 }
 
 describe('command-scope', () => {
-  it('defaults to the focused running agent, else engagement', () => {
+  it('defaults to a commandable (running or pending) focused agent, else Plan', () => {
     expect(defaultScopeFor(agent())).toEqual({ kind: 'agent', taskId: 't1', label: 'recon-1' });
+    expect(defaultScopeFor(agent({ status: 'pending' }))).toEqual({ kind: 'agent', taskId: 't1', label: 'recon-1' });
     expect(defaultScopeFor(null)).toBe(ENGAGEMENT_SCOPE);
-    // a non-running focused agent cannot receive an instruction → engagement
+    // a terminal focused agent cannot receive an instruction → Plan (engagement)
     expect(defaultScopeFor(agent({ status: 'completed' }))).toBe(ENGAGEMENT_SCOPE);
   });
 
-  it('canScopeToAgent only for a live agent', () => {
+  it('canScopeToAgent for a running OR pending agent (not terminal)', () => {
     expect(canScopeToAgent(agent())).toBe(true);
+    expect(canScopeToAgent(agent({ status: 'pending' }))).toBe(true);
     expect(canScopeToAgent(agent({ status: 'failed' }))).toBe(false);
+    expect(canScopeToAgent(agent({ status: 'completed' }))).toBe(false);
+    expect(canScopeToAgent(agent({ status: 'interrupted' }))).toBe(false);
     expect(canScopeToAgent(null)).toBe(false);
   });
 
-  it('routes engagement scope to the NL command endpoint', () => {
+  it('routes engagement scope to the NL command endpoint (the planner)', () => {
     expect(routeCommand(ENGAGEMENT_SCOPE)).toEqual({ via: 'command' });
   });
 
@@ -35,10 +40,16 @@ describe('command-scope', () => {
     expect(routeCommand({ kind: 'agent', taskId: 't1', label: 'recon-1' })).toEqual({ via: 'instruct', taskId: 't1' });
   });
 
+  it('routes all-agents scope to a broadcast instruct', () => {
+    expect(routeCommand(ALL_AGENTS_SCOPE)).toEqual({ via: 'instruct_all' });
+  });
+
   it('labels and placeholders reflect the scope', () => {
-    expect(scopeLabel(ENGAGEMENT_SCOPE)).toBe('Engagement');
+    expect(scopeLabel(ENGAGEMENT_SCOPE)).toBe('Plan');
+    expect(scopeLabel(ALL_AGENTS_SCOPE)).toBe('All agents');
     expect(scopeLabel({ kind: 'agent', taskId: 't1', label: 'recon-1' })).toBe('recon-1');
-    expect(scopePlaceholder(ENGAGEMENT_SCOPE)).toMatch(/engagement/i);
+    expect(scopePlaceholder(ENGAGEMENT_SCOPE)).toMatch(/plan/i);
+    expect(scopePlaceholder(ALL_AGENTS_SCOPE)).toMatch(/all/i);
     expect(scopePlaceholder({ kind: 'agent', taskId: 't1', label: 'recon-1' })).toMatch(/recon-1/);
   });
 });

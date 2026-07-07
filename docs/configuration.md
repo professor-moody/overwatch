@@ -81,7 +81,9 @@ The engagement config defines scope, objectives, and OPSEC policy. It's loaded a
   "hash_chain_enabled": true,
   "engagement_nonce": "64-char-hex-string (auto-generated for new engagements)",
   "engagement_signing_key_id": "optional-key-id-for-signed-checkpoints",
-  "subagent_isolation": "in_process | process"
+  "subagent_isolation": "in_process | process",
+  "available_models": ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
+  "default_agent_model": "claude-sonnet-5"
 }
 ```
 
@@ -211,6 +213,17 @@ When an action targets something outside scope:
 2. **Validation rejection** — `validate_action` returns `invalid` with error: `"Target is out of scope"`
 3. **No graph pollution** — `report_finding` accepts out-of-scope nodes (they may be discovered passively) but they won't generate frontier items
 4. **URL fallback** — When `url_patterns` is not configured, `validate_action` falls back to checking the URL's hostname against `scope.domains`. URLs with hostnames not matching any scoped domain are rejected.
+
+### Agent Models
+
+Headless agents (and the free-form planner) run as `claude -p` sub-processes, so you can choose which Claude model each uses.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `available_models` | `string[]` | The models the **Deploy** picker offers. When set and non-empty, a dispatch requesting a model outside this list is **rejected** — so an org that doesn't have a given model simply omits it here. Unset/empty → the picker offers a default set (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5`) and any model is allowed. |
+| `default_agent_model` | `string` | Model used for headless agents and the planner when the operator doesn't pick one. Unset → the `claude` CLI's own default. |
+
+The chosen model is passed straight through as `claude -p --model <id>`. Pick a model per-deploy in the dashboard's Deploy modal, or set `default_agent_model` to apply one engagement-wide.
 
 ### Example: Multi-Domain Engagement
 

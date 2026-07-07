@@ -50,6 +50,7 @@ function makeConfig(): EngagementConfig {
       achieved: false,
     }],
     opsec: { name: 'pentest', max_noise: 0.7, enabled: true },
+    available_models: ['claude-opus-4-8'],
   } as EngagementConfig;
 }
 
@@ -477,6 +478,22 @@ describe('POST /api/agents/quick-deploy', () => {
   it('400s on a target with no valid IPv4/CIDR/domain', async () => {
     const { status } = await postJson('/api/agents/quick-deploy', { target: 'not_a_host ::1' });
     expect(status).toBe(400);
+  });
+
+  it('rejects a disallowed model WITHOUT mutating scope (validate before updateScope)', async () => {
+    const before = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+    const { status } = await postJson('/api/agents/quick-deploy', { target: '10.44.0.9', model: 'not-a-real-model' });
+    expect(status).toBe(400);
+    // The rejected dispatch must not have widened engagement scope.
+    const after = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+    expect(after.body.scope.cidrs).not.toContain('10.44.0.9/32');
+    expect(after.body.scope.cidrs).toEqual(before.body.scope.cidrs);
+  });
+
+  it('accepts an allowed model and dispatches', async () => {
+    const { status, body } = await postJson<{ dispatched: boolean }>('/api/agents/quick-deploy', { target: '10.45.0.9', model: 'claude-opus-4-8' });
+    expect(status).toBe(201);
+    expect(body.dispatched).toBe(true);
   });
 });
 

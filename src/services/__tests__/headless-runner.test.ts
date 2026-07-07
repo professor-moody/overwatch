@@ -49,6 +49,7 @@ function headlessTask(overrides: Partial<AgentTask> = {}): AgentTask {
     subgraph_node_ids: [],
     backend: 'headless_mcp',
     frontier_item_id: overrides.frontier_item_id,
+    ...overrides,
   };
 }
 
@@ -112,6 +113,25 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
     expect(svc.activeHeadlessCount()).toBe(1);
     expect(spawned).toHaveLength(1);
+  });
+
+  it('passes --model <id> to the spawn when the task specifies a model', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-model', model: 'claude-opus-4-8' }));
+    await settle();
+    const args = spawnedArgs[0];
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4-8');
+  });
+
+  it('omits --model when the task has no model', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-nomodel' }));
+    await settle();
+    expect(spawnedArgs[0]).not.toContain('--model');
   });
 
   it('runs an orchestrator task with the full tool surface + a primary bootstrap, and honors a per-task binary override', async () => {

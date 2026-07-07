@@ -397,6 +397,7 @@ export function AgentsPanel() {
           and per-agent Tell box. */}
       <ContextualCommandBar
         focusedAgent={activeAgent}
+        agents={agents}
         onAgentCommandSent={() => { void loadConsole(); void loadAgentQueries(); }}
       />
 

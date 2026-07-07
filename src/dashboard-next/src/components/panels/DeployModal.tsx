@@ -17,10 +17,15 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
   const [text, setText] = useState('');
   const [override, setOverride] = useState('');
   const [archetypes, setArchetypes] = useState<api.AgentArchetypeSummary[]>([]);
+  const [models, setModels] = useState<{ available: string[]; default?: string }>({ available: [] });
+  const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.getArchetypes().then(d => setArchetypes(d.archetypes || [])).catch(() => {});
+    api.getArchetypes().then(d => {
+      setArchetypes(d.archetypes || []);
+      setModels(d.models || { available: [] });
+    }).catch(() => {});
   }, []);
 
   const parsed = useMemo(() => classifyDeployInput(text), [text]);
@@ -43,7 +48,7 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
     setBusy(true);
     try {
       if (parsed.kind === 'raw') {
-        const res = await api.quickDeploy({ target: parsed.target, archetype: effectiveId });
+        const res = await api.quickDeploy({ target: parsed.target, archetype: effectiveId, model: model || undefined });
         if (res.dispatched) {
           const added = (res.scope?.added_cidrs.length || 0) + (res.scope?.added_domains.length || 0);
           addToast({ type: 'success', title: `Deployed ${res.archetype || effectiveId}`, message: `${added} target(s) added to scope · ${res.scope?.affected_node_count ?? 0} node(s) in scope` });
@@ -52,7 +57,7 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
           addToast({ type: 'warning', title: 'Not deployed', message: res.reason || 'dispatch refused' });
         }
       } else if (parsed.kind === 'nodes') {
-        const res = await api.dispatchAgent({ target_node_ids: parsed.nodeIds, archetype: effectiveId });
+        const res = await api.dispatchAgent({ target_node_ids: parsed.nodeIds, archetype: effectiveId, model: model || undefined });
         if (res.dispatched) {
           addToast({ type: 'success', title: `Deployed ${effectiveId}`, message: res.task?.agent_id });
           onDeployed();
@@ -116,6 +121,23 @@ export function DeployModal({ onClose, onDeployed }: { onClose: () => void; onDe
           </div>
           {effective && <div className="mt-1 text-[11px] text-muted-foreground">{effective.description}</div>}
         </div>
+
+        {/* Model: config-driven list (or a default set). "Default" leaves it to
+            the engagement default / CLI default. */}
+        {models.available.length > 0 && (
+          <div className="mt-3">
+            <label className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground">Model</label>
+            <select
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              className="w-full rounded border border-border bg-elevated px-2 py-1 text-xs text-foreground"
+              disabled={busy}
+            >
+              <option value="">Default{models.default ? `: ${models.default}` : ''}</option>
+              {models.available.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        )}
 
         <div className="mt-4 flex justify-end gap-2">
           <ActionButton onClick={onClose} variant="ghost" size="xs" disabled={busy}>Cancel</ActionButton>

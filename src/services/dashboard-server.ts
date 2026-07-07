@@ -1426,6 +1426,22 @@ export class DashboardServer {
 
   // ---- Agent dispatch endpoint ----
 
+  // Resolve the model for a dispatch: an explicit choice is validated against
+  // `available_models` (when that list is configured); no choice falls back to
+  // the engagement's `default_agent_model` (or the CLI default if neither is set).
+  private resolveDispatchModel(raw: unknown): { ok: true; model?: string } | { ok: false; error: string } {
+    const config = this.engine.getConfig();
+    const requested = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+    if (requested === undefined) {
+      return { ok: true, model: config.default_agent_model };
+    }
+    const allowed = config.available_models;
+    if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes(requested)) {
+      return { ok: false, error: `model "${requested}" is not allowed (available_models: ${allowed.join(', ')})` };
+    }
+    return { ok: true, model: requested };
+  }
+
   private handleAgentDispatch(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
@@ -1454,6 +1470,12 @@ export class DashboardServer {
       const autoArchetype = recommendArchetype({ nodeType: targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined });
       const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
       const objective = typeof b.objective === 'string' ? b.objective : undefined;
+      const modelRes = this.resolveDispatchModel(b.model);
+      if (!modelRes.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: modelRes.error }));
+        return;
+      }
 
       if (targetNodeIds.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1480,6 +1502,7 @@ export class DashboardServer {
           ? { archetype: explicitArch.id, role: explicitArch.role, backend: explicitArch.backend }
           : { archetype: autoArchetype }),
         ...(objective ? { objective } : {}),
+        ...(modelRes.model ? { model: modelRes.model } : {}),
       };
 
       // F2: registerAgent may refuse on frontier-lease conflict.
@@ -1544,6 +1567,14 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
         return;
       }
+      // Validate the model BEFORE any scope mutation. updateScope persists, so a
+      // model rejected here must not leave the target durably in scope.
+      const modelRes = this.resolveDispatchModel(b.model);
+      if (!modelRes.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: modelRes.error }));
+        return;
+      }
       // Same classification as the `scan` command + the dashboard Add-Targets
       // parser (IPv4 CIDR / IP→/32 / domain; IPv6 + junk rejected).
       const CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
@@ -1584,6 +1615,7 @@ export class DashboardServer {
         role: arch.role,
         backend: arch.backend,
         objective,
+        ...(modelRes.model ? { model: modelRes.model } : {}),
       };
       const reg = this.engine.registerAgent(task);
       if (reg.cap_exceeded) {
@@ -1623,8 +1655,17 @@ export class DashboardServer {
       id: a.id, label: a.label, description: a.description,
       role: a.role, defaultSkill: a.defaultSkill, suitableFor: a.suitableFor,
     }));
+    // Models the Deploy picker offers: the operator's configured list, or a
+    // sensible default set. When available_models is set, dispatch validation
+    // (resolveDispatchModel) also restricts to it — so an org that lacks a model
+    // simply omits it from engagement.json.
+    const config = this.engine.getConfig();
+    const DEFAULT_MODELS = ['claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'];
+    const available = config.available_models && config.available_models.length > 0
+      ? config.available_models
+      : DEFAULT_MODELS;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ archetypes }));
+    res.end(JSON.stringify({ archetypes, models: { available, default: config.default_agent_model } }));
   }
 
   // ---- NL operator command (Phase 3A) ----
@@ -1659,6 +1700,7 @@ export class DashboardServer {
     // of registering a planner task that can never launch.
     if (!this.taskExecution || !this.taskExecution.isHeadlessAvailable()) return null;
     const taskId = randomUUID();
+    const plannerModel = this.engine.getConfig().default_agent_model;
     const reg = this.engine.registerAgent({
       id: taskId,
       agent_id: `planner-${taskId.slice(0, 8)}`,
@@ -1669,6 +1711,7 @@ export class DashboardServer {
       role: 'planner',
       skill: 'operator-planner',
       objective: buildPlannerObjective(command, state),
+      ...(plannerModel ? { model: plannerModel } : {}),
     });
     return reg.ok ? taskId : null;
   }
@@ -2699,9 +2742,12 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Agent task not found' }));
         return;
       }
-      if (task.status !== 'running') {
+      // Allow a directive to a running agent (acts live) or a pending one
+      // (queued — the agent acknowledges it on its first heartbeat once it
+      // launches). Terminal agents can't act on anything, so reject those.
+      if (task.status !== 'running' && task.status !== 'pending') {
         res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Agent is ${task.status} — directives only apply to running agents` }));
+        res.end(JSON.stringify({ error: `Agent is ${task.status} — directives only apply to running or pending agents` }));
         return;
       }
       const op: OperatorOp = {
@@ -2741,10 +2787,17 @@ export class DashboardServer {
     this.readJsonBody(req).then(body => {
       const b = (body ?? {}) as Record<string, unknown>;
       const kind = typeof b.kind === 'string' ? b.kind : '';
-      // Fleet controls are limited to lifecycle kinds (no arg-taking/free-text).
-      if (!['pause', 'resume', 'stop'].includes(kind)) {
+      // Lifecycle kinds fan out with no argument; 'instruct' broadcasts a
+      // free-text note to every running agent (the "All agents" command scope).
+      if (!['pause', 'resume', 'stop', 'instruct'].includes(kind)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `fleet directive kind must be pause|resume|stop, got "${kind}"` }));
+        res.end(JSON.stringify({ error: `fleet directive kind must be pause|resume|stop|instruct, got "${kind}"` }));
+        return;
+      }
+      const note = typeof b.note === 'string' ? b.note.trim() : '';
+      if (kind === 'instruct' && !note) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'fleet instruct requires a non-empty note' }));
         return;
       }
       const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
@@ -2752,6 +2805,7 @@ export class DashboardServer {
         t.status === 'running' && (!campaignId || t.campaign_id === campaignId));
       const ops: OperatorOp[] = targets.map(t => ({
         op: 'directive', task_id: t.id, agent_label: t.agent_id, kind: kind as AgentDirectiveKind,
+        ...(kind === 'instruct' ? { note } : {}),
       }));
       const results = ops.length ? executeOps(this.engine, ops, 'operator') : [];
       const ok = results.filter(r => r.ok).length;

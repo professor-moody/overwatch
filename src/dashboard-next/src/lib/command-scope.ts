@@ -13,39 +13,49 @@ import type { AgentInfo } from './types';
 
 export type CommandScope =
   | { kind: 'engagement' }
+  | { kind: 'all_agents' }
   | { kind: 'agent'; taskId: string; label: string };
 
 export type CommandRoute =
-  | { via: 'command' }                       // POST /api/commands — NL preview → confirm
-  | { via: 'instruct'; taskId: string };     // issueDirective(taskId, 'instruct', { note })
+  | { via: 'command' }                       // POST /api/commands — NL preview → confirm (the planner)
+  | { via: 'instruct'; taskId: string }      // issueDirective(taskId, 'instruct', { note })
+  | { via: 'instruct_all' };                 // fleetInstruct(note) → every running agent
 
 export const ENGAGEMENT_SCOPE: CommandScope = { kind: 'engagement' };
+export const ALL_AGENTS_SCOPE: CommandScope = { kind: 'all_agents' };
 
-/** The scope to default to given the focused agent (follows focus). */
+/**
+ * Whether an agent can be the target of a contextual instruction. Commandable
+ * while `running` (acts live) or `pending` (the instruct is queued and delivered
+ * on the agent's first heartbeat once it launches). Terminal agents can't act.
+ */
+export function canScopeToAgent(agent: AgentInfo | null | undefined): boolean {
+  return !!agent && (agent.status === 'running' || agent.status === 'pending');
+}
+
+/** The scope to default to given the focused agent (follows focus). A focused,
+ *  commandable agent scopes to it; otherwise fall back to the planner. */
 export function defaultScopeFor(agent: AgentInfo | null | undefined): CommandScope {
-  if (agent && agent.status === 'running') {
+  if (agent && canScopeToAgent(agent)) {
     return { kind: 'agent', taskId: agent.id, label: agent.agent_id || agent.id };
   }
   return ENGAGEMENT_SCOPE;
 }
 
-/** Whether an agent can be the target of a contextual instruction (must be live). */
-export function canScopeToAgent(agent: AgentInfo | null | undefined): boolean {
-  return !!agent && agent.status === 'running';
-}
-
 export function routeCommand(scope: CommandScope): CommandRoute {
-  return scope.kind === 'agent'
-    ? { via: 'instruct', taskId: scope.taskId }
-    : { via: 'command' };
+  if (scope.kind === 'agent') return { via: 'instruct', taskId: scope.taskId };
+  if (scope.kind === 'all_agents') return { via: 'instruct_all' };
+  return { via: 'command' };
 }
 
 export function scopeLabel(scope: CommandScope): string {
-  return scope.kind === 'agent' ? scope.label : 'Engagement';
+  if (scope.kind === 'agent') return scope.label;
+  if (scope.kind === 'all_agents') return 'All agents';
+  return 'Plan';
 }
 
 export function scopePlaceholder(scope: CommandScope): string {
-  return scope.kind === 'agent'
-    ? `Command ${scope.label}… e.g. "focus on SMB"`
-    : 'Command the engagement… e.g. "pause the apache agent", "scan 10.50.0.0/16"';
+  if (scope.kind === 'agent') return `Command ${scope.label}… e.g. "focus on SMB"`;
+  if (scope.kind === 'all_agents') return 'Instruct all running agents… e.g. "stop and report what you have"';
+  return 'Plan the engagement… e.g. "what should we do next", "scan 10.50.0.0/16"';
 }

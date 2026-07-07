@@ -259,6 +259,8 @@ export class HeadlessMcpRunner {
       '--output-format', 'stream-json',
       '--verbose',
     ];
+    // Operator-chosen model (validated at dispatch against available_models).
+    if (task.model) args.push('--model', task.model);
     if (this.opts.permissionMode) args.push('--permission-mode', this.opts.permissionMode);
     if (this.opts.maxTurns) args.push('--max-turns', String(this.opts.maxTurns));
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);

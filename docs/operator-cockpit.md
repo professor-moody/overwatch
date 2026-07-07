@@ -27,7 +27,15 @@ A headless sub-agent's tool allowlist is selected by role (`allowedToolsFor` in 
 The operator types plain English in the cockpit; `POST /api/commands` is a **two-phase preview → confirm** flow (`command-interpreter.ts`):
 
 1. **Grammar fast-path.** `interpretCommand` deterministically resolves high-frequency verbs against live state — `pause|resume|stop <agent>`, `tell <agent> <text>`, `scan <cidr/ip/domain>`, `approve|deny <action>`, `pause all` — into `OperatorOp`s. It returns a preview `plan_id`; the operator confirms; `executeOps` runs it.
-2. **Planner fallback.** A command the grammar can't resolve is handed to a headless **`planner`** sub-agent, which reasons over state and submits a plan via [`propose_plan`](tools/propose-plan.md). The operator confirms the proposed plan through the **same** confirm path.
+2. **Planner fallback.** A command the grammar can't resolve is handed to a headless **`planner`** sub-agent, which reasons over state and submits a plan via [`propose_plan`](tools/propose-plan.md). The operator confirms the proposed plan through the **same** confirm path. The planner runs on `default_agent_model` when set.
+
+### Command scope
+
+A **scope pill** above the input decides where the text goes — so the planner is a deliberate choice, not a silent default:
+
+- **Plan** (default) — the two-phase NL flow above (the planner).
+- **&lt;focused agent&gt;** — a free-text `instruct` directive to the agent you've selected. Shown for any **commandable** agent: a `running` one acts on its next heartbeat; a `pending` one has the instruction **queued** until it launches. A **terminal** (finished) agent shows a *disabled* pill — dismiss it or pick a live one, rather than silently falling back to the planner.
+- **All agents** — broadcast the instruct to every running agent (`POST /api/fleet/directive` with `kind: 'instruct'`), shown when at least one agent is running.
 
 ### OperatorOp {#operatorop}
 

@@ -227,6 +227,7 @@ The **Deploy** button opens a one-step deploy: type a target, pick (or accept th
 - A raw **IP / CIDR / domain** is an **ad-hoc real-time** target — `POST /api/agents/quick-deploy` adds it to scope (canonical `updateScope`) and dispatches the recommended agent at it, no engagement-setup ritual.
 - Existing **graph node IDs** dispatch against those nodes (`POST /api/agents/dispatch`).
 - The modal pre-selects the **recommended agent type** for the target and offers a **manual override** from the catalog (recon_scanner, web_tester, credential_operator, post_exploit, cve_researcher, osint_recon, pathfinder, report_scribe, default). See [Agent types & deploy](operator-cockpit.md#agent-types) for what each type does and its tool surface.
+- A **Model** dropdown lets you pick which Claude model the headless agent runs on (passed as `claude -p --model <id>`). The choices come from `available_models` in `engagement.json` (or a default set); "Default" leaves it to `default_agent_model` / the CLI default. See [Agent Models](configuration.md#agent-models).
 
 ### Add Targets
 
