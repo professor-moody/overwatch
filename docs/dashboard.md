@@ -215,7 +215,7 @@ The Console is a focused **master-detail** workspace:
 
 - a pinned **command bar** (natural-language commands; see the grammar reference below);
 - a **"Needs you" strip** — inline **Approve / Deny** for pending actions, an **Answer** box for agent questions, and **Confirm & run / Dismiss** for planner-proposed plans; it hides when nothing is waiting;
-- a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream;
+- a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream. Terminal (completed/failed/interrupted) agents can be **dismissed** from the roster individually or via **Clear finished** in the fleet header;
 - a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
 
 Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
@@ -254,7 +254,9 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/agents/quick-deploy` | POST | Ad-hoc deploy — scope a raw IP/CIDR/domain + dispatch the recommended/chosen agent type |
 | `/api/agent-archetypes` | GET | Agent-type catalog for the Deploy picker |
 | `/api/agents/:id/directive` | POST | Steer one running agent — one validated directive op via `executeOps` |
+| `/api/agents/:id/dismiss` | POST | Remove a terminal agent from the roster (409 if it's still running/pending — cancel first) |
 | `/api/fleet/directive` | POST | Fleet-wide pause/resume/stop (optionally one campaign) |
+| `/api/fleet/dismiss` | POST | Bulk "Clear finished" — dismiss every terminal agent (optionally one campaign) |
 | `/api/commands` | POST | NL command — preview / confirm / deny (operator cockpit) |
 | `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
 | `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |

@@ -185,6 +185,21 @@ export async function fleetDirective(
   });
 }
 
+/** Remove a terminal (completed/failed/interrupted) agent from the roster. 409 if it's still live. */
+export async function dismissAgent(taskId: string): Promise<{ dismissed: boolean; task_id: string }> {
+  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/dismiss`, { method: 'POST' });
+}
+
+/** Bulk "Clear finished": dismiss every terminal agent from the roster (optionally one campaign). */
+export async function fleetDismiss(
+  campaignId?: string,
+): Promise<{ ok: boolean; dismissed: number; total: number }> {
+  return fetchJson('/api/fleet/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ campaign_id: campaignId }),
+  });
+}
+
 export interface DispatchAgentResult {
   dispatched: boolean;
   task?: { id: string; agent_id: string };

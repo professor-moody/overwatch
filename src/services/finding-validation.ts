@@ -1,4 +1,5 @@
 import type { Finding, NodeProperties } from '../types.js';
+import { NODE_TYPES } from '../types.js';
 import { getCredentialMaterialKind, isCredentialUsableForAuth } from './credential-utils.js';
 import { validateEdgeEndpoints } from './graph-schema.js';
 
@@ -81,12 +82,42 @@ export function prepareFindingForIngest(
   };
 }
 
+// The node types the schema recognizes. Anything else from an agent or parser
+// is a stray type — most often a vulnerability *subtype* (e.g. 'cors_misconfig')
+// mistakenly used as a node type. Left alone it fails the VULNERABLE_TO target
+// constraint and the whole finding is dropped, so we coerce stray vuln-looking
+// nodes to a real `vulnerability` node (preserving the original token as
+// vuln_type) before validation.
+const NODE_TYPE_SET: ReadonlySet<string> = new Set<string>(NODE_TYPES);
+
+const VULN_TYPE_HINT = /(vuln|misconfig|xss|sqli|ssrf|idor|lfi|rce|takeover|injection|traversal|bypass|security[_-]?header|hardcoded[_-]?secret|weak[_-]?crypto|cors|csrf|ssti|xxe|deserial|exposure|disclosure|cve)/i;
+
+/** Coerce a stray-typed node to `vulnerability` when it clearly represents one.
+ *  Conservative: only fires for unrecognized types that also look like a vuln
+ *  (vuln fields present or a vuln-ish type token), so a genuine typo like
+ *  'webserver' is left to fail loudly rather than be silently reshaped. */
+function coerceStrayVulnerabilityNode<T extends Partial<NodeProperties> & { id: string; type: string }>(node: T): T {
+  if (NODE_TYPE_SET.has(node.type)) return node;
+  const n = node as T & Record<string, unknown>;
+  const looksVuln =
+    n.cvss != null || n.cve != null || n.cwe != null || n.severity != null ||
+    (typeof n.vuln_type === 'string' && n.vuln_type.length > 0) ||
+    VULN_TYPE_HINT.test(node.type);
+  if (!looksVuln) return node;
+  return {
+    ...node,
+    vuln_type: (typeof n.vuln_type === 'string' && n.vuln_type) || node.type,
+    type: 'vulnerability',
+  } as unknown as T;
+}
+
 export function normalizeFindingNode<T extends Partial<NodeProperties> & { id: string; type: string }>(node: T): T {
-  if (node.type !== 'credential') {
-    return node;
+  const coerced = coerceStrayVulnerabilityNode(node);
+  if (coerced.type !== 'credential') {
+    return coerced;
   }
 
-  const normalized = { ...node } as T & Record<string, unknown>;
+  const normalized = { ...coerced } as T & Record<string, unknown>;
 
   // Normalize non-standard aliases from parsers
   if (typeof normalized.cred_material_kind !== 'string' && typeof normalized.material_kind === 'string') {

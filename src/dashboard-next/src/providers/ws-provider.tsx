@@ -101,14 +101,22 @@ export function WsProvider({ children }: { children: ReactNode }) {
             linkPanel: 'actions',
           });
           break;
-        case 'action_resolved':
+        case 'action_resolved': {
           s.updatePendingAction(msg.type, msg.data);
-          toast({
-            type: (msg.data as { approved?: boolean })?.approved ? 'success' : 'info',
-            title: (msg.data as { approved?: boolean })?.approved ? 'Action approved' : 'Action denied',
-            linkPanel: 'actions',
-          });
+          // The resolution carries a `status` string, not an `approved` boolean.
+          // 'timeout' = auto-approved unattended execution (it RAN); 'aborted' =
+          // requesting client dropped before a decision (it did NOT run). Keying
+          // off a non-existent `approved` field mislabeled every outcome as denied.
+          const status = (msg.data as { status?: string })?.status;
+          const outcome =
+            status === 'approved' ? { type: 'success' as const, title: 'Action approved' } :
+            status === 'timeout'  ? { type: 'warning' as const, title: 'Action auto-approved (no operator response)' } :
+            status === 'aborted'  ? { type: 'info' as const, title: 'Action aborted (client disconnected)' } :
+            status === 'denied'   ? { type: 'info' as const, title: 'Action denied' } :
+                                    { type: 'info' as const, title: 'Action resolved' };
+          toast({ type: outcome.type, title: outcome.title, linkPanel: 'actions' });
           break;
+        }
         case 'session_update': {
           const data = msg.data as { type?: string; session?: SessionInfo; sessions?: SessionInfo[] };
           const prev = data.session ? s.sessions.find(session => session.id === data.session?.id) : undefined;

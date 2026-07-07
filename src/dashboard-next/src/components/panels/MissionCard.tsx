@@ -32,6 +32,7 @@ export function MissionCard({
   onClick,
   onToggleSelect,
   onCancel,
+  onDismiss,
 }: {
   card: MissionCardModel;
   active: boolean;
@@ -41,6 +42,7 @@ export function MissionCard({
   onClick: () => void;
   onToggleSelect: () => void;
   onCancel?: () => void;
+  onDismiss?: () => void;
 }) {
   const cancellable = card.status === 'running' || card.status === 'pending';
   return (
@@ -71,6 +73,15 @@ export function MissionCard({
             onClick={e => { e.stopPropagation(); onCancel(); }}
             className="flex-shrink-0 text-muted-foreground hover:text-destructive"
             title="Cancel agent"
+          >
+            ✕
+          </button>
+        )}
+        {!cancellable && onDismiss && (
+          <button
+            onClick={e => { e.stopPropagation(); onDismiss(); }}
+            className="flex-shrink-0 text-muted-foreground hover:text-destructive"
+            title="Dismiss from roster"
           >
             ✕
           </button>

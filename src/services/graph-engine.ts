@@ -2156,6 +2156,17 @@ export class GraphEngine {
     return ok;
   }
 
+  /**
+   * Remove a terminal agent task from the roster (operator "dismiss"/"clear
+   * finished"). Gated to terminal statuses inside AgentManager.dismiss; persists
+   * a snapshot so the removal survives a restart (agent tasks aren't WAL-replayed).
+   */
+  dismissAgent(taskId: string): boolean {
+    const ok = this.agentMgr.dismiss(taskId);
+    if (ok) this.persist();
+    return ok;
+  }
+
   getSubgraphForAgent(nodeIds: string[], options?: { hops?: number; includeCredentials?: boolean; includeServices?: boolean }): GraphQueryResult {
     const hops = options?.hops ?? 2;
     const includeCredentials = options?.includeCredentials ?? true;

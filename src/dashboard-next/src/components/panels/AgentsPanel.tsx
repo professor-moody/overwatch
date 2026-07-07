@@ -171,11 +171,42 @@ export function AgentsPanel() {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
+  const fleetAddToast = useToastStore(s => s.addToast);
+
   const cancelAgent = async (id: string) => {
-    try { await api.cancelAgent(id); await refreshAgents(); } catch { /* silent */ }
+    try {
+      await api.cancelAgent(id);
+      await refreshAgents();
+    } catch (err) {
+      // Surface the failure instead of swallowing it — a 409 ("Agent is
+      // interrupted — cannot cancel") used to read as a dead click.
+      fleetAddToast({ type: 'error', title: 'Cancel failed', message: err instanceof Error ? err.message : String(err) });
+    }
   };
 
-  const fleetAddToast = useToastStore(s => s.addToast);
+  const dismissAgent = async (id: string) => {
+    try {
+      await api.dismissAgent(id);
+      await refreshAgents();
+    } catch (err) {
+      fleetAddToast({ type: 'error', title: 'Dismiss failed', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const clearFinished = async () => {
+    try {
+      const res = await api.fleetDismiss();
+      fleetAddToast({
+        type: 'success',
+        title: 'Cleared finished agents',
+        message: res.total === 0 ? 'nothing to clear' : `dismissed ${res.dismissed}/${res.total}`,
+      });
+      await refreshAgents();
+    } catch (err) {
+      fleetAddToast({ type: 'error', title: 'Clear finished failed', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   const fleetAction = async (kind: 'pause' | 'resume' | 'stop') => {
     try {
       const res = await api.fleetDirective(kind);
@@ -414,6 +445,8 @@ export function AgentsPanel() {
             onToggleSelect={toggleSelect}
             onToggleGroup={toggleGroup}
             onCancelAgent={cancelAgent}
+            onDismissAgent={dismissAgent}
+            onClearFinished={clearFinished}
           />
 
           {/* MAIN: focused agent (detail + steer, top) over its activity stream
@@ -531,6 +564,8 @@ function MissionRoster({
   onToggleSelect,
   onToggleGroup,
   onCancelAgent,
+  onDismissAgent,
+  onClearFinished,
 }: {
   groups: import('../../lib/agent-mission').MissionGroup[];
   agentCount: number;
@@ -545,9 +580,12 @@ function MissionRoster({
   onToggleSelect: (id: string) => void;
   onToggleGroup: (id: string) => void;
   onCancelAgent: (id: string) => void;
+  onDismissAgent: (id: string) => void;
+  onClearFinished: () => void;
 }) {
   const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length, 0);
   const failedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'failed').length, 0);
+  const finishedCount = groups.reduce((n, g) => n + g.cards.filter(c => c.status === 'completed' || c.status === 'failed' || c.status === 'interrupted').length, 0);
 
   return (
     // Bounded so a long fleet scrolls within the card instead of bloating the
@@ -563,6 +601,15 @@ function MissionRoster({
           </div>
           <div className="flex items-center gap-1.5">
             <StatusPill tone={failedCount > 0 ? 'danger' : liveCount > 0 ? 'success' : 'muted'}>{liveCount} live</StatusPill>
+            {finishedCount > 0 && (
+              <button
+                onClick={onClearFinished}
+                className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-destructive"
+                title="Dismiss all finished (completed/failed/interrupted) agents from the roster"
+              >
+                Clear finished ({finishedCount})
+              </button>
+            )}
             <button
               onClick={onToggleBatch}
               className={cn('rounded px-1.5 py-0.5 text-[10px]', batchMode ? 'bg-accent/15 text-accent' : 'text-muted-foreground hover:text-foreground')}
@@ -615,6 +662,7 @@ function MissionRoster({
                   onClick={() => onSelectAgent(card.id)}
                   onToggleSelect={() => onToggleSelect(card.id)}
                   onCancel={() => onCancelAgent(card.id)}
+                  onDismiss={() => onDismissAgent(card.id)}
                 />
               ))}
             </div>

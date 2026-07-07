@@ -22,6 +22,14 @@ function makeCredNode(id: string, overrides: Record<string, unknown> = {}): Part
   } as Partial<NodeProperties> & { id: string; type: NodeType };
 }
 
+// A node with a stray (non-canonical) `type` — the kind an agent emits when it
+// mistakes a vulnerability subtype for a node type. Cast through unknown because
+// NodeProperties.type is the strict NodeType union (invalid types only exist at
+// runtime, from untrusted agent output).
+function strayNode(type: string, extra: Record<string, unknown> = {}): Partial<NodeProperties> & { id: string; type: NodeType } {
+  return { id: `stray-${type}`, type, label: type, ...extra } as unknown as Partial<NodeProperties> & { id: string; type: NodeType };
+}
+
 describe('finding-validation', () => {
   // =============================================
   // normalizeFindingNode
@@ -81,6 +89,29 @@ describe('finding-validation', () => {
       const node = { id: 'host-1', type: 'host' as NodeType, label: 'host', ip: '10.0.0.1' };
       const result = normalizeFindingNode(node);
       expect(result).toEqual(node);
+    });
+
+    it('coerces a stray vuln-subtype node type to vulnerability (vuln_type preserved)', () => {
+      const node = normalizeFindingNode(strayNode('cors_misconfig')) as unknown as { type: string; vuln_type?: string };
+      expect(node.type).toBe('vulnerability');
+      expect(node.vuln_type).toBe('cors_misconfig');
+    });
+
+    it('coerces a stray-typed node that carries vuln fields (cvss/severity)', () => {
+      const node = normalizeFindingNode(strayNode('weird_finding', { cvss: 7.5, severity: 'high' })) as unknown as { type: string; vuln_type?: string };
+      expect(node.type).toBe('vulnerability');
+      expect(node.vuln_type).toBe('weird_finding');
+    });
+
+    it('keeps an explicit vuln_type when coercing', () => {
+      const node = normalizeFindingNode(strayNode('cors_misconfig', { vuln_type: 'cors' })) as unknown as { type: string; vuln_type?: string };
+      expect(node.type).toBe('vulnerability');
+      expect(node.vuln_type).toBe('cors');
+    });
+
+    it('does NOT coerce a genuine unknown non-vuln type (fails loudly instead)', () => {
+      const node = normalizeFindingNode(strayNode('webserver')) as unknown as { type: string };
+      expect(node.type).toBe('webserver');
     });
   });
 
@@ -187,6 +218,26 @@ describe('finding-validation', () => {
       const constraintErrors = result.errors.filter(e => e.code === 'edge_type_constraint');
       expect(constraintErrors.length).toBe(1);
       expect(constraintErrors[0].edge_type).toBe('RUNS');
+    });
+
+    it('salvages the reported cors_misconfig case: VULNERABLE_TO webapp→(coerced vulnerability) validates', () => {
+      // The exact shape that was silently dropped: agent typed the target node
+      // as `cors_misconfig` (a vuln subtype), which the VULNERABLE_TO constraint
+      // rejected. Coercion turns it into a vulnerability node so the edge holds.
+      const finding = makeFinding({
+        nodes: [
+          { id: 'webapp-1', type: 'webapp' as NodeType, label: 'app', url: 'https://app.example.com' },
+          { id: 'vuln-cors', type: 'cors_misconfig', label: 'CORS misconfig', severity: 'medium' } as unknown as Partial<NodeProperties> & { id: string; type: NodeType },
+        ],
+        edges: [
+          { source: 'webapp-1', target: 'vuln-cors', properties: { type: 'VULNERABLE_TO', confidence: 1.0, discovered_at: new Date().toISOString() } },
+        ],
+      });
+      const result = prepareFindingForIngest(finding, noExistingNode);
+      expect(result.errors.length).toBe(0);
+      const coerced = result.finding.nodes.find(n => n.id === 'vuln-cors') as { type: string; vuln_type?: string };
+      expect(coerced.type).toBe('vulnerability');
+      expect(coerced.vuln_type).toBe('cors_misconfig');
     });
 
     it('normalizes credential nodes during preparation', () => {

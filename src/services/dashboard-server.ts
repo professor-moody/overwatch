@@ -744,6 +744,8 @@ export class DashboardServer {
       this.serveAgentArchetypes(res);
     } else if (pathname === '/api/fleet/directive' && method === 'POST') {
       this.handleFleetDirective(req, res);
+    } else if (pathname === '/api/fleet/dismiss' && method === 'POST') {
+      this.handleFleetDismiss(req, res);
     } else if (pathname === '/api/commands' && method === 'POST') {
       this.handleCommand(req, res);
     } else if (pathname === '/api/plans' && method === 'GET') {
@@ -835,6 +837,7 @@ export class DashboardServer {
       const agentHistoryMatch = pathname.match(/^\/api\/agents\/([^/]+)\/history$/);
       const agentConsoleMatch = pathname.match(/^\/api\/agents\/([^/]+)\/console$/);
       const agentCancelMatch = pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
+      const agentDismissMatch = pathname.match(/^\/api\/agents\/([^/]+)\/dismiss$/);
       const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
       const agentQueryAnswerMatch = pathname.match(/^\/api\/agent-queries\/([^/]+)\/answer$/);
       const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
@@ -874,6 +877,8 @@ export class DashboardServer {
         this.serveAgentConsole(decodeURIComponent(agentConsoleMatch[1]), url, res);
       } else if (agentCancelMatch && method === 'POST') {
         this.handleAgentCancel(decodeURIComponent(agentCancelMatch[1]), req, res);
+      } else if (agentDismissMatch && method === 'POST') {
+        this.handleAgentDismiss(decodeURIComponent(agentDismissMatch[1]), req, res);
       } else if (agentDirectiveMatch && method === 'POST') {
         this.handleAgentDirective(decodeURIComponent(agentDirectiveMatch[1]), req, res);
       } else if (agentQueryAnswerMatch && method === 'POST') {
@@ -2644,6 +2649,31 @@ export class DashboardServer {
     res.end(JSON.stringify({ cancelled: true, process_killed: killed, task: updated }));
   }
 
+  // Remove a terminal agent from the roster. Gated to terminal statuses — a live
+  // agent must be cancelled first (which kills the process + releases the lease).
+  private handleAgentDismiss(taskId: string, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    const task = this.engine.getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent task not found' }));
+      return;
+    }
+    if (task.status === 'running' || task.status === 'pending') {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Agent is ${task.status} — cancel it before dismissing` }));
+      return;
+    }
+    const dismissed = this.engine.dismissAgent(taskId);
+    if (!dismissed) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to dismiss agent' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ dismissed: true, task_id: taskId }));
+  }
+
   // ---- Per-agent steering (Phase 3B) ----
   // Single-click directive on one agent. Builds one OperatorOp and runs it
   // through the SAME validated executeOps path the command bar uses — no new
@@ -2736,6 +2766,29 @@ export class DashboardServer {
       this.engine.persist();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, applied: ok, total: targets.length, results }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  // Bulk "Clear finished": dismiss every terminal (completed/failed/interrupted)
+  // agent from the roster (optionally scoped to one campaign). Running/pending
+  // agents are left untouched.
+  private handleFleetDismiss(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
+      const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
+      const targets = this.engine.getAgentTasks().filter(t =>
+        TERMINAL.has(t.status) && (!campaignId || t.campaign_id === campaignId));
+      let dismissed = 0;
+      for (const t of targets) {
+        if (this.engine.dismissAgent(t.id)) dismissed++;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, dismissed, total: targets.length }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));

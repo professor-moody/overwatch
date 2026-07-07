@@ -68,6 +68,7 @@ Always report findings as they occur — do not batch them. Interim reporting en
 | `new_nodes` | `string[]` | IDs of newly created nodes |
 | `new_edges` | `string[]` | IDs of newly created edges |
 | `inferred_edges` | `string[]` | IDs of edges created by inference rules |
+| `warnings` | `string[]` | Present when part of the finding was salvaged (e.g. an invalid edge was dropped) |
 | `message` | `string` | Summary |
 
 ## Usage Notes
@@ -76,3 +77,5 @@ Always report findings as they occur — do not batch them. Interim reporting en
 - Duplicate node IDs update existing nodes (properties are merged)
 - Inference rules fire automatically on new nodes — check the `inferred_edges` in the response
 - Always include `action_id` from `validate_action` for traceability
+- **Vulnerabilities are `type: "vulnerability"` with a `vuln_type` property** (e.g. `vuln_type: "cors_misconfig"`) — don't invent a node type from the subtype. `VULNERABLE_TO` must point at a `vulnerability` node. (The ingester coerces obvious vuln-subtype node types as a safety net, but emit the canonical shape.)
+- **Invalid edges are salvaged, not fatal:** an edge whose endpoints violate the schema is dropped and reported in `warnings`, while the finding's nodes and valid edges still ingest. Only a node-level integrity failure (a credential claiming reusable/privileged access without credential material) rejects the whole finding (`isError: true`).

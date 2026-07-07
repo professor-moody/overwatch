@@ -113,7 +113,20 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       }
 
       const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
-      if (prepared.errors.length > 0) {
+
+      // Salvage instead of nuking the whole finding: invalid EDGES (a missing
+      // endpoint or a type-constraint violation) are dropped so the rest of the
+      // finding still lands. Only node-level integrity failures (e.g. a
+      // credential claiming reusable access without material) are fatal, because
+      // ingesting those would corrupt downstream reasoning.
+      const edgeErrors = prepared.errors.filter(
+        e => e.code === 'missing_node_reference' || e.code === 'edge_type_constraint',
+      );
+      const fatalErrors = prepared.errors.filter(
+        e => e.code !== 'missing_node_reference' && e.code !== 'edge_type_constraint',
+      );
+
+      if (fatalErrors.length > 0) {
         engine.logActionEvent({
           description: 'Finding report rejected: invalid graph mutation',
           agent_id,
@@ -139,12 +152,48 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
         };
       }
 
+      // Drop the invalid edges from the prepared finding, and surface the drop
+      // loudly (activity console + tool result) so a partial ingest is never
+      // silent — the operator sees what the agent found but couldn't link.
+      if (edgeErrors.length > 0) {
+        const skipSet = new Set(
+          edgeErrors.map(e => `${e.source_id}→${e.target_id}→${e.edge_type}`),
+        );
+        prepared.finding.edges = prepared.finding.edges.filter(
+          e => !skipSet.has(`${e.source}→${e.target}→${e.properties.type}`),
+        );
+        const droppedEdges = edgeErrors.map(e => ({
+          source: e.source_id,
+          target: e.target_id,
+          edge_type: e.edge_type,
+          reason: e.message,
+          suggestion: e.suggestion,
+        }));
+        engine.logActionEvent({
+          description: `Finding partially ingested: ${edgeErrors.length} invalid edge(s) dropped`,
+          agent_id,
+          action_id: normalizedActionId,
+          event_type: 'instrumentation_warning',
+          category: 'finding',
+          tool_name,
+          frontier_type: frontierType,
+          frontier_item_id,
+          result_classification: 'failure',
+          details: { dropped_edges: droppedEdges },
+        });
+        warnings.push(
+          `${edgeErrors.length} edge(s) failed schema validation and were dropped; the finding's nodes were still ingested. See dropped_edges.`,
+        );
+      }
+
       // Store full evidence in the durable evidence store, keep inline
       // snippets in the activity log for fast access and report rendering.
       const evidenceDetails: Record<string, unknown> = {
-        node_count: finding.nodes.length,
-        edge_count: finding.edges.length,
-        ingested_node_ids: finding.nodes.map(n => n.id),
+        node_count: prepared.finding.nodes.length,
+        // Report what actually ingests — prepared.finding.edges has any salvaged
+        // (schema-invalid) edges already dropped, so the count can't overstate.
+        edge_count: prepared.finding.edges.length,
+        ingested_node_ids: prepared.finding.nodes.map(n => n.id),
       };
       if (evidence || raw_output) {
         const store = engine.getEvidenceStore();
@@ -168,7 +217,7 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       }
 
       engine.logActionEvent({
-        description: `Finding reported: ${finding.nodes.length} nodes, ${finding.edges.length} edges`,
+        description: `Finding reported: ${prepared.finding.nodes.length} nodes, ${prepared.finding.edges.length} edges`,
         agent_id,
         action_id: normalizedActionId,
         event_type: 'finding_reported',

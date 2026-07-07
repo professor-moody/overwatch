@@ -41,8 +41,8 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const pendingActions = useEngagementStore(s => s.pendingActions);
   const frontier = useEngagementStore(s => s.frontier);
 
-  const search = useCallback(async () => {
-    const q = query.trim();
+  const runSearch = useCallback(async (raw?: string) => {
+    const q = (raw ?? query).trim();
     if (!q) return;
     setLoading(true); setError(''); setData(null);
     try {
@@ -54,12 +54,16 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
     } finally { setLoading(false); }
   }, [query, graph, findings]);
 
-  // Auto-search if initialQuery provided
+  // Auto-search if initialQuery provided. Set loading (like runSearch) so the
+  // guided empty state doesn't flash on top of the in-flight deep-link fetch.
   useEffect(() => {
-    if (initialQuery) {
-      setQuery(initialQuery);
-      getEvidenceChains(initialQuery).then(setData).catch(() => setError('No evidence found'));
-    }
+    if (!initialQuery) return;
+    setQuery(initialQuery);
+    setLoading(true); setError(''); setData(null);
+    getEvidenceChains(initialQuery)
+      .then(setData)
+      .catch(() => setError('No evidence found'))
+      .finally(() => setLoading(false));
   }, [initialQuery]);
 
   useEffect(() => {
@@ -82,13 +86,50 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
     <PanelSection title="Evidence Chain" className="space-y-3">
       <div className="flex gap-2">
         <input value={query} onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && search()}
+          onKeyDown={e => e.key === 'Enter' && runSearch()}
           placeholder="Node ID or label…" className="settings-input flex-1 min-w-0" />
-        <ActionButton onClick={search} variant="primary">Search</ActionButton>
+        <ActionButton onClick={() => runSearch()} variant="primary">Search</ActionButton>
       </div>
 
       {loading && <p className="text-xs text-muted-foreground">Searching…</p>}
       {error && <p className="text-xs text-muted-foreground">{error}</p>}
+
+      {/* Guided empty state: landing here without a node param (e.g. the sidebar
+          nav) used to show a blank search box. Explain the node-centric model and
+          offer recent findings as one-click entry points. Suppressed while an
+          error is showing so it can't stack under "No evidence found". */}
+      {!data && !loading && !error && (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Evidence is node-centric. Search a node ID or label above, or open a node in the graph and click
+            “View evidence”.{findings.length > 0 ? ' Or start from a recent finding:' : ''}
+          </p>
+          {findings.length > 0 && (
+            <div className="space-y-1.5">
+              {findings.slice(0, 8).map(f => {
+                const asset = f.affected_assets?.[0];
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => { if (asset) { setQuery(asset); void runSearch(asset); } }}
+                    disabled={!asset}
+                    className="flex w-full items-center gap-2 rounded border border-border bg-elevated p-2 text-left text-xs hover:bg-hover disabled:cursor-default disabled:opacity-50"
+                  >
+                    <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium',
+                      f.severity === 'critical' ? 'bg-destructive/10 text-destructive' :
+                      f.severity === 'high' ? 'bg-warning/10 text-warning' :
+                      f.severity === 'medium' ? 'bg-accent-dim text-accent' :
+                      'bg-elevated text-muted-foreground',
+                    )}>{f.severity}</span>
+                    <span className="truncate flex-1">{findingTitle(f)}</span>
+                    {asset && <span className="font-mono text-muted-foreground truncate max-w-[40%]">{asset}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {data && (
         <div className="space-y-3">

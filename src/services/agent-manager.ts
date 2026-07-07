@@ -273,4 +273,31 @@ export class AgentManager {
     }
     return count;
   }
+
+  /**
+   * Remove a terminal (completed/failed/interrupted) agent task from the roster.
+   * Refuses to dismiss a live (running/pending) task — those must be cancelled
+   * first, which releases the lease and kills the process. Returns true if a
+   * task was removed. Agent tasks are snapshot-persisted (not WAL-journaled), so
+   * the caller (GraphEngine.dismissAgent) just needs to persist a snapshot; there
+   * is no replay entry to add.
+   */
+  dismiss(taskId: string): boolean {
+    const task = this.ctx.agents.get(taskId);
+    if (!task) return false;
+    const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
+    if (!TERMINAL.includes(task.status)) return false;
+    this.ctx.agents.delete(taskId);
+    this.ctx.logEvent({
+      description: `Agent ${task.agent_id} dismissed from the roster`,
+      agent_id: task.agent_id,
+      category: 'agent',
+      event_type: 'agent_updated',
+      linked_agent_task_id: task.id,
+      frontier_item_id: task.frontier_item_id,
+      result_classification: 'neutral',
+      details: { reason: 'dismissed', prior_status: task.status },
+    });
+    return true;
+  }
 }

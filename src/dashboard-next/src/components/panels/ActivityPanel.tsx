@@ -178,7 +178,7 @@ function ActivityDetail({ entry, decisions, timeline }: {
   decisions: DecisionLogEntry[];
   timeline: TimelineEntry[];
 }) {
-  const { navigateToPanel } = useNavigation();
+  const { navigateToPanel, navigateToAction } = useNavigation();
   const [explanation, setExplanation] = useState<ActionExplanation | null>(null);
 
   const links = entry ? extractActivityLinks(entry) : null;
@@ -231,7 +231,7 @@ function ActivityDetail({ entry, decisions, timeline }: {
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <DetailFact label="Action" value={eventLinks.actionId || '—'} onClick={eventLinks.actionId ? () => navigateToPanel('actions') : undefined} />
+          <DetailFact label="Action" value={eventLinks.actionId || '—'} onClick={eventLinks.actionId ? () => navigateToAction(eventLinks.actionId!) : undefined} />
           <DetailFact label="Agent" value={eventLinks.agentId || '—'} onClick={eventLinks.agentId ? () => navigateToPanel('agents', eventLinks.agentId) : undefined} />
           <DetailFact label="Frontier" value={eventLinks.frontierItemId || '—'} onClick={eventLinks.frontierItemId ? () => navigateToPanel('frontier') : undefined} />
           <DetailFact label="Age" value={formatRelativeTime(entry.timestamp)} />

@@ -210,8 +210,8 @@ describe('structured activity logging tools', () => {
     expect(history.some(candidate => candidate.event_type === 'finding_ingested')).toBe(true);
   });
 
-  it('report_finding rejects invalid RUNS edges to shares with structured validation errors', async () => {
-    // Pre-create host node so the edge validation focuses on type constraint
+  it('report_finding salvages an invalid RUNS→share edge: drops the edge, keeps the node, warns', async () => {
+    // Pre-create host node so the edge validation focuses on the type constraint.
     engine.addNode({ id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1', discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0 });
     const result = await handlers.report_finding({
       agent_id: 'agent-invalid-edge',
@@ -224,10 +224,23 @@ describe('structured activity logging tools', () => {
       ],
     });
 
-    expect(result.isError).toBe(true);
+    // Salvage, not total rejection: the finding ingests minus the invalid edge,
+    // and the drop is surfaced (tool result warning + activity log) rather than
+    // silently discarding everything the agent found.
+    expect(result.isError).toBeFalsy();
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.validation_errors[0].code).toBe('edge_type_constraint');
+    expect(Array.isArray(payload.warnings)).toBe(true);
+    expect(payload.warnings.some((w: string) => /drop/i.test(w))).toBe(true);
+    // The share node still landed; the invalid edge did not.
+    expect(engine.getNode('share-invalid')).not.toBeNull();
     expect(engine.findEdgeId('host-10-10-10-1', 'share-invalid', 'RUNS')).toBeNull();
+    // The drop is recorded loudly in the activity log for the operator.
+    const history = engine.getFullHistory().filter(c => c.action_id === payload.action_id);
+    expect(history.some(c => (c.details as { dropped_edges?: unknown[] })?.dropped_edges !== undefined)).toBe(true);
+    // The finding_reported event reports the POST-salvage edge count (the invalid
+    // edge was dropped, so 0), not the pre-drop count.
+    const reported = history.find(c => c.event_type === 'finding_reported');
+    expect((reported?.details as { edge_count?: number })?.edge_count).toBe(0);
   });
 
   it('report_finding normalizes ad hoc credential fields before ingestion', async () => {

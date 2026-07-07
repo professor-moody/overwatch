@@ -61,6 +61,7 @@ The directive substrate ([`manage_agent_directive`](tools/manage-agent-directive
 
 - **Per-agent** Pause / Resume / Stop buttons + a free-text box (`instruct`) on the agent context panel — `POST /api/agents/:id/directive` builds one directive op and runs it through `executeOps`.
 - **Fleet-wide** Pause/Resume/Stop all (optionally one campaign) — `POST /api/fleet/directive` fans out directive ops over the running set.
+- **Roster cleanup** — a terminal (completed/failed/interrupted) agent can be **dismissed** from the roster (`POST /api/agents/:id/dismiss`, 409 if still live), or all of them cleared at once via **Clear finished** (`POST /api/fleet/dismiss`). This only removes the finished card from the roster; the agent's activity + findings stay in the log.
 
 ## Seeing everything
 
@@ -151,7 +152,9 @@ This makes the workspace a tight assess → re-parse → deploy loop, suggest-on
 | `GET /api/plans` | Open planner-proposed plans awaiting confirmation |
 | `GET /api/find-paths` | Structured attack-path query — `from`+`to` or `objective`, `optimize`, `max` (backs the Attack Paths **Custom path** picker; engine-ranked, supports `balanced`) |
 | `POST /api/agents/:id/directive` | Steer one agent (one validated directive op) |
+| `POST /api/agents/:id/dismiss` | Remove a terminal agent from the roster (409 if still running/pending) |
 | `POST /api/fleet/directive` | Fleet-wide pause/resume/stop (optionally by campaign) |
+| `POST /api/fleet/dismiss` | Bulk "Clear finished" — dismiss all terminal agents (optionally by campaign) |
 | `GET /api/agent-queries` · `POST /api/agent-queries/:id/answer` | The agent-question inbox |
 | `POST /api/actions/:id/approve` · `POST /api/actions/:id/deny` | Resolve a pending action inline (canonical `resolveApprovalRequest`) |
 | `POST /api/config/scope/preview` · `PATCH /api/config/scope` | Add Targets — read-only impact dry-run, then apply via `updateScope` |
