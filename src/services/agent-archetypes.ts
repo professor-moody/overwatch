@@ -217,7 +217,7 @@ const MISSIONS: Record<AgentArchetypeId, string> = {
     `YOUR ROLE IS PASSIVE EXTERNAL-RECON (OSINT). Map the target's external attack surface from PUBLIC sources only — subdomains, DNS, netblocks/ASNs, organizations, and emails. Run the passive binaries via validate_action + run_tool (subfinder, amass with -passive, crt.sh via curl, whois, theHarvester) and use WebSearch/WebFetch for web OSINT; turn raw output into graph data with parse_output/report_finding. You have NO interactive sessions, NO credential tools, and NO raw shell — do NOT actively scan, brute-force, or exploit; public sources only. After enumerating a domain, stamp it (subdomains_enumerated_at) so its frontier item retires even if nothing new was found. Done when the in-scope external surface is on the graph (subdomains, domains, asns, orgs, emails via parse_output/report_finding) — leave nothing only in stdout.`,
   research: CVE_MISSION,
   planner:
-    `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions). Use query_graph + get_agent_context to understand state, and reference ONLY the exact task_ids and action_ids listed in your objective. If the command cannot be expressed as the allowed ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,
+    `YOUR ROLE IS OPERATOR-COMMAND PLANNING. Translate the free-form operator command in your objective into a plan of operator operations and submit it with propose_plan({ agent_id, task_id, command, summary, rationale, ops }) for the operator to confirm. You PROPOSE; the operator CONFIRMS; the dashboard EXECUTES. You yourself CANNOT execute against targets or mutate the graph (no run_bash/run_tool/sessions) — but "do work" commands ARE expressible: a request to scan/enumerate/dig into a target becomes a **dispatch** op that deploys the right agent at the relevant graph node(s). Allowed ops: directive (steer a running task), scope (add cidrs/domains/exclusions), approve/deny (a pending action), and dispatch (deploy an agent — recon_scanner/web_tester/credential_operator/post_exploit/cve_researcher/osint_recon/… — at existing node id(s); omit archetype to auto-pick from the node type). Use query_graph + get_agent_context to find the exact node ids to target; reference ONLY real ids (task_ids/action_ids/node_ids) from your objective or the graph. So for "port-scan host X" or "dig into Y", propose a dispatch op rather than just recommending it. Only if a command genuinely maps to none of these ops, do NOT propose — explain why in submit_agent_transcript. Done when a plan of valid ops is submitted via propose_plan, or the transcript explains why the command can't be expressed.`,
 };
 
 /** The headless bootstrap mission for an archetype id or legacy role id. */
@@ -338,4 +338,17 @@ export function recommendArchetype(input: RecommendInput): AgentArchetypeId {
   if (input.nodeType === 'host' || input.nodeType === 'service') return 'recon_scanner';
   if (input.nodeType === 'domain' || input.nodeType === 'subdomain' || input.nodeType === 'organization' || input.nodeType === 'asn' || input.nodeType === 'email') return 'osint_recon';
   return 'default';
+}
+
+/**
+ * Archetype for an operator-confirmed "explore/deploy at this node" dispatch. An
+ * explicit valid archetype wins; otherwise auto-pick from the node type — but NEVER
+ * silently the full-surface `default` (which carries run_bash). A node type we don't
+ * map falls back to `recon_scanner` (a scoped explore agent), so an operator confirming
+ * "explore this node" never unknowingly launches a maximal-privilege shell agent.
+ */
+export function recommendExploreArchetype(explicit: string | undefined, nodeType: string | undefined): AgentArchetypeId {
+  if (explicit && isArchetypeId(explicit)) return explicit;
+  const auto = recommendArchetype({ nodeType });
+  return auto === 'default' ? 'recon_scanner' : auto;
 }

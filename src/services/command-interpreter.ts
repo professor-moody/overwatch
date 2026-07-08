@@ -13,14 +13,21 @@
 // (enforced by the /api/commands endpoint).
 // ============================================================
 
+import { v4 as uuidv4 } from 'uuid';
 import type { GraphEngine } from './graph-engine.js';
 import type { AgentDirectiveKind } from '../types.js';
+import { getArchetype, recommendExploreArchetype } from './agent-archetypes.js';
 
 export type OperatorOp =
   | { op: 'directive'; task_id: string; agent_label: string; kind: AgentDirectiveKind; node_ids?: string[]; frontier_types?: string[]; note?: string }
   | { op: 'scope'; add_cidrs?: string[]; add_domains?: string[]; add_exclusions?: string[] }
   | { op: 'approve'; action_id: string; notes?: string }
-  | { op: 'deny'; action_id: string; reason?: string };
+  | { op: 'deny'; action_id: string; reason?: string }
+  // Deploy an agent at existing graph node(s). Lets the planner answer "port-scan X"
+  // / "dig into host Y" with a confirmable action instead of dead-ending as advice.
+  // The operator confirms before it runs; archetype is resolved to a concrete type at
+  // propose time so the confirm card shows exactly what will deploy.
+  | { op: 'dispatch'; target_node_ids: string[]; archetype?: string; skill?: string; objective?: string };
 
 export interface InterpreterTask {
   id: string;
@@ -206,6 +213,7 @@ function describeOp(op: OperatorOp): string {
     }
     case 'approve': return `approve ${op.action_id}`;
     case 'deny': return `deny ${op.action_id}`;
+    case 'dispatch': return `deploy ${op.archetype ?? 'agent'} → ${op.target_node_ids.length} node(s)`;
   }
 }
 
@@ -241,6 +249,30 @@ export function executeOps(engine: GraphEngine, ops: OperatorOp[], issuedBy = 'o
         const r = op.op === 'approve' ? queue.approve(op.action_id, op.notes) : queue.deny(op.action_id, op.reason);
         if (!r) results.push({ op, ok: false, error: 'action not found or already resolved' });
         else { engine.resolveApprovalRequest(r); results.push({ op, ok: true, detail: `${op.op}d ${op.action_id}` }); }
+      } else if (op.op === 'dispatch') {
+        // Deploy at the node(s). Resolve a CONCRETE archetype (recommendExploreArchetype
+        // never yields the hidden full-surface 'default' — an unmapped node type falls
+        // back to recon_scanner), expand its role+backend, and register status:'running'
+        // so a drain loop launches it. No model → CLI default (the planner doesn't pick
+        // models). NOTE: a node-scoped dispatch carries NO frontier_item_id, so it takes
+        // NO frontier lease and is NOT lease-deduped — the dispatch cap is the only bound
+        // (two confirmed plans at the same node both launch). Node-level dedup is future work.
+        const taskId = uuidv4();
+        const seedType = op.target_node_ids[0] ? engine.getNode(op.target_node_ids[0])?.type : undefined;
+        const arch = getArchetype(recommendExploreArchetype(op.archetype, seedType));
+        const reg = engine.registerAgent({
+          id: taskId,
+          agent_id: `planner-dispatch-${taskId.slice(0, 8)}`,
+          assigned_at: new Date().toISOString(),
+          status: 'running',
+          subgraph_node_ids: op.target_node_ids,
+          skill: op.skill ?? arch.defaultSkill,
+          archetype: arch.id, role: arch.role, backend: arch.backend,
+          ...(op.objective ? { objective: op.objective } : {}),
+        });
+        if (reg.cap_exceeded) results.push({ op, ok: false, error: `dispatch cap exceeded (${reg.cap_exceeded.current}/${reg.cap_exceeded.limit}) — retry when a slot frees` });
+        else if (!reg.ok) results.push({ op, ok: false, error: reg.lease_conflict ? `already being worked by ${reg.lease_conflict.existing_agent_id}` : 'dispatch refused' });
+        else results.push({ op, ok: true, detail: describeOp({ ...op, archetype: arch.id }) });
       }
     } catch (err) {
       results.push({ op, ok: false, error: err instanceof Error ? err.message : String(err) });

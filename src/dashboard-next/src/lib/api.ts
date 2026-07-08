@@ -291,7 +291,7 @@ export async function dispatchAgent(body: {
 // --- NL operator cockpit (Phase 3A) ---
 
 export interface OperatorOp {
-  op: 'directive' | 'scope' | 'approve' | 'deny';
+  op: 'directive' | 'scope' | 'approve' | 'deny' | 'dispatch';
   [key: string]: unknown;
 }
 
