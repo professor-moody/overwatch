@@ -546,6 +546,48 @@ describe('GET /api/actions/pending', () => {
   });
 });
 
+describe('POST /api/actions/{approve,deny}-batch', () => {
+  // Seed a live pending approval; submit() returns a promise that resolves when the
+  // operator (here, the batch endpoint) approves/denies it.
+  const seed = (id: string) => engine.getPendingActionQueue().submit(
+    { action_id: id, technique: 'enumeration', description: `test ${id}`, target_ip: '10.0.0.9' } as never,
+  ) as Promise<{ status: string; reason?: string }>;
+
+  it('approve-batch resolves the listed actions and skips unknown ids', async () => {
+    const p1 = seed('batch-a1');
+    const p2 = seed('batch-a2');
+    const { status, body } = await postJson<{ ok: boolean; resolved: number; total: number }>(
+      '/api/actions/approve-batch', { action_ids: ['batch-a1', 'batch-a2', 'ghost-id'] });
+    expect(status).toBe(200);
+    expect(body.resolved).toBe(2);   // 2 real, unknown id skipped (not an error)
+    expect(body.total).toBe(3);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.status).toBe('approved');
+    expect(r2.status).toBe('approved');
+  });
+
+  it('deny-batch requires a non-empty reason', async () => {
+    const { status } = await postJson('/api/actions/deny-batch', { action_ids: ['x'], reason: '   ' });
+    expect(status).toBe(400);
+  });
+
+  it('deny-batch resolves with the shared reason', async () => {
+    const p = seed('batch-d1');
+    const { status, body } = await postJson<{ resolved: number }>(
+      '/api/actions/deny-batch', { action_ids: ['batch-d1'], reason: 'too noisy for this window' });
+    expect(status).toBe(200);
+    expect(body.resolved).toBe(1);
+    const res = await p;
+    expect(res.status).toBe('denied');
+    expect(res.reason).toBe('too noisy for this window');
+  });
+
+  it('empty action_ids → 400', async () => {
+    const { status } = await postJson('/api/actions/approve-batch', { action_ids: [] });
+    expect(status).toBe(400);
+  });
+});
+
 describe('GET /api/campaigns', () => {
   it('returns campaigns[]', async () => {
     const { status, body } = await getJson<{ campaigns: unknown[] }>('/api/campaigns');

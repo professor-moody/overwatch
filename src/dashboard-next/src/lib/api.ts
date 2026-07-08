@@ -479,6 +479,22 @@ export async function denyAction(id: string, reason?: string): Promise<unknown> 
   });
 }
 
+/** Bulk approve — routes each id through the same canonical resolve as the single path. */
+export async function approveBatch(actionIds: string[], notes?: string): Promise<{ ok: boolean; resolved: number; total: number }> {
+  return fetchJson('/api/actions/approve-batch', {
+    method: 'POST',
+    body: JSON.stringify({ action_ids: actionIds, notes }),
+  });
+}
+
+/** Bulk deny — one shared reason for all (required). */
+export async function denyBatch(actionIds: string[], reason: string): Promise<{ ok: boolean; resolved: number; total: number }> {
+  return fetchJson('/api/actions/deny-batch', {
+    method: 'POST',
+    body: JSON.stringify({ action_ids: actionIds, reason }),
+  });
+}
+
 // --- Config / Settings ---
 
 export async function getConfig(): Promise<EngagementConfig> {

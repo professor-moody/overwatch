@@ -3,7 +3,7 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { useToastStore } from '../../stores/toast-store';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { CountdownTimer, EmptyState } from '../shared';
-import { approveAction, denyAction, explainAction, getPendingActions } from '../../lib/api';
+import { approveAction, approveBatch, denyAction, denyBatch, explainAction, getPendingActions } from '../../lib/api';
 import { isDenyReasonValid } from '../../lib/console-approvals';
 import type { ActionExplanation, ActionQueueDiagnostics, PendingAction } from '../../lib/types';
 import { ActionButton, EmptyPanelState, FilterBar, PageHeader, PanelSection, StatusPill } from '../shared/primitives';
@@ -14,6 +14,7 @@ import {
   classifyActionLifecycle,
   computeActionRisk,
   groupActionsByTechnique,
+  recommendedDecision,
   sortActionsForQueue,
   sortTechniqueGroups,
   terminalApprovalCommand,
@@ -36,7 +37,13 @@ export function ActionsPanel() {
   const [copied, setCopied] = useState<string | null>(null);
   const [recentResolved, setRecentResolved] = useState<PendingAction[]>([]);
   const [diagnostics, setDiagnostics] = useState<ActionQueueDiagnostics | null>(null);
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkDenyIds, setBulkDenyIds] = useState<string[] | null>(null);
+  const [bulkReason, setBulkReason] = useState('');
   const { navigateToPanel } = useNavigation();
+  const addToast = useToastStore(s => s.addToast);
 
   const sorted = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -79,11 +86,91 @@ export function ActionsPanel() {
     }
   }, []);
 
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }, []);
+
+  // Bulk resolve — every id routes through the same canonical approve/deny path as
+  // the single action (the batch endpoint loops queue.approve/deny), so audit + OPSEC
+  // accounting stay identical. Denials always carry a reason.
+  const runBulk = useCallback(async (ids: string[], verb: 'approve' | 'deny', reason?: string) => {
+    const uniq = [...new Set(ids)];
+    if (uniq.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const res = verb === 'approve' ? await approveBatch(uniq) : await denyBatch(uniq, reason!);
+      addToast({
+        type: res.resolved > 0 ? (verb === 'approve' ? 'success' : 'info') : 'warning',
+        title: verb === 'approve' ? 'Approved' : 'Denied',
+        message: `${res.resolved}/${res.total} ${verb === 'approve' ? 'approved' : 'denied'}`,
+      });
+      setSelectedIds(new Set());
+      setBulkDenyIds(null);
+      setBulkReason('');
+      await refresh();
+    } catch (err) {
+      addToast({ type: 'error', title: `Bulk ${verb} failed`, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkBusy, addToast, refresh]);
+
+  // Keyboard single-approve of the FOCUSED row — routes through the single-action
+  // path (never the batch endpoint), so it can't touch the multi-select. Reuses
+  // bulkBusy to serialize against the bulk bar. One deliberate keypress = one action.
+  const approveFocused = useCallback(async (id: string) => {
+    if (bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      await approveAction(id, { notes: 'approved from dashboard (keyboard)' });
+      addToast({ type: 'success', title: 'Approved', message: id });
+      await refresh();
+    } catch (err) {
+      addToast({ type: 'error', title: 'Approve failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkBusy, addToast, refresh]);
+
+  // Keyboard triage — approve / navigate / select the focused action. Deny stays
+  // click-driven because a reason is always required (no reason-less keystroke deny).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore OS key auto-repeat: a held key must NOT walk down and approve the
+      // whole queue. Only deliberate, distinct presses decide actions.
+      if (e.repeat) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (sorted.length === 0) return;
+      const idx = Math.max(0, sorted.findIndex(a => a.action_id === selectedAction?.action_id));
+      if (e.key === 'j') { const n = sorted[Math.min(idx + 1, sorted.length - 1)]; if (n) { setSelectedId(n.action_id); e.preventDefault(); } }
+      else if (e.key === 'k') { const n = sorted[Math.max(idx - 1, 0)]; if (n) { setSelectedId(n.action_id); e.preventDefault(); } }
+      else if (e.key === 'a' && selectedAction) {
+        e.preventDefault();
+        // While assembling a batch (Select mode with a selection), 'a' is a no-op —
+        // the operator is using the visible bulk bar; a stray 'a' must neither
+        // bypass the selection nor wipe it. Otherwise approve just the focused row
+        // and advance focus to the next queued action (like 'j'), so repeated
+        // presses triage down the list instead of resetting focus to the top.
+        if (batchMode && selectedIds.size > 0) return;
+        const next = sorted[idx + 1] || sorted[idx - 1] || null;
+        void approveFocused(selectedAction.action_id);
+        if (next) setSelectedId(next.action_id);
+      }
+      else if (e.key === 'x' && selectedAction) { toggleSelect(selectedAction.action_id); e.preventDefault(); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [sorted, selectedAction, approveFocused, toggleSelect, batchMode, selectedIds]);
+
+  const selectedList = [...selectedIds];
+
   return (
     <div className="h-[calc(100vh-7rem)] min-h-[680px] flex flex-col gap-4">
       <PageHeader
         title="Approvals"
-        meta={`(${pendingActions.length} pending) · deep triage — approvals also act in the Console`}
+        meta={`(${pendingActions.length} pending) · a/j/k to triage · Select for bulk`}
         actions={(
           <FilterBar>
             <input
@@ -98,12 +185,46 @@ export function ActionsPanel() {
               <option value="noise-desc">Noise</option>
               <option value="timeout-asc">Timeout</option>
             </select>
+            {pendingActions.length > 0 && (
+              <ActionButton onClick={() => { setBatchMode(v => !v); setSelectedIds(new Set()); }} variant={batchMode ? 'primary' : 'secondary'}>
+                {batchMode ? 'Done' : 'Select'}
+              </ActionButton>
+            )}
             <ActionButton onClick={refresh} variant="secondary">
               Refresh
             </ActionButton>
           </FilterBar>
         )}
       />
+
+      {/* Bulk action bar (batch mode + a selection) — or the shared deny-reason bar. */}
+      {batchMode && selectedList.length > 0 && bulkDenyIds === null && (
+        <div className="flex items-center gap-2 rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs">
+          <span className="font-medium text-foreground">{selectedList.length} selected</span>
+          <ActionButton variant="success" size="xs" disabled={bulkBusy} onClick={() => void runBulk(selectedList, 'approve')}>Approve selected</ActionButton>
+          <ActionButton variant="danger" size="xs" disabled={bulkBusy} onClick={() => { setBulkDenyIds(selectedList); setBulkReason(''); }}>Deny selected…</ActionButton>
+          <ActionButton variant="ghost" size="xs" disabled={bulkBusy} onClick={() => setSelectedIds(new Set())}>Deselect</ActionButton>
+        </div>
+      )}
+      {bulkDenyIds !== null && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
+          <span className="flex-shrink-0 text-muted-foreground">Deny {bulkDenyIds.length} —</span>
+          <input
+            autoFocus
+            value={bulkReason}
+            onChange={e => setBulkReason(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && isDenyReasonValid(bulkReason)) void runBulk(bulkDenyIds, 'deny', bulkReason.trim());
+              if (e.key === 'Escape') setBulkDenyIds(null);
+            }}
+            placeholder="Reason for denial (required)…"
+            className="flex-1 rounded border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-accent"
+            disabled={bulkBusy}
+          />
+          <ActionButton variant="danger" size="xs" disabled={bulkBusy || !isDenyReasonValid(bulkReason)} onClick={() => void runBulk(bulkDenyIds, 'deny', bulkReason.trim())}>Confirm deny</ActionButton>
+          <ActionButton variant="ghost" size="xs" disabled={bulkBusy} onClick={() => setBulkDenyIds(null)}>Cancel</ActionButton>
+        </div>
+      )}
 
       {pendingActions.length === 0 ? (
         <ActionEmptyState
@@ -124,14 +245,24 @@ export function ActionsPanel() {
               {groupEntries.map(([technique, actions]) => (
                 <div key={technique} className="space-y-1.5">
                   <div className="flex items-center justify-between px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    <span>{technique}</span>
-                    <span>{actions.length}</span>
+                    <span>{technique} · {actions.length}</span>
+                    <button
+                      onClick={() => void runBulk(actions.map(a => a.action_id), 'approve')}
+                      disabled={bulkBusy}
+                      className="rounded px-1.5 py-0.5 normal-case text-muted-foreground hover:text-success disabled:opacity-50"
+                      title={`Approve all ${actions.length} ${technique} action(s)`}
+                    >
+                      Approve all ({actions.length})
+                    </button>
                   </div>
                   {actions.map(action => (
                     <ActionQueueRow
                       key={action.action_id}
                       action={action}
                       selected={selectedAction?.action_id === action.action_id}
+                      batchMode={batchMode}
+                      checked={selectedIds.has(action.action_id)}
+                      onToggleSelect={() => toggleSelect(action.action_id)}
                       onSelect={() => setSelectedId(action.action_id)}
                     />
                   ))}
@@ -219,31 +350,48 @@ function ActionEmptyState({
   );
 }
 
-function ActionQueueRow({ action, selected, onSelect }: { action: PendingAction; selected: boolean; onSelect: () => void }) {
+function ActionQueueRow({ action, selected, batchMode, checked, onToggleSelect, onSelect }: {
+  action: PendingAction; selected: boolean; batchMode: boolean; checked: boolean; onToggleSelect: () => void; onSelect: () => void;
+}) {
   const risk = computeActionRisk(action);
   const lifecycle = classifyActionLifecycle(action);
   const node = actionNodeId(action);
+  const cue = recommendedDecision(action); // visual-only triage cue
 
   return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        'w-full rounded border border-border bg-surface px-2.5 py-2 text-left transition-colors hover:border-accent/40 hover:bg-hover/40',
-        selected && 'border-accent/50 bg-accent/5',
+    <div className="flex items-start gap-2">
+      {batchMode && (
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggleSelect}
+          className="mt-2.5 flex-shrink-0 accent-accent"
+          aria-label="Select action for bulk resolve"
+        />
       )}
-    >
-      <div className="flex items-center gap-2">
-        <StatusPill className={risk.cls}>{risk.label}</StatusPill>
-        <StatusPill className={lifecycleClass(lifecycle)}>{lifecycleLabel(lifecycle)}</StatusPill>
-        <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(action.submitted_at)}</span>
-      </div>
-      <div className="mt-1 text-xs font-medium text-foreground line-clamp-2">{action.description}</div>
-      <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-        <span className="font-mono truncate">{action.action_id.slice(0, 12)}</span>
-        {node && <span className="font-mono truncate">{node}</span>}
-        <span>noise {actionNoise(action).toFixed(2)}</span>
-      </div>
-    </button>
+      <button
+        onClick={onSelect}
+        className={cn(
+          'min-w-0 flex-1 rounded border border-border bg-surface px-2.5 py-2 text-left transition-colors hover:border-accent/40 hover:bg-hover/40',
+          selected && 'border-accent/50 bg-accent/5',
+          // Subtle recommend cue — a left edge tint. Visual only; never auto-acts.
+          cue === 'approve' && 'border-l-2 border-l-success/50',
+          cue === 'deny' && 'border-l-2 border-l-destructive/50',
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <StatusPill className={risk.cls}>{risk.label}</StatusPill>
+          <StatusPill className={lifecycleClass(lifecycle)}>{lifecycleLabel(lifecycle)}</StatusPill>
+          <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(action.submitted_at)}</span>
+        </div>
+        <div className="mt-1 text-xs font-medium text-foreground line-clamp-2">{action.description}</div>
+        <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span className="font-mono truncate">{action.action_id.slice(0, 12)}</span>
+          {node && <span className="font-mono truncate">{node}</span>}
+          <span>noise {actionNoise(action).toFixed(2)}</span>
+        </div>
+      </button>
+    </div>
   );
 }
 
@@ -371,6 +519,7 @@ function ActionResolveControls({ action }: { action: PendingAction }) {
   const [busy, setBusy] = useState(false);
   const [denying, setDenying] = useState(false);
   const [reason, setReason] = useState('');
+  const cue = recommendedDecision(action); // visual-only: soft-ring the suggested button
 
   // Reset the inline deny form when the operator selects a different action.
   useEffect(() => { setDenying(false); setReason(''); setBusy(false); }, [action.action_id]);
@@ -401,9 +550,10 @@ function ActionResolveControls({ action }: { action: PendingAction }) {
   return (
     <div className="rounded border border-border bg-background/40 p-3">
       {!denying ? (
-        <div className="flex gap-2">
-          <ActionButton variant="success" disabled={busy} onClick={approve}>Approve</ActionButton>
-          <ActionButton variant="danger" disabled={busy} onClick={() => setDenying(true)}>Deny</ActionButton>
+        <div className="flex items-center gap-2">
+          <ActionButton variant="success" disabled={busy} onClick={approve} className={cn(cue === 'approve' && 'ring-1 ring-success/60')}>Approve</ActionButton>
+          <ActionButton variant="danger" disabled={busy} onClick={() => setDenying(true)} className={cn(cue === 'deny' && 'ring-1 ring-destructive/60')}>Deny</ActionButton>
+          {cue && <span className="text-[10px] text-muted-foreground">suggested: {cue}</span>}
         </div>
       ) : (
         <div className="flex items-center gap-2">

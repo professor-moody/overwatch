@@ -4,6 +4,7 @@ import { useToastStore } from '../../stores/toast-store';
 import * as api from '../../lib/api';
 import { isDenyReasonValid } from '../../lib/console-approvals';
 import { buildAttentionQueue, type AttentionItem } from '../../lib/attention-queue';
+import { recommendedDecision } from '../../lib/action-queue';
 import { cn } from '../../lib/utils';
 import { ActionButton, StatusPill } from '../shared/primitives';
 
@@ -42,6 +43,8 @@ export function AttentionQueue({
   // (still actionable inline). The operator opens the rest on demand so a queue of
   // 4–6 expanded rows can't own the viewport and bury the fleet below.
   const [open, setOpen] = useState(false);
+  const addToast = useToastStore(s => s.addToast);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   if (view.total === 0) return null;
 
@@ -54,6 +57,24 @@ export function AttentionQueue({
   // beyond that stays behind the "+N more → Triage all" link, so the toggle must
   // not promise "all" — it shows up to this many more rows in place.
   const inlineMore = Math.min(view.total, DISPLAY_CAP) - 1;
+
+  // Compact bulk-clear over ALL pending approvals (not just the visible slice), so
+  // the operator can drain the routine queue from the console without opening the
+  // full Approvals panel. Deny stays single (per-item judgement + a reason).
+  const approvalIds = pendingActions.map(a => a.action_id);
+  const safeIds = pendingActions.filter(a => recommendedDecision(a) === 'approve').map(a => a.action_id);
+  const bulkApprove = async (ids: string[], label: string) => {
+    if (ids.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const res = await api.approveBatch(ids);
+      addToast({ type: res.resolved > 0 ? 'success' : 'warning', title: label, message: `${res.resolved}/${res.total} approved` });
+    } catch (err) {
+      addToast({ type: 'error', title: `${label} failed`, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
@@ -71,8 +92,14 @@ export function AttentionQueue({
               {open ? '▾ hide' : `▸ show ${inlineMore} more`}
             </button>
           )}
-          {view.counts.approval > 0 && (
-            <button onClick={onTriageAll} className="text-[10px] text-accent hover:underline">Triage all →</button>
+          {pendingActions.length > 0 && (
+            <>
+              <button onClick={() => void bulkApprove(approvalIds, 'Approve all')} disabled={bulkBusy} className="text-[10px] text-success hover:underline disabled:opacity-50" title="Approve every pending action">Approve all ({approvalIds.length})</button>
+              {safeIds.length > 0 && safeIds.length < approvalIds.length && (
+                <button onClick={() => void bulkApprove(safeIds, 'Approve safe')} disabled={bulkBusy} className="text-[10px] text-success/80 hover:underline disabled:opacity-50" title="Approve only the low-risk (recommended) actions">Approve safe ({safeIds.length})</button>
+              )}
+              <button onClick={onTriageAll} className="text-[10px] text-accent hover:underline">Triage all →</button>
+            </>
           )}
         </div>
       </div>

@@ -22,6 +22,23 @@ export function computeActionRisk(action: PendingAction): ActionRisk {
   return { label: 'LOW', cls: 'bg-elevated text-muted-foreground', score };
 }
 
+/**
+ * A VISUAL-ONLY triage cue — it never auto-acts or pre-selects. Suggests which button
+ * to softly highlight:
+ *  - 'deny' for anything risky: HIGH risk, defensive signals fired, or a validation warning.
+ *  - 'approve' for the clearly-safe: LOW risk, no signals, and the noise budget not tight.
+ *  - undefined for the ambiguous middle — no cue; the operator reads it cold.
+ */
+export function recommendedDecision(action: PendingAction): 'approve' | 'deny' | undefined {
+  const opsec = action.opsec_context || {};
+  const signals = (opsec.defensive_signals || []).length > 0;
+  const risk = computeActionRisk(action).label;
+  if (risk === 'HIGH' || signals || action.validation_result === 'warning_only') return 'deny';
+  const budgetTight = typeof opsec.noise_budget_remaining === 'number' && opsec.noise_budget_remaining < 0.3;
+  if (risk === 'LOW' && !budgetTight) return 'approve';
+  return undefined;
+}
+
 export function actionNodeId(action: PendingAction): string | null {
   return action.target_node || action.target_cidr || action.target || null;
 }
