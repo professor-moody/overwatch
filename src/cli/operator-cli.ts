@@ -9,6 +9,7 @@
 import { resolveClientOptions, createClient, ApiError } from './operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS, type Command } from './operator/commands.js';
 import { setColorEnabled, bold, dim, cyan } from './operator/format.js';
+import { isEntrypoint } from './operator/entrypoint.js';
 
 const COMMANDS: Record<string, Command> = { ...READ_COMMANDS, ...WRITE_COMMANDS };
 
@@ -76,7 +77,8 @@ async function main(): Promise<void> {
   }
 }
 
-const isDirectRun = process.argv[1]?.endsWith('operator-cli.js') || process.argv[1]?.endsWith('operator-cli.ts');
-if (isDirectRun) {
+// Run main() when executed as a program — including via the `npm link` / global-bin
+// symlink (`overwatch …`), where argv[1] is the symlink path, not operator-cli.js.
+if (isEntrypoint(process.argv[1], import.meta.url)) {
   void main();
 }
