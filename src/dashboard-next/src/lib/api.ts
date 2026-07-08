@@ -289,6 +289,37 @@ export async function dispatchAgent(body: {
   throw new Error(`${res.status} ${res.statusText}: ${text}`);
 }
 
+export interface DispatchBatchResult {
+  dispatched: Array<{ node_ids: string[]; task_id: string; agent_id: string; archetype?: string }>;
+  skipped: Array<{ node_ids: string[]; reason: string; existing_agent_id?: string }>;
+  deferred: Array<{ node_ids: string[]; reason: string }>;
+  summary: { dispatched: number; skipped: number; deferred: number; groups: number };
+}
+
+/** Fan out N agents across a selection of nodes without overlap. `per-node`
+ *  (default) = one agent per node; `per-batch` groups up to `batch_size` nodes
+ *  per agent. Nodes already being worked are reported in `skipped`. */
+export async function dispatchBatch(body: {
+  target_node_ids: string[];
+  mode?: 'per-node' | 'per-batch';
+  batch_size?: number;
+  archetype?: string;
+  skill?: string;
+  model?: string;
+  objective?: string;
+}): Promise<DispatchBatchResult> {
+  const res = await fetch(`${BASE}/api/agents/dispatch-batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  }
+  return res.json() as Promise<DispatchBatchResult>;
+}
+
 // --- NL operator cockpit (Phase 3A) ---
 
 export interface OperatorOp {

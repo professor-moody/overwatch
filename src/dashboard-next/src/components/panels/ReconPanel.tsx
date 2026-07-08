@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import type { ExportedNode } from '../../lib/types';
-import { DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
+import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
+import { DeploySelectedModal } from './DeploySelectedModal';
 
 // Recon (OSINT) workspace — Tier 1: the SUBDOMAINS view. The external-recon surface
 // is all in the graph (subdomain/domain/asn/email nodes), but until now it was only
@@ -42,6 +43,8 @@ export function ReconPanel() {
   const [view, setView] = useState<View>('all');
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [fanOutOpen, setFanOutOpen] = useState(false);
 
   const subs = useMemo(() => graph.nodes.filter(n => n.type === 'subdomain'), [graph.nodes]);
 
@@ -81,6 +84,19 @@ export function ReconPanel() {
     return next;
   });
 
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const selectMany = (ids: string[], on: boolean) => setSelected(prev => {
+    const next = new Set(prev);
+    for (const id of ids) on ? next.add(id) : next.delete(id);
+    return next;
+  });
+  const clearSelection = () => setSelected(new Set());
+  const selectedIds = useMemo(() => [...selected], [selected]);
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -107,6 +123,16 @@ export function ReconPanel() {
         )}
       />
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 rounded-md border border-accent/40 bg-accent/5 px-3 py-2">
+          <span className="text-xs text-foreground">{selected.size} selected</span>
+          <ActionButton onClick={() => setFanOutOpen(true)} variant="purple" size="xs">
+            Deploy agents across selection
+          </ActionButton>
+          <ActionButton onClick={clearSelection} variant="ghost" size="xs">Clear</ActionButton>
+        </div>
+      )}
+
       {subs.length === 0 ? (
         <EmptyPanelState
           title="No subdomains yet"
@@ -120,17 +146,29 @@ export function ReconPanel() {
             const isCollapsed = collapsed.has(domain);
             const resolved = list.filter(n => resolvedIps(n).length > 0).length;
             const takeover = list.filter(isTakeover).length;
+            const groupIds = list.map(n => n.id);
+            const allSelected = groupIds.every(id => selected.has(id));
             return (
               <div key={domain} className="rounded-md border border-border bg-surface">
-                <button onClick={() => toggle(domain)} className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-hover/30">
-                  <span className="text-muted-foreground text-xs w-3">{isCollapsed ? '▸' : '▾'}</span>
-                  <span className="font-mono text-sm text-foreground truncate">{domain}</span>
-                  <span className="text-[10px] text-muted-foreground">{list.length}</span>
-                  <div className="ml-auto flex items-center gap-1.5">
-                    {takeover > 0 && <StatusPill className="bg-destructive/10 text-destructive">⚠ {takeover} takeover</StatusPill>}
-                    <StatusPill className="bg-elevated text-muted-foreground">{resolved} resolved</StatusPill>
-                  </div>
-                </button>
+                <div className="w-full flex items-center gap-2 px-3 py-2 hover:bg-hover/30">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={e => selectMany(groupIds, e.target.checked)}
+                    onClick={e => e.stopPropagation()}
+                    className="flex-shrink-0 accent-accent"
+                    title="Select all in group"
+                  />
+                  <button onClick={() => toggle(domain)} className="flex flex-1 items-center gap-2 text-left min-w-0">
+                    <span className="text-muted-foreground text-xs w-3">{isCollapsed ? '▸' : '▾'}</span>
+                    <span className="font-mono text-sm text-foreground truncate">{domain}</span>
+                    <span className="text-[10px] text-muted-foreground">{list.length}</span>
+                    <div className="ml-auto flex items-center gap-1.5">
+                      {takeover > 0 && <StatusPill className="bg-destructive/10 text-destructive">⚠ {takeover} takeover</StatusPill>}
+                      <StatusPill className="bg-elevated text-muted-foreground">{resolved} resolved</StatusPill>
+                    </div>
+                  </button>
+                </div>
                 {!isCollapsed && (
                   <div className="border-t border-border p-2 space-y-1.5">
                     {list.slice(0, GROUP_RENDER_CAP).map(n => {
@@ -139,6 +177,13 @@ export function ReconPanel() {
                       return (
                         <DataRow key={n.id} onClick={() => navigateToGraph(n.id, 2)}>
                           <div className="flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(n.id)}
+                              onChange={() => toggleSelect(n.id)}
+                              onClick={e => e.stopPropagation()}
+                              className="mt-0.5 flex-shrink-0 accent-accent"
+                            />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-xs font-medium text-foreground">{subName(n)}</span>
                               <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
@@ -164,6 +209,14 @@ export function ReconPanel() {
             );
           })}
         </div>
+      )}
+
+      {fanOutOpen && (
+        <DeploySelectedModal
+          nodeIds={selectedIds}
+          onClose={() => setFanOutOpen(false)}
+          onDeployed={() => { setFanOutOpen(false); clearSelection(); }}
+        />
       )}
     </div>
   );

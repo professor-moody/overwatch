@@ -20,7 +20,7 @@ import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, t
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
 import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype, recommendExploreArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
-import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
+import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind, type AgentTask } from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
 import { EngagementManager } from './engagement-manager.js';
 import { checkAllTools } from './tool-check.js';
@@ -738,6 +738,8 @@ export class DashboardServer {
       this.serveAgents(res);
     } else if (pathname === '/api/agents/dispatch' && method === 'POST') {
       this.handleAgentDispatch(req, res);
+    } else if (pathname === '/api/agents/dispatch-batch' && method === 'POST') {
+      this.handleAgentDispatchBatch(req, res);
     } else if (pathname === '/api/agents/quick-deploy' && method === 'POST') {
       this.handleQuickDeploy(req, res);
     } else if (pathname === '/api/agent-archetypes' && method === 'GET') {
@@ -1469,45 +1471,6 @@ export class DashboardServer {
       }
       const b = body as Record<string, unknown>;
       const targetNodeIds = Array.isArray(b.target_node_ids) ? b.target_node_ids.filter((x: unknown) => typeof x === 'string') as string[] : [];
-      const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
-      const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
-      // Agent type: an explicit archetype expands to {role, backend, skill,
-      // objective}; an explicit skill still overrides the archetype default.
-      // Fail closed — an unknown explicit archetype must not silently become the
-      // full-surface default agent.
-      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
-        return;
-      }
-      const explicitArch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
-      // No explicit agent type → auto-select one from the seed node type rather
-      // than silently using the full-surface default (mirrors quick-deploy + the
-      // dispatch tools). role/backend expansion stays on the explicit path.
-      const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
-      // Explore-safe: never fall through to the full-surface `default` agent when
-      // auto-selecting from the node type (recon_scanner is the safe floor). This
-      // matters for "deploy here" on arbitrary nodes whose type has no mapping.
-      const autoArchetype = recommendExploreArchetype(undefined, seedType);
-      const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
-      // Node-scoped dispatch with no explicit objective + no explicit archetype
-      // (the "deploy here" button) gets a default explore objective that nudges the
-      // agent to ground in prior actions (#156) before acting. NOTE: we do NOT fall
-      // back to the archetype's defaultObjective here — those carry an uninterpolated
-      // `{target}` placeholder (only quick-deploy interpolates it), so the explicit-
-      // archetype path keeps its prior behavior of leaving objective undefined (the
-      // runner mission + get_agent_context carry the intent).
-      const objective = typeof b.objective === 'string'
-        ? b.objective
-        : (explicitArch
-          ? undefined
-          : 'Explore and assess this node: check get_agent_context for prior actions on it first, then pursue untested attack surface.');
-      const modelRes = this.resolveDispatchModel(b.model);
-      if (!modelRes.ok) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: modelRes.error }));
-        return;
-      }
 
       if (targetNodeIds.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1515,27 +1478,13 @@ export class DashboardServer {
         return;
       }
 
-      const taskId = randomUUID();
-      const agentId = `dashboard-agent-${taskId.slice(0, 8)}`;
-
-      const task = {
-        id: taskId,
-        agent_id: agentId,
-        assigned_at: new Date().toISOString(),
-        // 'running' so the runners actually pick it up — both drain loops skip
-        // non-running tasks, so a 'pending' dispatch silently never executes
-        // (matches the planner/cve self-dispatch precedent).
-        status: 'running' as const,
-        subgraph_node_ids: targetNodeIds,
-        skill,
-        campaign_id: campaignId,
-        frontier_item_id: frontierItemId,
-        ...(explicitArch
-          ? { archetype: explicitArch.id, role: explicitArch.role, backend: explicitArch.backend }
-          : { archetype: autoArchetype }),
-        ...(objective ? { objective } : {}),
-        ...(modelRes.model ? { model: modelRes.model } : {}),
-      };
+      const built = this.buildDispatchTask(b, targetNodeIds);
+      if (!built.ok) {
+        res.writeHead(built.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: built.error }));
+        return;
+      }
+      const task = built.task;
 
       // F2: registerAgent may refuse on frontier-lease conflict.
       // Returning 201 with { dispatched: true } when the task was never
@@ -1567,6 +1516,185 @@ export class DashboardServer {
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ dispatched: true, task }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
+  }
+
+  /**
+   * Build a node-scoped dispatch task from a request body + the resolved target
+   * node ids. Centralizes the agent-type / objective / model resolution shared by
+   * single dispatch (handleAgentDispatch) and fan-out (handleAgentDispatchBatch),
+   * so both stay honest about the explore-safe archetype floor and the
+   * no-`{target}`-placeholder objective rule. Does NOT register the task — the
+   * caller registers (and handles cap/lease outcomes).
+   */
+  private buildDispatchTask(
+    b: Record<string, unknown>,
+    targetNodeIds: string[],
+  ): { ok: true; task: AgentTask } | { ok: false; status: number; error: string } {
+    // Fail closed — an unknown explicit archetype must not silently become the
+    // full-surface default agent.
+    if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
+      return { ok: false, status: 400, error: `Unknown agent type: ${b.archetype}` };
+    }
+    const explicitArch = typeof b.archetype === 'string' ? getArchetype(b.archetype) : undefined;
+    // No explicit agent type → auto-select from the seed node type. Explore-safe:
+    // never fall through to the full-surface `default` (recon_scanner is the floor).
+    const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
+    const autoArchetype = recommendExploreArchetype(undefined, seedType);
+    const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
+    // No explicit objective + no explicit archetype → default explore objective
+    // that grounds the agent in prior actions (#156). We do NOT fall back to the
+    // archetype's defaultObjective (those carry an uninterpolated `{target}` that
+    // only quick-deploy interpolates), so the explicit-archetype path keeps
+    // objective undefined (runner mission + get_agent_context carry the intent).
+    const objective = typeof b.objective === 'string'
+      ? b.objective
+      : (explicitArch
+        ? undefined
+        : 'Explore and assess this node: check get_agent_context for prior actions on it first, then pursue untested attack surface.');
+    const modelRes = this.resolveDispatchModel(b.model);
+    if (!modelRes.ok) return { ok: false, status: 400, error: modelRes.error };
+
+    const campaignId = typeof b.campaign_id === 'string' ? b.campaign_id : undefined;
+    const frontierItemId = typeof b.frontier_item_id === 'string' ? b.frontier_item_id : undefined;
+    const taskId = randomUUID();
+    const agentId = `dashboard-agent-${taskId.slice(0, 8)}`;
+
+    const task: AgentTask = {
+      id: taskId,
+      agent_id: agentId,
+      assigned_at: new Date().toISOString(),
+      // 'running' so the runners actually pick it up — both drain loops skip
+      // non-running tasks (matches the planner/cve self-dispatch precedent).
+      status: 'running',
+      subgraph_node_ids: targetNodeIds,
+      skill,
+      campaign_id: campaignId,
+      frontier_item_id: frontierItemId,
+      ...(explicitArch
+        ? { archetype: explicitArch.id, role: explicitArch.role, backend: explicitArch.backend }
+        : { archetype: autoArchetype }),
+      ...(objective ? { objective } : {}),
+      ...(modelRes.model ? { model: modelRes.model } : {}),
+    };
+    return { ok: true, task };
+  }
+
+  // ---- Fan-out dispatch ----
+  // Deploy N agents across a selection of nodes in one call, WITHOUT overlap.
+  // Node-scoped dispatch has no frontier lease (leases key on frontier_item_id),
+  // so non-overlap is enforced here: input ids are de-duped, and any node already
+  // covered by a RUNNING task (or claimed earlier in this same batch) is skipped
+  // — so re-running a fan-out over the same selection cleanly no-ops instead of
+  // stacking redundant agents on the same asset.
+  //   Body: { target_node_ids: string[], mode?: 'per-node'|'per-batch',
+  //           batch_size?, archetype?, skill?, model?, objective? }
+  //   'per-node' (default): one agent per distinct node (distinct lanes).
+  //   'per-batch': group up to batch_size nodes per agent.
+  // Returns 200 with aggregated { dispatched, skipped, deferred, summary }.
+  private handleAgentDispatchBatch(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        return;
+      }
+      const b = body as Record<string, unknown>;
+      // De-dupe while preserving selection order.
+      const rawIds = Array.isArray(b.target_node_ids)
+        ? b.target_node_ids.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      const nodeIds = [...new Set(rawIds)];
+      if (nodeIds.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'target_node_ids must be a non-empty array of node IDs' }));
+        return;
+      }
+
+      // Validate agent-type + model ONCE up front so a bad request fails fast even
+      // if every node ends up skipped (the per-group buildDispatchTask would
+      // otherwise never run its own validation for a fully-skipped batch).
+      if (typeof b.archetype === 'string' && !isArchetypeId(b.archetype)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown agent type: ${b.archetype}` }));
+        return;
+      }
+      const modelPre = this.resolveDispatchModel(b.model);
+      if (!modelPre.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: modelPre.error }));
+        return;
+      }
+
+      const mode = b.mode === 'per-batch' ? 'per-batch' : 'per-node';
+
+      const dispatched: Array<{ node_ids: string[]; task_id: string; agent_id: string; archetype?: string }> = [];
+      const skipped: Array<{ node_ids: string[]; reason: string; existing_agent_id?: string }> = [];
+      const deferred: Array<{ node_ids: string[]; reason: string }> = [];
+
+      // Partition FIRST: pull out nodes already covered by a running task and skip
+      // each individually, so a fresh node batched alongside a worked one is never
+      // stranded (only the worked node is skipped) and skip counts are per-node.
+      const runningCoverage = new Map<string, string>(); // node_id -> agent_id
+      for (const t of this.engine.getAgentTasks()) {
+        if (t.status !== 'running') continue;
+        for (const nid of t.subgraph_node_ids ?? []) {
+          if (!runningCoverage.has(nid)) runningCoverage.set(nid, t.agent_id);
+        }
+      }
+      const fresh: string[] = [];
+      for (const nid of nodeIds) {
+        const worker = runningCoverage.get(nid);
+        if (worker) skipped.push({ node_ids: [nid], reason: 'already_being_worked', existing_agent_id: worker });
+        else fresh.push(nid);
+      }
+
+      // Group only the FRESH nodes into per-agent lanes (per-node = one each).
+      const rawBatch = typeof b.batch_size === 'number' && Number.isFinite(b.batch_size) ? Math.floor(b.batch_size) : 5;
+      const batchSize = mode === 'per-batch' ? Math.max(1, rawBatch) : 1;
+      const groups: string[][] = [];
+      for (let i = 0; i < fresh.length; i += batchSize) {
+        groups.push(fresh.slice(i, i + batchSize));
+      }
+
+      for (const group of groups) {
+        // Validated up front, so buildDispatchTask cannot fail here — but keep the
+        // guard so a future validation added there can't silently 200.
+        const built = this.buildDispatchTask(b, group);
+        if (!built.ok) {
+          res.writeHead(built.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: built.error }));
+          return;
+        }
+        const reg = this.engine.registerAgent(built.task);
+        if (reg.cap_exceeded) {
+          // Concurrency cap hit — defer this group (a later group on a different
+          // target IP can still register, so keep looping rather than bailing).
+          deferred.push({ node_ids: group, reason: 'dispatch_cap_exceeded' });
+          continue;
+        }
+        if (!reg.ok) {
+          skipped.push({
+            node_ids: group,
+            reason: 'frontier_lease_conflict',
+            existing_agent_id: reg.lease_conflict?.existing_agent_id,
+          });
+          continue;
+        }
+        dispatched.push({ node_ids: group, task_id: built.task.id, agent_id: built.task.agent_id, archetype: built.task.archetype });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        dispatched,
+        skipped,
+        deferred,
+        summary: { dispatched: dispatched.length, skipped: skipped.length, deferred: deferred.length, groups: groups.length },
+      }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
