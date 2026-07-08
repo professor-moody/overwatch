@@ -94,22 +94,30 @@ export class PendingActionQueue {
   needsApproval(
     opsecContext: OpsecContext,
     technique?: string,
-    phaseEffective?: { mode: ApprovalMode; blacklisted_techniques: string[] },
+    phaseEffective?: { mode: ApprovalMode; blacklisted_techniques: string[]; opsec_enabled?: boolean },
   ): boolean {
     const mode = phaseEffective?.mode ?? this.getApprovalMode();
     if (mode === 'auto-approve') return false;
     if (mode === 'approve-all') return true;
 
-    // approve-critical: require approval for high-noise or blacklisted actions
-    const maxNoise = this.ctx.config.opsec.max_noise;
-    const noiseThreshold = maxNoise * 0.5;
-    const blacklist = phaseEffective?.blacklisted_techniques
-      ?? this.ctx.config.opsec.blacklisted_techniques
-      ?? [];
-    if (opsecContext.global_noise_spent + noiseThreshold >= maxNoise) return true;
-    if (technique && blacklist.includes(technique)) return true;
-    if (opsecContext.defensive_signals.length > 0) return true;
-    if (opsecContext.noise_budget_remaining <= 0) return true;
+    // approve-critical: require approval for high-noise or blacklisted actions — but
+    // ONLY when OPSEC enforcement is on. With OPSEC inert (the default), the noise
+    // budget / blacklist / defensive signals must not force actions into the approval
+    // queue. Prefer the caller's PHASE-EFFECTIVE opsec flag (folds phase opsec_overrides,
+    // matching validateAction + opsec_skipped); fall back to base config for callers
+    // that don't pass it.
+    const opsecEnforcing = phaseEffective?.opsec_enabled ?? this.ctx.config.opsec.enabled;
+    if (opsecEnforcing) {
+      const maxNoise = this.ctx.config.opsec.max_noise;
+      const noiseThreshold = maxNoise * 0.5;
+      const blacklist = phaseEffective?.blacklisted_techniques
+        ?? this.ctx.config.opsec.blacklisted_techniques
+        ?? [];
+      if (opsecContext.global_noise_spent + noiseThreshold >= maxNoise) return true;
+      if (technique && blacklist.includes(technique)) return true;
+      if (opsecContext.defensive_signals.length > 0) return true;
+      if (opsecContext.noise_budget_remaining <= 0) return true;
+    }
 
     return false;
   }

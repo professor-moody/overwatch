@@ -2131,7 +2131,7 @@ export class GraphEngine {
    */
   getEffectiveApprovalConfig(
     actionCtx?: { ip?: string; nodeId?: string; technique?: string },
-  ): { mode: import('../types.js').ApprovalMode; blacklisted_techniques: string[] } {
+  ): { mode: import('../types.js').ApprovalMode; blacklisted_techniques: string[]; opsec_enabled: boolean } {
     const phase = _getCurrentPhase(this.objectiveHost);
     const baseMode = this.ctx.config.opsec.approval_mode ?? 'auto-approve';
     const baseBlacklist = this.ctx.config.opsec.blacklisted_techniques ?? [];
@@ -2163,7 +2163,10 @@ export class GraphEngine {
         if (APPROVAL_STRICTNESS[rule.require] > APPROVAL_STRICTNESS[mode]) mode = rule.require;
       }
     }
-    return { mode, blacklisted_techniques };
+    // The PHASE-EFFECTIVE OPSEC switch (base config folded with the active phase's
+    // opsec_overrides), so approval escalation agrees with the enforcement path
+    // (validateAction / filterFrontier ceiling) and the opsec_skipped the tools branch on.
+    return { mode, blacklisted_techniques, opsec_enabled: this.getEffectiveOpsec().enabled === true };
   }
 
   updateAgentStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {

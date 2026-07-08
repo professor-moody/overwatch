@@ -87,14 +87,14 @@ describe('PendingActionQueue', () => {
     });
 
     it('returns true for approve-critical when noise is high', () => {
-      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0 });
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: true });
       // global_noise_spent + threshold(0.5) >= max_noise(1.0)
       const ctx = makeOpsecContext({ global_noise_spent: 0.6 });
       expect(queue.needsApproval(ctx)).toBe(true);
     });
 
     it('returns false for approve-critical when noise is low', () => {
-      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0 });
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: true });
       const ctx = makeOpsecContext({ global_noise_spent: 0.1, defensive_signals: [] });
       expect(queue.needsApproval(ctx)).toBe(false);
     });
@@ -103,6 +103,7 @@ describe('PendingActionQueue', () => {
       const { queue } = makeQueue({
         approval_mode: 'approve-critical',
         max_noise: 1.0,
+        enabled: true,
         blacklisted_techniques: ['T1003'],
       });
       const ctx = makeOpsecContext({ global_noise_spent: 0.0 });
@@ -113,6 +114,7 @@ describe('PendingActionQueue', () => {
       const { queue } = makeQueue({
         approval_mode: 'approve-critical',
         max_noise: 1.0,
+        enabled: true,
         blacklisted_techniques: ['T1003'],
       });
       const ctx = makeOpsecContext({ global_noise_spent: 0.0, defensive_signals: [] });
@@ -120,7 +122,7 @@ describe('PendingActionQueue', () => {
     });
 
     it('returns true for approve-critical when defensive signals present', () => {
-      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0 });
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: true });
       const ctx = makeOpsecContext({
         global_noise_spent: 0.0,
         defensive_signals: [{ type: 'lockout', detected_at: new Date().toISOString(), description: 'Alert fired' }],
@@ -129,9 +131,38 @@ describe('PendingActionQueue', () => {
     });
 
     it('returns true for approve-critical when noise budget exhausted', () => {
-      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0 });
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: true });
       const ctx = makeOpsecContext({ noise_budget_remaining: 0, global_noise_spent: 1.0, defensive_signals: [] });
       expect(queue.needsApproval(ctx)).toBe(true);
+    });
+
+    it('does NOT escalate on noise/blacklist/signals under approve-critical when OPSEC is DISABLED (inert)', () => {
+      const { queue } = makeQueue({
+        approval_mode: 'approve-critical', max_noise: 1.0, enabled: false, blacklisted_techniques: ['T1003'],
+      });
+      // Exhausted budget + defensive signals + a blacklisted technique — all would
+      // escalate if OPSEC were on; with OPSEC inert none of them force approval.
+      const ctx = makeOpsecContext({
+        noise_budget_remaining: 0, global_noise_spent: 1.0,
+        defensive_signals: [{ type: 'lockout', detected_at: new Date().toISOString(), description: 'Alert' }],
+      });
+      expect(queue.needsApproval(ctx, 'T1003')).toBe(false);
+    });
+
+    it('escalates when a PHASE enables OPSEC even though base config is disabled', () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: false });
+      const ctx = makeOpsecContext({ noise_budget_remaining: 0, global_noise_spent: 1.0 });
+      // Phase-effective flag (folds opsec_overrides) is the authority — must escalate.
+      expect(queue.needsApproval(ctx, undefined, { mode: 'approve-critical', blacklisted_techniques: [], opsec_enabled: true })).toBe(true);
+    });
+
+    it('does NOT escalate when a PHASE disables OPSEC even though base config is enabled', () => {
+      const { queue } = makeQueue({ approval_mode: 'approve-critical', max_noise: 1.0, enabled: true });
+      const ctx = makeOpsecContext({
+        noise_budget_remaining: 0, global_noise_spent: 1.0,
+        defensive_signals: [{ type: 'lockout', detected_at: new Date().toISOString(), description: 'x' }],
+      });
+      expect(queue.needsApproval(ctx, undefined, { mode: 'approve-critical', blacklisted_techniques: [], opsec_enabled: false })).toBe(false);
     });
 
     it('defaults to auto-approve when approval_mode not set', () => {
