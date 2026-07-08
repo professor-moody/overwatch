@@ -114,7 +114,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
     if (!edgeGroups.has(edgeType)) edgeGroups.set(edgeType, { count: 0, peers: [] });
     const group = edgeGroups.get(edgeType)!;
     group.count++;
-    if (group.peers.length < 5) group.peers.push({ id: peerId, label: peerLabel, type: peerType });
+    // Collect ALL peers (not just the first 5) so a high-degree node — e.g. a domain
+    // with 30+ SUBDOMAIN_OF edges — is fully legible here instead of only in raw tool
+    // output. The EdgeGroup renderer collapses to 5 with an expand + filter.
+    group.peers.push({ id: peerId, label: peerLabel, type: peerType });
   });
 
   const edgeEntries = [...edgeGroups.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -306,25 +309,7 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           ) : (
             <div className="space-y-2">
               {edgeEntries.map(([edgeType, group]) => (
-                <div key={edgeType} className="text-xs">
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span
-                      className="w-2 h-0.5 rounded-full inline-block"
-                      style={{ backgroundColor: EDGE_CATEGORIES[edgeType] || DEFAULT_EDGE_COLOR }}
-                    />
-                    <span className="font-mono text-muted-foreground">{edgeType}</span>
-                    <span className="text-muted ml-auto">x{group.count}</span>
-                  </div>
-                  <div className="pl-3.5 space-y-0.5">
-                    {group.peers.map((peer, index) => (
-                      <button key={`${peer.id}-${index}`} onClick={() => navigateToGraph(peer.id, 2)} className="w-full flex items-center gap-1.5 text-[11px] hover:text-accent">
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: NODE_COLORS[peer.type] || '#888' }} />
-                        <span className="truncate text-foreground">{peer.label}</span>
-                      </button>
-                    ))}
-                    {group.count > 5 && <span className="text-muted text-[10px]">+{group.count - 5} more</span>}
-                  </div>
-                </div>
+                <EdgeGroup key={edgeType} edgeType={edgeType} group={group} onPeer={(id) => navigateToGraph(id, 2)} />
               ))}
             </div>
           )}
@@ -369,6 +354,62 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
           </ActionButton>
         </div>
         {editMode && <AddEdgeInline graph={graph} sourceId={nodeId} onUndoPush={onUndoPush} />}
+      </div>
+    </div>
+  );
+}
+
+/** One edge-type group in the inspector. Collapsed shows the first few peers; a
+ *  high-degree group (e.g. a domain's 30+ subdomains) expands to show every peer,
+ *  with a filter box once the list is long — so all neighbours are legible here. */
+function EdgeGroup({ edgeType, group, onPeer }: {
+  edgeType: string;
+  group: { count: number; peers: { id: string; label: string; type: string }[] };
+  onPeer: (id: string) => void;
+}) {
+  const COLLAPSED = 5;
+  const RENDER_CAP = 200; // bound the DOM even for a node with thousands of edges
+  const [expanded, setExpanded] = useState(false);
+  const [filter, setFilter] = useState('');
+  const q = filter.trim().toLowerCase();
+  const matched = q
+    ? group.peers.filter(p => p.label.toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
+    : group.peers;
+  const visible = expanded ? matched.slice(0, RENDER_CAP) : matched.slice(0, COLLAPSED);
+  const hidden = matched.length - visible.length;
+
+  return (
+    <div className="text-xs">
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <span className="w-2 h-0.5 rounded-full inline-block" style={{ backgroundColor: EDGE_CATEGORIES[edgeType] || DEFAULT_EDGE_COLOR }} />
+        <span className="font-mono text-muted-foreground">{edgeType}</span>
+        <span className="text-muted ml-auto">x{group.count}</span>
+      </div>
+      {expanded && group.peers.length > 12 && (
+        <input
+          value={filter}
+          onChange={e => setFilter(e.target.value)}
+          placeholder={`Filter ${group.count}…`}
+          className="mb-1 ml-3.5 w-[calc(100%-0.875rem)] rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] outline-none focus:border-accent"
+        />
+      )}
+      <div className="pl-3.5 space-y-0.5">
+        {visible.map((peer, index) => (
+          <button key={`${peer.id}-${index}`} onClick={() => onPeer(peer.id)} className="w-full flex items-center gap-1.5 text-[11px] hover:text-accent">
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: NODE_COLORS[peer.type] || '#888' }} />
+            <span className="truncate text-foreground">{peer.label}</span>
+          </button>
+        ))}
+        {matched.length === 0 && <span className="text-muted text-[10px]">No matches.</span>}
+        {!expanded && hidden > 0 && (
+          <button onClick={() => setExpanded(true)} className="text-[10px] text-accent hover:text-foreground">+ show all {matched.length}</button>
+        )}
+        {expanded && hidden > 0 && (
+          <span className="text-muted text-[10px]">showing {visible.length} of {matched.length} — filter to narrow</span>
+        )}
+        {expanded && group.peers.length > COLLAPSED && (
+          <button onClick={() => { setExpanded(false); setFilter(''); }} className="text-[10px] text-accent hover:text-foreground">show less</button>
+        )}
       </div>
     </div>
   );

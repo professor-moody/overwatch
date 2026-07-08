@@ -19,6 +19,7 @@ export const PANEL_IDS = [
   'evidence',
   'identity',
   'credentials',
+  'recon',
   'paths',
   'findings',
   'engagements',
