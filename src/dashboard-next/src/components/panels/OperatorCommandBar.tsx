@@ -28,6 +28,7 @@ function describeOp(op: api.OperatorOp): string {
     case 'scope': return `scope +${[...(op.add_cidrs as string[] ?? []), ...(op.add_domains as string[] ?? [])].join(', ')}`;
     case 'approve': return `approve ${String(op.action_id)}`;
     case 'deny': return `deny ${String(op.action_id)}`;
+    case 'dispatch': return `deploy ${String(op.archetype ?? 'agent')} → ${(op.target_node_ids as string[] ?? []).length} node(s)`;
     default: return JSON.stringify(op);
   }
 }

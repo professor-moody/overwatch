@@ -101,6 +101,20 @@ describe('propose_plan — validation + recording', () => {
     expect(rejected[0].reason).toMatch(/adds nothing/);
   });
 
+  it('REJECTS a dispatch op that targets an unknown node', () => {
+    const rejected = validateProposedOps(engine, [{ op: 'dispatch', target_node_ids: ['ghost-node'] }]);
+    expect(rejected[0].reason).toMatch(/unknown node/);
+  });
+
+  it('ACCEPTS a dispatch op against an existing node', () => {
+    engine.addNode({
+      id: 'host-1', type: 'host', label: '10.0.0.1', ip: '10.0.0.1',
+      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+    });
+    const rejected = validateProposedOps(engine, [{ op: 'dispatch', target_node_ids: ['host-1'], archetype: 'recon_scanner' }]);
+    expect(rejected).toHaveLength(0);
+  });
+
   it('REJECTS an empty plan', () => {
     const r = recordProposedPlan(engine, { summary: 'empty', ops: [] });
     expect(r.ok).toBe(false);

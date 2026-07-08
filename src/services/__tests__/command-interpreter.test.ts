@@ -172,6 +172,33 @@ describe('executeOps (engine effects)', () => {
     expect(results[0].ok).toBe(false);
     expect(results[0].error).toMatch(/not found/);
   });
+
+  it('dispatch op deploys a running agent scoped to the target node(s)', () => {
+    engine.addNode({
+      id: 'host-10-99-0-5', type: 'host', label: '10.99.0.5', ip: '10.99.0.5',
+      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+    });
+    const before = engine.getAgentTasks().length;
+    const results = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-5'], archetype: 'recon_scanner' }]);
+    expect(results[0].ok).toBe(true);
+    const tasks = engine.getAgentTasks();
+    expect(tasks.length).toBe(before + 1);
+    const task = tasks.find(t => t.subgraph_node_ids.includes('host-10-99-0-5'));
+    expect(task).toBeDefined();
+    expect(task!.status).toBe('running');
+    expect(task!.archetype).toBe('recon_scanner');
+  });
+
+  it('dispatch op auto-selects an archetype when none is given', () => {
+    engine.addNode({
+      id: 'host-10-99-0-6', type: 'host', label: '10.99.0.6', ip: '10.99.0.6',
+      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+    });
+    const results = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-6'] }]);
+    expect(results[0].ok).toBe(true);
+    const task = engine.getAgentTasks().find(t => t.subgraph_node_ids.includes('host-10-99-0-6'));
+    expect(task?.archetype).toBeTruthy();   // auto-resolved
+  });
 });
 
 describe('buildPlannerObjective (3A.2 — handed to the headless planner)', () => {
