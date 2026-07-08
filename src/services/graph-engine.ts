@@ -760,9 +760,40 @@ export class GraphEngine {
     return c;
   }
 
+  /**
+   * Enforce the invariant that an ABORTED campaign has no running agents: mark every
+   * running agent whose campaign is aborted `no_retry` (a deliberate stop → the Phase
+   * 3.1 re-offer sweep must not auto-re-dispatch their work) + `interrupted`. Keyed on
+   * campaign STATUS (not a single id) so it naturally covers the whole subtree, since
+   * `campaignPlanner.abortCampaign` cascades the abort to child campaigns. The OS
+   * process is killed by TaskExecutionService.reconcileTerminatedTasks on the next
+   * watchdog tick (it kills any tracked process whose task is no longer running).
+   * Returns the count stopped.
+   */
+  private stopRunningAgentsOfAbortedCampaigns(reason: string): number {
+    let stopped = 0;
+    for (const agent of this.agentMgr.getAll()) {
+      if (agent.status !== 'running' || !agent.campaign_id) continue;
+      if (this.getCampaign(agent.campaign_id)?.status === 'aborted') {
+        agent.no_retry = true;
+        this.agentMgr.updateStatus(agent.id, 'interrupted', reason);
+        stopped++;
+      }
+    }
+    return stopped;
+  }
+
   abortCampaign(id: string): import('../types.js').Campaign | null {
     const c = this.campaignPlanner.abortCampaign(id);
-    if (c) this.persist();
+    if (c) {
+      // A manual abort must actually STOP the campaign's in-flight work — otherwise
+      // the campaign reads "aborted" while its agents keep executing target actions.
+      // (The automatic abort-conditions path already does this; this closes the gap
+      // for the operator-initiated /api/campaigns/:id/action { action: "abort" }, and
+      // covers cascaded child campaigns too.)
+      this.stopRunningAgentsOfAbortedCampaigns('Campaign aborted by operator');
+      this.persist();
+    }
     return c;
   }
 
@@ -2147,15 +2178,9 @@ export class GraphEngine {
         const abort = this.campaignPlanner.checkAbortConditions(task.campaign_id);
         if (abort.should_abort) {
           this.campaignPlanner.abortCampaign(task.campaign_id);
-          // Cancel remaining running agents for this campaign. Mark them
-          // no_retry — a campaign abort is a deliberate stop, so the Phase 3.1
-          // re-offer sweep must not auto-re-dispatch their work.
-          for (const agent of this.agentMgr.getAll()) {
-            if (agent.campaign_id === task.campaign_id && agent.status === 'running' && agent.id !== taskId) {
-              agent.no_retry = true;
-              this.agentMgr.updateStatus(agent.id, 'interrupted', `Campaign aborted: ${abort.reason}`);
-            }
-          }
+          // Stop the remaining running agents of the now-aborted campaign(s). The task
+          // that triggered this is already terminal (completed/failed), so it's skipped.
+          this.stopRunningAgentsOfAbortedCampaigns(`Campaign aborted: ${abort.reason}`);
         }
       }
       this.persist();

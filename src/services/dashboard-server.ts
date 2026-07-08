@@ -1430,18 +1430,31 @@ export class DashboardServer {
 
   // ---- Agent dispatch endpoint ----
 
-  // Resolve the model for a dispatch: an explicit choice is validated against
-  // `available_models` (when that list is configured); no choice falls back to
-  // the engagement's `default_agent_model` (or the CLI default if neither is set).
+  // Resolve the model for a dispatch: the EFFECTIVE model — whether an explicit
+  // choice or the engagement's `default_agent_model` fallback — must pass the
+  // `available_models` allowlist (when configured). A misconfigured default that
+  // isn't on the list must not silently reach `claude -p --model`; it fails loudly
+  // so the operator fixes the config rather than running a disallowed model.
+  /** True when `model` is permitted by the engagement's `available_models` allowlist
+   *  (an empty/unset list means "no restriction" → everything allowed). */
+  private isModelAllowed(model: string): boolean {
+    const allowed = this.engine.getConfig().available_models;
+    return !(Array.isArray(allowed) && allowed.length > 0) || allowed.includes(model);
+  }
+
   private resolveDispatchModel(raw: unknown): { ok: true; model?: string } | { ok: false; error: string } {
     const config = this.engine.getConfig();
+    const allowed = config.available_models;
     const requested = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
     if (requested === undefined) {
-      return { ok: true, model: config.default_agent_model };
+      const fallback = config.default_agent_model;
+      if (fallback !== undefined && !this.isModelAllowed(fallback)) {
+        return { ok: false, error: `default_agent_model "${fallback}" is not in available_models (${(allowed ?? []).join(', ')}) — fix the engagement config` };
+      }
+      return { ok: true, model: fallback };
     }
-    const allowed = config.available_models;
-    if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes(requested)) {
-      return { ok: false, error: `model "${requested}" is not allowed (available_models: ${allowed.join(', ')})` };
+    if (!this.isModelAllowed(requested)) {
+      return { ok: false, error: `model "${requested}" is not allowed (available_models: ${(allowed ?? []).join(', ')})` };
     }
     return { ok: true, model: requested };
   }
@@ -1704,7 +1717,21 @@ export class DashboardServer {
     // of registering a planner task that can never launch.
     if (!this.taskExecution || !this.taskExecution.isHeadlessAvailable()) return null;
     const taskId = randomUUID();
-    const plannerModel = this.engine.getConfig().default_agent_model;
+    // Uphold the same allowlist as the operator dispatch paths: never pass a
+    // disallowed default_agent_model to `claude -p --model`. A misconfigured default
+    // is dropped here (planner falls back to the CLI default) rather than blocking
+    // planning — but LOG it, so an operator who only drives via natural language (and
+    // never hits the explicit 400 on a direct dispatch) can still discover the bad config.
+    const configuredModel = this.engine.getConfig().default_agent_model;
+    const modelAllowed = !configuredModel || this.isModelAllowed(configuredModel);
+    if (configuredModel && !modelAllowed) {
+      this.engine.logActionEvent({
+        description: `default_agent_model "${configuredModel}" is not in available_models — planner is using the CLI default; fix the engagement config`,
+        event_type: 'instrumentation_warning', category: 'system', result_classification: 'failure',
+        details: { reason: 'default_model_not_allowed', model: configuredModel },
+      });
+    }
+    const plannerModel = modelAllowed ? configuredModel : undefined;
     const reg = this.engine.registerAgent({
       id: taskId,
       agent_id: `planner-${taskId.slice(0, 8)}`,
