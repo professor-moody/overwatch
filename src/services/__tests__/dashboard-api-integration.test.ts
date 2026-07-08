@@ -495,6 +495,35 @@ describe('POST /api/agents/quick-deploy', () => {
     expect(status).toBe(201);
     expect(body.dispatched).toBe(true);
   });
+
+  it('rejects a no-model dispatch when default_agent_model is NOT in available_models', async () => {
+    const cfg = engine.getConfig();
+    const prev = cfg.default_agent_model;
+    cfg.default_agent_model = 'not-in-the-allowlist';    // misconfigured default
+    try {
+      const before = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+      // No model → falls back to the (disallowed) default; must not silently reach claude -p.
+      const { status } = await postJson('/api/agents/quick-deploy', { target: '10.46.0.9' });
+      expect(status).toBe(400);
+      const after = await getJson<{ scope: { cidrs: string[] } }>('/api/config');
+      expect(after.body.scope.cidrs).toEqual(before.body.scope.cidrs); // no scope mutation
+    } finally {
+      if (prev === undefined) delete cfg.default_agent_model; else cfg.default_agent_model = prev;
+    }
+  });
+
+  it('accepts a no-model dispatch when default_agent_model IS allowed', async () => {
+    const cfg = engine.getConfig();
+    const prev = cfg.default_agent_model;
+    cfg.default_agent_model = 'claude-opus-4-8';         // valid default
+    try {
+      const { status, body } = await postJson<{ dispatched: boolean }>('/api/agents/quick-deploy', { target: '10.47.0.9' });
+      expect(status).toBe(201);
+      expect(body.dispatched).toBe(true);
+    } finally {
+      if (prev === undefined) delete cfg.default_agent_model; else cfg.default_agent_model = prev;
+    }
+  });
 });
 
 // =============================================

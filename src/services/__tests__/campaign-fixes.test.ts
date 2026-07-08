@@ -82,6 +82,51 @@ describe('Campaign fixes — P1: persistence of CRUD/lifecycle', () => {
   });
 });
 
+describe('Campaign fixes — manual abort stops in-flight agents', () => {
+  afterEach(cleanup);
+
+  it('abortCampaign interrupts the campaign\'s running agents (no_retry) and leaves others alone', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1']);
+    engine.registerAgent({
+      id: 'task-camp', agent_id: 'a-camp', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], campaign_id: campaignId,
+    } as never);
+    engine.registerAgent({
+      id: 'task-other', agent_id: 'a-other', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [],   // no campaign_id → unrelated
+    } as never);
+
+    const c = engine.abortCampaign(campaignId);
+    expect(c?.status).toBe('aborted');
+
+    // A deliberate abort must actually STOP the campaign's work.
+    const camp = engine.getTask('task-camp');
+    expect(camp?.status).toBe('interrupted');
+    expect(camp?.no_retry).toBe(true);            // re-offer sweep must not re-dispatch it
+
+    // An unrelated running agent is untouched.
+    expect(engine.getTask('task-other')?.status).toBe('running');
+  });
+
+  it('aborting a parent campaign also stops agents of cascaded child campaigns', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1', 'fi-2']);
+    const children = engine.splitCampaign(campaignId, 2);
+    expect(children && children.length).toBeGreaterThan(0);
+    const childId = children![0].id;
+    engine.registerAgent({
+      id: 'task-child', agent_id: 'a-child', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], campaign_id: childId,
+    } as never);
+
+    engine.abortCampaign(campaignId);                      // cascades → child aborted
+
+    expect(engine.getCampaign(childId)?.status).toBe('aborted');
+    const child = engine.getTask('task-child');
+    expect(child?.status).toBe('interrupted');             // cascaded child's agent stopped too
+    expect(child?.no_retry).toBe(true);
+  });
+});
+
 describe('Campaign fixes — P1: dispatch skips completed items', () => {
   afterEach(cleanup);
 
