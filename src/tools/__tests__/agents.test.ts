@@ -106,6 +106,43 @@ describe('agent tools', () => {
     expect(payload.subgraph.nodes.some((n: { id: string }) => n.id === 'host-10-10-10-1')).toBe(true);
   });
 
+  it('get_agent_context surfaces prior_actions_on_scope (already-run actions on the agent\'s targets)', async () => {
+    engine.addNode({
+      id: 'host-10-10-10-9', type: 'host', label: '10.10.10.9', ip: '10.10.10.9',
+      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+    });
+    // A completed action already ran against this host...
+    engine.logActionEvent({
+      description: 'nmap -sV on 10.10.10.9', event_type: 'action_completed', category: 'agent',
+      action_id: 'act-nmap', result_classification: 'success', technique: 'service_enumeration',
+      tool_name: 'nmap', target_node_ids: ['host-10-10-10-9'],
+    });
+    // ...logged a SECOND time with the same action_id — must be deduped to one row.
+    engine.logActionEvent({
+      description: 'nmap -sV on 10.10.10.9 (dup)', event_type: 'action_completed', category: 'agent',
+      action_id: 'act-nmap', result_classification: 'success', technique: 'service_enumeration',
+      tool_name: 'nmap', target_node_ids: ['host-10-10-10-9'],
+    });
+    // ...and one on an UNRELATED node, which must NOT appear in this agent's scope.
+    engine.logActionEvent({
+      description: 'elsewhere', event_type: 'action_completed', category: 'agent',
+      result_classification: 'success', target_node_ids: ['host-10-10-10-1'],
+    });
+
+    const reg = await handlers.register_agent({
+      agent_id: 'agent-prior', frontier_item_id: 'frontier-node-host-10-10-10-9',
+      subgraph_node_ids: ['host-10-10-10-9'],
+    });
+    const taskId = JSON.parse(reg.content[0].text).task_id;
+
+    const payload = JSON.parse((await handlers.get_agent_context({ task_id: taskId, hops: 1 })).content[0].text);
+    expect(payload.prior_actions_on_scope).toHaveLength(1);
+    expect(payload.prior_actions_on_scope[0].tool).toBe('nmap');
+    expect(payload.prior_actions_on_scope[0].technique).toBe('service_enumeration');
+    expect(payload.prior_actions_on_scope[0].result).toBe('success');
+    expect(payload.prior_actions_on_scope[0].targets).toContain('host-10-10-10-9');
+  });
+
   it('update_agent changes status to completed', async () => {
     const reg = await handlers.register_agent({
       agent_id: 'agent-update',

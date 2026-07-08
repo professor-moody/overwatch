@@ -5,6 +5,66 @@ import type { GraphEngine } from '../services/graph-engine.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { isIpInCidr } from '../services/cidr.js';
 import { recommendArchetype, isArchetypeId, type AgentArchetypeId, type RecommendInput } from '../services/agent-archetypes.js';
+import type { ActivityLogEntry } from '../services/engine-context.js';
+
+interface PriorActionOnScope {
+  action_id?: string;
+  at: string;
+  technique?: string;
+  tool?: string;
+  result?: string;              // success | failure | partial | neutral
+  targets: string[];            // the in-scope node(s)/target(s) this action touched
+}
+
+const PRIOR_ACTIONS_LIMIT = 25;
+// Bound the lookback so a huge activity log doesn't cost O(N) per dispatch (sparse
+// matches would otherwise scan the whole log). Prior actions older than this tail
+// are ancient for grounding purposes.
+const PRIOR_ACTIONS_SCAN_CAP = 4000;
+
+/**
+ * Recent completed/failed actions the agent's scope has already seen — so a dispatched
+ * agent grounds in what's been run (digs into gaps instead of repeating scans). `match`
+ * returns the in-scope target(s) an entry touched (by node id, or by CIDR/IP). Reverse-
+ * scans a bounded tail of the activity log, dedups by action_id, returns chronological.
+ */
+function collectPriorActions(engine: GraphEngine, match: (e: ActivityLogEntry) => string[] | undefined): PriorActionOnScope[] {
+  const out: PriorActionOnScope[] = [];
+  const seen = new Set<string>();
+  const hist = engine.getFullHistory();
+  const stop = Math.max(0, hist.length - PRIOR_ACTIONS_SCAN_CAP);
+  for (let i = hist.length - 1; i >= stop && out.length < PRIOR_ACTIONS_LIMIT; i--) {
+    const e = hist[i];
+    if (e.event_type !== 'action_completed' && e.event_type !== 'action_failed') continue;
+    const hit = match(e);
+    if (!hit || hit.length === 0) continue;
+    if (e.action_id) {
+      if (seen.has(e.action_id)) continue;   // one row per action, even if logged twice
+      seen.add(e.action_id);
+    }
+    out.push({ action_id: e.action_id, at: e.timestamp, technique: e.technique, tool: e.tool_name, result: e.result_classification, targets: hit });
+  }
+  return out.reverse(); // chronological (oldest first)
+}
+
+/** Prior actions that touched any of the agent's scoped NODES. */
+function buildPriorActionsOnScope(engine: GraphEngine, seedIds: string[]): PriorActionOnScope[] {
+  if (seedIds.length === 0) return [];
+  const scope = new Set(seedIds);
+  return collectPriorActions(engine, e => e.target_node_ids?.filter(n => scope.has(n)));
+}
+
+/** Prior actions within a discovery CIDR — so a network_discovery agent doesn't
+ *  re-enumerate a subnet a prior scan already covered. */
+function buildPriorActionsForCidr(engine: GraphEngine, cidr: string | undefined): PriorActionOnScope[] {
+  if (!cidr) return [];
+  return collectPriorActions(engine, e => {
+    const hits: string[] = [];
+    if (e.target_cidrs?.includes(cidr)) hits.push(cidr);
+    for (const ip of e.target_ips ?? []) { try { if (isIpInCidr(ip, cidr)) hits.push(ip); } catch { /* bad ip/cidr */ } }
+    return hits;
+  });
+}
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
   const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot', 'credential_test'] as const;
@@ -335,6 +395,7 @@ auto-computed from the frontier item's target node(s).`,
                 scope: engine.getState().config.scope,
               },
               subgraph: { nodes: [], edges: [] },
+              prior_actions_on_scope: buildPriorActionsForCidr(engine, frontierItem?.target_cidr),
               message: `Network discovery task for ${frontierItem?.target_cidr || 'unknown CIDR'}`,
             }, null, 2)
           }]
@@ -359,6 +420,10 @@ auto-computed from the frontier item's target node(s).`,
               archetype: task.archetype,
               subgraph: { nodes: [], edges: [] },
               scope: engine.getState().config.scope,
+              // No scoped nodes/CIDR to attribute prior actions to here — keep the field
+              // present (honestly empty) so the agent doesn't read its ABSENCE as "nothing
+              // done"; it should query_graph/get_history if it needs the wider picture.
+              prior_actions_on_scope: [],
               ...(adHoc
                 ? { message: 'Ad-hoc deploy with no pre-seeded graph nodes — work from the objective (your target is named there) and the engagement scope; discover and report findings as you go.' }
                 : { warning: `Frontier item ${task.frontier_item_id} no longer resolves to any graph nodes. The frontier may have changed since task registration. Report this to the primary session.` }),
@@ -368,6 +433,13 @@ auto-computed from the frontier item's target node(s).`,
       }
 
       const subgraph = engine.getSubgraphForAgent(seedIds, { hops });
+
+      // Prior actions already run against this agent's scope. The subgraph gives the
+      // agent the RESULT nodes but not WHICH actions produced them — so without this an
+      // agent can't tell "nmap already ran here, 3 services found" from "nothing done
+      // yet", and it re-scans or misses the gaps. Surfacing the recent completed/failed
+      // actions on-scope lets it dig into what's identified and run only what's missing.
+      const priorActions = buildPriorActionsOnScope(engine, seedIds);
 
       return {
         content: [{
@@ -383,7 +455,8 @@ auto-computed from the frontier item's target node(s).`,
             archetype: task.archetype,
             objective: task.objective,
             subgraph,
-            message: `Subgraph context: ${subgraph.nodes.length} nodes, ${subgraph.edges.length} edges`
+            prior_actions_on_scope: priorActions,
+            message: `Subgraph context: ${subgraph.nodes.length} nodes, ${subgraph.edges.length} edges; ${priorActions.length} prior action(s) already run on your scope — review them to avoid repeating work and to find the gaps still worth doing.`
           }, null, 2)
         }]
       };

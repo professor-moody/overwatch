@@ -451,7 +451,7 @@ function leanLoopSection(): string {
 
 Reason briefly with \`log_thought\` before each phase; skip a phase only when its precondition is already met.
 
-1. **ORIENT (always your first action)** — call \`get_agent_context\` before anything else. The Brief only lists your scope by id; this is where you load the actual node details, full subgraph, and current objective. Do not start with an execute. (Overwatch tools load on demand — the MCP server can boot \`status: pending\` with zero tools; if a tool you need isn't available, find it with \`ToolSearch\` before assuming it's absent.)
+1. **ORIENT (always your first action)** — call \`get_agent_context\` before anything else. The Brief only lists your scope by id; this loads the actual node details, full subgraph, current objective, **and \`prior_actions_on_scope\` — the actions already run against your targets.** Read that list: do NOT repeat a scan/technique already completed there; build on what's known and go after the GAPS (what hasn't been tried, or what a prior action left unfinished/failed). A subgraph node exists because a prior action found it — treat re-discovering it as wasted noise. Do not start with an execute. (Overwatch tools load on demand — the MCP server can boot \`status: pending\` with zero tools; if a tool you need isn't available, find it with \`ToolSearch\` before assuming it's absent.)
 2. **VALIDATE** — call \`validate_action\` before any execute. It returns an \`action_id\` and echoes \`frontier_item_id\` — copy both into the calls that follow; don't invent them.
 3. **EXECUTE** — prefer \`run_tool\` (binary + argv, no shell) or \`run_bash\` (only when you need shell features); both fold validation, the approval gate, action lifecycle logging, and evidence capture into one call. For custom tooling, do the manual \`validate_action\` → \`log_action_event(action_started)\` → execute → \`log_action_event(action_completed|action_failed)\` flow.
 4. **LAND** — record results immediately: \`parse_output\` for supported tool output, \`report_finding\` for manual observations. Pass \`action_id\` + \`frontier_item_id\`. No prose-only findings — an unrecorded discovery doesn't exist.
@@ -496,7 +496,7 @@ function leanTacticsSection(agent?: AgentTask): string {
   const lines = [
     '## Tactics',
     '',
-    '- Check the graph before acting — `query_graph()` to avoid re-scanning a port or re-cracking a hash already recorded; check tool output dirs from prior actions.',
+    '- Check what\'s already been done before acting — `prior_actions_on_scope` (from `get_agent_context`) shows the techniques already run on your targets, and `query_graph()` shows what they found. Skip the redundant re-scan/re-crack; spend your noise budget on the gaps.',
     '- CVE-first for versioned services: a known CVE on a service+version is lower-noise and higher-reward than brute-force.',
     '- After a new credential lands, immediately evaluate the auth edges it unlocks (`query_graph`) — don\'t wait for the next cycle.',
     '- `run_tool` for argv (no shell parsing/injection); `run_bash` only for real shell features. `parse_output` for parser-supported output; `report_finding` for everything else.',
