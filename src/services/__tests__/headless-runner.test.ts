@@ -293,6 +293,48 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned.length).toBe(2);                        // relaunched
   });
 
+  it('supervisor liveness: a LIVE orchestrator is not reaped even when its beat goes stale past the TTL', async () => {
+    svc = makeService({ orchestratorHealthyMs: 0 }); // healthy → a real reap would respawn (we assert it does NOT)
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    const orch = runningOrchestrators()[0];
+    expect(orch).toBeDefined();
+    expect(spawned.length).toBe(1);
+    // Simulate a busy-but-quiet orchestrator: its process is still alive (never
+    // exited → still in the registry), but the model hasn't called agent_heartbeat,
+    // so its beat is now 700s old against the 600s TTL — a reap without the fix.
+    engine.getTask(orch.id)!.heartbeat_at = new Date(Date.now() - 700_000).toISOString();
+    svc.tickWatchdog();               // beforeTick refresh must land before the reap
+    await settle();
+    // Not reaped, not churned: same task, same single process.
+    expect(engine.getTask(orch.id)?.status).toBe('running');
+    expect(runningOrchestrators().map(o => o.id)).toEqual([orch.id]);
+    expect(spawned.length).toBe(1);
+    // The supervisor refreshed the beat — it's now recent, not the stale value.
+    expect(Date.now() - Date.parse(engine.getTask(orch.id)!.heartbeat_at!)).toBeLessThan(30_000);
+  });
+
+  it('supervisor liveness stops once the process exits — a dead orchestrator still reaps + respawns', async () => {
+    svc = makeService({ orchestratorHealthyMs: 0 });
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    const first = runningOrchestrators()[0];
+    // Process dies → exit handler clears the registry + marks it interrupted. The
+    // liveness refresh must NOT resurrect it (registry no longer has it).
+    spawned[0].simulateExit(0, null); spawned[0].simulateClose(0, null);
+    await settle();
+    svc.tickWatchdog();
+    await settle();
+    const orchs = runningOrchestrators();
+    expect(orchs.length).toBe(1);
+    expect(orchs[0].id).not.toBe(first.id);   // a fresh one, not the dead task kept alive
+    expect(spawned.length).toBe(2);
+  });
+
   it('runs the orchestrator OUTSIDE the concurrency cap (no sub-agent starvation)', async () => {
     svc = makeService({ maxConcurrentHeadless: 1 });      // one sub-agent slot
     svc.start();
@@ -352,6 +394,42 @@ describe('Headless runner mechanics (injected spawn)', () => {
     // The default 120s TTL would let cold-start (spawn + MCP bootstrap + first
     // tool call) trip the watchdog and reap a healthy agent before its first beat.
     expect(engine.getTask('h-ttl')?.heartbeat_ttl_seconds).toBe(300);
+  });
+
+  it('keeps a headless task queued behind the concurrency cap alive (heartbeat + lease) so it is not reaped before it launches', async () => {
+    svc = makeService({ maxConcurrentHeadless: 1 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'q-A' }));   // fills the single slot → launches
+    engine.registerAgent(headlessTask({ id: 'q-B' }));   // at capacity → queued, NOT launched
+    await settle();
+    expect(spawned.length).toBe(1);
+    expect(engine.getTask('q-B')?.status).toBe('running');
+    // Simulate the queued task waiting past its 120s TTL: age its beat beyond the
+    // TTL. Before the fix the watchdog reaped it (heartbeat_timeout) before it ever
+    // ran; now the supervisor refreshes it (before the reap) while it waits.
+    engine.getTask('q-B')!.heartbeat_at = new Date(Date.now() - 130_000).toISOString();
+    svc.tickWatchdog();
+    await settle();
+    expect(engine.getTask('q-B')?.status).toBe('running');                 // not reaped
+    expect(Date.now() - Date.parse(engine.getTask('q-B')!.heartbeat_at!)).toBeLessThan(30_000); // refreshed
+    // When the running slot frees, the queued task launches and beats for itself.
+    spawned[0].simulateExit(0, null); spawned[0].simulateClose(0, null);
+    await settle();
+    svc.tickWatchdog(); await settle();
+    expect(spawned.length).toBe(2);
+  });
+
+  it('does NOT clobber the orchestrator\'s configured 600s TTL with the sub-agent cold-start grace', async () => {
+    svc = makeService();
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    const orch = runningOrchestrators()[0];
+    expect(orch).toBeDefined();
+    // Registered with 600s; the launch path must leave it there (not 300).
+    expect(orch.heartbeat_ttl_seconds).toBe(600);
   });
 
   it('routes an UNSET-backend open-ended task to headless (not scripted no-op) when endpoint available', async () => {

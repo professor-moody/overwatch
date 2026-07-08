@@ -1924,10 +1924,14 @@ export class GraphEngine {
     return this.ctx.nextDeterministicSeq();
   }
 
-  /** P0.3: heartbeat + watchdog passthrough. */
-  agentHeartbeat(taskId: string, now?: string): boolean {
-    const ok = this.agentMgr.heartbeat(taskId, now);
-    if (ok) this.persist();
+  /** P0.3: heartbeat + watchdog passthrough. A `silent` keepalive (supervisor-driven
+   *  liveness for the orchestrator / queued sub-agents) updates the in-memory beat +
+   *  frontier lease but skips the activity event AND the disk write: the reaper reads
+   *  memory, and on restart the startup sweep interrupts running headless tasks anyway,
+   *  so a persisted keepalive beat is moot. */
+  agentHeartbeat(taskId: string, now?: string, opts?: { silent?: boolean }): boolean {
+    const ok = this.agentMgr.heartbeat(taskId, now, opts);
+    if (ok && !opts?.silent) this.persist();
     return ok;
   }
 
