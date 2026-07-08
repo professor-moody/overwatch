@@ -74,6 +74,7 @@ function actionContext(item: FrontierItem): string {
 
 export function FrontierPanel() {
   const frontier = useEngagementStore(s => s.frontier);
+  const frontierHidden = useEngagementStore(s => s.frontierHidden);
   const graph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
   const pendingActions = useEngagementStore(s => s.pendingActions);
@@ -146,6 +147,25 @@ export function FrontierPanel() {
           </FilterBar>
         )}
       />
+
+      {frontierHidden && frontierHidden.total > 0 && (() => {
+        const r = frontierHidden.by_reason;
+        const parts = [
+          r.lease > 0 && `${r.lease} held by agents`,
+          r.opsec > 0 && `${r.opsec} OPSEC-vetoed`,
+          r.dead_host > 0 && `${r.dead_host} dead host`,
+          r.scope > 0 && `${r.scope} out of scope`,
+        ].filter(Boolean);
+        return (
+          <div
+            className="flex flex-wrap items-center gap-x-1.5 rounded-md border border-border bg-elevated px-3 py-1.5 text-[11px] text-muted-foreground"
+            title="Frontier items intentionally not shown as actionable — held by a running agent (lease), OPSEC-vetoed, on a dead host, or out of scope."
+          >
+            <span className="font-medium text-foreground">{frontierHidden.total} hidden</span>
+            {parts.length > 0 && <span>· {parts.join(' · ')}</span>}
+          </div>
+        );
+      })()}
 
       {frontier.length === 0 ? (
         <EmptyPanelState message="Frontier empty. Ingest data to generate candidates." />

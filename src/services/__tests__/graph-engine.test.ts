@@ -1218,6 +1218,27 @@ describe('GraphEngine', () => {
       expect(result.filtered[0].reason.toLowerCase()).toContain('out of scope');
     });
 
+    it('filterFrontier reasons use the exact prefixes the hidden-summary categorizer keys on', () => {
+      // getFrontierHiddenSummary buckets filtered items by these reason-string
+      // prefixes; if filterFrontier's wording drifts, counts silently mis-bucket.
+      // This locks the contract for the scope + dead_host reasons.
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-14', type: 'host', label: '10.10.10.14', ip: '10.10.10.14' },
+          { id: 'host-dead', type: 'host', label: 'dead', alive: false },
+        ],
+      }));
+      const base = { graph_metrics: { hops_to_objective: null, fan_out_estimate: 1, node_degree: 1, confidence: 1.0 }, opsec_noise: 0.3, staleness_seconds: 0 };
+      const { filtered } = engine.filterFrontier([
+        { id: 'fi-scope', type: 'incomplete_node' as const, node_id: 'host-10-10-10-14', description: 'excluded host', ...base },
+        { id: 'fi-dead', type: 'incomplete_node' as const, node_id: 'host-dead', description: 'dead host', ...base },
+      ]);
+      const byId = Object.fromEntries(filtered.map(f => [f.item.id, f.reason]));
+      expect(byId['fi-scope']).toMatch(/^Out of scope:/);
+      expect(byId['fi-dead']).toMatch(/^Dead host:/);
+    });
+
     it('filterFrontier excludes service nodes on excluded hosts', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       // Add a service on the excluded host (10.10.10.14)

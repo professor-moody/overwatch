@@ -6,6 +6,7 @@ import type {
   ExportedNode,
   ExportedEdge,
   FrontierItem,
+  FrontierHiddenSummary,
   Objective,
   AgentInfo,
   Campaign,
@@ -39,6 +40,7 @@ export interface EngagementStore {
 
   // Frontier
   frontier: FrontierItem[];
+  frontierHidden: FrontierHiddenSummary | null;
 
   // Objectives
   objectives: Objective[];
@@ -101,6 +103,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
 
   // Frontier
   frontier: [],
+  frontierHidden: null,
 
   // Objectives
   objectives: [],
@@ -153,6 +156,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       graphVersion: get().graphVersion + 1,
       lastDelta: null,
       frontier: s.frontier || [],
+      frontierHidden: s.frontier_hidden || null,
       objectives: s.objectives || [],
       agents: s.agents || [],
       campaigns: s.campaigns || [],
@@ -205,6 +209,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       graphVersion: get().graphVersion + 1,
       lastDelta: data.delta,
       frontier: s.frontier || get().frontier,
+      frontierHidden: s.frontier_hidden ?? get().frontierHidden,
       objectives: s.objectives || get().objectives,
       agents: s.agents || get().agents,
       campaigns: s.campaigns || get().campaigns,

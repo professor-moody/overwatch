@@ -142,7 +142,7 @@ export class GraphEngine {
   private campaignPlanner: CampaignPlanner;
   private reconciler: IdentityReconciler;
   private healthReportCache: HealthReport | null = null;
-  private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[] } | null = null;
+  private frontierCache: { passed: FrontierItem[]; all: FrontierItem[]; campaigns: import('../types.js').Campaign[]; hidden: import('../types.js').FrontierHiddenSummary } | null = null;
   private evidenceStore: EvidenceStore;
   private actionOutputBuffer = new ActionOutputBuffer();
   /** Shared skill methodology index (attached at app construction); null in bare/test contexts. */
@@ -716,10 +716,25 @@ export class GraphEngine {
       // Generate campaigns from frontier + chain groups (phase-aware)
       const campaigns = this.campaignPlanner.generateCampaigns(all, chainGroups, this.getCurrentPhaseId());
 
-      const { passed } = this.filterFrontier(all);
-      this.frontierCache = { all, passed, campaigns };
+      const { passed, filtered } = this.filterFrontier(all);
+      this.frontierCache = { all, passed, campaigns, hidden: this.summarizeFilteredFrontier(filtered) };
     }
     return this.frontierCache.all;
+  }
+
+  /** Counts of frontier items intentionally hidden from the actionable frontier,
+   *  grouped by reason (lease / OPSEC / dead host / scope). Computed from the SAME
+   *  cached snapshot as `getCachedFilteredFrontier()` (the displayed frontier), so
+   *  the "N hidden" count is always consistent with the frontier list shown next to
+   *  it. The frontier cache is invalidated on ingestion / scope / session changes
+   *  (not on lease acquire/release), so like the frontier list itself the count can
+   *  briefly lag live lease state until the next recompute — but the two never
+   *  disagree with each other. */
+  getFrontierHiddenSummary(): import('../types.js').FrontierHiddenSummary {
+    if (!this.frontierCache) {
+      this.computeFrontier();
+    }
+    return this.frontierCache!.hidden;
   }
 
   private getCachedFilteredFrontier(): FrontierItem[] {
@@ -1133,6 +1148,22 @@ export class GraphEngine {
     }
 
     return { passed, filtered };
+  }
+
+  /** Bucket filterFrontier's `filtered` reasons into the dashboard's summary shape.
+   *  Categorizes by the reason-string prefixes filterFrontier emits; an unrecognized
+   *  reason counts toward `total` but no bucket (so total stays honest). */
+  private summarizeFilteredFrontier(
+    filtered: Array<{ item: FrontierItem; reason: string }>,
+  ): import('../types.js').FrontierHiddenSummary {
+    const by_reason = { lease: 0, opsec: 0, dead_host: 0, scope: 0 };
+    for (const { reason } of filtered) {
+      if (reason.startsWith('frontier_item_leased:')) by_reason.lease++;
+      else if (reason.startsWith('OPSEC veto:')) by_reason.opsec++;
+      else if (reason.startsWith('Dead host:')) by_reason.dead_host++;
+      else if (reason.startsWith('Out of scope:')) by_reason.scope++;
+    }
+    return { total: filtered.length, by_reason };
   }
 
   private resolveHostIp(nodeId: string): string | null {
@@ -2378,6 +2409,7 @@ export class GraphEngine {
       },
       objectives: this.ctx.config.objectives,
       frontier: this.getCachedFilteredFrontier(),
+      frontier_hidden: this.getFrontierHiddenSummary(),
       active_agents: Array.from(this.ctx.agents.values()).filter(a => a.status === 'running'),
       agents: Array.from(this.ctx.agents.values()),
       recent_activity: this.filterRecentActivity({ activityCount, includeReasoning, includeSystem }),

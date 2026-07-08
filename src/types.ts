@@ -870,6 +870,22 @@ export interface ColdNodeRecord {
 
 // --- Frontier + Scoring ---
 
+/** Summary of frontier items filtered out of the actionable frontier, grouped by
+ *  why. Counts only (item-level detail is intentionally omitted to keep state light). */
+export interface FrontierHiddenSummary {
+  total: number;
+  by_reason: {
+    /** Held by a running sub-agent's lease. */
+    lease: number;
+    /** OPSEC hard veto (noise over budget) — only when OPSEC enforcement is on. */
+    opsec: number;
+    /** Target host marked dead. */
+    dead_host: number;
+    /** Out of scope (excluded). */
+    scope: number;
+  };
+}
+
 export interface FrontierItem {
   id: string;
   type:
@@ -1164,6 +1180,11 @@ export interface EngagementState {
   };
   objectives: EngagementObjective[];
   frontier: FrontierItem[];
+  /** Counts of frontier items intentionally NOT shown in `frontier` — held by a
+   *  running agent (lease), OPSEC-vetoed, on a dead host, or out of scope. Lets the
+   *  dashboard explain the gap between the raw frontier and what's actionable now,
+   *  instead of the frontier looking like it silently drops items. */
+  frontier_hidden: FrontierHiddenSummary;
   active_agents: AgentTask[];
   /** All agent tasks regardless of status (running, completed, failed, interrupted). The dashboard reads this for the AgentsPanel; `active_agents` stays running-only for the prompt-generator's per-agent context. */
   agents: AgentTask[];

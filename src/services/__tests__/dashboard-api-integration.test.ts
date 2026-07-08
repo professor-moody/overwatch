@@ -195,6 +195,14 @@ describe('GET /api/state', () => {
     expect(body.state).toHaveProperty('graph_summary');
     expect((body.state as { graph_summary: { nodes_by_type: unknown } }).graph_summary).toHaveProperty('nodes_by_type');
     expect(body.graph.nodes.length).toBeGreaterThan(0);
+    // frontier_hidden: counts of intentionally-filtered frontier items so the
+    // dashboard can explain the gap instead of looking like it drops items.
+    expect(body.state).toHaveProperty('frontier_hidden');
+    const hidden = (body.state as { frontier_hidden: { total: number; by_reason: Record<string, number> } }).frontier_hidden;
+    expect(typeof hidden.total).toBe('number');
+    expect(hidden.by_reason).toMatchObject({
+      lease: expect.any(Number), opsec: expect.any(Number), dead_host: expect.any(Number), scope: expect.any(Number),
+    });
   });
 });
 

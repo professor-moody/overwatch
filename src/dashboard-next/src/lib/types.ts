@@ -376,6 +376,16 @@ export interface TimelineEntry {
 
 // --- Engagement State (from get_state) ---
 
+export interface FrontierHiddenSummary {
+  total: number;
+  by_reason: {
+    lease: number;
+    opsec: number;
+    dead_host: number;
+    scope: number;
+  };
+}
+
 export interface EngagementState {
   engagement?: {
     id: string;
@@ -404,6 +414,9 @@ export interface EngagementState {
   };
   objectives?: Objective[];
   frontier?: FrontierItem[];
+  /** Counts of frontier items intentionally hidden from `frontier` (held by a
+   *  running agent, OPSEC-vetoed, dead host, or out of scope). */
+  frontier_hidden?: FrontierHiddenSummary;
   agents?: AgentInfo[];
   campaigns?: Campaign[];
   sessions?: SessionInfo[];
