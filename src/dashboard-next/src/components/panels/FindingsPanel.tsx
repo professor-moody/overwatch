@@ -30,6 +30,7 @@ import {
   findingRemediation,
   findingSummary,
   findingTitle,
+  findingVulnLabel,
 } from '../../lib/finding-display';
 
 const SEVERITY_ORDER: Array<FindingDto['severity']> = ['critical', 'high', 'medium', 'low', 'info'];
@@ -358,7 +359,7 @@ function FindingInspector({
       <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-3">
         <div className="space-y-2">
           <div className="text-xs font-medium text-muted-foreground">Supporting Evidence</div>
-          <EvidenceNarrative items={narrativeItemsFromFindingContext(context)} />
+          <FindingEvidence context={context} />
           <div>
             <div className="mb-1 text-xs font-medium text-muted-foreground">Recommended Remediation</div>
             <div className="rounded border border-border bg-elevated p-2 text-xs text-foreground whitespace-pre-wrap">
@@ -412,6 +413,23 @@ function FindingInspector({
       )}
     </div>
   );
+}
+
+/** Evidence for a finding — anchored to the vuln it proves, and honest when there's
+ *  none (an inference/analysis-derived finding, not broken). */
+function FindingEvidence({ context }: { context: FindingContextResponse }) {
+  const items = narrativeItemsFromFindingContext(context);
+  if (items.length === 0) {
+    return (
+      <div className="rounded border border-warning/30 bg-warning/5 p-2 text-xs">
+        <div className="font-medium text-warning">No direct tool evidence</div>
+        <div className="mt-0.5 text-muted-foreground">
+          Derived from the graph (inference / analysis of {context.affected_nodes.length} affected node{context.affected_nodes.length === 1 ? '' : 's'}) rather than captured tool output — open the affected nodes to see what it's based on.
+        </div>
+      </div>
+    );
+  }
+  return <EvidenceNarrative items={items} subject={findingVulnLabel(context.finding)} />;
 }
 
 function ContextMetric({ label, value }: { label: string; value: number | string }) {

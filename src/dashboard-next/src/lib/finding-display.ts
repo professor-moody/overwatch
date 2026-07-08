@@ -18,6 +18,12 @@ export function findingRemediation(finding: FindingDto): string {
   return steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
 }
 
+/** A short label for WHAT the finding is — the CWE name when classified, else the
+ *  category label. Used to anchor the evidence block to the vuln it proves. */
+export function findingVulnLabel(finding: FindingDto): string {
+  return finding.classification?.cwe?.name || findingCategoryLabel(finding.category);
+}
+
 export function findingCategoryLabel(category: string): string {
   switch (category) {
     case 'compromised_host': return 'Confirmed access';
