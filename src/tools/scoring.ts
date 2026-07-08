@@ -224,13 +224,21 @@ Call this before every significant action. Returns valid/invalid with specific e
         engine.persist();
       }
 
+      // When OPSEC enforcement is OFF (opsec_skipped), don't hand the agent the noise
+      // budget / recommended_approach / "budget exhausted" warning — an inert budget it
+      // sees makes it self-limit and "mention" a constraint that isn't enforced. Keep
+      // opsec_skipped so it knows OPSEC is inert. (The approval-gate + runner ceiling
+      // that USE opsec_context already ran above / are gated by opsec.enabled.)
+      const { opsec_context, ...restResult } = result as { opsec_context?: unknown; opsec_skipped?: boolean } & Record<string, unknown>;
+      const opsecEnforcing = restResult.opsec_skipped !== true;
       const responseObj: Record<string, unknown> = {
         action_id: normalizedActionId,
         action: resolvedDescription,
         frontier_item_id: frontier_item_id || undefined,
         frontier_type: frontierType || undefined,
         validation_result: validationResult,
-        ...result,
+        ...restResult,
+        ...(opsecEnforcing ? { opsec_context } : {}),
       };
 
       // Enrich with KB technique context if available

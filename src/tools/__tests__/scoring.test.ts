@@ -129,6 +129,26 @@ describe('scoring and inference tools', () => {
     expect(handlers.deny_action).toBeTypeOf('function');
   });
 
+  it('omits opsec_context from validate_action when OPSEC is inert (default)', async () => {
+    // Default config has no opsec.enabled → inert. The agent must NOT receive a noise
+    // budget it would self-limit on; opsec_skipped signals OPSEC is off.
+    const res = await handlers.validate_action({
+      action_id: 'act-opsec-inert', target_ip: '10.10.10.6', technique: 'portscan', description: 'Scan host',
+    });
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.opsec_context).toBeUndefined();
+    expect(payload.opsec_skipped).toBe(true);
+  });
+
+  it('includes opsec_context in validate_action when OPSEC enforcement is enabled', async () => {
+    engine.getConfig().opsec.enabled = true;
+    const res = await handlers.validate_action({
+      action_id: 'act-opsec-on', target_ip: '10.10.10.7', technique: 'portscan', description: 'Scan host',
+    });
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.opsec_context).toBeDefined();
+  });
+
   it('persists approval-gated validate_action requests before blocking', async () => {
     const config = engine.getConfig();
     config.opsec.approval_mode = 'approve-all';
