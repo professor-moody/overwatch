@@ -272,16 +272,17 @@ export async function dispatchAgent(body: {
   model?: string;
 }): Promise<DispatchAgentResult> {
   // The server (handleAgentDispatch) reads `target_node_ids` (400s on empty) and
-  // returns 409 with { dispatched:false, reason:'frontier_lease_conflict', ... }
-  // when the item is already leased. Treat that 409 as a STRUCTURED result (not
-  // an exception) so callers can show "already being worked" cleanly; other
-  // non-2xx still throw.
+  // returns 409 { dispatched:false, reason:'frontier_lease_conflict', ... } when
+  // the item is already leased, or 429 { dispatched:false, reason:'dispatch_cap_exceeded' }
+  // when the concurrency cap is hit. Treat both as STRUCTURED results (not
+  // exceptions) so callers can show "already being worked" / "cap reached — retry
+  // later" cleanly; other non-2xx still throw.
   const res = await fetch(`${BASE}/api/agents/dispatch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (res.status === 201 || res.status === 409) {
+  if (res.status === 201 || res.status === 409 || res.status === 429) {
     return res.json() as Promise<DispatchAgentResult>;
   }
   const text = await res.text().catch(() => '');
