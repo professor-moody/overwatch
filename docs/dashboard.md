@@ -218,7 +218,13 @@ The Console is a focused **master-detail** workspace:
 - a **Fleet** roster on the left — select an agent to focus its detail, per-agent steering (Pause/Resume/Stop/Tell), and its own activity stream; with nothing selected, a fleet overview sits over the full primary/sub-agent stream. Terminal (completed/failed/interrupted) agents can be **dismissed** from the roster individually or via **Clear finished** in the fleet header;
 - a **Deploy** launcher and an **Add Targets** launcher in the header. See [Deploy](#deploy) and [Add Targets](#add-targets) below.
 
-Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls. See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
+Approve/deny here routes through the same canonical path as the terminal; resolved rows clear off the live `action_resolved` push. The standalone **Approvals** view (Console group) is the deep triage queue with the same controls **plus batch triage** for a busy queue — every path still an explicit operator decision (no auto-approval):
+
+- **Multi-select** (the *Select* toggle) → **Approve/Deny selected**; **per-technique "Approve all (N)"** in each group header; denials always take one shared reason.
+- **Keyboard triage:** `a` approve the focused action · `j`/`k` move · `x` toggle its selection. (Deny stays click-driven — a reason is required.)
+- A **subtle recommended cue** (a left-edge tint / soft ring on the suggested button) from the engine's risk / defensive-signals / noise-budget — a *visual hint only*, never a pre-selection.
+
+See **[Operator Cockpit](operator-cockpit.md)** for the full model (NL command two-phase, the planner role, the directive substrate, escalation, and the safety invariant).
 
 ### Deploy
 
@@ -262,6 +268,7 @@ The MCP-tool equivalent is [`update_scope`](tools/update-scope.md).
 | `/api/config/scope/preview` | POST | Read-only dry-run of a scope change — nodes entering/leaving scope, resolved suggestions (Add Targets) |
 | `/api/config/scope` | PATCH | Apply a scope change (full-replacement body, diffed server-side → `updateScope`) |
 | `/api/actions/:id/approve` · `/api/actions/:id/deny` | POST | Resolve a pending action (inline approve/deny; canonical `resolveApprovalRequest` path) |
+| `/api/actions/approve-batch` · `/api/actions/deny-batch` | POST | Bulk resolve `{ action_ids[] }` (deny takes one shared `reason`) — each id routes through the same canonical path |
 | `/api/plans` | GET | Open planner-proposed plans awaiting confirmation |
 | `/api/agent-queries` · `/api/agent-queries/:id/answer` | GET · POST | Agent→operator question inbox + answer |
 | `/api/actions/:id/output` | GET | Raw stdout/stderr (head-by-default) + run metadata (Analysis workspace) |

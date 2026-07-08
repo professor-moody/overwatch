@@ -746,6 +746,10 @@ export class DashboardServer {
       this.handleFleetDirective(req, res);
     } else if (pathname === '/api/fleet/dismiss' && method === 'POST') {
       this.handleFleetDismiss(req, res);
+    } else if (pathname === '/api/actions/approve-batch' && method === 'POST') {
+      this.handleActionApproveBatch(req, res);
+    } else if (pathname === '/api/actions/deny-batch' && method === 'POST') {
+      this.handleActionDenyBatch(req, res);
     } else if (pathname === '/api/commands' && method === 'POST') {
       this.handleCommand(req, res);
     } else if (pathname === '/api/plans' && method === 'GET') {
@@ -3290,6 +3294,67 @@ export class DashboardServer {
       this.engine.resolveApprovalRequest(result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    });
+  }
+
+  // Bulk approve — each id routes through the SAME canonical resolve as the single
+  // handler (queue.approve → resolveApprovalRequest, which fires the per-action WS
+  // event). An id already gone from the live queue is skipped, not an error, so a
+  // stale selection resolves the still-live subset cleanly.
+  private handleActionApproveBatch(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const ids = Array.isArray(b.action_ids) ? (b.action_ids as unknown[]).filter(x => typeof x === 'string') as string[] : [];
+      if (ids.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'action_ids (non-empty string[]) is required' }));
+        return;
+      }
+      const notes = typeof b.notes === 'string' ? b.notes : undefined;
+      const queue = this.engine.getPendingActionQueue();
+      let resolved = 0;
+      for (const id of ids) {
+        const result = queue.approve(id, notes);
+        if (result) { this.engine.resolveApprovalRequest(result); resolved++; }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, resolved, total: ids.length }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    });
+  }
+
+  // Bulk deny — a single shared reason applies to all (audit parity with the single
+  // deny: a reason is required, no silent bulk-deny).
+  private handleActionDenyBatch(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkMutationAuth(req, res)) return;
+    this.readJsonBody(req).then(body => {
+      const b = (body ?? {}) as Record<string, unknown>;
+      const ids = Array.isArray(b.action_ids) ? (b.action_ids as unknown[]).filter(x => typeof x === 'string') as string[] : [];
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+      if (ids.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'action_ids (non-empty string[]) is required' }));
+        return;
+      }
+      if (!reason) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'reason (non-empty) is required to deny' }));
+        return;
+      }
+      const queue = this.engine.getPendingActionQueue();
+      let resolved = 0;
+      for (const id of ids) {
+        const result = queue.deny(id, reason);
+        if (result) { this.engine.resolveApprovalRequest(result); resolved++; }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, resolved, total: ids.length }));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid request body' }));

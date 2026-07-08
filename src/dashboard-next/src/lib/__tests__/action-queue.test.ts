@@ -4,6 +4,7 @@ import {
   classifyActionLifecycle,
   computeActionRisk,
   groupActionsByTechnique,
+  recommendedDecision,
   sortActionsForQueue,
   sortTechniqueGroups,
   terminalApprovalCommand,
@@ -31,6 +32,21 @@ describe('action queue helpers', () => {
       noise_level: 2,
       opsec_context: { defensive_signals: ['edr', 'rate-limit'] },
     })).label).toBe('HIGH');
+  });
+
+  it('recommendedDecision is a visual cue: deny risky, approve clearly-safe, undefined for the middle', () => {
+    // clearly safe → approve
+    expect(recommendedDecision(action({ noise_level: 0.1 }))).toBe('approve');
+    // HIGH risk → deny
+    expect(recommendedDecision(action({ noise_level: 3 }))).toBe('deny');
+    // defensive signals fired (even if low noise) → deny
+    expect(recommendedDecision(action({ noise_level: 0.1, opsec_context: { defensive_signals: ['edr'] } }))).toBe('deny');
+    // a validation warning → deny
+    expect(recommendedDecision(action({ noise_level: 0.1, validation_result: 'warning_only' }))).toBe('deny');
+    // MED, ambiguous → no cue
+    expect(recommendedDecision(action({ noise_level: 1.5 }))).toBeUndefined();
+    // LOW but the noise budget is tight → withhold the approve cue
+    expect(recommendedDecision(action({ noise_level: 0.1, opsec_context: { noise_budget_remaining: 0.1 } }))).toBeUndefined();
   });
 
   it('sorts stably by risk and then submitted time', () => {
