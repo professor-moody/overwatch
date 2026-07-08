@@ -1,13 +1,29 @@
 # Getting Started
 
-This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. Anything not strictly required for that path is in [Advanced Setup](#advanced-setup) at the bottom.
+This page gets you from a clean clone to "AI is doing recon on my lab" in about five minutes. There are [**two ways to run Overwatch**](#two-ways-to-run-overwatch) — the Quick Start below uses the simplest (stdio); running it as a persistent daemon is a first-class alternative, not an afterthought. Genuinely optional extras (audit trail, tape proxy) live in [Advanced Setup](#advanced-setup).
 
 !!! tip "Already past setup?"
     Jump to the [Operator Playbook](playbook/index.md) for what to actually do once Overwatch is running, or the [End-to-End Walkthrough](playbook/walkthrough.md) for a narrated lab engagement. Working a specific engagement type? Start from an **Assessment Guide**: [Web Assessment](assessments/web-assessment.md) or [Internal AD / Network](assessments/internal-ad-network.md).
 
 ---
 
-## Quick Start (5 minutes)
+## Two ways to run Overwatch
+
+Overwatch is **one engine** — the same graph, tools, and dashboard either way. What differs is how clients attach to it:
+
+| | **stdio** *(Quick Start below)* | **HTTP daemon** |
+|---|---|---|
+| How it starts | `claude` launches Overwatch as a child process | You run `npm start -- --http`; it stays up on its own |
+| Lifetime | Lives and dies with that one `claude` session | Long-lived; survives client restarts |
+| Clients | One Claude Code session | Many at once — the dashboard, a terminal `claude`, the [`overwatch` CLI](cli.md), and dispatched sub-agents, all on the *same* engagement |
+| Dashboard | Yes, on `:8384` | Yes, on `:8384` |
+| Best for | Solo operator, fastest first run | Dashboard-driven ops, multi-agent dispatch, the `overwatch` CLI, remote/shared instances |
+
+Both bring up the live dashboard. Pick **stdio** to get going in five minutes (the Quick Start). Pick the **daemon** when you want more than one thing steering the same live engagement — see [Run as a persistent daemon](#run-as-a-persistent-daemon-http). Install and engagement setup (steps 1–3) are identical; only how you launch differs.
+
+---
+
+## Quick Start (stdio · 5 minutes)
 
 ### 1. Install
 
@@ -182,26 +198,75 @@ All three returning clean output means you're good.
 
 ---
 
-## Advanced Setup
+## Run as a persistent daemon (HTTP)
 
-Skip this section unless you actually need it.
+The Quick Start runs Overwatch over **stdio** — Claude Code launches it as a child process that lives and dies with that one `claude` session. Run it as a long-lived **HTTP daemon** when you want the dashboard as a first-class control surface, the [`overwatch` CLI](cli.md), a terminal `claude`, and dispatched sub-agents to all share the *same* live engagement — or when the server should outlive any single client (a remote box, a shared instance).
 
-### HTTP / SSE transport (remote, multi-client)
-
-Default transport is stdio (Claude Code talks directly to a child process). For remote deployments, dashboards talking to the same server, or a long-running shared instance:
+**Steps 1–3 above are identical** (install, pick a template, wire config). Instead of Step 4, start the daemon yourself:
 
 ```bash
-OVERWATCH_TRANSPORT=http npm start
-# or
-node dist/index.js --http
+cd /absolute/path/to/overwatch
+npm start -- --http                 # or: OVERWATCH_TRANSPORT=http node dist/index.js --http
 ```
 
-Binds `127.0.0.1:3000` by default. The MCP endpoint is `POST /mcp`; sessions are tracked via the `mcp-session-id` header.
+It binds two loopback ports:
+
+| Port | Serves | Who connects |
+|------|--------|--------------|
+| `127.0.0.1:3000` | MCP endpoint (`POST /mcp`) | Claude Code, headless sub-agents |
+| `127.0.0.1:8384` | Dashboard + `/api` | The browser dashboard, the `overwatch` CLI |
+
+Every MCP client gets its own `mcp-session-id`, but they all read and write the **same** graph, sessions, and approval queue — that's what lets the dashboard, a terminal Claude, the CLI, and sub-agents coordinate on one engagement.
+
+### Point Claude Code at the daemon
+
+Instead of the stdio `.mcp.json` from Step 3, use the HTTP form — there's a ready template at `.mcp.http.example.json`:
+
+```bash
+cp .mcp.http.example.json .mcp.json
+```
+
+```json
+{
+  "mcpServers": {
+    "overwatch": {
+      "type": "http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": { "Authorization": "Bearer ${OVERWATCH_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+The `/mcp` endpoint **fails closed**: it requires a bearer token by default — *even on loopback* — because it exposes the full tool surface (including target-facing `run_bash`) to every connecting client. Set a stable one and start the daemon with it:
+
+```bash
+OVERWATCH_TRANSPORT=http OVERWATCH_MCP_TOKEN=<token> node dist/index.js --http
+```
+
+If you don't set `OVERWATCH_MCP_TOKEN`, the daemon generates one and writes it `0600` to `.overwatch-mcp-token` beside the state file — read it from there. For trusted single-user dev only, `OVERWATCH_MCP_REQUIRE_TOKEN=0` disables the check.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OVERWATCH_HTTP_PORT` | `3000` | HTTP server port |
-| `OVERWATCH_HTTP_HOST` | `127.0.0.1` | Bind address |
+| `OVERWATCH_HTTP_PORT` | `3000` | MCP HTTP port |
+| `OVERWATCH_HTTP_HOST` | `127.0.0.1` | MCP bind address |
+| `OVERWATCH_MCP_TOKEN` | *(auto-generated)* | Bearer token required on `/mcp` |
+
+### Operate from the terminal — the `overwatch` CLI
+
+With the daemon up, the **`overwatch` CLI** drives the same engagement over the `/api` surface on `:8384` — read commands (`status`, `frontier`, `findings`, `agents`, `approvals`) and write commands (`approve`, `deny`, `answer`, `deploy`, `dispatch`), with opt-in compact output. It's a Claude-independent operator surface: watch and steer from a second pane while the model works.
+
+```bash
+npm run overwatch -- status          # or, after `npm link`: overwatch status
+```
+
+The CLI talks to `:8384` (not the MCP port), which is loopback-open by default — protect it with `OVERWATCH_DASHBOARD_TOKEN`, and pass `--url` / `OVERWATCH_URL` (plus `--token`) to reach a remote daemon. Full command reference: [Terminal Operator CLI](cli.md).
+
+---
+
+## Advanced Setup
+
+Skip this section unless you actually need it.
 
 ### Audit trail (defensible evidence)
 
@@ -230,10 +295,6 @@ You don't have to write `engagement.json` by hand. With a server running, just a
 > **"Set up an engagement named Acme Q3 scoped to 10.10.0.0/16, objective 'reach Domain Admin', quiet OPSEC."**
 
 Under the hood that's `create_engagement` (which validates scope/OPSEC and writes `engagements/<id>.json`, returning activation steps), plus `add_objective`, `set_opsec` (confirm-gated, warns when you loosen posture), and `update_scope`. See the [Engagement Setup tools](tools/index.md). New engagements activate on restart (create-then-start), so there's no live reload to reason about.
-
-### Operate from the terminal
-
-Prefer the terminal? The **`overwatch` CLI** drives a running engagement over the same `/api` — read and write commands, with opt-in compact output. See the [CLI guide](cli.md).
 
 ### Writing engagement.json from scratch
 

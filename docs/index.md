@@ -52,8 +52,10 @@ claude
 
 `ctf.json` is the friendliest first-run template — no OPSEC constraints,
 auto-approves everything. For real engagements switch to
-`internal-pentest.json` or `external-pentest.json` — see
+`internal-pentest.json` or `external-assessment.json` — see
 [Configuration](configuration.md).
+
+That's **stdio** mode — Claude launches Overwatch for one session. To run it as a persistent **HTTP daemon** that a browser dashboard, the [`overwatch` CLI](cli.md), and multiple agents share on the *same* live engagement, see [Two ways to run Overwatch](getting-started.md#two-ways-to-run-overwatch).
 
 Full walk-through with template list, dashboard tour, and "what to say to the AI first" prompts: [Getting Started](getting-started.md). Or jump straight to a [lab workflow](playbook/index.md).
 
