@@ -438,7 +438,7 @@ describe('GET /api/agent-archetypes', () => {
 
 describe('POST /api/agents/dispatch with an archetype', () => {
   it('expands the archetype into the task (role/skill/archetype)', async () => {
-    const { status, body } = await postJson<{ dispatched: boolean; task: { archetype?: string; role?: string; skill?: string; status?: string } }>(
+    const { status, body } = await postJson<{ dispatched: boolean; task: { archetype?: string; role?: string; skill?: string; status?: string; objective?: string } }>(
       '/api/agents/dispatch',
       { target_node_ids: ['cloud-id-power'], archetype: 'recon_scanner' },
     );
@@ -448,6 +448,29 @@ describe('POST /api/agents/dispatch with an archetype', () => {
     expect(body.task.role).toBe('default');
     expect(body.task.skill).toBe('network-recon'); // archetype defaultSkill = real skill basename
     // 'running' so a runner actually picks it up (not a dormant 'pending').
+    expect(body.task.status).toBe('running');
+    // The explicit-archetype path must NOT inject the archetype's defaultObjective:
+    // those carry an uninterpolated `{target}` placeholder (only quick-deploy
+    // interpolates it), so a leaked objective would feed the runner literal text.
+    expect(body.task.objective ?? '').not.toContain('{target}');
+  });
+});
+
+describe('POST /api/agents/dispatch to an arbitrary node (no archetype)', () => {
+  it('auto-picks an explore-safe archetype (never full-surface default) + a default objective', async () => {
+    // `user-op` has type `user`, which recommendArchetype maps to the full-surface
+    // `default`. Node-scoped "deploy here" must downgrade that to recon_scanner and
+    // attach a default explore objective, so the agent grounds before acting.
+    const { status, body } = await postJson<{ dispatched: boolean; task: { archetype?: string; objective?: string; status?: string } }>(
+      '/api/agents/dispatch',
+      { target_node_ids: ['user-op'] },
+    );
+    expect(status).toBe(201);
+    expect(body.dispatched).toBe(true);
+    expect(body.task.archetype).not.toBe('default');
+    expect(body.task.archetype).toBe('recon_scanner');
+    expect(typeof body.task.objective).toBe('string');
+    expect(body.task.objective).toContain('get_agent_context');
     expect(body.task.status).toBe('running');
   });
 });

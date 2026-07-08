@@ -18,7 +18,7 @@ import type { SessionEvent, SessionManager } from './session-manager.js';
 import { dispatchCampaignAgents } from '../tools/agents.js';
 import { interpretCommand, executeOps, buildPlannerObjective, type OperatorOp, type InterpreterState } from './command-interpreter.js';
 import { interpretQuery, executeQuery, type QueryAnswer } from './query-interpreter.js';
-import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype } from './agent-archetypes.js';
+import { getArchetype, isArchetypeId, listArchetypes, recommendArchetype, recommendExploreArchetype } from './agent-archetypes.js';
 import { listTemplates, loadTemplate, mergeTemplateWithConfig } from '../config.js';
 import { opsecPartialUpdateSchema, operatorPolicyUpdateSchema, type Campaign, type AgentDirectiveKind } from '../types.js';
 import type { DefensiveSignal, OpsecContext } from './opsec-tracker.js';
@@ -1484,9 +1484,24 @@ export class DashboardServer {
       // No explicit agent type → auto-select one from the seed node type rather
       // than silently using the full-surface default (mirrors quick-deploy + the
       // dispatch tools). role/backend expansion stays on the explicit path.
-      const autoArchetype = recommendArchetype({ nodeType: targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined });
+      const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
+      // Explore-safe: never fall through to the full-surface `default` agent when
+      // auto-selecting from the node type (recon_scanner is the safe floor). This
+      // matters for "deploy here" on arbitrary nodes whose type has no mapping.
+      const autoArchetype = recommendExploreArchetype(undefined, seedType);
       const skill = typeof b.skill === 'string' ? b.skill : explicitArch?.defaultSkill;
-      const objective = typeof b.objective === 'string' ? b.objective : undefined;
+      // Node-scoped dispatch with no explicit objective + no explicit archetype
+      // (the "deploy here" button) gets a default explore objective that nudges the
+      // agent to ground in prior actions (#156) before acting. NOTE: we do NOT fall
+      // back to the archetype's defaultObjective here — those carry an uninterpolated
+      // `{target}` placeholder (only quick-deploy interpolates it), so the explicit-
+      // archetype path keeps its prior behavior of leaving objective undefined (the
+      // runner mission + get_agent_context carry the intent).
+      const objective = typeof b.objective === 'string'
+        ? b.objective
+        : (explicitArch
+          ? undefined
+          : 'Explore and assess this node: check get_agent_context for prior actions on it first, then pursue untested attack surface.');
       const modelRes = this.resolveDispatchModel(b.model);
       if (!modelRes.ok) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

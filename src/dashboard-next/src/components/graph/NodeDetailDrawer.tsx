@@ -7,7 +7,7 @@ import type Graph from 'graphology';
 import { NODE_COLORS, EDGE_CATEGORIES, DEFAULT_EDGE_COLOR } from '../../lib/graph-constants';
 import { getNodeDisplayLabel, getNodeIdentityEntries, getFriendlyNodeTypeLabel } from '../../lib/node-display';
 import { useNavigation } from '../../hooks/useNavigation';
-import { correctGraph, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
+import { correctGraph, dispatchAgent, evidenceImageUrl, getEvidenceChains, getFindings, getTrustSignals, type FindingDto, type GraphCorrectionOperation, type TrustSignalDto } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { deriveNodeRelationships } from '../../lib/relationships';
@@ -42,6 +42,8 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
   const [trustSignals, setTrustSignals] = useState<TrustSignalDto[]>([]);
   const [evidence, setEvidence] = useState<EvidenceChainResponse | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<EvidenceStatus>('idle');
+  const [deploying, setDeploying] = useState(false);
+  const addToast = useToastStore(s => s.addToast);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +103,30 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
     findings,
   });
   const nodeTrustSignals = trustSignalsForNode(trustSignals, nodeId, relationships.findings.map(finding => finding.id));
+
+  // Deploy an agent to explore THIS node — works on any node, not just frontier
+  // items. Archetype is auto-selected from the node type server-side; the deployed
+  // agent grounds in prior actions on this node (get_agent_context) before acting.
+  const deployHere = async () => {
+    if (deploying) return;
+    setDeploying(true);
+    try {
+      const res = await dispatchAgent({ target_node_ids: [nodeId] });
+      if (res.dispatched) {
+        addToast({ type: 'success', title: 'Agent deployed', message: `exploring ${label}` });
+      } else if (res.existing_agent_id) {
+        addToast({ type: 'warning', title: 'Already being worked', message: `by ${res.existing_agent_id}` });
+      } else if (res.reason === 'dispatch_cap_exceeded') {
+        addToast({ type: 'warning', title: 'Dispatch cap reached', message: 'too many agents running — retry when one frees up' });
+      } else {
+        addToast({ type: 'error', title: 'Not deployed', message: res.reason || 'dispatch refused' });
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Deploy failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDeploying(false);
+    }
+  };
 
   const edgeGroups = new Map<string, { count: number; peers: { id: string; label: string; type: string }[] }>();
   graph.forEachEdge(nodeId, (_edgeId, edgeAttrs, source, target) => {
@@ -330,6 +356,14 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
       </div>
 
       <div className="flex-shrink-0 px-4 py-2 border-t border-border bg-surface/95 flex flex-col gap-2">
+        <ActionButton
+          onClick={deployHere}
+          variant="primary"
+          disabled={deploying}
+          className="w-full"
+        >
+          {deploying ? 'Deploying…' : 'Deploy agent here'}
+        </ActionButton>
         <div className="flex gap-2">
           <ActionButton
             onClick={() => onFocus?.(nodeId, 2)}
