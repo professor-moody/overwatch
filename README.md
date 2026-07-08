@@ -41,6 +41,8 @@ If you create config files manually, `.mcp.json` should use absolute paths:
 
 Then run `claude`. `.mcp.json` starts Overwatch; `.claude/settings.json` enables hooks that keep Claude using Overwatch instead of drifting into raw target-facing Bash. See the full [Getting Started](https://professor-moody.github.io/overwatch/getting-started/) guide.
 
+That's **stdio** mode (Claude launches Overwatch for one session). To run it as a persistent **HTTP daemon** that the dashboard, the `overwatch` CLI, and multiple agents share on one live engagement, see [Two ways to run Overwatch](https://professor-moody.github.io/overwatch/getting-started/#two-ways-to-run-overwatch).
+
 ## Documentation
 
 **[professor-moody.github.io/overwatch](https://professor-moody.github.io/overwatch/)** — architecture, configuration, 80 MCP tools, graph model, inference rules, skills library, operator playbook, and development guide.
