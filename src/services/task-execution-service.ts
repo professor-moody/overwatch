@@ -45,6 +45,13 @@ const DEFAULT_HEADLESS_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 const ORCHESTRATOR_BACKOFF_BASE_MS = 30_000;
 const ORCHESTRATOR_BACKOFF_CAP_MS = 10 * 60_000;
 const ORCHESTRATOR_HEALTHY_MS = 5 * 60_000;
+// Wedged-primary ceiling: if the orchestrator's process is alive but has produced NO
+// output this long, treat it as hung and restart it. A healthy primary delegates
+// long-running work to sub-agents (dispatch is async — it keeps polling get_state and
+// streaming output while they run), so it goes silent this long only if it DIRECTLY
+// awaits a single long tool call — which it should avoid. That residual case (and the
+// recovery speed for a true hang) is why the ceiling is tunable via options.
+const ORCHESTRATOR_WEDGED_CEILING_MS = 30 * 60_000;
 
 export interface TaskExecutionServiceOptions {
   /** Watchdog tick interval (ms). Defaults to the watchdog's own default (30s). */
@@ -56,6 +63,9 @@ export interface TaskExecutionServiceOptions {
   /** A persistent-orchestrator run lasting at least this long counts as healthy and
    *  resets the crash-loop backoff. Default 5 min (lowered in tests). */
   orchestratorHealthyMs?: number;
+  /** If the orchestrator's process is alive but it makes no genuine heartbeat for
+   *  this long, it's treated as wedged and restarted. Default 30 min (lowered in tests). */
+  orchestratorWedgedCeilingMs?: number;
   /** Options forwarded to HeadlessMcpRunner (claude binary, spawnFn for tests, etc.). */
   headless?: HeadlessMcpRunnerOptions;
 }
@@ -88,6 +98,7 @@ export class TaskExecutionService {
   private maxConcurrentHeadless: number;
   private headlessTimeoutMs: number;
   private orchestratorHealthyMs: number;
+  private orchestratorWedgedCeilingMs: number;
 
   constructor(engine: GraphEngine, processTracker: ProcessTracker, options: TaskExecutionServiceOptions = {}) {
     this.engine = engine;
@@ -107,6 +118,7 @@ export class TaskExecutionService {
     this.maxConcurrentHeadless = options.maxConcurrentHeadless ?? DEFAULT_MAX_HEADLESS;
     this.headlessTimeoutMs = options.headlessTimeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS;
     this.orchestratorHealthyMs = options.orchestratorHealthyMs ?? ORCHESTRATOR_HEALTHY_MS;
+    this.orchestratorWedgedCeilingMs = options.orchestratorWedgedCeilingMs ?? ORCHESTRATOR_WEDGED_CEILING_MS;
   }
 
   /**
@@ -423,7 +435,9 @@ export class TaskExecutionService {
    *    / long tool call, and the watchdog reaps it mid-work — `reconcileTerminatedTasks`
    *    then kills the still-live process and `reconcileOrchestrator` respawns it,
    *    churning real work. Since WE hold the child process, WE own its liveness: refresh
-   *    while its process is alive in the registry.
+   *    while its process is alive in the registry — UNLESS it's wedged (alive but making
+   *    no genuine beat within the ceiling), in which case we kill it so a fresh primary
+   *    is respawned instead of propping up a hung one forever.
    *  - A headless sub-agent QUEUED behind the concurrency cap is registered (and holds a
    *    frontier lease) but has no process yet, so it can neither beat nor renew its lease.
    *    Left alone it is reaped at its TTL before it ever launches, and its lease expires
@@ -442,12 +456,34 @@ export class TaskExecutionService {
       return Number.isFinite(age) && age > ttlMs / 2;
     };
 
-    // The orchestrator — only while its process is genuinely alive. Silent keepalive:
-    // in-memory beat + lease renewal only, no activity event / disk write.
+    // The orchestrator — only while its process is genuinely alive.
     const orchId = this.orchestratorTaskId;
     if (orchId && this.registry.has(orchId)) {
       const t = this.engine.getTask(orchId);
-      if (t && isStale(t)) this.engine.agentHeartbeat(orchId, undefined, { silent: true });
+      if (t && t.status === 'running') {
+        // Wedged-primary guard: the silent keepalive stops a LIVE process from being
+        // reaped, but a process that HANGS would then be propped up forever. Liveness =
+        // process OUTPUT, not agent_heartbeat: a working `claude -p` streams stdout as it
+        // thinks and calls tools; a hung one is silent. (agent_heartbeat is unreliable —
+        // the orchestrator prompt doesn't force it, which is why the supervisor keepalive
+        // exists at all.) If the process has produced NO output within the ceiling, kill
+        // it — reconcileOrchestrator respawns a fresh primary. Falls back to assigned_at
+        // before the first chunk, so a just-launched primary gets the full ceiling.
+        const lastOutputAt = this.registry.get(orchId)?.last_output_at;
+        const genuineAt = lastOutputAt ?? Date.parse(t.assigned_at);
+        if (Number.isFinite(genuineAt) && now - genuineAt > this.orchestratorWedgedCeilingMs) {
+          this.engine.logActionEvent({
+            description: `Orchestrator ${t.agent_id} appears wedged — no process output in ${Math.round((now - genuineAt) / 60_000)}m; restarting`,
+            event_type: 'instrumentation_warning', category: 'agent', result_classification: 'failure',
+            linked_agent_task_id: orchId,
+            details: { reason: 'orchestrator_wedged', last_output_at: lastOutputAt ?? null },
+          });
+          this.cancelHeadless(orchId, 'orchestrator wedged — no process output within the ceiling');
+        } else if (isStale(t)) {
+          // Silent keepalive: in-memory beat + lease renewal only, no event / disk write.
+          this.engine.agentHeartbeat(orchId, undefined, { silent: true });
+        }
+      }
     }
 
     // Headless sub-agents queued behind the cap: registered + running but not yet

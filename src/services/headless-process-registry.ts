@@ -18,6 +18,10 @@ export interface HeadlessProcessEntry {
   /** Temp --mcp-config path to unlink when the process ends. */
   configPath?: string;
   started_at: string;
+  /** Wall-clock ms of the process's most recent stdout/stderr chunk — a liveness
+   *  signal for wedged-detection: a working `claude -p` streams output as it thinks
+   *  and calls tools; a hung one is silent. Undefined until the first chunk. */
+  last_output_at?: number;
 }
 
 /**
@@ -56,6 +60,14 @@ export class HeadlessProcessRegistry {
 
   get(task_id: string): HeadlessProcessEntry | undefined {
     return this.entries.get(task_id);
+  }
+
+  /** Record that the process produced output — updates the liveness timestamp used
+   *  to detect a wedged (alive-but-silent) process. No-op if the task isn't
+   *  registered yet (a chunk that races ahead of register()). */
+  noteOutput(task_id: string, atMs: number): void {
+    const entry = this.entries.get(task_id);
+    if (entry) entry.last_output_at = atMs;
   }
 
   has(task_id: string): boolean {

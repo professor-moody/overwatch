@@ -64,10 +64,11 @@ describe('Headless runner mechanics (injected spawn)', () => {
   let logDir: string;
   let nextPid: number;
 
-  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number } = {}) {
+  function makeService(opts: { maxConcurrentHeadless?: number; engineOverride?: GraphEngine; orchestratorHealthyMs?: number; orchestratorWedgedCeilingMs?: number } = {}) {
     return new TaskExecutionService(opts.engineOverride ?? engine, new ProcessTracker(), {
       maxConcurrentHeadless: opts.maxConcurrentHeadless,
       orchestratorHealthyMs: opts.orchestratorHealthyMs,
+      orchestratorWedgedCeilingMs: opts.orchestratorWedgedCeilingMs,
       headless: {
         logDir,
         spawnFn: (cmd: string, args: string[]) => {
@@ -418,6 +419,57 @@ describe('Headless runner mechanics (injected spawn)', () => {
     await settle();
     svc.tickWatchdog(); await settle();
     expect(spawned.length).toBe(2);
+  });
+
+  it('restarts a WEDGED orchestrator (alive but no genuine heartbeat) instead of propping it up forever', async () => {
+    svc = makeService({ orchestratorHealthyMs: 0, orchestratorWedgedCeilingMs: 1000 });
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    const first = runningOrchestrators()[0];
+    expect(first).toBeDefined();
+    expect(spawned.length).toBe(1);
+    // Wedged: process still alive, but has produced NO output for longer than the
+    // ceiling (no last_output_at → liveness falls back to assigned_at).
+    engine.getTask(first.id)!.assigned_at = new Date(Date.now() - 5000).toISOString();
+    svc.tickWatchdog();
+    await settle();
+    expect(engine.getFullHistory().some(e => (e.details as { reason?: string })?.reason === 'orchestrator_wedged')).toBe(true);
+    const orchs = runningOrchestrators();
+    expect(orchs.length).toBe(1);
+    expect(orchs[0].id).not.toBe(first.id);                // a fresh primary
+    expect(spawned.length).toBe(2);
+  });
+
+  it('does NOT treat a genuinely-active orchestrator as wedged (recent process output resets the ceiling)', async () => {
+    svc = makeService({ orchestratorHealthyMs: 0, orchestratorWedgedCeilingMs: 1000 });
+    svc.start();
+    engine.getConfig().orchestrator = { enabled: true };
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    await settle();
+    const orch = runningOrchestrators()[0];
+    // Old start, but the process is streaming output NOW → healthy, not wedged.
+    engine.getTask(orch.id)!.assigned_at = new Date(Date.now() - 5000).toISOString();
+    spawned[0].stdout.emit('data', Buffer.from('{"type":"assistant"}\n')); // process alive + producing
+    svc.tickWatchdog();
+    await settle();
+    expect(engine.getTask(orch.id)?.status).toBe('running');
+    expect(runningOrchestrators().map(o => o.id)).toEqual([orch.id]); // same primary, not restarted
+  });
+
+  it('gives an orchestrator-flagged task with NO configured TTL the cold-start grace (not the tight 120s default)', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    // Eval-style: orchestrator:true + headless_mcp, but NO role/heartbeat_ttl_seconds.
+    engine.registerAgent({
+      id: 'h-eval-orch', agent_id: 'a-eval', assigned_at: new Date().toISOString(),
+      status: 'running', subgraph_node_ids: [], backend: 'headless_mcp', orchestrator: true,
+    } as never);
+    await settle();
+    expect(spawned.length).toBe(1);
+    expect(engine.getTask('h-eval-orch')?.heartbeat_ttl_seconds).toBe(300);
   });
 
   it('does NOT clobber the orchestrator\'s configured 600s TTL with the sub-agent cold-start grace', async () => {

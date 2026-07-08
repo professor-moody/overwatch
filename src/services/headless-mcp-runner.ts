@@ -150,8 +150,10 @@ export class HeadlessMcpRunner {
       captured += c.toString('utf8');
       if (captured.length > SALVAGE_CAP) { captured = captured.slice(captured.length - SALVAGE_CAP); capturedTruncated = true; }
     };
-    child.stdout?.on('data', (c: Buffer) => { capture(c); try { log?.write(c); } catch { /* log errors must not kill the agent */ } });
-    child.stderr?.on('data', (c: Buffer) => { capture(c); try { log?.write(c); } catch { /* ignore */ } });
+    // Stamp process output as a liveness signal (wedged-detection reads it): a working
+    // `claude -p` streams stdout as it thinks/acts; a hung one goes silent.
+    child.stdout?.on('data', (c: Buffer) => { capture(c); this.registry.noteOutput(task.id, Date.now()); try { log?.write(c); } catch { /* log errors must not kill the agent */ } });
+    child.stderr?.on('data', (c: Buffer) => { capture(c); this.registry.noteOutput(task.id, Date.now()); try { log?.write(c); } catch { /* ignore */ } });
 
     child.on('error', (err) => {
       this.engine.logActionEvent({
@@ -220,13 +222,15 @@ export class HeadlessMcpRunner {
     this.registry.register(task.id, child, configPath, this.now());
     // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
     // take longer than the default 120s heartbeat TTL, which would let the watchdog
-    // reap a healthy agent before its first heartbeat. Give headless SUB-agents a
-    // generous startup TTL; their heartbeats keep it fresh and the 30-min wall-clock
-    // timeout remains the backstop for a truly wedged one. The persistent
-    // orchestrator is excluded — it keeps its own generous configured TTL (600s) and
-    // its liveness is refreshed by the supervisor while its process is alive, so
-    // clobbering it down to the sub-agent grace would only tighten the reap window.
-    if (task.orchestrator !== true && task.role !== 'orchestrator') {
+    // reap a healthy agent before its first heartbeat. Give a launched agent with NO
+    // explicit TTL a generous startup grace; its heartbeats keep it fresh and the
+    // 30-min wall-clock timeout remains the backstop for a truly wedged one. Only the
+    // task that carries its OWN configured TTL is exempt — the persistent orchestrator
+    // (600s + supervisor refresh); clobbering that down to the grace would tighten its
+    // reap window. Keying on the configured TTL (not `orchestrator === true`) means an
+    // eval-path orchestrator with no configured TTL still gets the cold-start grace
+    // instead of being left at the tight 120s default.
+    if (task.heartbeat_ttl_seconds === undefined) {
       this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
     }
     this.processTracker.register({
