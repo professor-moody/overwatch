@@ -24,6 +24,7 @@ import type { ProcessTracker } from './process-tracker.js';
 import type { AgentTask, TaskBackend } from '../types.js';
 import { ScriptedAgentRunner, scriptedCanHandle } from './scripted-agent-runner.js';
 import { AgentWatchdog } from './agent-watchdog.js';
+import { DEFAULT_HEARTBEAT_TTL_SECONDS } from './agent-manager.js';
 import { HeadlessProcessRegistry } from './headless-process-registry.js';
 import { HeadlessMcpRunner, type HeadlessEndpoint, type HeadlessMcpRunnerOptions } from './headless-mcp-runner.js';
 
@@ -93,6 +94,10 @@ export class TaskExecutionService {
     this.scripted = new ScriptedAgentRunner(engine);
     this.watchdog = new AgentWatchdog(engine, {
       intervalMs: options.watchdogIntervalMs,
+      // Before each reap, keep supervised tasks' heartbeats fresh: the orchestrator
+      // while its process is alive (its beat otherwise only advances when the model
+      // calls agent_heartbeat), and sub-agents queued behind the cap (no process yet).
+      beforeTick: () => this.refreshSupervisedLiveness(),
       // After each reap, kill any headless process whose task is now terminal
       // and abort its blocked approvals (heartbeat-reap doesn't do either).
       afterTick: () => { this.reconcileTerminatedTasks(); this.reofferStrandedWork(); this.reconcileOrchestrator(); },
@@ -405,6 +410,57 @@ export class TaskExecutionService {
     // The reoffered flags are durable dedup state — flush them so a restart right
     // after an alert doesn't re-alert the same dead tasks.
     if (changed) this.engine.persist();
+  }
+
+  /**
+   * Supervisor-owned liveness: keep the heartbeat (and thus the frontier lease) fresh
+   * for tasks the supervisor is actively managing but that cannot beat for themselves
+   * right now. `heartbeat_at` otherwise advances ONLY when the model calls
+   * `agent_heartbeat`, so without this two things go wrong:
+   *
+   *  - The persistent orchestrator (a keepalive on a wall-clock schedule the model
+   *    cannot perceive) emits no beat during a long synthesis turn / blocking approval
+   *    / long tool call, and the watchdog reaps it mid-work — `reconcileTerminatedTasks`
+   *    then kills the still-live process and `reconcileOrchestrator` respawns it,
+   *    churning real work. Since WE hold the child process, WE own its liveness: refresh
+   *    while its process is alive in the registry.
+   *  - A headless sub-agent QUEUED behind the concurrency cap is registered (and holds a
+   *    frontier lease) but has no process yet, so it can neither beat nor renew its lease.
+   *    Left alone it is reaped at its TTL before it ever launches, and its lease expires
+   *    (freeing the item for a duplicate dispatch). Refresh it until a slot frees.
+   *
+   * Runs at the START of each watchdog tick, BEFORE reaping. Refreshes only once a beat
+   * is older than half its TTL, so the event volume stays low and scales to each task's
+   * own TTL. A throw is caught + logged by the watchdog's before-reap hook wrapper.
+   */
+  private refreshSupervisedLiveness(): void {
+    const now = Date.now();
+    const isStale = (task: AgentTask): boolean => {
+      if (task.status !== 'running' || !task.heartbeat_at) return false;
+      const ttlMs = (task.heartbeat_ttl_seconds ?? DEFAULT_HEARTBEAT_TTL_SECONDS) * 1000;
+      const age = now - Date.parse(task.heartbeat_at);
+      return Number.isFinite(age) && age > ttlMs / 2;
+    };
+
+    // The orchestrator — only while its process is genuinely alive. Silent keepalive:
+    // in-memory beat + lease renewal only, no activity event / disk write.
+    const orchId = this.orchestratorTaskId;
+    if (orchId && this.registry.has(orchId)) {
+      const t = this.engine.getTask(orchId);
+      if (t && isStale(t)) this.engine.agentHeartbeat(orchId, undefined, { silent: true });
+    }
+
+    // Headless sub-agents queued behind the cap: registered + running but not yet
+    // launched (not in the registry / launched set) in daemon mode. The orchestrator
+    // is handled above; skip it here.
+    if (!this.endpoint) return;
+    for (const task of this.engine.getAgentTasks()) {
+      if (task.status !== 'running') continue;                              // cheap skip for terminal/historical
+      if (task.orchestrator === true || task.role === 'orchestrator') continue;
+      if (this.launched.has(task.id) || this.registry.has(task.id)) continue; // launched → beats itself
+      if (this.resolveBackend(task) !== 'headless_mcp') continue;
+      if (isStale(task)) this.engine.agentHeartbeat(task.id, undefined, { silent: true });
+    }
   }
 
   /**

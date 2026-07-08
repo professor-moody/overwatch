@@ -220,10 +220,15 @@ export class HeadlessMcpRunner {
     this.registry.register(task.id, child, configPath, this.now());
     // Cold-start grace: spawning claude + MCP bootstrap + the first tool call can
     // take longer than the default 120s heartbeat TTL, which would let the watchdog
-    // reap a healthy agent before its first heartbeat. Give headless agents a
+    // reap a healthy agent before its first heartbeat. Give headless SUB-agents a
     // generous startup TTL; their heartbeats keep it fresh and the 30-min wall-clock
-    // timeout remains the backstop for a truly wedged one.
-    this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
+    // timeout remains the backstop for a truly wedged one. The persistent
+    // orchestrator is excluded — it keeps its own generous configured TTL (600s) and
+    // its liveness is refreshed by the supervisor while its process is alive, so
+    // clobbering it down to the sub-agent grace would only tighten the reap window.
+    if (task.orchestrator !== true && task.role !== 'orchestrator') {
+      this.engine.setAgentHeartbeatTtl(task.id, HEADLESS_STARTUP_TTL_SECONDS);
+    }
     this.processTracker.register({
       id: `headless-${task.id}`,
       pid: child.pid,

@@ -13,7 +13,7 @@ import type { AgentTask } from '../types.js';
  * grants cold-starting headless agents a longer TTL explicitly (its own
  * `HEADLESS_STARTUP_TTL_SECONDS`); this is the floor for everything else.
  */
-const DEFAULT_HEARTBEAT_TTL_SECONDS = 120;
+export const DEFAULT_HEARTBEAT_TTL_SECONDS = 120;
 
 export class AgentManager {
   private ctx: EngineContext;
@@ -64,6 +64,10 @@ export class AgentManager {
     // until manual intervention. With the baseline set, the task gets
     // one TTL window (default 120s) to call agent_heartbeat; failing
     // that, the watchdog reaps it and releases the lease.
+    //
+    // A headless task QUEUED behind the concurrency cap has no process yet to beat
+    // for itself — TaskExecutionService keeps its heartbeat (and thus its lease)
+    // fresh via the watchdog's before-reap hook until a slot frees and it launches.
     if (task.status === 'running' && !task.heartbeat_at) {
       task.heartbeat_at = this.ctx.nowIso();
     }
@@ -181,7 +185,7 @@ export class AgentManager {
    * hash chain — same class as `thought`). Returns false if the task is
    * unknown or already terminal; true on success.
    */
-  heartbeat(taskId: string, now?: string): boolean {
+  heartbeat(taskId: string, now?: string, opts?: { silent?: boolean }): boolean {
     const task = this.ctx.agents.get(taskId);
     if (!task) return false;
     const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
@@ -189,6 +193,10 @@ export class AgentManager {
     task.heartbeat_at = now ?? new Date().toISOString();
     // P1.4: heartbeat extends any lease this task holds.
     this.ctx.frontierLeases.renew(task.id, task.heartbeat_at);
+    // A `silent` keepalive (supervisor-driven liveness) skips the activity event —
+    // it's not agent progress, and emitting one per queued task per tick would spam
+    // the log. The beat + lease renewal above are all the reaper needs.
+    if (opts?.silent) return true;
     this.ctx.logEvent({
       description: `Agent heartbeat: ${task.agent_id}`,
       agent_id: task.agent_id,

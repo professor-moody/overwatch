@@ -27,6 +27,15 @@ export interface AgentWatchdogOptions {
   /** Optional clock injection (used by tests). */
   now?: () => string;
   /**
+   * Runs at the START of every tick, BEFORE reaping. The owner
+   * (TaskExecutionService) uses this to refresh liveness for supervised
+   * long-lived agents (the persistent orchestrator) whose heartbeat would
+   * otherwise only advance when the model calls `agent_heartbeat` — so a
+   * busy-but-quiet one isn't reaped mid-work. Ordering matters: this must run
+   * before `reapStaleAgents`, or the refresh lands too late to save it.
+   */
+  beforeTick?: () => void;
+  /**
    * Runs at the end of every tick, after reaping. The owner (TaskExecutionService)
    * uses this to reconcile reaped tasks with the OS-process registry — heartbeat
    * reaping flips a task to 'interrupted' but does NOT fire onUpdate or touch the
@@ -40,17 +49,20 @@ export class AgentWatchdog {
   private intervalMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private now: () => string;
+  private beforeTick?: () => void;
   private afterTick?: () => void;
   private reapedTotal = 0;
-  /** True once a post-tick reconcile error has been logged; suppresses repeats so
-   *  a persistently-failing reconcile (every interval) can't flood the log. Reset
-   *  on the next successful tick so a recovered-then-failed-again error re-logs. */
-  private reconcileErrorLogged = false;
+  /** True once a hook error has been logged for that phase; suppresses repeats so a
+   *  persistently-failing hook (every interval) can't flood the log. Reset on the
+   *  next successful run so a recovered-then-failed-again error re-logs. */
+  private beforeTickErrorLogged = false;
+  private afterTickErrorLogged = false;
 
   constructor(engine: GraphEngine, options: AgentWatchdogOptions = {}) {
     this.engine = engine;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.beforeTick = options.beforeTick;
     this.afterTick = options.afterTick;
   }
 
@@ -77,8 +89,42 @@ export class AgentWatchdog {
    * for heartbeat-based reaping (e.g., the task was already terminal
    * but the lease wasn't released cleanly).
    */
+  /**
+   * Run a tick hook (before-reap liveness refresh, or post-tick reconcile) without
+   * ever letting it break the timer or skip the reap. Logs the FIRST failure of a
+   * streak (not every interval — a persistently-throwing hook would flood the log),
+   * with a stderr fallback, and re-arms once the hook succeeds again.
+   */
+  private invokeHook(fn: () => void, phase: 'before-reap' | 'post-tick'): void {
+    const alreadyLogged = phase === 'before-reap' ? this.beforeTickErrorLogged : this.afterTickErrorLogged;
+    try {
+      fn();
+      if (phase === 'before-reap') this.beforeTickErrorLogged = false; else this.afterTickErrorLogged = false;
+    } catch (err) {
+      if (alreadyLogged) return; // already logged this streak
+      if (phase === 'before-reap') this.beforeTickErrorLogged = true; else this.afterTickErrorLogged = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        this.engine.logActionEvent({
+          description: `Watchdog ${phase} hook failed: ${msg}`,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          result_classification: 'failure',
+          details: { reason: 'watchdog_hook_error', phase },
+        });
+      } catch {
+        try { console.error(`[overwatch] watchdog ${phase} hook failed and could not be logged: ${msg}`); } catch { /* never break the timer */ }
+      }
+    }
+  }
+
   tick(): number {
     const now = this.now();
+    // Refresh supervised long-lived liveness BEFORE reaping — the owner keeps the
+    // orchestrator's heartbeat fresh while its process is alive, so a busy-but-quiet
+    // one isn't reaped on this very tick. A throwing hook is logged (once per streak)
+    // but never breaks the timer or skips the reap.
+    if (this.beforeTick) this.invokeHook(this.beforeTick, 'before-reap');
     const reaped = this.engine.reapStaleAgents(now);
     // Drop expired leases. Heartbeat-based reaping above already released
     // leases for tasks that got interrupted on this same tick; this catches
@@ -95,35 +141,10 @@ export class AgentWatchdog {
       });
     }
     this.reapedTotal += reaped;
-    // Reconcile reaped tasks with the OS-process registry / approval queue.
-    // Wrapped so a reconcile error never kills the watchdog timer — but log it,
-    // since a repeatedly-throwing reconcile means orphaned processes aren't being
-    // cleaned up and would otherwise fail silently.
-    if (this.afterTick) {
-      try {
-        this.afterTick();
-        this.reconcileErrorLogged = false; // recovered → re-arm logging
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // Log once per error streak (not every interval — a persistently-failing
-        // reconcile would otherwise flood the activity log) with a stderr fallback
-        // so the failure is never fully silent even if logging itself is down.
-        if (!this.reconcileErrorLogged) {
-          this.reconcileErrorLogged = true;
-          try {
-            this.engine.logActionEvent({
-              description: `Watchdog post-tick reconcile failed: ${msg}`,
-              event_type: 'instrumentation_warning',
-              category: 'system',
-              result_classification: 'failure',
-              details: { reason: 'watchdog_reconcile_error' },
-            });
-          } catch {
-            try { console.error(`[overwatch] watchdog reconcile failed and could not be logged: ${msg}`); } catch { /* never break the timer */ }
-          }
-        }
-      }
-    }
+    // Reconcile reaped tasks with the OS-process registry / approval queue. A
+    // repeatedly-throwing reconcile means orphaned processes aren't being cleaned
+    // up, so the hook logs its failures (once per streak) rather than failing silently.
+    if (this.afterTick) this.invokeHook(this.afterTick, 'post-tick');
     return reaped;
   }
 

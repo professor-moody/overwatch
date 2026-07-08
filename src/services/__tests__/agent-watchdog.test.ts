@@ -87,6 +87,40 @@ describe('AgentWatchdog (P0.3)', () => {
     expect(engine.getTask('fresh-1')?.status).toBe('running');
   });
 
+  it('runs beforeTick BEFORE reaping — a refresh there saves an otherwise-stale task', () => {
+    // Stale by 5min against a 60s TTL → would be reaped. A beforeTick that refreshes
+    // its heartbeat must land before the reap and keep it alive.
+    const stale = makeRunningTask({
+      id: 'saved-1',
+      heartbeat_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      heartbeat_ttl_seconds: 60,
+    });
+    engine.registerAgent(stale);
+    let beforeRan = false;
+    const watchdog = new AgentWatchdog(engine, {
+      beforeTick: () => { beforeRan = true; engine.agentHeartbeat('saved-1'); },
+    });
+    const reaped = watchdog.tick();
+    expect(beforeRan).toBe(true);
+    expect(reaped).toBe(0);                                // refresh landed before the reap
+    expect(engine.getTask('saved-1')?.status).toBe('running');
+  });
+
+  it('a throwing beforeTick never breaks the tick — reaping still runs', () => {
+    const stale = makeRunningTask({
+      id: 'stale-throw',
+      heartbeat_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      heartbeat_ttl_seconds: 60,
+    });
+    engine.registerAgent(stale);
+    const watchdog = new AgentWatchdog(engine, {
+      beforeTick: () => { throw new Error('boom'); },
+    });
+    const reaped = watchdog.tick();                        // does not throw
+    expect(reaped).toBe(1);
+    expect(engine.getTask('stale-throw')?.status).toBe('interrupted');
+  });
+
   it('emits an instrumentation_warning when reaping', () => {
     const stale = makeRunningTask({
       id: 'stale-2',
@@ -112,6 +146,17 @@ describe('AgentWatchdog (P0.3)', () => {
     expect(engine.getTask('hb-1')?.heartbeat_at).toBeDefined();
     const after = engine.getFullHistory().slice(before);
     expect(after.some(e => e.event_type === 'heartbeat')).toBe(true);
+  });
+
+  it('a silent keepalive updates heartbeat_at + lease but emits NO heartbeat event', () => {
+    const task = makeRunningTask({ id: 'hb-silent' });
+    engine.registerAgent(task);
+    const before = engine.getFullHistory().length;
+    const ok = engine.agentHeartbeat('hb-silent', undefined, { silent: true });
+    expect(ok).toBe(true);
+    expect(engine.getTask('hb-silent')?.heartbeat_at).toBeDefined();
+    const after = engine.getFullHistory().slice(before);
+    expect(after.some(e => e.event_type === 'heartbeat')).toBe(false); // supervisor keepalive stays quiet
   });
 
   it('agentHeartbeat refuses tasks that are already in a terminal state', () => {
