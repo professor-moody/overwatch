@@ -475,6 +475,81 @@ describe('POST /api/agents/dispatch to an arbitrary node (no archetype)', () => 
   });
 });
 
+describe('POST /api/agents/dispatch-batch (fan-out)', () => {
+  type BatchResult = {
+    dispatched: Array<{ node_ids: string[]; task_id: string; agent_id: string }>;
+    skipped: Array<{ node_ids: string[]; reason: string; existing_agent_id?: string }>;
+    deferred: Array<{ node_ids: string[]; reason: string }>;
+    summary: { dispatched: number; skipped: number; deferred: number; groups: number };
+  };
+
+  it('per-batch groups fresh nodes per agent (ceil(n/batch_size)) and de-dupes ids', async () => {
+    // Fresh, un-dispatched seed nodes (cloud-id-power/user-op are claimed by earlier
+    // tests). No operator_policy → no dispatch cap, so all register. A duplicate id
+    // is de-duped before grouping. 3 distinct fresh → ceil(3/2) = 2 groups/agents.
+    const { status, body } = await postJson<BatchResult>('/api/agents/dispatch-batch', {
+      target_node_ids: ['idp-app-gha', 'idp-app-gha', 'cred-oidc', 'host-jump'],
+      mode: 'per-batch',
+      batch_size: 2,
+    });
+    expect(status).toBe(200);
+    expect(body.summary.groups).toBe(2);
+    expect(body.summary.dispatched).toBe(2);
+    // Distinct agents; every fresh node dispatched exactly once (no overlap).
+    expect(new Set(body.dispatched.map(d => d.agent_id)).size).toBe(2);
+    const allNodes = body.dispatched.flatMap(d => d.node_ids).sort();
+    expect(allNodes).toEqual(['cred-oidc', 'host-jump', 'idp-app-gha']);
+  });
+
+  it('re-running over already-worked nodes skips each node individually (per-node)', async () => {
+    // All three nodes are now being worked (previous test) — each is skipped on its
+    // own so counts are per-node, and nothing fresh remains to dispatch.
+    const { status, body } = await postJson<BatchResult>('/api/agents/dispatch-batch', {
+      target_node_ids: ['idp-app-gha', 'cred-oidc', 'host-jump'],
+      mode: 'per-node',
+    });
+    expect(status).toBe(200);
+    expect(body.summary.dispatched).toBe(0);
+    expect(body.summary.skipped).toBe(3);
+    expect(body.summary.groups).toBe(0);
+    expect(body.skipped.every(s => s.reason === 'already_being_worked')).toBe(true);
+    expect(body.skipped.every(s => s.node_ids.length === 1 && typeof s.existing_agent_id === 'string')).toBe(true);
+  });
+
+  it('a fresh node batched with a worked node still dispatches (no stranding)', async () => {
+    // idp-app-gha is being worked; user-idp is fresh. Even grouped together in a
+    // single per-batch lane, the worked node is skipped and the fresh one dispatches.
+    engine.addNode({
+      id: 'user-idp', type: 'idp_application', label: 'fresh-idp-app',
+      idp_kind: 'ci_github_actions', discovered_at: NOW, confidence: 1.0,
+    } as never);
+    const { status, body } = await postJson<BatchResult>('/api/agents/dispatch-batch', {
+      target_node_ids: ['idp-app-gha', 'user-idp'],
+      mode: 'per-batch',
+      batch_size: 5,
+    });
+    expect(status).toBe(200);
+    expect(body.summary.skipped).toBe(1);
+    expect(body.skipped[0].node_ids).toEqual(['idp-app-gha']);
+    expect(body.summary.dispatched).toBe(1);
+    expect(body.dispatched[0].node_ids).toEqual(['user-idp']);
+  });
+
+  it('rejects an unknown archetype for the whole request (400)', async () => {
+    const { status, body } = await postJson<{ error?: string }>('/api/agents/dispatch-batch', {
+      target_node_ids: ['idp-app-gha'],
+      archetype: 'not_a_real_archetype',
+    });
+    expect(status).toBe(400);
+    expect(body.error).toContain('Unknown agent type');
+  });
+
+  it('rejects an empty selection (400)', async () => {
+    const { status } = await postJson('/api/agents/dispatch-batch', { target_node_ids: [] });
+    expect(status).toBe(400);
+  });
+});
+
 describe('POST /api/agents/quick-deploy', () => {
   it('scopes a raw IP and dispatches the recommended recon agent in one step', async () => {
     const { status, body } = await postJson<{ dispatched: boolean; archetype: string; scope: { added_cidrs: string[] }; task: { objective?: string; status?: string } }>(
