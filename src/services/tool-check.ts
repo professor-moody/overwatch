@@ -42,6 +42,27 @@ const TOOL_CHECKS: Array<{ name: string; command: string; versionFlag: string }>
   { name: 'python3', command: 'python3', versionFlag: '--version' },
 ];
 
+// Bound how many tool binaries we run at once. `checkTool` doesn't just probe for
+// existence — it EXECUTES each tool to read its version, and several here are heavy
+// Python/Ruby startups (impacket-*, pacu, prowler, responder). Spawning all of them
+// at once saturates the CPU and starves the daemon's event loop, which reads on the
+// dashboard as a full freeze until the scan finishes. A small pool keeps the scan
+// responsive.
+const SCAN_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight, preserving order. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function checkTool(tool: { name: string; command: string; versionFlag: string }): Promise<ToolStatus> {
   try {
     // Check if command exists
@@ -50,12 +71,15 @@ async function checkTool(tool: { name: string; command: string; versionFlag: str
       return { name: tool.name, installed: false };
     }
 
-    // Try to get version
+    // Try to get version. maxBuffer guards against a chatty `-h` flooding memory;
+    // the timeout kills a tool that hangs (e.g. one whose version flag drops into
+    // its main mode waiting on stdin).
     let version: string | undefined;
     try {
       const { stdout: output } = await execFile(tool.command, [tool.versionFlag], {
         encoding: 'utf-8',
         timeout: 5000,
+        maxBuffer: 1024 * 1024,
       });
       // Extract first line that looks like a version
       const lines = output.trim().split('\n');
@@ -74,7 +98,9 @@ async function checkTool(tool: { name: string; command: string; versionFlag: str
 }
 
 export async function checkAllTools(): Promise<ToolStatus[]> {
-  return Promise.all(TOOL_CHECKS.map(checkTool));
+  // Bounded concurrency (not Promise.all over all 26) so the scan can't saturate the
+  // CPU and freeze the daemon — see SCAN_CONCURRENCY.
+  return mapWithConcurrency(TOOL_CHECKS, SCAN_CONCURRENCY, checkTool);
 }
 
 export async function checkToolByName(name: string): Promise<ToolStatus | null> {
