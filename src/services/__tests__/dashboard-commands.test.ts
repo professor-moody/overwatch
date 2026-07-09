@@ -257,6 +257,22 @@ describe('/api/commands — grammar fast-path', () => {
     const res = await post({ confirm: true, plan_id: 'does-not-exist' });
     expect(res.status).toBe(404);
   });
+
+  it('a duplicate confirm of an already-executed plan is idempotent (not a 404 that re-prompts)', async () => {
+    const preview = await (await post({ command: 'pause scanner-1' })).json();
+    const first = await post({ confirm: true, plan_id: preview.plan_id });
+    expect(first.status).toBe(200);
+    expect((await first.json()).executed).toBe(true);
+
+    // Second confirm of the SAME plan_id (double-click / retry). The plan was
+    // consumed by the first, but instead of a 404 "re-issue the command" — which the
+    // operator hit AFTER agents had already deployed — it returns the prior result.
+    const second = await post({ confirm: true, plan_id: preview.plan_id });
+    expect(second.status).toBe(200);
+    const body = await second.json();
+    expect(body.executed).toBe(true);
+    expect(body.already_executed).toBe(true);
+  });
 });
 
 describe('/api/commands — headless planner fallback', () => {
