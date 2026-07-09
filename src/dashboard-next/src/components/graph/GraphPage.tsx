@@ -10,6 +10,7 @@ import { colorForNode, type ColorMode } from '../../lib/graph-color';
 import { ColorModeLegend } from './ColorModeLegend';
 import noverlap from 'graphology-layout-noverlap';
 import { explodeHubs } from '../../lib/graph-hub-layout';
+import { computeHierarchical, computeTiered, type LayoutType } from '../../lib/graph-layouts';
 import { getNeighborhood } from '../../lib/graph-utils';
 import { useGraph } from '../../hooks/useGraph';
 import { useSigma } from '../../hooks/useSigma';
@@ -71,6 +72,10 @@ export function GraphPage() {
   const [edgeCount, setEdgeCount] = useState(0);
   const [renderIssue, setRenderIssue] = useState<string | null>(null);
   const [layoutMode, setLayoutMode] = useState<'auto' | 'manual' | 'paused'>('auto');
+  const [layoutType, setLayoutType] = useState<LayoutType>('force');
+  // Mirror of layoutType readable inside the (non-reactive) data-load effect so a
+  // delta re-applies the ACTIVE layout, not always force.
+  const layoutTypeRef = useRef<LayoutType>('force');
   const [showManualHint, setShowManualHint] = useState(true);
   const [uiRevision, setUiRevision] = useState(0);
   const userPinnedLayoutRef = useRef(false);
@@ -169,6 +174,48 @@ export function GraphPage() {
     }
   }, [graph]);
 
+  // Apply a deterministic (non-force) layout: write positions, de-overlap, refresh.
+  // Transient — it never writes to the saved-position store, so a reload restores
+  // whatever the user pinned.
+  const applyComputedLayout = useCallback((type: 'hierarchical' | 'tiered') => {
+    if (graph.order === 0) return;
+    if (type === 'hierarchical') computeHierarchical(graph); else computeTiered(graph);
+    normalizeAutoLayout();
+    applyNoverlap();
+    refresh();
+  }, [graph, normalizeAutoLayout, applyNoverlap, refresh]);
+
+  // Run whichever layout is active for a fresh/merged graph. Force = the FA2 burst +
+  // explode/noverlap finalize; computed = apply it synchronously. No-op when the user
+  // has pinned a manual layout.
+  const runActiveLayout = useCallback((fitDuration: number, opts?: { isDelta?: boolean }) => {
+    if (userPinnedLayoutRef.current) return;
+    if (layoutTypeRef.current === 'force') {
+      layout.start();
+      setLayoutRunning(true);
+      setTimeout(() => {
+        layout.stop();
+        setLayoutRunning(false);
+        // Re-check BOTH: the user may have pinned OR switched to a computed layout
+        // during the 1500ms burst — don't stomp a just-applied hierarchical/tiered view.
+        if (userPinnedLayoutRef.current || layoutTypeRef.current !== 'force') return;
+        normalizeAutoLayout();
+        explodeHubs(graph);
+        applyNoverlap();
+        refresh();
+        fitCurrentGraphContext(fitDuration, !!selectedNodeId);
+      }, 1500);
+    } else if (!opts?.isDelta) {
+      // Computed layouts recompute the WHOLE graph deterministically (dagre / grid).
+      // Doing that on every streamed delta would block the main thread and jump every
+      // node, so only run it on a full load / explicit switch — not per delta. New
+      // nodes from a delta keep their seed position until the next full load or the
+      // operator re-picks the layout.
+      applyComputedLayout(layoutTypeRef.current);
+      fitCurrentGraphContext(fitDuration, !!selectedNodeId);
+    }
+  }, [graph, layout, normalizeAutoLayout, applyNoverlap, refresh, fitCurrentGraphContext, applyComputedLayout, selectedNodeId]);
+
   // ---- Edit mode ----
   const [editMode, setEditMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -256,23 +303,10 @@ export function GraphPage() {
       mergeGraphDelta(lastDelta);
       setNodeCount(graph.order);
       setEdgeCount(graph.size);
-      // Brief layout burst for new nodes
+      // Re-run the active layout for new nodes. Force does its worker burst; computed
+      // layouts skip delta recompute (isDelta) to avoid janking/jumping the whole graph.
       if ((lastDelta.nodes?.length || 0) > 0) {
-        if (!userPinnedLayoutRef.current) {
-          layout.start();
-          setLayoutRunning(true);
-        }
-        setTimeout(() => {
-          layout.stop();
-          setLayoutRunning(false);
-          if (!userPinnedLayoutRef.current) {
-            normalizeAutoLayout();
-            explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
-            applyNoverlap();     // run LAST so any leaf fanned onto an unrelated node gets nudged apart
-            refresh();
-            fitCurrentGraphContext(250, !!selectedNodeId);
-          }
-        }, 1500);
+        runActiveLayout(250, { isDelta: true });
       }
       refresh();
     } else if (storeGraph && storeGraph.nodes && storeGraph.nodes.length > 0) {
@@ -292,23 +326,11 @@ export function GraphPage() {
         refresh();
         if (!userPinnedLayoutRef.current) {
           fitCurrentGraphContext(250, false);
-          layout.start();
-          setLayoutRunning(true);
-          setTimeout(() => {
-            layout.stop();
-            setLayoutRunning(false);
-            if (!userPinnedLayoutRef.current) {
-              normalizeAutoLayout();
-              explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
-              applyNoverlap();     // run LAST so any leaf fanned onto an unrelated node gets nudged apart
-              refresh();
-              fitCurrentGraphContext(300, false);
-            }
-          }, 1500);
+          runActiveLayout(300);
         }
       }, 50);
     }
-  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh, fitCurrentGraphContext, normalizeAutoLayout, engagementId, selectedNodeId]);
+  }, [graphVersion, lastDelta, storeGraph, loadGraphData, mergeGraphDelta, graph, layout, refresh, fitCurrentGraphContext, normalizeAutoLayout, runActiveLayout, engagementId, selectedNodeId]);
 
   useEffect(() => {
     if (!storeGraph?.nodes?.length) {
@@ -488,6 +510,28 @@ export function GraphPage() {
     setLayoutRunning(true);
     forceGraphUi();
   }, [layout, forceGraphUi]);
+
+  // Switch the layout algorithm. Force resumes the physics sim; Hierarchical/Tiered
+  // compute deterministic positions once (and re-apply on future deltas via
+  // layoutTypeRef). Switching un-pins so the chosen layout takes effect; saved manual
+  // positions still restore on a full reload (computed layouts are transient views).
+  const handleSetLayout = useCallback((typeStr: string) => {
+    const type = typeStr as LayoutType;
+    layoutTypeRef.current = type;
+    setLayoutType(type);
+    userPinnedLayoutRef.current = false;
+    setLayoutMode('auto');
+    if (type === 'force') {
+      layout.start();
+      setLayoutRunning(true);
+    } else {
+      layout.stop();
+      setLayoutRunning(false);
+      applyComputedLayout(type);
+      fitCurrentGraphContext(400, !!selectedNodeId);
+    }
+    forceGraphUi();
+  }, [layout, applyComputedLayout, fitCurrentGraphContext, selectedNodeId, forceGraphUi]);
 
   const handleResetPositions = useCallback(() => {
     clearGraphPositions(engagementId);
@@ -766,6 +810,7 @@ export function GraphPage() {
         labelDensity={s.labelDensity}
         colorMode={s.colorMode}
         pathMode={s.pathMode}
+        layoutType={layoutType}
         activeFocusPreset={s.activeFocusPreset}
         layers={layers}
         onZoomIn={zoomIn}
@@ -780,6 +825,7 @@ export function GraphPage() {
         onSetGraphMode={handleSetGraphMode}
         onSetLabelDensity={handleSetLabelDensity}
         onSetColorMode={handleSetColorMode}
+        onSetLayout={handleSetLayout}
         onSetFocusPreset={handleSetFocusPreset}
         onToggleLayer={handleToggleLayer}
         onTogglePathMode={handleTogglePathMode}
