@@ -298,7 +298,9 @@ export function useGraphInteractions({
         suppressNextClickRef.current = false;
         return;
       }
-      if (event.original.shiftKey) {
+      // Shift-click always traces a path; Path mode makes a PLAIN click do the same
+      // so the feature is discoverable without knowing the gesture.
+      if (event.original.shiftKey || s.pathMode) {
         handlePathClick(node);
         return;
       }

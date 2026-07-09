@@ -40,6 +40,9 @@ export interface GraphInteractionState {
   hoveredEdge: string | null;
 
   // Path
+  // When on, a plain click picks source then target (same as shift-click) — makes
+  // the path-tracing feature discoverable without the hidden gesture.
+  pathMode: boolean;
   pathSource: string | null;
   pathTarget: string | null;
   pathNodes: Set<string>;
@@ -88,6 +91,7 @@ export function createInitialInteractionState(): GraphInteractionState {
     hoveredNode: null,
     hoveredNeighbors: null,
     hoveredEdge: null,
+    pathMode: false,
     pathSource: null,
     pathTarget: null,
     pathNodes: new Set(),
