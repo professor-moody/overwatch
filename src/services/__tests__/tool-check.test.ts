@@ -7,7 +7,7 @@ vi.mock('child_process', () => ({
 }));
 
 // Re-import after mock is in place
-const { checkToolByName } = await import('../tool-check.js');
+const { checkToolByName, checkAllTools } = await import('../tool-check.js');
 
 describe('tool-check', () => {
   beforeEach(() => {
@@ -70,6 +70,30 @@ Compiled with: nmap-liblua-5.4.4 openssl-3.0.8`;
     const versionLine = lines.find(l => /\d+\.\d+/.test(l));
     expect(versionLine).toBeDefined();
     expect(versionLine!.slice(0, 120).trim()).toBe('nmap version 7.94 ( https://nmap.org )');
+  });
+
+  it('checkAllTools bounds concurrency so it cannot spawn every tool at once', async () => {
+    // The freeze fix: without a pool, all ~24 tools ran concurrently (each EXECUTES
+    // its binary), saturating the CPU. Assert no more than SCAN_CONCURRENCY (4) tool
+    // probes are ever in flight at once.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    execFileMock.mockImplementation(
+      (_cmd: string, _args: string[], opts: unknown, cb?: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+        const callback = (cb || opts) as (err: Error | null, result: { stdout: string; stderr: string }) => void;
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        setTimeout(() => {
+          inFlight--;
+          if (typeof callback === 'function') callback(null, { stdout: '/usr/bin/tool\n', stderr: '' });
+        }, 3);
+      },
+    );
+
+    const results = await checkAllTools();
+    expect(results.length).toBeGreaterThan(4);
+    expect(maxInFlight).toBeGreaterThan(0);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
   });
 
   it('version extraction returns undefined when no version line exists', () => {
