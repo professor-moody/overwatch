@@ -28,9 +28,15 @@ async function shutdown() {
   const timer = setTimeout(() => process.exit(1), 5000);
   try {
     await shutdownOverwatchApp(app);
+  } catch (err) {
+    console.error('Shutdown error:', err);
   } finally {
     clearTimeout(timer);
   }
+  // Exit explicitly: shutdownOverwatchApp has awaited every durable flush, but the
+  // stdio transport keeps process.stdin open, so without this the process lingers
+  // until the SIGKILL fallback (the "graceful shutdown hangs" bug).
+  process.exit(0);
 }
 process.on('SIGTERM', () => { void shutdown(); });
 process.on('SIGINT', () => { void shutdown(); });
