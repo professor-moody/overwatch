@@ -33,6 +33,7 @@ export function MissionCard({
   onToggleSelect,
   onCancel,
   onDismiss,
+  onForceRemove,
 }: {
   card: MissionCardModel;
   active: boolean;
@@ -43,6 +44,7 @@ export function MissionCard({
   onToggleSelect: () => void;
   onCancel?: () => void;
   onDismiss?: () => void;
+  onForceRemove?: () => void;
 }) {
   const cancellable = card.status === 'running' || card.status === 'pending';
   return (
@@ -75,6 +77,15 @@ export function MissionCard({
             title="Cancel agent"
           >
             ✕
+          </button>
+        )}
+        {cancellable && onForceRemove && (
+          <button
+            onClick={e => { e.stopPropagation(); onForceRemove(); }}
+            className="flex-shrink-0 text-[10px] text-muted-foreground hover:text-destructive"
+            title="Force stop & remove — kills the process and clears the agent even if Cancel won't"
+          >
+            ⏻
           </button>
         )}
         {!cancellable && onDismiss && (

@@ -2836,62 +2836,111 @@ export class DashboardServer {
 
   private handleAgentCancel(taskId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
-    const task = this.engine.getTask(taskId);
-    if (!task) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Agent task not found' }));
-      return;
-    }
-    if (task.status !== 'running' && task.status !== 'pending') {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Agent is ${task.status} — cannot cancel` }));
-      return;
-    }
-    // Operator cancel is a DELIBERATE stop — mark it so the Phase 3.1 re-offer
-    // sweep doesn't auto-re-dispatch the work the operator just called off.
-    task.no_retry = true;
-    let killed = false;
-    if (this.taskExecution) {
-      // Kills the headless OS process (if any) AND marks the task interrupted
-      // (releases the lease). Non-headless tasks just get the status update.
-      killed = this.taskExecution.cancelHeadless(taskId, 'Cancelled by operator via dashboard');
-    } else {
-      // No execution service attached (e.g. isolated tests): status-only cancel.
-      this.engine.updateAgentStatus(taskId, 'interrupted', 'Cancelled by operator via dashboard');
-    }
-    const updated = this.engine.getTask(taskId);
-    if (updated?.status !== 'interrupted') {
+    // Wrap EVERYTHING: a synchronous throw here (e.g. from the kill path) would
+    // otherwise never write a response and hang the socket, which reads on the
+    // dashboard as "Cancel did nothing / failed" with the agent stuck forever.
+    const REASON = 'Cancelled by operator via dashboard';
+    try {
+      const task = this.engine.getTask(taskId);
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent task not found' }));
+        return;
+      }
+      const wasTerminal = task.status !== 'running' && task.status !== 'pending';
+      // Operator cancel is a DELIBERATE stop — mark it (on EVERY path, including an
+      // already-terminal one) so the Phase 3.1 re-offer sweep doesn't re-dispatch the
+      // work the operator just called off.
+      task.no_retry = true;
+      // Best-effort kill on EVERY path. A task can be 'interrupted' in the graph while
+      // its OS process is still alive (the exact stuck case) — so kill even when
+      // already terminal, not just when running/pending. cancelHeadless is safe on a
+      // terminal task: it kills the process (if any), releases the lease, and aborts
+      // approvals; the status flip inside it no-ops for a terminal task.
+      let killed = false;
+      try {
+        if (this.taskExecution) killed = this.taskExecution.cancelHeadless(taskId, REASON);
+      } catch (err) {
+        this.engine.logActionEvent({
+          description: `Agent cancel: kill path threw for ${taskId} — forcing terminal`,
+          event_type: 'instrumentation_warning', category: 'system', result_classification: 'failure',
+          linked_agent_task_id: taskId, details: { reason: 'cancel_kill_threw', error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+      // Guarantee terminal: whether taskExecution is absent, the kill threw, or
+      // cancelHeadless didn't flip the status, force the task to 'interrupted' so a
+      // stuck agent is ALWAYS removable afterward.
+      const afterKill = this.engine.getTask(taskId);
+      if (afterKill && (afterKill.status === 'running' || afterKill.status === 'pending')) {
+        this.engine.updateAgentStatus(taskId, 'interrupted', REASON);
+      }
+      // Abort any lingering approval gate so it can't auto-fire on timeout and run a
+      // command for the agent we just killed. cancelHeadless does this, but the
+      // fallback (no taskExecution / kill threw) path above does not — so do it here
+      // unconditionally (aborting an already-aborted gate is a no-op).
+      try { this.engine.abortApprovalsForTask(taskId, REASON); } catch { /* best-effort */ }
+      const updated = this.engine.getTask(taskId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ cancelled: true, already_terminal: wasTerminal, process_killed: killed, task: updated }));
+    } catch (err) {
+      // Last resort: still try to force the task terminal, then always respond.
+      try { this.engine.updateAgentStatus(taskId, 'interrupted', 'force-cancel after error'); } catch { /* best-effort */ }
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to cancel agent' }));
-      return;
+      res.end(JSON.stringify({ error: 'cancel failed', detail: err instanceof Error ? err.message : String(err) }));
     }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ cancelled: true, process_killed: killed, task: updated }));
   }
 
   // Remove a terminal agent from the roster. Gated to terminal statuses — a live
   // agent must be cancelled first (which kills the process + releases the lease).
   private handleAgentDismiss(taskId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
-    const task = this.engine.getTask(taskId);
-    if (!task) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Agent task not found' }));
-      return;
-    }
-    if (task.status === 'running' || task.status === 'pending') {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Agent is ${task.status} — cancel it before dismissing` }));
-      return;
-    }
-    const dismissed = this.engine.dismissAgent(taskId);
-    if (!dismissed) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to dismiss agent' }));
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ dismissed: true, task_id: taskId }));
+    // Optional `{ force: true }` body: force-terminate a live agent and remove it in
+    // one step, so a wedged sub-agent can always be cleared without a cancel→dismiss
+    // dance that can dead-end. No body → legacy behavior (terminal-only).
+    this.readJsonBody(req).then(body => {
+      try {
+        const force = !!(body && typeof body === 'object' && (body as Record<string, unknown>).force === true);
+        const task = this.engine.getTask(taskId);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Agent task not found' }));
+          return;
+        }
+        const live = task.status === 'running' || task.status === 'pending';
+        if (live && !force) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Agent is ${task.status} — cancel it before dismissing (or pass force:true)` }));
+          return;
+        }
+        if (force) {
+          // Best-effort kill + guarantee terminal + abort approvals BEFORE removing —
+          // even for an already-terminal task, whose OS process may still be alive
+          // (the stuck case). Removing the card without killing would orphan a zombie.
+          const REASON = 'Force-removed by operator';
+          task.no_retry = true;
+          try { this.taskExecution?.cancelHeadless(taskId, REASON); } catch { /* fall through to force terminal */ }
+          const t = this.engine.getTask(taskId);
+          if (t && (t.status === 'running' || t.status === 'pending')) {
+            this.engine.updateAgentStatus(taskId, 'interrupted', REASON);
+          }
+          try { this.engine.abortApprovalsForTask(taskId, REASON); } catch { /* best-effort */ }
+        }
+        const dismissed = this.engine.dismissAgent(taskId);
+        if (!dismissed) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Failed to dismiss agent' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ dismissed: true, task_id: taskId, forced: force }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'dismiss failed', detail: err instanceof Error ? err.message : String(err) }));
+      }
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    });
   }
 
   // ---- Per-agent steering (Phase 3B) ----

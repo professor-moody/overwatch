@@ -197,8 +197,13 @@ export async function fleetInstruct(
 }
 
 /** Remove a terminal (completed/failed/interrupted) agent from the roster. 409 if it's still live. */
-export async function dismissAgent(taskId: string): Promise<{ dismissed: boolean; task_id: string }> {
-  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/dismiss`, { method: 'POST' });
+export async function dismissAgent(taskId: string, opts?: { force?: boolean }): Promise<{ dismissed: boolean; task_id: string; forced?: boolean }> {
+  // force:true force-terminates a still-running/pending agent and removes it in one
+  // step (the escape hatch for a wedged sub-agent that won't cancel cleanly).
+  return fetchJson(`/api/agents/${encodeURIComponent(taskId)}/dismiss`, {
+    method: 'POST',
+    ...(opts?.force ? { body: JSON.stringify({ force: true }) } : {}),
+  });
 }
 
 /** Bulk "Clear finished": dismiss every terminal agent from the roster (optionally one campaign). */
