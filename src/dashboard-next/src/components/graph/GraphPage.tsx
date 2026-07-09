@@ -9,6 +9,7 @@ import { NODE_COLORS, FOCUS_PRESETS } from '../../lib/graph-constants';
 import { colorForNode, type ColorMode } from '../../lib/graph-color';
 import { ColorModeLegend } from './ColorModeLegend';
 import noverlap from 'graphology-layout-noverlap';
+import { explodeHubs } from '../../lib/graph-hub-layout';
 import { getNeighborhood } from '../../lib/graph-utils';
 import { useGraph } from '../../hooks/useGraph';
 import { useSigma } from '../../hooks/useSigma';
@@ -267,6 +268,7 @@ export function GraphPage() {
           if (!userPinnedLayoutRef.current) {
             normalizeAutoLayout();
             applyNoverlap();
+            explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
             refresh();
             fitCurrentGraphContext(250, !!selectedNodeId);
           }
@@ -298,6 +300,7 @@ export function GraphPage() {
             if (!userPinnedLayoutRef.current) {
               normalizeAutoLayout();
               applyNoverlap();
+              explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
               refresh();
               fitCurrentGraphContext(300, false);
             }
