@@ -1134,14 +1134,40 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 
 // ---- Bulk Frontier Dispatch Modal ----
 
+// Cap rendered rows so a large frontier can't blow up the DOM; the type filter +
+// search narrow the rest. Selection/dispatch operate on the full filtered set, not
+// just what's rendered.
+const BULK_RENDER_CAP = 300;
+
 function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => void; onDispatched: () => void }) {
   const frontier = useEngagementStore((s) => s.frontier);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [skill, setSkill] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [dispatching, setDispatching] = useState(false);
   const addToast = useToastStore(s => s.addToast);
 
-  const topItems = frontier.slice(0, 20);
+  // Distinct frontier item types present (for the type filter dropdown).
+  const typeCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const i of frontier) m.set(i.type, (m.get(i.type) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [frontier]);
+
+  // The WHOLE actionable frontier, filtered by type + search — no 20-item cap, so
+  // any frontier candidate is reachable, not just the top slice.
+  const filteredItems = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return frontier.filter(i => {
+      if (typeFilter !== 'all' && i.type !== typeFilter) return false;
+      if (q && !`${i.type} ${i.description ?? ''}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [frontier, typeFilter, search]);
+
+  const visibleItems = filteredItems.slice(0, BULK_RENDER_CAP);
+  const allFilteredSelected = filteredItems.length > 0 && filteredItems.every(i => selectedItemIds.has(getFrontierKey(i)));
 
   const toggleItem = (id: string) => {
     setSelectedItemIds(prev => {
@@ -1151,18 +1177,24 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
     });
   };
 
+  // Select/deselect every item matching the CURRENT filter (not just the rendered
+  // slice), merging with selections made under other filters.
   const selectAll = () => {
-    if (selectedItemIds.size === topItems.length) {
-      setSelectedItemIds(new Set());
-    } else {
-      setSelectedItemIds(new Set(topItems.map(i => i.frontier_item_id || i.id)));
-    }
+    setSelectedItemIds(prev => {
+      const next = new Set(prev);
+      const keys = filteredItems.map(getFrontierKey);
+      if (allFilteredSelected) keys.forEach(k => next.delete(k));
+      else keys.forEach(k => next.add(k));
+      return next;
+    });
   };
 
   const dispatchAll = async () => {
     if (selectedItemIds.size === 0) return;
     setDispatching(true);
-    const selected = topItems.filter(i => selectedItemIds.has(getFrontierKey(i)));
+    // Dispatch everything selected across the whole frontier, even items hidden by
+    // the current type/search filter (selections persist across filter changes).
+    const selected = frontier.filter(i => selectedItemIds.has(getFrontierKey(i)));
     try {
       const results = await Promise.allSettled(
         selected.map(item => {
@@ -1196,24 +1228,43 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
       <div className="absolute inset-0 bg-black/40" />
       <div className="relative bg-surface border border-border rounded-lg p-5 w-[28rem] max-h-[80vh] flex flex-col shadow-xl" onClick={e => e.stopPropagation()}>
         <h3 className="text-sm font-semibold mb-1">Bulk Dispatch from Frontier</h3>
-        <p className="text-[10px] text-muted-foreground mb-3">Select frontier items to dispatch as parallel agents.</p>
+        <p className="text-[10px] text-muted-foreground mb-3">Select frontier items to dispatch as parallel agents. Filter by type or search to reach the whole frontier.</p>
+
+        <div className="flex items-center gap-2 mb-2">
+          <select
+            value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)}
+            className="text-xs px-2 py-1 bg-elevated border border-border rounded text-foreground"
+          >
+            <option value="all">All types ({frontier.length})</option>
+            {typeCounts.map(([type, count]) => (
+              <option key={type} value={type}>{type.replace(/_/g, ' ')} ({count})</option>
+            ))}
+          </select>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search…"
+            className="flex-1 text-xs px-2 py-1 bg-elevated border border-border rounded text-foreground placeholder:text-muted-foreground"
+          />
+        </div>
 
         <div className="flex items-center gap-2 mb-2">
           <label className="flex items-center gap-1 text-xs text-muted-foreground cursor-pointer">
             <input
               type="checkbox"
-              checked={selectedItemIds.size === topItems.length && topItems.length > 0}
+              checked={allFilteredSelected}
               onChange={selectAll}
               className="accent-accent"
             />
-            Select all ({topItems.length})
+            Select all ({filteredItems.length})
           </label>
           <span className="flex-1" />
           <span className="text-xs text-accent font-medium">{selectedItemIds.size} selected</span>
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-1 mb-3 max-h-64">
-          {topItems.map((item) => {
+          {visibleItems.map((item) => {
             const itemId = item.frontier_item_id || item.id;
             return (
               <label
@@ -1240,7 +1291,16 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
               </label>
             );
           })}
-          {topItems.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">No frontier items available.</p>}
+          {filteredItems.length === 0 && (
+            <p className="text-xs text-muted-foreground text-center py-4">
+              {frontier.length === 0 ? 'No frontier items available.' : 'No frontier items match the filter.'}
+            </p>
+          )}
+          {filteredItems.length > BULK_RENDER_CAP && (
+            <p className="px-2 py-1 text-[10px] text-muted-foreground">
+              Showing {BULK_RENDER_CAP} of {filteredItems.length} — narrow with the type filter or search. (Select all still selects all {filteredItems.length}.)
+            </p>
+          )}
         </div>
 
         <div>
