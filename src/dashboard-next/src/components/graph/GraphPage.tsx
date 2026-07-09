@@ -507,6 +507,15 @@ export function GraphPage() {
     forceGraphUi();
   }, [stateRef, recolorNodes, forceGraphUi]);
 
+  const handleTogglePathMode = useCallback(() => {
+    const s = stateRef.current;
+    s.pathMode = !s.pathMode;
+    // Leaving path mode clears any half-built or completed path so a normal click
+    // resumes selecting.
+    if (!s.pathMode) clearPathHighlight();
+    forceGraphUi();
+  }, [stateRef, clearPathHighlight, forceGraphUi]);
+
   // Re-apply the active (non-type) color encoding after a data load/merge so newly
   // arrived nodes — which load with their default type color — pick up the mode.
   useEffect(() => {
@@ -729,6 +738,7 @@ export function GraphPage() {
         graphMode={s.graphMode}
         labelDensity={s.labelDensity}
         colorMode={s.colorMode}
+        pathMode={s.pathMode}
         activeFocusPreset={s.activeFocusPreset}
         layers={layers}
         onZoomIn={zoomIn}
@@ -745,6 +755,7 @@ export function GraphPage() {
         onSetColorMode={handleSetColorMode}
         onSetFocusPreset={handleSetFocusPreset}
         onToggleLayer={handleToggleLayer}
+        onTogglePathMode={handleTogglePathMode}
         onToggleShortcuts={() => setShowShortcuts(v => !v)}
         editMode={editMode}
         onToggleEditMode={() => setEditMode(v => !v)}
@@ -821,6 +832,12 @@ export function GraphPage() {
               {layoutMode === 'manual' && (
                 <div className="pointer-events-none bg-warning/10 border border-warning/30 text-warning rounded px-3 py-1.5 text-xs shadow-lg">
                   Manual layout: positions are saved in this browser.
+                </div>
+              )}
+
+              {s.pathMode && (
+                <div className="pointer-events-none bg-accent/10 border border-accent/30 text-accent rounded px-3 py-1.5 text-xs shadow-lg">
+                  Path mode: click a source node, then a target.
                 </div>
               )}
             </div>

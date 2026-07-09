@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Route,
   SlidersHorizontal,
   Undo2,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ interface GraphToolbarProps {
   graphMode: string;
   labelDensity: string;
   colorMode: string;
+  pathMode: boolean;
   activeFocusPreset: string | null;
   layers: GraphLayerState[];
   // Actions
@@ -49,6 +51,7 @@ interface GraphToolbarProps {
   onSetColorMode: (mode: string) => void;
   onSetFocusPreset: (preset: string) => void;
   onToggleLayer: (id: GraphLayerState['id']) => void;
+  onTogglePathMode: () => void;
   onToggleShortcuts: () => void;
   // Edit mode
   editMode?: boolean;
@@ -88,12 +91,12 @@ export function getLayoutToolbarAction({ layoutMode, layoutRunning }: LayoutTool
 }
 
 export function GraphToolbar({
-  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, colorMode, activeFocusPreset,
+  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, colorMode, pathMode, activeFocusPreset,
   layers,
   onZoomIn, onZoomOut, onFit, onToggleLayout, onResumeLayout, onReset, onResetPositions,
   onExportPNG, onExportSVG,
   onSetGraphMode, onSetLabelDensity, onSetColorMode, onSetFocusPreset,
-  onToggleLayer,
+  onToggleLayer, onTogglePathMode,
   onToggleShortcuts,
   editMode, onToggleEditMode, onUndo, undoCount,
 }: GraphToolbarProps) {
@@ -130,6 +133,13 @@ export function GraphToolbar({
         >
           {layoutAction.intent === 'pause' ? <Pause size={14} /> : <Play size={14} />}
           <span className="hidden lg:inline">{layoutAction.label}</span>
+        </ToolBtn>
+        <ToolBtn
+          onClick={onTogglePathMode}
+          active={pathMode}
+          title="Path mode: click a source node, then a target, to trace the shortest attack path (or shift-click any two nodes)"
+        >
+          <Route size={14} /><span className="hidden lg:inline">Path</span>
         </ToolBtn>
         <ToolBtn onClick={onReset} title="Clear graph focus and filters">Clear view</ToolBtn>
         <Sep />
