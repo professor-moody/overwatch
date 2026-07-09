@@ -126,7 +126,7 @@ export function updateScope(
   });
   const promotedIds: string[] = [];
   for (const id of coldToPromote) {
-    const coldRecord = host.ctx.coldStore.promote(id);
+    const coldRecord = host.ctx.coldPromote(id);
     if (coldRecord) {
       host.addNode({
         id: coldRecord.id,
