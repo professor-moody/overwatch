@@ -267,8 +267,8 @@ export function GraphPage() {
           setLayoutRunning(false);
           if (!userPinnedLayoutRef.current) {
             normalizeAutoLayout();
-            applyNoverlap();
             explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
+            applyNoverlap();     // run LAST so any leaf fanned onto an unrelated node gets nudged apart
             refresh();
             fitCurrentGraphContext(250, !!selectedNodeId);
           }
@@ -299,8 +299,8 @@ export function GraphPage() {
             setLayoutRunning(false);
             if (!userPinnedLayoutRef.current) {
               normalizeAutoLayout();
-              applyNoverlap();
               explodeHubs(graph); // fan out subdomain/port/etc. stars so they stop stacking on their hub
+              applyNoverlap();     // run LAST so any leaf fanned onto an unrelated node gets nudged apart
               refresh();
               fitCurrentGraphContext(300, false);
             }
