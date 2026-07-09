@@ -578,12 +578,29 @@ const ENV_DENYLIST = new Set<string>([
   'OVERWATCH_SKILLS',
   'OVERWATCH_BOOTSTRAP',
   'OVERWATCH_DASHBOARD_PORT',
+  // Server secrets a scan/tool child must NEVER inherit. Without this, an agent
+  // allowed to exec an arbitrary binary (e.g. `env`) recovers the master MCP token
+  // (defeating its --allowedTools sandbox — every authenticated session gets the full
+  // tool surface), the dashboard token, or the Ed25519 checkpoint signing key that
+  // backs the activity-chain tamper-evidence.
+  'OVERWATCH_MCP_TOKEN',
+  'OVERWATCH_DASHBOARD_TOKEN',
+  'OVERWATCH_CHECKPOINT_SIGNING_KEY',
 ]);
 
-function buildChildEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+// Defensive catch-all for future OVERWATCH_*-prefixed secrets. Scoped to the
+// OVERWATCH_ prefix on purpose, so genuine tool credentials the scanner needs
+// (AWS_SECRET_ACCESS_KEY, etc.) still pass through to cloud/scan children.
+const OVERWATCH_SECRET_ENV = /^OVERWATCH_.*(TOKEN|SECRET|SIGNING_KEY|PASSWORD)/i;
+
+function isDeniedChildEnvKey(k: string): boolean {
+  return ENV_DENYLIST.has(k) || OVERWATCH_SECRET_ENV.test(k);
+}
+
+export function buildChildEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (ENV_DENYLIST.has(k)) continue;
+    if (isDeniedChildEnvKey(k)) continue;
     if (v !== undefined) base[k] = v;
   }
   if (extra) {
