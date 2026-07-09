@@ -435,3 +435,35 @@ describe('WS action_resolved push + durable record on dashboard approve/deny', (
     expect(res.status).toBe(404);
   });
 });
+
+describe('request-boundary hardening (CSWSH + crash guard)', () => {
+  function tryOpenWs(origin?: string): Promise<'open' | 'rejected'> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`${wsBase}/ws`, origin ? { origin } : undefined);
+      ws.on('open', () => { ws.close(); resolve('open'); });
+      ws.on('error', () => resolve('rejected'));
+      ws.on('unexpected-response', () => { try { ws.close(); } catch { /* */ } resolve('rejected'); });
+    });
+  }
+
+  it('rejects a cross-origin WebSocket handshake (CSWSH), even on loopback', async () => {
+    expect(await tryOpenWs('https://evil.example')).toBe('rejected');
+  });
+
+  it('allows a same-origin WebSocket handshake', async () => {
+    // baseUrl is http://127.0.0.1:<port> → an allowed same-host Origin.
+    expect(await tryOpenWs(baseUrl)).toBe('open');
+  });
+
+  it('allows a no-Origin (non-browser) WebSocket handshake', async () => {
+    expect(await tryOpenWs(undefined)).toBe('open');
+  });
+
+  it('a malformed %-escape path returns 400 and does NOT crash the server', async () => {
+    const res = await fetch(`${baseUrl}/api/engagements/%E0%A4%A`);
+    expect(res.status).toBe(400);
+    // The daemon must still be serving after the bad request.
+    const alive = await fetch(`${baseUrl}/api/state`);
+    expect(alive.status).toBe(200);
+  });
+});

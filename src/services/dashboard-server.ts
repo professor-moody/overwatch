@@ -223,8 +223,30 @@ export class DashboardServer {
 
     // URL-based WebSocket routing
     this.httpServer.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      // Guard: a malformed Host header makes `new URL` throw. This runs before any
+      // auth, in an 'upgrade' listener with no outer boundary, so an unhandled throw
+      // would crash the daemon. Fail the handshake instead.
+      let url: URL;
+      try {
+        url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      } catch {
+        socket.destroy();
+        return;
+      }
       const pathname = url.pathname;
+
+      // Reject cross-origin WebSocket handshakes (CSWSH). Browsers ALWAYS send an
+      // Origin on a WS handshake and cannot spoof it; a malicious page the operator
+      // visits could otherwise open ws://127.0.0.1/ws and read the full graph
+      // (incl. credential material). Same-origin dashboard connections are allowed;
+      // non-browser clients (no Origin) aren't a confused-deputy risk. Applies on
+      // loopback too (that's exactly where the drive-by works).
+      const origin = req.headers.origin;
+      if (origin && !this.isAllowedWsOrigin(origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
 
       // Auth check for non-loopback
       if (!this.isLoopback(this.host)) {
@@ -686,19 +708,34 @@ export class DashboardServer {
     );
   }
 
+  /** True when an Origin header is same-origin / localhost / the configured host.
+   *  Shared by the HTTP CORS gate and the WebSocket upgrade CSWSH check. */
+  private isAllowedWsOrigin(origin: string): boolean {
+    const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
+    if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)) return true;
+    try { return new URL(origin).hostname === allowedHost; } catch { return false; }
+  }
+
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
+    // Top-level boundary: a synchronous throw in routing (e.g. a URIError from
+    // decodeURIComponent on a malformed %-escape path) must not crash the daemon.
+    try {
+      this.handleHttpRoute(req, res);
+    } catch (err) {
+      if (!res.headersSent) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Bad request' }));
+      }
+    }
+  }
+
+  private handleHttpRoute(req: IncomingMessage, res: ServerResponse): void {
     const url = req.url || '/';
     const method = req.method || 'GET';
 
     // CORS: restrict to localhost origins (or env override)
     const origin = req.headers.origin || '';
-    const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
-    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
-    let isAllowedOrigin = isLocalOrigin;
-    if (!isAllowedOrigin && origin) {
-      try { isAllowedOrigin = new URL(origin).hostname === allowedHost; } catch { /* malformed origin */ }
-    }
-    if (isAllowedOrigin && origin) {
+    if (origin && this.isAllowedWsOrigin(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
