@@ -7,6 +7,7 @@ import { useRef, useCallback } from 'react';
 import type Graph from 'graphology';
 import {
   NODE_COLORS,
+  RECON_NODE_TYPES,
   EDGE_CATEGORIES,
   DEFAULT_EDGE_COLOR,
   HIGH_SIGNAL_NODE_TYPES,
@@ -101,7 +102,8 @@ export function createInitialInteractionState(): GraphInteractionState {
     focusLabel: null,
     focusKind: null,
     emphasizedNodeTypes: new Set(),
-    activeFilters: new Set(Object.keys(NODE_COLORS)),
+    // OSINT recon types start hidden (browse them in the Recon tab; toggle chips to show).
+    activeFilters: new Set(Object.keys(NODE_COLORS).filter(t => !RECON_NODE_TYPES.includes(t as never))),
     edgeTypeFilter: null,
     edgeSourceFilter: null,
     hideOrphans: false,

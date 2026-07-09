@@ -24,7 +24,16 @@ const NON_STRUCTURAL_EDGE_TYPES = new Set(['REACHABLE', 'RELATED']);
  * edges are handled by dagre; reachability/generic edges are excluded from ranking
  * to keep the hierarchy clean.
  */
-export function computeHierarchical(graph: Graph): void {
+export interface ComputeLayoutOptions {
+  /** Only lay out nodes for which this returns true (e.g. currently-VISIBLE nodes —
+   *  pass the reducer's isNodeVisible). Hidden nodes keep their old positions —
+   *  they're off-screen anyway, and excluding them stops a flood of hidden recon
+   *  nodes from sizing the whole canvas. */
+  include?: (id: string, attrs: Record<string, unknown>) => boolean;
+}
+
+export function computeHierarchical(graph: Graph, opts: ComputeLayoutOptions = {}): void {
+  const include = opts.include ?? (() => true);
   const g = new dagre.graphlib.Graph({ multigraph: true, directed: true });
   // Generous separation so ranks/rows don't collide (normalizeAutoLayout rescales the
   // whole thing afterward, so these are relative spacings, kept large vs node size).
@@ -32,6 +41,7 @@ export function computeHierarchical(graph: Graph): void {
   g.setDefaultEdgeLabel(() => ({}));
 
   graph.forEachNode((id, attrs) => {
+    if (!include(id, attrs as Record<string, unknown>)) return;
     const size = (attrs.size as number) || 6;
     g.setNode(id, { width: Math.max(30, size * 4), height: Math.max(30, size * 4) });
   });
@@ -39,6 +49,7 @@ export function computeHierarchical(graph: Graph): void {
   let i = 0;
   graph.forEachEdge((_edgeId, attrs, source, target) => {
     if (NON_STRUCTURAL_EDGE_TYPES.has((attrs.edgeType as string) || '')) return;
+    if (!g.hasNode(source) || !g.hasNode(target)) return; // an endpoint was excluded
     g.setEdge(source, target, {}, `e${i++}`);
   });
 
@@ -62,10 +73,12 @@ const TIER_BAND: Record<Tier, number> = { identity: 0, cloud: 1, app: 2, network
  * band wrapped into a grid so a populous tier (e.g. hundreds of hosts) doesn't become
  * one endless row. Fully deterministic — you always know where a class of node lives.
  */
-export function computeTiered(graph: Graph): void {
+export function computeTiered(graph: Graph, opts: ComputeLayoutOptions = {}): void {
+  const include = opts.include ?? (() => true);
   const bands = new Map<number, string[]>();
   graph.forEachNode((id, attrs) => {
     if (attrs.fixed) return;
+    if (!include(id, attrs as Record<string, unknown>)) return;
     const band = TIER_BAND[tierForNode(attrs._props as ExportedNode | undefined)] ?? 4;
     const arr = bands.get(band);
     if (arr) arr.push(id); else bands.set(band, [id]);

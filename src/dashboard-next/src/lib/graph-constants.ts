@@ -2,6 +2,12 @@
 // Graph Constants — ported from legacy graph.js
 // ============================================================
 
+// OSINT / external-recon node types hidden from the graph BY DEFAULT — a domain can
+// carry hundreds of these (subdomains especially), which drown the actual attack
+// graph. They're browsable in the Recon tab, and the NodeFilters chips let the
+// operator toggle them back into the graph.
+export const RECON_NODE_TYPES = ['subdomain', 'asn', 'organization', 'email'] as const;
+
 export const NODE_COLORS: Record<string, string> = {
   host: '#6e9eff',
   service: '#5dcaa5',

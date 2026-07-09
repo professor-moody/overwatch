@@ -33,6 +33,14 @@ describe('computeTiered', () => {
     expect(g.getNodeAttribute('pinned', 'x')).toBe(999);
     expect(g.getNodeAttribute('pinned', 'y')).toBe(999);
   });
+
+  it('excludes nodes rejected by the include predicate', () => {
+    const g = new Graph({ type: 'directed', multi: true });
+    addNode(g, 'host', 'host'); addNode(g, 'sub', 'subdomain', { x: 5, y: 5 });
+    computeTiered(g, { include: (_id, a) => (a.nodeType as string) !== 'subdomain' });
+    expect(g.getNodeAttribute('sub', 'x')).toBe(5);
+    expect(g.getNodeAttribute('sub', 'y')).toBe(5);
+  });
 });
 
 describe('computeHierarchical', () => {
@@ -57,6 +65,16 @@ describe('computeHierarchical', () => {
       expect(Number.isFinite(g.getNodeAttribute(id, 'y'))).toBe(true);
     }
     expect(g.getNodeAttribute('pinned', 'y')).toBe(42);
+  });
+
+  it('excludes nodes rejected by the include predicate (hidden recon nodes)', () => {
+    const g = new Graph({ type: 'directed', multi: true });
+    addNode(g, 'host', 'host'); addNode(g, 'sub', 'subdomain', { x: 7, y: 7 });
+    g.addEdge('sub', 'host', { edgeType: 'RESOLVES_TO' });
+    computeHierarchical(g, { include: (_id, a) => (a.nodeType as string) !== 'subdomain' });
+    // The excluded subdomain keeps its original position; the host is laid out.
+    expect(g.getNodeAttribute('sub', 'x')).toBe(7);
+    expect(g.getNodeAttribute('sub', 'y')).toBe(7);
   });
 
   it('ignores non-structural (REACHABLE) edges for ranking', () => {
