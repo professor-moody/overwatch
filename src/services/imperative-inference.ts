@@ -67,7 +67,7 @@ export function inferPivotReachability(host: ImperativeInferenceHost, triggerHos
       if (isIpInCidr(record.ip, subnetCidr)) coldPeersToPromote.push(record.id);
     });
     for (const coldPeerId of coldPeersToPromote) {
-      const coldRecord = host.ctx.coldStore.promote(coldPeerId);
+      const coldRecord = host.ctx.coldPromote(coldPeerId);
       if (coldRecord) {
         host.addNode({
           id: coldRecord.id,

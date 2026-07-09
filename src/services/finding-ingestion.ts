@@ -113,10 +113,10 @@ export function ingestFindingImpl(
 
     if (temperature === 'cold' && !wasCold) {
       const subnetCidr = host.findSubnetCidr(fullProps.ip);
-      host.ctx.coldStore.add(toColdRecord(fullProps, subnetCidr, { finding_id: finding.id, action_id: finding.action_id }));
+      host.ctx.coldAdd(toColdRecord(fullProps, subnetCidr, { finding_id: finding.id, action_id: finding.action_id }));
       continue;
     } else if (wasCold) {
-      const coldRecord = host.ctx.coldStore.promote(node.id);
+      const coldRecord = host.ctx.coldPromote(node.id);
       if (coldRecord) {
         if (coldRecord.discovered_at < fullProps.discovered_at) {
           fullProps.discovered_at = coldRecord.discovered_at;
@@ -173,7 +173,7 @@ export function ingestFindingImpl(
     if (shouldPromoteCold) {
       for (const endpointId of [sourceId, targetId]) {
         if (!host.ctx.graph.hasNode(endpointId) && host.ctx.coldStore.has(endpointId)) {
-          const coldRecord = host.ctx.coldStore.promote(endpointId);
+          const coldRecord = host.ctx.coldPromote(endpointId);
           if (coldRecord) {
             host.addNode({
               id: coldRecord.id,

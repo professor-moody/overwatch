@@ -13,7 +13,7 @@ import type {
   NodeProperties, EdgeProperties, FrontierItem,
 } from '../types.js';
 import type { TrackedProcess } from './process-tracker.js';
-import { ColdStore } from './cold-store.js';
+import { ColdStore, type ColdNodeRecord } from './cold-store.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { PendingActionQueue } from './pending-action-queue.js';
 import type { DurableApprovalRecord } from './pending-action-queue.js';
@@ -258,6 +258,24 @@ export class EngineContext {
       ...(source_action_id ? { source_action_id } : {}),
       ts: this.nowIso(),
     });
+  }
+
+  /**
+   * Journaled cold-store writes. The cold store is durable only via the debounced
+   * snapshot, so a bare `coldStore.add/promote` is lost if the process crashes in the
+   * ≤500ms snapshot window (reproduced: cold_node_count 1→0 across a crash). Routing
+   * cold adds/promotions through the WAL (like every other durable graph mutation)
+   * makes them crash-recoverable via replay. Replay itself calls coldStore directly
+   * (journaling suppressed), so these don't double-record.
+   */
+  coldAdd(record: ColdNodeRecord): void {
+    this.journalMutation('cold_add', { record });
+    this.coldStore.add(record);
+  }
+
+  coldPromote(id: string): ColdNodeRecord | undefined {
+    this.journalMutation('cold_promote', { id });
+    return this.coldStore.promote(id);
   }
 
   /**

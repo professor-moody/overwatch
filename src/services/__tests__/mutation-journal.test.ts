@@ -140,6 +140,38 @@ describe('MutationJournal (P2.1)', () => {
       expect(eng2.getNode('baseline')).toBeDefined();
     });
 
+    it('survives a crash: a journaled cold_add is replayed (cold_node_count preserved)', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      eng.flushNow(); // baseline snapshot: empty cold store
+      // A cold add lands in the journal but NOT the (debounced, un-flushed) snapshot —
+      // the exact window that previously lost cold nodes across a crash.
+      (eng as any).ctx.coldAdd({
+        id: 'host-cold', type: 'host', label: '10.10.10.9', ip: '10.10.10.9',
+        discovered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z',
+        subnet_cidr: '10.10.10.0/24', alive: true,
+      });
+      expect((eng as any).ctx.coldStore.count()).toBe(1);
+      // Don't flush → crash. A fresh engine replays the journal and recovers the node.
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      expect((eng2 as any).ctx.coldStore.has('host-cold')).toBe(true);
+      expect((eng2 as any).ctx.coldStore.count()).toBe(1);
+    });
+
+    it('replays cold_promote so a promoted node is not resurrected in the cold store', () => {
+      const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      (eng as any).ctx.coldAdd({
+        id: 'host-p', type: 'host', label: '10.10.10.8', ip: '10.10.10.8',
+        discovered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z',
+        subnet_cidr: '10.10.10.0/24', alive: true,
+      });
+      eng.persist();  // mark dirty so flushNow actually writes...
+      eng.flushNow(); // ...a snapshot that CONTAINS the cold node (compacts the journal).
+      (eng as any).ctx.coldPromote('host-p'); // journaled removal, NOT yet snapshotted
+      const eng2 = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
+      // Snapshot had it; the replayed cold_promote must remove it again.
+      expect((eng2 as any).ctx.coldStore.has('host-p')).toBe(false);
+    });
+
     it('preserves the journal when replay skips unsupported or incomplete mutations', () => {
       const eng = new GraphEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE);
       eng.addNode({ id: 'baseline', type: 'host', label: 'baseline', ip: '10.10.10.1', discovered_at: '2026-01-01T00:00:00Z', confidence: 1 });

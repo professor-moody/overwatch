@@ -680,6 +680,19 @@ export class StatePersistence {
               ctx.graph.dropEdge(p.edge_id);
               return { status: 'applied' };
             }
+            case 'cold_add': {
+              // Re-add a cold-store node lost to a crash before the snapshot flushed.
+              const record = (entry.payload as { record: import('./cold-store.js').ColdNodeRecord }).record;
+              ctx.coldStore.add(record);
+              return { status: 'applied' };
+            }
+            case 'cold_promote': {
+              // A cold node was promoted to hot: remove it from the cold store (the
+              // matching add_node/merge entry re-adds it to the graph).
+              const id = (entry.payload as { id: string }).id;
+              ctx.coldStore.promote(id);
+              return { status: 'applied' };
+            }
             default:
               // Unknown / future types are tolerated (forward-compat for
               // journals written by a newer version of the engine).
