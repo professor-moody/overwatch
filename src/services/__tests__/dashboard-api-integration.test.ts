@@ -558,6 +558,24 @@ describe('POST /api/agents/dispatch-batch (fan-out)', () => {
   });
 });
 
+describe('POST /api/agents/:id/dismiss — force-remove a live agent', () => {
+  it('non-force dismiss of a running agent still 409s (unchanged legacy behavior)', async () => {
+    engine.registerAgent({ id: 'task-live-1', agent_id: 'agent-live-1', assigned_at: NOW, status: 'running', subgraph_node_ids: [] });
+    const { status } = await postJson('/api/agents/task-live-1/dismiss', {});
+    expect(status).toBe(409);
+    expect(engine.getTask('task-live-1')?.status).toBe('running');
+  });
+
+  it('force dismiss terminates AND removes a still-running agent in one call', async () => {
+    engine.registerAgent({ id: 'task-live-2', agent_id: 'agent-live-2', assigned_at: NOW, status: 'running', subgraph_node_ids: [] });
+    const { status, body } = await postJson<{ dismissed: boolean; forced: boolean }>('/api/agents/task-live-2/dismiss', { force: true });
+    expect(status).toBe(200);
+    expect(body.dismissed).toBe(true);
+    expect(body.forced).toBe(true);
+    expect(engine.getTask('task-live-2')).toBeNull();
+  });
+});
+
 describe('POST /api/agents/quick-deploy', () => {
   it('scopes a raw IP and dispatches the recommended recon agent in one step', async () => {
     const { status, body } = await postJson<{ dispatched: boolean; archetype: string; scope: { added_cidrs: string[] }; task: { objective?: string; status?: string } }>(

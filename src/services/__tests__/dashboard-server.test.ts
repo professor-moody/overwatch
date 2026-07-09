@@ -1319,14 +1319,42 @@ describe('DashboardServer', () => {
       expect(updated?.status).toBe('interrupted');
     });
 
-    it('handleAgentCancel returns 409 for completed agent', () => {
+    it('handleAgentCancel is idempotent for an already-terminal agent (200, not a 409 dead-end)', () => {
       const task = registerTestAgent({ status: 'completed' });
 
       const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
       const res = mockRes();
       (dashboard as any).handleAgentCancel(task.id, req, res);
 
-      expect(res.statusCode).toBe(409);
+      // A terminal agent is already "cancelled" as far as the operator cares — return
+      // success so the UI can proceed to remove it, instead of getting stuck on a 409.
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body);
+      expect(data.cancelled).toBe(true);
+      expect(data.already_terminal).toBe(true);
+    });
+
+    it('handleAgentCancel still kills the process for an already-terminal agent (zombie reap)', () => {
+      // A task can be 'interrupted' in the graph while its OS process is still alive
+      // (the stuck case). Cancel must still attempt the kill, not skip it.
+      const task = registerTestAgent({ status: 'interrupted' });
+      const cancelHeadless = vi.fn(() => true);
+      (dashboard as any).attachTaskExecution({ cancelHeadless, isHeadlessAvailable: () => true });
+      const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
+      const res = mockRes();
+      (dashboard as any).handleAgentCancel(task.id, req, res);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).already_terminal).toBe(true);
+      expect(cancelHeadless).toHaveBeenCalledWith(task.id, expect.any(String));
+    });
+
+    it('handleAgentCancel forces a pending agent terminal even without a task-execution service', () => {
+      const task = registerTestAgent({ status: 'pending' });
+      const req = { headers: {}, url: '/api/agents/x/cancel' } as any;
+      const res = mockRes();
+      (dashboard as any).handleAgentCancel(task.id, req, res);
+      expect(res.statusCode).toBe(200);
+      expect(engine.getTask(task.id)?.status).toBe('interrupted');
     });
 
     it('handleAgentCancel returns 404 for missing task', () => {

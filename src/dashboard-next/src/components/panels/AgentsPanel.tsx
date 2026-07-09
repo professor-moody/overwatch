@@ -193,6 +193,17 @@ export function AgentsPanel() {
     }
   };
 
+  // Escape hatch for a wedged agent that won't cancel cleanly: force-terminate +
+  // remove in one call, then refresh.
+  const forceRemoveAgent = async (id: string) => {
+    try {
+      await api.dismissAgent(id, { force: true });
+      await refreshAgents();
+    } catch (err) {
+      fleetAddToast({ type: 'error', title: 'Force remove failed', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   const clearFinished = async () => {
     try {
       const res = await api.fleetDismiss();
@@ -447,6 +458,7 @@ export function AgentsPanel() {
             onToggleGroup={toggleGroup}
             onCancelAgent={cancelAgent}
             onDismissAgent={dismissAgent}
+            onForceRemoveAgent={forceRemoveAgent}
             onClearFinished={clearFinished}
           />
 
@@ -566,6 +578,7 @@ function MissionRoster({
   onToggleGroup,
   onCancelAgent,
   onDismissAgent,
+  onForceRemoveAgent,
   onClearFinished,
 }: {
   groups: import('../../lib/agent-mission').MissionGroup[];
@@ -582,6 +595,7 @@ function MissionRoster({
   onToggleGroup: (id: string) => void;
   onCancelAgent: (id: string) => void;
   onDismissAgent: (id: string) => void;
+  onForceRemoveAgent: (id: string) => void;
   onClearFinished: () => void;
 }) {
   const liveCount = groups.reduce((n, g) => n + g.cards.filter(c => c.tone === 'running' || c.tone === 'blocked' || c.tone === 'stuck').length, 0);
@@ -664,6 +678,7 @@ function MissionRoster({
                   onToggleSelect={() => onToggleSelect(card.id)}
                   onCancel={() => onCancelAgent(card.id)}
                   onDismiss={() => onDismissAgent(card.id)}
+                  onForceRemove={() => onForceRemoveAgent(card.id)}
                 />
               ))}
             </div>
