@@ -703,7 +703,7 @@ interface ProcessResult {
   spawn_error?: string;
 }
 
-function runProcess(binary: string, args: string[], opts: {
+export function runProcess(binary: string, args: string[], opts: {
   cwd?: string;
   env?: Record<string, string>;
   timeout_ms: number;
@@ -713,12 +713,21 @@ function runProcess(binary: string, args: string[], opts: {
   /** Optional live tee (e.g. the Analysis live-output buffer). Never blocks the process. */
   onStdout?: (chunk: Buffer) => void;
   onStderr?: (chunk: Buffer) => void;
+  /** Operator/agent cancellation. When it aborts AFTER spawn, the child is killed
+   *  (SIGTERM → SIGKILL). Previously abort only cancelled the pre-spawn approval wait,
+   *  so a cancelled scan kept running to completion. */
+  signal?: AbortSignal;
 }): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const start = Date.now();
     const stdout = new BoundedStreamBuffer();
     const stderr = new BoundedStreamBuffer();
     let timedOut = false;
+    let settled = false;
+    // The delayed SIGKILL escalation timer (from the timeout OR abort path). Held
+    // here so it can be cleared once the child exits — otherwise it could fire 5s
+    // later and signal a recycled PID/process-group.
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     let child;
     try {
@@ -764,12 +773,42 @@ function runProcess(binary: string, args: string[], opts: {
       return false;
     };
 
+    // Escalate to SIGKILL a few seconds after SIGTERM. Captured in `killTimer` so
+    // `finish()` can cancel it once the child is gone (avoids signalling a reused pid).
+    const escalateKill = (): void => {
+      if (killTimer) return;
+      killTimer = setTimeout(() => { killTree('SIGKILL'); }, 5000);
+      killTimer.unref();
+    };
+
     const timer = setTimeout(() => {
       timedOut = true;
       killTree('SIGTERM');
-      setTimeout(() => { killTree('SIGKILL'); }, 5000).unref();
+      escalateKill();
     }, opts.timeout_ms);
     timer.unref();
+
+    // Cancellation: an abort AFTER spawn terminates the child (the finding was that
+    // abort only cancelled the approval wait, so cancelled scans ran to completion).
+    const onAbort = (): void => {
+      killTree('SIGTERM');
+      escalateKill();
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    // Run once when the process settles: clear all timers/listeners so nothing fires
+    // against a dead (or recycled) pid, then resolve exactly once.
+    const finish = (result: ProcessResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+      opts.signal?.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
 
     child.stdout?.on('data', (c: Buffer) => {
       captureStream(stdout, c);
@@ -783,8 +822,7 @@ function runProcess(binary: string, args: string[], opts: {
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         exit_code: null,
         signal: null,
         stdout,
@@ -796,8 +834,7 @@ function runProcess(binary: string, args: string[], opts: {
     });
 
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         exit_code: code,
         signal,
         stdout,
@@ -1428,6 +1465,8 @@ export async function runInstrumentedProcess(
       cwd,
       env,
       timeout_ms: effectiveTimeout,
+      // Wire cancellation through: aborting the tool call now kills the running child.
+      signal: abortSignal,
       stdoutSink,
       stderrSink,
       // Scrub reflected secrets from the live dashboard tee too (per-chunk; a
