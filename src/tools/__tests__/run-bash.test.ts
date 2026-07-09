@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, unlinkSync, rmSync } from 'fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { GraphEngine } from '../../services/graph-engine.js';
 import { registerRunBashTool } from '../run-bash.js';
+import { startAgentKeepalive } from '../_process-runner.js';
 import type { EngagementConfig } from '../../types.js';
 
 const TEST_STATE_FILE = './state-test-run-bash.json';
@@ -74,6 +75,56 @@ describe('run_bash tool', () => {
     // Evidence store has the stdout
     const stored = engine.getEvidenceStore().getRawOutput(payload.stdout_evidence_id);
     expect(stored).toContain('hello-from-bash');
+  });
+
+  it('refreshes the calling agent heartbeat while its tool runs (no reap mid-scan)', async () => {
+    // A running agent whose last beat is well past its TTL: without the keepalive
+    // it would be reaped as stale the moment it blocks on a long scan.
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    engine.registerAgent({
+      id: 'task-hb', agent_id: 'agent-hb', assigned_at: stale,
+      status: 'running', subgraph_node_ids: [], heartbeat_at: stale, heartbeat_ttl_seconds: 120,
+    });
+    const before = engine.getTask('task-hb')?.heartbeat_at;
+
+    await handlers.run_bash({ command: 'echo scanning', agent_id: 'agent-hb', validate: false });
+
+    const after = engine.getTask('task-hb')?.heartbeat_at;
+    expect(after).toBeTruthy();
+    expect(Date.parse(after!)).toBeGreaterThan(Date.parse(before!));
+    // The keepalive must not create a duplicate task for the same agent_id.
+    expect(engine.getAgentTasks().filter(t => t.agent_id === 'agent-hb').length).toBe(1);
+  });
+
+  it('startAgentKeepalive bumps on an interval, stops on dispose, and self-caps at maxMs', () => {
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    engine.registerAgent({
+      id: 'task-k', agent_id: 'agent-k', assigned_at: stale,
+      status: 'running', subgraph_node_ids: [], heartbeat_at: stale,
+    });
+    const spy = vi.spyOn(engine, 'agentHeartbeat');
+    vi.useFakeTimers();
+    try {
+      // Interval + dispose.
+      const stop = startAgentKeepalive(engine, 'agent-k', { intervalMs: 1000, maxMs: 60_000 });
+      expect(spy).toHaveBeenCalledTimes(1);           // immediate bump
+      vi.advanceTimersByTime(3000);
+      expect(spy).toHaveBeenCalledTimes(4);           // + 3 interval bumps
+      stop();
+      vi.advanceTimersByTime(5000);
+      expect(spy).toHaveBeenCalledTimes(4);           // no bumps after dispose
+
+      // Self-cap: past maxMs the keepalive stops on its own.
+      spy.mockClear();
+      startAgentKeepalive(engine, 'agent-k', { intervalMs: 1000, maxMs: 2500 });
+      expect(spy).toHaveBeenCalledTimes(1);           // immediate (t=0)
+      vi.advanceTimersByTime(10_000);
+      // bumps at t=1000, t=2000 (both < 2500); t=3000 sees elapsed>maxMs → stop, no bump.
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+      spy.mockRestore();
+    }
   });
 
   it('logs action_failed on non-zero exit', async () => {

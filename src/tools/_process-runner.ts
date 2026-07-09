@@ -892,6 +892,58 @@ export interface InstrumentedProcessResponse {
  * Execute a child process with full action-lifecycle instrumentation.
  * Returns an MCP-shaped tool response.
  */
+// How often to refresh a tool-blocked agent's heartbeat. Well under both the
+// default 120s TTL and the headless 300s startup TTL, so a long scan never lets
+// the beat go stale.
+const AGENT_KEEPALIVE_INTERVAL_MS = 45_000;
+// Hard ceiling on how long a SINGLE tool call may keep an agent's heartbeat fresh.
+// Bounds the window in which a crashed-mid-tool agent — whose server-side tool
+// keeps running detached — stays un-reaped: past this, the keepalive stops and
+// normal TTL reaping resumes even if the tool is still going (its output is still
+// salvaged when it ends). Comfortably exceeds any legitimate single scan.
+const AGENT_KEEPALIVE_MAX_MS = 30 * 60_000;
+
+/**
+ * Keep a running agent's heartbeat fresh while it blocks on a long-running tool.
+ * An agent awaiting a server-side scan (nmap / subfinder / httpx / nuclei over
+ * many hosts) can't call agent_heartbeat itself, so the watchdog would otherwise
+ * reap it mid-scan as "stale" and mark it interrupted. Bumps immediately, then on
+ * an interval, using the SAME silent-keepalive the supervisor uses for the
+ * orchestrator (in-memory beat + lease renewal, no event / disk write). Returns a
+ * disposer the caller MUST invoke when the tool returns; after that, normal
+ * reaping resumes if the agent goes idle without beating. No-op for a blank
+ * agent_id. Bounded two ways so a genuinely-wedged agent still gets reaped: the
+ * caller stops it when the process returns (the tool's own timeout ends that), and
+ * `maxMs` caps the lifetime even if the tool never returns — this only keeps a
+ * HEALTHY long scan alive, it can't prop up a dead agent indefinitely.
+ * `intervalMs`/`maxMs` are injectable for tests.
+ */
+export function startAgentKeepalive(
+  engine: GraphEngine,
+  agentId?: string,
+  opts?: { intervalMs?: number; maxMs?: number },
+): () => void {
+  if (!agentId) return () => { /* no agent to keep alive */ };
+  const intervalMs = opts?.intervalMs ?? AGENT_KEEPALIVE_INTERVAL_MS;
+  const maxMs = opts?.maxMs ?? AGENT_KEEPALIVE_MAX_MS;
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stop = (): void => { if (timer) { clearInterval(timer); timer = null; } };
+  const bump = (): void => {
+    // Stop propping the agent up past the ceiling — a still-blocked agent beyond
+    // this is treated as potentially wedged and handed back to TTL reaping.
+    if (Date.now() - startedAt > maxMs) { stop(); return; }
+    const task = engine.getAgentTasks().find(t => t.agent_id === agentId && t.status === 'running');
+    if (!task) return;
+    try { engine.agentHeartbeat(task.id, undefined, { silent: true }); } catch { /* keepalive is best-effort */ }
+  };
+  bump();
+  timer = setInterval(bump, intervalMs);
+  // Don't let the keepalive timer hold the event loop open on shutdown.
+  if (typeof timer.unref === 'function') timer.unref();
+  return stop;
+}
+
 export async function runInstrumentedProcess(
   engine: GraphEngine,
   opts: InstrumentedProcessOpts,
@@ -1362,18 +1414,31 @@ export async function runInstrumentedProcess(
   // running action in real time. Durable bytes still go to the evidence sinks.
   const liveOutput = engine.getActionOutputBuffer();
   liveOutput.open(normalizedActionId);
-  const result = await runProcess(binary, args, {
-    cwd,
-    env,
-    timeout_ms: effectiveTimeout,
-    stdoutSink,
-    stderrSink,
-    // Scrub reflected secrets from the live dashboard tee too (per-chunk; a
-    // secret straddling a chunk boundary in the live stream is a documented
-    // residual — the persisted response/parser paths scrub the full text).
-    onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
-    onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
-  });
+  // Keep the calling agent's heartbeat fresh WHILE this (possibly long) tool runs.
+  // A headless sub-agent blocked awaiting a server-side scan can't call
+  // agent_heartbeat itself, so without this the watchdog reaps it mid-scan —
+  // network-recon / osint / web-discovery tools (nmap, subfinder, httpx, nuclei)
+  // routinely exceed the heartbeat TTL. Stopped the instant the process returns
+  // (which the tool's own `effectiveTimeout` guarantees), and self-caps at
+  // AGENT_KEEPALIVE_MAX_MS so it can't prop up a crashed-mid-tool agent forever.
+  const stopAgentKeepalive = startAgentKeepalive(engine, agent_id);
+  let result: ProcessResult;
+  try {
+    result = await runProcess(binary, args, {
+      cwd,
+      env,
+      timeout_ms: effectiveTimeout,
+      stdoutSink,
+      stderrSink,
+      // Scrub reflected secrets from the live dashboard tee too (per-chunk; a
+      // secret straddling a chunk boundary in the live stream is a documented
+      // residual — the persisted response/parser paths scrub the full text).
+      onStdout: (c) => liveOutput.append(normalizedActionId, 'stdout', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
+      onStderr: (c) => liveOutput.append(normalizedActionId, 'stderr', redact_secrets?.length ? scrubSecretsFromText(c.toString('utf8'), redact_secrets) : c),
+    });
+  } finally {
+    stopAgentKeepalive();
+  }
   const stdoutInfo = joinAndCap(result.stdout, STREAM_INLINE_CAP);
   const stderrInfo = joinAndCap(result.stderr, STREAM_INLINE_CAP);
   // Scrub caller-supplied secrets from the text that reaches the tool response
