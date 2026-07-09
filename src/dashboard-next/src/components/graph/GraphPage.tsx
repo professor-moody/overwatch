@@ -5,7 +5,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
-import { NODE_COLORS, FOCUS_PRESETS } from '../../lib/graph-constants';
+import { NODE_COLORS } from '../../lib/graph-constants';
 import { colorForNode, type ColorMode } from '../../lib/graph-color';
 import { ColorModeLegend } from './ColorModeLegend';
 import noverlap from 'graphology-layout-noverlap';
@@ -32,7 +32,7 @@ import { EdgeDetailPanel } from './EdgeDetailPanel';
 import { correctGraph, type GraphCorrectionOperation } from '../../lib/api';
 import { useToastStore } from '../../stores/toast-store';
 import { useDashboardUiStore } from '../../stores/dashboard-ui-store';
-import { buildGraphLayerStates, edgeMatchesSemanticType, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
+import { buildGraphLayerStates, isCredentialFlowEdge, type GraphLayerId } from '../../lib/graph-layers';
 import { clearGraphPositions, loadGraphPositions, saveGraphNodePosition } from '../../lib/graph-position-store';
 import { parseGraphTargetParams, resolveGraphTarget, type ResolvedGraphTarget } from '../../lib/graph-target';
 import { buildGraphFocusApplication } from '../../lib/graph-focus';
@@ -551,11 +551,6 @@ export function GraphPage() {
     forceGraphUi();
   }, [engagementId, storeGraph, loadGraphData, refresh, fitVisibleGraph, layout, toast, forceGraphUi]);
 
-  const handleSetGraphMode = useCallback((mode: string) => {
-    stateRef.current.graphMode = mode as 'overview' | 'focused' | 'raw';
-    refresh();
-  }, [stateRef, refresh]);
-
   const handleSetLabelDensity = useCallback((density: string) => {
     stateRef.current.labelDensity = density as 'minimal' | 'balanced' | 'verbose';
     refresh();
@@ -592,57 +587,6 @@ export function GraphPage() {
   useEffect(() => {
     if (stateRef.current.colorMode !== 'type') recolorNodes();
   }, [graphVersion, recolorNodes, stateRef]);
-
-  const handleSetFocusPreset = useCallback((presetName: string) => {
-    const s = stateRef.current;
-    if (!presetName) {
-      if (s.activeFocusPreset) {
-        s.activeFocusPreset = null;
-        handleReset();
-      }
-      return;
-    }
-    const preset = FOCUS_PRESETS[presetName];
-    if (!preset) return;
-
-    s.activeFocusPreset = presetName;
-    clearPathHighlight();
-    s.focusNode = null;
-    s.focusNeighborhood = null;
-    s.focusLabel = null;
-    s.focusKind = null;
-    s.selectedNode = null;
-    s.inspectedEdgeIds.clear();
-    s.graphMode = 'focused';
-    s.activeFilters = new Set(preset.nodeTypes.filter(t => NODE_COLORS[t]));
-    s.emphasizedNodeTypes = new Set(preset.nodeTypes);
-    s.edgeTypeFilter = null;
-    s.edgeSourceFilter = null;
-
-    // Build neighborhood
-    const neighborhood = new Set<string>();
-    graph.forEachNode((id, attrs) => {
-      if (preset.nodeTypes.includes(attrs.nodeType as string)) neighborhood.add(id);
-    });
-    for (const nodeId of [...neighborhood]) {
-      graph.forEachEdge(nodeId, (_edge, attrs, src, tgt) => {
-        if (edgeMatchesSemanticType(attrs, preset.edgeHighlight)) {
-          neighborhood.add(src);
-          neighborhood.add(tgt);
-        }
-      });
-    }
-    s.selectedNeighborhood = neighborhood;
-    refresh();
-    const moved = zoomToNodes(neighborhood, {
-      ...focusedFitOptions('preset'),
-      padding: graphFitPadding(false),
-      duration: 300,
-    });
-    if (!moved) {
-      toast({ type: 'warning', title: 'Graph focus unavailable', message: 'No preset nodes can be framed yet.' });
-    }
-  }, [graph, stateRef, clearPathHighlight, refresh, zoomToNodes, handleReset, graphFitPadding, focusedFitOptions, toast]);
 
   const handleToggleFilter = useCallback((type: string) => {
     const s = stateRef.current;
@@ -806,12 +750,10 @@ export function GraphPage() {
         edgeCount={edgeCount}
         layoutRunning={layoutRunning}
         layoutMode={layoutMode}
-        graphMode={s.graphMode}
         labelDensity={s.labelDensity}
         colorMode={s.colorMode}
         pathMode={s.pathMode}
         layoutType={layoutType}
-        activeFocusPreset={s.activeFocusPreset}
         layers={layers}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
@@ -822,11 +764,9 @@ export function GraphPage() {
         onResetPositions={handleResetPositions}
         onExportPNG={() => exportScreenshot(rendererRef.current)}
         onExportSVG={() => exportSVG(rendererRef.current, graph)}
-        onSetGraphMode={handleSetGraphMode}
         onSetLabelDensity={handleSetLabelDensity}
         onSetColorMode={handleSetColorMode}
         onSetLayout={handleSetLayout}
-        onSetFocusPreset={handleSetFocusPreset}
         onToggleLayer={handleToggleLayer}
         onTogglePathMode={handleTogglePathMode}
         onToggleShortcuts={() => setShowShortcuts(v => !v)}
