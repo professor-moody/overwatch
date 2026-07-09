@@ -1833,10 +1833,16 @@ export class DashboardServer {
   // (preview, no mutation); the operator then confirms the plan_id to execute.
   // Nothing mutates without an explicit confirm.
   private commandPlans = new Map<string, { ops: OperatorOp[]; command: string; created_at: number }>();
+  // Plan ids that have already been confirmed+executed, kept briefly so a DUPLICATE
+  // confirm (double-click, retry, re-render) is idempotent — it returns the prior
+  // result instead of a 404 "re-issue the command" (which the operator saw AFTER the
+  // first confirm had already deployed the agents). Both grammar + planner plans.
+  private executedPlanIds = new Map<string, { at: number; results: unknown[] }>();
 
   private pruneCommandPlans(): void {
     const cutoff = Date.now() - 10 * 60_000; // 10 min TTL
     for (const [id, p] of this.commandPlans) if (p.created_at < cutoff) this.commandPlans.delete(id);
+    for (const [id, e] of this.executedPlanIds) if (e.at < cutoff) this.executedPlanIds.delete(id);
   }
 
   private buildInterpreterState(): InterpreterState {
@@ -2034,12 +2040,23 @@ export class DashboardServer {
         const proposed = grammarPlan ? null : this.engine.getProposedPlanStore().resolve(b.plan_id, 'confirmed');
         const plan = grammarPlan ?? (proposed ? { ops: proposed.ops, command: proposed.command } : null);
         if (!plan) {
+          // Idempotent duplicate: a prior confirm already executed this plan (and
+          // deployed its agents). Return that result instead of a 404 that wrongly
+          // tells the operator to re-issue the command — re-executing would double it.
+          const already = this.executedPlanIds.get(b.plan_id);
+          if (already) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ executed: true, already_executed: true, results: already.results }));
+            return;
+          }
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'plan not found or expired — re-issue the command' }));
           return;
         }
         if (grammarPlan) this.commandPlans.delete(b.plan_id);
         const results = executeOps(this.engine, plan.ops, 'operator');
+        // Record BEFORE responding so a duplicate confirm racing this one is idempotent.
+        this.executedPlanIds.set(b.plan_id, { at: Date.now(), results });
         this.engine.logActionEvent({
           description: `Operator command executed: ${plan.command || '(planner plan)'}`,
           event_type: 'operator_command',
