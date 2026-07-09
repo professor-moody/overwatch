@@ -31,6 +31,7 @@ interface GraphToolbarProps {
   layoutMode: 'auto' | 'manual' | 'paused';
   graphMode: string;
   labelDensity: string;
+  colorMode: string;
   activeFocusPreset: string | null;
   layers: GraphLayerState[];
   // Actions
@@ -45,6 +46,7 @@ interface GraphToolbarProps {
   onExportSVG: () => void;
   onSetGraphMode: (mode: string) => void;
   onSetLabelDensity: (density: string) => void;
+  onSetColorMode: (mode: string) => void;
   onSetFocusPreset: (preset: string) => void;
   onToggleLayer: (id: GraphLayerState['id']) => void;
   onToggleShortcuts: () => void;
@@ -86,11 +88,11 @@ export function getLayoutToolbarAction({ layoutMode, layoutRunning }: LayoutTool
 }
 
 export function GraphToolbar({
-  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, activeFocusPreset,
+  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, colorMode, activeFocusPreset,
   layers,
   onZoomIn, onZoomOut, onFit, onToggleLayout, onResumeLayout, onReset, onResetPositions,
   onExportPNG, onExportSVG,
-  onSetGraphMode, onSetLabelDensity, onSetFocusPreset,
+  onSetGraphMode, onSetLabelDensity, onSetColorMode, onSetFocusPreset,
   onToggleLayer,
   onToggleShortcuts,
   editMode, onToggleEditMode, onUndo, undoCount,
@@ -142,6 +144,13 @@ export function GraphToolbar({
               <div className="space-y-2 p-2">
                 <SelectGroup label="Mode" value={graphMode} onChange={onSetGraphMode} options={['overview', 'focused', 'raw']} />
                 <SelectGroup label="Labels" value={labelDensity} onChange={onSetLabelDensity} options={['minimal', 'balanced', 'verbose']} />
+                <SelectGroup
+                  label="Color by"
+                  value={colorMode}
+                  onChange={onSetColorMode}
+                  options={['type', 'community', 'tier']}
+                  optionLabels={['Type', 'Community', 'Tier']}
+                />
                 <SelectGroup
                   label="Focus"
                   value={activeFocusPreset || ''}

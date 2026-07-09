@@ -6,6 +6,8 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { NODE_COLORS, FOCUS_PRESETS } from '../../lib/graph-constants';
+import { colorForNode, type ColorMode } from '../../lib/graph-color';
+import { ColorModeLegend } from './ColorModeLegend';
 import { getNeighborhood } from '../../lib/graph-utils';
 import { useGraph } from '../../hooks/useGraph';
 import { useSigma } from '../../hooks/useSigma';
@@ -488,6 +490,29 @@ export function GraphPage() {
     refresh();
   }, [stateRef, refresh]);
 
+  // Rewrite every node's stored `color` attr for the active color mode. Rewriting
+  // the attr (rather than branching the per-frame reducer) keeps the reducer lean and
+  // keeps the minimap + all `dimColor(data.color,…)` paths automatically consistent.
+  const recolorNodes = useCallback(() => {
+    const mode = stateRef.current.colorMode;
+    graph.forEachNode((id, attrs) => {
+      graph.setNodeAttribute(id, 'color', colorForNode(attrs as { nodeType?: string; community?: number; _props?: unknown }, mode));
+    });
+    refresh();
+  }, [graph, stateRef, refresh]);
+
+  const handleSetColorMode = useCallback((mode: string) => {
+    stateRef.current.colorMode = mode as ColorMode;
+    recolorNodes();
+    forceGraphUi();
+  }, [stateRef, recolorNodes, forceGraphUi]);
+
+  // Re-apply the active (non-type) color encoding after a data load/merge so newly
+  // arrived nodes — which load with their default type color — pick up the mode.
+  useEffect(() => {
+    if (stateRef.current.colorMode !== 'type') recolorNodes();
+  }, [graphVersion, recolorNodes, stateRef]);
+
   const handleSetFocusPreset = useCallback((presetName: string) => {
     const s = stateRef.current;
     if (!presetName) {
@@ -703,6 +728,7 @@ export function GraphPage() {
         layoutMode={layoutMode}
         graphMode={s.graphMode}
         labelDensity={s.labelDensity}
+        colorMode={s.colorMode}
         activeFocusPreset={s.activeFocusPreset}
         layers={layers}
         onZoomIn={zoomIn}
@@ -716,6 +742,7 @@ export function GraphPage() {
         onExportSVG={() => exportSVG(rendererRef.current, graph)}
         onSetGraphMode={handleSetGraphMode}
         onSetLabelDensity={handleSetLabelDensity}
+        onSetColorMode={handleSetColorMode}
         onSetFocusPreset={handleSetFocusPreset}
         onToggleLayer={handleToggleLayer}
         onToggleShortcuts={() => setShowShortcuts(v => !v)}
@@ -776,6 +803,7 @@ export function GraphPage() {
 
           <div className="grid grid-cols-[minmax(14rem,1fr)_auto_minmax(10rem,12rem)] items-end gap-3">
             <div className="flex min-w-0 flex-col items-start gap-2">
+              <ColorModeLegend colorMode={s.colorMode} graph={graph} graphVersion={graphVersion} />
               <EdgeLegend defaultCollapsed={true} className="max-w-[14rem]" />
               <NodeFilters
                 graph={graph}

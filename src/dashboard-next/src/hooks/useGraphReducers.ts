@@ -24,6 +24,10 @@ export interface GraphInteractionState {
   // Mode
   graphMode: 'overview' | 'focused' | 'raw';
   labelDensity: 'minimal' | 'balanced' | 'verbose';
+  // What the node color encodes. The stored node `color` attr is rewritten on
+  // change (recolorNodes in GraphPage), so the reducer itself doesn't branch on this
+  // — it's here so the toolbar/legend can read the active encoding.
+  colorMode: 'type' | 'community' | 'tier';
 
   // Selection
   selectedNode: string | null;
@@ -77,6 +81,7 @@ export function createInitialInteractionState(): GraphInteractionState {
   return {
     graphMode: 'overview',
     labelDensity: 'balanced',
+    colorMode: 'type',
     selectedNode: null,
     selectedNeighborhood: null,
     inspectedEdgeIds: new Set(),

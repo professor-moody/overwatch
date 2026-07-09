@@ -59,7 +59,10 @@ export function Minimap({ graph, rendererRef, className }: MinimapProps) {
       const x = attrs.x as number;
       const y = attrs.y as number;
       if (typeof x !== 'number' || typeof y !== 'number') return;
-      const color = NODE_COLORS[(attrs.nodeType as string)] || '#888';
+      // Use the node's STORED color attr so the minimap follows the active color
+      // mode (type/community/tier) — GraphPage rewrites `color` on mode change.
+      // Fall back to the type color only if a node somehow has no color attr.
+      const color = (attrs.color as string) || NODE_COLORS[(attrs.nodeType as string)] || '#888';
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(ox + (x - minX) * scale, oy + (y - minY) * scale, 1.5, 0, Math.PI * 2);
