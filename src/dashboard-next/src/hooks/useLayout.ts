@@ -43,10 +43,10 @@ export function useLayout(graph: Graph, _rendererRef: React.MutableRefObject<Sig
       settings: {
         // Lower gravity = less pull toward the center, so the graph is allowed to
         // spread out instead of clumping into a dense ball.
-        gravity: 0.4,
-        // Repulsion strength — the main "spread things apart" lever. Bumped hard
-        // (was 10) so connected nodes stop stacking and edges get real length.
-        scalingRatio: 50,
+        gravity: 0.25,
+        // Repulsion strength — the main "spread things apart" lever. Bumped hard so
+        // connected nodes stop stacking and clusters aren't a compact blob.
+        scalingRatio: 120,
         // Always on: the Barnes-Hut approximation is cheap and helps small graphs
         // spread too (previously gated at >100 nodes).
         barnesHutOptimize: true,

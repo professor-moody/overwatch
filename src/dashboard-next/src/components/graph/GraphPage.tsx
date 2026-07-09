@@ -39,8 +39,10 @@ import { buildGraphFocusApplication } from '../../lib/graph-focus';
 
 const GRAPH_DRAWER_WIDTH = 384;
 const GRAPH_OVERLAY_GUTTER = 12;
-const MAX_AUTO_LAYOUT_SPAN = 160;
-const TARGET_AUTO_LAYOUT_SPAN = 90;
+// Floor for the normalized layout span, and how much the span grows per node
+// (× sqrt(node count)) so a big graph gets a big canvas instead of an overlapping blob.
+const TARGET_AUTO_LAYOUT_SPAN = 120;
+const SPAN_PER_NODE = 30;
 
 export function GraphPage() {
   // ---- Graph data layer ----
@@ -138,9 +140,16 @@ export function GraphPage() {
     if (!Number.isFinite(minX) || !Number.isFinite(minY)) return false;
 
     const span = Math.max(maxX - minX, maxY - minY);
-    if (span <= MAX_AUTO_LAYOUT_SPAN) return false;
+    if (span <= 0) return false;
 
-    const scale = TARGET_AUTO_LAYOUT_SPAN / span;
+    // Target span scales with sqrt(node count) so per-node DENSITY stays roughly
+    // constant. A fixed target crushed large graphs into a tiny box, so nodes piled
+    // on top of each other; scaling the canvas with node count means sigma renders
+    // nodes smaller (camera fits a larger span) and they get room to breathe. Only
+    // rescale when we're meaningfully off target (avoids churn on small deltas).
+    const target = Math.max(TARGET_AUTO_LAYOUT_SPAN, Math.sqrt(graph.order) * SPAN_PER_NODE);
+    const scale = target / span;
+    if (scale > 0.9 && scale < 1.1) return false;
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     graph.forEachNode((nodeId, attrs) => {
@@ -165,8 +174,10 @@ export function GraphPage() {
       if (attrs.fixed) pinned.set(id, { x: attrs.x as number, y: attrs.y as number });
     });
     noverlap.assign(graph, {
-      maxIterations: 60,
-      settings: { margin: 6, ratio: 1.4, gridSize: 20, speed: 3 },
+      maxIterations: 200,
+      // margin/ratio keep real breathing room around each node; more iterations so a
+      // dense graph on the (now larger) canvas actually converges to no-overlap.
+      settings: { margin: 10, ratio: 1.6, gridSize: 20, speed: 4 },
     });
     for (const [id, pos] of pinned) {
       graph.setNodeAttribute(id, 'x', pos.x);
