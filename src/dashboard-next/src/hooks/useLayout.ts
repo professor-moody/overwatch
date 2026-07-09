@@ -43,11 +43,18 @@ export function useLayout(graph: Graph, _rendererRef: React.MutableRefObject<Sig
       settings: {
         gravity: 1,
         scalingRatio: 10,
-        barnesHutOptimize: graph.order > 100,
+        // Always on: the Barnes-Hut approximation is cheap and helps small graphs
+        // spread too (previously gated at >100 nodes).
+        barnesHutOptimize: true,
         barnesHutTheta: 0.5,
         strongGravityMode: false,
         slowDown: 5,
-        adjustSizes: false,
+        // Treat node `size` as a collision radius so nodes stop overlapping — the
+        // cheapest anti-hairball win, and reduces the need for a separate noverlap pass.
+        adjustSizes: true,
+        // Distribute outbound attraction so high-degree hubs (domains, busy hosts)
+        // don't collapse everything onto themselves — spreads dense neighborhoods.
+        outboundAttractionDistribution: true,
       },
     });
 

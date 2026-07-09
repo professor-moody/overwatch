@@ -71,10 +71,67 @@ function hashId(value: string): number {
   return hash;
 }
 
+/**
+ * Seed positions by Louvain community so ForceAtlas2 relaxes into visibly
+ * separated clusters instead of one hairball. Community centroids are placed on a
+ * ring (radius grows with community count); each node is scattered in a disc around
+ * its centroid, sized by community population, with a stable per-id hash so the seed
+ * is deterministic. Returns null when there aren't at least 2 communities — the
+ * caller then falls back to the domain→host→satellite seeding (preserves old
+ * behavior when Louvain data is absent).
+ */
+export function seedByCommunity(nodes: ExportedNode[]): Record<string, { x: number; y: number }> | null {
+  const byCommunity = new Map<number, ExportedNode[]>();
+  for (const n of nodes) {
+    if (typeof n.community_id !== 'number') continue;
+    const arr = byCommunity.get(n.community_id);
+    if (arr) arr.push(n); else byCommunity.set(n.community_id, [n]);
+  }
+  if (byCommunity.size < 2) return null;
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  // Largest communities first so the biggest clusters get stable early ring slots.
+  const communities = [...byCommunity.entries()].sort((a, b) => b[1].length - a[1].length);
+  const k = communities.length;
+  const ringRadius = Math.max(30, k * 8);
+
+  communities.forEach(([, members], idx) => {
+    const centroidAngle = (idx / k) * Math.PI * 2;
+    const cx = ringRadius * Math.cos(centroidAngle);
+    const cy = ringRadius * Math.sin(centroidAngle);
+    // Disc radius scales with sqrt(size) so a dense community doesn't spill onto the ring.
+    const clusterR = 4 + Math.sqrt(members.length) * 2.5;
+    members.forEach(n => {
+      const h = hashId(n.id);
+      const a = ((h % 360) / 360) * Math.PI * 2;
+      // `>>> 3` (unsigned) — hashId returns an unsigned 32-bit value, so a signed
+      // `>> 3` would go negative for any hash >= 2^31 and sqrt(negative) → NaN,
+      // poisoning ~half the seeds.
+      const r = clusterR * Math.sqrt(((h >>> 3) % 100) / 100); // sqrt → roughly uniform disc fill
+      positions[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+    });
+  });
+
+  // Any node missing a community_id (shouldn't happen once Louvain has run) → small
+  // deterministic jitter near the origin so it still gets a seed.
+  for (const n of nodes) {
+    if (positions[n.id]) continue;
+    const h = hashId(n.id);
+    positions[n.id] = { x: (h % 20) - 10, y: ((h >>> 4) % 20) - 10 };
+  }
+  return positions;
+}
+
 function groupInitialPositions(
   nodes: ExportedNode[],
   edges: ExportedEdge[],
 ): Record<string, { x: number; y: number }> {
+  // Prefer community-based seeding when Louvain communities are present — it's the
+  // biggest lever against the "jumbled hairball". Falls back to the domain-anchored
+  // seeding below when there are <2 communities (e.g. early/sparse engagements).
+  const communitySeed = seedByCommunity(nodes);
+  if (communitySeed) return communitySeed;
+
   const positions: Record<string, { x: number; y: number }> = {};
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
   const domains = nodes.filter(n => n.type === 'domain');
