@@ -63,6 +63,7 @@
     "clsx": "^2.1.1",
     "fast-xml-parser": "^5.7.2",
     "graphology-communities-louvain": "2.0.2",
+    "graphology-layout-noverlap": "^0.4.2",
     "graphology-shortest-path": "2.1.0",
     "graphology-types": "0.24.8",
     "lucide-react": "^1.8.0",

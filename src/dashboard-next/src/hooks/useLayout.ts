@@ -41,8 +41,12 @@ export function useLayout(graph: Graph, _rendererRef: React.MutableRefObject<Sig
 
     const layout = new FA2Layout(graph, {
       settings: {
-        gravity: 1,
-        scalingRatio: 10,
+        // Lower gravity = less pull toward the center, so the graph is allowed to
+        // spread out instead of clumping into a dense ball.
+        gravity: 0.4,
+        // Repulsion strength — the main "spread things apart" lever. Bumped hard
+        // (was 10) so connected nodes stop stacking and edges get real length.
+        scalingRatio: 50,
         // Always on: the Barnes-Hut approximation is cheap and helps small graphs
         // spread too (previously gated at >100 nodes).
         barnesHutOptimize: true,

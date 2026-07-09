@@ -8,6 +8,7 @@ import { useEngagementStore } from '../../stores/engagement-store';
 import { NODE_COLORS, FOCUS_PRESETS } from '../../lib/graph-constants';
 import { colorForNode, type ColorMode } from '../../lib/graph-color';
 import { ColorModeLegend } from './ColorModeLegend';
+import noverlap from 'graphology-layout-noverlap';
 import { getNeighborhood } from '../../lib/graph-utils';
 import { useGraph } from '../../hooks/useGraph';
 import { useSigma } from '../../hooks/useSigma';
@@ -146,6 +147,27 @@ export function GraphPage() {
     return true;
   }, [graph]);
 
+  // Anti-overlap pass: nudge nodes apart so they stop stacking on top of each other
+  // and their connected neighbors (ForceAtlas2 gets close but doesn't guarantee no
+  // overlap). `margin` is the extra gap kept between nodes; `ratio` scales the node
+  // size used for collision. Only runs on the auto-layout path (no user-pinned
+  // nodes there), but we still snapshot/restore any `fixed` node defensively.
+  const applyNoverlap = useCallback(() => {
+    if (graph.order === 0) return;
+    const pinned = new Map<string, { x: number; y: number }>();
+    graph.forEachNode((id, attrs) => {
+      if (attrs.fixed) pinned.set(id, { x: attrs.x as number, y: attrs.y as number });
+    });
+    noverlap.assign(graph, {
+      maxIterations: 60,
+      settings: { margin: 6, ratio: 1.4, gridSize: 20, speed: 3 },
+    });
+    for (const [id, pos] of pinned) {
+      graph.setNodeAttribute(id, 'x', pos.x);
+      graph.setNodeAttribute(id, 'y', pos.y);
+    }
+  }, [graph]);
+
   // ---- Edit mode ----
   const [editMode, setEditMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -244,6 +266,7 @@ export function GraphPage() {
           setLayoutRunning(false);
           if (!userPinnedLayoutRef.current) {
             normalizeAutoLayout();
+            applyNoverlap();
             refresh();
             fitCurrentGraphContext(250, !!selectedNodeId);
           }
@@ -274,6 +297,7 @@ export function GraphPage() {
             setLayoutRunning(false);
             if (!userPinnedLayoutRef.current) {
               normalizeAutoLayout();
+              applyNoverlap();
               refresh();
               fitCurrentGraphContext(300, false);
             }
