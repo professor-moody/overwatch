@@ -15,13 +15,13 @@ import {
   Pause,
   Pencil,
   Play,
+  Network,
   Plus,
   RotateCcw,
   Route,
   SlidersHorizontal,
   Undo2,
 } from 'lucide-react';
-import { FOCUS_PRESETS } from '../../lib/graph-constants';
 import { cn } from '../../lib/utils';
 import type { GraphLayerState } from '../../lib/graph-layers';
 
@@ -30,12 +30,10 @@ interface GraphToolbarProps {
   edgeCount: number;
   layoutRunning: boolean;
   layoutMode: 'auto' | 'manual' | 'paused';
-  graphMode: string;
   labelDensity: string;
   colorMode: string;
   pathMode: boolean;
   layoutType: string;
-  activeFocusPreset: string | null;
   layers: GraphLayerState[];
   // Actions
   onZoomIn: () => void;
@@ -47,11 +45,9 @@ interface GraphToolbarProps {
   onResetPositions: () => void;
   onExportPNG: () => void;
   onExportSVG: () => void;
-  onSetGraphMode: (mode: string) => void;
   onSetLabelDensity: (density: string) => void;
   onSetColorMode: (mode: string) => void;
   onSetLayout: (type: string) => void;
-  onSetFocusPreset: (preset: string) => void;
   onToggleLayer: (id: GraphLayerState['id']) => void;
   onTogglePathMode: () => void;
   onToggleShortcuts: () => void;
@@ -93,11 +89,11 @@ export function getLayoutToolbarAction({ layoutMode, layoutRunning }: LayoutTool
 }
 
 export function GraphToolbar({
-  nodeCount, edgeCount, layoutRunning, layoutMode, graphMode, labelDensity, colorMode, pathMode, layoutType, activeFocusPreset,
+  nodeCount, edgeCount, layoutRunning, layoutMode, labelDensity, colorMode, pathMode, layoutType,
   layers,
   onZoomIn, onZoomOut, onFit, onToggleLayout, onResumeLayout, onReset, onResetPositions,
   onExportPNG, onExportSVG,
-  onSetGraphMode, onSetLabelDensity, onSetColorMode, onSetLayout, onSetFocusPreset,
+  onSetLabelDensity, onSetColorMode, onSetLayout,
   onToggleLayer, onTogglePathMode,
   onToggleShortcuts,
   editMode, onToggleEditMode, onUndo, undoCount,
@@ -105,8 +101,15 @@ export function GraphToolbar({
   const [showExport, setShowExport] = useState(false);
   const [showLayers, setShowLayers] = useState(false);
   const [showView, setShowView] = useState(false);
+  const [showLayout, setShowLayout] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const layoutAction = getLayoutToolbarAction({ layoutMode, layoutRunning });
+
+  const LAYOUT_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
+    { id: 'force', label: 'Force (clusters)', hint: 'Physics simulation — organic clusters' },
+    { id: 'hierarchical', label: 'Hierarchical (flow)', hint: 'Top-to-bottom by edge direction — what leads to what' },
+    { id: 'tiered', label: 'Tiered (by role)', hint: 'Bands: identity / cloud / app / network' },
+  ];
 
   return (
     <div className="h-12 bg-surface border-b border-border flex items-center px-3 gap-2 text-xs flex-shrink-0 relative z-50 overflow-visible">
@@ -136,6 +139,30 @@ export function GraphToolbar({
           {layoutAction.intent === 'pause' ? <Pause size={14} /> : <Play size={14} />}
           <span className="hidden lg:inline">{layoutAction.label}</span>
         </ToolBtn>
+        {/* Layout algorithm — the primary "make the graph readable" control. */}
+        <div className="relative">
+          <ToolBtn
+            onClick={() => { setShowLayout(!showLayout); setShowExport(false); setShowLayers(false); setShowView(false); setShowMore(false); }}
+            active={layoutType !== 'force'}
+            title="Layout algorithm"
+          >
+            <Network size={14} /><span className="hidden lg:inline">Layout</span>
+          </ToolBtn>
+          {showLayout && (
+            <Dropdown onClose={() => setShowLayout(false)} wide>
+              {LAYOUT_OPTIONS.map(opt => (
+                <button
+                  key={opt.id}
+                  onClick={() => { onSetLayout(opt.id); setShowLayout(false); }}
+                  title={opt.hint}
+                  className={`w-full text-left px-3 py-1.5 text-xs rounded hover:bg-hover transition-colors ${layoutType === opt.id ? 'text-accent font-medium' : 'text-foreground'}`}
+                >
+                  {layoutType === opt.id ? '● ' : '○ '}{opt.label}
+                </button>
+              ))}
+            </Dropdown>
+          )}
+        </div>
         <ToolBtn
           onClick={onTogglePathMode}
           active={pathMode}
@@ -154,14 +181,6 @@ export function GraphToolbar({
           {showView && (
             <Dropdown onClose={() => setShowView(false)} wide>
               <div className="space-y-2 p-2">
-                <SelectGroup
-                  label="Layout"
-                  value={layoutType}
-                  onChange={onSetLayout}
-                  options={['force', 'hierarchical', 'tiered']}
-                  optionLabels={['Force (clusters)', 'Hierarchical (flow)', 'Tiered (by role)']}
-                />
-                <SelectGroup label="Mode" value={graphMode} onChange={onSetGraphMode} options={['overview', 'focused', 'raw']} />
                 <SelectGroup label="Labels" value={labelDensity} onChange={onSetLabelDensity} options={['minimal', 'balanced', 'verbose']} />
                 <SelectGroup
                   label="Color by"
@@ -169,13 +188,6 @@ export function GraphToolbar({
                   onChange={onSetColorMode}
                   options={['type', 'community', 'tier']}
                   optionLabels={['Type', 'Community', 'Tier']}
-                />
-                <SelectGroup
-                  label="Focus"
-                  value={activeFocusPreset || ''}
-                  onChange={onSetFocusPreset}
-                  options={['', ...Object.keys(FOCUS_PRESETS)]}
-                  optionLabels={['None', ...Object.keys(FOCUS_PRESETS)]}
                 />
               </div>
             </Dropdown>
