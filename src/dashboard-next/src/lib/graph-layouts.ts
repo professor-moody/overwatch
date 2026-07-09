@@ -26,12 +26,14 @@ const NON_STRUCTURAL_EDGE_TYPES = new Set(['REACHABLE', 'RELATED']);
  */
 export function computeHierarchical(graph: Graph): void {
   const g = new dagre.graphlib.Graph({ multigraph: true, directed: true });
-  g.setGraph({ rankdir: 'TB', nodesep: 45, ranksep: 90, marginx: 20, marginy: 20 });
+  // Generous separation so ranks/rows don't collide (normalizeAutoLayout rescales the
+  // whole thing afterward, so these are relative spacings, kept large vs node size).
+  g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 140, marginx: 30, marginy: 30 });
   g.setDefaultEdgeLabel(() => ({}));
 
   graph.forEachNode((id, attrs) => {
     const size = (attrs.size as number) || 6;
-    g.setNode(id, { width: Math.max(24, size * 3), height: Math.max(24, size * 3) });
+    g.setNode(id, { width: Math.max(30, size * 4), height: Math.max(30, size * 4) });
   });
 
   let i = 0;
@@ -69,9 +71,9 @@ export function computeTiered(graph: Graph): void {
     if (arr) arr.push(id); else bands.set(band, [id]);
   });
 
-  const colGap = 34;
-  const rowGap = 34;
-  const bandGap = 90; // vertical gap between the start of one tier's block and the next
+  const colGap = 48;
+  const rowGap = 44;
+  const bandGap = 140; // vertical gap between the start of one tier's block and the next
   let bandTop = 0;
 
   for (const band of [...bands.keys()].sort((a, b) => a - b)) {
