@@ -5,7 +5,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
-import { NODE_COLORS } from '../../lib/graph-constants';
+import { NODE_COLORS, RECON_NODE_TYPES } from '../../lib/graph-constants';
 import { colorForNode, type ColorMode } from '../../lib/graph-color';
 import { ColorModeLegend } from './ColorModeLegend';
 import noverlap from 'graphology-layout-noverlap';
@@ -49,7 +49,7 @@ export function GraphPage() {
   const { graph, loadGraphData, mergeGraphDelta, reachableOnlyCacheRef } = useGraph();
 
   // ---- Reducers ----
-  const { stateRef, nodeReducer, edgeReducer } = useGraphReducers(graph, reachableOnlyCacheRef);
+  const { stateRef, nodeReducer, edgeReducer, isNodeVisible } = useGraphReducers(graph, reachableOnlyCacheRef);
 
   // ---- Camera ratio tracking ----
   const onCameraUpdate = useCallback((ratio: number) => {
@@ -128,10 +128,17 @@ export function GraphPage() {
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    graph.forEachNode((_nodeId, attrs) => {
+    // Measure the span + count over VISIBLE nodes only, so hidden recon nodes don't
+    // inflate the canvas (which would leave the visible attack graph as sparse dots).
+    // isNodeVisible is the SAME predicate the reducer renders with, so a subdomain
+    // shown because it's on a highlighted path counts here too (and is framed).
+    let visibleCount = 0;
+    graph.forEachNode((nodeId, attrs) => {
       const x = attrs.x as number;
       const y = attrs.y as number;
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (!isNodeVisible(nodeId, attrs)) return;
+      visibleCount++;
       minX = Math.min(minX, x);
       maxX = Math.max(maxX, x);
       minY = Math.min(minY, y);
@@ -142,12 +149,12 @@ export function GraphPage() {
     const span = Math.max(maxX - minX, maxY - minY);
     if (span <= 0) return false;
 
-    // Target span scales with sqrt(node count) so per-node DENSITY stays roughly
-    // constant. A fixed target crushed large graphs into a tiny box, so nodes piled
-    // on top of each other; scaling the canvas with node count means sigma renders
-    // nodes smaller (camera fits a larger span) and they get room to breathe. Only
-    // rescale when we're meaningfully off target (avoids churn on small deltas).
-    const target = Math.max(TARGET_AUTO_LAYOUT_SPAN, Math.sqrt(graph.order) * SPAN_PER_NODE);
+    // Target span scales with sqrt(VISIBLE node count) so per-node DENSITY stays
+    // roughly constant. A fixed target crushed large graphs into a tiny box, so nodes
+    // piled on top of each other; scaling the canvas with node count means sigma
+    // renders nodes smaller (camera fits a larger span) and they get room to breathe.
+    // Only rescale when we're meaningfully off target (avoids churn on small deltas).
+    const target = Math.max(TARGET_AUTO_LAYOUT_SPAN, Math.sqrt(Math.max(visibleCount, 1)) * SPAN_PER_NODE);
     const scale = target / span;
     if (scale > 0.9 && scale < 1.1) return false;
     const cx = (minX + maxX) / 2;
@@ -160,7 +167,7 @@ export function GraphPage() {
       graph.setNodeAttribute(nodeId, 'y', (y - cy) * scale);
     });
     return true;
-  }, [graph]);
+  }, [graph, isNodeVisible]);
 
   // Anti-overlap pass: nudge nodes apart so they stop stacking on top of each other
   // and their connected neighbors (ForceAtlas2 gets close but doesn't guarantee no
@@ -190,11 +197,19 @@ export function GraphPage() {
   // whatever the user pinned.
   const applyComputedLayout = useCallback((type: 'hierarchical' | 'tiered') => {
     if (graph.order === 0) return;
-    if (type === 'hierarchical') computeHierarchical(graph); else computeTiered(graph);
+    // Lay out only currently-VISIBLE nodes — otherwise a flood of hidden recon nodes
+    // (subdomains) sizes the canvas and the visible attack graph is a few sparse dots.
+    // Use isNodeVisible (the render predicate), not raw activeFilters, so a recon node
+    // shown because it's on a highlighted path is laid out too, not stranded at a stale
+    // position that zoomToFit would then frame.
+    const include = (id: string, attrs: Record<string, unknown>) => isNodeVisible(id, attrs);
+    if (type === 'hierarchical') computeHierarchical(graph, { include }); else computeTiered(graph, { include });
+    // NOTE: no applyNoverlap here — dagre/tiered are overlap-free by construction, and
+    // running noverlap over the whole graph let hidden nodes (left at stale positions,
+    // since they weren't laid out) shove the freshly-positioned visible nodes apart.
     normalizeAutoLayout();
-    applyNoverlap();
     refresh();
-  }, [graph, normalizeAutoLayout, applyNoverlap, refresh]);
+  }, [graph, isNodeVisible, normalizeAutoLayout, refresh]);
 
   // Run whichever layout is active for a fresh/merged graph. Force = the FA2 burst +
   // explode/noverlap finalize; computed = apply it synchronously. No-op when the user
@@ -480,7 +495,7 @@ export function GraphPage() {
   // ---- Toolbar callbacks ----
   const handleReset = useCallback(() => {
     const s = stateRef.current;
-    s.activeFilters = new Set(Object.keys(NODE_COLORS));
+    s.activeFilters = new Set(Object.keys(NODE_COLORS).filter(t => !RECON_NODE_TYPES.includes(t as never)));
     s.graphMode = 'overview';
     s.labelDensity = 'balanced';
     s.edgeTypeFilter = null;
