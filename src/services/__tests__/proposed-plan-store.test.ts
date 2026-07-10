@@ -46,6 +46,31 @@ describe('ProposedPlanStore', () => {
     expect(store.size()).toBe(0);
   });
 
+  it('describeResolution distinguishes confirmed / denied / expired / unknown after the plan is gone', () => {
+    const store = new ProposedPlanStore(60_000); // 1 min TTL
+    // open plan → 'open'
+    const openPlan = store.add({ command: 'a', ops, summary: 'a', now: 1000 });
+    expect(store.describeResolution(openPlan.plan_id, 1000)).toBe('open');
+
+    // confirmed → tombstone survives pruning
+    const confirmed = store.add({ command: 'b', ops, summary: 'b', now: 1000 });
+    store.resolve(confirmed.plan_id, 'confirmed', 1000);
+    expect(store.describeResolution(confirmed.plan_id, 1000)).toBe('confirmed');
+    expect(store.describeResolution(confirmed.plan_id, 1000 + 61_000)).toBe('confirmed'); // pruned from live map, tombstone remains
+
+    // denied → tombstone survives pruning
+    const denied = store.add({ command: 'c', ops, summary: 'c', now: 1000 });
+    store.resolve(denied.plan_id, 'denied', 1000);
+    expect(store.describeResolution(denied.plan_id, 1000 + 61_000)).toBe('denied');
+
+    // open-but-timed-out → 'expired' (tombstoned by prune, not confirmed/denied)
+    const stale = store.add({ command: 'd', ops, summary: 'd', now: 1000 });
+    expect(store.describeResolution(stale.plan_id, 1000 + 61_000)).toBe('expired');
+
+    // never seen → 'unknown'
+    expect(store.describeResolution('never-existed')).toBe('unknown');
+  });
+
   it('onChange fires on add and resolve', () => {
     const store = new ProposedPlanStore();
     let calls = 0;

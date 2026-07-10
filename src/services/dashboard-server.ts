@@ -2086,8 +2086,22 @@ export class DashboardServer {
             res.end(JSON.stringify({ executed: true, already_executed: true, results: already.results }));
             return;
           }
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'plan not found or expired — re-issue the command' }));
+          // State-aware error: ONLY an expired/unknown plan should be re-issued. A plan
+          // confirmed or denied from the OTHER surface (the "Needs you" queue can resolve
+          // the same plan_id) is already handled — a blind "re-issue the command" there
+          // spawns a duplicate planner + a duplicate dispatch, which is exactly the
+          // "404 said re-enter, but agents still deployed" symptom.
+          // (grammarPlan is always falsy in this !plan branch — a found grammar plan
+          // wouldn't be null — so the disposition is always the proposed-store's.)
+          const disp = this.engine.getProposedPlanStore().describeResolution(b.plan_id);
+          const alreadyHandled = disp === 'confirmed' || disp === 'denied';
+          const error = disp === 'confirmed'
+            ? 'plan was already confirmed — check the fleet (do not re-issue)'
+            : disp === 'denied'
+              ? 'plan was dismissed — it will not deploy (do not re-issue)'
+              : 'plan not found or expired — re-issue the command';
+          res.writeHead(alreadyHandled ? 409 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error, resolution: disp, already_handled: alreadyHandled }));
           return;
         }
         if (grammarPlan) this.commandPlans.delete(b.plan_id);

@@ -348,4 +348,40 @@ describe('/api/commands — planner-proposed plan confirm + deny + GET /api/plan
     // scope was NOT widened
     expect(engine.getConfig().scope.cidrs).not.toContain('10.9.9.0/24');
   });
+
+  it('confirming a plan DENIED from the other surface returns 409 "do not re-issue", not a re-issue 404', async () => {
+    // The "Needs you" queue dismissed this plan; the OperatorCommandBar then tries to
+    // confirm the same (now-stale) plan_id. A blanket 404 "re-issue the command" here
+    // is what spawned a duplicate planner + duplicate dispatch — the reported bug.
+    const plan = engine.getProposedPlanStore().add({
+      command: 'go poke around', ops: [{ op: 'directive', task_id: 'target-1', agent_label: 'scanner-1', kind: 'pause' }], summary: 's',
+    });
+    engine.getProposedPlanStore().resolve(plan.plan_id, 'denied'); // dismissed elsewhere
+    const res = await post({ confirm: true, plan_id: plan.plan_id });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.already_handled).toBe(true);
+    expect(body.resolution).toBe('denied');
+    expect(body.error).toContain('do not re-issue');
+  });
+
+  it('confirming a plan already confirmed elsewhere returns 409 "check the fleet", not a re-issue 404', async () => {
+    const plan = engine.getProposedPlanStore().add({
+      command: 'go poke around', ops: [{ op: 'directive', task_id: 'target-1', agent_label: 'scanner-1', kind: 'pause' }], summary: 's',
+    });
+    engine.getProposedPlanStore().resolve(plan.plan_id, 'confirmed'); // consumed by another surface (not via executedPlanIds)
+    const res = await post({ confirm: true, plan_id: plan.plan_id });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.resolution).toBe('confirmed');
+    expect(body.error).toContain('check the fleet');
+  });
+
+  it('a genuinely unknown/expired plan_id still gets the re-issue 404', async () => {
+    const res = await post({ confirm: true, plan_id: 'never-proposed' });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.already_handled).toBeFalsy();
+    expect(body.error).toContain('re-issue');
+  });
 });
