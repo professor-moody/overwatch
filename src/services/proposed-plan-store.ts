@@ -54,11 +54,34 @@ const DEFAULT_TTL_MS = 10 * 60_000; // 10 min, matches the grammar-plan TTL
  * In-memory store of planner-proposed plans awaiting operator confirmation.
  * Self-contained (no engine ref needed) so it's trivially unit-testable.
  */
+/**
+ * Why a confirm found no open plan. Lets the confirm path give ACCURATE advice
+ * instead of a blanket "re-issue the command" that manufactures a duplicate
+ * planner/dispatch when the plan was actually already handled elsewhere (the
+ * "Needs you" queue can confirm/deny the same plan_id).
+ */
+export type PlanResolution = 'open' | 'confirmed' | 'denied' | 'expired' | 'unknown';
+
+// Bounded history of terminal plan dispositions, so `describeResolution` can still
+// answer after the plan itself has been pruned from the live map.
+const TOMBSTONE_CAP = 200;
+
 export class ProposedPlanStore {
   private plans = new Map<string, ProposedPlan>();
+  // plan_id → how it ended (confirmed/denied/expired). Insertion-ordered + capped.
+  private tombstones = new Map<string, 'confirmed' | 'denied' | 'expired'>();
   private onChangeCb: (() => void) | null = null;
 
   constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
+
+  private tombstone(plan_id: string, disposition: 'confirmed' | 'denied' | 'expired'): void {
+    this.tombstones.delete(plan_id); // re-insert to move to the newest (MRU) position
+    this.tombstones.set(plan_id, disposition);
+    if (this.tombstones.size > TOMBSTONE_CAP) {
+      const oldest = this.tombstones.keys().next().value;
+      if (oldest !== undefined) this.tombstones.delete(oldest);
+    }
+  }
 
   /** Register a change listener (the dashboard uses this to broadcast). */
   onChange(cb: () => void): void {
@@ -111,15 +134,34 @@ export class ProposedPlanStore {
     const plan = this.plans.get(plan_id);
     if (!plan || plan.status !== 'open') return null;
     plan.status = status;
+    this.tombstone(plan_id, status);
     this.onChangeCb?.();
     return plan;
   }
 
-  /** Sweep plans older than the TTL, marking still-open ones expired then dropping all stale. */
+  /**
+   * Explain what happened to a plan_id that `resolve` couldn't confirm. Reads the
+   * live plan first (still open / resolved but not yet pruned), then the tombstone
+   * history for one that's already been swept. `unknown` = never seen (or aged out
+   * of both). Prunes first so an expired-but-unswept plan reports `expired`.
+   */
+  describeResolution(plan_id: string, now: number = Date.now()): PlanResolution {
+    this.prune(now);
+    const plan = this.plans.get(plan_id);
+    if (plan) return plan.status; // 'open' | 'confirmed' | 'denied' (expired ones are pruned, not kept)
+    return this.tombstones.get(plan_id) ?? 'unknown';
+  }
+
+  /** Sweep plans older than the TTL, tombstoning still-open ones as expired before dropping. */
   prune(now: number = Date.now()): void {
     const cutoff = now - this.ttlMs;
     for (const [id, p] of this.plans) {
-      if (p.created_at < cutoff) this.plans.delete(id);
+      if (p.created_at < cutoff) {
+        // A still-open plan that timed out is 'expired'; a resolved one already has
+        // its confirmed/denied tombstone from resolve() — don't overwrite it.
+        if (p.status === 'open') this.tombstone(id, 'expired');
+        this.plans.delete(id);
+      }
     }
   }
 
