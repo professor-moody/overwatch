@@ -464,6 +464,27 @@ describe('POST /api/agents/dispatch with an archetype', () => {
   });
 });
 
+describe('POST /api/agents/dispatch — duplicate at the same node is refused (node dedup)', () => {
+  it('a second same-archetype deploy at a node returns 409 node_dispatch_conflict, not a bogus frontier lease error', async () => {
+    engine.addNode({
+      id: 'host-dupe', type: 'host', label: '10.20.30.40', ip: '10.20.30.40',
+      discovered_at: NOW, discovered_by: 'test', confidence: 1.0,
+    });
+    const first = await postJson<{ dispatched: boolean; task: { agent_id: string } }>(
+      '/api/agents/dispatch', { target_node_ids: ['host-dupe'], archetype: 'recon_scanner' });
+    expect(first.status).toBe(201);
+    expect(first.body.dispatched).toBe(true);
+
+    const dup = await postJson<{ dispatched: boolean; reason: string; node_id?: string; existing_agent_id?: string }>(
+      '/api/agents/dispatch', { target_node_ids: ['host-dupe'], archetype: 'recon_scanner' });
+    expect(dup.status).toBe(409);
+    expect(dup.body.dispatched).toBe(false);
+    expect(dup.body.reason).toBe('node_dispatch_conflict'); // NOT 'frontier_lease_conflict'
+    expect(dup.body.node_id).toBe('host-dupe');
+    expect(dup.body.existing_agent_id).toBe(first.body.task.agent_id);
+  });
+});
+
 describe('POST /api/agents/dispatch to an arbitrary node (no archetype)', () => {
   it('auto-picks an explore-safe archetype (never full-surface default) + a default objective', async () => {
     // `user-op` has type `user`, which recommendArchetype maps to the full-surface

@@ -66,6 +66,45 @@ describe('AgentManager', () => {
       expect(mgr.getTask('task-1')).toBe(replacement);
       expect(mgr.getAll()).toHaveLength(1);
     });
+
+    describe('node-scoped dispatch dedup (no frontier_item_id)', () => {
+      // A node-scoped dispatch (planner deploy-at-node) carries no frontier lease;
+      // dedup stops a re-issued command from launching a duplicate at the same node.
+      const nodeDispatch = (o: Partial<AgentTask>) =>
+        makeTask({ frontier_item_id: undefined, archetype: 'recon_scanner', role: 'research', ...o });
+
+      it('refuses a second running dispatch of the same archetype at the same node', () => {
+        const { mgr } = setup();
+        expect(mgr.register(nodeDispatch({ id: 't1', agent_id: 'a1', subgraph_node_ids: ['n1'] })).ok).toBe(true);
+        const r = mgr.register(nodeDispatch({ id: 't2', agent_id: 'a2', subgraph_node_ids: ['n1'] }));
+        expect(r.ok).toBe(false);
+        expect(r.node_conflict).toMatchObject({ existing_task_id: 't1', existing_agent_id: 'a1', node_id: 'n1' });
+        expect(mgr.getTask('t2')).toBeNull(); // not stored
+      });
+
+      it('allows a DIFFERENT archetype at the same node (web-crawl alongside a port-scan)', () => {
+        const { mgr } = setup();
+        mgr.register(nodeDispatch({ id: 't1', agent_id: 'a1', archetype: 'recon_scanner', subgraph_node_ids: ['n1'] }));
+        const r = mgr.register(nodeDispatch({ id: 't2', agent_id: 'a2', archetype: 'web_prober', subgraph_node_ids: ['n1'] }));
+        expect(r.ok).toBe(true);
+      });
+
+      it('allows a re-dispatch once the prior agent is terminal', () => {
+        const { mgr } = setup();
+        mgr.register(nodeDispatch({ id: 't1', agent_id: 'a1', subgraph_node_ids: ['n1'] }));
+        mgr.updateStatus('t1', 'completed');
+        const r = mgr.register(nodeDispatch({ id: 't2', agent_id: 'a2', subgraph_node_ids: ['n1'] }));
+        expect(r.ok).toBe(true);
+      });
+
+      it('does NOT node-dedup frontier-scoped work (that has its own lease)', () => {
+        const { mgr } = setup();
+        // Two DIFFERENT frontier items that happen to seed the same node → both allowed;
+        // the frontier lease, not node-dedup, governs frontier work.
+        expect(mgr.register(makeTask({ id: 't1', agent_id: 'a1', frontier_item_id: 'fi-A', subgraph_node_ids: ['n1'] })).ok).toBe(true);
+        expect(mgr.register(makeTask({ id: 't2', agent_id: 'a2', frontier_item_id: 'fi-B', subgraph_node_ids: ['n1'] })).ok).toBe(true);
+      });
+    });
   });
 
   describe('getTask', () => {

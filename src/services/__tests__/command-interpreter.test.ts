@@ -189,6 +189,21 @@ describe('executeOps (engine effects)', () => {
     expect(task!.archetype).toBe('recon_scanner');
   });
 
+  it('a duplicate dispatch at the same node is refused (node dedup), not launched twice', () => {
+    engine.addNode({
+      id: 'host-10-99-0-9', type: 'host', label: '10.99.0.9', ip: '10.99.0.9',
+      discovered_at: new Date().toISOString(), discovered_by: 'test', confidence: 1.0,
+    });
+    const first = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-9'], archetype: 'recon_scanner' }]);
+    expect(first[0].ok).toBe(true);
+    // Re-issue the same command → same archetype + same node while the first still runs.
+    const dup = executeOps(engine, [{ op: 'dispatch', target_node_ids: ['host-10-99-0-9'], archetype: 'recon_scanner' }]);
+    expect(dup[0].ok).toBe(false);
+    expect(dup[0].error).toContain('already being worked');
+    // Only one agent actually landed at the node.
+    expect(engine.getAgentTasks().filter(t => t.subgraph_node_ids.includes('host-10-99-0-9') && t.status === 'running')).toHaveLength(1);
+  });
+
   it('dispatch op auto-selects an archetype when none is given', () => {
     engine.addNode({
       id: 'host-10-99-0-6', type: 'host', label: '10.99.0.6', ip: '10.99.0.6',

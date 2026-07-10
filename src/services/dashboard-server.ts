@@ -1541,13 +1541,25 @@ export class DashboardServer {
         return;
       }
       if (!reg.ok) {
+        // Two distinct refusal modes: a frontier-lease conflict (same frontier item)
+        // or a node-dedup conflict (same archetype already at this node — a re-issued
+        // deploy-at-node). Surface each with its own reason so the UI isn't told a
+        // bogus "frontier lease" with a null agent.
         res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          dispatched: false,
-          reason: 'frontier_lease_conflict',
-          existing_task_id: reg.lease_conflict?.existing_task_id,
-          existing_agent_id: reg.lease_conflict?.existing_agent_id,
-        }));
+        res.end(JSON.stringify(reg.node_conflict
+          ? {
+              dispatched: false,
+              reason: 'node_dispatch_conflict',
+              node_id: reg.node_conflict.node_id,
+              existing_task_id: reg.node_conflict.existing_task_id,
+              existing_agent_id: reg.node_conflict.existing_agent_id,
+            }
+          : {
+              dispatched: false,
+              reason: 'frontier_lease_conflict',
+              existing_task_id: reg.lease_conflict?.existing_task_id,
+              existing_agent_id: reg.lease_conflict?.existing_agent_id,
+            }));
         return;
       }
 
@@ -1676,9 +1688,12 @@ export class DashboardServer {
       // Partition FIRST: pull out nodes already covered by a running task and skip
       // each individually, so a fresh node batched alongside a worked one is never
       // stranded (only the worked node is skipped) and skip counts are per-node.
+      // Cover RUNNING and PENDING (queued-behind-cap) tasks: a pending agent already
+      // owns its nodes, and register() would refuse a duplicate at one anyway — pre-
+      // skipping here reports it as 'already_being_worked' instead of a late conflict.
       const runningCoverage = new Map<string, string>(); // node_id -> agent_id
       for (const t of this.engine.getAgentTasks()) {
-        if (t.status !== 'running') continue;
+        if (t.status !== 'running' && t.status !== 'pending') continue;
         for (const nid of t.subgraph_node_ids ?? []) {
           if (!runningCoverage.has(nid)) runningCoverage.set(nid, t.agent_id);
         }
@@ -1715,11 +1730,9 @@ export class DashboardServer {
           continue;
         }
         if (!reg.ok) {
-          skipped.push({
-            node_ids: group,
-            reason: 'frontier_lease_conflict',
-            existing_agent_id: reg.lease_conflict?.existing_agent_id,
-          });
+          skipped.push(reg.node_conflict
+            ? { node_ids: group, reason: 'already_being_worked', existing_agent_id: reg.node_conflict.existing_agent_id }
+            : { node_ids: group, reason: 'frontier_lease_conflict', existing_agent_id: reg.lease_conflict?.existing_agent_id });
           continue;
         }
         dispatched.push({ node_ids: group, task_id: built.task.id, agent_id: built.task.agent_id, archetype: built.task.archetype });
