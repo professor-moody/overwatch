@@ -486,16 +486,33 @@ export class TaskExecutionService {
       }
     }
 
-    // Headless sub-agents queued behind the cap: registered + running but not yet
-    // launched (not in the registry / launched set) in daemon mode. The orchestrator
-    // is handled above; skip it here.
+    // Headless sub-agents: keep the frontier moving without reaping a busy agent.
+    //  - QUEUED behind the concurrency cap (no process yet): it can neither beat nor
+    //    renew its lease, so refresh it until a slot frees.
+    //  - LAUNCHED with a live process: it must self-beat, but while it's blocked inside
+    //    a single long tool child (a big nmap / subfinder / gowitness crawl) the model
+    //    isn't looping, so no agent_heartbeat fires and the reaper would kill a healthy
+    //    scanner mid-run. Use the SAME liveness signal as the orchestrator — process
+    //    OUTPUT — and keep it fresh as long as it has produced output within the wedged
+    //    ceiling. Past the ceiling with no output it's genuinely hung: stop propping it
+    //    up and let the reaper (+ the 30-min wall-clock timeout) take it.
     if (!this.endpoint) return;
     for (const task of this.engine.getAgentTasks()) {
-      if (task.status !== 'running') continue;                              // cheap skip for terminal/historical
-      if (task.orchestrator === true || task.role === 'orchestrator') continue;
-      if (this.launched.has(task.id) || this.registry.has(task.id)) continue; // launched → beats itself
+      if (task.status !== 'running') continue;                                  // cheap skip for terminal/historical
+      if (task.orchestrator === true || task.role === 'orchestrator') continue; // handled above
       if (this.resolveBackend(task) !== 'headless_mcp') continue;
-      if (isStale(task)) this.engine.agentHeartbeat(task.id, undefined, { silent: true });
+
+      const proc = this.registry.get(task.id);
+      if (proc) {
+        // Launched & process alive. Fall back to assigned_at before the first output
+        // chunk so a just-launched agent gets the full ceiling, not an instant reap.
+        const genuineAt = proc.last_output_at ?? Date.parse(task.assigned_at);
+        const withinCeiling = Number.isFinite(genuineAt) && now - genuineAt <= this.orchestratorWedgedCeilingMs;
+        if (withinCeiling && isStale(task)) this.engine.agentHeartbeat(task.id, undefined, { silent: true });
+        continue;
+      }
+      if (this.launched.has(task.id)) continue; // launched but process gone → reaper/reconcile owns it
+      if (isStale(task)) this.engine.agentHeartbeat(task.id, undefined, { silent: true }); // queued behind cap
     }
   }
 

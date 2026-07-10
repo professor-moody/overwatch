@@ -421,6 +421,49 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(spawned.length).toBe(2);
   });
 
+  it('keeps a LAUNCHED sub-agent alive while its process is live (busy in a long tool child), not reaped mid-scan', async () => {
+    // A launched sub-agent must self-beat, but while it's blocked inside one long tool
+    // child (a big nmap/subfinder/crawl) the model isn't looping, so no agent_heartbeat
+    // fires. Its process is still alive → the supervisor keeps the beat fresh (same
+    // process-liveness signal the orchestrator uses) instead of reaping a healthy scanner.
+    // Small ceiling + an OLD assigned_at so the assigned_at fallback alone would reap it;
+    // the only thing that keeps it alive is fresh process OUTPUT (last_output_at). This
+    // pins the test to the output-liveness path, not the fallback — and is the exact
+    // mirror of the wedged test below, which is identical but emits no output.
+    svc = makeService({ orchestratorWedgedCeilingMs: 1000 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'busy-scanner', agent_id: 'network-recon' }));
+    await settle();
+    expect(spawned.length).toBe(1);                                          // launched, process alive
+    const busy = engine.getTask('busy-scanner')!;
+    busy.assigned_at = new Date(Date.now() - 5000).toISOString();            // past the 1s ceiling → fallback would reap
+    busy.heartbeat_at = new Date(Date.now() - 310_000).toISOString();        // beat aged past the 300s cold-start TTL
+    spawned[0].stdout.emit('data', Buffer.from('{"type":"assistant"}\n'));   // nmap just returned → last_output_at now, within ceiling
+    svc.tickWatchdog();
+    await settle();
+    expect(engine.getTask('busy-scanner')?.status).toBe('running');          // NOT reaped — output proves it's live
+    expect(Date.now() - Date.parse(engine.getTask('busy-scanner')!.heartbeat_at!)).toBeLessThan(30_000); // refreshed
+  });
+
+  it('does NOT prop up a launched sub-agent that is genuinely WEDGED (process alive but silent past the ceiling)', async () => {
+    // Alive process, but no output for longer than the wedged ceiling AND a stale beat →
+    // the supervisor stops refreshing it and the reaper takes it (the 30-min wall-clock
+    // timeout is the other backstop). Distinguishes "busy" (recent output) from "hung".
+    svc = makeService({ orchestratorWedgedCeilingMs: 1000 });
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'wedged-sub', agent_id: 'osint' }));
+    await settle();
+    expect(spawned.length).toBe(1);
+    const t = engine.getTask('wedged-sub')!;
+    t.assigned_at = new Date(Date.now() - 5000).toISOString();               // no output ever → falls back to assigned_at, past the 1s ceiling
+    t.heartbeat_at = new Date(Date.now() - 310_000).toISOString();           // beat also stale past the 300s TTL
+    svc.tickWatchdog();
+    await settle();
+    expect(engine.getTask('wedged-sub')?.status).toBe('interrupted');        // reaped, not propped up
+  });
+
   it('restarts a WEDGED orchestrator (alive but no genuine heartbeat) instead of propping it up forever', async () => {
     svc = makeService({ orchestratorHealthyMs: 0, orchestratorWedgedCeilingMs: 1000 });
     svc.start();
