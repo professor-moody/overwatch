@@ -1915,6 +1915,29 @@ export class DashboardServer {
     // no /mcp endpoint (stdio mode) → headless is unavailable; report it instead
     // of registering a planner task that can never launch.
     if (!this.taskExecution || !this.taskExecution.isHeadlessAvailable()) return null;
+
+    // Dedup: if a planner is ALREADY working this exact command (the operator
+    // re-issued after a stale-plan 404, or double-submitted), reuse it instead of
+    // spawning a second planner that would propose a duplicate plan. The command is
+    // embedded verbatim in the objective's first line (buildPlannerObjective), so we
+    // extract + normalize it. Self-cleaning: a terminated planner isn't running/pending.
+    const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+    const wanted = norm(command);
+    // (1) A planner is still WORKING this command (double-submit, or a re-issue while
+    // it's mid-thought) → reuse it.
+    for (const t of this.engine.getAgentTasks()) {
+      if (t.role !== 'planner') continue;
+      if (t.status !== 'running' && t.status !== 'pending') continue;
+      const m = t.objective?.match(/^OPERATOR COMMAND \(free-form\): "([\s\S]*?)"$/m);
+      if (m && norm(m[1]) === wanted) return t.id; // latch onto the in-flight planner
+    }
+    // (2) A planner already PROPOSED an open plan for this command and has since
+    // terminated → surface that plan instead of spawning a duplicate. The UI polls
+    // GET /api/plans by source_task_id, so returning it points the operator at the
+    // plan that's already waiting to be confirmed.
+    const openPlan = this.engine.getProposedPlanStore().getOpen().find(p => norm(p.command) === wanted);
+    if (openPlan?.source_task_id) return openPlan.source_task_id;
+
     const taskId = randomUUID();
     // Uphold the same allowlist as the operator dispatch paths: never pass a
     // disallowed default_agent_model to `claude -p --model`. A misconfigured default
