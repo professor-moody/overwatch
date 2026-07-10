@@ -198,12 +198,21 @@ export class HeadlessMcpRunner {
         linked_agent_task_id: task.id,
         details: { reason: 'headless_exited', exit_code: code, signal },
       });
-      // Reconcile: if the agent died without closing out its task (no
-      // update_agent / submit_agent_transcript), mark it interrupted so the
-      // frontier lease releases instead of leaking.
+      // Reconcile: the agent exited while still `running`, i.e. it never closed itself
+      // out (no update_agent / submit_agent_transcript). That's abnormal however it
+      // ended — a well-behaved agent always reports its own terminal state — so the
+      // work is treated as INCOMPLETE and marked `interrupted`: that releases the
+      // frontier lease AND lets reofferStrandedWork put the item back on the frontier
+      // for another agent, and (unlike `completed`) it does not inflate campaign
+      // success or reset the consecutive-failure counter. Its output is still salvaged
+      // on 'close'. The reason line distinguishes HOW it ended so a clean exit (hit its
+      // turn budget / ended its turn early) doesn't read to the operator like a crash.
       const current = this.engine.getTask(task.id);
       if (current && current.status === 'running') {
-        this.engine.updateAgentStatus(task.id, 'interrupted', 'headless agent exited without submitting a transcript');
+        const reason = code === 0 && signal == null
+          ? 'headless agent ended its turn without submitting a transcript (clean exit) — work returned to the frontier'
+          : `headless agent exited without submitting a transcript (code=${code ?? 'null'}, signal=${signal ?? 'null'}) — work returned to the frontier`;
+        this.engine.updateAgentStatus(task.id, 'interrupted', reason);
       }
     });
 
