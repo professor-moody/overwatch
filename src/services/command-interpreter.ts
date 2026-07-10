@@ -254,9 +254,9 @@ export function executeOps(engine: GraphEngine, ops: OperatorOp[], issuedBy = 'o
         // never yields the hidden full-surface 'default' — an unmapped node type falls
         // back to recon_scanner), expand its role+backend, and register status:'running'
         // so a drain loop launches it. No model → CLI default (the planner doesn't pick
-        // models). NOTE: a node-scoped dispatch carries NO frontier_item_id, so it takes
-        // NO frontier lease and is NOT lease-deduped — the dispatch cap is the only bound
-        // (two confirmed plans at the same node both launch). Node-level dedup is future work.
+        // models). A node-scoped dispatch carries no frontier_item_id, so it can't take a
+        // frontier lease; registerAgent instead node-dedups it against a running/pending
+        // agent of the same archetype+role already at the node (see AgentManager.register).
         const taskId = uuidv4();
         const seedType = op.target_node_ids[0] ? engine.getNode(op.target_node_ids[0])?.type : undefined;
         const arch = getArchetype(recommendExploreArchetype(op.archetype, seedType));
@@ -271,6 +271,7 @@ export function executeOps(engine: GraphEngine, ops: OperatorOp[], issuedBy = 'o
           ...(op.objective ? { objective: op.objective } : {}),
         });
         if (reg.cap_exceeded) results.push({ op, ok: false, error: `dispatch cap exceeded (${reg.cap_exceeded.current}/${reg.cap_exceeded.limit}) — retry when a slot frees` });
+        else if (reg.node_conflict) results.push({ op, ok: false, error: `already being worked at ${reg.node_conflict.node_id} by ${reg.node_conflict.existing_agent_id} — not dispatching a duplicate` });
         else if (!reg.ok) results.push({ op, ok: false, error: reg.lease_conflict ? `already being worked by ${reg.lease_conflict.existing_agent_id}` : 'dispatch refused' });
         else results.push({ op, ok: true, detail: describeOp({ ...op, archetype: arch.id }) });
       }

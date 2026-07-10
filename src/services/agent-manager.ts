@@ -22,7 +22,42 @@ export class AgentManager {
     this.ctx = ctx;
   }
 
-  register(task: AgentTask): { ok: boolean; lease_conflict?: { existing_task_id: string; existing_agent_id: string } } {
+  register(task: AgentTask): {
+    ok: boolean;
+    lease_conflict?: { existing_task_id: string; existing_agent_id: string };
+    node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
+  } {
+    // Node-scoped dispatch dedup: a dispatch with target nodes but NO frontier_item_id
+    // (planner `dispatch` op / deploy-at-node) can't take a frontier lease, so nothing
+    // stopped a re-issued command from launching a SECOND identical agent at the same
+    // node. Refuse when a running/pending agent with the SAME archetype+role already
+    // covers one of these nodes — a DIFFERENT archetype on the same host (e.g. a
+    // web-crawl alongside a port-scan) is legitimate, so key on (archetype,role,node),
+    // not node alone. Frontier-scoped work is deduped by its lease below, not here.
+    if (!task.frontier_item_id && task.subgraph_node_ids?.length) {
+      const targetNodes = new Set(task.subgraph_node_ids);
+      const sig = `${task.archetype ?? ''}|${task.role ?? ''}`;
+      for (const other of this.ctx.agents.values()) {
+        if (other.id === task.id) continue;
+        if (other.status !== 'running' && other.status !== 'pending') continue;
+        if (other.frontier_item_id) continue; // frontier work is deduped by its lease
+        if (`${other.archetype ?? ''}|${other.role ?? ''}` !== sig) continue;
+        const overlap = (other.subgraph_node_ids ?? []).find(n => targetNodes.has(n));
+        if (overlap) {
+          this.ctx.logEvent({
+            description: `Agent registration refused: ${task.agent_id} duplicates work at ${overlap} (held by ${other.agent_id})`,
+            agent_id: task.agent_id,
+            category: 'agent',
+            event_type: 'instrumentation_warning',
+            linked_agent_task_id: task.id,
+            result_classification: 'failure',
+            details: { reason: 'node_dispatch_dedup', node_id: overlap, existing_task_id: other.id, existing_agent_id: other.agent_id },
+          });
+          return { ok: false, node_conflict: { existing_task_id: other.id, existing_agent_id: other.agent_id, node_id: overlap } };
+        }
+      }
+    }
+
     // P1.4: take a frontier lease before claiming the task. If another
     // agent already holds the lease, refuse the registration. This makes
     // race-resolution explicit instead of relying on

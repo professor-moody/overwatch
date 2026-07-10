@@ -1867,6 +1867,7 @@ export class GraphEngine {
   registerAgent(task: AgentTask): {
     ok: boolean;
     lease_conflict?: { existing_task_id: string; existing_agent_id: string };
+    node_conflict?: { existing_task_id: string; existing_agent_id: string; node_id: string };
     cap_exceeded?: { scope: 'subnet' | 'target'; key: string; limit: number; current: number };
   } {
     // Operator-policy dispatch cap: refuse (don't register) when a target-facing

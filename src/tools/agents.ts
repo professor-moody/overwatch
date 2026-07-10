@@ -152,20 +152,31 @@ The agent can then call get_agent_context with its task ID to receive its scoped
         };
       }
       if (!reg.ok) {
-        // P1.4: another task already holds the lease on this frontier item.
-        // Surface the conflict to the caller so they can take a different
-        // item rather than racing.
+        // Two refusal modes. node_conflict: a same-archetype agent is already at this
+        // node (a node-scoped dispatch with no frontier item can't take a lease, so
+        // it's node-deduped). lease_conflict (P1.4): another task holds this frontier
+        // item's lease. Surface each accurately so the caller picks a different item/
+        // node rather than racing or seeing a bogus "frontier item undefined".
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              error: 'frontier_lease_conflict',
-              frontier_item_id,
-              existing_task_id: reg.lease_conflict?.existing_task_id,
-              existing_agent_id: reg.lease_conflict?.existing_agent_id,
-              message: `Frontier item ${frontier_item_id} is already leased by task ${reg.lease_conflict?.existing_task_id}. Pick a different item.`,
-            }, null, 2),
+            text: JSON.stringify(reg.node_conflict
+              ? {
+                  ok: false,
+                  error: 'node_dispatch_conflict',
+                  node_id: reg.node_conflict.node_id,
+                  existing_task_id: reg.node_conflict.existing_task_id,
+                  existing_agent_id: reg.node_conflict.existing_agent_id,
+                  message: `Node ${reg.node_conflict.node_id} is already being worked by agent ${reg.node_conflict.existing_agent_id}. Pick a different node or wait for it to finish.`,
+                }
+              : {
+                  ok: false,
+                  error: 'frontier_lease_conflict',
+                  frontier_item_id,
+                  existing_task_id: reg.lease_conflict?.existing_task_id,
+                  existing_agent_id: reg.lease_conflict?.existing_agent_id,
+                  message: `Frontier item ${frontier_item_id} is already leased by task ${reg.lease_conflict?.existing_task_id}. Pick a different item.`,
+                }, null, 2),
           }],
           isError: true,
         };
