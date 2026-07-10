@@ -473,6 +473,9 @@ export function AgentsPanel() {
               onCancel={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
                 ? () => cancelAgent(activeAgent.id)
                 : undefined}
+              onForceRemove={activeAgent && (activeAgent.status === 'running' || activeAgent.status === 'pending')
+                ? () => forceRemoveAgent(activeAgent.id)
+                : undefined}
               onNavigateGraph={(nodeId) => navigateToGraph(nodeId, 1)}
               onNavigateCampaign={navigateToCampaign}
             />
@@ -825,22 +828,32 @@ function AgentOutputConsole({
 function AgentSteeringControls({ taskId }: { taskId: string }) {
   const addToast = useToastStore(s => s.addToast);
   const [busy, setBusy] = useState<string | null>(null);
+  // Pause/Resume are COOPERATIVE — the agent applies them on its next heartbeat.
+  // They intentionally do NOT force the process; a wedged agent (no next beat) won't
+  // honor them, so the toast points the operator at Cancel / Force remove above, which
+  // terminate the process regardless. (A cooperative "Stop" used to live here too and
+  // was the "I clicked Stop and nothing happened" trap — Cancel is the real stop.)
   const issue = async (kind: api.DirectiveKind) => {
     setBusy(kind);
     try {
       const res = await api.issueDirective(taskId, kind);
-      addToast({ type: res.ok ? 'success' : 'warning', title: `Directive: ${kind}`, message: res.ok ? 'issued — agent honors it on its next heartbeat' : 'not applied' });
+      addToast({
+        type: res.ok ? 'success' : 'warning',
+        title: `Directive: ${kind}`,
+        message: res.ok
+          ? 'issued — a live agent applies it on its next heartbeat (if it looks wedged, use Cancel / Force remove above)'
+          : 'not applied',
+      });
     } catch (err) {
       addToast({ type: 'error', title: `Directive failed: ${kind}`, message: err instanceof Error ? err.message : String(err) });
     } finally { setBusy(null); }
   };
   return (
     <div className="mt-3">
-      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Steer</div>
+      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">Steer (cooperative)</div>
       <div className="flex flex-wrap gap-1.5">
         <ActionButton size="xs" variant="warning" disabled={!!busy} onClick={() => issue('pause')}>Pause</ActionButton>
         <ActionButton size="xs" variant="success" disabled={!!busy} onClick={() => issue('resume')}>Resume</ActionButton>
-        <ActionButton size="xs" variant="danger" disabled={!!busy} onClick={() => issue('stop')}>Stop</ActionButton>
       </div>
     </div>
   );
@@ -904,12 +917,14 @@ function AgentContextPanel({
   agent,
   context,
   onCancel,
+  onForceRemove,
   onNavigateGraph,
   onNavigateCampaign,
 }: {
   agent: AgentInfo | null;
   context: AgentContext | null;
   onCancel?: () => void;
+  onForceRemove?: () => void;
   onNavigateGraph: (nodeId: string) => void;
   onNavigateCampaign: (campaignId: string) => void;
 }) {
@@ -942,6 +957,12 @@ function AgentContextPanel({
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         {onCancel && <ActionButton onClick={onCancel} size="xs" variant="danger">Cancel</ActionButton>}
+        {/* Escape hatch for a wedged agent Cancel can't clear: force-kill + remove. */}
+        {onForceRemove && (
+          <ActionButton onClick={onForceRemove} size="xs" variant="danger" title="Force stop & remove — kills the process and clears the agent even if Cancel won't">
+            Force remove
+          </ActionButton>
+        )}
         {ownedSessions.length > 0 && (
           <ActionButton onClick={() => navigateToSession(ownedSessions[0].id)} size="xs" variant="secondary">
             Open session →{ownedSessions.length > 1 ? ` (${ownedSessions.length})` : ''}
