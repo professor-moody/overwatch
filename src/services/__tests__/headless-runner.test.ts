@@ -557,19 +557,50 @@ describe('Headless runner mechanics (injected spawn)', () => {
     expect(t?.result_summary ?? '').toContain('no_scripted_handler');
   });
 
-  it('reconciles to interrupted when the child exits without closing the task', async () => {
+  it('reconciles a CLEAN exit (code 0) without a transcript to interrupted, with a non-crash reason, and salvages its output', async () => {
     svc = makeService();
     svc.start();
     svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
-    engine.registerAgent(headlessTask({ id: 'h-exit' }));
+    engine.registerAgent(headlessTask({ id: 'h-clean', agent_id: 'a-clean' }));
     await settle();
     expect(svc.activeHeadlessCount()).toBe(1);
 
-    spawned[0].simulateExit(0);
+    // The agent produced output but exited 0 without ever calling submit_agent_transcript
+    // (ended its turn / hit its budget). That's incomplete work → interrupted so the
+    // frontier item is re-offered, but the reason says so instead of reading like a crash.
+    spawned[0].stdout.emit('data', Buffer.from('{"type":"assistant","text":"enumerated 3 hosts"}\n'));
+    spawned[0].simulateExit(0, null);
+    spawned[0].simulateClose(0, null);
     await settle();
-    // Process gone, and the still-running task is marked interrupted (lease released).
+
     expect(svc.activeHeadlessCount()).toBe(0);
-    expect(engine.getTask('h-exit')?.status).toBe('interrupted');
+    const task = engine.getTask('h-clean');
+    expect(task?.status).toBe('interrupted');                              // re-offerable, not counted as campaign success
+    expect(task?.result_summary ?? '').toContain('clean exit');           // distinguished from a crash
+    expect(task?.result_summary ?? '').toContain('returned to the frontier');
+    // Its work is still salvaged even though it never self-submitted.
+    const salvage = engine.getFullHistory().find(e =>
+      (e.details as { salvaged?: boolean } | undefined)?.salvaged === true &&
+      e.linked_agent_task_id === 'h-clean');
+    expect(salvage).toBeDefined();
+    const evidenceId = (salvage!.details as { evidence_id?: string }).evidence_id;
+    expect(engine.getEvidenceStore().getContent(evidenceId ?? '') ?? '').toContain('enumerated 3 hosts');
+  });
+
+  it('reconciles a non-clean exit (non-zero code / killed) without a transcript to interrupted, tagging the code/signal', async () => {
+    svc = makeService();
+    svc.start();
+    svc.setHttpEndpoint({ url: 'http://127.0.0.1:9/mcp' });
+    engine.registerAgent(headlessTask({ id: 'h-crash' }));
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(1);
+
+    spawned[0].simulateExit(1, null); // crashed (non-zero) → genuine interruption, lease released
+    await settle();
+    expect(svc.activeHeadlessCount()).toBe(0);
+    const task = engine.getTask('h-crash');
+    expect(task?.status).toBe('interrupted');
+    expect(task?.result_summary ?? '').toContain('code=1');               // crash detail preserved for triage
   });
 
   it('salvages a cut-off agent\'s run log to evidence on exit', async () => {
