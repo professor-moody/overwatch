@@ -288,6 +288,38 @@ describe('/api/commands — headless planner fallback', () => {
     expect(task?.objective).toContain('go take care of the noisy box somehow');
   });
 
+  it('re-issuing the same free-form command reuses the in-flight planner (no duplicate)', async () => {
+    headlessAvail = true;
+    const cmd = 'go rummage through the weird share  and report back';
+    const first = await (await post({ command: cmd })).json();
+    expect(first.planner_task_id).toBeTruthy();
+    // Re-issue verbatim (and with cosmetic whitespace/case differences) while the first
+    // planner is still running → same task id back, and only ONE planner exists.
+    const second = await (await post({ command: cmd })).json();
+    expect(second.planner_task_id).toBe(first.planner_task_id);
+    const third = await (await post({ command: '  GO Rummage through the weird share and report back ' })).json();
+    expect(third.planner_task_id).toBe(first.planner_task_id);
+    const planners = engine.getAgentTasks().filter(t => t.role === 'planner' && t.objective?.includes('rummage through the weird share'));
+    expect(planners).toHaveLength(1);
+  });
+
+  it('surfaces an already-open plan for the command instead of spawning a duplicate planner', async () => {
+    headlessAvail = true;
+    // A prior planner proposed a plan for this command and has since terminated; the
+    // plan is still open in the store. Re-issuing the command must NOT spawn a new
+    // planner — it returns the open plan's source task so the UI shows that plan.
+    engine.getProposedPlanStore().add({
+      command: 'deal with the leftover box',
+      ops: [{ op: 'directive', task_id: 'target-1', agent_label: 'scanner-1', kind: 'pause' }],
+      summary: 's', source_task_id: 'planner-prior', source_agent_id: 'planner-prior-a',
+    });
+    const before = engine.getAgentTasks().filter(t => t.role === 'planner').length;
+    const r = await (await post({ command: 'Deal with the leftover box' })).json(); // case-insensitive match
+    expect(r.planner_task_id).toBe('planner-prior');
+    expect(r.planner_available).toBe(true);
+    expect(engine.getAgentTasks().filter(t => t.role === 'planner').length).toBe(before); // no new planner
+  });
+
   it('reports planner_available:false in stdio mode (no daemon)', async () => {
     headlessAvail = false;
     const r = await (await post({ command: 'please do the thing with the stuff' })).json();
