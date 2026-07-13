@@ -11,8 +11,16 @@ import type {
   PhaseCriterion,
   CampaignStrategy,
   FailurePattern,
+  Objective,
 } from '../../lib/types';
 import { ENGAGEMENT_PROFILES, PROFILE_LABELS } from '../../lib/profiles';
+
+// Stable id for a newly-added objective. Existing objectives keep their id so phase
+// criteria that reference them (and achieved/criteria fields) survive an edit.
+function newObjectiveId(): string {
+  const rand = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10);
+  return `obj-${rand}`;
+}
 
 const PROFILES = ENGAGEMENT_PROFILES;
 const CLOUD_PROFILES = new Set(['cloud', 'hybrid']);
@@ -273,7 +281,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
   const [blacklist, setBlacklist] = useState('');
 
   // Objectives
-  const [objectives, setObjectives] = useState<string[]>([]);
+  const [objectives, setObjectives] = useState<Objective[]>([]);
 
   // Failure patterns
   const [failurePatterns, setFailurePatterns] = useState<FailurePattern[]>([]);
@@ -296,14 +304,16 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
     if (tmpl.opsec?.max_noise != null) setMaxNoise(tmpl.opsec.max_noise);
     if (tmpl.opsec?.approval_mode) setApprovalMode(tmpl.opsec.approval_mode);
     if (tmpl.opsec?.blacklisted_techniques?.length) setBlacklist(tmpl.opsec.blacklisted_techniques.join('\n'));
-    if (tmpl.objectives?.length) setObjectives(tmpl.objectives.map(o => o.description));
+    // Preserve the template's objective id when present — the template's phase criteria
+    // (objective_achieved) reference those ids, so regenerating them would dangle.
+    if (tmpl.objectives?.length) setObjectives(tmpl.objectives.map(o => ({ id: o.id ?? newObjectiveId(), description: o.description, achieved: false })));
     if (tmpl.phases?.length) setPhases(tmpl.phases);
     if (tmpl.failure_patterns?.length) setFailurePatterns(tmpl.failure_patterns);
   };
 
   // Soft validation
   const hasScope = cidrs.length > 0 || domains.length > 0 || hosts.length > 0;
-  const hasObjectives = objectives.some(o => o.trim());
+  const hasObjectives = objectives.some(o => o.description.trim());
   const warnings: string[] = [];
   if (!hasScope) warnings.push('No scope defined — the agent won’t have targets.');
   if (!hasObjectives) warnings.push('No objectives defined — the agent won’t have goals.');
@@ -312,7 +322,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
     if (!name.trim()) return;
     setCreating(true);
     try {
-      const objs = objectives.filter(d => d.trim()).map((d, i) => ({ id: `obj-${i + 1}`, description: d.trim() }));
+      const objs = objectives.filter(o => o.description.trim()).map(o => ({ ...o, description: o.description.trim() }));
       const tw = twStart && twEnd ? { start_hour: parseInt(twStart), end_hour: parseInt(twEnd) } : null;
       const bl = blacklist.split('\n').map(s => s.trim()).filter(Boolean);
 
@@ -399,7 +409,7 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
       </Section>
 
       {/* Objectives */}
-      <Section title={`Objectives (${objectives.filter(o => o.trim()).length})`}>
+      <Section title={`Objectives (${objectives.filter(o => o.description.trim()).length})`}>
         <ObjectivesEditor objectives={objectives} onChange={setObjectives} />
       </Section>
 
@@ -454,16 +464,21 @@ function CreateEngagementForm({ templates, onCreated, onCancel }: {
 
 /* ============ Objectives Editor ============ */
 
-function ObjectivesEditor({ objectives, onChange }: { objectives: string[]; onChange: (v: string[]) => void }) {
-  const add = () => onChange([...objectives, '']);
-  const update = (i: number, val: string) => onChange(objectives.map((o, j) => j === i ? val : o));
+// Edits objectives as OBJECTS (not bare description strings), so editing an existing
+// engagement preserves each objective's id + achieved/achieved_at/achievement_edge_types
+// (and any extra backend-only fields like target_criteria, which ride along at runtime
+// via the spread) instead of regenerating ids and dropping those fields — the id
+// regeneration also broke phase criteria that reference objective ids.
+function ObjectivesEditor({ objectives, onChange }: { objectives: Objective[]; onChange: (v: Objective[]) => void }) {
+  const add = () => onChange([...objectives, { id: newObjectiveId(), description: '', achieved: false }]);
+  const update = (i: number, val: string) => onChange(objectives.map((o, j) => j === i ? { ...o, description: val } : o));
   const remove = (i: number) => onChange(objectives.filter((_, j) => j !== i));
 
   return (
     <div className="space-y-1.5">
-      {objectives.map((desc, i) => (
-        <div key={i} className="flex gap-2">
-          <input value={desc} onChange={e => update(i, e.target.value)}
+      {objectives.map((o, i) => (
+        <div key={o.id || i} className="flex gap-2">
+          <input value={o.description} onChange={e => update(i, e.target.value)}
             className="settings-input flex-1 min-w-0" placeholder="e.g. Compromise Domain Controller" />
           <button onClick={() => remove(i)} className="text-muted-foreground hover:text-destructive text-xs">&times;</button>
         </div>
@@ -509,7 +524,7 @@ function FailurePatternsEditor({ patterns, onChange }: { patterns: FailurePatter
 
 /* ============ Phase Builder ============ */
 
-function PhasesEditor({ phases, onChange, objectives }: { phases: EngagementPhase[]; onChange: (v: EngagementPhase[]) => void; objectives: string[] }) {
+function PhasesEditor({ phases, onChange, objectives }: { phases: EngagementPhase[]; onChange: (v: EngagementPhase[]) => void; objectives: Objective[] }) {
   const addPhase = () => {
     const order = phases.length;
     onChange([...phases, {
@@ -594,7 +609,7 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
   criteria: PhaseCriterion[];
   onChange: (c: PhaseCriterion[]) => void;
   phases: EngagementPhase[];
-  objectives: string[];
+  objectives: Objective[];
   currentPhaseIdx: number;
 }) {
   const addCriterion = () => onChange([...criteria, { type: 'always' }]);
@@ -604,7 +619,7 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
     let c: PhaseCriterion;
     switch (type) {
       case 'phase_completed': c = { type: 'phase_completed', phase_id: phases[0]?.id || '' }; break;
-      case 'objective_achieved': c = { type: 'objective_achieved', objective_id: 'obj-1' }; break;
+      case 'objective_achieved': c = { type: 'objective_achieved', objective_id: objectives.find(o => o.description.trim())?.id ?? '' }; break;
       case 'node_count': c = { type: 'node_count', node_type: 'host', min: 1 }; break;
       case 'access_level': c = { type: 'access_level', min_level: 'user' }; break;
       default: c = { type: 'always' };
@@ -635,8 +650,8 @@ function CriteriaEditor({ label, criteria, onChange, phases, objectives, current
 
             {c.type === 'objective_achieved' && (
               <select value={c.objective_id} onChange={e => patchCriterion(i, { objective_id: e.target.value })} className="settings-input flex-1 min-w-0">
-                {objectives.filter(o => o.trim()).map((o, oi) => (
-                  <option key={oi} value={`obj-${oi + 1}`}>{o.slice(0, 60)}</option>
+                {objectives.filter(o => o.description.trim()).map(o => (
+                  <option key={o.id} value={o.id}>{o.description.slice(0, 60)}</option>
                 ))}
               </select>
             )}
@@ -691,7 +706,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
   const [twStart, setTwStart] = useState('');
   const [twEnd, setTwEnd] = useState('');
   const [blacklist, setBlacklist] = useState('');
-  const [objectives, setObjectives] = useState<string[]>([]);
+  const [objectives, setObjectives] = useState<Objective[]>([]);
   const [failurePatterns, setFailurePatterns] = useState<FailurePattern[]>([]);
   const [phases, setPhases] = useState<EngagementPhase[]>([]);
 
@@ -722,7 +737,7 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
     setTwStart(d.opsec?.time_window?.start_hour?.toString() ?? '');
     setTwEnd(d.opsec?.time_window?.end_hour?.toString() ?? '');
     setBlacklist((d.opsec?.blacklisted_techniques || []).join('\n'));
-    setObjectives((d.objectives || []).map(o => o.description));
+    setObjectives((d.objectives || []) as Objective[]); // keep full objects (id/criteria/achieved) so a save preserves them
     setFailurePatterns(d.failure_patterns || []);
     setPhases(d.phases || []);
   };
@@ -737,11 +752,10 @@ function EngagementDetailDrawer({ id, onBack }: { id: string; onBack: () => void
     try {
       const tw = twStart && twEnd ? { start_hour: parseInt(twStart), end_hour: parseInt(twEnd) } : undefined;
       const bl = blacklist.split('\n').map(s => s.trim()).filter(Boolean);
-      const objs = objectives.filter(d => d.trim()).map((d, i) => ({
-        id: `obj-${i + 1}`,
-        description: d.trim(),
-        achieved: detail?.objectives?.[i]?.achieved ?? false,
-      }));
+      // Preserve each objective's id + achieved/achieved_at/target_criteria/edge types
+      // (spread) so an edit doesn't regenerate ids (breaking phase references) or drop
+      // achievement semantics — only the description is editable here.
+      const objs = objectives.filter(o => o.description.trim()).map(o => ({ ...o, description: o.description.trim() }));
 
       await updateEngagement(id, {
         name,

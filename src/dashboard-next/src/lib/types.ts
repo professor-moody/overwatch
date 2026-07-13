@@ -724,7 +724,7 @@ export interface EngagementTemplate {
   description?: string;
   profile?: string;
   opsec?: OpsecConfig;
-  objectives?: { description: string }[];
+  objectives?: { id?: string; description: string }[];
   phases?: EngagementPhase[];
   failure_patterns?: FailurePattern[];
 }
