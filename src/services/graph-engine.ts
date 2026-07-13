@@ -555,14 +555,18 @@ export class GraphEngine {
           const existing = this.ctx.graph.getNodeAttributes(canonicalId) as NodeProperties;
           const existingSources = Array.isArray(existing.sources) ? existing.sources : [];
           if (!existingSources.includes(finding.agent_id)) {
-            this.ctx.graph.mergeNodeAttributes(canonicalId, {
-              sources: [...existingSources, finding.agent_id],
-              last_seen_at: finding.timestamp,
-            });
+            // Route through the guarded addNode (merge branch) so the new attribution is
+            // JOURNALED (merge_node_attrs) + cache-invalidated — a raw graph merge here
+            // was neither journaled nor persisted, so the cross-agent source vanished on
+            // restart (a crash before the debounced snapshot dropped it entirely).
+            this.addNode({ ...existing, sources: [...existingSources, finding.agent_id], last_seen_at: finding.timestamp });
             updatedNodes.push(canonicalId);
           }
         }
       }
+      // Persist so the merged attribution reaches disk (legacy snapshot path + dashboard
+      // delta); on a WAL engagement the journal above already made it crash-safe.
+      if (updatedNodes.length > 0) this.persist({ updated_nodes: updatedNodes });
       return { new_nodes: [], new_edges: [], updated_nodes: updatedNodes, updated_edges: [], inferred_edges: [], deduplicated: true };
     }
 
