@@ -187,7 +187,13 @@ export class EngagementManager {
 
   updateEngagement(id: string, partial: Record<string, unknown>): Record<string, unknown> | null {
     if (!isSafeEngagementId(id)) return null;
-    const filePath = join(this.engagementsDir, `${id}.json`);
+    // Edit the SAME file getEngagement reads. For the ACTIVE engagement that's the live
+    // active config, not the (stale) engagementsDir mirror — writing the mirror left the
+    // active config and every subsequent read/reload unchanged, so the edit vanished.
+    const activeId = this.getActiveId();
+    const filePath = (id === activeId && existsSync(this.activeConfigPath))
+      ? this.activeConfigPath
+      : join(this.engagementsDir, `${id}.json`);
     if (!existsSync(filePath)) return null;
     try {
       const raw = JSON.parse(readFileSync(filePath, 'utf-8'));
