@@ -1792,6 +1792,33 @@ describe('GraphEngine', () => {
       expect(engine.getFullHistory().some(entry => entry.event_type === 'graph_corrected')).toBe(true);
     });
 
+    it('persists a correction across reload even when state was clean before it (durability)', () => {
+      const engine1 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      engine1.ingestFinding(makeFinding({
+        nodes: [
+          { id: 'host-10-10-10-1', type: 'host', label: '10.10.10.1', ip: '10.10.10.1' },
+          { id: 'share-tmp', type: 'share', label: 'tmp' },
+        ],
+        edges: [{ source: 'host-10-10-10-1', target: 'share-tmp', properties: { type: 'RUNS', confidence: 1.0, discovered_at: new Date().toISOString() } }],
+      }));
+      // Establish a clean, durable baseline: snapshot written, dirty flag cleared.
+      engine1.flushNow();
+
+      // Correct the graph. correctGraph suppresses the WAL for its ops and relies on
+      // its OWN flush for durability — that flush must actually write a snapshot.
+      const res = engine1.correctGraph('drop stale edge', [
+        { kind: 'drop_edge', source_id: 'host-10-10-10-1', target_id: 'share-tmp', edge_type: 'RUNS' },
+      ], 'action-durability-1');
+      expect(res.dropped_edges).toHaveLength(1);
+
+      // Simulate a crash/restart before any LATER mutation could flush: reload from disk.
+      const engine2 = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const stillThere = engine2.exportGraph().edges.some(
+        e => e.source === 'host-10-10-10-1' && e.target === 'share-tmp' && e.properties.type === 'RUNS',
+      );
+      expect(stillThere).toBe(false); // the dropped edge must NOT resurrect on reload
+    });
+
     it('rolls back the whole correction batch when one operation is invalid', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({

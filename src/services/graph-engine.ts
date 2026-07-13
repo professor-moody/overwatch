@@ -1827,8 +1827,8 @@ export class GraphEngine {
       throw err;
     }
 
-    // All operations succeeded: re-enable journal and flush so the new state
-    // is immediately durable (no window for a partial-state crash).
+    // All operations succeeded: re-enable journal so subsequent mutations resume
+    // journaling normally.
     this.ctx.mutationJournal = savedJournal;
 
     this.evaluateObjectives();
@@ -1851,7 +1851,12 @@ export class GraphEngine {
         patched_nodes: patchedNodes,
       },
     });
-    this.flushNow();
+    // Durability: the ops were applied with the WAL suppressed (so they're NOT in the
+    // journal), so the ONLY record of the correction is the snapshot. flushNow() no-ops
+    // when the dirty flag is clear — and neither the graph mutations nor logActionEvent
+    // set it — so a correction on otherwise-clean state was silently lost on a crash.
+    // persistImmediate() writes the snapshot unconditionally, capturing the correction.
+    this.persistence.persistImmediate();
 
     return {
       dropped_edges: droppedEdges,
