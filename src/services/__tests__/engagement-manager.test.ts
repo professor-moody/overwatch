@@ -58,6 +58,34 @@ describe('EngagementManager — engagement ID containment', () => {
   });
 });
 
+describe('EngagementManager — editing the ACTIVE engagement targets the live config', () => {
+  let dir: string;
+  let activePath: string;
+  let mgr: EngagementManager;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'overwatch-eng-active-'));
+    activePath = join(dir, 'engagement.json');
+    mgr = new EngagementManager(activePath);
+    // The ACTIVE engagement lives at the active config path.
+    writeFileSync(activePath, JSON.stringify({ id: 'act-eng', name: 'Live', scope: { cidrs: [], domains: [], exclusions: [] } }, null, 2));
+    // A stale mirror in engagements/ that edits must NOT hit.
+    writeFileSync(join(mgr.engagementsDir, 'act-eng.json'), JSON.stringify({ id: 'act-eng', name: 'Stale Mirror', scope: { cidrs: [], domains: [], exclusions: [] } }, null, 2));
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('writes the active config (visible to getEngagement), not the stale mirror', () => {
+    const updated = mgr.updateEngagement('act-eng', { name: 'Renamed Live' });
+    expect(updated?.name).toBe('Renamed Live');
+    // getEngagement reads the active config → reflects the edit (was unchanged before the fix)
+    expect(mgr.getEngagement('act-eng')?.name).toBe('Renamed Live');
+    expect(JSON.parse(readFileSync(activePath, 'utf-8')).name).toBe('Renamed Live');
+    // the stale mirror is left untouched
+    expect(JSON.parse(readFileSync(join(mgr.engagementsDir, 'act-eng.json'), 'utf-8')).name).toBe('Stale Mirror');
+  });
+});
+
 // ============================================================
 // Dashboard create-flow round-trip
 // Mirrors the exact payload shape posted by the React EngagementsPanel
