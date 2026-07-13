@@ -395,10 +395,15 @@ export interface EngagementState {
     created_at?: string;
   };
   config?: {
+    id: string;
     name: string;
+    profile?: string;
+    created_at?: string;
     scope?: ScopeConfig;
     opsec?: OpsecConfig;
   };
+  /** Backend access summary — the toolbar's access level reads current_access_level. */
+  access_summary?: AccessSummary;
   graph_summary?: {
     total_nodes: number;
     total_edges: number;
