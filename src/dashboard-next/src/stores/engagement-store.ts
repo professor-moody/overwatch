@@ -148,8 +148,12 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       edges: data.graph.edges.map(flattenEdge),
     };
     set({
-      engagement: s.engagement || null,
-      accessLevel: s.access_level || 'none',
+      // The backend sends `config` + `access_summary`, NOT top-level `engagement`/
+      // `access_level`. Derive the toolbar/layout view-model from the real fields —
+      // reading the phantom fields left the toolbar blank, access at 'none', and the
+      // graph-layout store keyed on 'default' (positions bleeding across engagements).
+      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : null,
+      accessLevel: s.access_summary?.current_access_level || 'none',
       historyCount: data.history_count ?? 0,
       graph: flatGraph,
       graphSummary: s.graph_summary || null,
@@ -165,7 +169,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       phases: s.phases || [],
       initialized: true,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : null,
-      accessSummary: (s as any).access_summary || get().accessSummary,
+      accessSummary: s.access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });
   },
@@ -198,8 +202,8 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
     }
 
     set({
-      engagement: s.engagement || get().engagement,
-      accessLevel: s.access_level || get().accessLevel,
+      engagement: s.config ? { id: s.config.id, name: s.config.name, profile: s.config.profile, created_at: s.config.created_at } : get().engagement,
+      accessLevel: s.access_summary?.current_access_level || get().accessLevel,
       historyCount: data.history_count ?? get().historyCount,
       graph: {
         nodes: Array.from(nodeMap.values()),
@@ -217,7 +221,7 @@ export const useEngagementStore = create<EngagementStore>((set, get) => ({
       pendingActions: s.pending_actions || get().pendingActions,
       phases: s.phases || get().phases,
       readiness: s.lab_readiness ? { status: s.lab_readiness.status, issues: s.lab_readiness.top_issues } : get().readiness,
-      accessSummary: (s as any).access_summary || get().accessSummary,
+      accessSummary: s.access_summary || get().accessSummary,
       recentActivity: (s as any).recent_activity || get().recentActivity,
     });
   },

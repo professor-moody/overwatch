@@ -92,4 +92,24 @@ describe('engagement store hydration', () => {
       agents_total: 3,
     });
   });
+
+  it('derives engagement + access level from config/access_summary (the real backend shape)', () => {
+    // The backend sends `config` + `access_summary`, not top-level `engagement`/
+    // `access_level`. Before the fix the store read the phantom fields, so the toolbar
+    // was blank, access showed 'none', and the graph-layout key fell back to 'default'.
+    const data: FullStateData = {
+      state: {
+        config: { id: 'eng-42', name: 'Prod Engagement', profile: 'goad_ad', created_at: '2026-05-15T10:00:00Z' },
+        access_summary: { compromised_hosts: ['h1'], valid_credentials: ['c1'], current_access_level: 'domain_admin' },
+        graph_summary: { total_nodes: 0, total_edges: 0, confirmed_edges: 0, inferred_edges: 0, nodes_by_type: {} },
+      },
+      graph: { nodes: [], edges: [] },
+      history_count: 0,
+    };
+    useEngagementStore.getState().loadFullState(data);
+    const s = useEngagementStore.getState();
+    expect(s.engagement).toMatchObject({ id: 'eng-42', name: 'Prod Engagement', profile: 'goad_ad' });
+    expect(s.engagement?.id).toBe('eng-42'); // the per-engagement graph-layout storage key
+    expect(s.accessLevel).toBe('domain_admin');
+  });
 });
