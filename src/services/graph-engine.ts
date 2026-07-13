@@ -234,6 +234,10 @@ export class GraphEngine {
     this.reconcileSessionEdgesOnStartup();
     this.agentMgr.reconcileOnStartup();
     this.reconcilePendingApprovalsOnStartup();
+    // The campaign planner built its reverse indexes in its constructor, BEFORE
+    // loadState/recover reassigned ctx.campaigns — rebuild them now against the loaded
+    // campaigns so findCampaignForItem works and campaigns aren't regenerated as dupes.
+    this.campaignPlanner.reindex();
     this.persistence.persistImmediate();
 
     // 7.7: Auto health check on startup
