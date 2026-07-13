@@ -38,7 +38,13 @@ export function AnalysisPanel() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const data = await api.getHistory({ limit: 400 });
+      // Fetch the action lifecycle events ONLY (the sole types buildActionRuns uses),
+      // so the limit counts tool runs — not heartbeats/thoughts that would otherwise
+      // crowd runs out of the window and hide most of them from this view.
+      const data = await api.getHistory({
+        limit: 500,
+        eventTypes: ['action_started', 'action_completed', 'action_failed'],
+      });
       setEntries(data.entries || []);
       hasLoaded.current = true;
     } catch { /* keep current list visible */ }

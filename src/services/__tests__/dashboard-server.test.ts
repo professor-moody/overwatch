@@ -432,6 +432,31 @@ describe('DashboardServer', () => {
     }
   });
 
+  it('serveHistory event_types keeps tool runs from being crowded out by heartbeat/thought noise', () => {
+    // Two real tool-run lifecycle events, buried in a burst of noise events that would
+    // otherwise fill a tight limit window and hide the runs from the Analysis view.
+    engine.logActionEvent({ description: 'nmap started', event_type: 'action_started', category: 'frontier', action_id: 'run-A', tool_name: 'nmap' });
+    for (let i = 0; i < 20; i++) engine.logActionEvent({ description: 'beat', event_type: 'heartbeat', category: 'agent' });
+    engine.logActionEvent({ description: 'nmap done', event_type: 'action_completed', category: 'frontier', action_id: 'run-A', tool_name: 'nmap', result_classification: 'success' });
+    for (let i = 0; i < 20; i++) engine.logActionEvent({ description: 'thinking', event_type: 'thought', category: 'agent' });
+
+    const res = {
+      statusCode: 0, headers: {} as Record<string, string>, body: '' as string,
+      writeHead(s: number, h: Record<string, string>) { this.statusCode = s; this.headers = h; },
+      end(b?: string) { this.body = b || ''; }, setHeader() {},
+    };
+
+    // A tight limit that, WITHOUT the filter, would return only the newest noise events.
+    (dashboard as any).serveHistory('/api/history?limit=5&event_types=action_started,action_completed', res);
+    const payload = JSON.parse(res.body);
+    // Only the requested types come back — no heartbeats/thoughts.
+    expect(payload.entries.every((e: { event_type: string }) => e.event_type === 'action_started' || e.event_type === 'action_completed')).toBe(true);
+    // Both lifecycle events of the run survive despite the 40 interleaved noise events.
+    expect(payload.entries.filter((e: { action_id?: string }) => e.action_id === 'run-A').length).toBe(2);
+    // total reflects the FILTERED count, so the client's "N runs" is meaningful.
+    expect(payload.total).toBe(payload.entries.length);
+  });
+
   it('serveHistory returns most recent entries first by default', () => {
     // Get the full history to see how many startup entries exist
     const res = {

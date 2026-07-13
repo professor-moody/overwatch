@@ -2362,6 +2362,16 @@ export class DashboardServer {
     const after = rawAfter && !isNaN(Date.parse(rawAfter)) ? rawAfter : undefined;
     const rawBefore = params.get('before') || undefined;
     const before = rawBefore && !isNaN(Date.parse(rawBefore)) ? rawBefore : undefined;
+    // event_types=a,b,c restricts to those event types BEFORE the limit slice. Without
+    // it, `?limit=N` returns the most-recent N of the WHOLE stream — heartbeats,
+    // thoughts, agent updates and all — so a chatty engagement crowds tool runs out of
+    // the window (the Analysis view then shows only a fraction of the runs that exist).
+    // Filtering first means `limit=N&event_types=action_started,...` yields the most
+    // recent N ACTION events, undiluted.
+    const rawTypes = params.get('event_types') || undefined;
+    const typeFilter = rawTypes
+      ? new Set(rawTypes.split(',').map(s => s.trim()).filter(Boolean))
+      : undefined;
     // order=asc|desc; default desc so `?limit=N` returns the *most recent* N
     // entries (operators care about latest activity, not oldest).
     const orderParam = (params.get('order') || 'desc').toLowerCase();
@@ -2375,6 +2385,9 @@ export class DashboardServer {
     }
     if (before) {
       entries = entries.filter(e => e.timestamp < before);
+    }
+    if (typeFilter && typeFilter.size > 0) {
+      entries = entries.filter(e => e.event_type !== undefined && typeFilter.has(e.event_type));
     }
 
     const total = entries.length;

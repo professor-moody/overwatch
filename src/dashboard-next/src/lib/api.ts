@@ -70,11 +70,15 @@ export async function getHistory(params?: {
   limit?: number;
   after?: string;
   before?: string;
+  /** Restrict to these event types before the limit is applied — so `limit` counts
+   *  the matching events, not the whole (heartbeat/thought-diluted) stream. */
+  eventTypes?: string[];
 }): Promise<{ entries: ActivityEntry[]; total: number }> {
   const qs = new URLSearchParams();
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.after) qs.set('after', params.after);
   if (params?.before) qs.set('before', params.before);
+  if (params?.eventTypes?.length) qs.set('event_types', params.eventTypes.join(','));
   const q = qs.toString();
   return fetchJson(`/api/history${q ? `?${q}` : ''}`);
 }
