@@ -54,6 +54,19 @@ describe('Campaign fixes — P1: persistence of CRUD/lifecycle', () => {
     expect(e2.listCampaigns().some((x) => x.id === c.id)).toBe(true);
   });
 
+  it('findCampaignForItem resolves by item id after a restart (reverse index rebuilt on load)', () => {
+    cleanup();
+    const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    const c = e1.createCampaign({ name: 'reindex-me', strategy: 'enumeration', item_ids: ['fi-reindex'], abort_conditions: [] });
+    e1.flushNow();
+
+    const e2 = new GraphEngine(makeConfig(), TEST_STATE_FILE);
+    // The reverse index was built in the planner's constructor from the still-empty
+    // campaigns map, then loadState replaced the map — so before the reindex-on-load
+    // fix this returned null and the campaign was regenerated as a duplicate.
+    expect(e2.findCampaignForItem('fi-reindex')?.id).toBe(c.id);
+  });
+
   it('pause / resume / abort persist across reloads', () => {
     cleanup();
     const e1 = new GraphEngine(makeConfig(), TEST_STATE_FILE);

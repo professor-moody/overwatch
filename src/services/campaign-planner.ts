@@ -65,6 +65,18 @@ export class CampaignPlanner {
     this.rebuildItemIndex();
   }
 
+  /**
+   * Rebuild the reverse indexes from ctx.campaigns. MUST be called after the
+   * persistence layer reassigns ctx.campaigns on load/recover — the constructor
+   * built the indexes from the (still-empty) map, so without this findCampaignForItem
+   * and the chain-stable lookups return nothing after a restart and campaigns get
+   * regenerated as duplicates.
+   */
+  reindex(): void {
+    this.rebuildChainIndex();
+    this.rebuildItemIndex();
+  }
+
   /** Rebuild itemToCampaign reverse index from persisted campaigns */
   private rebuildItemIndex(): void {
     this.itemToCampaign.clear();
