@@ -176,6 +176,16 @@ export function updateConfig(host: ConfigManagerHost, partial: Record<string, un
     draft.objectives = partial.objectives as EngagementConfig['objectives'];
   }
 
+  // Merge operator_policy (full replace; null clears it). The dashboard validates the
+  // whole policy strictly at the route, and the merged draft is validated again below.
+  // Without this the route accepted the policy and reported success but the value was
+  // silently dropped here — so approval rules / dispatch caps never took effect.
+  if (partial.operator_policy === null) {
+    draft.operator_policy = undefined;
+  } else if (partial.operator_policy && typeof partial.operator_policy === 'object') {
+    draft.operator_policy = partial.operator_policy as EngagementConfig['operator_policy'];
+  }
+
   // Validate the fully-merged draft before committing to live config.
   const parsed = engagementConfigSchema.safeParse(draft);
   if (!parsed.success) {

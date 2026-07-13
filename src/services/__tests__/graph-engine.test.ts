@@ -3511,6 +3511,22 @@ describe('GraphEngine', () => {
       expect(engine.getConfig().failure_patterns).toHaveLength(1);
       expect(engine.getConfig().failure_patterns![0].technique).toBe('T1110');
     });
+
+    it('persists operator_policy instead of silently discarding it (Save Policy)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      const policy = {
+        version: 1 as const,
+        dispatch_limits: { max_per_subnet: 3, max_per_target: 1 },
+        approval_rules: [{ match: { host_class: 'excluded' as const }, require: 'approve-all' as const }],
+      };
+      engine.updateConfig({ operator_policy: policy });
+      const saved = engine.getConfig().operator_policy;
+      expect(saved?.dispatch_limits?.max_per_subnet).toBe(3);
+      expect(saved?.approval_rules).toHaveLength(1);
+      // null clears it.
+      engine.updateConfig({ operator_policy: null });
+      expect(engine.getConfig().operator_policy).toBeUndefined();
+    });
   });
 
   describe('objective CRUD', () => {
