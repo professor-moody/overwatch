@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '../../lib/utils';
+import { ENGAGEMENT_PROFILES, PROFILE_LABELS } from '../../lib/profiles';
 import {
   getConfig,
   updateConfig,
@@ -134,13 +135,13 @@ function IdentitySection({ config, onSave }: { config: EngagementConfig; onSave:
           <input value={name} onChange={e => setName(e.target.value)} className="settings-input w-full" />
         </Field>
         <Field label="Profile">
+          {/* Options come from the shared ENGAGEMENT_PROFILES list so they can't drift
+              from the engagementConfigSchema `profile` enum (src/types.ts). This panel
+              previously emitted "ad"/"webapp", which aren't in the enum, so saving those
+              failed validation (400) and the valid profiles were unselectable. */}
           <select value={profile} onChange={e => setProfile(e.target.value)} className="settings-input w-full">
             <option value="">—</option>
-            <option value="network">network</option>
-            <option value="ad">ad</option>
-            <option value="cloud">cloud</option>
-            <option value="webapp">webapp</option>
-            <option value="hybrid">hybrid</option>
+            {ENGAGEMENT_PROFILES.map(p => <option key={p} value={p}>{PROFILE_LABELS[p]}</option>)}
           </select>
         </Field>
       </div>

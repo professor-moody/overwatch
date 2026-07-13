@@ -12,17 +12,10 @@ import type {
   CampaignStrategy,
   FailurePattern,
 } from '../../lib/types';
+import { ENGAGEMENT_PROFILES, PROFILE_LABELS } from '../../lib/profiles';
 
-const PROFILES = ['network', 'goad_ad', 'single_host', 'web_app', 'cloud', 'hybrid'] as const;
+const PROFILES = ENGAGEMENT_PROFILES;
 const CLOUD_PROFILES = new Set(['cloud', 'hybrid']);
-const PROFILE_LABELS: Record<string, string> = {
-  network: 'Network',
-  goad_ad: 'GOAD / AD',
-  single_host: 'Single Host',
-  web_app: 'Web App',
-  cloud: 'Cloud',
-  hybrid: 'Hybrid',
-};
 const APPROVAL_MODES = [
   { value: 'auto-approve', label: 'Auto Approve' },
   { value: 'approve-critical', label: 'Approve Critical' },
