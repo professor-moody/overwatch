@@ -644,6 +644,7 @@ export class GraphEngine {
       degradeExpiredCredentialEdges: this.degradeExpiredCredentialEdges.bind(this),
       evaluateObjectives: this.evaluateObjectives.bind(this),
       persist: this.persist.bind(this),
+      persistImmediate: this.persistImmediate.bind(this),
       propertiesChanged: this.propertiesChanged.bind(this),
       invalidateFrontierCache: this.invalidateFrontierCache.bind(this),
     };
@@ -2564,6 +2565,15 @@ export class GraphEngine {
    */
   flushNow(): void {
     this.persistence.flushNow();
+  }
+
+  /**
+   * Immediately write a snapshot regardless of the dirty flag. Use at sync points
+   * whose mutations bypass the WAL (identity merges, graph corrections) so a crash
+   * before the debounced snapshot can't replay stale journal state over them.
+   */
+  persistImmediate(detail?: GraphUpdateDetail): void {
+    this.persistence.persistImmediate(detail);
   }
 
   /**
