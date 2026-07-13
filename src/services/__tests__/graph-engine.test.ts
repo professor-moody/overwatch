@@ -3592,6 +3592,31 @@ describe('GraphEngine', () => {
       expect(node?.sources).toContain('agent-B');
     });
 
+    it('cross-agent dedup attribution survives a restart (journaled, not memory-only)', () => {
+      const NONCE = 'f'.repeat(64);
+      const engine1 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+      const baseFinding = makeFinding({
+        tool_name: 'nmap',
+        nodes: [{ id: 'host-attrib-persist', type: 'host', label: 'attrib-host', ip: '10.0.0.98' }],
+        edges: [],
+      });
+      const r1 = engine1.ingestFinding({ ...baseFinding, agent_id: 'agent-A' });
+      const resolvedId = r1.new_nodes[0];
+      engine1.flushNow(); // baseline snapshot: only agent-A is on disk
+
+      // Same finding, DIFFERENT agent, within the window → dedup hit + attribution merge.
+      const r2 = engine1.ingestFinding({ ...baseFinding, agent_id: 'agent-B' });
+      expect(r2.deduplicated).toBe(true);
+      expect(engine1.getNode(resolvedId)?.sources).toContain('agent-B'); // merged in memory
+
+      engine1.dispose(); // crash before the debounced snapshot — only the journal has agent-B
+
+      const engine2 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+      const node = engine2.getNode(resolvedId);
+      expect(node?.sources).toContain('agent-A');
+      expect(node?.sources).toContain('agent-B'); // survived via WAL replay (was memory-only before)
+    });
+
     it('allows re-ingestion with different properties (partial overlap)', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
 
