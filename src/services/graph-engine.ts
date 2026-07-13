@@ -327,8 +327,20 @@ export class GraphEngine {
       // was actually applied — not the raw incoming props whose conflicting type
       // the live path refused. (updateNode already journals post-guard.)
       this.ctx.journalMutation('merge_node_attrs', { props: merged });
+      // A property change on an existing node can add or resolve frontier work — e.g.
+      // filling `services` clears an incomplete_node item, setting `cve_checked_at`
+      // retires a cve_research item, a new `version` creates one. Previously the merge
+      // branch cleared only the health report, so the frontier cache went stale:
+      // resolved work stayed visible and newly-relevant work stayed hidden. Invalidate
+      // the frontier too, but only when the merge actually changes an attribute (a no-op
+      // re-observation shouldn't churn the cache). Shallow compare — arrays/objects
+      // compare by ref, conservatively counting as changed (safe over-invalidation).
+      const attrsChanged = Object.keys(merged).some(
+        k => (existing as Record<string, unknown>)[k] !== (merged as Record<string, unknown>)[k],
+      );
       this.ctx.graph.mergeNodeAttributes(props.id, merged);
       this.invalidateHealthReport();
+      if (attrsChanged) this.invalidateFrontierCache();
     } else {
       this.ctx.journalMutation('add_node', { props });
       this.ctx.graph.addNode(props.id, props);

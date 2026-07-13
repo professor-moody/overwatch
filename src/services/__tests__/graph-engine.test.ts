@@ -259,6 +259,26 @@ describe('GraphEngine', () => {
       expect(graph.edges.some(edge => edge.source === 'user-test-local-jsmith' && edge.target === 'host-10-10-10-2' && edge.properties.type === 'HAS_SESSION')).toBe(true);
     });
 
+    it('a property-only merge invalidates the frontier cache (resolved CVE work disappears)', () => {
+      const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
+      // A service with a version but no CVE check yet → a cve_research frontier item.
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-cve-1', type: 'service', label: 'nginx 1.18', port: 80, service_name: 'http', version: '1.18' }],
+      }));
+      const before = engine.getState().frontier.filter(i => i.type === 'cve_research' && i.node_id === 'svc-cve-1');
+      expect(before).toHaveLength(1); // sanity: the work is on the frontier (and the cache is primed)
+
+      // Retire it by setting cve_checked_at via a PROPERTY-ONLY merge (no new edges,
+      // so nothing else invalidates the frontier cache).
+      engine.ingestFinding(makeFinding({
+        nodes: [{ id: 'svc-cve-1', type: 'service', label: 'nginx 1.18', port: 80, service_name: 'http', version: '1.18', cve_checked_at: new Date().toISOString() }],
+      }));
+
+      // Before the fix the stale cache still advertised the now-resolved item.
+      const after = engine.getState().frontier.filter(i => i.type === 'cve_research' && i.node_id === 'svc-cve-1');
+      expect(after).toHaveLength(0);
+    });
+
     it('exportGraph populates source_trust only when opted in (default omits it)', () => {
       const engine = trackedEngine(makeConfig(), TEST_STATE_FILE);
       engine.ingestFinding(makeFinding({
