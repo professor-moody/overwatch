@@ -34,6 +34,7 @@ export interface FindingIngestionHost {
   degradeExpiredCredentialEdges(nodeId: string): string[];
   evaluateObjectives(): void;
   persist(detail?: GraphUpdateDetail): void;
+  persistImmediate(detail?: GraphUpdateDetail): void;
   propertiesChanged(oldProps: NodeProperties, newProps: NodeProperties): boolean;
   invalidateFrontierCache(): void;
 }
@@ -339,9 +340,21 @@ export function ingestFindingImpl(
     },
   });
 
-  // Persist with real delta detail for dashboard callbacks
+  // Persist with real delta detail for dashboard callbacks.
   const result = { new_nodes: newNodes, new_edges: newEdges, updated_nodes: updatedNodes, updated_edges: updatedEdges, inferred_edges: inferredEdges };
-  host.persist({ ...result, removed_nodes: removedNodes, removed_edges: removedEdges });
+  const detail = { ...result, removed_nodes: removedNodes, removed_edges: removedEdges };
+  // An identity merge (removedNodes populated only by reconcileCanonicalNode) drops the
+  // alias node + rewires its edges via DIRECT graph ops that bypass the WAL — they're
+  // not journaled. On a WAL engagement a debounced persist() leaves a window where a
+  // crash replays the journal (which still has the alias's add) but NOT the merge,
+  // resurrecting the merged-away alias + duplicate edges. Force a snapshot so the merge
+  // is durable (the snapshot supersedes the WAL up to its seq). Gate on the journal
+  // being active: with no WAL, persistence is snapshot-only and a crash loses the whole
+  // ingest atomically (no resurrection), so forcing here would give no benefit while
+  // dropping the debounced flush that later cross-tier inference edges rely on. Merges
+  // are rare, so the extra write on the WAL path is negligible.
+  if (removedNodes.length > 0 && host.ctx.mutationJournal) host.persistImmediate(detail);
+  else host.persist(detail);
 
   return result;
 }

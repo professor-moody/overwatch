@@ -3384,6 +3384,34 @@ describe('GraphEngine', () => {
       expect(engine2.getState().access_summary.compromised_hosts).toHaveLength(0);
     });
 
+    it('an identity merge survives crash-before-flush (alias does not resurrect on replay)', () => {
+      const NONCE = 'e'.repeat(64);
+      const engine1 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+      // An unresolved alias with a HAS_SESSION edge to a host — durably snapshotted.
+      engine1.addNode({ id: 'bh-user-s-1-5-21-1', type: 'user', label: 'mystery-user', identity_status: 'unresolved', identity_markers: ['user:acct:test-local:jsmith'], discovered_at: new Date().toISOString(), confidence: 0.7 });
+      engine1.addNode({ id: 'host-10-10-10-2', type: 'host', label: '10.10.10.2', ip: '10.10.10.2', alive: true, discovered_at: new Date().toISOString(), confidence: 1.0 });
+      engine1.addEdge('bh-user-s-1-5-21-1', 'host-10-10-10-2', { type: 'HAS_SESSION', confidence: 1.0, discovered_at: new Date().toISOString() });
+      engine1.flushNow(); // baseline snapshot: the alias + its edge are on disk
+
+      // A later canonical identity converges the alias → mergeAliasIntoCanonical drops the
+      // alias node + retargets its edge via DIRECT (un-journaled) graph ops.
+      engine1.ingestFinding(makeFinding({
+        nodes: [{ id: 'user-test-local-jsmith', type: 'user', label: 'JSMITH@TEST.LOCAL', username: 'jsmith', domain_name: 'test.local' }],
+      }));
+      expect(engine1.exportGraph().nodes.some(n => n.id === 'bh-user-s-1-5-21-1')).toBe(false); // merged in memory
+
+      engine1.dispose(); // cancel debounced persist — simulate a crash before the snapshot
+
+      // Reload: the stale snapshot still holds the alias, and the journal replays the
+      // canonical add but NOT the un-journaled merge drops — so before the fix the alias
+      // (and a duplicate session edge) resurrect.
+      const engine2 = trackedEngine(makeConfig({ engagement_nonce: NONCE }), TEST_STATE_FILE);
+      expect(engine2.exportGraph().nodes.some(n => n.id === 'bh-user-s-1-5-21-1')).toBe(false); // stays merged
+      const sessionEdges = engine2.exportGraph().edges.filter(e => e.properties.type === 'HAS_SESSION' && e.target === 'host-10-10-10-2');
+      expect(sessionEdges).toHaveLength(1);
+      expect(sessionEdges[0].source).toBe('user-test-local-jsmith');
+    });
+
     it('a post-restart session can drain the edge even though a stale live_session_id was reconciled', () => {
       const now = new Date().toISOString();
       const engine1 = trackedEngine(makeConfig({ engagement_nonce: 'd'.repeat(64) }), TEST_STATE_FILE);
