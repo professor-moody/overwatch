@@ -346,7 +346,13 @@ export class HeadlessMcpRunner {
   private openLog(task_id: string): WriteStream | null {
     try {
       mkdirSync(this.opts.logDir, { recursive: true });
-      return createWriteStream(join(this.opts.logDir, `${task_id}.ndjson`), { flags: 'a' });
+      const stream = createWriteStream(join(this.opts.logDir, `${task_id}.ndjson`), { flags: 'a' });
+      // createWriteStream errors (async open failure, later write failure — disk full,
+      // path revoked) are emitted on the stream, NOT thrown, so the try/catch can't see
+      // them. Without an 'error' listener an unhandled 'error' event crashes the daemon.
+      // Logging is best-effort, so swallow it (never take the whole process down for a log).
+      stream.on('error', () => { /* best-effort log; ignore async open/write errors */ });
+      return stream;
     } catch {
       return null; // logging is best-effort; never block the agent
     }
