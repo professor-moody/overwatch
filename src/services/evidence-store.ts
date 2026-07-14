@@ -324,18 +324,33 @@ export class EvidenceStore {
       return new Promise<void>((resolve) => {
         if (writeError) { resolve(); return; }
         const s = ensureStream();
+        let settled = false;
+        const done = () => { if (!settled) { settled = true; resolve(); } };
         const ok = s.write(buf, (err?: Error | null) => {
           if (err && !writeError) writeError = err;
           else if (!err) {
             bytesDurable += buf.length;
             hasher.update(buf);
           }
-          // resolve regardless — backpressure handled below
-          if (ok) resolve();
+          // Resolve when the write itself completed OR errored. A successful write
+          // under backpressure (ok=false) resolves via 'drain' below — but an ERRORED
+          // write never drains, so resolving here is what stops the write chain (and
+          // the tool call awaiting end()) from hanging forever.
+          if (ok || err) done();
         });
         if (!ok) {
-          // Wait for drain before resolving so the next write waits too.
-          s.once('drain', () => resolve());
+          // Backpressure: resolve on drain. But an errored/destroyed stream never
+          // emits 'drain', so also settle on 'error'/'close' as a backstop — covers a
+          // stream that dies after the write callback already fired without draining.
+          const onSettle = () => {
+            s.removeListener('drain', onSettle);
+            s.removeListener('error', onSettle);
+            s.removeListener('close', onSettle);
+            done();
+          };
+          s.once('drain', onSettle);
+          s.once('error', onSettle);
+          s.once('close', onSettle);
         }
       });
     };

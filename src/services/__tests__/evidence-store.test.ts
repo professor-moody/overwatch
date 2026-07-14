@@ -40,6 +40,23 @@ describe('EvidenceStore', () => {
     expect(store.getRawOutput(id)).toBe(rawOutput);
   });
 
+  it('does not hang when a backpressured write errors (drain never fires)', async () => {
+    const store = new EvidenceStore(TEST_STATE);
+    // Remove the evidence dir so the lazy createWriteStream fails (ENOENT) on first write.
+    rmSync(EVIDENCE_DIR, { recursive: true, force: true });
+    const sink = store.createBlobStream({ evidence_type: 'screenshot', filename: 'big.bin', kind: 'content' });
+    // A chunk larger than the 16KB highWaterMark → write() returns false (backpressure),
+    // then the stream errors — before the fix the writeChunk promise waited for a 'drain'
+    // that never comes, so end() (which awaits the write chain) hung forever.
+    sink.write(Buffer.alloc(64 * 1024, 0x41));
+    const outcome = await Promise.race([
+      sink.end().then(() => 'settled').catch(() => 'settled'),
+      new Promise<string>(r => setTimeout(() => r('timeout'), 1500)),
+    ]);
+    expect(outcome).toBe('settled');       // did NOT hang
+    expect(sink.error()).toBeTruthy();     // the capture error is surfaced, not swallowed
+  });
+
   it('round-trips BINARY content via createBlobStream + getContentBuffer (no UTF-8 corruption)', async () => {
     const store = new EvidenceStore(TEST_STATE);
     // PNG magic + bytes that do not survive a UTF-8 decode/encode round-trip.
