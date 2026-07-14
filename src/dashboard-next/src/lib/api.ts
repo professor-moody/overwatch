@@ -479,9 +479,8 @@ export async function campaignAction(id: string, action: 'activate' | 'pause' | 
 
 export async function dispatchCampaign(id: string, body?: {
   max_agents?: number;
-  scope_hops?: number;
+  hops?: number;   // server reads `hops` (was sent as scope_hops → ignored)
   skill?: string;
-  throttle_seconds?: number;
 }): Promise<unknown> {
   return fetchJson(`/api/campaigns/${id}/dispatch`, {
     method: 'POST',
