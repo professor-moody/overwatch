@@ -139,21 +139,28 @@ export class AgentManager {
   updateStatus(taskId: string, status: AgentTask['status'], summary?: string): boolean {
     const task = this.ctx.agents.get(taskId);
     if (!task) return false;
-    // Idempotency guard: once an agent has reached a terminal state, swallow
-    // duplicate terminal transitions instead of re-emitting events and
-    // double-counting downstream campaign progress. We allow `interrupted`
-    // to win over a prior `completed`/`failed` so external cancellation
-    // signals are still expressible, but symmetric replays no-op.
+    // Terminal states are MONOTONIC: once a task is terminal it stays terminal and does
+    // not flip to a DIFFERENT terminal state. A late natural completed/failed must never
+    // overwrite an interrupt (operator cancel / heartbeat-reap) — that would turn a
+    // cancelled task into a false success and mis-count its campaign. The one allowed
+    // override is an interrupt winning over a prior completed/failed, so an operator
+    // cancel still registers even after the agent reported done. (Symmetric replays and
+    // any other terminal→terminal transition no-op.)
     const TERMINAL: AgentTask['status'][] = ['completed', 'failed', 'interrupted'];
     const currentTerminal = TERMINAL.includes(task.status);
     const incomingTerminal = TERMINAL.includes(status);
-    if (currentTerminal && incomingTerminal && task.status === status) {
-      return false;
+    if (currentTerminal) {
+      const isCancelOverride = status === 'interrupted' && task.status !== 'interrupted';
+      if (!isCancelOverride) return false;
     }
     task.status = status;
     if (summary) task.result_summary = summary;
-    if (status === 'completed' || status === 'failed') {
-      task.completed_at = new Date().toISOString();
+    // Stamp completed_at for EVERY terminal state (including interrupted) so lifecycle
+    // consumers — attention-card aging, elapsed time — have an end timestamp; interrupted
+    // previously got none and its attention card never aged out. Keep the first stamp on
+    // a cancel-override.
+    if (incomingTerminal) {
+      task.completed_at = task.completed_at ?? new Date().toISOString();
     }
     // P1.4: release any frontier lease this task held.
     if (status === 'completed' || status === 'failed' || status === 'interrupted') {
