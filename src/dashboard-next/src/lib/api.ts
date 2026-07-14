@@ -449,10 +449,14 @@ export async function createCampaign(body: {
   items?: FrontierItem[];
   abort_conditions?: unknown[];
 }): Promise<Campaign> {
-  return fetchJson('/api/campaigns', {
+  // The server wraps the new campaign as { campaign }. Unwrap it so callers get the
+  // bare Campaign — previously they read `.id` off the wrapper (undefined) and the
+  // newly-created campaign was never selected.
+  const res = await fetchJson<{ campaign: Campaign }>('/api/campaigns', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  return res.campaign;
 }
 
 export async function updateCampaign(id: string, body: Partial<Campaign>): Promise<Campaign> {
