@@ -76,6 +76,20 @@ describe('Session Adapters', () => {
       adapter.cleanup('nonexistent-session');
     });
 
+    it('rejects (does not hang) when the connection is refused', async () => {
+      const adapter = new SocketAdapter();
+      // getFreePort closes the server before returning, so nothing is listening →
+      // ECONNREFUSED. Before the fix, wireSocket's error handler set closed=true first,
+      // so the connect promise's `!closed` reject guard never fired and open_session hung.
+      const port = await getFreePort();
+      const spawn = adapter.spawn({ mode: 'connect', host: '127.0.0.1', port, sessionId: 'refused-1' });
+      const outcome = await Promise.race([
+        spawn.then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>(r => setTimeout(() => r('timeout'), 1500)),
+      ]);
+      expect(outcome).toBe('rejected'); // settled with a rejection, not hung
+    });
+
     it('rearm listen mode keeps the listener alive after a connection closes', async () => {
       const adapter = new SocketAdapter();
       const port = await getFreePort();
