@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findingVulnLabel } from '../finding-display';
+import { findingVulnLabel, severityDiverseEntryFindings } from '../finding-display';
 import type { FindingDto } from '../api';
 
 function makeFinding(over: Partial<FindingDto>): FindingDto {
@@ -35,5 +35,26 @@ describe('findingVulnLabel', () => {
       classification: { owasp_top_10: { id: 'A01', name: 'Broken Access Control' } },
     });
     expect(findingVulnLabel(f)).toBe('Administrative path');
+  });
+});
+
+describe('severityDiverseEntryFindings', () => {
+  const f = (id: string, severity: FindingDto['severity'], asset = 'host-1') =>
+    makeFinding({ id, severity, affected_assets: asset ? [asset] : [], risk_score: 1 });
+
+  it('surfaces lower-severity findings even when highs dominate (risk-sorted input)', () => {
+    const input = [
+      ...Array.from({ length: 10 }, (_, i) => f(`h${i}`, 'high')),
+      f('m1', 'medium'), f('l1', 'low'),
+    ];
+    const out = severityDiverseEntryFindings(input);
+    expect(out.some(x => x.severity === 'medium')).toBe(true); // was crowded out by a top-N slice
+    expect(out.some(x => x.severity === 'low')).toBe(true);
+    expect(out.filter(x => x.severity === 'high').length).toBeLessThanOrEqual(3); // capped per severity
+  });
+
+  it('excludes findings with no navigable affected asset', () => {
+    const out = severityDiverseEntryFindings([f('a', 'critical', ''), f('b', 'high', 'host-2')]);
+    expect(out.map(x => x.id)).toEqual(['b']);
   });
 });

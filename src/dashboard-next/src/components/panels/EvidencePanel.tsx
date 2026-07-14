@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
@@ -10,7 +10,7 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { EvidenceNarrative } from '../shared/EvidenceNarrative';
 import { narrativeItemsFromChains, resolveEvidenceQuery } from '../../lib/evidence-narrative';
-import { findingTitle } from '../../lib/finding-display';
+import { findingTitle, severityDiverseEntryFindings } from '../../lib/finding-display';
 
 export function EvidencePanel() {
   const [searchParams] = useSearchParams();
@@ -35,6 +35,9 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
   const [findings, setFindings] = useState<FindingDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Entry-point shortcuts spread across severities — /api/findings is risk-sorted, so a
+  // plain top-N only surfaced critical/high (see severityDiverseEntryFindings).
+  const entryFindings = useMemo(() => severityDiverseEntryFindings(findings), [findings]);
   const { navigateToPanel, navigateToAction } = useNavigation();
   const graph = useEngagementStore(s => s.graph);
   const sessions = useEngagementStore(s => s.sessions);
@@ -102,11 +105,11 @@ function EvidenceChainSearch({ initialQuery }: { initialQuery?: string }) {
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
             Evidence is node-centric. Search a node ID or label above, or open a node in the graph and click
-            “View evidence”.{findings.length > 0 ? ' Or start from a recent finding:' : ''}
+            “View evidence”.{entryFindings.length > 0 ? ' Or start from a finding:' : ''}
           </p>
-          {findings.length > 0 && (
+          {entryFindings.length > 0 && (
             <div className="space-y-1.5">
-              {findings.slice(0, 8).map(f => {
+              {entryFindings.map(f => {
                 const asset = f.affected_assets?.[0];
                 return (
                   <button
