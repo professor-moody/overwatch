@@ -466,7 +466,6 @@ function CampaignBuilder({ frontier, onCancel, onCreated }: {
 function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () => void }) {
   const [maxAgents, setMaxAgents] = useState(3);
   const [scopeHops, setScopeHops] = useState(1);
-  const [throttle, setThrottle] = useState(0);
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -474,8 +473,7 @@ function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () =>
     try {
       await dispatchCampaign(campaign.id, {
         max_agents: maxAgents,
-        scope_hops: scopeHops,
-        throttle_seconds: throttle || undefined,
+        hops: scopeHops,
       });
       onDone();
     } catch { /* leave dispatch panel open */ }
@@ -484,7 +482,10 @@ function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () =>
 
   return (
     <PanelSection title="Explicit Dispatch Gate">
-      <div className="grid grid-cols-3 gap-3">
+      {/* Throttle-seconds control removed: it was never wired server-side (the dispatch
+          helper has no throttle option), so it silently did nothing. Concurrency is
+          bounded by Max agents. */}
+      <div className="grid grid-cols-2 gap-3">
         <label className="text-xs text-muted-foreground">
           Max agents
           <input type="number" min={1} max={20} value={maxAgents} onChange={e => setMaxAgents(parseInt(e.target.value, 10) || 1)} className="settings-input mt-1 w-full" />
@@ -492,10 +493,6 @@ function DispatchPanel({ campaign, onDone }: { campaign: Campaign; onDone: () =>
         <label className="text-xs text-muted-foreground">
           Scope hops
           <input type="number" min={0} max={5} value={scopeHops} onChange={e => setScopeHops(parseInt(e.target.value, 10) || 0)} className="settings-input mt-1 w-full" />
-        </label>
-        <label className="text-xs text-muted-foreground">
-          Throttle seconds
-          <input type="number" min={0} value={throttle} onChange={e => setThrottle(parseInt(e.target.value, 10) || 0)} className="settings-input mt-1 w-full" />
         </label>
       </div>
       <div className="mt-3 rounded border border-warning/20 bg-warning/10 p-2 text-xs text-warning">
