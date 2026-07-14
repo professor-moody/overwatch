@@ -147,6 +147,38 @@ describe('AgentManager', () => {
       expect(mgr.getTask('task-1')!.completed_at).toBeUndefined();
     });
 
+    it('sets completed_at for interrupted (so its attention card can age out)', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask());
+      mgr.updateStatus('task-1', 'interrupted', 'operator cancel');
+      expect(mgr.getTask('task-1')!.completed_at).toBeDefined();
+    });
+
+    it('terminal is monotonic: a late completed does NOT overwrite an interrupt', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask());
+      expect(mgr.updateStatus('task-1', 'interrupted', 'cancelled')).toBe(true);
+      // A natural completion arriving after the cancel must be swallowed.
+      expect(mgr.updateStatus('task-1', 'completed', 'late done')).toBe(false);
+      expect(mgr.getTask('task-1')!.status).toBe('interrupted'); // not a false success
+    });
+
+    it('allows an interrupt to override a prior completed (operator cancel wins)', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask());
+      mgr.updateStatus('task-1', 'completed', 'done');
+      expect(mgr.updateStatus('task-1', 'interrupted', 'cancelled anyway')).toBe(true);
+      expect(mgr.getTask('task-1')!.status).toBe('interrupted');
+    });
+
+    it('a completed/failed does not overwrite another terminal (no flip-flop)', () => {
+      const { mgr } = setup();
+      mgr.register(makeTask());
+      mgr.updateStatus('task-1', 'completed');
+      expect(mgr.updateStatus('task-1', 'failed')).toBe(false);
+      expect(mgr.getTask('task-1')!.status).toBe('completed');
+    });
+
     it('logs an agent_updated event with correct classification', () => {
       const { mgr, ctx } = setup();
       mgr.register(makeTask());

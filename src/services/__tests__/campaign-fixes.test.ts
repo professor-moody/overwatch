@@ -204,6 +204,24 @@ describe('Campaign fixes — P2: idempotent terminal updates', () => {
     expect(c.progress.completed).toBe(1);
     expect(c.progress.succeeded).toBe(1);
   });
+
+  it('a late completion after an interrupt does not resurrect a campaign item as success', () => {
+    const { engine, campaignId } = buildEngineWithCampaign(['fi-1']);
+    engine.registerAgent({
+      id: 'task-int', agent_id: 'agent-Y', assigned_at: new Date().toISOString(),
+      status: 'running', frontier_item_id: 'fi-1', campaign_id: campaignId, subgraph_node_ids: [],
+    });
+
+    // Operator cancel → interrupted. (Campaign progress for interrupts is intentionally
+    // NOT advanced here — see the deferred completion-semantics note; the point of this
+    // test is that a LATE completed must not overwrite the interrupt into a false success.)
+    engine.updateAgentStatus('task-int', 'interrupted', 'cancelled');
+    engine.updateAgentStatus('task-int', 'completed', 'late done');
+
+    expect(engine.getTask('task-int')?.status).toBe('interrupted'); // monotonic — not a false success
+    const c = engine.getCampaign(campaignId)!;
+    expect(c.progress.succeeded).toBe(0);
+  });
 });
 
 describe('Campaign fixes — P2: report_finding links finding to campaign', () => {
