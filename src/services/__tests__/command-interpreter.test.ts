@@ -228,6 +228,9 @@ describe('buildPlannerObjective (3A.2 — handed to the headless planner)', () =
     // documents the op vocabulary so the planner emits OperatorOp-shaped ops
     expect(obj).toContain('"op":"directive"');
     expect(obj).toContain('"op":"scope"');
+    // dispatch is a supported op (propose_plan accepts it) — the objective must advertise
+    // it or free-form "scan/deploy at X" commands never become dispatch plans.
+    expect(obj).toContain('"op":"dispatch"');
   });
 
   it('handles no running agents / no pending actions gracefully', () => {

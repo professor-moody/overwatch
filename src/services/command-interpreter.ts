@@ -196,7 +196,9 @@ export function buildPlannerObjective(command: string, state: InterpreterState):
     `  { "op":"scope", "add_cidrs?":["10.0.0.0/24"], "add_domains?":["example.com"], "add_exclusions?":["10.0.0.5/32"] }`,
     `  { "op":"approve", "action_id":"<id>", "notes?":"" }`,
     `  { "op":"deny", "action_id":"<id>", "reason?":"" }`,
-    `Only reference task_ids/action_ids from the lists above. Pass the operator command back as \`command\` so it's logged with the plan.`,
+    `  { "op":"dispatch", "target_node_ids":["<existing graph node id>"], "archetype?":"recon_scanner", "skill?":"", "objective?":"" }`,
+    `Use \`dispatch\` to turn "port-scan X" / "dig into host Y" into a confirmable action — deploy an agent at EXISTING graph node id(s) you found via query_graph.`,
+    `Only reference task_ids/action_ids from the lists above (and dispatch node ids you confirmed exist). Pass the operator command back as \`command\` so it's logged with the plan.`,
   ].join('\n');
 }
 
