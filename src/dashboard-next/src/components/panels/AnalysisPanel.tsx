@@ -58,7 +58,14 @@ export function AnalysisPanel() {
 
   const runs = useMemo(() => buildActionRuns(entries), [entries]);
   const filtered = useMemo(() => filterRuns(runs, { status: statusFilter, search }), [runs, statusFilter, search]);
-  const selected = filtered.find(r => r.actionId === selectedId) ?? filtered[0] ?? null;
+  // Resolve the selected run. A deep-link (?item=<actionId>) may point at a run that's
+  // been filtered out (status/search) OR aged out of the fetched window entirely. In
+  // both cases show THAT run — its output still loads by id via getActionOutput — rather
+  // than silently swapping to the newest. Only fall back to newest when nothing is pinned.
+  const selectedInSet = selectedId ? runs.find(r => r.actionId === selectedId) : undefined;
+  const selectedOutOfWindow = !!selectedId && !selectedInSet;
+  const selected = selectedInSet
+    ?? (selectedOutOfWindow ? outOfWindowStub(selectedId!) : (filtered[0] ?? null));
 
   // Pin the initial selection so the 5s history poll doesn't yank the
   // assessment view to a newly-arrived run; the user's explicit click sticks.
@@ -124,7 +131,7 @@ export function AnalysisPanel() {
 
         {/* key on actionId: switching runs remounts, cleanly resetting stream/
             find/maxBytes and issuing a single fetch (no stale-maxBytes double-fetch). */}
-        <AssessmentView key={selected?.actionId ?? 'none'} run={selected} />
+        <AssessmentView key={selected?.actionId ?? 'none'} run={selected} outOfWindow={selectedOutOfWindow} />
       </div>
     </div>
   );
@@ -154,7 +161,13 @@ function RunRow({ run, selected, onSelect }: { run: ActionRun; selected: boolean
   );
 }
 
-function AssessmentView({ run }: { run: ActionRun | null }) {
+// A run deep-linked by id that isn't in the fetched window: a minimal stub whose fields
+// the getActionOutput fetch fills in. Lets a ?item= link to an aged-out run still open.
+function outOfWindowStub(actionId: string): ActionRun {
+  return { actionId, tool: null, command: null, status: 'neutral', agentId: null, targets: [], timestamp: '', startedAt: null, description: '' };
+}
+
+function AssessmentView({ run, outOfWindow }: { run: ActionRun | null; outOfWindow?: boolean }) {
   const { navigateToFinding, navigateToAgent } = useNavigation();
   const [output, setOutput] = useState<ActionOutputView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -235,6 +248,11 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
 
   return (
     <PanelSection className="p-0 overflow-hidden min-h-0 flex flex-col">
+      {outOfWindow && (
+        <div className="border-b border-border bg-accent/10 px-3 py-1.5 text-[11px] text-accent">
+          Loaded by link — this run isn't in the recent-runs list (filtered out or older than the window).
+        </div>
+      )}
       {/* Header: command + status + facts */}
       <div className="border-b border-border p-3 space-y-2">
         <div className="flex items-center gap-2">
@@ -245,7 +263,7 @@ function AssessmentView({ run }: { run: ActionRun | null }) {
             </span>
           )}
           <span className="font-mono text-sm text-foreground truncate">{output?.tool ?? run.tool ?? 'tool'}</span>
-          <span className="ml-auto text-[10px] text-muted-foreground">{formatTimestamp(run.timestamp)}</span>
+          <span className="ml-auto text-[10px] text-muted-foreground">{run.timestamp ? formatTimestamp(run.timestamp) : ''}</span>
         </div>
         {(output?.command ?? run.command) && (
           <pre className="overflow-x-auto rounded border border-border bg-background px-2 py-1.5 text-[11px] font-mono text-muted-foreground">
