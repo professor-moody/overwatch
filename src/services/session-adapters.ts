@@ -325,12 +325,19 @@ export class SocketAdapter implements SessionAdapterFactory {
       const dataCallbacks: Array<(chunk: string) => void> = [];
       const exitCallbacks: Array<(info: { exitCode?: number; signal?: number }) => void> = [];
       let closed = false;
+      // Whether this connect promise has settled. Keyed separately from `closed`
+      // because wireSocket's own 'error' handler sets closed=true and is registered
+      // BEFORE the reject handler below — so a `!closed` guard there would already be
+      // false on a refused connection, and the promise would hang (open_session forever).
+      let settled = false;
 
       // Buffer early data arriving before onData is registered by the caller
       const earlyBuffer: string[] = [];
       dataCallbacks.push((chunk: string) => { earlyBuffer.push(chunk); });
 
       const socket = connect({ host, port }, () => {
+        if (settled) return; // an error already rejected — don't also resolve
+        settled = true;
         if (onConnect) onConnect();
 
         const handle: AdapterHandle = {
@@ -365,7 +372,10 @@ export class SocketAdapter implements SessionAdapterFactory {
       this.wireSocket(socket, dataCallbacks, exitCallbacks, () => { closed = true; });
 
       socket.on('error', (err: Error) => {
-        if (!closed) {
+        // Reject only if the connect callback hasn't resolved yet. A post-connect
+        // error is reported via wireSocket's exit callbacks, not by rejecting here.
+        if (!settled) {
+          settled = true;
           reject(err);
         }
       });
