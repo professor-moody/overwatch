@@ -43,7 +43,7 @@ interface StateResponse {
   history_count?: number;
 }
 interface FrontierItem { id: string; type: string; description: string; opsec_noise?: number; graph_metrics?: { confidence?: number; hops_to_objective?: number } }
-interface AgentInfo { id: string; status: string; task: string; skill?: string; current_action?: string }
+interface AgentInfo { id: string; status: string; agent_id?: string; skill?: string; current_action?: string }
 interface FindingDto { id: string; severity: string; title: string; risk_score: number; affected_assets: string[] }
 interface FindingsResponse { findings: FindingDto[]; total: number; severity_summary: Record<string, number> }
 interface PendingAction { action_id: string; technique?: string; target?: string; description: string; noise_level?: number; agent_id?: string }
@@ -130,7 +130,9 @@ export function renderFindings(resp: FindingsResponse): string {
 export function renderAgents(agents: AgentInfo[]): string {
   return formatTable(
     ['STATUS', 'ID', 'TASK', 'NOW'],
-    agents.map(a => [a.status, a.id, a.task, a.current_action ?? '']),
+    // TASK is the agent's job/label. `task` never existed on the API payload (always
+    // undefined → blank column); use the skill, falling back to the agent_id label.
+    agents.map(a => [a.status, a.id, a.skill ?? a.agent_id ?? '—', a.current_action ?? '']),
     { color: [s => agentStatusColor(s.trim())(s), dim, undefined, dim] },
   );
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { setColorEnabled, formatTable, truncate, keyValues } from '../operator/format.js';
 import { resolveClientOptions, createClient, ApiError, type ApiClient } from '../operator/client.js';
 import { READ_COMMANDS, WRITE_COMMANDS } from '../operator/commands.js';
-import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch } from '../operator/render.js';
+import { renderStatus, renderApprovals, renderQueries, renderOpsec, renderFindings, renderDeploy, renderDispatch, renderAgents } from '../operator/render.js';
 
 // Deterministic output: force color off for all assertions.
 beforeEach(() => setColorEnabled(false));
@@ -194,6 +194,15 @@ describe('renderers', () => {
     expect(out).toContain('Acme Test');
     expect(out).toContain('1/2 achieved');
     expect(out).toContain('Get DA');
+  });
+
+  it('renderAgents fills the TASK column from skill/agent_id (not the nonexistent `task`)', () => {
+    const out = renderAgents([
+      { id: 'task-1', status: 'running', agent_id: 'network-recon-ab12', skill: 'network-recon', current_action: 'nmap' },
+      { id: 'task-2', status: 'running', agent_id: 'osint-cd34' }, // no skill → falls back to agent_id
+    ] as never);
+    expect(out).toContain('network-recon'); // TASK column populated from skill
+    expect(out).toContain('osint-cd34');    // fallback to agent_id when skill absent
   });
 
   it('empty approvals + queries render friendly messages', () => {
