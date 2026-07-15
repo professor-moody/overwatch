@@ -33,6 +33,7 @@ import { existsSync, openSync, fsyncSync, closeSync, writeSync, readFileSync, re
 import { dirname, join, basename } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
+import { decodeUtf8Fatal } from './durable-json.js';
 
 type WriteSyncLike = (
   fd: number,
@@ -152,6 +153,9 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
       if (!isRecord(payload.props) || !nonEmptyString(payload.props.type)) {
         return { ok: false, reason: 'add_edge payload.props.type must be a non-empty string' };
       }
+      if (payload.edge_id !== undefined && !nonEmptyString(payload.edge_id)) {
+        return { ok: false, reason: 'add_edge payload.edge_id must be a non-empty string when present' };
+      }
       break;
     }
     case 'merge_edge_attrs': {
@@ -163,6 +167,19 @@ function validateMutationEntry(value: unknown): MutationValidationResult {
     case 'drop_edge': {
       if (!nonEmptyString(payload.edge_id)) {
         return { ok: false, reason: 'drop_edge payload.edge_id must be a non-empty string' };
+      }
+      const hasIdentityRef = payload.source !== undefined
+        || payload.target !== undefined
+        || payload.edge_type !== undefined;
+      if (
+        hasIdentityRef
+        && (
+          !nonEmptyString(payload.source)
+          || !nonEmptyString(payload.target)
+          || !nonEmptyString(payload.edge_type)
+        )
+      ) {
+        return { ok: false, reason: 'drop_edge identity fallback requires non-empty source, target, and edge_type strings' };
       }
       break;
     }
@@ -451,8 +468,21 @@ export class MutationJournal {
    * a malformed/unknown/gapped WAL before any recovery anchor is created,
    * pruned, or compacted. Filesystem errors intentionally propagate so the
    * persistence owner can enter inspectable degraded mode. */
-  inspectIntegrity(): MutationReadIssue | undefined {
-    const issue = this.scanJournal().issue;
+  inspectIntegrity(afterCheckpoint?: number): MutationReadIssue | undefined {
+    const scan = this.scanJournal();
+    const issue = afterCheckpoint === undefined
+      ? scan.issue
+      : this.resolveReplayIssue(scan, afterCheckpoint, { trustedContiguousCheckpoint: true });
+    return issue ? { ...issue } : undefined;
+  }
+
+  /** Candidate-aware read-only replay preflight. Unlike inspectIntegrity(),
+   * this can preserve the ambiguity semantics of a legacy checkpoint. */
+  inspectReplayIntegrity(
+    fromSeq: number,
+    options: MutationReplayOptions = {},
+  ): MutationReadIssue | undefined {
+    const issue = this.resolveReplayIssue(this.scanJournal(), fromSeq, options);
     return issue ? { ...issue } : undefined;
   }
 
@@ -466,12 +496,17 @@ export class MutationJournal {
    *  avoid reusing a seq that still lives orphaned past the corruption barrier. */
   highestSeqOnDisk(): number {
     if (!existsSync(this.journalPath)) return 0;
-    const raw = readFileSync(this.journalPath, 'utf-8');
+    const raw = readFileSync(this.journalPath);
     let max = 0;
-    for (const line of raw.split('\n')) {
-      if (!line) continue;
+    let byteOffset = 0;
+    while (byteOffset < raw.length) {
+      const newlineOffset = raw.indexOf(0x0a, byteOffset);
+      const byteEnd = newlineOffset < 0 ? raw.length : newlineOffset;
+      const frame = raw.subarray(byteOffset, byteEnd);
+      byteOffset = newlineOffset < 0 ? raw.length : newlineOffset + 1;
+      if (frame.length === 0) continue;
       try {
-        const e = JSON.parse(line) as MutationEntry;
+        const e = JSON.parse(decodeUtf8Fatal(frame)) as MutationEntry;
         if (typeof e.seq === 'number' && e.seq > max) max = e.seq;
       } catch { /* skip malformed */ }
     }
@@ -520,7 +555,7 @@ export class MutationJournal {
 
       let parsed: unknown;
       try {
-        parsed = JSON.parse(frame.toString('utf-8'));
+        parsed = JSON.parse(decodeUtf8Fatal(frame));
       } catch (error) {
         return {
           raw,
@@ -593,6 +628,16 @@ export class MutationJournal {
   ): MutationEntry[] {
     const scan = this.scanJournal();
     const replayRecords = scan.records.filter(record => record.entry.seq > fromSeq);
+    const issue = this.resolveReplayIssue(scan, fromSeq, options);
+    this.lastReadIssue = issue;
+    return replayRecords.map(record => record.entry);
+  }
+
+  private resolveReplayIssue(
+    scan: MutationScanResult,
+    fromSeq: number,
+    options: MutationReplayOptions,
+  ): MutationReadIssue | undefined {
     // Candidate-specific legacy ambiguity takes precedence over any later
     // physical issue. Otherwise a valid retained record at/below an untrusted
     // checkpoint could be applied or skipped based on a claim we do not know is
@@ -600,19 +645,19 @@ export class MutationJournal {
     const ambiguous = options.trustedContiguousCheckpoint === false && fromSeq > 0
       ? scan.records.find(record => record.entry.seq <= fromSeq)
       : undefined;
-    let issue: MutationReadIssue | undefined = ambiguous
-      ? {
-          kind: 'ambiguous_checkpoint',
-          line: ambiguous.line,
-          byte_offset: ambiguous.byte_offset,
-          reason: `legacy base checkpoint ${fromSeq} may hide retained WAL seq ${ambiguous.entry.seq}`,
-          expected_seq: fromSeq + 1,
-          actual_seq: ambiguous.entry.seq,
-        }
-      : scan.issue;
-    const firstNewer = replayRecords[0];
-    if (!issue && firstNewer && firstNewer.entry.seq !== fromSeq + 1) {
-      issue = {
+    if (ambiguous) {
+      return {
+        kind: 'ambiguous_checkpoint',
+        line: ambiguous.line,
+        byte_offset: ambiguous.byte_offset,
+        reason: `legacy base checkpoint ${fromSeq} may hide retained WAL seq ${ambiguous.entry.seq}`,
+        expected_seq: fromSeq + 1,
+        actual_seq: ambiguous.entry.seq,
+      };
+    }
+    const firstNewer = scan.records.find(record => record.entry.seq > fromSeq);
+    if (firstNewer && firstNewer.entry.seq !== fromSeq + 1) {
+      const gap: MutationReadIssue = {
         kind: 'sequence_gap',
         line: firstNewer.line,
         byte_offset: firstNewer.byte_offset,
@@ -621,9 +666,12 @@ export class MutationJournal {
         actual_seq: firstNewer.entry.seq,
         offending_record_included: true,
       };
+      // Recovery stops at the first physical boundary it cannot justify. A
+      // later unknown/malformed frame must not hide an earlier base-to-WAL
+      // sequence gap and allow the post-gap prefix to reach the applier.
+      if (!scan.issue || gap.byte_offset <= scan.issue.byte_offset) return gap;
     }
-    this.lastReadIssue = issue;
-    return replayRecords.map(record => record.entry);
+    return scan.issue;
   }
 
   readSince(fromSeq: number): MutationEntry[] {

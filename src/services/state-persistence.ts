@@ -11,11 +11,16 @@
 // and batchMutate() to suppress flushes during batch operations.
 // ============================================================
 
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, openSync, fsyncSync, closeSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, openSync, fsyncSync, closeSync, lstatSync } from 'fs';
 import { dirname, basename, isAbsolute, join, relative, resolve } from 'path';
-import { createHash } from 'crypto';
-import type { EngineContext, OverwatchGraph, GraphUpdateDetail, ActivityLogEntry } from './engine-context.js';
-import { normalizeActivityLogEntry } from './engine-context.js';
+import { createHash, randomUUID } from 'crypto';
+import {
+  EngineContext,
+  normalizeActivityLogEntry,
+  type OverwatchGraph,
+  type GraphUpdateDetail,
+  type ActivityLogEntry,
+} from './engine-context.js';
 import { FrontierLinkageTracker } from './frontier-linkage.js';
 import { FrontierLeases } from './frontier-leases.js';
 import {
@@ -29,15 +34,52 @@ import { normalizeNodeProvenance } from './provenance-utils.js';
 import { OpsecTracker } from './opsec-tracker.js';
 import { MutationJournal, type MutationReplayResult } from './mutation-journal.js';
 import { fsyncDirectory, mkdirDurable } from './durable-fs.js';
+import { parseJsonBytes } from './durable-json.js';
+import {
+  deterministicCollisionEdgeKey,
+  edgeIdentityMatches,
+  preferredEdgeKey,
+} from './edge-identity.js';
 
 export const MAX_SNAPSHOTS = 5;
+const WAL_COMPACTION_AUTHORITY_SEMANTICS = 'full_state_sha256_json_v1' as const;
+
+function snapshotCollisionIdentity(path: string): { family: string; ordinal: number } | undefined {
+  const name = basename(path);
+  const match = /^(.*\.snap-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+)(?:-(\d{4}))?\.json$/.exec(name);
+  if (!match) return undefined;
+  return {
+    family: match[1],
+    ordinal: match[2] === undefined ? 0 : Number(match[2]),
+  };
+}
+
+/** Snapshot paths sort oldest-first. A same-clock/PID exclusive-create retry
+ * is newer than its unsuffixed predecessor even though plain lexical ordering
+ * places `-0001` before `.json`. */
+function compareSnapshotPaths(a: string, b: string): number {
+  const aName = basename(a);
+  const bName = basename(b);
+  const aCollision = snapshotCollisionIdentity(aName);
+  const bCollision = snapshotCollisionIdentity(bName);
+  if (
+    aCollision
+    && bCollision
+    && aCollision.family === bCollision.family
+    && aCollision.ordinal !== bCollision.ordinal
+  ) {
+    return aCollision.ordinal - bCollision.ordinal;
+  }
+  const byName = aName.localeCompare(bName);
+  return byName !== 0 ? byName : a.localeCompare(b);
+}
 
 /** The guarded engine mutators WAL replay routes through, so replay re-applies
  *  state via the SAME code path (and guards) as the live write instead of a
  *  parallel raw-graph reimplementation. GraphEngine satisfies this structurally. */
 export interface ReplayMutators {
   addNode(props: NodeProperties): string;
-  addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean };
+  addEdge(source: string, target: string, props: EdgeProperties, replayEdgeId?: string): { id: string; isNew: boolean };
 }
 
 // --- Coalescing configuration ---
@@ -50,6 +92,13 @@ class JournalRecoveryGateError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'JournalRecoveryGateError';
+  }
+}
+
+class StateIntegrityError extends Error {
+  constructor(message: string, readonly checkpoint?: number) {
+    super(message);
+    this.name = 'StateIntegrityError';
   }
 }
 
@@ -83,6 +132,18 @@ interface RestoredBase {
 interface RestoredCheckpoint {
   checkpoint: number;
   trusted: boolean;
+  /** Only current-writer, checksum-bound full-state snapshots may authorize
+   * deletion of WAL bytes. Legacy bases remain valid for recovery but are not
+   * compaction authorities. */
+  compactionTrusted?: boolean;
+}
+
+interface IntegrityRejectedBase {
+  source: 'state' | 'snapshot';
+  path: string;
+  error: string;
+  checkpoint?: number;
+  newnessRank: number;
 }
 
 interface RollbackIntentV1 {
@@ -226,8 +287,10 @@ export class StatePersistence {
     const journal = this.ctx.mutationJournal;
     const journalBlockedReason = journal?.getAppendBlockedReason();
     let physicalHighest: number | undefined;
+    let journalHasData = false;
     try {
       physicalHighest = journal?.getHighestPhysicalSeq();
+      journalHasData = journal?.hasData() ?? false;
     } catch (error) {
       const accessReason = this.describeJournalAccessFailure(error);
       const reason = this.recoveryReadOnlyReason
@@ -242,6 +305,7 @@ export class StatePersistence {
         accessFailure: true,
       });
       physicalHighest = this.recoveryStatus.highest_on_disk_seq;
+      journalHasData = journal !== null;
     }
     return {
       ...this.recoveryStatus,
@@ -263,7 +327,8 @@ export class StatePersistence {
         ...this.recoveryStatus.journal,
         // An append/apply ambiguity blocks the journal outside the startup
         // replay path. Surface that the bytes remain available for recovery.
-        preserved: this.recoveryStatus.journal.preserved || journalBlockedReason !== undefined,
+        preserved: this.recoveryStatus.journal.preserved
+          || (journalBlockedReason !== undefined && journalHasData),
       },
     };
   }
@@ -319,6 +384,7 @@ export class StatePersistence {
     error?: unknown;
     malformed: boolean;
     accessFailure?: boolean;
+    subject?: 'WAL' | 'state';
   }): JournalRecoveryGateError {
     const alreadyLatched = this.recoveryReadOnlyReason === input.reason;
     this.cancelTimers();
@@ -334,7 +400,9 @@ export class StatePersistence {
       : input.error === undefined ? input.reason : String(input.error);
     this.lastPersistenceError = message;
     this.ctx.mutationJournal?.blockAppends(input.reason);
-    const quarantine = alreadyLatched ? {} : this.quarantineJournal();
+    let journalHasData = false;
+    try { journalHasData = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalHasData = true; }
+    const quarantine = !alreadyLatched && journalHasData ? this.quarantineJournal() : {};
     this.recoveryStatus = {
       ...this.recoveryStatus,
       outcome: 'incomplete',
@@ -345,15 +413,16 @@ export class StatePersistence {
       journal: {
         ...this.recoveryStatus.journal,
         malformed: input.malformed,
-        preserved: true,
+        preserved: this.recoveryStatus.journal.preserved || journalHasData,
       },
     };
     if (!alreadyLatched) {
+      const subject = input.subject ?? 'WAL';
       // eslint-disable-next-line no-console
-      console.error(`[persistence] degraded read-only WAL: ${input.reason}`);
+      console.error(`[persistence] degraded read-only ${subject}: ${input.reason}`);
       try {
         this.ctx.logEvent({
-          description: 'WAL integrity/access failure forced degraded read-only mode',
+          description: `${subject} integrity/access failure forced degraded read-only mode`,
           event_type: 'system',
           category: 'system',
           outcome: 'failure',
@@ -546,7 +615,11 @@ export class StatePersistence {
     try {
       if (this.pendingRecoveryCheckpoint !== undefined) {
         const checkpoint = this.pendingRecoveryCheckpoint;
-        this.writeStateToDisk({ journalCheckpointSeq: checkpoint, rotateExisting: false });
+        this.writeStateToDisk({
+          journalCheckpointSeq: checkpoint,
+          rotateExisting: false,
+          allowIntegrityReplacement: this.pendingRecoverySource === 'snapshot',
+        });
         this.finishRecoveryCheckpoint(checkpoint, this.pendingRecoverySource ?? 'state', {
           // The GraphEngine skipped startup reconciliation while recovery was
           // degraded. A late checkpoint cannot safely reopen writes in-place.
@@ -700,7 +773,11 @@ export class StatePersistence {
 
   // --- Core durable write logic ---
 
-  private writeStateToDisk(options: { journalCheckpointSeq?: number; rotateExisting?: boolean } = {}): void {
+  private writeStateToDisk(options: {
+    journalCheckpointSeq?: number;
+    rotateExisting?: boolean;
+    allowIntegrityReplacement?: boolean;
+  } = {}): void {
     const journalCheckpointSeq = options.journalCheckpointSeq
       ?? this.ctx.mutationJournal?.getAppliedThroughSeq()
       ?? 0;
@@ -743,7 +820,24 @@ export class StatePersistence {
       journalCheckpointSemantics: JOURNAL_CHECKPOINT_SEMANTICS,
       ...(this.rollbackIntent ? { rollbackIntent: this.rollbackIntent } : {}),
     };
-    const json = JSON.stringify(data);
+    // A base may be perfectly usable for recovery while still being too old or
+    // too weakly described to authorize deletion of WAL history. Bind every
+    // state emitted by this writer to its exact JSON payload; snapshot rotation
+    // only compacts against copies whose authority still verifies. Legacy or
+    // unknown-marker files remain readable, while a recognized mismatch is
+    // explicit corruption and can never be silently reseeded over.
+    // Snapshot live values exactly once. Activity/event detail bags are
+    // intentionally extensible and may contain getters or toJSON hooks; hashing
+    // one evaluation and emitting a second could create a self-invalid state.
+    const serializedData = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+    const payloadJson = JSON.stringify(serializedData);
+    const json = JSON.stringify({
+      ...serializedData,
+      walCompactionAuthority: {
+        semantics: WAL_COMPACTION_AUTHORITY_SEMANTICS,
+        payload_sha256: createHash('sha256').update(payloadJson).digest('hex'),
+      },
+    });
     const serializeEnd = Date.now();
     this.metrics.totalSerializeMs += (serializeEnd - serializeStart);
 
@@ -752,6 +846,19 @@ export class StatePersistence {
     // Atomic write: write to temp, fsync, then rename (atomic on POSIX)
     const stateDir = dirname(this.ctx.stateFilePath);
     mkdirDurable(stateDir);
+    let primaryIsUsableBase = false;
+    if (
+      options.allowIntegrityReplacement !== true
+      && existsSync(this.ctx.stateFilePath)
+    ) {
+      primaryIsUsableBase = this.assertPrimaryStateIntegrity();
+    }
+    // Every ordinary write is followed by retention pruning, even when the
+    // 30-second rotation interval has not elapsed. Inspect retained recovery
+    // heads before either replacement or pruning can change durable bytes.
+    if (options.rotateExisting !== false) {
+      this.assertNoBlockingRetainedStateIntegrity(primaryIsUsableBase);
+    }
 
     // Rotate the current durable primary before creating the replacement temp.
     // This lets a WAL-integrity preflight fail without leaving a state temp that
@@ -784,6 +891,10 @@ export class StatePersistence {
     }
     fsyncDirectory(stateDir);
     this.ctx.journalSnapshotSeq = journalCheckpointSeq;
+    // A failed replacement must retain every snapshot that justified any
+    // preceding WAL compaction. Prune only after the new primary rename and
+    // its directory entry are durable.
+    if (options.rotateExisting !== false) this.pruneSnapshotsBestEffort();
 
     const writeEnd = Date.now();
     this.metrics.totalWriteMs += (writeEnd - writeStart);
@@ -800,7 +911,7 @@ export class StatePersistence {
     if (journal) {
       let issue;
       try {
-        issue = journal.inspectIntegrity();
+        issue = journal.inspectIntegrity(this.ctx.journalSnapshotSeq);
       } catch (error) {
         throw this.latchJournalRecoveryFailure({
           reason: this.describeJournalAccessFailure(error),
@@ -842,7 +953,7 @@ export class StatePersistence {
     // Copy the current durable primary to a durable snapshot before replacing
     // it. Creation/fsync failures abort the entire persistence attempt.
     try {
-      const stateBytes = readFileSync(this.ctx.stateFilePath);
+      const stateBytes = this.readPersistedBytes(this.ctx.stateFilePath);
       writeFileSync(snapFd, stateBytes);
       fsyncSync(snapFd);
       closeSync(snapFd);
@@ -889,11 +1000,97 @@ export class StatePersistence {
         }
       }
     }
-    // Prune only after integrity checking and any compaction have succeeded.
+  }
+
+  private assertNoBlockingRetainedStateIntegrity(primaryIsUsableBase: boolean): void {
+    const stateDir = dirname(this.ctx.stateFilePath);
+    let snapshots: string[];
+    try {
+      snapshots = this.listSnapshotsStrict();
+    } catch (error) {
+      throw new Error(
+        `state replacement could not enumerate retained recovery snapshots: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const candidates = snapshots.map(snapshot => ({
+      path: join(stateDir, snapshot),
+    }));
+    for (const candidate of candidates) {
+      let bytes: Buffer;
+      try {
+        bytes = this.readPersistedBytes(candidate.path);
+      } catch (error) {
+        throw new Error(
+          `state replacement could not read retained recovery snapshot at ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      try {
+        const data = parseJsonBytes(bytes);
+        this.validateStateBase(data);
+      } catch (error) {
+        if (!(error instanceof StateIntegrityError)) continue;
+        const blocksReplacement = error.checkpoint === undefined
+          || error.checkpoint > this.ctx.journalSnapshotSeq
+          || (
+            error.checkpoint === this.ctx.journalSnapshotSeq
+            && !primaryIsUsableBase
+          );
+        if (!blocksReplacement) continue;
+        throw this.latchJournalRecoveryFailure({
+          reason: `state replacement found a blocking recognized integrity mismatch at ${candidate.path}: ${error.message}`,
+          error,
+          malformed: false,
+          subject: 'state',
+        });
+      }
+    }
+  }
+
+  private assertPrimaryStateIntegrity(): boolean {
+    let bytes: Buffer;
+    try {
+      bytes = this.readPersistedBytes(this.ctx.stateFilePath);
+    } catch (error) {
+      throw new Error(
+        `state replacement could not read the durable primary at ${this.ctx.stateFilePath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    try {
+      const data = parseJsonBytes(bytes);
+      this.validateStateBase(data);
+      this.validateFullStateDetached(data, this.builtinRules);
+      return true;
+    } catch (error) {
+      if (!(error instanceof StateIntegrityError)) return false;
+      throw this.latchJournalRecoveryFailure({
+        reason: `state replacement found a recognized integrity mismatch at ${this.ctx.stateFilePath}: ${error.message}`,
+        error,
+        malformed: false,
+        subject: 'state',
+      });
+    }
+  }
+
+  /** Injectable seam for deterministic read-access failure tests. Production
+   * callers always use the synchronous filesystem read. */
+  private readPersistedBytes(path: string): Buffer {
+    return readFileSync(path);
+  }
+
+  private pruneSnapshotsBestEffort(): void {
+    const dir = dirname(this.ctx.stateFilePath);
+    const base = basename(this.ctx.stateFilePath, '.json');
+    const snapDir = join(dir, '.snapshots');
+    if (!existsSync(snapDir)) return;
     // Retaining an extra snapshot is safe, so pruning alone remains best-effort.
-    const snaps = readdirSync(snapDir)
-      .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
-      .sort();
+    let snaps: string[];
+    try {
+      snaps = readdirSync(snapDir)
+        .filter(f => f.startsWith(`${base}.snap-`) && f.endsWith('.json'))
+        .sort(compareSnapshotPaths);
+    } catch {
+      return;
+    }
     while (snaps.length > MAX_SNAPSHOTS) {
       const oldest = snaps.shift()!;
       try {
@@ -929,10 +1126,7 @@ export class StatePersistence {
     // Compare the snapshot filenames, not their storage-directory prefixes.
     // Otherwise every legacy root snapshot sorts after every `.snapshots/`
     // entry and is incorrectly tried first after the caller reverses the list.
-    return results.sort((a, b) => {
-      const byName = basename(a).localeCompare(basename(b));
-      return byName !== 0 ? byName : a.localeCompare(b);
-    });
+    return results.sort(compareSnapshotPaths);
   }
 
   /** Return the oldest checkpoint for a retained snapshot that is itself a
@@ -942,22 +1136,21 @@ export class StatePersistence {
     const stateDir = dirname(this.ctx.stateFilePath);
     let oldest: number | undefined;
     for (const snapshot of this.listSnapshots()) {
-      let raw: string;
+      let data: unknown;
       try {
-        raw = readFileSync(join(stateDir, snapshot), 'utf-8');
+        data = parseJsonBytes(this.readPersistedBytes(join(stateDir, snapshot)));
       } catch {
         // An unreadable retained file may still be the oldest valid recovery
         // anchor. It cannot authorize deletion of any WAL bytes.
         return undefined;
       }
       try {
-        const data = JSON.parse(raw) as unknown;
-        const { checkpoint, trusted } = this.validateCompactionAnchor(data);
+        const { checkpoint, trusted, compactionTrusted } = this.validateCompactionAnchor(data);
         // A legacy snapshot may contain an allocation-based overclaim. It is a
         // usable graph base, but not authority to delete *any* retained WAL
         // records. Disabling compaction preserves the suffix it may need and
         // any records at/below its unproven cursor.
-        if (!trusted) return undefined;
+        if (!trusted || !compactionTrusted) return undefined;
         oldest = oldest === undefined ? checkpoint : Math.min(oldest, checkpoint);
       } catch (error) {
         if (error instanceof JournalRecoveryGateError) throw error;
@@ -970,12 +1163,21 @@ export class StatePersistence {
 
   rollbackToSnapshot(snapshotName: string, builtinRules: InferenceRule[]): boolean {
     const dir = dirname(this.ctx.stateFilePath);
-    const snapPath = join(dir, snapshotName);
-    if (!existsSync(snapPath)) {
-      // Try legacy same-directory location
-      const legacyPath = join(dir, basename(snapshotName));
-      if (!existsSync(legacyPath)) return false;
-      return this._rollbackFrom(legacyPath, builtinRules);
+    const candidates = this.listSnapshotsStrict().map(snapshot => join(dir, snapshot));
+    const requested = isAbsolute(snapshotName)
+      ? resolve(snapshotName)
+      : resolve(dir, snapshotName);
+    let snapPath = candidates.find(candidate => resolve(candidate) === requested);
+    if (!snapPath) {
+      // Preserve the legacy basename lookup, but only when it resolves to a
+      // file that is actually in the enumerated snapshot inventory.
+      const legacyRequested = resolve(dir, basename(snapshotName));
+      snapPath = candidates.find(candidate => resolve(candidate) === legacyRequested);
+    }
+    if (!snapPath) return false;
+    const stat = lstatSync(snapPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Rollback snapshot must be a regular retained file: ${snapshotName}`);
     }
     return this._rollbackFrom(snapPath, builtinRules);
   }
@@ -984,9 +1186,19 @@ export class StatePersistence {
     // Read and perform structural validation before disturbing any pending
     // persistence work. A bad rollback input must not strand an otherwise
     // writable dirty engine with its debounce/retry timers cancelled.
-    const snapshotBytes = readFileSync(snapPath);
-    const data = JSON.parse(snapshotBytes.toString('utf-8')) as unknown;
-    const validated = this.validateStateBase(data);
+    let snapshotBytes: Buffer;
+    let data: unknown;
+    let validated: RestoredCheckpoint;
+    try {
+      snapshotBytes = this.readPersistedBytes(snapPath);
+      data = parseJsonBytes(snapshotBytes);
+      validated = this.validateStateBase(data);
+      this.assertLegacyRollbackCheckpointUnambiguous(validated);
+    } catch (error) {
+      throw new Error(
+        `Rollback to ${basename(snapPath)} did not start: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const snapshotSeq = validated.checkpoint;
     const intent = this.createRollbackIntent({
       version: 1,
@@ -1022,7 +1234,11 @@ export class StatePersistence {
       // that sees this marker must finish this rollback before comparing any
       // newer snapshot checkpoints or replaying the superseded WAL suffix.
       this.rollbackIntent = intent;
-      this.writeStateToDisk({ journalCheckpointSeq: snapshotSeq, rotateExisting: false });
+      this.writeStateToDisk({
+        journalCheckpointSeq: snapshotSeq,
+        rotateExisting: false,
+        allowIntegrityReplacement: true,
+      });
 
       // Phase 2 is destructive but idempotent. It is safe only after the marked
       // primary above has reached stable storage.
@@ -1032,7 +1248,11 @@ export class StatePersistence {
       // Phase 3: clear the intent only after cleanup is durable. If this final
       // write fails, the marked primary remains and startup retries phase 2.
       this.rollbackIntent = undefined;
-      this.writeStateToDisk({ journalCheckpointSeq: snapshotSeq, rotateExisting: false });
+      this.writeStateToDisk({
+        journalCheckpointSeq: snapshotSeq,
+        rotateExisting: false,
+        allowIntegrityReplacement: true,
+      });
       this.removeRollbackAuthority();
       this.ctx.mutationJournal?.unblockAppends();
       this.finishSuccessfulWrite();
@@ -1086,6 +1306,38 @@ export class StatePersistence {
     }
   }
 
+  /** A legacy checkpoint can be promoted to the current trusted marker only
+   * after a complete WAL scan proves it does not hide any retained record at
+   * or below its claimed cursor. */
+  private assertLegacyRollbackCheckpointUnambiguous(validated: RestoredCheckpoint): void {
+    if (validated.trusted) return;
+    let issue;
+    try {
+      issue = this.ctx.mutationJournal?.inspectReplayIntegrity(
+        validated.checkpoint,
+        { trustedContiguousCheckpoint: false },
+      );
+    } catch (error) {
+      throw this.latchJournalRecoveryFailure({
+        reason: this.describeJournalAccessFailure(error),
+        error,
+        malformed: false,
+        accessFailure: true,
+      });
+    }
+    if (!issue) return;
+    if (issue.kind !== 'ambiguous_checkpoint') {
+      throw this.latchJournalRecoveryFailure({
+        reason: `legacy rollback WAL integrity preflight failed at line ${issue.line}: ${issue.reason}`,
+        error: issue.reason,
+        malformed: issue.kind === 'malformed_entry',
+      });
+    }
+    throw new Error(
+      `legacy rollback checkpoint ${validated.checkpoint} is not provably contiguous: ${issue.reason}`,
+    );
+  }
+
   private snapshotPathForIntent(snapshotPath: string): string {
     const stateDir = resolve(dirname(this.ctx.stateFilePath));
     const selected = resolve(snapshotPath);
@@ -1122,7 +1374,7 @@ export class StatePersistence {
     const dir = dirname(path);
     if (existsSync(path)) {
       const existing = this.validateStandaloneRollbackIntent(
-        JSON.parse(readFileSync(path, 'utf-8')) as unknown,
+        parseJsonBytes(this.readPersistedBytes(path)),
       );
       if (existing.intent_checksum !== intent.intent_checksum) {
         throw new Error('an existing rollback authority names a different target');
@@ -1172,14 +1424,23 @@ export class StatePersistence {
       // A listed-but-unreadable snapshot might still be a valid, newer base.
       // Treat filesystem failure as fatal; only parse/schema-invalid snapshots
       // are safe to ignore because startup will reject them too.
-      const raw = readFileSync(snapshotPath, 'utf-8');
+      const raw = this.readPersistedBytes(snapshotPath);
       let candidateCheckpoint: number;
       try {
-        const data = JSON.parse(raw) as unknown;
+        const data = parseJsonBytes(raw);
         candidateCheckpoint = this.validateStateBase(data).checkpoint;
-      } catch {
-        // Invalid snapshots cannot outrank a valid rollback base.
-        continue;
+      } catch (error) {
+        if (error instanceof StateIntegrityError) {
+          if (error.checkpoint === undefined) {
+            throw new Error(
+              `cannot durably complete rollback while superseded snapshot ${snapshot} has a recognized integrity mismatch and no usable checkpoint`,
+            );
+          }
+          candidateCheckpoint = error.checkpoint;
+        } else {
+          // Invalid snapshots cannot outrank a valid rollback base.
+          continue;
+        }
       }
       if (candidateCheckpoint < checkpoint) continue;
       // I/O failures here intentionally escape: silently retaining a valid
@@ -1328,7 +1589,7 @@ export class StatePersistence {
 
     if (hasAuthoritySidecar) {
       try {
-        const authority = JSON.parse(readFileSync(authorityPath, 'utf-8')) as unknown;
+        const authority = parseJsonBytes(this.readPersistedBytes(authorityPath));
         intent = this.validateStandaloneRollbackIntent(authority);
       } catch (error) {
         this.latchRollbackFailure(error, this.rollbackCheckpointHintFromIntentFile(authorityPath) ?? 0, 'state');
@@ -1338,7 +1599,7 @@ export class StatePersistence {
 
     if (existsSync(this.ctx.stateFilePath)) {
       try {
-        primaryData = JSON.parse(readFileSync(this.ctx.stateFilePath, 'utf-8')) as unknown;
+        primaryData = parseJsonBytes(this.readPersistedBytes(this.ctx.stateFilePath));
         if (
           primaryData
           && typeof primaryData === 'object'
@@ -1372,27 +1633,30 @@ export class StatePersistence {
 
     let recoverySource: 'state' | 'snapshot' = 'state';
     try {
-      let rollbackData: unknown;
-      // The sidecar binds the selected snapshot bytes, not arbitrary contents
-      // of the replaceable marked primary. Whenever that independent authority
-      // exists, its checksummed snapshot is canonical even if the primary is
-      // syntactically valid and carries the same intent fields.
-      if (!hasAuthoritySidecar && primaryData && primaryIntent?.intent_checksum === intent.intent_checksum) {
-        rollbackData = primaryData;
-      } else {
-        recoverySource = 'snapshot';
-        const selectedPath = join(dirname(this.ctx.stateFilePath), intent.selected_snapshot);
-        const selectedBytes = readFileSync(selectedPath);
-        const selectedDigest = createHash('sha256').update(selectedBytes).digest('hex');
-        if (selectedDigest !== intent.selected_snapshot_sha256) {
-          throw new Error('selected rollback snapshot checksum does not match the durable intent');
-        }
-        rollbackData = JSON.parse(selectedBytes.toString('utf-8')) as unknown;
-        const selected = this.validateStateBase(rollbackData);
-        if (selected.checkpoint !== intent.checkpoint) {
-          throw new Error('selected rollback snapshot checkpoint does not match the durable intent');
-        }
+      // The intent always binds the original selected snapshot. Validate those
+      // bytes even when a marker-only current-writer primary is usable: that
+      // primary may have been produced from a legacy checkpoint immediately
+      // before a crash and therefore cannot establish the source checkpoint's
+      // contiguity by itself.
+      recoverySource = 'snapshot';
+      const selectedPath = join(dirname(this.ctx.stateFilePath), intent.selected_snapshot);
+      const selectedBytes = this.readPersistedBytes(selectedPath);
+      const selectedDigest = createHash('sha256').update(selectedBytes).digest('hex');
+      if (selectedDigest !== intent.selected_snapshot_sha256) {
+        throw new Error('selected rollback snapshot checksum does not match the durable intent');
       }
+      const selectedData = parseJsonBytes(selectedBytes);
+      const selected = this.validateStateBase(selectedData);
+      if (selected.checkpoint !== intent.checkpoint) {
+        throw new Error('selected rollback snapshot checkpoint does not match the durable intent');
+      }
+      this.assertLegacyRollbackCheckpointUnambiguous(selected);
+
+      // The intent binds the selected snapshot bytes, never arbitrary contents
+      // of the replaceable marked primary. This remains true for marker-only
+      // compatibility: matching intent metadata does not authenticate the
+      // primary graph/config payload.
+      const rollbackData = selectedData;
 
       // Marker-only pending states are upgraded to the independently durable
       // authority before any cleanup. Existing matching sidecars are reused and
@@ -1409,7 +1673,11 @@ export class StatePersistence {
       // Rebuild a marked primary from the selected snapshot when the old marked
       // primary was absent/corrupt, then resume destructive cleanup.
       if (recoverySource === 'snapshot') {
-        this.writeStateToDisk({ journalCheckpointSeq: intent.checkpoint, rotateExisting: false });
+        this.writeStateToDisk({
+          journalCheckpointSeq: intent.checkpoint,
+          rotateExisting: false,
+          allowIntegrityReplacement: true,
+        });
       }
       this.completeRollbackCleanup(intent);
       this.ctx.logEvent({
@@ -1420,7 +1688,11 @@ export class StatePersistence {
         details: { checkpoint: intent.checkpoint },
       });
       this.rollbackIntent = undefined;
-      this.writeStateToDisk({ journalCheckpointSeq: intent.checkpoint, rotateExisting: false });
+      this.writeStateToDisk({
+        journalCheckpointSeq: intent.checkpoint,
+        rotateExisting: false,
+        allowIntegrityReplacement: true,
+      });
       this.removeRollbackAuthority();
       this.ctx.mutationJournal?.unblockAppends();
       this.finishSuccessfulWrite();
@@ -1435,6 +1707,13 @@ export class StatePersistence {
       });
       return { status: 'restored', source: recoverySource };
     } catch (error) {
+      if (error instanceof JournalRecoveryGateError) {
+        return {
+          status: 'degraded',
+          source: recoverySource,
+          reason: this.recoveryReadOnlyReason,
+        };
+      }
       const checkpoint = this.rollbackIntent?.checkpoint ?? intent.checkpoint;
       this.latchRollbackFailure(error, checkpoint, recoverySource);
       return {
@@ -1459,6 +1738,7 @@ export class StatePersistence {
     mutators?: ReplayMutators,
   ): RestoreResult {
     const rejected: Array<{ path: string; error: string }> = [];
+    const integrityRejected: IntegrityRejectedBase[] = [];
     const baseline = this.captureRestoreBaseline();
 
     // Parse and validate every base before choosing one. Filename order alone
@@ -1466,9 +1746,9 @@ export class StatePersistence {
     // than a stale-but-still-valid primary left by an interrupted rename.
     const validated: ValidatedRestoreCandidate[] = [];
     for (const [newnessRank, candidate] of candidates.entries()) {
-      let raw: string;
+      let raw: Buffer;
       try {
-        raw = readFileSync(candidate.path, 'utf-8');
+        raw = this.readPersistedBytes(candidate.path);
       } catch (error) {
         // A transiently unreadable base may be the newest durable state. Treating
         // it like malformed JSON and overwriting it from an older base/config
@@ -1476,10 +1756,20 @@ export class StatePersistence {
         return this.enterBaseAccessFailure(candidate.source, candidate.path, error);
       }
       try {
-        const data = JSON.parse(raw) as unknown;
+        const data = parseJsonBytes(raw);
         const { checkpoint } = this.validateStateBase(data);
+        this.validateFullStateDetached(data, builtinRules);
         validated.push({ ...candidate, data, checkpoint, newnessRank });
       } catch (error) {
+        if (error instanceof StateIntegrityError) {
+          integrityRejected.push({
+            source: candidate.source,
+            path: candidate.path,
+            error: error.message,
+            checkpoint: error.checkpoint,
+            newnessRank,
+          });
+        }
         rejected.push({
           path: candidate.path,
           error: error instanceof Error ? error.message : String(error),
@@ -1489,6 +1779,28 @@ export class StatePersistence {
     validated.sort((left, right) =>
       right.checkpoint - left.checkpoint || left.newnessRank - right.newnessRank,
     );
+
+    // A recognized-checksum mismatch is not just an invalid legacy base: its
+    // bytes may contain newer non-WAL state. Never overwrite such a candidate
+    // with an older fallback. Older mismatched snapshots cannot block a newer
+    // valid primary, but the highest-ranked recovery head remains untouched and
+    // inspectable in degraded mode for explicit reconciliation.
+    const bestValid = validated[0];
+    const integrityRank = (candidate: IntegrityRejectedBase): number =>
+      candidate.checkpoint ?? Number.MAX_SAFE_INTEGER;
+    const blockingIntegrity = integrityRejected
+      .filter(candidate => !bestValid
+        || integrityRank(candidate) > bestValid.checkpoint
+        || (
+          integrityRank(candidate) === bestValid.checkpoint
+          && candidate.newnessRank < bestValid.newnessRank
+        ))
+      .sort((left, right) =>
+        integrityRank(right) - integrityRank(left) || left.newnessRank - right.newnessRank,
+      );
+    if (blockingIntegrity.length > 0) {
+      return this.enterStateIntegrityFailure(blockingIntegrity);
+    }
 
     for (const candidate of validated) {
       let restoredCheckpoint: RestoredCheckpoint;
@@ -1591,6 +1903,15 @@ export class StatePersistence {
   private validateStateBase(data: unknown): RestoredCheckpoint {
     if (!data || typeof data !== 'object') throw new Error('persisted state is not an object');
     const record = data as Record<string, unknown>;
+    const compactionAuthority = this.walCompactionAuthorityStatus(record);
+    if (compactionAuthority === 'invalid') {
+      throw new StateIntegrityError(
+        'persisted WAL compaction authority checksum does not match the state payload',
+        Number.isSafeInteger(record.journalSnapshotSeq) && (record.journalSnapshotSeq as number) >= 0
+          ? record.journalSnapshotSeq as number
+          : undefined,
+      );
+    }
     if (!record.config || typeof record.config !== 'object') throw new Error('persisted state is missing config');
     const configValidation = engagementConfigSchema.safeParse(record.config);
     if (!configValidation.success) {
@@ -1600,6 +1921,7 @@ export class StatePersistence {
       throw new Error(`persisted state config is invalid: ${issues}`);
     }
     if (!record.graph || typeof record.graph !== 'object') throw new Error('persisted state is missing graph');
+    this.validatePersistedAuxiliaryShapes(record);
     if (
       record.journalSnapshotSeq !== undefined
       && (!Number.isSafeInteger(record.journalSnapshotSeq) || (record.journalSnapshotSeq as number) < 0)
@@ -1613,33 +1935,109 @@ export class StatePersistence {
     return {
       checkpoint,
       trusted: record.journalCheckpointSemantics === JOURNAL_CHECKPOINT_SEMANTICS,
+      compactionTrusted: compactionAuthority === 'valid',
     };
   }
 
-  /** Compaction requires more than a rankable config/graph/checkpoint. Exercise
-   * the exact full-state deserializer, then restore the current live baseline,
-   * so an auxiliary-field-corrupt snapshot can never authorize WAL deletion. */
+  /** Compaction requires more than a rankable config/graph/checkpoint. Only a
+   * checksum-bound base emitted by this writer can authorize WAL deletion, and
+   * it must pass the exact full-state deserializer in a detached context. */
   private validateCompactionAnchor(data: unknown): RestoredCheckpoint {
     const validated = this.validateStateBase(data);
-    const baseline = this.captureRestoreBaseline();
-    let candidateError: unknown;
-    try {
-      this._restoreFromData(data, this.builtinRules);
-    } catch (error) {
-      candidateError = error;
+    if (!validated.compactionTrusted) {
+      return { ...validated, compactionTrusted: false };
     }
 
+    this.validateFullStateDetached(data, this.builtinRules);
+    return { ...validated, compactionTrusted: true };
+  }
+
+  private validateFullStateDetached(data: unknown, builtinRules: InferenceRule[]): void {
+    const liveCtx = this.ctx;
+    const scratchStatePath = join(
+      dirname(liveCtx.stateFilePath),
+      `.${basename(liveCtx.stateFilePath)}.state-validation-${process.pid}-${randomUUID()}.json`,
+    );
+    const scratchCtx = new EngineContext(this.createGraph(), liveCtx.config, scratchStatePath);
+    // The detached context must never observe or create a persistence stream.
+    scratchCtx.mutationJournal = null;
     try {
-      this.restoreRejectedCandidateBaseline(baseline, this.builtinRules);
-    } catch (error) {
-      throw this.latchJournalRecoveryFailure({
-        reason: `compaction anchor validation could not restore the live engine baseline: ${error instanceof Error ? error.message : String(error)}`,
-        error,
-        malformed: false,
-      });
+      this.ctx = scratchCtx;
+      this._restoreFromData(data, builtinRules);
+    } finally {
+      this.ctx = liveCtx;
     }
-    if (candidateError !== undefined) throw candidateError;
-    return validated;
+  }
+
+  private walCompactionAuthorityStatus(
+    record: Record<string, unknown>,
+  ): 'absent_or_unknown' | 'valid' | 'invalid' {
+    const rawAuthority = record.walCompactionAuthority;
+    if (!rawAuthority || typeof rawAuthority !== 'object' || Array.isArray(rawAuthority)) {
+      return 'absent_or_unknown';
+    }
+    const authority = rawAuthority as Record<string, unknown>;
+    if (authority.semantics !== WAL_COMPACTION_AUTHORITY_SEMANTICS) return 'absent_or_unknown';
+    if (typeof authority.payload_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(authority.payload_sha256)) {
+      return 'invalid';
+    }
+    const payload = { ...record };
+    delete payload.walCompactionAuthority;
+    const actual = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    return actual === authority.payload_sha256 ? 'valid' : 'invalid';
+  }
+
+  /** Legacy snapshots may omit auxiliary fields, but a present field with the
+   * wrong container shape is not a valid full-state recovery base. Several old
+   * deserializers silently coerced those values to empty state, which could
+   * otherwise let a corrupt snapshot authorize deletion of its WAL proof. */
+  private validatePersistedAuxiliaryShapes(record: Record<string, unknown>): void {
+    const arrayFields = [
+      'activityLog',
+      'agents',
+      'campaigns',
+      'agentDirectives',
+      'approvalRequests',
+      'inferenceRules',
+      'trackedProcesses',
+      'coldStore',
+      'chainCheckpoints',
+    ] as const;
+    for (const field of arrayFields) {
+      if (Object.prototype.hasOwnProperty.call(record, field) && !Array.isArray(record[field])) {
+        throw new Error(`persisted ${field} must be an array when present`);
+      }
+    }
+
+    const objectFields = ['opsecTracker', 'frontierLinkage', 'frontierLeases'] as const;
+    for (const field of objectFields) {
+      const value = record[field];
+      if (
+        Object.prototype.hasOwnProperty.call(record, field)
+        && (value === null || typeof value !== 'object' || Array.isArray(value))
+      ) {
+        throw new Error(`persisted ${field} must be an object when present`);
+      }
+    }
+
+    if (Array.isArray(record.coldStore)) {
+      for (const [index, value] of record.coldStore.entries()) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)
+          || typeof (value as Record<string, unknown>).id !== 'string'
+          || (value as Record<string, unknown>).id === '') {
+          throw new Error(`persisted coldStore[${index}] must be an object with a nonempty id`);
+        }
+      }
+    }
+    if (
+      record.deterministicSeq !== undefined
+      && (!Number.isSafeInteger(record.deterministicSeq) || (record.deterministicSeq as number) < 0)
+    ) {
+      throw new Error('persisted deterministicSeq must be a non-negative safe integer');
+    }
+    if (record.lastKnownPhaseId !== undefined && typeof record.lastKnownPhaseId !== 'string') {
+      throw new Error('persisted lastKnownPhaseId must be a string when present');
+    }
   }
 
   private validateRollbackIntent(
@@ -1721,7 +2119,7 @@ export class StatePersistence {
 
   private rollbackCheckpointHintFromIntentFile(path: string): number | undefined {
     try {
-      const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      const raw = parseJsonBytes(this.readPersistedBytes(path)) as Record<string, unknown>;
       const checkpoint = raw?.checkpoint;
       return Number.isSafeInteger(checkpoint) && (checkpoint as number) >= 0
         ? checkpoint as number
@@ -1792,7 +2190,11 @@ export class StatePersistence {
     // truth, advanced the checkpoint, or selected a snapshot as the new primary.
     if (restored.source === 'snapshot' || checkpoint !== restored.checkpoint) {
       try {
-        this.writeStateToDisk({ journalCheckpointSeq: checkpoint, rotateExisting: false });
+        this.writeStateToDisk({
+          journalCheckpointSeq: checkpoint,
+          rotateExisting: false,
+          allowIntegrityReplacement: restored.source === 'snapshot',
+        });
         this.finishRecoveryCheckpoint(checkpoint, restored.source);
       } catch (error) {
         return this.enterCheckpointFailure(restored, checkpoint, error);
@@ -1891,11 +2293,50 @@ export class StatePersistence {
     return { status: 'degraded', source: 'fresh', reason };
   }
 
+  private enterStateIntegrityFailure(
+    rejected: IntegrityRejectedBase[],
+  ): RestoreResult {
+    const first = rejected[0]!;
+    const reason = `persisted ${first.source} recovery base failed its recognized integrity check at ${first.path}: ${first.error}`;
+    this.recoveryReadOnlyReason = reason;
+    this.ctx.mutationJournal?.blockAppends(reason);
+    let journalPreserved = false;
+    try { journalPreserved = this.ctx.mutationJournal?.hasData() ?? false; } catch { journalPreserved = true; }
+    const quarantine = journalPreserved ? this.quarantineJournal() : {};
+    this.recoveryStatus = this.buildRecoveryStatus({
+      outcome: 'incomplete',
+      source: first.source,
+      complete: false,
+      writable: false,
+      reason,
+      checkpoint: 0,
+      preserved: journalPreserved,
+    });
+    this.ctx.logEvent({
+      description: 'Persistence recovery blocked by a state integrity mismatch',
+      event_type: 'system',
+      category: 'system',
+      outcome: 'failure',
+      result_classification: 'failure',
+      details: {
+        reason,
+        rejected_bases: rejected,
+        quarantine_path: quarantine.path,
+        quarantine_error: quarantine.error,
+      },
+    });
+    return { status: 'degraded', source: first.source, reason };
+  }
+
   private enterJournalAccessFailure(
     error: unknown,
     source: 'fresh' | 'state' | 'snapshot',
+    precedingReason?: string,
   ): RestoreResult {
-    const reason = this.describeJournalAccessFailure(error);
+    const journalReason = this.describeJournalAccessFailure(error);
+    const reason = precedingReason
+      ? `${precedingReason}; additionally, ${journalReason}`
+      : journalReason;
     this.latchJournalRecoveryFailure({
       reason,
       error,
@@ -1911,11 +2352,11 @@ export class StatePersistence {
     path: string,
     error: unknown,
   ): RestoreResult {
-    if (this.journalAccessError !== undefined) {
-      return this.enterJournalAccessFailure(this.journalAccessError, source);
-    }
     const message = error instanceof Error ? error.message : String(error);
     const reason = `persisted ${source} recovery base could not be read at ${path}: ${message}`;
+    if (this.journalAccessError !== undefined) {
+      return this.enterJournalAccessFailure(this.journalAccessError, source, reason);
+    }
     this.recoveryReadOnlyReason = reason;
     this.ctx.mutationJournal?.blockAppends(reason);
     let journalPreserved = false;
@@ -2131,26 +2572,38 @@ export class StatePersistence {
               return { status: 'applied' };
             }
             case 'add_edge': {
-              const p = entry.payload as { source: string; target: string; props: import('../types.js').EdgeProperties };
+              const p = entry.payload as {
+                source: string;
+                target: string;
+                props: import('../types.js').EdgeProperties;
+                edge_id?: string;
+              };
               if (!ctx.graph.hasNode(p.source) || !ctx.graph.hasNode(p.target)) {
                 return { status: 'skipped', reason: `missing endpoint(s): ${p.source} -> ${p.target}` };
               }
               if (mutators) {
-                mutators.addEdge(p.source, p.target, p.props);
+                mutators.addEdge(p.source, p.target, p.props, p.edge_id);
               } else {
                 const existingEdges = ctx.graph.edges(p.source, p.target);
                 let merged = false;
                 for (const eid of existingEdges) {
                   const ea = ctx.graph.getEdgeAttributes(eid);
-                  if (ea.type === p.props.type) {
+                  if (edgeIdentityMatches(ea, p.props)) {
                     ctx.graph.mergeEdgeAttributes(eid, p.props as Partial<import('../types.js').EdgeProperties>);
                     merged = true;
                     break;
                   }
                 }
                 if (!merged) {
-                  const baseKey = `${p.source}--${p.props.type}--${p.target}`;
-                  try { ctx.graph.addEdgeWithKey(baseKey, p.source, p.target, p.props); } catch { /* edge already exists */ }
+                  const preferredId = preferredEdgeKey(p.source, p.target, p.props);
+                  const edgeId = p.edge_id
+                    ?? (ctx.graph.hasEdge(preferredId)
+                      ? deterministicCollisionEdgeKey(p.source, p.target, p.props)
+                      : preferredId);
+                  if (ctx.graph.hasEdge(edgeId)) {
+                    return { status: 'skipped', reason: `edge identity collision: ${edgeId}` };
+                  }
+                  ctx.graph.addEdgeWithKey(edgeId, p.source, p.target, p.props);
                 }
               }
               return { status: 'applied' };
@@ -2164,14 +2617,46 @@ export class StatePersistence {
               return { status: 'applied' };
             }
             case 'drop_edge': {
-              const p = entry.payload as { edge_id: string };
-              if (!ctx.graph.hasEdge(p.edge_id)) {
+              const p = entry.payload as {
+                edge_id: string;
+                source?: string;
+                target?: string;
+                edge_type?: string;
+              };
+              let edgeId = ctx.graph.hasEdge(p.edge_id) ? p.edge_id : undefined;
+              if (
+                edgeId
+                && p.source
+                && p.target
+                && p.edge_type
+                && (
+                  ctx.graph.source(edgeId) !== p.source
+                  || ctx.graph.target(edgeId) !== p.target
+                  || ctx.graph.getEdgeAttributes(edgeId).type !== p.edge_type
+                )
+              ) {
+                edgeId = undefined;
+              }
+              if (!edgeId && p.source && p.target && p.edge_type) {
+                const matches = ctx.graph.hasNode(p.source) && ctx.graph.hasNode(p.target)
+                  ? ctx.graph.edges(p.source, p.target).filter(candidate =>
+                      ctx.graph.getEdgeAttributes(candidate).type === p.edge_type)
+                  : [];
+                if (matches.length > 1) {
+                  return {
+                    status: 'skipped',
+                    reason: `ambiguous legacy drop identity for ${p.source} --[${p.edge_type}]--> ${p.target}`,
+                  };
+                }
+                [edgeId] = matches;
+              }
+              if (!edgeId) {
                 // Prefix replay is intentionally idempotent. A trusted base may
                 // already reflect this deletion, so absence is the desired end
                 // state rather than an incompatible recovery chain.
                 return { status: 'applied' };
               }
-              ctx.graph.dropEdge(p.edge_id);
+              ctx.graph.dropEdge(edgeId);
               return { status: 'applied' };
             }
             case 'cold_add': {

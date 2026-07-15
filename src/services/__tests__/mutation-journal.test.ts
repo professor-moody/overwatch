@@ -128,6 +128,52 @@ describe('MutationJournal (P2.1)', () => {
       expect(j.highestSeqOnDisk()).toBe(999);
     });
 
+    it('rejects invalid UTF-8 without applying, normalizing, or compacting the WAL', () => {
+      const invalidFrame = Buffer.concat([
+        Buffer.from('{"seq":1,"ts":"2026-01-01T00:00:00.000Z","type":"add_node","payload":{"props":{"id":"'),
+        Buffer.from([0xff]),
+        Buffer.from('"}}}\n'),
+      ]);
+      const validTail = Buffer.from(`${JSON.stringify({
+        seq: 2,
+        ts: '2026-01-01T00:00:01.000Z',
+        type: 'add_node',
+        payload: { props: { id: 'must-remain-after-invalid-utf8' } },
+      })}\n`);
+      const original = Buffer.concat([invalidFrame, validTail]);
+      writeFileSync(JOURNAL_PATH, original);
+
+      const journal = new MutationJournal(TEST_STATE);
+      const attempted: number[] = [];
+      const result = journal.replay({
+        apply(entry) {
+          attempted.push(entry.seq);
+          return { status: 'applied' };
+        },
+      }, 0);
+
+      expect(attempted).toEqual([]);
+      expect(result).toMatchObject({
+        read: 0,
+        attempted: 0,
+        applied: 0,
+        complete: false,
+        highest_on_disk_seq: 2,
+        highest_contiguous_applied_seq: 0,
+        read_issue: { kind: 'malformed_entry', line: 1, byte_offset: 0 },
+      });
+      expect(journal.compactUpTo(2)).toMatchObject({
+        kept: 0,
+        dropped: 0,
+        preserved: true,
+      });
+      expect(readFileSync(JOURNAL_PATH)).toEqual(original);
+      const quarantine = journal.quarantine();
+      expect(quarantine).toBeDefined();
+      expect(readFileSync(quarantine!)).toEqual(original);
+      expect(readFileSync(JOURNAL_PATH)).toEqual(original);
+    });
+
     it('compactUpTo preserves every byte when a sequence gap interrupts the journal', () => {
       const j = new MutationJournal(TEST_STATE);
       j.append({ type: 'add_node', payload: { props: { id: 'a' } } });
@@ -505,6 +551,49 @@ describe('MutationJournal (P2.1)', () => {
           kind: 'sequence_gap',
           expected_seq: 3,
           actual_seq: 4,
+          offending_record_included: true,
+        },
+      });
+    });
+
+    it('reports a base-to-WAL gap before a later unsupported record', () => {
+      writeFileSync(JOURNAL_PATH, [
+        JSON.stringify({
+          seq: 5,
+          ts: '2026-01-01T00:00:00.000Z',
+          type: 'add_node',
+          payload: { props: { id: 'must-not-apply-beyond-gap' } },
+        }),
+        JSON.stringify({
+          seq: 6,
+          ts: '2026-01-01T00:00:01.000Z',
+          type: 'future_mutation',
+          payload: {},
+        }),
+        '',
+      ].join('\n'));
+      const recovered = new MutationJournal(TEST_STATE);
+      recovered.setNextSeq(1, { appliedThroughSeq: 1 });
+      const attempted: number[] = [];
+
+      const result = recovered.replay({
+        apply(entry) {
+          attempted.push(entry.seq);
+          return { status: 'applied' };
+        },
+      }, 1, { trustedContiguousCheckpoint: true });
+
+      expect(attempted).toEqual([]);
+      expect(result).toMatchObject({
+        read: 2,
+        attempted: 0,
+        applied: 0,
+        complete: false,
+        highest_contiguous_applied_seq: 1,
+        read_issue: {
+          kind: 'sequence_gap',
+          expected_seq: 2,
+          actual_seq: 5,
           offending_record_included: true,
         },
       });

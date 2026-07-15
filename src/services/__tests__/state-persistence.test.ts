@@ -361,6 +361,23 @@ describe('StatePersistence', () => {
       persistence.persist();
       persistence.flushNow();
       expect(persistence.listSnapshots().length).toBeGreaterThan(1);
+      const supersededSnapshot = persistence.listSnapshots()
+        .find(snapshot => snapshot !== rollbackSnapshot)!;
+      const supersededPath = join(tempDir, supersededSnapshot);
+      const integrityMismatched = JSON.parse(
+        readFileSync(supersededPath, 'utf-8'),
+      ) as Record<string, any>;
+      integrityMismatched.graph.nodes.push({
+        key: 'host-integrity-mismatch',
+        attributes: {
+          id: 'host-integrity-mismatch',
+          type: 'host',
+          label: 'must-be-superseded',
+          discovered_at: now,
+          confidence: 1.0,
+        },
+      });
+      writeFileSync(supersededPath, JSON.stringify(integrityMismatched));
 
       expect(persistence.rollbackToSnapshot(rollbackSnapshot, BUILTIN_RULES)).toBe(true);
       expect(ctx.graph.hasNode('host-2')).toBe(false);
@@ -593,9 +610,12 @@ describe('StatePersistence', () => {
     });
 
     it('scheduled flush errors are logged rather than escaping the timer', async () => {
-      const parentFile = join(tempDir, 'not-a-directory');
-      writeFileSync(parentFile, 'occupied');
-      const { ctx, persistence, graph } = buildPersistence(join(parentFile, 'state.json'));
+      const { ctx, persistence, graph } = buildPersistence();
+      // Keep the durable primary/snapshot paths inspectable and fail only the
+      // replacement temp write. Read-access failures are recovery gates, not
+      // transient flush failures.
+      mkdirSync(`${ctx.stateFilePath}.tmp`);
+      ctx.lastSnapshotTime = Date.now();
       graph.addNode('host-1', { id: 'host-1', type: 'host', label: '10.0.0.1', discovered_at: now, confidence: 1.0 } as NodeProperties);
 
       persistence.persist();

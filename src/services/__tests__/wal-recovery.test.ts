@@ -11,11 +11,13 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
+import { createHash } from 'crypto';
 import { GraphEngine } from '../graph-engine.js';
 import { MutationJournal } from '../mutation-journal.js';
 import type { MutationType } from '../mutation-journal.js';
 import {
   FLUSH_DEBOUNCE_MS,
+  MAX_SNAPSHOTS,
   PERSIST_RETRY_DELAYS_MS,
 } from '../state-persistence.js';
 import type { EngagementConfig, NodeProperties } from '../../types.js';
@@ -53,6 +55,39 @@ function checkpoint(statePath: string): number {
     throw new Error('state did not contain a safe journalSnapshotSeq');
   }
   return state.journalSnapshotSeq as number;
+}
+
+function withCompactionAuthority(state: Record<string, unknown>): Buffer {
+  const payload = { ...state };
+  delete payload.walCompactionAuthority;
+  const payloadJson = JSON.stringify(payload);
+  return Buffer.from(JSON.stringify({
+    ...payload,
+    walCompactionAuthority: {
+      semantics: 'full_state_sha256_json_v1',
+      payload_sha256: createHash('sha256').update(payloadJson).digest('hex'),
+    },
+  }));
+}
+
+function rollbackIntent(input: {
+  checkpoint: number;
+  selected_snapshot: string;
+  selected_snapshot_sha256: string;
+}): Record<string, unknown> {
+  const body = {
+    version: 1 as const,
+    ...input,
+  };
+  return {
+    ...body,
+    intent_checksum: createHash('sha256').update(JSON.stringify([
+      body.version,
+      body.checkpoint,
+      body.selected_snapshot,
+      body.selected_snapshot_sha256,
+    ])).digest('hex'),
+  };
 }
 
 function stableGraph(engine: GraphEngine): unknown {
@@ -127,6 +162,38 @@ describe('WAL recovery integration', () => {
       .sort();
   }
 
+  function stageLegacyRollbackOverclaim(writer: GraphEngine): {
+    snapshot: string;
+    snapshotPath: string;
+    snapshotBytes: Buffer;
+    checkpoint: number;
+  } {
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('legacy-rollback-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const durableCheckpoint = checkpoint(statePath);
+    const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    delete legacy.walCompactionAuthority;
+    delete legacy.journalCheckpointSemantics;
+    legacy.journalSnapshotSeq = durableCheckpoint + 1;
+    const snapshotBytes = Buffer.from(JSON.stringify(legacy));
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    const snapshotName = 'state.snap-2026-01-01T00-00-00-000Z-1.json';
+    const snapshotPath = join(snapshotDir, snapshotName);
+    writeFileSync(snapshotPath, snapshotBytes);
+    const journal = (writer as any).ctx.mutationJournal as MutationJournal;
+    expect(journal.compactUpTo(durableCheckpoint)).toEqual({ kept: 0, dropped: durableCheckpoint });
+    writer.addNode(host('legacy-rollback-hidden-wal-record'));
+    return {
+      snapshot: `.snapshots/${snapshotName}`,
+      snapshotPath,
+      snapshotBytes,
+      checkpoint: durableCheckpoint + 1,
+    };
+  }
+
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'overwatch-wal-recovery-'));
     statePath = join(tempDir, 'state.json');
@@ -174,6 +241,62 @@ describe('WAL recovery integration', () => {
       writable: true,
       base_checkpoint: r2Checkpoint,
     });
+    closeEngine(r3);
+  });
+
+  it('does not resurrect a dropped edge when legacy WAL edge IDs collided', () => {
+    const r1 = openEngine();
+    const sourceOne = 'a';
+    const targetOne = 'b--RELATED--c';
+    const sourceTwo = 'a--RELATED--b';
+    const targetTwo = 'c';
+    for (const id of [sourceOne, targetOne, sourceTwo, targetTwo]) r1.addNode(host(id));
+    (r1 as any).ctx.lastSnapshotTime = Date.now();
+    r1.persist();
+    r1.flushNow();
+    const baseCheckpoint = checkpoint(statePath);
+    const props = {
+      type: 'RELATED' as const,
+      confidence: 1,
+      discovered_at: NOW,
+    };
+    const first = r1.addEdge(sourceOne, targetOne, props);
+    const second = r1.addEdge(sourceTwo, targetTwo, props);
+    expect(first.id).not.toBe(second.id);
+    expect(second.id).toContain('--collision-');
+    expect(r1.dropEdgeByRef(sourceTwo, targetTwo, 'RELATED')).toBe(second.id);
+    expect(r1.findEdgeId(sourceOne, targetOne, 'RELATED')).toBe(first.id);
+    expect(r1.findEdgeId(sourceTwo, targetTwo, 'RELATED')).toBeNull();
+
+    // Emulate journals emitted before edge IDs became deterministic/persisted:
+    // add_edge lacked edge_id and drop_edge named a random live fallback ID.
+    const legacyRecords = readFileSync(journalPath(), 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, any>);
+    for (const record of legacyRecords) {
+      if (record.type === 'add_edge') delete record.payload.edge_id;
+      if (record.type === 'drop_edge') record.payload.edge_id = 'legacy-random-fallback-id';
+    }
+    writeFileSync(journalPath(), `${legacyRecords.map(record => JSON.stringify(record)).join('\n')}\n`);
+    closeEngine(r1);
+
+    const r2 = openEngine();
+    expect(r2.findEdgeId(sourceOne, targetOne, 'RELATED')).toBeTruthy();
+    expect(r2.findEdgeId(sourceTwo, targetTwo, 'RELATED')).toBeNull();
+    expect(r2.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      complete: true,
+      writable: true,
+      base_checkpoint: baseCheckpoint + 3,
+      journal: { read: 3, attempted: 3, applied: 3, skipped: 0, failed: 0 },
+    });
+    closeEngine(r2);
+
+    const r3 = openEngine();
+    expect(r3.findEdgeId(sourceOne, targetOne, 'RELATED')).toBeTruthy();
+    expect(r3.findEdgeId(sourceTwo, targetTwo, 'RELATED')).toBeNull();
+    expect(r3.getPersistenceRecoveryStatus()).toMatchObject({ complete: true, writable: true });
     closeEngine(r3);
   });
 
@@ -259,6 +382,7 @@ describe('WAL recovery integration', () => {
     // Reproduce the pre-fix failure mode: a snapshot claimed the allocated
     // sequence even though the corresponding mutation was never applied.
     state.journalSnapshotSeq = unknown.seq;
+    delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
     const stateBeforeRecovery = readFileSync(statePath);
     const walBefore = readFileSync(journalPath());
@@ -304,6 +428,7 @@ describe('WAL recovery integration', () => {
     });
     state.journalSnapshotSeq = possiblyHidden.seq;
     delete state.journalCheckpointSemantics;
+    delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
     const stateBeforeRecovery = readFileSync(statePath);
     const walBeforeRecovery = readFileSync(journalPath());
@@ -334,6 +459,7 @@ describe('WAL recovery integration', () => {
 
     const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
     delete state.journalCheckpointSemantics;
+    delete state.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(state));
     rmSync(journalPath(), { force: true });
     const wal = new MutationJournal(statePath);
@@ -400,6 +526,133 @@ describe('WAL recovery integration', () => {
     closeEngine(verified);
   });
 
+  it('does not overwrite a newer recognized checksum mismatch with an older valid fallback', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('checksum-fallback-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const validAnchor = readFileSync(statePath);
+
+    writer.addNode(host('checksum-fallback-tail'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+
+    const snapshotDir = join(tempDir, '.snapshots');
+    rmSync(snapshotDir, { recursive: true, force: true });
+    mkdirSync(snapshotDir, { recursive: true });
+    writeFileSync(
+      join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json'),
+      validAnchor,
+    );
+    const tampered = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    tampered.graph.nodes = tampered.graph.nodes
+      .filter((node: { key: string }) => node.key !== 'checksum-fallback-tail');
+    const tamperedBytes = Buffer.from(JSON.stringify(tampered));
+    writeFileSync(statePath, tamperedBytes);
+    const walBefore = readFileSync(journalPath());
+
+    const degraded = openEngine();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(readFileSync(statePath)).toEqual(tamperedBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(readFileSync(
+      join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json'),
+    )).toEqual(validAnchor);
+    closeEngine(degraded);
+  });
+
+  it('does not reseed over a recognized checksum mismatch when no alternate base exists', () => {
+    const writer = openEngine();
+    writer.addNode(host('checksum-mismatch-must-remain-on-disk'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+    rmSync(join(tempDir, '.snapshots'), { recursive: true, force: true });
+    rmSync(journalPath(), { force: true });
+
+    const tampered = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    tampered.graph.nodes = [];
+    const tamperedBytes = Buffer.from(JSON.stringify(tampered));
+    writeFileSync(statePath, tamperedBytes);
+
+    const degraded = openEngine();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      base_checkpoint: 0,
+      highest_on_disk_seq: 0,
+      highest_contiguous_applied_seq: 0,
+      journal: { preserved: false },
+    });
+    expect(degraded.getPersistenceRecoveryStatus().reason).toContain('integrity check');
+    expect(readFileSync(statePath)).toEqual(tamperedBytes);
+    expect(() => degraded.addNode(host('must-not-reseed-over-checksum-mismatch'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
+    closeEngine(degraded);
+  });
+
+  it('ranks an integrity mismatch against fully restorable candidates only', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('fully-valid-cp-one'));
+    writer.persist();
+    writer.flushNow();
+    const validCpOne = readFileSync(statePath);
+
+    writer.addNode(host('mismatched-cp-two'));
+    writer.persist();
+    writer.flushNow();
+    const mismatchedCpTwo = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    mismatchedCpTwo.graph.nodes.push({
+      key: 'mismatched-base-only-cp-two',
+      attributes: host('mismatched-base-only-cp-two'),
+    });
+    const mismatchedCpTwoBytes = Buffer.from(JSON.stringify(mismatchedCpTwo));
+
+    writer.addNode(host('unrestorable-cp-three'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+    const unrestorableCpThree = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    delete unrestorableCpThree.walCompactionAuthority;
+    unrestorableCpThree.agents = [1];
+    const unrestorableCpThreeBytes = Buffer.from(JSON.stringify(unrestorableCpThree));
+    writeFileSync(statePath, unrestorableCpThreeBytes);
+
+    const snapshotDir = join(tempDir, '.snapshots');
+    rmSync(snapshotDir, { recursive: true, force: true });
+    mkdirSync(snapshotDir, { recursive: true });
+    const validPath = join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json');
+    const mismatchPath = join(snapshotDir, 'state.snap-2026-01-02T00-00-00-000Z-1.json');
+    writeFileSync(validPath, validCpOne);
+    writeFileSync(mismatchPath, mismatchedCpTwoBytes);
+    const walBefore = readFileSync(journalPath());
+
+    const degraded = openEngine();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'snapshot',
+      complete: false,
+      writable: false,
+    });
+    expect(readFileSync(statePath)).toEqual(unrestorableCpThreeBytes);
+    expect(readFileSync(validPath)).toEqual(validCpOne);
+    expect(readFileSync(mismatchPath)).toEqual(mismatchedCpTwoBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    closeEngine(degraded);
+  });
+
   it('never creates or reseeds a primary when a nonempty WAL has no valid base', () => {
     const wal = new MutationJournal(statePath);
     wal.append({
@@ -431,6 +684,47 @@ describe('WAL recovery integration', () => {
     }
   });
 
+  it('rejects invalid UTF-8 in a legacy base instead of replacement-decoding and checkpointing it', () => {
+    const seed = openEngine();
+    closeEngine(seed);
+    const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    delete legacy.walCompactionAuthority;
+    const labelMarker = 'invalid-utf8-state-label';
+    legacy.graph.nodes.push({
+      key: 'legacy-invalid-utf8-node',
+      attributes: { ...host('legacy-invalid-utf8-node'), label: labelMarker },
+    });
+    const invalidBase = Buffer.from(JSON.stringify(legacy));
+    const markerOffset = invalidBase.indexOf(Buffer.from(labelMarker));
+    expect(markerOffset).toBeGreaterThanOrEqual(0);
+    invalidBase[markerOffset] = 0xff;
+    writeFileSync(statePath, invalidBase);
+
+    const journal = new MutationJournal(statePath);
+    journal.append({
+      type: 'add_node',
+      payload: { props: host('valid-wal-beyond-invalid-utf8-base') },
+      ts: NOW,
+    });
+    const walBefore = readFileSync(journalPath());
+
+    for (let restart = 1; restart <= 3; restart++) {
+      const degraded = openEngine();
+      expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+        outcome: 'incomplete',
+        complete: false,
+        writable: false,
+        journal: { preserved: true },
+      });
+      expect(degraded.getNode('legacy-invalid-utf8-node')).toBeNull();
+      expect(degraded.getNode('valid-wal-beyond-invalid-utf8-base')).toBeNull();
+      expect(readFileSync(statePath)).toEqual(invalidBase);
+      expect(readFileSync(journalPath())).toEqual(walBefore);
+      expect(quarantineFiles()).toHaveLength(1);
+      closeEngine(degraded);
+    }
+  });
+
   it('does not overwrite a recovery base that is present but unreadable', () => {
     rmSync(statePath, { force: true });
     mkdirSync(statePath);
@@ -447,6 +741,25 @@ describe('WAL recovery integration', () => {
       /Durable mutations are disabled while persistence is degraded/,
     );
     expect(existsSync(statePath)).toBe(true);
+    closeEngine(degraded);
+  });
+
+  it('reports both base and WAL access failures when they occur together', () => {
+    rmSync(statePath, { force: true });
+    mkdirSync(statePath);
+    mkdirSync(journalPath());
+
+    const degraded = openEngine();
+    const reason = degraded.getPersistenceRecoveryStatus().reason ?? '';
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      source: 'state',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(reason).toContain('persisted state recovery base could not be read');
+    expect(reason).toContain('persisted WAL could not be read');
     closeEngine(degraded);
   });
 
@@ -548,6 +861,7 @@ describe('WAL recovery integration', () => {
     rejected.config = { ...rejected.config, name: 'rejected persisted config' };
     // Graph/config restore first; iterating this invalid late field then throws.
     rejected.inferenceRules = { invalid: true };
+    delete rejected.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(rejected));
 
     const recovered = openEngine();
@@ -573,6 +887,7 @@ describe('WAL recovery integration', () => {
       name: 'invalid persisted config',
       scope: { ...rejected.config.scope, cidrs: ['999.999.999.999/99'] },
     };
+    delete rejected.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(rejected));
 
     const recovered = openEngine();
@@ -611,6 +926,44 @@ describe('WAL recovery integration', () => {
     const recovered = openEngine();
     expect(recovered.getNode('old-snapshot-node')).toBeDefined();
     expect(recovered.getNode('new-snapshot-node')).toBeDefined();
+    expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      source: 'snapshot',
+      complete: true,
+      writable: true,
+    });
+    closeEngine(recovered);
+  });
+
+  it('treats a same-clock collision suffix as newer at an equal checkpoint', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('collision-order-old-state'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+
+    const oldBytes = readFileSync(statePath);
+    const newer = JSON.parse(oldBytes.toString('utf-8')) as Record<string, any>;
+    newer.config = { ...newer.config, name: 'collision-order-new-state' };
+    newer.graph.nodes.push({
+      key: 'collision-order-new-state',
+      attributes: host('collision-order-new-state'),
+    });
+    const newerBytes = withCompactionAuthority(newer);
+
+    rmSync(journalPath(), { force: true });
+    const snapshotDir = join(tempDir, '.snapshots');
+    rmSync(snapshotDir, { recursive: true, force: true });
+    mkdirSync(snapshotDir, { recursive: true });
+    const family = 'state.snap-2026-07-15T12-34-56-789Z-123';
+    writeFileSync(join(snapshotDir, `${family}.json`), oldBytes);
+    writeFileSync(join(snapshotDir, `${family}-0001.json`), newerBytes);
+    writeFileSync(statePath, '{corrupt primary');
+
+    const recovered = openEngine();
+    expect(recovered.getConfig().name).toBe('collision-order-new-state');
+    expect(recovered.getNode('collision-order-new-state')).toBeDefined();
     expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'recovered',
       source: 'snapshot',
@@ -693,6 +1046,7 @@ describe('WAL recovery integration', () => {
     const incompatiblePrimary = JSON.parse(snapshotBytes.toString('utf-8')) as Record<string, any>;
     incompatiblePrimary.graph.nodes = incompatiblePrimary.graph.nodes
       .filter((node: { key: string }) => node.key !== 'edge-target');
+    delete incompatiblePrimary.walCompactionAuthority;
     writeFileSync(statePath, JSON.stringify(incompatiblePrimary));
     const stateBeforeRecovery = readFileSync(statePath);
     const walBeforeRecovery = readFileSync(journalPath());
@@ -762,6 +1116,7 @@ describe('WAL recovery integration', () => {
     writer.flushNow();
     const oldestSnapshot = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
     delete oldestSnapshot.journalCheckpointSemantics;
+    delete oldestSnapshot.walCompactionAuthority;
     const oldestSnapshotBytes = Buffer.from(JSON.stringify(oldestSnapshot));
     const oldestCheckpoint = checkpoint(statePath);
 
@@ -822,7 +1177,7 @@ describe('WAL recovery integration', () => {
     closeEngine(recovered);
   });
 
-  it('does not compact WAL when a retained snapshot cannot be read', () => {
+  it('gates an ordinary non-rotation flush before pruning an unreadable retained snapshot', () => {
     const writer = openEngine();
     (writer as any).ctx.lastSnapshotTime = Date.now();
     writer.addNode(host('unreadable-snapshot-anchor'));
@@ -833,10 +1188,26 @@ describe('WAL recovery integration', () => {
     writer.addNode(host('unreadable-snapshot-tail'));
     const snapshotDir = join(tempDir, '.snapshots');
     mkdirSync(snapshotDir, { recursive: true });
-    mkdirSync(join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json'));
-    (writer as any).ctx.lastSnapshotTime = 0;
+    const primaryBefore = readFileSync(statePath);
+    for (let i = 0; i <= MAX_SNAPSHOTS; i++) {
+      writeFileSync(
+        join(snapshotDir, `state.snap-2026-01-0${i + 1}T00-00-00-000Z-1.json`),
+        primaryBefore,
+      );
+    }
+    const unreadable = join(snapshotDir, 'state.snap-2026-01-09T00-00-00-000Z-1.json');
+    mkdirSync(unreadable);
+    const snapshotsBefore = writer.listSnapshots();
+    const walBefore = readFileSync(journalPath());
+    (writer as any).ctx.lastSnapshotTime = Date.now();
     writer.persist();
-    writer.flushNow();
+    for (let failures = 1; failures <= 3; failures++) {
+      expect(() => writer.flushNow()).toThrow(/could not read retained recovery snapshot/);
+      expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+        writable: failures < 3,
+        consecutive_persistence_failures: failures,
+      });
+    }
 
     const retainedSeqs = readFileSync(journalPath(), 'utf-8')
       .split('\n')
@@ -844,6 +1215,16 @@ describe('WAL recovery integration', () => {
       .map(line => (JSON.parse(line) as { seq: number }).seq);
     expect(retainedSeqs).toContain(anchorCheckpoint);
     expect(retainedSeqs).toContain(anchorCheckpoint + 1);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(writer.listSnapshots()).toEqual(snapshotsBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      consecutive_persistence_failures: 3,
+      journal: { preserved: true },
+    });
     closeEngine(writer);
   });
 
@@ -921,20 +1302,32 @@ describe('WAL recovery integration', () => {
     const retainedAnchor = Buffer.from('pre-existing recovery anchor bytes');
     writeFileSync(collidingPath, retainedAnchor);
 
-    // Make the durable primary unreadable only after retaining its bytes. The
-    // rotation will allocate a fresh suffixed path, fail while copying, and
-    // must leave the colliding anchor byte-for-byte unchanged.
-    rmSync(statePath);
-    mkdirSync(statePath);
+    // Let the preflight inspect the primary, then fail the second primary read
+    // after rotation has allocated its suffixed exclusive-create candidate.
+    // This pins cleanup at the actual copy-failure boundary.
+    const persistence = (writer as any).persistence as {
+      readPersistedBytes(path: string): Buffer;
+    };
+    const readPersistedBytes = persistence.readPersistedBytes.bind(persistence);
+    let primaryReads = 0;
+    vi.spyOn(persistence, 'readPersistedBytes').mockImplementation((path: string) => {
+      if (path === statePath && ++primaryReads === 2) {
+        throw new Error('synthetic snapshot copy read failure');
+      }
+      return readPersistedBytes(path);
+    });
     writer.addNode(host('collision-wal-tail'));
     writer.persist();
     (writer as any).ctx.lastSnapshotTime = 0;
 
-    expect(() => writer.flushNow()).toThrow();
+    expect(() => writer.flushNow()).toThrow(/synthetic snapshot copy read failure/);
     expect(readFileSync(collidingPath)).toEqual(retainedAnchor);
-
-    rmSync(statePath, { recursive: true, force: true });
-    writeFileSync(statePath, primaryBefore);
+    expect(existsSync(join(
+      snapshotDir,
+      `state.snap-${timestamp}-${process.pid}-0001.json`,
+    ))).toBe(false);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath(), 'utf-8')).toContain('collision-wal-tail');
     closeEngine(writer);
     vi.useRealTimers();
   });
@@ -942,16 +1335,25 @@ describe('WAL recovery integration', () => {
   it('does not compact against an auxiliary-corrupt snapshot before a failed primary replacement', () => {
     const writer = openEngine();
     (writer as any).ctx.lastSnapshotTime = Date.now();
-    writer.addNode(host('aux-corrupt-seq-one'));
+    (writer as any).ctx.coldAdd({
+      id: 'aux-corrupt-cold-seq-one',
+      type: 'host',
+      label: '10.10.10.9',
+      ip: '10.10.10.9',
+      discovered_at: NOW,
+      last_seen_at: NOW,
+      subnet_cidr: '10.10.10.0/24',
+      alive: true,
+    });
     writer.persist();
     writer.flushNow();
     const firstCheckpoint = checkpoint(statePath);
     rmSync(join(tempDir, '.snapshots'), { recursive: true, force: true });
 
     // Keep live memory valid while making the durable primary rankable by
-    // config/graph/checkpoint but impossible for the full deserializer.
+    // config/graph/checkpoint but silently lossy to the old deserializer.
     const corruptPrimary = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
-    corruptPrimary.agents = {};
+    corruptPrimary.coldStore = {};
     const corruptPrimaryBytes = Buffer.from(JSON.stringify(corruptPrimary));
     writeFileSync(statePath, corruptPrimaryBytes);
 
@@ -984,6 +1386,256 @@ describe('WAL recovery integration', () => {
     });
     expect(readFileSync(journalPath())).toEqual(walBefore);
     closeEngine(restarted);
+  });
+
+  it('retains the compaction anchor until the replacement primary is durable', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('retained-valid-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const anchorCheckpoint = checkpoint(statePath);
+    const validAnchorBytes = readFileSync(statePath);
+
+    const snapshotDir = join(tempDir, '.snapshots');
+    rmSync(snapshotDir, { recursive: true, force: true });
+    mkdirSync(snapshotDir, { recursive: true });
+    const validAnchorName = 'state.snap-2026-01-01T00-00-00-000Z-1.json';
+    writeFileSync(join(snapshotDir, validAnchorName), validAnchorBytes);
+    for (let day = 2; day <= MAX_SNAPSHOTS + 2; day++) {
+      writeFileSync(
+        join(snapshotDir, `state.snap-2026-01-${String(day).padStart(2, '0')}T00-00-00-000Z-1.json`),
+        '{invalid newer snapshot',
+      );
+    }
+
+    writeFileSync(statePath, '{corrupt primary before failed replacement');
+    writer.addNode(host('retained-anchor-tail'));
+    mkdirSync(`${statePath}.tmp`);
+    (writer as any).ctx.lastSnapshotTime = 0;
+    writer.persist();
+
+    expect(() => writer.flushNow()).toThrow();
+    expect(readFileSync(join(snapshotDir, validAnchorName))).toEqual(validAnchorBytes);
+    const retainedSeqs = readFileSync(journalPath(), 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => (JSON.parse(line) as { seq: number }).seq);
+    expect(retainedSeqs).toContain(anchorCheckpoint + 1);
+    closeEngine(writer);
+
+    rmSync(`${statePath}.tmp`, { recursive: true, force: true });
+    const recovered = openEngine();
+    expect(recovered.getNode('retained-valid-anchor')).toBeDefined();
+    expect(recovered.getNode('retained-anchor-tail')).toBeDefined();
+    expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      source: 'snapshot',
+      complete: true,
+      writable: true,
+    });
+    closeEngine(recovered);
+  });
+
+  it('validates retained snapshots without mutating live hash-chain counters', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('detached-anchor-validation'));
+    writer.persist();
+    writer.flushNow();
+
+    (writer as any).ctx.chainEventsSinceCheckpoint = 17;
+    (writer as any).ctx.lastSnapshotTime = 0;
+    writer.persist();
+    writer.flushNow();
+
+    expect((writer as any).ctx.chainEventsSinceCheckpoint).toBe(17);
+    closeEngine(writer);
+  });
+
+  it('serializes live state once before hashing and emitting its compaction authority', () => {
+    const writer = openEngine();
+    let evaluations = 0;
+    (writer as any).ctx.activityLog.push({
+      event_id: 'evt-stateful-serialization',
+      timestamp: NOW,
+      description: 'stateful serialization fixture',
+      event_type: 'system',
+      details: {
+        dynamic: {
+          toJSON() {
+            evaluations++;
+            return { evaluation: evaluations };
+          },
+        },
+      },
+    });
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.persist();
+    writer.flushNow();
+    expect(evaluations).toBe(1);
+    closeEngine(writer);
+
+    const recovered = openEngine();
+    expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
+      complete: true,
+      writable: true,
+      source: 'state',
+    });
+    const restored = (recovered as any).ctx.activityLog.find(
+      (entry: { event_id?: string }) => entry.event_id === 'evt-stateful-serialization',
+    );
+    expect(restored?.details?.dynamic).toEqual({ evaluation: 1 });
+    closeEngine(recovered);
+  });
+
+  it('gates an ordinary flush before replacing a checksum-mismatched primary', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('live-integrity-anchor'));
+    writer.persist();
+    writer.flushNow();
+
+    const mismatched = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    mismatched.graph.nodes.push({
+      key: 'base-only-integrity-state',
+      attributes: host('base-only-integrity-state'),
+    });
+    const primaryBefore = Buffer.from(JSON.stringify(mismatched));
+    writeFileSync(statePath, primaryBefore);
+    writer.addNode(host('live-integrity-tail'));
+    const walBefore = readFileSync(journalPath());
+    writer.persist();
+
+    expect(() => writer.flushNow()).toThrow(/state replacement found a recognized integrity mismatch/);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    closeEngine(writer);
+  });
+
+  it('fails before writing or renaming when the durable primary cannot be read', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('read-access-live-anchor'));
+    writer.persist();
+    writer.flushNow();
+
+    writer.addNode(host('read-access-live-tail'));
+    const primaryBefore = readFileSync(statePath);
+    const walBefore = readFileSync(journalPath());
+    const persistence = (writer as any).persistence as {
+      readPersistedBytes(path: string): Buffer;
+    };
+    const readPersistedBytes = persistence.readPersistedBytes.bind(persistence);
+    vi.spyOn(persistence, 'readPersistedBytes').mockImplementation((path: string) => {
+      if (path === statePath) throw new Error('synthetic primary EIO');
+      return readPersistedBytes(path);
+    });
+    writer.persist();
+
+    expect(() => writer.flushNow()).toThrow(/synthetic primary EIO/);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(existsSync(`${statePath}.tmp`)).toBe(false);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      writable: true,
+      consecutive_persistence_failures: 1,
+      last_persistence_error: expect.stringContaining('synthetic primary EIO'),
+    });
+    expect(writer.getPersistenceRecoveryStatus().reason ?? '').not.toContain('persisted WAL could not be read');
+    closeEngine(writer);
+  });
+
+  it('gates an ordinary non-rotation flush before pruning a higher-checkpoint mismatched snapshot', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('snapshot-integrity-anchor'));
+    writer.persist();
+    writer.flushNow();
+
+    const snapshotDir = join(tempDir, '.snapshots');
+    rmSync(snapshotDir, { recursive: true, force: true });
+    mkdirSync(snapshotDir, { recursive: true });
+    const mismatchPath = join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json');
+    const mismatched = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    mismatched.journalSnapshotSeq = 999;
+    mismatched.graph.nodes.push({
+      key: 'higher-checkpoint-base-only-state',
+      attributes: host('higher-checkpoint-base-only-state'),
+    });
+    const mismatchBytes = Buffer.from(JSON.stringify(mismatched));
+    writeFileSync(mismatchPath, mismatchBytes);
+    const validSnapshotBytes = readFileSync(statePath);
+    for (let i = 0; i < MAX_SNAPSHOTS; i++) {
+      writeFileSync(
+        join(snapshotDir, `state.snap-2026-01-0${i + 2}T00-00-00-000Z-1.json`),
+        validSnapshotBytes,
+      );
+    }
+
+    const primaryBefore = readFileSync(statePath);
+    writer.addNode(host('snapshot-integrity-tail'));
+    const walBefore = readFileSync(journalPath());
+    const snapshotsBefore = writer.listSnapshots();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.persist();
+
+    expect(() => writer.flushNow()).toThrow(/blocking recognized integrity mismatch/);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(readFileSync(mismatchPath)).toEqual(mismatchBytes);
+    expect(writer.listSnapshots()).toEqual(snapshotsBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    closeEngine(writer);
+  });
+
+  it('does not overwrite an equal-checkpoint mismatch when the primary is not a usable base', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('equal-checkpoint-live-anchor'));
+    writer.persist();
+    writer.flushNow();
+
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    const mismatchPath = join(snapshotDir, 'state.snap-2026-01-01T00-00-00-000Z-1.json');
+    const mismatched = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    mismatched.graph.nodes.push({
+      key: 'equal-checkpoint-base-only-state',
+      attributes: host('equal-checkpoint-base-only-state'),
+    });
+    const mismatchBytes = Buffer.from(JSON.stringify(mismatched));
+    writeFileSync(mismatchPath, mismatchBytes);
+    const corruptPrimary = Buffer.from('{corrupt equal-checkpoint primary');
+    writeFileSync(statePath, corruptPrimary);
+
+    writer.addNode(host('equal-checkpoint-live-tail'));
+    const walBefore = readFileSync(journalPath());
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.persist();
+
+    expect(() => writer.flushNow()).toThrow(/blocking recognized integrity mismatch/);
+    expect(readFileSync(statePath)).toEqual(corruptPrimary);
+    expect(readFileSync(mismatchPath)).toEqual(mismatchBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    closeEngine(writer);
   });
 
   it('immediately gates writes when snapshot rotation detects a corrupt WAL', () => {
@@ -1019,6 +1671,224 @@ describe('WAL recovery integration', () => {
     );
     expect(readFileSync(journalPath())).toEqual(walBefore);
     closeEngine(writer);
+  });
+
+  it('immediately gates rotation when the physical WAL starts after the durable checkpoint gap', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('wal-head-gap-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const durableCheckpoint = checkpoint(statePath);
+    const primaryBefore = readFileSync(statePath);
+    const snapshotsBefore = writer.listSnapshots();
+    writeFileSync(journalPath(), `${JSON.stringify({
+      seq: durableCheckpoint + 2,
+      ts: NOW,
+      type: 'add_node',
+      payload: { props: host('stranded-after-live-head-gap') },
+    })}\n`);
+    const walBefore = readFileSync(journalPath());
+
+    (writer as any).ctx.lastSnapshotTime = 0;
+    writer.persist();
+    expect(() => writer.flushNow()).toThrow(
+      new RegExp(`expected seq ${durableCheckpoint + 1}, found ${durableCheckpoint + 2}`),
+    );
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(writer.listSnapshots()).toEqual(snapshotsBefore);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      highest_on_disk_seq: durableCheckpoint + 2,
+      journal: { malformed: false, preserved: true },
+    });
+    expect(() => writer.addNode(host('must-not-append-after-head-gap'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
+    closeEngine(writer);
+  });
+
+  it('rejects rollback to the active primary because it is not a retained snapshot', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('active-primary-anchor'));
+    writer.persist();
+    writer.flushNow();
+    const primaryBefore = readFileSync(statePath);
+    const walBefore = readFileSync(journalPath());
+
+    expect(writer.rollbackToSnapshot(basename(statePath))).toBe(false);
+    expect(writer.isPersistenceWritable()).toBe(true);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+    closeEngine(writer);
+  });
+
+  it('rejects a fresh legacy rollback target that overclaims a retained WAL record', () => {
+    const writer = openEngine();
+    const target = stageLegacyRollbackOverclaim(writer);
+    const primaryBefore = readFileSync(statePath);
+    const walBefore = readFileSync(journalPath());
+
+    expect(() => writer.rollbackToSnapshot(target.snapshot)).toThrow(/not provably contiguous/);
+    expect(writer.getNode('legacy-rollback-hidden-wal-record')).toBeDefined();
+    expect(writer.isPersistenceWritable()).toBe(true);
+    expect(readFileSync(statePath)).toEqual(primaryBefore);
+    expect(readFileSync(target.snapshotPath)).toEqual(target.snapshotBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+    closeEngine(writer);
+  });
+
+  it('sticky-gates a malformed or unknown WAL discovered by legacy rollback preflight', () => {
+    const writer = openEngine();
+    const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete legacy.walCompactionAuthority;
+    delete legacy.journalCheckpointSemantics;
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    const snapshot = '.snapshots/state.snap-2026-01-01T00-00-00-000Z-1.json';
+    writeFileSync(join(tempDir, snapshot), JSON.stringify(legacy));
+    const journal = (writer as any).ctx.mutationJournal as MutationJournal;
+    journal.append({ type: 'future_mutation' as MutationType, payload: {}, ts: NOW });
+    const walBefore = readFileSync(journalPath());
+
+    expect(() => writer.rollbackToSnapshot(snapshot)).toThrow(/WAL integrity preflight failed/);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { malformed: false, preserved: true },
+    });
+    expect(() => writer.addNode(host('must-not-append-after-rollback-wal-failure'))).toThrow(
+      /Durable mutations are disabled while persistence is degraded/,
+    );
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+    closeEngine(writer);
+  });
+
+  it('sticky-gates an unreadable WAL discovered by legacy rollback preflight', () => {
+    const writer = openEngine();
+    const legacy = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+    delete legacy.walCompactionAuthority;
+    delete legacy.journalCheckpointSemantics;
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    const snapshot = '.snapshots/state.snap-2026-01-01T00-00-00-000Z-1.json';
+    writeFileSync(join(tempDir, snapshot), JSON.stringify(legacy));
+    rmSync(journalPath(), { force: true });
+    mkdirSync(journalPath());
+
+    expect(() => writer.rollbackToSnapshot(snapshot)).toThrow(/persisted WAL could not be read/);
+    expect(writer.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(writer.getPersistenceRecoveryStatus().reason).toContain('persisted WAL could not be read');
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+    closeEngine(writer);
+  });
+
+  it.each([
+    { name: 'sidecar plus marked primary', sidecar: true },
+    { name: 'marker-only primary', sidecar: false },
+  ])('degrades a pending $name sourced from an ambiguous legacy rollback target', ({ sidecar }) => {
+    const writer = openEngine();
+    const target = stageLegacyRollbackOverclaim(writer);
+    const walBefore = readFileSync(journalPath());
+    closeEngine(writer);
+
+    const intent = rollbackIntent({
+      checkpoint: target.checkpoint,
+      selected_snapshot: target.snapshot,
+      selected_snapshot_sha256: createHash('sha256').update(target.snapshotBytes).digest('hex'),
+    });
+    const markedPayload = JSON.parse(target.snapshotBytes.toString('utf-8')) as Record<string, unknown>;
+    markedPayload.journalCheckpointSemantics = 'contiguous_applied_v1';
+    markedPayload.rollbackIntent = intent;
+    const markedPrimary = withCompactionAuthority(markedPayload);
+    writeFileSync(statePath, markedPrimary);
+    const authorityPath = `${statePath}.rollback-intent.json`;
+    const authorityBytes = Buffer.from(JSON.stringify(intent));
+    if (sidecar) writeFileSync(authorityPath, authorityBytes);
+
+    const degraded = openEngine();
+    expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      writable: false,
+      journal: { preserved: true },
+    });
+    expect(degraded.getPersistenceRecoveryStatus().reason).toContain('not provably contiguous');
+    expect(degraded.getNode('legacy-rollback-hidden-wal-record')).toBeNull();
+    expect(readFileSync(statePath)).toEqual(markedPrimary);
+    expect(readFileSync(target.snapshotPath)).toEqual(target.snapshotBytes);
+    expect(readFileSync(journalPath())).toEqual(walBefore);
+    expect(existsSync(authorityPath)).toBe(sidecar);
+    if (sidecar) expect(readFileSync(authorityPath)).toEqual(authorityBytes);
+    closeEngine(degraded);
+  });
+
+  it('uses the selected snapshot as canonical for marker-only rollback recovery', () => {
+    const writer = openEngine();
+    (writer as any).ctx.lastSnapshotTime = Date.now();
+    writer.addNode(host('marker-only-selected-state'));
+    writer.persist();
+    writer.flushNow();
+    closeEngine(writer);
+
+    const selectedBytes = readFileSync(statePath);
+    const selected = JSON.parse(selectedBytes.toString('utf-8')) as Record<string, any>;
+    const selectedCheckpoint = selected.journalSnapshotSeq as number;
+    const snapshotDir = join(tempDir, '.snapshots');
+    mkdirSync(snapshotDir, { recursive: true });
+    const snapshot = '.snapshots/state.snap-2026-01-01T00-00-00-000Z-1.json';
+    const snapshotPath = join(tempDir, snapshot);
+    writeFileSync(snapshotPath, selectedBytes);
+    const intent = rollbackIntent({
+      checkpoint: selectedCheckpoint,
+      selected_snapshot: snapshot,
+      selected_snapshot_sha256: createHash('sha256').update(selectedBytes).digest('hex'),
+    });
+
+    const markedPayload: Record<string, any> = { ...selected, rollbackIntent: intent };
+    markedPayload.graph = {
+      ...selected.graph,
+      nodes: [
+        ...selected.graph.nodes,
+        {
+          key: 'marker-only-primary-only-state',
+          attributes: host('marker-only-primary-only-state'),
+        },
+      ],
+    };
+    const markedPrimary = withCompactionAuthority(markedPayload);
+    writeFileSync(statePath, markedPrimary);
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+
+    const recovered = openEngine();
+    expect(recovered.getNode('marker-only-selected-state')).toBeDefined();
+    expect(recovered.getNode('marker-only-primary-only-state')).toBeNull();
+    expect(recovered.getPersistenceRecoveryStatus()).toMatchObject({
+      outcome: 'recovered',
+      source: 'snapshot',
+      complete: true,
+      writable: true,
+    });
+    const completed = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, any>;
+    expect(completed.rollbackIntent).toBeUndefined();
+    expect((completed.graph.nodes as Array<{ key: string }>).map(node => node.key))
+      .not.toContain('marker-only-primary-only-state');
+    expect(readFileSync(snapshotPath)).toEqual(selectedBytes);
+    expect(existsSync(`${statePath}.rollback-intent.json`)).toBe(false);
+    closeEngine(recovered);
   });
 
   it.each(ROLLBACK_PRIMARY_CORRUPTIONS)(
@@ -1137,6 +2007,55 @@ describe('WAL recovery integration', () => {
       expect(quarantines).toHaveLength(1);
       expect(readFileSync(join(tempDir, quarantines[0]))).toEqual(walBefore);
       closeEngine(recovered);
+    }
+  });
+
+  it('preserves invalid UTF-8 and its following WAL tail across three restarts', () => {
+    const base = openEngine();
+    base.persist();
+    base.flushNow();
+    closeEngine(base);
+    const stateBefore = readFileSync(statePath);
+    const baseCheckpoint = checkpoint(statePath);
+    const invalidSeq = baseCheckpoint + 1;
+    const tailSeq = invalidSeq + 1;
+    const invalidFrame = Buffer.concat([
+      Buffer.from(`{"seq":${invalidSeq},"ts":"${NOW}","type":"add_node","payload":{"props":{"id":"`),
+      Buffer.from([0xff]),
+      Buffer.from('"}}}\n'),
+    ]);
+    const tail = Buffer.from(`${JSON.stringify({
+      seq: tailSeq,
+      ts: NOW,
+      type: 'add_node',
+      payload: { props: host('tail-after-invalid-utf8') },
+    })}\n`);
+    const walBefore = Buffer.concat([invalidFrame, tail]);
+    writeFileSync(journalPath(), walBefore);
+
+    for (let restart = 1; restart <= 3; restart++) {
+      const degraded = openEngine();
+      expect(degraded.getPersistenceRecoveryStatus()).toMatchObject({
+        outcome: 'incomplete',
+        complete: false,
+        writable: false,
+        base_checkpoint: baseCheckpoint,
+        highest_on_disk_seq: tailSeq,
+        highest_contiguous_applied_seq: baseCheckpoint,
+        journal: {
+          read: 0,
+          attempted: 0,
+          applied: 0,
+          malformed: true,
+          preserved: true,
+        },
+      });
+      expect(degraded.getNode('tail-after-invalid-utf8')).toBeNull();
+      expect(readFileSync(statePath)).toEqual(stateBefore);
+      expect(readFileSync(journalPath())).toEqual(walBefore);
+      expect(quarantineFiles()).toHaveLength(1);
+      expect(readFileSync(join(tempDir, quarantineFiles()[0]))).toEqual(walBefore);
+      closeEngine(degraded);
     }
   });
 
@@ -1262,8 +2181,8 @@ describe('WAL recovery integration', () => {
     const engine = openEngine();
     vi.useFakeTimers();
 
-    rmSync(statePath, { force: true });
-    mkdirSync(statePath); // rename(state.tmp, state) will fail while the target is a directory
+    mkdirSync(`${statePath}.tmp`);
+    (engine as any).ctx.lastSnapshotTime = Date.now();
     engine.addNode(host('persisted-after-retry'));
     engine.persist();
 
@@ -1273,7 +2192,7 @@ describe('WAL recovery integration', () => {
       consecutive_persistence_failures: 1,
     });
 
-    rmSync(statePath, { recursive: true, force: true });
+    rmSync(`${statePath}.tmp`, { recursive: true, force: true });
     await vi.advanceTimersByTimeAsync(PERSIST_RETRY_DELAYS_MS[0] + 1);
     expect(engine.getPersistenceRecoveryStatus()).toMatchObject({
       writable: true,
@@ -1293,8 +2212,8 @@ describe('WAL recovery integration', () => {
     const engine = openEngine();
     vi.useFakeTimers();
 
-    rmSync(statePath, { force: true });
-    mkdirSync(statePath);
+    mkdirSync(`${statePath}.tmp`);
+    (engine as any).ctx.lastSnapshotTime = Date.now();
     engine.addNode(host('before-persistence-degraded'));
     engine.persist();
 
@@ -1324,7 +2243,7 @@ describe('WAL recovery integration', () => {
 
     // A background retry may make the pending state durable, but target-facing
     // work already froze around the failure. Do not reopen this process in-place.
-    rmSync(statePath, { recursive: true, force: true });
+    rmSync(`${statePath}.tmp`, { recursive: true, force: true });
     await vi.advanceTimersByTimeAsync(PERSIST_RETRY_DELAYS_MS[2] + 1);
     expect(engine.getPersistenceRecoveryStatus()).toMatchObject({
       outcome: 'incomplete',

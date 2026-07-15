@@ -36,6 +36,11 @@ import { BUILTIN_RULES } from './builtin-inference-rules.js';
 import { BloodHoundPathEnricher } from './bloodhound-paths.js';
 import type { HVTResult, PreComputedPath } from './bloodhound-paths.js';
 import { KnowledgeBase } from './knowledge-base.js';
+import {
+  deterministicCollisionEdgeKey,
+  edgeIdentityMatches,
+  preferredEdgeKey,
+} from './edge-identity.js';
 import { WebChainEnricher } from './web-attack-chains.js';
 import type { MatchedChain } from './web-attack-chains.js';
 import type { OpsecContext } from './opsec-tracker.js';
@@ -389,63 +394,61 @@ export class GraphEngine {
     return props.id;
   }
 
-  addEdge(source: string, target: string, props: EdgeProperties): { id: string; isNew: boolean } {
+  addEdge(
+    source: string,
+    target: string,
+    props: EdgeProperties,
+    replayEdgeId?: string,
+  ): { id: string; isNew: boolean } {
     // Validate the only condition Graphology can reject before the WAL append.
     // A durable record for an impossible edge would otherwise poison every
     // subsequent restart even though no live mutation ever succeeded.
     if (!this.ctx.graph.hasNode(source) || !this.ctx.graph.hasNode(target)) {
       throw new Error(`Cannot add edge with missing endpoint(s): ${source} -> ${target}`);
     }
-    // P2.1: journal the intent. We can't tell yet whether this will be a
-    // new edge or a property-merge on an existing one, so the entry is
-    // type=add_edge with the full props. Replay code re-runs addEdge so
-    // it independently makes the same determination.
-    return this.ctx.applyJournaledMutation('add_edge', { source, target, props }, () => {
-      // Check for duplicate edge of same type
-      const existingEdges = this.ctx.graph.edges(source, target);
-      // For scope-bearing Azure RBAC edges, dedupe must include `scope` so
-      // distinct role assignments at different scopes do not collapse and
-      // silently overwrite each other's scope properties.
-      const scopeAware = props.type === 'HAS_POLICY' || props.type === 'POLICY_ALLOWS';
-      const incomingScope = scopeAware ? (props as unknown as { scope?: string }).scope : undefined;
-      for (const edgeId of existingEdges) {
-        const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
-        if (attrs.type !== props.type) continue;
-        if (scopeAware) {
-          const existingScope = (attrs as { scope?: string }).scope;
-          if ((existingScope || undefined) !== (incomingScope || undefined)) continue;
-        }
-        // Detect confirmation of inferred edge
-        if (attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0) {
-          props = { ...props, confirmed_at: this.ctx.nowIso() };
-          if (!this.ctx.suppressMutationEvents) {
-            this.log(`Confirmed inferred edge [${attrs.inferred_by_rule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
+    // Resolve merge-vs-add and the exact graph-wide edge key before appending.
+    // Persisting that identity makes later drop/merge records replay-stable.
+    for (const edgeId of this.ctx.graph.edges(source, target)) {
+      const attrs = this.ctx.graph.getEdgeAttributes(edgeId);
+      if (!edgeIdentityMatches(attrs, props)) continue;
+      let effectiveProps = props;
+      const confirmedRule = attrs.inferred_by_rule && !attrs.confirmed_at && props.confidence >= 1.0
+        ? attrs.inferred_by_rule
+        : undefined;
+      if (confirmedRule) effectiveProps = { ...props, confirmed_at: this.ctx.nowIso() };
+      return this.ctx.applyJournaledMutation(
+        'add_edge',
+        { source, target, props: effectiveProps, edge_id: edgeId },
+        () => {
+          if (confirmedRule && !this.ctx.suppressMutationEvents) {
+            this.log(`Confirmed inferred edge [${confirmedRule}]: ${source} --[${attrs.type}]--> ${target}`, undefined, { category: 'inference', outcome: 'success', event_type: 'inference_generated' });
           }
-        }
-        // Update existing edge — property-only change, no topology change
-        this.ctx.graph.mergeEdgeAttributes(edgeId, props as Partial<EdgeProperties>);
-        this.invalidateHealthReport();
-        return { id: edgeId, isNew: false };
-      }
-      // New edge — topology change
-      this.invalidatePathGraph();
-      this.invalidateAllCaches();
-      // Scope-aware edge keys keep distinct role assignments separate.
-      const baseKey = `${source}--${props.type}--${target}`;
-      const edgeId = scopeAware && incomingScope
-        ? `${baseKey}--${createHash('sha1').update(incomingScope).digest('hex').slice(0, 10)}`
-        : baseKey;
-      try {
+          this.ctx.graph.mergeEdgeAttributes(edgeId, effectiveProps as Partial<EdgeProperties>);
+          this.invalidateHealthReport();
+          return { id: edgeId, isNew: false };
+        },
+      );
+    }
+
+    const preferredId = preferredEdgeKey(source, target, props);
+    const edgeId = replayEdgeId
+      ?? (this.ctx.graph.hasEdge(preferredId)
+        ? deterministicCollisionEdgeKey(source, target, props)
+        : preferredId);
+    // Fail before the WAL append if even the deterministic identity is owned by
+    // another tuple. Continuing with another random suffix would be unreplayable.
+    if (this.ctx.graph.hasEdge(edgeId)) {
+      throw new Error(`Deterministic edge key collision for ${source} --[${props.type}]--> ${target}: ${edgeId}`);
+    }
+    return this.ctx.applyJournaledMutation(
+      'add_edge',
+      { source, target, props, edge_id: edgeId },
+      () => {
+        this.invalidatePathGraph();
+        this.invalidateAllCaches();
         return { id: this.ctx.graph.addEdgeWithKey(edgeId, source, target, props), isNew: true };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('already exists')) {
-          const fallbackId = `${edgeId}-${uuidv4().slice(0, 8)}`;
-          return { id: this.ctx.graph.addEdgeWithKey(fallbackId, source, target, props), isNew: true };
-        }
-        throw err;
-      }
-    });
+      },
+    );
   }
 
   findEdgeId(source: string, target: string, type: EdgeType): string | null {
