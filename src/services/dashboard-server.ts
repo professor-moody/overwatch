@@ -41,6 +41,38 @@ import type { ToolEntry } from './prompt-generator.js';
 import { buildTrustSignalsResponse, type TrustSignalSeverity } from './trust-signal-summary.js';
 import { activityToAgentConsoleEvent, buildAgentConsoleEvents, type AgentConsoleEvent } from './agent-console.js';
 import { assessPersistenceRecovery } from './lab-preflight.js';
+import { projectAgentDtos } from './dashboard-agent-projector.js';
+import {
+  AgentListResponseSchema,
+  CampaignActionRequestSchema,
+  CampaignActionResponseSchema,
+  CampaignChildrenResponseSchema,
+  CampaignCloneResponseSchema,
+  CampaignCreateRequestSchema,
+  CampaignCreateResponseSchema,
+  CampaignDeleteResponseSchema,
+  CampaignDetailResponseSchema,
+  CampaignDispatchRequestSchema,
+  CampaignDispatchResponseSchema,
+  CampaignListResponseSchema,
+  CampaignSplitRequestSchema,
+  CampaignSplitResponseSchema,
+  CampaignUpdateRequestSchema,
+  CampaignUpdateResponseSchema,
+  FrontierWeightsPatchSchema,
+  FrontierWeightsResetResultSchema,
+  FrontierWeightsUpdateResultSchema,
+  HealthDtoSchema,
+  ObjectiveCreateRequestSchema,
+  ObjectiveCreateResponseSchema,
+  ObjectiveDeleteResponseSchema,
+  ObjectiveUpdateRequestSchema,
+  ObjectiveUpdateResponseSchema,
+  SettingsDtoSchema,
+  SettingsPatchSchema,
+  SettingsUpdateResultSchema,
+  type AgentDto,
+} from '../contracts/dashboard-v1.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -123,6 +155,7 @@ type DashboardCampaign = Campaign & {
   agents_active: number;
   completion_pct: number;
   findings_count: number;
+  child_count?: number;
   opsec: CampaignOpsecBudget;
 };
 
@@ -249,7 +282,7 @@ export class DashboardServer {
       // non-browser clients (no Origin) aren't a confused-deputy risk. Applies on
       // loopback too (that's exactly where the drive-by works).
       const origin = req.headers.origin;
-      if (origin && !this.isAllowedWsOrigin(origin)) {
+      if (origin && !this.isAllowedWsOrigin(origin, req.headers.host)) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;
@@ -475,6 +508,7 @@ export class DashboardServer {
           edges: deltaEdges,
           removed_nodes: detail.removed_nodes || [],
           removed_edges: detail.removed_edges || [],
+          cold_nodes: fullGraph.cold_nodes ?? [],
         },
       },
     });
@@ -735,12 +769,25 @@ export class DashboardServer {
     );
   }
 
-  /** True when an Origin header is same-origin / localhost / the configured host.
+  /** True when an Origin header matches the request Host.
    *  Shared by the HTTP CORS gate and the WebSocket upgrade CSWSH check. */
-  private isAllowedWsOrigin(origin: string): boolean {
-    const allowedHost = process.env.OVERWATCH_DASHBOARD_HOST || '127.0.0.1';
-    if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)) return true;
-    try { return new URL(origin).hostname === allowedHost; } catch { return false; }
+  private isAllowedWsOrigin(origin: string, requestHost?: string): boolean {
+    try {
+      const originUrl = new URL(origin);
+      if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false;
+      const effectiveRequestHost = requestHost || `${this.host}:${this.port}`;
+      // Interpret Host using the Origin scheme so default ports normalize
+      // correctly (https://host and Host: host:443 are the same authority).
+      const requestUrl = new URL(`${originUrl.protocol}//${effectiveRequestHost}`);
+      const effectivePort = (url: URL): string => url.port || (url.protocol === 'https:' ? '443' : '80');
+      if (
+        originUrl.hostname.toLowerCase() === requestUrl.hostname.toLowerCase()
+        && effectivePort(originUrl) === effectivePort(requestUrl)
+      ) return true;
+      return this.isLoopback(originUrl.hostname) && this.isLoopback(requestUrl.hostname);
+    } catch {
+      return false;
+    }
   }
 
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
@@ -762,7 +809,7 @@ export class DashboardServer {
 
     // CORS: restrict to localhost origins (or env override)
     const origin = req.headers.origin || '';
-    if (origin && this.isAllowedWsOrigin(origin)) {
+    if (origin && this.isAllowedWsOrigin(origin, req.headers.host)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
@@ -931,13 +978,13 @@ export class DashboardServer {
       const agentDismissMatch = pathname.match(/^\/api\/agents\/([^/]+)\/dismiss$/);
       const agentDirectiveMatch = pathname.match(/^\/api\/agents\/([^/]+)\/directive$/);
       const agentQueryAnswerMatch = pathname.match(/^\/api\/agent-queries\/([^/]+)\/answer$/);
-      const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([a-f0-9-]+)$/);
-      const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)$/);
-      const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/action$/);
-      const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/dispatch$/);
-      const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/clone$/);
-      const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/split$/);
-      const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([a-f0-9-]+)\/children$/);
+      const objectiveMatch = pathname.match(/^\/api\/config\/objectives\/([^/]+)$/);
+      const campaignDetailMatch = pathname.match(/^\/api\/campaigns\/([^/]+)$/);
+      const campaignActionMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/action$/);
+      const campaignDispatchMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/dispatch$/);
+      const campaignCloneMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/clone$/);
+      const campaignSplitMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/split$/);
+      const campaignChildrenMatch = pathname.match(/^\/api\/campaigns\/([^/]+)\/children$/);
       const actionExplainMatch = pathname.match(/^\/api\/actions\/([^/]+)\/explain$/);
       // Raw tool-output for the Analysis workspace. Action ids are `act_<hex>`
       // or a uuid (the `act_` underscore falls outside [a-f0-9-]), so match the
@@ -975,25 +1022,25 @@ export class DashboardServer {
       } else if (agentQueryAnswerMatch && method === 'POST') {
         this.handleAnswerAgentQuery(decodeURIComponent(agentQueryAnswerMatch[1]), req, res);
       } else if (objectiveMatch && method === 'PATCH') {
-        this.handleUpdateObjective(objectiveMatch[1], req, res);
+        this.handleUpdateObjective(decodeURIComponent(objectiveMatch[1]), req, res);
       } else if (objectiveMatch && method === 'DELETE') {
-        this.handleDeleteObjective(objectiveMatch[1], req, res);
+        this.handleDeleteObjective(decodeURIComponent(objectiveMatch[1]), req, res);
       } else if (campaignActionMatch && method === 'POST') {
-        this.handleCampaignAction(campaignActionMatch[1], req, res);
+        this.handleCampaignAction(decodeURIComponent(campaignActionMatch[1]), req, res);
       } else if (campaignDispatchMatch && method === 'POST') {
-        this.handleCampaignDispatch(campaignDispatchMatch[1], req, res);
+        this.handleCampaignDispatch(decodeURIComponent(campaignDispatchMatch[1]), req, res);
       } else if (campaignCloneMatch && method === 'POST') {
-        this.handleCampaignClone(campaignCloneMatch[1], req, res);
+        this.handleCampaignClone(decodeURIComponent(campaignCloneMatch[1]), req, res);
       } else if (campaignSplitMatch && method === 'POST') {
-        this.handleCampaignSplit(campaignSplitMatch[1], req, res);
+        this.handleCampaignSplit(decodeURIComponent(campaignSplitMatch[1]), req, res);
       } else if (campaignChildrenMatch) {
-        this.serveCampaignChildren(campaignChildrenMatch[1], res);
+        this.serveCampaignChildren(decodeURIComponent(campaignChildrenMatch[1]), res);
       } else if (campaignDetailMatch && method === 'PATCH') {
-        this.handleCampaignUpdate(campaignDetailMatch[1], req, res);
+        this.handleCampaignUpdate(decodeURIComponent(campaignDetailMatch[1]), req, res);
       } else if (campaignDetailMatch && method === 'DELETE') {
-        this.handleCampaignDelete(campaignDetailMatch[1], req, res);
+        this.handleCampaignDelete(decodeURIComponent(campaignDetailMatch[1]), req, res);
       } else if (campaignDetailMatch) {
-        this.serveCampaignDetail(campaignDetailMatch[1], res);
+        this.serveCampaignDetail(decodeURIComponent(campaignDetailMatch[1]), res);
       } else if (actionExplainMatch && method === 'GET') {
         this.serveActionExplanation(decodeURIComponent(actionExplainMatch[1]), res);
       } else if (actionOutputMatch && method === 'GET') {
@@ -1169,8 +1216,7 @@ export class DashboardServer {
     const config = this.engine.getConfig();
     const opsec = config.opsec;
     const opsecStatus = this.engine.getOpsecStatus();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    const payload = SettingsDtoSchema.parse({
       opsec: {
         enabled: opsec.enabled === true,
         max_noise: opsec.max_noise,
@@ -1189,16 +1235,19 @@ export class DashboardServer {
         per_host_ceiling_ratio: 0.50,
       },
       profile: opsec.name || config.profile || 'custom',
-    }));
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
   }
 
   private handleUpdateSettings(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
+      const parsed = SettingsPatchSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        res.end(JSON.stringify({ error: 'Invalid settings patch', issues: parsed.error.issues }));
         return;
       }
       if (!this.requireWritablePersistence(res)) return;
@@ -1206,44 +1255,47 @@ export class DashboardServer {
       const opsec = { ...current };
       let changed = false;
 
-      if (typeof body.enabled === 'boolean') {
-        opsec.enabled = body.enabled;
+      const patch = parsed.data;
+      if (patch.enabled !== undefined) {
+        opsec.enabled = patch.enabled;
         changed = true;
       }
-      if (typeof body.max_noise === 'number' && body.max_noise >= 0 && body.max_noise <= 2) {
-        opsec.max_noise = body.max_noise;
+      if (patch.max_noise !== undefined) {
+        opsec.max_noise = patch.max_noise;
         changed = true;
       }
-      if (typeof body.approval_mode === 'string' && ['auto-approve', 'approve-all', 'approve-critical'].includes(body.approval_mode)) {
-        opsec.approval_mode = body.approval_mode;
+      if (patch.approval_mode !== undefined) {
+        opsec.approval_mode = patch.approval_mode;
         changed = true;
       }
-      if (typeof body.approval_timeout_ms === 'number' && body.approval_timeout_ms >= 10000 && body.approval_timeout_ms <= 3600000) {
-        opsec.approval_timeout_ms = body.approval_timeout_ms;
+      if (patch.approval_timeout_ms !== undefined) {
+        opsec.approval_timeout_ms = patch.approval_timeout_ms;
         changed = true;
       }
-      if (Array.isArray(body.blacklisted_techniques)) {
-        opsec.blacklisted_techniques = body.blacklisted_techniques.filter((t: unknown) => typeof t === 'string');
+      if (patch.blacklisted_techniques !== undefined) {
+        opsec.blacklisted_techniques = patch.blacklisted_techniques;
         changed = true;
       }
-      if (body.time_window !== undefined) {
-        if (body.time_window === null) {
+      if (patch.time_window !== undefined) {
+        if (patch.time_window === null) {
           opsec.time_window = undefined;
           changed = true;
-        } else if (typeof body.time_window === 'object' &&
-                   typeof body.time_window.start_hour === 'number' &&
-                   typeof body.time_window.end_hour === 'number') {
-          opsec.time_window = { start_hour: body.time_window.start_hour, end_hour: body.time_window.end_hour };
+        } else {
+          opsec.time_window = patch.time_window;
           changed = true;
         }
       }
 
       if (changed) {
-        this.engine.updateConfig({ opsec });
+        const updatePayload = patch.time_window === null
+          ? { ...opsec, time_window: null }
+          : opsec;
+        this.engine.updateConfig({ opsec: updatePayload as Parameters<GraphEngine['updateConfig']>[0]['opsec'] });
       }
 
+      const payload = SettingsUpdateResultSchema.parse({ updated: changed, opsec: this.engine.getConfig().opsec });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: changed, opsec }));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       // updateConfig performs its own final guard. If the gate crossed after
       // our post-body check, preserve the recovery status instead of
@@ -1479,20 +1531,21 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object' || typeof (body as Record<string, unknown>).description !== 'string') {
+      const parsed = ObjectiveCreateRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'description is required' }));
+        res.end(JSON.stringify({ error: 'Invalid objective create request', issues: parsed.error.issues }));
         return;
       }
-      const b = body as Record<string, unknown>;
       const objective = this.engine.addObjective({
-        description: b.description as string,
-        target_node_type: b.target_node_type as string | undefined,
-        target_criteria: b.target_criteria as Record<string, unknown> | undefined,
-        achievement_edge_types: b.achievement_edge_types as string[] | undefined,
+        description: parsed.data.description,
+        target_node_type: parsed.data.target_node_type,
+        target_criteria: parsed.data.target_criteria,
+        achievement_edge_types: parsed.data.achievement_edge_types,
       });
+      const payload = ObjectiveCreateResponseSchema.parse({ created: true, objective });
       res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ created: true, objective }));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -1503,19 +1556,21 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
+      const parsed = ObjectiveUpdateRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object' }));
+        res.end(JSON.stringify({ error: 'Invalid objective update request', issues: parsed.error.issues }));
         return;
       }
-      const ok = this.engine.updateObjective(id, body as Record<string, unknown>);
+      const ok = this.engine.updateObjective(id, parsed.data);
       if (!ok) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Objective not found' }));
         return;
       }
+      const payload = ObjectiveUpdateResponseSchema.parse({ updated: true });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: true }));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -1530,8 +1585,9 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'Objective not found' }));
       return;
     }
+    const payload = ObjectiveDeleteResponseSchema.parse({ deleted: true });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deleted: true }));
+    res.end(JSON.stringify(payload));
   }
 
   // ---- Agent dispatch endpoint ----
@@ -1575,15 +1631,83 @@ export class DashboardServer {
         return;
       }
       const b = body as Record<string, unknown>;
-      const targetNodeIds = Array.isArray(b.target_node_ids) ? b.target_node_ids.filter((x: unknown) => typeof x === 'string') as string[] : [];
+      const frontierItemId = typeof b.frontier_item_id === 'string' && b.frontier_item_id.trim()
+        ? b.frontier_item_id.trim()
+        : undefined;
+      let dispatchBody = b;
+      let targetNodeIds: string[];
+      let campaignToActivate: string | undefined;
 
-      if (targetNodeIds.length === 0) {
+      if (frontierItemId) {
+        const known = this.engine.getFrontierItem(frontierItemId);
+        if (!known) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Frontier item not found', reason: 'frontier_not_found', frontier_item_id: frontierItemId }));
+          return;
+        }
+        const actionable = this.engine.getActionableFrontierItem(frontierItemId);
+        if (!actionable) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Frontier item is no longer actionable', reason: 'frontier_not_actionable', frontier_item_id: frontierItemId }));
+          return;
+        }
+
+        // The frontier id is authoritative. Ignore legacy target_node_ids and
+        // derive both scope and agent type from the current server-side item.
+        targetNodeIds = this.engine.computeSubgraphNodeIds(frontierItemId, 2);
+        if (targetNodeIds.length === 0 && actionable.type !== 'network_discovery') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Frontier item has no live graph scope', reason: 'frontier_unscoped', frontier_item_id: frontierItemId }));
+          return;
+        }
+        const seedType = targetNodeIds[0] ? this.engine.getNode(targetNodeIds[0])?.type : undefined;
+        const archetype = recommendArchetype({ frontierType: actionable.type, nodeType: seedType });
+        const canonicalCampaign = this.engine.findCampaignForItem(actionable.id);
+        const itemStatus = canonicalCampaign?.item_status?.[actionable.id];
+        if (itemStatus) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: `Campaign item already ${itemStatus}`,
+            reason: `already_${itemStatus}`,
+            campaign_id: canonicalCampaign.id,
+            frontier_item_id: actionable.id,
+          }));
+          return;
+        }
+        if (canonicalCampaign && canonicalCampaign.status !== 'draft' && canonicalCampaign.status !== 'active') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: `Campaign is ${canonicalCampaign.status} — cannot dispatch frontier work`,
+            reason: 'campaign_not_dispatchable',
+            campaign_id: canonicalCampaign.id,
+            frontier_item_id: actionable.id,
+          }));
+          return;
+        }
+        if (canonicalCampaign?.status === 'draft') campaignToActivate = canonicalCampaign.id;
+        dispatchBody = {
+          ...b,
+          frontier_item_id: actionable.id,
+          target_node_ids: targetNodeIds,
+          archetype,
+          objective: actionable.description,
+          // A client-supplied campaign cannot override canonical membership.
+          // Ambiguous clone/split membership intentionally leaves this unset.
+          campaign_id: canonicalCampaign?.id,
+        };
+      } else {
+        targetNodeIds = Array.isArray(b.target_node_ids)
+          ? b.target_node_ids.filter((x: unknown): x is string => typeof x === 'string')
+          : [];
+      }
+
+      if (!frontierItemId && targetNodeIds.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'target_node_ids must be a non-empty array of node IDs' }));
+        res.end(JSON.stringify({ error: 'frontier_item_id or a non-empty target_node_ids array is required' }));
         return;
       }
 
-      const built = this.buildDispatchTask(b, targetNodeIds);
+      const built = this.buildDispatchTask(dispatchBody, targetNodeIds);
       if (!built.ok) {
         res.writeHead(built.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: built.error }));
@@ -1630,6 +1754,8 @@ export class DashboardServer {
             }));
         return;
       }
+
+      if (campaignToActivate) this.engine.activateCampaign(campaignToActivate);
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ dispatched: true, task }));
@@ -2308,17 +2434,19 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
+      const parsed = FrontierWeightsPatchSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Expected JSON object with fan_out and/or noise' }));
+        res.end(JSON.stringify({ error: 'Invalid frontier weight patch', issues: parsed.error.issues }));
         return;
       }
       this.engine.setFrontierWeights({
-        fan_out: body.fan_out && typeof body.fan_out === 'object' ? body.fan_out : undefined,
-        noise: body.noise && typeof body.noise === 'object' ? body.noise : undefined,
+        fan_out: parsed.data.fan_out,
+        noise: parsed.data.noise,
       });
+      const payload = FrontierWeightsUpdateResultSchema.parse({ updated: true, weights: this.engine.getFrontierWeights() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ updated: true, weights: this.engine.getFrontierWeights() }));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -2328,8 +2456,9 @@ export class DashboardServer {
   private handleResetFrontierWeights(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.engine.resetFrontierWeights();
+    const payload = FrontierWeightsResetResultSchema.parse({ reset: true, weights: this.engine.getFrontierWeights() });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ reset: true, weights: this.engine.getFrontierWeights() }));
+    res.end(JSON.stringify(payload));
   }
 
   // ---- Health endpoint ----
@@ -2339,8 +2468,7 @@ export class DashboardServer {
       const health = this.engine.getHealthReport();
       const adContext = this.engine.checkADContext();
       const graph = this.engine.exportGraph();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      const payload = HealthDtoSchema.parse({
         graph_stats: {
           nodes: graph.nodes.length,
           edges: graph.edges.length,
@@ -2351,7 +2479,9 @@ export class DashboardServer {
         },
         ad_context: adContext,
         health_checks: health,
-      }));
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
@@ -2368,6 +2498,7 @@ export class DashboardServer {
    * payload stays consistent.
    */
   private enrichCampaigns(campaigns: Campaign[] = this.engine.listCampaigns()): DashboardCampaign[] {
+    const allCampaigns = this.engine.listCampaigns();
     const allAgents = this.engine.getAllAgents();
     // The global noise context (budget remaining, recommended approach, time
     // window) is the same for every campaign — compute it once. Only the
@@ -2376,21 +2507,34 @@ export class DashboardServer {
     const maxNoise = this.engine.getConfig().opsec.max_noise;
     const tracker = this.engine.getOpsecTracker();
     return campaigns.map(c => {
-      const agents = allAgents.filter(a => a.campaign_id === c.id);
-      const completed = c.progress?.completed ?? 0;
-      const total = c.progress?.total ?? c.items.length;
+      const children = allCampaigns.filter(candidate => candidate.parent_id === c.id);
+      const aggregateProgress = children.length > 0 ? this.engine.getCampaignParentProgress(c.id) : null;
+      const derivedStatus = children.length > 0 ? this.engine.deriveCampaignParentStatus(c.id) : null;
+      const projectedFindings = [...new Set([
+        ...(c.findings ?? []),
+        ...children.flatMap(child => child.findings ?? []),
+      ])];
+      const campaignIds = new Set([c.id, ...children.map(child => child.id)]);
+      const agents = allAgents.filter(a => a.campaign_id && campaignIds.has(a.campaign_id));
+      const progress = aggregateProgress ?? c.progress;
+      const completed = progress?.completed ?? 0;
+      const total = progress?.total ?? c.items.length;
       const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
       const runningAgents = agents.filter(a => a.status === 'running').length;
       return {
         ...c,
+        status: derivedStatus ?? c.status,
+        progress,
+        findings: projectedFindings,
         agent_count: agents.length,
         running_agents: runningAgents,
         agents_total: agents.length,
         agents_active: runningAgents,
         completion_pct: completionPct,
-        findings_count: c.findings?.length ?? 0,
+        findings_count: projectedFindings.length,
+        child_count: children.length || undefined,
         opsec: {
-          global_noise_spent: tracker.getCampaignNoise(c.id),
+          global_noise_spent: [...campaignIds].reduce((totalNoise, id) => totalNoise + tracker.getCampaignNoise(id), 0),
           noise_budget_remaining: opsecCtx.noise_budget_remaining,
           max_noise: maxNoise,
           recommended_approach: opsecCtx.recommended_approach,
@@ -2404,7 +2548,8 @@ export class DashboardServer {
     });
   }
 
-  private buildFrontendState(): ReturnType<GraphEngine['getState']> & {
+  private buildFrontendState(): Omit<ReturnType<GraphEngine['getState']>, 'agents'> & {
+    agents: AgentDto[];
     sessions: ReturnType<NonNullable<SessionManager>['list']>;
     pending_actions: PendingAction[];
     campaigns: DashboardCampaign[];
@@ -2414,7 +2559,8 @@ export class DashboardServer {
     const pending_actions = this.getDashboardApprovalRecords()
       .filter(action => action.status === 'pending') as PendingAction[];
     const campaigns = this.enrichCampaigns();
-    return { ...state, sessions, pending_actions, campaigns };
+    const agents = projectAgentDtos(state.agents, this.engine.getFullHistory(), campaigns);
+    return { ...state, agents, sessions, pending_actions, campaigns };
   }
 
   private serveState(res: ServerResponse): void {
@@ -2910,64 +3056,14 @@ export class DashboardServer {
   // ---- Agent & Campaign REST endpoints ----
 
   private serveAgents(res: ServerResponse): void {
-    const agents = this.engine.getAllAgents();
-    const now = Date.now();
-
-    // Derive each agent's most recent activity ("current action") + last finding
-    // in ONE pass over history, so the roster can show "doing: …" live without
-    // N×history scans. 3C / "see everything".
-    //   - current_action reflects the agent's WORK, so skip operator/runtime
-    //     bookkeeping (directives, launch/exit warnings, registration) and
-    //     heartbeats — otherwise "doing:" reads "Operator directive: pause".
-    //   - keyed by the precise task id when present; agent_id is a fallback only
-    //     when exactly one running task owns that label, so two tasks sharing an
-    //     agent_id never cross-bleed each other's activity.
-    const latestByKey = new Map<string, { description: string; event_type?: string; timestamp: string }>();
-    const lastFindingAtByKey = new Map<string, string>();
-    const BOOKKEEPING_EVENTS = new Set(['instrumentation_warning', 'operator_command', 'agent_registered', 'agent_updated', 'heartbeat']);
-    for (const e of this.engine.getFullHistory()) {
-      const keys = [e.agent_id, e.linked_agent_task_id, (e.details as { task_id?: string } | undefined)?.task_id].filter((k): k is string => !!k);
-      const isFinding = e.category === 'finding' || (e.event_type ?? '').startsWith('finding') || e.event_type === 'parse_output';
-      const isBookkeeping = e.category === 'system' || BOOKKEEPING_EVENTS.has(e.event_type ?? '');
-      for (const k of keys) {
-        if (!isBookkeeping) {
-          const prev = latestByKey.get(k);
-          if (!prev || e.timestamp > prev.timestamp) latestByKey.set(k, { description: e.description, event_type: e.event_type, timestamp: e.timestamp });
-        }
-        if (isFinding) {
-          const pf = lastFindingAtByKey.get(k);
-          if (!pf || e.timestamp > pf) lastFindingAtByKey.set(k, e.timestamp);
-        }
-      }
-    }
-    // Count running tasks per agent_id so a shared label only attributes activity
-    // when it's unambiguous (exactly one running owner).
-    const runningPerAgentId = new Map<string, number>();
-    for (const a of agents) {
-      if (a.status === 'running') runningPerAgentId.set(a.agent_id, (runningPerAgentId.get(a.agent_id) ?? 0) + 1);
-    }
-    const resolveByKeys = <V>(m: Map<string, V>, a: { id: string; agent_id: string }): V | undefined =>
-      m.get(a.id) ?? (runningPerAgentId.get(a.agent_id) === 1 ? m.get(a.agent_id) : undefined);
-
-    const enriched = agents.map(a => {
-      const latest = a.status === 'running' ? resolveByKeys(latestByKey, a) : undefined;
-      return {
-        ...a,
-        elapsed_ms: a.status === 'running' ? now - new Date(a.assigned_at).getTime() : undefined,
-        campaign: a.campaign_id ? this.engine.getCampaign(a.campaign_id) : undefined,
-        // Live "current action" — what this agent most recently did.
-        current_action: latest?.description,
-        current_action_type: latest?.event_type,
-        current_action_at: latest?.timestamp,
-        // A finding timestamp bleeding between same-label tasks is low-harm, and
-        // completed agents (no running owner) still need it — keep the plain fallback.
-        last_finding_at: lastFindingAtByKey.get(a.id) ?? lastFindingAtByKey.get(a.agent_id),
-        // pending headless tasks are effectively queued behind the concurrency cap.
-        queued: a.status === 'pending',
-      };
-    });
+    const enriched = projectAgentDtos(
+      this.engine.getAllAgents(),
+      this.engine.getFullHistory(),
+      this.engine.listCampaigns(),
+    );
+    const payload = AgentListResponseSchema.parse({ agents: enriched, total: enriched.length });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ agents: enriched, total: enriched.length }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveAgentContext(taskId: string, res: ServerResponse): void {
@@ -3283,8 +3379,9 @@ export class DashboardServer {
 
   private serveCampaigns(res: ServerResponse): void {
     const enriched = this.enrichCampaigns();
+    const payload = CampaignListResponseSchema.parse({ campaigns: enriched, total: enriched.length });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ campaigns: enriched, total: enriched.length }));
+    res.end(JSON.stringify(payload));
   }
 
   private serveCampaignDetail(campaignId: string, res: ServerResponse): void {
@@ -3294,36 +3391,61 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'Campaign not found' }));
       return;
     }
-    const allAgents = this.engine.getAllAgents();
-    const agents = allAgents.filter(a => a.campaign_id === campaignId);
-    const abort_check = this.engine.checkCampaignAbortConditions(campaignId);
+    const projectedCampaign = this.enrichCampaigns([campaign])[0];
+    const childIds = new Set(this.engine.getCampaignChildren(campaignId).map(child => child.id));
+    const matchingTasks = this.engine.getAllAgents().filter(a => a.campaign_id === campaignId || (a.campaign_id ? childIds.has(a.campaign_id) : false));
+    const agents = projectAgentDtos(matchingTasks, this.engine.getFullHistory(), this.engine.listCampaigns());
+    const childAbortChecks = this.engine.getCampaignChildren(campaignId)
+      .map(child => ({ campaign_id: child.id, ...this.engine.checkCampaignAbortConditions(child.id) }));
+    const abort_check = childAbortChecks.find(check => check.should_abort)
+      ?? { campaign_id: campaignId, ...this.engine.checkCampaignAbortConditions(campaignId) };
 
-    // Enrich findings with node summaries
-    const finding_details = (campaign.findings || []).map(nodeId => {
-      const node = this.engine.getNode(nodeId);
+    // Campaigns store durable Finding IDs, not graph-node IDs. Resolve their
+    // presentation from the activity event that recorded the finding, then use
+    // its ingested node references for an operator-friendly summary.
+    const history = this.engine.getFullHistory();
+    const finding_details = (projectedCampaign.findings || []).map(findingId => {
+      const linkedEntries = history.filter(candidate => candidate.linked_finding_ids?.includes(findingId));
+      // parse_output is intentionally logged after finding_ingested, but its
+      // summary may not carry the concrete node ids. Prefer the newest linked
+      // event with graph references so campaign detail does not regress to a
+      // generic parser message merely because it was logged later.
+      const entry = [...linkedEntries].reverse().find(candidate => {
+        const candidateDetails = (candidate.details ?? {}) as Record<string, unknown>;
+        return (Array.isArray(candidateDetails.ingested_node_ids) && candidateDetails.ingested_node_ids.length > 0)
+          || (candidate.target_node_ids?.length ?? 0) > 0;
+      }) ?? linkedEntries.at(-1);
+      const details = (entry?.details ?? {}) as Record<string, unknown>;
+      const ingestedIds = Array.isArray(details.ingested_node_ids)
+        ? details.ingested_node_ids.filter((id): id is string => typeof id === 'string')
+        : [];
+      const nodeIds = ingestedIds.length > 0 ? ingestedIds : (entry?.target_node_ids ?? []);
+      const nodes = nodeIds.map(id => this.engine.getNode(id)).filter((node): node is NonNullable<typeof node> => Boolean(node));
       return {
-        id: nodeId,
-        label: node?.label || nodeId,
-        type: node?.type || 'unknown',
-        created_at: node?.created_at || null,
+        id: findingId,
+        label: nodes.length > 0 ? nodes.map(node => node.label).join(', ') : (entry?.description ?? findingId),
+        type: nodes[0]?.type ?? entry?.event_type ?? 'finding',
+        created_at: entry?.timestamp ?? null,
+        node_ids: nodeIds,
       };
     });
 
+    const payload = CampaignDetailResponseSchema.parse({ campaign: projectedCampaign, agents, abort_check, finding_details });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ campaign, agents, abort_check, finding_details }));
+    res.end(JSON.stringify(payload));
   }
 
   private handleCampaignAction(campaignId: string, req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      const action = body?.action;
-      const validActions = ['activate', 'pause', 'resume', 'abort'];
-      if (!validActions.includes(action)) {
+      const parsed = CampaignActionRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${validActions.join(', ')}` }));
+        res.end(JSON.stringify({ error: 'Invalid campaign action', issues: parsed.error.issues }));
         return;
       }
+      const action = parsed.data.action;
       const campaign = this.engine.getCampaign(campaignId);
       if (!campaign) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -3342,8 +3464,9 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: `Failed to ${action} campaign` }));
         return;
       }
+      const payload = CampaignActionResponseSchema.parse({ action, campaign: result });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ action, campaign: result }));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -3354,18 +3477,25 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
+      const parsed = CampaignDispatchRequestSchema.safeParse(body ?? {});
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid campaign dispatch request', issues: parsed.error.issues }));
+        return;
+      }
       const result = dispatchCampaignAgents(this.engine, campaignId, {
-        max_agents: typeof body?.max_agents === 'number' ? body.max_agents : undefined,
-        hops: typeof body?.hops === 'number' ? body.hops : undefined,
-        skill: typeof body?.skill === 'string' ? body.skill : undefined,
+        max_agents: parsed.data.max_agents,
+        hops: parsed.data.hops,
+        skill: parsed.data.skill,
       });
       if (result.error) {
         res.writeHead(result.error.includes('not found') ? 404 : 409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
         return;
       }
+      const payload = CampaignDispatchResponseSchema.parse(result);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      res.end(JSON.stringify(payload));
     }).catch(() => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
@@ -3376,36 +3506,26 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body?.name || typeof body.name !== 'string') {
+      const parsed = CampaignCreateRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        const invalidStrategy = parsed.error.issues.some(issue => issue.path[0] === 'strategy');
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'name (string) is required' }));
-        return;
-      }
-      if (!body?.strategy || typeof body.strategy !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'strategy (string) is required' }));
-        return;
-      }
-      if (!Array.isArray(body?.item_ids) || body.item_ids.length === 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'item_ids (non-empty array) is required' }));
-        return;
-      }
-      const validStrategies = ['credential_spray', 'enumeration', 'post_exploitation', 'network_discovery', 'custom'];
-      if (!validStrategies.includes(body.strategy)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Invalid strategy. Must be one of: ${validStrategies.join(', ')}` }));
+        res.end(JSON.stringify({
+          error: invalidStrategy ? 'Invalid strategy' : 'Invalid campaign create request',
+          issues: parsed.error.issues,
+        }));
         return;
       }
       try {
         const campaign = this.engine.createCampaign({
-          name: body.name,
-          strategy: body.strategy as import('../types.js').CampaignStrategy,
-          item_ids: body.item_ids,
-          abort_conditions: Array.isArray(body.abort_conditions) ? body.abort_conditions : undefined,
+          name: parsed.data.name,
+          strategy: parsed.data.strategy,
+          item_ids: parsed.data.item_ids,
+          abort_conditions: parsed.data.abort_conditions,
         });
+        const payload = CampaignCreateResponseSchema.parse({ campaign });
         res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ campaign }));
+        res.end(JSON.stringify(payload));
       } catch (err: any) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -3420,25 +3540,27 @@ export class DashboardServer {
     if (!this.checkMutationAuth(req, res)) return;
     this.readJsonBody(req).then(body => {
       if (!this.requireWritablePersistence(res)) return;
-      if (!body || typeof body !== 'object') {
+      const parsed = CampaignUpdateRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'JSON body required' }));
+        res.end(JSON.stringify({ error: 'Invalid campaign update request', issues: parsed.error.issues }));
         return;
       }
       try {
         const campaign = this.engine.updateCampaign(campaignId, {
-          name: typeof body.name === 'string' ? body.name : undefined,
-          abort_conditions: Array.isArray(body.abort_conditions) ? body.abort_conditions : undefined,
-          add_items: Array.isArray(body.add_items) ? body.add_items : undefined,
-          remove_items: Array.isArray(body.remove_items) ? body.remove_items : undefined,
+          name: parsed.data.name,
+          abort_conditions: parsed.data.abort_conditions,
+          add_items: parsed.data.add_items,
+          remove_items: parsed.data.remove_items,
         });
         if (!campaign) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Campaign not found' }));
           return;
         }
+        const payload = CampaignUpdateResponseSchema.parse({ campaign });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ campaign }));
+        res.end(JSON.stringify(payload));
       } catch (err: any) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -3458,8 +3580,9 @@ export class DashboardServer {
         res.end(JSON.stringify({ error: 'Campaign not found' }));
         return;
       }
+      const payload = CampaignDeleteResponseSchema.parse({ deleted: true });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ deleted: true }));
+      res.end(JSON.stringify(payload));
     } catch (err: any) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
@@ -3474,8 +3597,9 @@ export class DashboardServer {
       res.end(JSON.stringify({ error: 'Campaign not found' }));
       return;
     }
+    const payload = CampaignCloneResponseSchema.parse({ campaign });
     res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ campaign }));
+    res.end(JSON.stringify(payload));
   }
 
   private async handleCampaignSplit(campaignId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -3483,14 +3607,32 @@ export class DashboardServer {
     try {
       const body = await this.readJsonBody(req);
       if (!this.requireWritablePersistence(res)) return;
-      const children = this.engine.splitCampaign(campaignId, body.count);
-      if (!children) {
+      const parsed = CampaignSplitRequestSchema.safeParse(body);
+      if (!parsed.success) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Campaign not found or cannot be split' }));
+        res.end(JSON.stringify({ error: 'Invalid campaign split request', issues: parsed.error.issues }));
         return;
       }
+      const parent = this.engine.getCampaign(campaignId);
+      if (!parent) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Campaign not found' }));
+        return;
+      }
+      if (parsed.data.count > parent.items.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Split count cannot exceed campaign item count' }));
+        return;
+      }
+      const children = this.engine.splitCampaign(campaignId, parsed.data.count);
+      if (!children) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Campaign cannot be split in its current state' }));
+        return;
+      }
+      const payload = CampaignSplitResponseSchema.parse({ parent_id: campaignId, children, count: children.length });
       res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ parent_id: campaignId, children, count: children.length }));
+      res.end(JSON.stringify(payload));
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid request body' }));
@@ -3498,11 +3640,17 @@ export class DashboardServer {
   }
 
   private serveCampaignChildren(campaignId: string, res: ServerResponse): void {
-    const children = this.engine.getCampaignChildren(campaignId);
+    if (!this.engine.getCampaign(campaignId)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Campaign not found' }));
+      return;
+    }
+    const children = this.enrichCampaigns(this.engine.getCampaignChildren(campaignId));
     const progress = this.engine.getCampaignParentProgress(campaignId);
     const derivedStatus = this.engine.deriveCampaignParentStatus(campaignId);
+    const payload = CampaignChildrenResponseSchema.parse({ parent_id: campaignId, children, derived_status: derivedStatus, aggregated_progress: progress });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ parent_id: campaignId, children, derived_status: derivedStatus, aggregated_progress: progress }));
+    res.end(JSON.stringify(payload));
   }
 
   private servePhases(res: ServerResponse): void {
@@ -3548,12 +3696,7 @@ export class DashboardServer {
     // Reject cross-origin mutations from untrusted sites that may be open in the browser.
     const origin = req.headers.origin;
     if (origin) {
-      const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
-      let isAllowed = isLocalOrigin;
-      if (!isAllowed) {
-        try { isAllowed = new URL(origin).hostname === this.host; } catch { /* malformed */ }
-      }
-      if (!isAllowed) {
+      if (!this.isAllowedWsOrigin(origin, req.headers.host)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'CSRF: origin not allowed' }));
         return false;
@@ -3618,7 +3761,8 @@ export class DashboardServer {
   }
 
   private isLoopback(host: string): boolean {
-    return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+    const normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
+    return normalized === '127.0.0.1' || normalized === '::1' || normalized === 'localhost';
   }
 
   // =============================================

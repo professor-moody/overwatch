@@ -19,7 +19,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@overwatch/types": ["../types.ts"]
+      "@overwatch/types": ["../types.ts"],
+      "@overwatch/dashboard-contracts": ["../contracts/dashboard-v1.ts"]
     }
   },
   "include": ["src/**/*", "*.ts"],

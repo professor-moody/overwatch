@@ -1,0 +1,144 @@
+import type { AgentTask, Campaign } from '../types.js';
+import type { AgentDto } from '../contracts/dashboard-v1.js';
+import type { ActivityLogEntry } from './engine-context.js';
+
+const BOOKKEEPING_EVENTS = new Set([
+  'instrumentation_warning',
+  'operator_command',
+  'agent_registered',
+  'agent_updated',
+  'heartbeat',
+]);
+
+interface LatestActivity {
+  description: string;
+  event_type?: string;
+  timestamp: string;
+}
+
+/**
+ * Project persisted agent tasks into the one dashboard DTO used by REST and
+ * state/WebSocket snapshots. Exact task linkage always wins. Legacy label-only
+ * events are attributed only when that label belongs to one task, never by
+ * guessing between duplicate labels.
+ */
+export function projectAgentDtos(
+  tasks: AgentTask[],
+  history: ActivityLogEntry[],
+  campaigns: Campaign[],
+  now: number = Date.now(),
+): AgentDto[] {
+  const taskById = new Map(tasks.map(task => [task.id, task]));
+  const taskIdsByLabel = new Map<string, string[]>();
+  for (const task of tasks) {
+    const ids = taskIdsByLabel.get(task.agent_id) ?? [];
+    ids.push(task.id);
+    taskIdsByLabel.set(task.agent_id, ids);
+  }
+
+  const latestByTask = new Map<string, LatestActivity>();
+  const lastFindingAtByTask = new Map<string, string>();
+  const findingIdsByTask = new Map<string, Set<string>>();
+
+  // Action completion/finding events do not always repeat the task ID. Build
+  // the authoritative action→task index first so later projection never has to
+  // guess from a potentially duplicated agent label.
+  const taskIdByAction = new Map<string, string>();
+  for (const entry of history) {
+    if (!entry.action_id) continue;
+    const detailTaskId = (entry.details as { task_id?: unknown } | undefined)?.task_id;
+    const explicitTaskId = typeof entry.linked_agent_task_id === 'string'
+      ? entry.linked_agent_task_id
+      : typeof detailTaskId === 'string'
+        ? detailTaskId
+        : undefined;
+    if (explicitTaskId) taskIdByAction.set(entry.action_id, explicitTaskId);
+  }
+
+  for (const entry of history) {
+    const detailTaskId = (entry.details as { task_id?: unknown } | undefined)?.task_id;
+    const explicitlyLinkedTaskId = typeof entry.linked_agent_task_id === 'string'
+      ? entry.linked_agent_task_id
+      : typeof detailTaskId === 'string'
+        ? detailTaskId
+        : entry.action_id
+          ? taskIdByAction.get(entry.action_id)
+          : undefined;
+    // Explicit linkage remains authoritative even when the linked task is not
+    // in this projection subset (for example, a campaign-detail filter). Never
+    // reattribute it to a visible task that happens to share the same label.
+    if (explicitlyLinkedTaskId && !taskById.has(explicitlyLinkedTaskId)) continue;
+    const legacyIds = !explicitlyLinkedTaskId && entry.agent_id ? taskIdsByLabel.get(entry.agent_id) : undefined;
+    const taskId = explicitlyLinkedTaskId ?? (legacyIds?.length === 1 ? legacyIds[0] : undefined);
+    if (!taskId) continue;
+
+    const isBookkeeping = entry.category === 'system' || BOOKKEEPING_EVENTS.has(entry.event_type ?? '');
+    if (!isBookkeeping) {
+      const previous = latestByTask.get(taskId);
+      if (!previous || entry.timestamp > previous.timestamp) {
+        latestByTask.set(taskId, {
+          description: entry.description,
+          event_type: entry.event_type,
+          timestamp: entry.timestamp,
+        });
+      }
+    }
+
+    const linkedFindingIds = entry.linked_finding_ids ?? [];
+    const isFinding = linkedFindingIds.length > 0
+      || entry.category === 'finding'
+      || (entry.event_type ?? '').startsWith('finding')
+      || entry.event_type === 'parse_output';
+    if (isFinding) {
+      const previous = lastFindingAtByTask.get(taskId);
+      if (!previous || entry.timestamp > previous) lastFindingAtByTask.set(taskId, entry.timestamp);
+    }
+    if (linkedFindingIds.length > 0) {
+      const ids = findingIdsByTask.get(taskId) ?? new Set<string>();
+      for (const findingId of linkedFindingIds) ids.add(findingId);
+      findingIdsByTask.set(taskId, ids);
+    }
+  }
+
+  const campaignById = new Map(campaigns.map(campaign => [campaign.id, campaign]));
+  return tasks.map(task => {
+    const latest = task.status === 'running' ? latestByTask.get(task.id) : undefined;
+    const assignedAt = new Date(task.assigned_at).getTime();
+    const elapsed = task.status === 'running' && Number.isFinite(assignedAt) && now >= assignedAt
+      ? now - assignedAt
+      : undefined;
+    const campaign = task.campaign_id ? campaignById.get(task.campaign_id) : undefined;
+    const heartbeatAt = task.heartbeat_at ? new Date(task.heartbeat_at).getTime() : NaN;
+    const heartbeatTtlMs = (task.heartbeat_ttl_seconds ?? 120) * 1_000;
+    const staleHeartbeat = task.status === 'running'
+      && Number.isFinite(heartbeatAt)
+      && now - heartbeatAt > heartbeatTtlMs;
+    const lifecycle = task.status === 'pending'
+      ? 'queued' as const
+      : task.status === 'running'
+        ? staleHeartbeat ? 'stale' as const : 'live' as const
+        : task.status;
+
+    return {
+      ...task,
+      task_id: task.id,
+      agent_label: task.agent_id,
+      id: task.id,
+      agent_id: task.agent_id,
+      assigned_at: task.assigned_at,
+      subgraph_node_ids: task.subgraph_node_ids ?? [],
+      queued: task.status === 'pending',
+      lifecycle,
+      live: lifecycle === 'live',
+      ...(elapsed !== undefined ? { elapsed_ms: elapsed } : {}),
+      ...(campaign ? { campaign: { id: campaign.id, name: campaign.name, strategy: campaign.strategy } } : {}),
+      ...(latest ? {
+        current_action: latest.description,
+        current_action_type: latest.event_type,
+        current_action_at: latest.timestamp,
+      } : {}),
+      ...(lastFindingAtByTask.has(task.id) ? { last_finding_at: lastFindingAtByTask.get(task.id) } : {}),
+      findings_count: findingIdsByTask.get(task.id)?.size ?? 0,
+    } satisfies AgentDto;
+  });
+}

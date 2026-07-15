@@ -9,6 +9,7 @@ import * as api from '../../lib/api';
 import type { ReportRecord } from '../../lib/api';
 import { formatReportBytes, reportEvidenceLabel, reportPrimaryActionLabel, reportProfileLabel } from '../../lib/report-display';
 import { cn, formatTimestamp } from '../../lib/utils';
+import { downloadDashboardResource, openDashboardResource } from '../../lib/dashboard-transport';
 
 interface Props {
   reports: ReportRecord[];
@@ -31,6 +32,17 @@ export function ReportsList({ reports, onRefresh }: Props) {
       await api.deleteReport(id);
       onRefresh();
     } catch { /* silent */ }
+  };
+
+  const handleReport = async (report: ReportRecord) => {
+    const open = reportPrimaryActionLabel(report.format) === 'Open';
+    const path = open ? api.reportOpenUrl(report.id) : api.reportDownloadUrl(report.id);
+    try {
+      if (open) await openDashboardResource(path);
+      else await downloadDashboardResource(path);
+    } catch {
+      // Keep the archive row available for retry.
+    }
   };
 
   return (
@@ -58,14 +70,12 @@ export function ReportsList({ reports, onRefresh }: Props) {
                 </span>
               )}
             </span>
-            <a
-              href={reportPrimaryActionLabel(r.format) === 'Open' ? api.reportOpenUrl(r.id) : api.reportDownloadUrl(r.id)}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => void handleReport(r)}
               className="px-2 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20"
             >
               {reportPrimaryActionLabel(r.format)}
-            </a>
+            </button>
             <button
               onClick={() => handleDelete(r.id)}
               className="px-2 py-0.5 rounded text-muted-foreground hover:text-destructive"

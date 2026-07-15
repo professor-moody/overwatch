@@ -22,6 +22,17 @@ import { join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import type { EngagementConfig } from '../../types.js';
+import {
+  FrontierWeightsResetResultSchema,
+  FrontierWeightsUpdateResultSchema,
+  HealthDtoSchema,
+  ObjectiveDeleteResponseSchema,
+  ObjectiveCreateResponseSchema,
+  ObjectiveUpdateResponseSchema,
+  RawGraphDtoSchema,
+  SettingsDtoSchema,
+  SettingsUpdateResultSchema,
+} from '../../contracts/dashboard-v1.js';
 
 let dashboard: DashboardServer;
 let engine: GraphEngine;
@@ -215,10 +226,20 @@ describe('GET /api/state', () => {
 
 describe('GET /api/graph', () => {
   it('returns nodes + edges arrays', async () => {
-    const { status, body } = await getJson<{ nodes: unknown[]; edges: unknown[] }>('/api/graph');
+    const { status, body } = await getJson('/api/graph');
     expect(status).toBe(200);
-    expect(Array.isArray(body.nodes)).toBe(true);
-    expect(Array.isArray(body.edges)).toBe(true);
+    const graph = RawGraphDtoSchema.parse(body);
+    expect(Array.isArray(graph.nodes)).toBe(true);
+    expect(Array.isArray(graph.edges)).toBe(true);
+    expect(graph.nodes[0]).toHaveProperty('properties');
+  });
+
+  it('keeps the raw wrapped graph shape on explicit JSON export', async () => {
+    const exported = await postJson('/api/graph/export', {});
+    expect(exported.status).toBe(200);
+    const graph = RawGraphDtoSchema.parse(exported.body);
+    expect(graph.nodes.some(node => node.id === 'cloud-id-power')).toBe(true);
+    expect(graph.nodes.find(node => node.id === 'cloud-id-power')?.properties.type).toBe('cloud_identity');
   });
 });
 
@@ -265,10 +286,29 @@ describe('GET /api/templates', () => {
 
 describe('GET /api/health', () => {
   it('returns graph_stats + health report', async () => {
-    const { status, body } = await getJson<{ graph_stats: { nodes: number }; health?: unknown }>('/api/health');
+    const { status, body } = await getJson('/api/health');
     expect(status).toBe(200);
-    expect(body).toHaveProperty('graph_stats');
-    expect(body.graph_stats.nodes).toBeGreaterThan(0);
+    const health = HealthDtoSchema.parse(body);
+    expect(health.graph_stats.nodes).toBeGreaterThan(0);
+    expect(health.health_checks).toHaveProperty('status');
+    expect(health.health_checks).toHaveProperty('counts_by_severity');
+    expect(Array.isArray(health.health_checks.issues)).toBe(true);
+  });
+
+  it('preserves critical status, severity counts, and issues', async () => {
+    const spy = vi.spyOn(engine, 'getHealthReport').mockReturnValue({
+      status: 'critical', counts_by_severity: { warning: 1, critical: 1 },
+      issues: [{ severity: 'critical', check: 'test-critical', message: 'Critical test issue' }],
+    });
+    try {
+      const response = await getJson('/api/health');
+      const health = HealthDtoSchema.parse(response.body);
+      expect(health.health_checks.status).toBe('critical');
+      expect(health.health_checks.counts_by_severity.critical).toBe(1);
+      expect(health.health_checks.issues[0].message).toBe('Critical test issue');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -432,6 +472,7 @@ describe('GET /api/settings', () => {
     expect(body).toHaveProperty('opsec');
     expect(body.opsec).toHaveProperty('approval_mode');
     expect(body.opsec).toHaveProperty('approval_timeout_ms');
+    expect(SettingsDtoSchema.parse(body).opsec.enabled).toBe(true);
   });
 });
 
@@ -441,6 +482,64 @@ describe('PATCH /api/settings', () => {
     expect(patchRes.status).toBe(200);
     const after = await getJson<{ opsec: { approval_timeout_ms: number } }>('/api/settings');
     expect(after.body.opsec.approval_timeout_ms).toBe(600000);
+  });
+
+  it('round-trips enabled and explicit time_window null', async () => {
+    const enabled = await patchJson('/api/settings', {
+      enabled: false, time_window: { start_hour: 9, end_hour: 17 },
+    });
+    expect(SettingsUpdateResultSchema.parse(enabled.body).updated).toBe(true);
+    let current = SettingsDtoSchema.parse((await getJson('/api/settings')).body);
+    expect(current.opsec).toMatchObject({ enabled: false, time_window: { start_hour: 9, end_hour: 17 } });
+
+    const cleared = await patchJson('/api/settings', { enabled: true, time_window: null });
+    expect(SettingsUpdateResultSchema.parse(cleared.body).updated).toBe(true);
+    current = SettingsDtoSchema.parse((await getJson('/api/settings')).body);
+    expect(current.opsec).toMatchObject({ enabled: true, time_window: null });
+  });
+});
+
+describe('encoded objective IDs', () => {
+  it('accepts canonical objective vocabulary and rejects invalid graph types', async () => {
+    const created = await postJson('/api/config/objectives', {
+      description: 'Reach a managed host',
+      target_node_type: 'host',
+      target_criteria: { environment: 'production' },
+      achievement_edge_types: ['ADMIN_TO'],
+    });
+    expect(created.status).toBe(201);
+    const objective = ObjectiveCreateResponseSchema.parse(created.body).objective;
+    expect(objective).toMatchObject({
+      target_node_type: 'host', target_criteria: { environment: 'production' },
+      achievement_edge_types: ['ADMIN_TO'],
+    });
+
+    const invalid = await postJson('/api/config/objectives', {
+      description: 'Invalid vocabulary', target_node_type: 'invented_node_type',
+    });
+    expect(invalid.status).toBe(400);
+    await fetch(`${baseUrl}/api/config/objectives/${encodeURIComponent(objective.id)}`, { method: 'DELETE' });
+  });
+
+  it('updates any non-slash ID and retains target_criteria', async () => {
+    const id = 'objective:power user';
+    engine.updateConfig({
+      objectives: [...engine.getConfig().objectives, {
+        id, description: 'Custom objective', target_node_type: 'host',
+        target_criteria: { label: 'before' }, achieved: false,
+      }],
+    });
+    const path = `/api/config/objectives/${encodeURIComponent(id)}`;
+    const updated = await patchJson(path, {
+      description: 'Updated objective', target_criteria: { label: 'after', tier: 0 },
+    });
+    expect(ObjectiveUpdateResponseSchema.parse(updated.body)).toEqual({ updated: true });
+    expect(engine.getConfig().objectives.find(objective => objective.id === id)?.target_criteria)
+      .toEqual({ label: 'after', tier: 0 });
+
+    const deleted = await fetch(`${baseUrl}${path}`, { method: 'DELETE' });
+    expect(deleted.status).toBe(200);
+    expect(ObjectiveDeleteResponseSchema.parse(await deleted.json())).toEqual({ deleted: true });
   });
 });
 
@@ -765,12 +864,17 @@ describe('GET /api/frontier/weights', () => {
 
 describe('PATCH then POST /api/frontier/weights/reset', () => {
   it('round-trips weights and reset', async () => {
-    const before = await getJson<Record<string, number>>('/api/frontier/weights');
-    const { status: patchStatus } = await patchJson('/api/frontier/weights', { weights: { hops_to_objective: 99 } });
+    const before = await getJson<{ fan_out: Record<string, number>; noise: Record<string, number> }>('/api/frontier/weights');
+    const { status: patchStatus, body: patchBody } = await patchJson(
+      '/api/frontier/weights',
+      { fan_out: { host: 99 } },
+    );
     expect(patchStatus).toBe(200);
-    const { status: resetStatus } = await postJson('/api/frontier/weights/reset', {});
+    expect(FrontierWeightsUpdateResultSchema.parse(patchBody)).toMatchObject({ updated: true, weights: { fan_out: { host: 99 } } });
+    const { status: resetStatus, body: resetBody } = await postJson('/api/frontier/weights/reset', {});
     expect(resetStatus).toBe(200);
-    const after = await getJson<Record<string, number>>('/api/frontier/weights');
+    expect(FrontierWeightsResetResultSchema.parse(resetBody)).toMatchObject({ reset: true, weights: before.body });
+    const after = await getJson<{ fan_out: Record<string, number>; noise: Record<string, number> }>('/api/frontier/weights');
     expect(after.body).toEqual(before.body);
   });
 });

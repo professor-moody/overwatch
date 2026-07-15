@@ -11,11 +11,11 @@ import {
 import type { AccessSummary, ActivityEntry, Campaign, ExportedNode, FrontierItem, PendingAction, SessionInfo } from '../types';
 
 describe('overview workspace helpers', () => {
-  it('prioritizes pending approvals, readiness, and top frontier items', () => {
+  it('places attention before frontier while preserving server candidate order', () => {
     const pending = [{ action_id: 'a1', technique: 'scan', target: 'host-1', noise_level: 0, description: 'scan', submitted_at: 'now' }] as PendingAction[];
     const frontier = [
-      { id: 'f-low', type: 'incomplete_node', priority: 1, description: 'low' },
-      { id: 'f-high', type: 'incomplete_node', priority: 9, description: 'high', node_id: 'host-1' },
+      { id: 'f-low', type: 'incomplete_node', node_id: 'host-0', description: 'low', graph_metrics: { hops_to_objective: 3, fan_out_estimate: 1, node_degree: 1, confidence: 1 }, opsec_noise: 0.2, staleness_seconds: 0 },
+      { id: 'f-high', type: 'incomplete_node', description: 'high', node_id: 'host-1', graph_metrics: { hops_to_objective: 1, fan_out_estimate: 1, node_degree: 1, confidence: 9 }, opsec_noise: 0.2, staleness_seconds: 0 },
     ] as FrontierItem[];
 
     const items = deriveAttentionItems({
@@ -24,9 +24,9 @@ describe('overview workspace helpers', () => {
       frontier,
     });
 
-    expect(items.map(item => item.id)).toEqual(['pending-actions', 'readiness', 'f-high', 'f-low']);
+    expect(items.map(item => item.id)).toEqual(['pending-actions', 'readiness', 'f-low', 'f-high']);
     expect(items[0].route).toBe('actions');
-    expect(items[2].nodeId).toBe('host-1');
+    expect(items[2].nodeId).toBe('host-0');
   });
 
   it('orders blocking Now items before routine work and treats expired tokens as attention', () => {
@@ -60,28 +60,29 @@ describe('overview workspace helpers', () => {
 
   it('summarizes Next actions with rank reason, context, and node ids', () => {
     const items = deriveNextActionItems([
-      { id: 'low', type: 'incomplete_node', priority: 1, description: 'low' },
+      { id: 'low', type: 'incomplete_node', node_id: 'host-low', description: 'low', graph_metrics: { hops_to_objective: 2, fan_out_estimate: 1, node_degree: 1, confidence: 1 }, opsec_noise: 0.2, staleness_seconds: 0 },
       {
         id: 'high',
-        frontier_item_id: 'frontier-high',
         type: 'inferred_edge',
-        priority: 9,
         description: 'Test high path',
         edge_source: 'cred-1',
         edge_target: 'svc-1',
-        graph_metrics: { hops_to_objective: 1, fan_out_estimate: 2, confidence: 1.2 },
+        edge_type: 'VALID_ON',
+        graph_metrics: { hops_to_objective: 1, fan_out_estimate: 2, node_degree: 1, confidence: 1.2 },
+        opsec_noise: 0.2,
+        staleness_seconds: 0,
       },
-    ] as FrontierItem[], 1);
+    ] as FrontierItem[], 2);
 
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      id: 'frontier-high',
+    expect(items).toHaveLength(2);
+    expect(items[1]).toMatchObject({
+      id: 'high',
       context: 'cred-1 -> svc-1',
       primaryNode: 'cred-1',
-      priority: 9,
+      scoreMultiplier: 1.2,
     });
-    expect(items[0].reason).toContain('near objective');
-    expect(items[0].nodeIds).toEqual(['cred-1', 'svc-1']);
+    expect(items[1].reason).toContain('near objective');
+    expect(items[1].nodeIds).toEqual(['cred-1', 'svc-1']);
   });
 
   it('summarizes current access using live connected sessions only', () => {
@@ -96,8 +97,8 @@ describe('overview workspace helpers', () => {
     ] as SessionInfo[];
 
     const campaigns = [
-      { id: 'c1', name: 'Active', strategy: 'custom', status: 'active', items: [], created_at: 'now' },
-      { id: 'c2', name: 'Paused', strategy: 'custom', status: 'paused', items: [], created_at: 'now' },
+      { id: 'c1', name: 'Active', strategy: 'custom', status: 'active', items: [], created_at: 'now', abort_conditions: [], progress: { total: 0, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 }, findings: [] },
+      { id: 'c2', name: 'Paused', strategy: 'custom', status: 'paused', items: [], created_at: 'now', abort_conditions: [], progress: { total: 0, completed: 0, succeeded: 0, failed: 0, consecutive_failures: 0 }, findings: [] },
     ] as Campaign[];
 
     expect(deriveAccessFacts(access, sessions, campaigns)).toEqual({

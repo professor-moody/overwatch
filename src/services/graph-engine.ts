@@ -591,19 +591,23 @@ export class GraphEngine {
       // identity-resolution first so we land on the canonical graph node
       // ID (e.g. an IP-keyed host, not the raw label the finding used).
       const updatedNodes: string[] = [];
-      if (finding.agent_id) {
-        for (const n of finding.nodes) {
-          const resolution = resolveNodeIdentity({
-            id: n.id,
-            type: n.type as NodeType,
-            ip: n.ip,
-            hostname: n.hostname,
-            label: n.label,
-            domain_name: n.domain_name,
-            username: n.username,
-          });
-          const canonicalId = resolution.id;
-          if (!this.ctx.graph.hasNode(canonicalId)) continue;
+      const ingestedNodeIds = new Set(
+        (finding.target_node_ids ?? []).filter(nodeId => this.ctx.graph.hasNode(nodeId)),
+      );
+      for (const n of finding.nodes) {
+        const resolution = resolveNodeIdentity({
+          id: n.id,
+          type: n.type as NodeType,
+          ip: n.ip,
+          hostname: n.hostname,
+          label: n.label,
+          domain_name: n.domain_name,
+          username: n.username,
+        });
+        const canonicalId = resolution.id;
+        if (!this.ctx.graph.hasNode(canonicalId)) continue;
+        ingestedNodeIds.add(canonicalId);
+        if (finding.agent_id) {
           const existing = this.ctx.graph.getNodeAttributes(canonicalId) as NodeProperties;
           const existingSources = Array.isArray(existing.sources) ? existing.sources : [];
           if (!existingSources.includes(finding.agent_id)) {
@@ -616,9 +620,34 @@ export class GraphEngine {
           }
         }
       }
-      // Persist so the merged attribution reaches disk (legacy snapshot path + dashboard
-      // delta); on a WAL engagement the journal above already made it crash-safe.
-      if (updatedNodes.length > 0) this.persist({ updated_nodes: updatedNodes });
+      // A duplicate-content parse still has its own finding ID and evidence
+      // lineage. Emit the same canonical reference event as a normal ingest so
+      // campaign detail and audit views do not degrade to a generic parse row.
+      this.logActionEvent({
+        description: 'Finding ingested: duplicate content matched existing graph data',
+        agent_id: finding.agent_id,
+        action_id: finding.action_id,
+        event_type: 'finding_ingested',
+        category: 'finding',
+        tool_name: finding.tool_name,
+        target_node_ids: [...ingestedNodeIds],
+        frontier_item_id: finding.frontier_item_id,
+        linked_finding_ids: [finding.id],
+        result_classification: 'neutral',
+        details: {
+          finding_id: finding.id,
+          deduplicated: true,
+          new_nodes: 0,
+          new_edges: 0,
+          updated_nodes: updatedNodes.length,
+          updated_edges: 0,
+          inferred_edges: 0,
+          ingested_node_ids: [...ingestedNodeIds],
+        },
+      });
+      // Persist both the merged attribution (when any) and the duplicate's
+      // audit event. On WAL engagements the guarded mutations are journaled.
+      this.persist({ updated_nodes: updatedNodes });
       return { new_nodes: [], new_edges: [], updated_nodes: updatedNodes, updated_edges: [], inferred_edges: [], deduplicated: true };
     }
 
@@ -946,10 +975,69 @@ export class GraphEngine {
     return this.campaignPlanner.findCampaignForItem(frontierItemId);
   }
 
+  /**
+   * Attribute a finding to exactly one campaign. The executing task's campaign
+   * is authoritative; frontier membership is used only when it is unique.
+   * Ambiguous labels or cloned/split membership never cross-count findings.
+   */
+  linkFindingToCampaign(params: {
+    finding_id: string;
+    frontier_item_id?: string;
+    task_id?: string;
+    agent_id?: string;
+    action_id?: string;
+  }): string | undefined {
+    this.assertPersistenceWritable();
+
+    let task = params.task_id ? this.agentMgr.getTask(params.task_id) : null;
+    if (!task && params.action_id) {
+      const linkedTaskId = [...this.ctx.activityLog].reverse().find(entry =>
+        entry.action_id === params.action_id && typeof entry.linked_agent_task_id === 'string')?.linked_agent_task_id;
+      if (linkedTaskId) task = this.agentMgr.getTask(linkedTaskId);
+    }
+    if (!task && params.agent_id) {
+      task = this.agentMgr.getTask(params.agent_id);
+      if (!task) {
+        const matches = this.agentMgr.getAll().filter(candidate =>
+          candidate.agent_id === params.agent_id &&
+          (!params.frontier_item_id || candidate.frontier_item_id === params.frontier_item_id));
+        if (matches.length === 1) task = matches[0];
+      }
+    }
+
+    let campaignId = task?.campaign_id;
+    if (campaignId && !this.campaignPlanner.getCampaign(campaignId)) campaignId = undefined;
+    if (!campaignId && params.frontier_item_id) {
+      campaignId = this.campaignPlanner.findCampaignForItem(params.frontier_item_id)?.id;
+    }
+    if (!campaignId) return undefined;
+
+    this.campaignPlanner.addFinding(campaignId, params.finding_id);
+    this.persist();
+    return campaignId;
+  }
+
   splitCampaign(id: string, count?: number): import('../types.js').Campaign[] | null {
     this.assertPersistenceWritable();
     const cs = this.campaignPlanner.splitCampaign(id, count);
-    if (cs) this.persist();
+    if (cs) {
+      // Existing work follows its frontier item into the owning child. Without
+      // this handoff, split progress is projected from children while in-flight
+      // tasks continue updating the parent, hiding completion and findings.
+      const childByItem = new Map(cs.flatMap(child => child.items.map(item => [item, child.id] as const)));
+      for (const task of this.agentMgr.getAll()) {
+        if (task.campaign_id !== id || !task.frontier_item_id) continue;
+        const childId = childByItem.get(task.frontier_item_id);
+        if (childId) task.campaign_id = childId;
+      }
+      const parent = this.campaignPlanner.getCampaign(id);
+      for (const findingId of parent?.findings ?? []) {
+        const linked = [...this.ctx.activityLog].reverse().find(event => event.linked_finding_ids?.includes(findingId));
+        const childId = linked?.frontier_item_id ? childByItem.get(linked.frontier_item_id) : undefined;
+        if (childId) this.campaignPlanner.addFinding(childId, findingId);
+      }
+      this.persist();
+    }
     return cs;
   }
 
@@ -3044,6 +3132,18 @@ export class GraphEngine {
     return this.computeFrontier().find(item => item.id === frontierItemId) || null;
   }
 
+  /**
+   * Resolve a frontier id against the same deterministic filters used by
+   * next_task. Dashboard dispatch uses this instead of trusting client-supplied
+   * node ids, so stale, leased, out-of-scope, dead-host, and OPSEC-vetoed items
+   * cannot be launched through a second path.
+   */
+  getActionableFrontierItem(frontierItemId: string): FrontierItem | null {
+    const item = this.getFrontierItem(frontierItemId);
+    if (!item) return null;
+    return this.filterFrontier([item]).passed[0] ?? null;
+  }
+
   getFrontierWeights(): { fan_out: Record<string, number>; noise: Record<string, number> } {
     return {
       fan_out: this.frontierComputer.getFanOutEstimates(),
@@ -3219,7 +3319,7 @@ export class GraphEngine {
 
     if (frontierItemId.startsWith('frontier-node-')) {
       const nodeId = frontierItemId.slice('frontier-node-'.length);
-      return this.ctx.graph.hasNode(nodeId) ? [nodeId] : [];
+      if (this.ctx.graph.hasNode(nodeId)) return [nodeId];
     }
 
     if (frontierItemId.startsWith('frontier-edge-')) {
@@ -3228,18 +3328,26 @@ export class GraphEngine {
         const seeds = [this.ctx.graph.source(edgeId), this.ctx.graph.target(edgeId)];
         return seeds.filter((id, index) => seeds.indexOf(id) === index);
       }
-      return [];
     }
 
     const frontier = this.computeFrontier();
     const item = frontier.find(f => f.id === frontierItemId);
-    if (!item) return [];
+    if (item) {
+      const candidateIds = [
+        item.node_id,
+        item.credential_id,
+        item.edge_source,
+        item.edge_target,
+        item.pivot_host_id,
+        item.via_pivot,
+      ];
+      return candidateIds.filter((id, index, all): id is string =>
+        typeof id === 'string' &&
+        all.indexOf(id) === index &&
+        this.ctx.graph.hasNode(id));
+    }
 
-    const seeds: string[] = [];
-    if (item.node_id && this.ctx.graph.hasNode(item.node_id)) seeds.push(item.node_id);
-    if (item.edge_source && this.ctx.graph.hasNode(item.edge_source)) seeds.push(item.edge_source);
-    if (item.edge_target && this.ctx.graph.hasNode(item.edge_target)) seeds.push(item.edge_target);
-    return seeds;
+    return [];
   }
 
   private valuesEqual(left: unknown, right: unknown): boolean {

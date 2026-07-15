@@ -12,7 +12,7 @@ function query(o: Partial<AgentQuery> = {}): AgentQuery {
   return { query_id: 'q1', agent_id: 'recon-1', question: 'increase intensity?', status: 'open', created_at: NOW, ...o };
 }
 function agent(o: Partial<AgentInfo> = {}): AgentInfo {
-  return { id: 't1', agent_id: 'recon-1', status: 'running', task: 'recon', ...o };
+  return { task_id: 't1', agent_label: 'recon-1', id: 't1', agent_id: 'recon-1', status: 'running', assigned_at: new Date(NOW - 10_000).toISOString(), queued: false, lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0, ...o };
 }
 
 describe('buildAttentionQueue', () => {

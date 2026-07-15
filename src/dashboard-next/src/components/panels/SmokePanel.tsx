@@ -23,6 +23,7 @@ import {
 import type { DashboardReadinessSummary } from '../../lib/types';
 import type { PanelId } from '../layout/OperatorLayout';
 import { ActionButton, PageHeader } from '../shared/primitives';
+import { dashboardFetch } from '../../lib/dashboard-transport';
 
 // ---- types ----
 
@@ -53,13 +54,13 @@ interface CheckDef {
 // ---- helpers ----
 
 async function probe(url: string): Promise<SmokeValidationResult & { statusCode?: number }> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  const res = await dashboardFetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) return { ok: false, status: 'fail', detail: `endpoint broken: HTTP ${res.status}`, statusCode: res.status };
   return { ok: true, status: 'pass', statusCode: res.status };
 }
 
 async function probeOptional(url: string, action = 'Enable this surface only when the active workflow needs it.'): Promise<SmokeValidationResult & { statusCode?: number }> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  const res = await dashboardFetch(url, { signal: AbortSignal.timeout(5000) });
   if (res.status === 503) {
     return {
       ok: false,
@@ -77,7 +78,7 @@ async function probeJson<T>(
   url: string,
   validate?: (data: T) => SmokeValidationResult | string | undefined,
 ): Promise<SmokeValidationResult & { statusCode?: number }> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  const res = await dashboardFetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) return { ok: false, status: 'fail', detail: `endpoint broken: HTTP ${res.status}`, statusCode: res.status };
   const data = (await res.json()) as T;
   const result = validate?.(data);

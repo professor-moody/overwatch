@@ -244,6 +244,99 @@ describe('CampaignPlanner', () => {
       expect(regenC.status).toBe('active');
       expect(regenC.progress.succeeded).toBe(1);
     });
+
+    it('keeps a canonical chain campaign authoritative after clone/split reindexing', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_value: 'pass123' });
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const planner = new CampaignPlanner(ctx);
+      const items = ['fi-1', 'fi-2', 'fi-3', 'fi-4'].map((id, index) => makeFrontierItem({
+        id, chain_id: 'chain-cred-1', edge_source: 'cred-1', edge_target: `svc-${index + 1}`,
+        edge_type: 'POTENTIAL_AUTH' as any,
+      }));
+      const [canonical] = planner.generateCampaigns(items, [makeChainGroup({ total_count: 4 })]);
+      const clone = planner.cloneCampaign(canonical.id)!;
+      const children = planner.splitCampaign(canonical.id, 2)!;
+      const childBuckets = children.map(child => [...child.items]);
+
+      const restoredPlanner = new CampaignPlanner(ctx);
+      const [regenerated] = restoredPlanner.generateCampaigns(items, [makeChainGroup({ total_count: 4 })]);
+      expect(regenerated.id).toBe(canonical.id);
+      expect(restoredPlanner.getCampaign(clone.id)?.items).toEqual(items.map(item => item.id));
+      expect(children.map(child => restoredPlanner.getCampaign(child.id)?.items)).toEqual(childBuckets);
+      expect(clone.chain_id).toBeUndefined();
+      expect(children.every(child => child.chain_id === undefined)).toBe(true);
+    });
+
+    it('never lets an ambiguous legacy chain-id clone hijack regeneration', () => {
+      const graph = makeGraph();
+      addNode(graph, 'cred-1', { type: 'credential', cred_type: 'plaintext', cred_value: 'pass123' });
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const planner = new CampaignPlanner(ctx);
+      const items = ['fi-1', 'fi-2'].map((id, index) => makeFrontierItem({
+        id, chain_id: 'chain-cred-1', edge_source: 'cred-1', edge_target: `svc-${index + 1}`,
+        edge_type: 'POTENTIAL_AUTH' as any,
+      }));
+      const chain = makeChainGroup();
+      const [canonical] = planner.generateCampaigns(items, [chain]);
+      const clone = planner.cloneCampaign(canonical.id)!;
+      // Simulate a pre-fix persisted clone that copied chain_id before either
+      // campaign had a durable stable_key.
+      delete canonical.stable_key;
+      clone.chain_id = canonical.chain_id;
+
+      const restoredPlanner = new CampaignPlanner(ctx);
+      const [regenerated] = restoredPlanner.generateCampaigns(items, [chain]);
+      expect(regenerated.id).not.toBe(clone.id);
+    });
+
+    it('keeps canonical enumeration identity after clone/split reindexing', () => {
+      const graph = makeGraph();
+      const items = ['h1', 'h2', 'h3', 'h4'].map(id => {
+        addNode(graph, id, { type: 'host', ip: `10.10.10.${id.slice(1)}` });
+        return makeFrontierItem({ id: `fi-${id}`, type: 'incomplete_node', node_id: id });
+      });
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const planner = new CampaignPlanner(ctx);
+      const [canonical] = planner.generateCampaigns(items, []);
+      const clone = planner.cloneCampaign(canonical.id)!;
+      clone.name = 'Enumerate 4 host nodes secondary';
+      const children = planner.splitCampaign(canonical.id, 2)!;
+      const childBuckets = children.map(child => [...child.items]);
+
+      const restoredPlanner = new CampaignPlanner(ctx);
+      const [regenerated] = restoredPlanner.generateCampaigns(items, []);
+      expect(regenerated.id).toBe(canonical.id);
+      expect(canonical.stable_key).toBe('enum-host');
+      expect(restoredPlanner.getCampaign(clone.id)?.items).toEqual(items.map(item => item.id));
+      expect(children.map(child => restoredPlanner.getCampaign(child.id)?.items)).toEqual(childBuckets);
+    });
+
+    it('keeps canonical post-exploitation and discovery identities after cloning and reindexing', () => {
+      const graph = makeGraph();
+      addNode(graph, 'host-1', { type: 'host', ip: '10.10.10.1' });
+      addNode(graph, 'user-1', { type: 'user', username: 'admin' });
+      addNode(graph, 'svc-1', { type: 'service', port: 445 });
+      addNode(graph, 'svc-2', { type: 'service', port: 22 });
+      addEdge(graph, 'user-1', 'host-1', 'HAS_SESSION');
+      const postItems = [
+        makeFrontierItem({ id: 'post-1', edge_source: 'host-1', edge_target: 'svc-1', edge_type: 'ADMIN_TO' as any }),
+        makeFrontierItem({ id: 'post-2', edge_source: 'host-1', edge_target: 'svc-2', edge_type: 'ADMIN_TO' as any }),
+      ];
+      const discovery = makeFrontierItem({ id: 'disc-1', type: 'network_discovery', target_cidr: '10.10.10.0/28' });
+      const ctx = new EngineContext(graph, makeConfig(), './test-state.json');
+      const planner = new CampaignPlanner(ctx);
+      const generated = planner.generateCampaigns([...postItems, discovery], []);
+      const post = generated.find(campaign => campaign.strategy === 'post_exploitation')!;
+      const disc = generated.find(campaign => campaign.strategy === 'network_discovery')!;
+      planner.cloneCampaign(post.id);
+      planner.cloneCampaign(disc.id);
+
+      const restoredPlanner = new CampaignPlanner(ctx);
+      const regenerated = restoredPlanner.generateCampaigns([...postItems, discovery], []);
+      expect(regenerated.find(campaign => campaign.strategy === 'post_exploitation')?.id).toBe(post.id);
+      expect(regenerated.find(campaign => campaign.strategy === 'network_discovery')?.id).toBe(disc.id);
+    });
   });
 
   // =============================================
@@ -491,6 +584,17 @@ describe('CampaignPlanner', () => {
       planner.generateCampaigns([], []);
 
       expect(planner.findCampaignForItem('nonexistent')).toBeNull();
+    });
+
+    it('returns null when clone or split membership makes fallback attribution ambiguous', () => {
+      const planner = buildPlanner(makeGraph());
+      const original = planner.createCampaign({
+        name: 'Original', strategy: 'custom', item_ids: ['fi-a', 'fi-b'], abort_conditions: [],
+      });
+      planner.cloneCampaign(original.id);
+      expect(planner.findCampaignForItem('fi-a')).toBeNull();
+      planner.splitCampaign(original.id, 2);
+      expect(planner.findCampaignForItem('fi-b')).toBeNull();
     });
   });
 

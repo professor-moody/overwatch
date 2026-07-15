@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useEngagementStore } from '../../stores/engagement-store';
 import { useNavigation } from '../../hooks/useNavigation';
 import { evidenceImageUrl } from '../../lib/api';
+import { AuthenticatedImage } from '../shared/AuthenticatedImage';
 import type { ExportedNode } from '../../lib/types';
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 import { DeploySelectedModal } from './DeploySelectedModal';
@@ -347,7 +348,7 @@ function WebHostsSegment({ webapps, edges, navigate, selected, onToggle }: Selec
             <div className="flex items-start gap-2">
               <RowCheckbox id={n.id} selected={selected} onToggle={onToggle} />
               {shotId && (
-                <img
+                <AuthenticatedImage
                   src={evidenceImageUrl(shotId)}
                   alt=""
                   loading="lazy"

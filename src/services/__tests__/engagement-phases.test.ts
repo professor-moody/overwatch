@@ -283,6 +283,21 @@ describe('Engagement Phases', () => {
       const kids2 = engine.getCampaignChildren(parent.id);
       expect(kids2.every(k => k.status === 'aborted')).toBe(true);
     });
+
+    it('should operate parent lifecycle from child-derived status', () => {
+      engine = createEngine(makeConfig());
+      const parent = engine.createCampaign({
+        name: 'Parent', strategy: 'enumeration', item_ids: ['a', 'b'],
+      });
+      const children = engine.splitCampaign(parent.id, 2)!;
+      engine.activateCampaign(children[0].id);
+      expect(engine.deriveCampaignParentStatus(parent.id)).toBe('active');
+
+      expect(engine.pauseCampaign(parent.id)?.status).toBe('paused');
+      expect(engine.getCampaign(children[0].id)?.status).toBe('paused');
+      expect(engine.resumeCampaign(parent.id)?.status).toBe('active');
+      expect(engine.getCampaign(children[0].id)?.status).toBe('active');
+    });
   });
 
   // ============================================================

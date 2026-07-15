@@ -10,7 +10,7 @@ import { sessionsForAgent } from '../../lib/session-workspace';
 import { buildMissionCard, groupMissionCards } from '../../lib/agent-mission';
 import { buildAgentThread } from '../../lib/agent-thread';
 import { threadConsoleEvents, type ActivityThread } from '../../lib/activity-threads';
-import { getFrontierNodeIds, getFrontierKey } from '../../lib/frontier-workspace';
+import { formatFrontierScore, getFrontierKey } from '../../lib/frontier-workspace';
 import { POLL } from '../../lib/polling';
 import { ContextualCommandBar } from './ContextualCommandBar';
 import { AttentionQueue } from './AttentionQueue';
@@ -1233,16 +1233,10 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
     const selected = frontier.filter(i => selectedItemIds.has(getFrontierKey(i)));
     try {
       const results = await Promise.allSettled(
-        selected.map(item => {
-          const nodeIds = getFrontierNodeIds(item);
-          if (nodeIds.length === 0) return Promise.reject(new Error('no node ids'));
-          // frontier_item_id links the lease so the dashboard traces the item.
-          return api.dispatchAgent({
-            target_node_ids: nodeIds,
-            skill: skill || undefined,
-            frontier_item_id: getFrontierKey(item),
-          });
-        })
+        selected.map(item => api.dispatchAgent({
+          skill: skill || undefined,
+          frontier_item_id: getFrontierKey(item),
+        }))
       );
       // A fulfilled promise can still be a 409 lease-conflict (dispatched:false);
       // count only genuinely-dispatched agents.
@@ -1301,7 +1295,7 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
 
         <div className="flex-1 overflow-y-auto space-y-1 mb-3 max-h-64">
           {visibleItems.map((item) => {
-            const itemId = item.frontier_item_id || item.id;
+            const itemId = item.id;
             return (
               <label
                 key={itemId}
@@ -1323,7 +1317,7 @@ function BulkFrontierDispatchModal({ onClose, onDispatched }: { onClose: () => v
                   {item.type.replace(/_/g, ' ')}
                 </span>
                 <span className="text-muted-foreground truncate flex-1">{item.description}</span>
-                <span className="font-mono text-foreground flex-shrink-0">{(item.priority ?? 0).toFixed(1)}</span>
+                <span className="font-mono text-foreground flex-shrink-0">{formatFrontierScore(item)}</span>
               </label>
             );
           })}

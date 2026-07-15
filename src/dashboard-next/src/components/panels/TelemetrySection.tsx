@@ -7,7 +7,7 @@ export function TelemetrySection() {
   const [data, setData] = useState<TelemetryResponse | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const fetch = useCallback(async () => {
+  const reloadTelemetry = useCallback(async () => {
     try {
       const res = await api.getTelemetry();
       setData(res);
@@ -15,10 +15,10 @@ export function TelemetrySection() {
   }, []);
 
   useEffect(() => {
-    fetch();
-    const timer = setInterval(fetch, 15_000);
+    reloadTelemetry();
+    const timer = setInterval(reloadTelemetry, 15_000);
     return () => clearInterval(timer);
-  }, [fetch]);
+  }, [reloadTelemetry]);
 
   if (!data) {
     return (

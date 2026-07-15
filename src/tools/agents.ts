@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FRONTIER_TYPES } from '../contracts/dashboard-v1.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GraphEngine } from '../services/graph-engine.js';
@@ -67,7 +68,6 @@ function buildPriorActionsForCidr(engine: GraphEngine, cidr: string | undefined)
 }
 
 export function registerAgentTools(server: McpServer, engine: GraphEngine): void {
-  const FRONTIER_TYPES = ['incomplete_node', 'untested_edge', 'inferred_edge', 'network_discovery', 'network_pivot', 'credential_test'] as const;
 
   // ============================================================
   // Tool: register_agent
@@ -1069,6 +1069,18 @@ export function dispatchCampaignAgents(
     return { campaign_id, strategy: campaign.strategy, requested: max_agents, total_items: campaign.items.length, dispatched: [], skipped: [], error: `Campaign is ${campaign.status} — cannot dispatch agents` };
   }
 
+  if (engine.getCampaignChildren(campaign_id).length > 0) {
+    return {
+      campaign_id,
+      strategy: campaign.strategy,
+      requested: max_agents,
+      total_items: campaign.items.length,
+      dispatched: [],
+      skipped: [],
+      error: 'Campaign has child campaigns — dispatch a child campaign instead',
+    };
+  }
+
   // F5: defer draft activation until at least one agent has been
   // successfully registered. Activating up front would mark the campaign
   // 'active' even when every dispatch attempt is skipped or refused —
@@ -1097,15 +1109,22 @@ export function dispatchCampaignAgents(
       continue;
     }
 
+    const actionable = engine.getActionableFrontierItem(itemId);
+    if (!actionable) {
+      skipped.push({ frontier_item_id: itemId, reason: 'frontier_not_actionable' });
+      continue;
+    }
+
     const scope = computeCampaignScope(engine, campaign.strategy, itemId, hops);
-    // Note: campaign items are operator-curated; even zero-scope items
-    // can be useful (the agent enumerates from scratch). We don't skip
-    // them here, just record in details if scope is empty.
+    if (scope.length === 0 && actionable.type !== 'network_discovery') {
+      skipped.push({ frontier_item_id: itemId, reason: 'frontier_unscoped' });
+      continue;
+    }
 
     const campaignArchetype = resolveDispatchArchetype(engine, {
       explicit: archetypeOverride,
       strategy: campaign.strategy,
-      frontierItem: engine.getFrontierItem(itemId),
+      frontierItem: actionable,
     });
     const agent_id = `agent-campaign-${campaign.strategy.replace(/[^a-z]/g, '').slice(0, 6)}-${uuidv4().slice(0, 8)}`;
     const task = buildTask(agent_id, itemId, scope, skill, campaign_id, campaignArchetype);

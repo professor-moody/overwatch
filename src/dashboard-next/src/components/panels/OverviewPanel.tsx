@@ -411,7 +411,7 @@ function NextActionRow({ item, onInspect }: { item: NextActionItem; onInspect: (
             <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', frontierTypeClass(item.type))}>
               {item.type.replace(/_/g, ' ')}
             </span>
-            <span className="font-mono text-[10px] text-muted-foreground">priority {item.priority.toFixed(1)}</span>
+            <span className="font-mono text-[10px] text-muted-foreground" title="Relative score multiplier">score ×{item.scoreMultiplier.toFixed(2)}</span>
           </div>
           <div className="text-foreground leading-snug whitespace-normal break-words">{item.label}</div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">

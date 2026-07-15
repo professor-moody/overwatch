@@ -6,7 +6,7 @@ import type { AgentQuery } from '../api';
 const NOW = Date.UTC(2026, 5, 17, 12, 0, 0);
 
 function agent(o: Partial<AgentInfo> = {}): AgentInfo {
-  return { id: 'task-1', agent_id: 'recon-1', status: 'running', task: 'recon', ...o };
+  return { task_id: 'task-1', agent_label: 'recon-1', id: 'task-1', agent_id: 'recon-1', status: 'running', assigned_at: new Date(NOW - 10_000).toISOString(), queued: false, lifecycle: 'live', live: true, subgraph_node_ids: [], findings_count: 0, ...o };
 }
 function query(o: Partial<AgentQuery> = {}): AgentQuery {
   return { query_id: 'q1', task_id: 'task-1', agent_id: 'recon-1', question: 'go?', status: 'open', created_at: NOW, ...o };

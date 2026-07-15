@@ -1,8 +1,10 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useEngagementStore } from '../stores/engagement-store';
 import { useToastStore } from '../stores/toast-store';
 import type { WsMessage, FullStateData, GraphUpdateData, SessionInfo, AgentConsoleEvent } from '../lib/types';
 import * as api from '../lib/api';
+import { createDashboardWebSocket } from '../lib/dashboard-transport';
+import { FallbackPollCoordinator, GenerationSocketController } from '../lib/generation-socket';
 
 interface WsContextValue {
   connected: boolean;
@@ -14,186 +16,151 @@ export function useWs() {
   return useContext(WsContext);
 }
 
-const RECONNECT_INTERVAL_MS = 3000;
-const POLL_INTERVAL_MS = 5000;
+const POLL_INTERVAL_MS = 5_000;
 
 export function WsProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const hasLoadedState = useRef(false);
-
   const store = useEngagementStore;
 
   useEffect(() => {
-    function connect() {
-      const host = window.location.host;
-      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${scheme}://${host}/ws`);
-      wsRef.current = ws;
+    let active = true;
+    const fallbackPoll = new FallbackPollCoordinator();
 
-      ws.onopen = () => {
-        setConnected(true);
-        store.getState().setConnected(true);
-        void pollState(true);
-        if (reconnectTimer.current) {
-          clearInterval(reconnectTimer.current);
-          reconnectTimer.current = null;
-        }
-      };
+    const abortFallbackPoll = () => {
+      fallbackPoll.invalidate();
+    };
 
-      ws.onmessage = (event) => {
-        try {
-          const msg: WsMessage = JSON.parse(event.data);
-          handleMessage(msg);
-        } catch (err) {
-          console.error('[WS] Message parse error:', err);
-        }
-      };
+    const handleMessage = (raw: unknown, generation: number, controller: GenerationSocketController) => {
+      try {
+        const msg: WsMessage = JSON.parse(String(raw));
+        const s = store.getState();
+        const toast = useToastStore.getState().addToast;
 
-      ws.onclose = () => {
-        setConnected(false);
-        store.getState().setConnected(false);
-        if (!reconnectTimer.current) {
-          reconnectTimer.current = setInterval(connect, RECONNECT_INTERVAL_MS);
-        }
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
-    }
-
-    function handleMessage(msg: WsMessage) {
-      const s = store.getState();
-      const toast = useToastStore.getState().addToast;
-      switch (msg.type) {
-        case 'full_state':
+        if (msg.type === 'full_state') {
+          abortFallbackPoll();
           s.loadFullState(msg.data as FullStateData);
-          hasLoadedState.current = true;
-          break;
-        case 'graph_update': {
-          const prevAgents = s.agents;
-          s.applyGraphUpdate(msg.data as GraphUpdateData);
-          // Toast for newly completed agents
-          const newAgents = store.getState().agents;
-          for (const a of newAgents) {
-            const prev = prevAgents.find(p => p.id === a.id);
-            if (prev && prev.status === 'running' && a.status === 'completed') {
+          controller.markSynchronized(generation);
+          return;
+        }
+
+        // A reconnect is not live until the server has supplied a fresh base.
+        if (!controller.isSynchronized()) return;
+
+        switch (msg.type) {
+          case 'graph_update': {
+            const prevAgents = s.agents;
+            s.applyGraphUpdate(msg.data as GraphUpdateData);
+            for (const agent of store.getState().agents) {
+              const previous = prevAgents.find(candidate => candidate.id === agent.id);
+              if (previous?.status === 'running' && agent.status === 'completed') {
+                toast({
+                  type: 'success',
+                  title: 'Agent completed',
+                  message: `${(agent.agent_id || agent.id).slice(0, 8)} — ${agent.findings_count || 0} findings`,
+                  linkPanel: 'agents',
+                  linkItem: agent.id,
+                });
+              }
+            }
+            break;
+          }
+          case 'action_pending':
+            s.updatePendingAction(msg.type, msg.data);
+            toast({
+              type: 'warning',
+              title: 'Action pending approval',
+              message: (msg.data as { description?: string })?.description || undefined,
+              linkPanel: 'actions',
+            });
+            break;
+          case 'action_resolved': {
+            s.updatePendingAction(msg.type, msg.data);
+            const status = (msg.data as { status?: string })?.status;
+            const outcome =
+              status === 'approved' ? { type: 'success' as const, title: 'Action approved' } :
+              status === 'timeout' ? { type: 'warning' as const, title: 'Action auto-approved (no operator response)' } :
+              status === 'aborted' ? { type: 'info' as const, title: 'Action aborted (client disconnected)' } :
+              status === 'denied' ? { type: 'info' as const, title: 'Action denied' } :
+              { type: 'info' as const, title: 'Action resolved' };
+            toast({ type: outcome.type, title: outcome.title, linkPanel: 'actions' });
+            break;
+          }
+          case 'session_update': {
+            const data = msg.data as { type?: string; session?: SessionInfo; sessions?: SessionInfo[] };
+            const previous = data.session ? s.sessions.find(session => session.id === data.session?.id) : undefined;
+            if (Array.isArray(data.sessions)) {
+              s.setSessions(data.sessions);
+            } else if (data.session) {
+              s.setSessions([...s.sessions.filter(session => session.id !== data.session!.id), data.session]);
+            }
+            if (previous?.state === 'pending' && data.session?.state === 'connected') {
               toast({
                 type: 'success',
-                title: `Agent completed`,
-                message: `${(a.agent_id || a.id).slice(0, 8)} — ${a.findings_count || 0} findings`,
-                linkPanel: 'agents',
-                linkItem: a.id,
+                title: 'Session connected',
+                message: data.session.title || data.session.id.slice(0, 8),
+                linkPanel: 'sessions',
+                linkItem: data.session.id,
               });
             }
+            break;
           }
-          break;
-        }
-        case 'action_pending':
-          s.updatePendingAction(msg.type, msg.data);
-          toast({
-            type: 'warning',
-            title: 'Action pending approval',
-            message: (msg.data as { description?: string })?.description || undefined,
-            linkPanel: 'actions',
-          });
-          break;
-        case 'action_resolved': {
-          s.updatePendingAction(msg.type, msg.data);
-          // The resolution carries a `status` string, not an `approved` boolean.
-          // 'timeout' = auto-approved unattended execution (it RAN); 'aborted' =
-          // requesting client dropped before a decision (it did NOT run). Keying
-          // off a non-existent `approved` field mislabeled every outcome as denied.
-          const status = (msg.data as { status?: string })?.status;
-          const outcome =
-            status === 'approved' ? { type: 'success' as const, title: 'Action approved' } :
-            status === 'timeout'  ? { type: 'warning' as const, title: 'Action auto-approved (no operator response)' } :
-            status === 'aborted'  ? { type: 'info' as const, title: 'Action aborted (client disconnected)' } :
-            status === 'denied'   ? { type: 'info' as const, title: 'Action denied' } :
-                                    { type: 'info' as const, title: 'Action resolved' };
-          toast({ type: outcome.type, title: outcome.title, linkPanel: 'actions' });
-          break;
-        }
-        case 'session_update': {
-          const data = msg.data as { type?: string; session?: SessionInfo; sessions?: SessionInfo[] };
-          const prev = data.session ? s.sessions.find(session => session.id === data.session?.id) : undefined;
-          if (Array.isArray(data.sessions)) {
-            s.setSessions(data.sessions);
-          } else if (data.session) {
-            s.setSessions([...s.sessions.filter(session => session.id !== data.session!.id), data.session]);
+          case 'agent_console_update': {
+            const data = msg.data as { events?: AgentConsoleEvent[] };
+            window.dispatchEvent(new CustomEvent('overwatch-agent-console-update', { detail: data }));
+            break;
           }
-          if (prev?.state === 'pending' && data.session?.state === 'connected') {
-            toast({
-              type: 'success',
-              title: 'Session connected',
-              message: data.session.title || data.session.id.slice(0, 8),
-              linkPanel: 'sessions',
-              linkItem: data.session.id,
-            });
-          }
-          break;
+          case 'agent_query':
+            window.dispatchEvent(new CustomEvent('overwatch-agent-query-update', { detail: msg.data }));
+            break;
+          default:
+            break;
         }
-        case 'agent_console_update': {
-          const data = msg.data as { events?: AgentConsoleEvent[] };
-          window.dispatchEvent(new CustomEvent('overwatch-agent-console-update', { detail: data }));
-          break;
-        }
-        case 'agent_query': {
-          // 3D: a running agent asked the operator (or one was answered) — wake
-          // the inbox immediately. It also polls as a fallback.
-          window.dispatchEvent(new CustomEvent('overwatch-agent-query-update', { detail: msg.data }));
-          break;
-        }
-        default:
-          // agent_update, campaign_update, objective_update
-          // These are embedded in graph_update state, but handle standalone if needed
-          break;
+      } catch (error) {
+        console.error('[WS] Message parse error:', error);
       }
-    }
+    };
 
-    async function pollState(force = false) {
-      if (!force && wsRef.current?.readyState === WebSocket.OPEN) return;
+    let controller: GenerationSocketController;
+
+    const pollState = async () => {
+      if (!active || controller.isSynchronized()) return;
+      const ticket = fallbackPoll.begin();
       try {
-        const data = await api.getState();
-        const s = store.getState();
-        if (!hasLoadedState.current) {
-          s.loadFullState(data as FullStateData);
-          hasLoadedState.current = true;
-        } else {
-          // Treat as state refresh
-          s.loadFullState(data as FullStateData);
+        const data = await api.getState(ticket.controller.signal);
+        if (!active || !fallbackPoll.isCurrent(ticket) || controller.isSynchronized()) return;
+        store.getState().loadFullState(data as FullStateData);
+      } catch (error) {
+        if (active && fallbackPoll.isCurrent(ticket)) {
+          store.getState().setInitialized();
         }
-      } catch {
-        // Mark initialized even on failure so panels render with empty data
-        store.getState().setInitialized();
+      } finally {
+        fallbackPoll.complete(ticket);
       }
-    }
+    };
 
-    // Initial HTTP load
-    pollState();
+    controller = new GenerationSocketController({
+      createSocket: () => createDashboardWebSocket('/ws'),
+      onMessage: (data, generation) => handleMessage(data, generation, controller),
+      onSynchronizedChange: synchronized => {
+        if (!active) return;
+        setConnected(synchronized);
+        store.getState().setConnected(synchronized);
+        if (synchronized) abortFallbackPoll();
+      },
+      onDisconnected: () => { void pollState(); },
+    });
 
-    // WebSocket connection
-    connect();
-
-    // Fallback polling
-    pollTimer.current = setInterval(pollState, POLL_INTERVAL_MS);
+    void pollState();
+    controller.start();
+    const pollTimer = window.setInterval(() => { void pollState(); }, POLL_INTERVAL_MS);
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
-      if (reconnectTimer.current) clearInterval(reconnectTimer.current);
-      if (pollTimer.current) clearInterval(pollTimer.current);
+      active = false;
+      window.clearInterval(pollTimer);
+      abortFallbackPoll();
+      controller.stop();
     };
   }, [store]);
 
-  return (
-    <WsContext.Provider value={{ connected }}>
-      {children}
-    </WsContext.Provider>
-  );
+  return <WsContext.Provider value={{ connected }}>{children}</WsContext.Provider>;
 }

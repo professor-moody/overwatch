@@ -1,19 +1,20 @@
+import { FRONTIER_TYPES, type FrontierType } from '@overwatch/dashboard-contracts';
 import type { FrontierItem } from './types';
 
-export const FRONTIER_TYPE_ORDER = [
-  'incomplete_node',
-  'untested_edge',
-  'inferred_edge',
-  'network_discovery',
-  'credential_test',
-] as const;
+export const FRONTIER_TYPE_ORDER = FRONTIER_TYPES;
 
-export const FRONTIER_SECTION_LABELS: Record<string, string> = {
-  incomplete_node: 'Incomplete Nodes',
-  untested_edge: 'Untested Edges',
-  inferred_edge: 'Inferred Opportunities',
+export const FRONTIER_SECTION_LABELS: Record<FrontierType, string> = {
+  incomplete_node: 'Incomplete Node',
+  untested_edge: 'Untested Edge',
+  inferred_edge: 'Inferred Opportunity',
   network_discovery: 'Network Discovery',
-  credential_test: 'Credential Tests',
+  network_pivot: 'Network Pivot',
+  credential_test: 'Credential Test',
+  idp_enumeration: 'Identity Provider Enumeration',
+  mfa_bypass_candidate: 'MFA Bypass Candidate',
+  cross_tier_pivot: 'Cross-tier Pivot',
+  cve_research: 'CVE Research',
+  domain_enumeration: 'Domain Enumeration',
 };
 
 export interface FrontierSection {
@@ -26,7 +27,6 @@ export interface FrontierSection {
 export interface FrontierSectionOptions {
   typeFilter?: string | null;
   nodeFilter?: string | null;
-  priorityLimit?: number;
 }
 
 function clean(value: unknown): string | null {
@@ -35,71 +35,72 @@ function clean(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-export function getFrontierKey(item: FrontierItem): string {
-  return item.frontier_item_id || item.id;
+function field(item: FrontierItem, key: string): string | null {
+  return clean((item as Record<string, unknown>)[key]);
 }
 
+export function getFrontierKey(item: FrontierItem): string {
+  return item.id;
+}
+
+/** Canonical graph participants, ordered by their role in the frontier item. */
 export function getFrontierNodeIds(item: FrontierItem): string[] {
   const ids = [
-    item.target_node,
-    item.node_id,
-    item.edge_source,
-    item.edge_target,
-    item.source_node,
-  ].map(clean).filter((v): v is string => !!v);
-  // De-duplicate: a node can appear as both target_node and node_id, and
-  // dispatch scope / display shouldn't list it twice.
+    field(item, 'node_id'),
+    field(item, 'credential_id'),
+    field(item, 'edge_source'),
+    field(item, 'edge_target'),
+    field(item, 'pivot_host_id'),
+    field(item, 'via_pivot'),
+  ].filter((value): value is string => value !== null);
   return [...new Set(ids)];
 }
 
+export function getFrontierTargetCidr(item: FrontierItem): string | null {
+  return field(item, 'target_cidr');
+}
+
 export function getFrontierPrimaryNodeId(item: FrontierItem): string | null {
-  return getFrontierNodeIds(item)[0] || null;
+  return getFrontierNodeIds(item)[0] ?? null;
 }
 
 export function frontierReferencesNode(item: FrontierItem, nodeId: string): boolean {
   return getFrontierNodeIds(item).includes(nodeId);
 }
 
+/** Compatibility helper: server candidate order is already authoritative. */
 export function sortFrontierItems(items: FrontierItem[]): FrontierItem[] {
-  return [...items].sort((a, b) => {
-    const priority = (b.priority ?? 0) - (a.priority ?? 0);
-    if (priority !== 0) return priority;
-    return getFrontierKey(a).localeCompare(getFrontierKey(b));
-  });
+  return [...items];
 }
 
-export function filterFrontierItems(items: FrontierItem[], typeFilter?: string | null, nodeFilter?: string | null): FrontierItem[] {
-  return sortFrontierItems(items)
+export function filterFrontierItems(
+  items: FrontierItem[],
+  typeFilter?: string | null,
+  nodeFilter?: string | null,
+): FrontierItem[] {
+  return items
     .filter(item => !typeFilter || item.type === typeFilter)
     .filter(item => !nodeFilter || frontierReferencesNode(item, nodeFilter));
 }
 
-export function buildFrontierSections(items: FrontierItem[], options: FrontierSectionOptions = {}): FrontierSection[] {
-  const priorityLimit = options.priorityLimit ?? 8;
+/** One list preserves the exact server candidate ordering across frontier kinds. */
+export function buildFrontierSections(
+  items: FrontierItem[],
+  options: FrontierSectionOptions = {},
+): FrontierSection[] {
   const list = filterFrontierItems(items, options.typeFilter, options.nodeFilter);
+  return [{
+    key: options.nodeFilter ? 'matching' : 'candidates',
+    title: options.nodeFilter ? 'Matching Candidates' : 'Candidates',
+    items: list,
+    total: list.length,
+  }];
+}
 
-  if (options.nodeFilter) {
-    return [{ key: 'matching', title: 'Matching Items', items: list, total: list.length }];
-  }
+export function frontierScoreMultiplier(item: FrontierItem): number {
+  return item.graph_metrics.confidence;
+}
 
-  const topPriority = list.slice(0, priorityLimit);
-  const topIds = new Set(topPriority.map(getFrontierKey));
-  const sections: FrontierSection[] = [
-    { key: 'priority', title: 'Top Priority', items: topPriority, total: topPriority.length },
-  ];
-
-  for (const type of FRONTIER_TYPE_ORDER) {
-    const typeItems = list.filter(item => item.type === type);
-    const visibleItems = typeItems.filter(item => !topIds.has(getFrontierKey(item)));
-    if (typeItems.length > 0) {
-      sections.push({
-        key: type,
-        title: FRONTIER_SECTION_LABELS[type] || type,
-        items: visibleItems,
-        total: typeItems.length,
-      });
-    }
-  }
-
-  return sections;
+export function formatFrontierScore(item: FrontierItem): string {
+  return `×${frontierScoreMultiplier(item).toFixed(2)}`;
 }

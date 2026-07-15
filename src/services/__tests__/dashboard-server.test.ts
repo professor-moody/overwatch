@@ -9,6 +9,7 @@ import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
 import { InProcessTapeController } from '../in-process-tape.js';
 import type { EngagementConfig } from '../../types.js';
+import { AgentDtoSchema } from '../../contracts/dashboard-v1.js';
 
 let testStateDir: string;
 let TEST_STATE_FILE: string;
@@ -981,6 +982,14 @@ describe('DashboardServer', () => {
     expect((dashboard as any).isLoopback('10.10.10.5')).toBe(false);
   });
 
+  it('normalizes same-origin authorities while rejecting foreign ports and non-HTTP schemes', () => {
+    expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test', 'ops.example.test:443')).toBe(true);
+    expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test', 'ops.example.test')).toBe(true);
+    expect((dashboard as any).isAllowedWsOrigin('https://ops.example.test:444', 'ops.example.test:443')).toBe(false);
+    expect((dashboard as any).isAllowedWsOrigin('ftp://ops.example.test', 'ops.example.test')).toBe(false);
+    expect((dashboard as any).isAllowedWsOrigin('http://127.0.0.1:3000', 'localhost:8384')).toBe(true);
+  });
+
   // ---- Terminal Multiplexer (WS bridge) ----
 
   it('serveSessions returns empty when no session manager', () => {
@@ -1464,6 +1473,48 @@ describe('DashboardServer', () => {
 
       const completed = data.agents.find((a: any) => a.id === 'task-completed');
       expect(completed.elapsed_ms).toBeUndefined();
+    });
+
+    it('projects the same canonical AgentDto through REST, state, full-state WS, and graph updates', () => {
+      vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-07-15T12:00:00Z'));
+      const task = registerTestAgent({
+        id: 'task-canonical', agent_id: 'operator-label', assigned_at: '2026-07-15T11:55:00Z',
+        heartbeat_at: '2026-07-15T11:59:30Z', heartbeat_ttl_seconds: 120,
+        archetype: 'web_tester', objective: 'Inspect the app', model: 'test-model',
+      });
+      engine.logActionEvent({
+        description: 'Found endpoint', event_type: 'finding_reported', category: 'finding',
+        linked_agent_task_id: task.id, linked_finding_ids: ['finding-canonical'],
+      });
+
+      const agentRes = mockRes();
+      (dashboard as any).serveAgents(agentRes);
+      const restDto = AgentDtoSchema.parse(JSON.parse(agentRes.body).agents[0]);
+
+      const stateRes = mockRes();
+      (dashboard as any).serveState(stateRes);
+      const stateDto = AgentDtoSchema.parse(JSON.parse(stateRes.body).state.agents[0]);
+
+      const socket = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn(), on: vi.fn() };
+      (dashboard as any).wss.emit('connection', socket);
+      const fullState = sentMessages(socket)[0];
+      const fullStateDto = AgentDtoSchema.parse(fullState.data.state.agents[0]);
+
+      engine.addNode({
+        id: 'agent-dto-update', type: 'host', label: 'agent dto update', ip: '10.10.10.1',
+        discovered_at: '2026-07-15T12:00:00Z', confidence: 1,
+      });
+      dashboard.onGraphUpdate({ new_nodes: ['agent-dto-update'] });
+      dashboard.flush();
+      const graphUpdate = sentMessages(socket).find(message => message.type === 'graph_update');
+      const graphUpdateDto = AgentDtoSchema.parse(graphUpdate.data.state.agents[0]);
+
+      expect(restDto).toEqual(stateDto);
+      expect(fullStateDto).toEqual(restDto);
+      expect(graphUpdateDto).toEqual(restDto);
+      expect(restDto).toMatchObject({
+        task_id: 'task-canonical', agent_label: 'operator-label', lifecycle: 'live', findings_count: 1,
+      });
     });
 
     it('serveAgentContext returns task and subgraph', () => {
@@ -2144,6 +2195,73 @@ describe('DashboardServer', () => {
       (nlDashboard as any).handleHttp(nlReq('/api/state?token=right-token'), res);
       expect(res.statusCode).toBe(200);
     });
+
+    it('authenticates live HTTP/downloads and all three WebSocket channels with same-origin enforcement', async () => {
+      const token = 'remote token+/=?';
+      process.env.OVERWATCH_DASHBOARD_TOKEN = token;
+      const sessionId = '00000000-0000-4000-8000-000000000001';
+      const session = { id: sessionId, kind: 'pty', state: 'connected', title: 'Remote shell' };
+      (nlDashboard as any).sessionManager = {
+        list: () => [session],
+        getSession: (id: string) => id === sessionId ? session : null,
+        read: () => ({ text: '', end_pos: 0 }),
+        write: vi.fn(), resize: vi.fn(), onEvent: vi.fn(),
+      };
+      nlEngine.getActionOutputBuffer().open('act-live');
+      nlEngine.getActionOutputBuffer().append('act-live', 'stdout', 'live output');
+
+      const started = await nlDashboard.start();
+      expect(started.started).toBe(true);
+      const port = new URL(nlDashboard.address).port;
+      const httpBase = `http://127.0.0.1:${port}`;
+      const wsBase = `ws://127.0.0.1:${port}`;
+      const origin = httpBase;
+      const tokenQuery = new URLSearchParams({ token }).toString();
+
+      const stateResponse = await fetch(`${httpBase}/api/state`, {
+        headers: { Authorization: `Bearer ${token}`, Origin: origin },
+      });
+      expect(stateResponse.status).toBe(200);
+      const bundleResponse = await fetch(`${httpBase}/api/bundle`, {
+        headers: { Authorization: `Bearer ${token}`, Origin: origin },
+      });
+      expect(bundleResponse.status).toBe(200);
+      await bundleResponse.body?.cancel();
+
+      const openWithFirstMessage = (path: string, headers: Record<string, string> = { Origin: origin }) => new Promise<{ socket: WebSocket; message: any }>((resolve, reject) => {
+        const socket = new WebSocket(`${wsBase}${path}${path.includes('?') ? '&' : '?'}${tokenQuery}`, {
+          headers,
+        });
+        socket.once('message', raw => resolve({ socket, message: JSON.parse(String(raw)) }));
+        socket.once('error', reject);
+      });
+      const main = await openWithFirstMessage('/ws');
+      const sessionSocket = await openWithFirstMessage(`/ws/session/${sessionId}`);
+      const action = await openWithFirstMessage('/ws/actions/act-live/output');
+      expect(main.message.type).toBe('full_state');
+      expect(sessionSocket.message.type).toBe('session_meta');
+      expect(action.message).toMatchObject({ type: 'output', text: 'live output' });
+
+      const remoteHost = `ops.example.test:${port}`;
+      const remoteOrigin = `http://${remoteHost}`;
+      const remoteMain = await openWithFirstMessage('/ws', { Host: remoteHost, Origin: remoteOrigin });
+      expect(remoteMain.message.type).toBe('full_state');
+
+      const rejectedStatus = (url: string, rejectedOrigin: string, host?: string) => new Promise<number>((resolve, reject) => {
+        const socket = new WebSocket(url, { headers: { ...(host ? { Host: host } : {}), Origin: rejectedOrigin } });
+        socket.once('unexpected-response', (_req, response) => resolve(response.statusCode ?? 0));
+        socket.once('open', () => reject(new Error('WebSocket unexpectedly opened')));
+        socket.once('error', () => {});
+      });
+      expect(await rejectedStatus(`${wsBase}/ws?${new URLSearchParams({ token: 'wrong' })}`, origin)).toBe(401);
+      expect(await rejectedStatus(`${wsBase}/ws?${tokenQuery}`, 'https://foreign.example.test')).toBe(403);
+      expect(await rejectedStatus(`${wsBase}/ws?${tokenQuery}`, `http://foreign.example.test:${port}`, remoteHost)).toBe(403);
+
+      main.socket.close();
+      sessionSocket.socket.close();
+      action.socket.close();
+      remoteMain.socket.close();
+    }, 30_000);
 
     it('does not gate /api/* on loopback binds', () => {
       // dashboard from outer beforeEach is loopback (127.0.0.1)

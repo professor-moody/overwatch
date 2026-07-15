@@ -1,46 +1,61 @@
-// ============================================================
-// Graph node/edge shape normalization.
-//
-// The backend's engine.exportGraph() emits the wrapped form
-// `{ id, properties: {...} }` for both nodes and edges. The dashboard
-// panel code (IdentityPanel, AttackPathsPanel, EvidencePanel, etc.)
-// was written against the flat form `{ id, type, label, ... }` — the
-// shape ExportedNode declares.
-//
-// The store applies these flatteners on every full_state /
-// graph_update push so panels can read flat fields without each
-// one knowing about the wire shape. Idempotent for already-flat
-// inputs.
-// ============================================================
+import { NODE_TYPES } from './types';
+import { RawGraphEdgeDtoSchema, RawGraphNodeDtoSchema } from '@overwatch/dashboard-contracts';
+import type {
+  ExportedEdge,
+  ExportedGraph,
+  ExportedNode,
+  NodeType,
+  RawGraphDto,
+  RawGraphEdgeDto,
+  RawGraphNodeDto,
+} from './types';
 
-import type { ExportedNode, ExportedEdge } from './types';
-
-export function flattenNode(
-  n: ExportedNode | (ExportedNode & { properties?: Record<string, unknown> }),
-): ExportedNode {
-  const props = (n as { properties?: Record<string, unknown> }).properties;
-  if (props && typeof props === 'object') {
-    // Spread props twice so any explicit top-level keys win on the
-    // outside but defaults flow from props on the inside, while id
-    // remains canonical from the wrapper.
-    return { ...(props as Record<string, unknown>), ...n, ...props, id: n.id } as ExportedNode;
-  }
-  return n as ExportedNode;
+function isRawNode(node: RawGraphNodeDto | ExportedNode): node is RawGraphNodeDto {
+  return 'properties' in node && !!node.properties && typeof node.properties === 'object';
 }
 
-export function flattenEdge(
-  e: ExportedEdge | (ExportedEdge & { properties?: Record<string, unknown> }),
-): ExportedEdge {
-  const props = (e as { properties?: Record<string, unknown> }).properties;
-  if (props && typeof props === 'object') {
-    return {
-      ...(props as Record<string, unknown>),
-      ...e,
-      ...props,
-      id: e.id,
-      source: e.source,
-      target: e.target,
-    } as ExportedEdge;
+function isRawEdge(edge: RawGraphEdgeDto | ExportedEdge): edge is RawGraphEdgeDto {
+  return 'properties' in edge && !!edge.properties && typeof edge.properties === 'object';
+}
+
+/** Convert the wrapped backend node into the dashboard's flat view model. */
+export function flattenNode(node: RawGraphNodeDto | ExportedNode): ExportedNode {
+  if (!isRawNode(node)) return node;
+  const parsedNode = RawGraphNodeDtoSchema.parse(node);
+  const properties = parsedNode.properties;
+  if (typeof properties.type !== 'string' || !NODE_TYPES.includes(properties.type as NodeType)) {
+    throw new Error(`Raw graph node ${parsedNode.id} has an invalid node type`);
   }
-  return e as ExportedEdge;
+  const { properties: _nestedProperties, ...flatProperties } = properties;
+  return {
+    ...flatProperties,
+    id: parsedNode.id,
+    type: properties.type as NodeType,
+    label: String(properties.label ?? node.id),
+    confidence: typeof properties.confidence === 'number' ? properties.confidence : 0,
+    discovered_at: typeof properties.discovered_at === 'string' ? properties.discovered_at : '',
+  };
+}
+
+/** Convert the wrapped backend edge into the dashboard's flat view model. */
+export function flattenEdge(edge: RawGraphEdgeDto | ExportedEdge): ExportedEdge {
+  if (!isRawEdge(edge)) return edge;
+  const parsedEdge = RawGraphEdgeDtoSchema.parse(edge);
+  const properties = parsedEdge.properties;
+  return {
+    ...properties,
+    id: parsedEdge.id,
+    source: parsedEdge.source,
+    target: parsedEdge.target,
+    type: String(properties.type ?? 'unknown'),
+  };
+}
+
+/** Project raw HTTP/WS graph data without folding cold inventory into hot nodes. */
+export function projectRawGraph(graph: RawGraphDto): ExportedGraph {
+  return {
+    nodes: graph.nodes.map(flattenNode),
+    edges: graph.edges.map(flattenEdge),
+    coldInventory: [...(graph.cold_nodes ?? [])],
+  };
 }

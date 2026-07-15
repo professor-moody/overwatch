@@ -1,13 +1,11 @@
 import type {
   EngagementState,
-  ExportedGraph,
   ActivityEntry,
   DecisionLogEntry,
   ActionExplanation,
   TimelineEntry,
   SessionInfo,
   SessionBufferResponse,
-  AgentInfo,
   AgentConsoleEvent,
   Campaign,
   PendingAction,
@@ -17,7 +15,6 @@ import type {
   FindingContextResponse,
   AttackPath,
   FindPathsResponse,
-  FrontierItem,
   ScopeConfig,
   OpsecConfig,
   OpsecBudget,
@@ -34,6 +31,45 @@ import type {
   InferenceRuleEffectiveness,
   CredentialCoverage,
 } from './types';
+import {
+  AgentListResponseSchema,
+  CampaignActionRequestSchema,
+  CampaignActionResponseSchema,
+  CampaignChildrenResponseSchema,
+  CampaignCloneResponseSchema,
+  CampaignCreateRequestSchema,
+  CampaignCreateResponseSchema,
+  CampaignDeleteResponseSchema,
+  CampaignDetailResponseSchema,
+  CampaignDispatchRequestSchema,
+  CampaignDispatchResponseSchema,
+  CampaignListResponseSchema,
+  CampaignSplitRequestSchema,
+  CampaignSplitResponseSchema,
+  CampaignUpdateRequestSchema,
+  CampaignUpdateResponseSchema,
+  FrontierWeightsPatchSchema,
+  FrontierWeightsResetResultSchema,
+  FrontierWeightsUpdateResultSchema,
+  HealthDtoSchema,
+  ObjectiveCreateRequestSchema,
+  ObjectiveCreateResponseSchema,
+  ObjectiveDeleteResponseSchema,
+  ObjectiveUpdateRequestSchema,
+  ObjectiveUpdateResponseSchema,
+  RawGraphDtoSchema,
+  SettingsDtoSchema,
+  SettingsPatchSchema,
+  SettingsUpdateResultSchema,
+  type AgentListResponse,
+  type CampaignDetailResponse,
+  type CampaignDispatchResponse,
+  type ObjectiveCreateRequest,
+  type ObjectiveUpdateRequest,
+  type RawGraphDto,
+  type SettingsDto,
+} from '@overwatch/dashboard-contracts';
+import { dashboardFetch } from './dashboard-transport';
 
 const BASE = '';
 
@@ -43,9 +79,11 @@ export function evidenceImageUrl(evidenceId: string): string {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const res = await dashboardFetch(`${BASE}${url}`, {
     ...init,
+    headers,
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -56,12 +94,13 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 // --- State ---
 
-export async function getState(): Promise<{ state: EngagementState; graph: ExportedGraph; history_count: number }> {
-  return fetchJson('/api/state');
+export async function getState(signal?: AbortSignal): Promise<{ state: EngagementState; graph: RawGraphDto; history_count: number }> {
+  const response = await fetchJson<{ state: EngagementState; graph: unknown; history_count: number }>('/api/state', { signal });
+  return { ...response, graph: RawGraphDtoSchema.parse(response.graph) };
 }
 
-export async function getGraph(): Promise<ExportedGraph> {
-  return fetchJson('/api/graph');
+export async function getGraph(): Promise<RawGraphDto> {
+  return RawGraphDtoSchema.parse(await fetchJson('/api/graph'));
 }
 
 // --- History ---
@@ -148,8 +187,8 @@ export async function getSessionBuffer(id: string, params?: { from?: number; tai
 
 // --- Agents ---
 
-export async function getAgents(): Promise<{ agents: AgentInfo[] }> {
-  return fetchJson('/api/agents');
+export async function getAgents(): Promise<AgentListResponse> {
+  return AgentListResponseSchema.parse(await fetchJson('/api/agents'));
 }
 
 export async function getAgentContext(agentId: string): Promise<unknown> {
@@ -256,7 +295,7 @@ export interface QuickDeployResult {
  *  client regex let through) is normalized to a non-dispatched result with the
  *  server's message; only unexpected statuses throw. */
 export async function quickDeploy(body: { target: string; archetype?: string; model?: string }): Promise<QuickDeployResult> {
-  const res = await fetch(`${BASE}/api/agents/quick-deploy`, {
+  const res = await dashboardFetch(`${BASE}/api/agents/quick-deploy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -286,7 +325,7 @@ export async function dispatchAgent(body: {
   // when the concurrency cap is hit. Treat both as STRUCTURED results (not
   // exceptions) so callers can show "already being worked" / "cap reached — retry
   // later" cleanly; other non-2xx still throw.
-  const res = await fetch(`${BASE}/api/agents/dispatch`, {
+  const res = await dashboardFetch(`${BASE}/api/agents/dispatch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -317,7 +356,7 @@ export async function dispatchBatch(body: {
   model?: string;
   objective?: string;
 }): Promise<DispatchBatchResult> {
-  const res = await fetch(`${BASE}/api/agents/dispatch-batch`, {
+  const res = await dashboardFetch(`${BASE}/api/agents/dispatch-batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -434,73 +473,82 @@ export async function answerAgentQueryBatch(queryIds: string[], answer: string):
 
 // --- Campaigns ---
 
-export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {
-  return fetchJson('/api/campaigns');
+export async function getCampaigns(): Promise<{ campaigns: Campaign[]; total: number }> {
+  return CampaignListResponseSchema.parse(await fetchJson('/api/campaigns'));
 }
 
-export async function getCampaign(id: string): Promise<Campaign> {
-  return fetchJson(`/api/campaigns/${id}`);
+export async function getCampaign(id: string): Promise<CampaignDetailResponse> {
+  return CampaignDetailResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`));
 }
 
 export async function createCampaign(body: {
   name: string;
   strategy: string;
-  item_ids?: string[];
-  items?: FrontierItem[];
-  abort_conditions?: unknown[];
+  item_ids: string[];
+  abort_conditions?: Array<{ type: 'consecutive_failures' | 'total_failures_pct' | 'opsec_noise_ceiling' | 'time_limit_seconds'; threshold: number }>;
 }): Promise<Campaign> {
-  // The server wraps the new campaign as { campaign }. Unwrap it so callers get the
-  // bare Campaign — previously they read `.id` off the wrapper (undefined) and the
-  // newly-created campaign was never selected.
-  const res = await fetchJson<{ campaign: Campaign }>('/api/campaigns', {
+  const request = CampaignCreateRequestSchema.parse(body);
+  const res = CampaignCreateResponseSchema.parse(await fetchJson('/api/campaigns', {
     method: 'POST',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
   return res.campaign;
 }
 
-export async function updateCampaign(id: string, body: Partial<Campaign>): Promise<Campaign> {
-  return fetchJson(`/api/campaigns/${id}`, {
+export async function updateCampaign(id: string, body: {
+  name?: string;
+  abort_conditions?: Array<{ type: 'consecutive_failures' | 'total_failures_pct' | 'opsec_noise_ceiling' | 'time_limit_seconds'; threshold: number }>;
+  add_items?: string[];
+  remove_items?: string[];
+}): Promise<Campaign> {
+  const request = CampaignUpdateRequestSchema.parse(body);
+  const res = CampaignUpdateResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
+  return res.campaign;
 }
 
-export async function deleteCampaign(id: string): Promise<{ ok: boolean }> {
-  return fetchJson(`/api/campaigns/${id}`, { method: 'DELETE' });
+export async function deleteCampaign(id: string): Promise<{ deleted: true }> {
+  return CampaignDeleteResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }));
 }
 
-export async function campaignAction(id: string, action: 'activate' | 'pause' | 'resume' | 'abort' | 'complete'): Promise<Campaign> {
-  return fetchJson(`/api/campaigns/${id}/action`, {
+export async function campaignAction(id: string, action: 'activate' | 'pause' | 'resume' | 'abort'): Promise<Campaign> {
+  const request = CampaignActionRequestSchema.parse({ action });
+  const res = CampaignActionResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/action`, {
     method: 'POST',
-    body: JSON.stringify({ action }),
-  });
+    body: JSON.stringify(request),
+  }));
+  return res.campaign;
 }
 
 export async function dispatchCampaign(id: string, body?: {
   max_agents?: number;
   hops?: number;   // server reads `hops` (was sent as scope_hops → ignored)
   skill?: string;
-}): Promise<unknown> {
-  return fetchJson(`/api/campaigns/${id}/dispatch`, {
+}): Promise<CampaignDispatchResponse> {
+  const request = CampaignDispatchRequestSchema.parse(body ?? {});
+  return CampaignDispatchResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/dispatch`, {
     method: 'POST',
-    body: JSON.stringify(body || {}),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
 export async function cloneCampaign(id: string): Promise<Campaign> {
-  return fetchJson(`/api/campaigns/${id}/clone`, { method: 'POST' });
+  const res = CampaignCloneResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/clone`, { method: 'POST' }));
+  return res.campaign;
 }
 
-export async function splitCampaign(id: string, body: { item_ids: string[] }): Promise<Campaign> {
-  return fetchJson(`/api/campaigns/${id}/split`, {
+export async function splitCampaign(id: string, body: { count: number }): Promise<{ parent_id: string; children: Campaign[]; count: number }> {
+  const request = CampaignSplitRequestSchema.parse(body);
+  return CampaignSplitResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/split`, {
     method: 'POST',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
-export async function getCampaignChildren(id: string): Promise<{ campaigns: Campaign[] }> {
-  return fetchJson(`/api/campaigns/${id}/children`);
+export async function getCampaignChildren(id: string) {
+  return CampaignChildrenResponseSchema.parse(await fetchJson(`/api/campaigns/${encodeURIComponent(id)}/children`));
 }
 
 // --- Pending Actions ---
@@ -584,52 +632,52 @@ export async function updateScope(body: Partial<ScopeConfig>): Promise<ScopeUpda
   });
 }
 
-export async function addObjective(body: {
-  description: string;
-  target_node_type?: string;
-  achievement_edge_types?: string[];
-}): Promise<unknown> {
-  return fetchJson('/api/config/objectives', {
+export async function addObjective(body: ObjectiveCreateRequest) {
+  const request = ObjectiveCreateRequestSchema.parse(body);
+  return ObjectiveCreateResponseSchema.parse(await fetchJson('/api/config/objectives', {
     method: 'POST',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
-export async function updateObjective(id: string, body: Record<string, unknown>): Promise<unknown> {
-  return fetchJson(`/api/config/objectives/${id}`, {
+export async function updateObjective(id: string, body: ObjectiveUpdateRequest) {
+  const request = ObjectiveUpdateRequestSchema.parse(body);
+  return ObjectiveUpdateResponseSchema.parse(await fetchJson(`/api/config/objectives/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
-export async function deleteObjective(id: string): Promise<unknown> {
-  return fetchJson(`/api/config/objectives/${id}`, { method: 'DELETE' });
+export async function deleteObjective(id: string) {
+  return ObjectiveDeleteResponseSchema.parse(await fetchJson(`/api/config/objectives/${encodeURIComponent(id)}`, { method: 'DELETE' }));
 }
 
-export async function getSettings(): Promise<{ settings: OpsecConfig & Record<string, unknown> }> {
-  return fetchJson('/api/settings');
+export async function getSettings(): Promise<SettingsDto> {
+  return SettingsDtoSchema.parse(await fetchJson('/api/settings'));
 }
 
-export async function updateSettings(body: Partial<OpsecConfig>): Promise<unknown> {
-  return fetchJson('/api/settings', {
+export async function updateSettings(body: Partial<OpsecConfig>) {
+  const request = SettingsPatchSchema.parse(body);
+  return SettingsUpdateResultSchema.parse(await fetchJson('/api/settings', {
     method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
 export async function getFrontierWeights(): Promise<FrontierWeights> {
   return fetchJson('/api/frontier/weights');
 }
 
-export async function updateFrontierWeights(body: Partial<FrontierWeights>): Promise<{ updated: boolean }> {
-  return fetchJson('/api/frontier/weights', {
+export async function updateFrontierWeights(body: Partial<FrontierWeights>) {
+  const request = FrontierWeightsPatchSchema.parse(body);
+  return FrontierWeightsUpdateResultSchema.parse(await fetchJson('/api/frontier/weights', {
     method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+    body: JSON.stringify(request),
+  }));
 }
 
-export async function resetFrontierWeights(): Promise<{ updated: boolean }> {
-  return fetchJson('/api/frontier/weights/reset', { method: 'POST' });
+export async function resetFrontierWeights() {
+  return FrontierWeightsResetResultSchema.parse(await fetchJson('/api/frontier/weights/reset', { method: 'POST' }));
 }
 
 // --- OPSEC Budget ---
@@ -658,7 +706,7 @@ export async function getAgentConsole(taskId: string, params?: {
 // --- Health ---
 
 export async function getHealth(): Promise<HealthStatus> {
-  return fetchJson('/api/health');
+  return HealthDtoSchema.parse(await fetchJson('/api/health'));
 }
 
 // --- Templates ---
@@ -923,7 +971,7 @@ export async function getInferenceRules(): Promise<{ rules: InferenceRuleInfo[];
 
 // --- Graph Export ---
 
-export async function exportGraphJson(): Promise<ExportedGraph> {
+export async function exportGraphJson(): Promise<RawGraphDto> {
   return fetchJson('/api/graph/export', { method: 'POST' });
 }
 

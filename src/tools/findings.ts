@@ -241,17 +241,12 @@ Returns: Summary of what was added/updated and any new inferred edges.`,
       // this, campaign.findings stayed empty until updateAgentStatus ran
       // — and even then it never received a findingId, so the list was
       // effectively never populated.
-      let campaign_id: string | undefined;
-      if (frontier_item_id) {
-        const campaign = engine.findCampaignForItem(frontier_item_id);
-        if (campaign && !campaign.findings.includes(finding.id)) {
-          campaign.findings.push(finding.id);
-          engine.persist();
-          campaign_id = campaign.id;
-        } else if (campaign) {
-          campaign_id = campaign.id;
-        }
-      }
+      const campaign_id = engine.linkFindingToCampaign({
+        finding_id: finding.id,
+        frontier_item_id,
+        agent_id,
+        action_id: normalizedActionId,
+      });
 
       // Durability: a reported finding is the engagement's most important data —
       // flush it (and the campaign link above) to disk synchronously rather than

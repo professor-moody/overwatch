@@ -1,4 +1,5 @@
 import type { ActivityEntry, FrontierItem, PendingAction, SessionBufferResponse, SessionInfo } from './types';
+import { getFrontierKey, getFrontierNodeIds } from './frontier-workspace';
 
 // `error` is split out from `closed` — an errored session is a failure the
 // operator may want to act on, not a clean teardown, so it gets its own group
@@ -138,12 +139,8 @@ export function relatedSessionFrontier(session: SessionInfo, frontier: FrontierI
   ].filter((value): value is string => typeof value === 'string' && value.length > 0));
 
   return frontier.filter(item =>
-    ids.has(item.id)
-    || (!!item.frontier_item_id && ids.has(item.frontier_item_id))
-    || (!!item.target_node && ids.has(item.target_node))
-    || (!!item.node_id && ids.has(item.node_id))
-    || (!!item.edge_source && ids.has(item.edge_source))
-    || (!!item.edge_target && ids.has(item.edge_target)),
+    ids.has(getFrontierKey(item))
+    || getFrontierNodeIds(item).some(id => ids.has(id)),
   );
 }
 

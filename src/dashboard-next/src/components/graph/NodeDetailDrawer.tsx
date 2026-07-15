@@ -14,12 +14,13 @@ import { deriveNodeRelationships } from '../../lib/relationships';
 import { ActionButton, StatusPill } from '../shared/primitives';
 import type { EvidenceChainResponse } from '../../lib/types';
 import { computeActionRisk } from '../../lib/action-queue';
-import { getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
+import { formatFrontierScore, getFrontierPrimaryNodeId } from '../../lib/frontier-workspace';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { GraphNodeLinks } from '../shared/GraphNodeLinks';
 import { trustSignalsForNode } from '../../lib/trust-signals';
 import { TrustSignalList } from '../shared/TrustSignals';
 import { findingSummary, findingTitle } from '../../lib/finding-display';
+import { AuthenticatedImage } from '../shared/AuthenticatedImage';
 
 interface NodeDetailDrawerProps {
   graph: Graph;
@@ -198,14 +199,13 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
 
         {nodeType === 'webapp' && typeof props.screenshot_evidence_id === 'string' && props.screenshot_evidence_id && (
           <InspectorSection title="Screenshot">
-            <a href={evidenceImageUrl(props.screenshot_evidence_id)} target="_blank" rel="noreferrer" className="block">
-              <img
-                src={evidenceImageUrl(props.screenshot_evidence_id)}
-                alt={`Screenshot of ${String(props.url ?? nodeId)}`}
-                loading="lazy"
-                className="w-full max-h-96 object-contain rounded border border-border bg-black/20"
-              />
-            </a>
+            <AuthenticatedImage
+              src={evidenceImageUrl(props.screenshot_evidence_id)}
+              alt={`Screenshot of ${String(props.url ?? nodeId)}`}
+              loading="lazy"
+              linkToFullSize
+              className="w-full max-h-96 object-contain rounded border border-border bg-black/20"
+            />
           </InspectorSection>
         )}
 
@@ -279,10 +279,10 @@ export function NodeDetailDrawer({ graph, nodeId, onClose, onFocus, editMode, on
               {relationships.frontier.slice(0, 4).map((item, index) => {
                 const primaryNode = getFrontierPrimaryNodeId(item);
                 return (
-                  <div key={`${item.frontier_item_id || item.id || 'frontier'}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
+                  <div key={`${item.id}-${index}`} className="rounded border border-border bg-background/40 px-2 py-1.5 text-xs">
                     <div className="flex items-center gap-2">
                       <StatusPill className="bg-accent/10 text-accent">{item.type.replace(/_/g, ' ')}</StatusPill>
-                      <span className="font-mono text-foreground ml-auto">{(item.priority ?? 0).toFixed(1)}</span>
+                      <span className="font-mono text-foreground ml-auto">{formatFrontierScore(item)}</span>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{item.description}</div>
                     {primaryNode && <GraphNodeLinks nodeId={primaryNode} className="mt-1" />}
