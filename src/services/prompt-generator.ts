@@ -502,7 +502,7 @@ function leanTacticsSection(agent?: AgentTask): string {
     '- `run_tool` for argv (no shell parsing/injection); `run_bash` only for real shell features. `parse_output` for parser-supported output; `report_finding` for everything else.',
   ];
   if (agent?.archetype && CREDENTIAL_ARCHETYPES.has(agent.archetype)) {
-    lines.push('- For captured cloud/SaaS credentials, prefer the playbook tools (`expand_aws_credential`, `expand_github_credential`, `expand_entra_credential`, `expand_oidc_capture`, `exchange_refresh_token`) over re-deriving the recon chain by hand — each returns a numbered plan whose steps still go through the `run_tool`/`run_bash` + approval flow.');
+    lines.push('- For captured cloud/SaaS credentials, prefer the stateless playbook generators (`expand_aws_credential`, `expand_github_credential`, `expand_entra_credential`, `expand_oidc_capture`, `exchange_refresh_token`) over re-deriving the recon chain by hand. Execute only non-null descriptors that are not explicitly blocked (`status: "blocked"` or `ready: false`) through their returned `runner` (`run_bash` or `run_tool`) or direct `tool`; resolve `env_from_credential` to the actual selected credential value in `run_bash.env`, and preserve every parser field.');
   }
   return lines.join('\n');
 }
@@ -904,12 +904,12 @@ function generateTacticalSection(): string {
 - Check for credential reuse: if \`user:password\` works on one service, test it against all services that user has POTENTIAL_AUTH edges to.
 
 ### Credential-Driven Playbooks
-For captured cloud / SaaS credentials, prefer the **playbook tools** over re-deriving the canonical recon chain by hand. Each tool returns a numbered plan with per-step \`command\`, \`parse_with\` parser, technique tag, and expected node/edge shape — every step still goes through the existing \`run_bash\` / \`run_tool\` + approval flow.
-- **\`expand_aws_credential({ credential_id })\`** — STS get-caller-identity → IAM summary → CloudFox inventory → S3/Lambda enumeration. Use as soon as an AWS access key, STS session, or assumed-role token lands in the graph.
-- **\`expand_github_credential({ credential_id })\`** — /user → /user/orgs → /user/repos → per-repo: actions/secrets, branch/protection, deploy keys, OIDC trust customization. Pass \`candidate_repos: [...]\` to pre-expand specific repos.
-- **\`expand_oidc_capture({ credential_id })\`** — for captured CI/CD OIDC tokens (GitHub Actions / GitLab CI / CircleCI). Walks inferred ASSUMES_ROLE edges, emits one \`validate_token_credential\` step per candidate cloud role. Successful replays mint temp AWS creds — chain into \`expand_aws_credential\` for the resulting session.
-- **\`exchange_refresh_token({ credential_id, client_id })\`** — exchanges an Entra refresh token for a fresh access token. Approval-gated by default. Set \`REFRESH_TOKEN\` env var before running the emitted curl.
-- **\`expand_entra_credential({ credential_id })\`** — /me → /users → /applications → /servicePrincipals → /groups. The CONSENT_ABUSE inference rule fires after step 4 lands and stamps high-priv apps for the FindingsPanel.
+For captured cloud / SaaS credentials, prefer the **playbook tools** over re-deriving the canonical recon chain by hand. They are read-only, stateless plan generators: execute only non-null descriptors that are not explicitly blocked (\`status: "blocked"\` or \`ready: false\`), honor the returned \`runner\` (\`run_bash\` or \`run_tool\`) or direct \`tool\`, and re-expand after a dependency lands. Resolve every \`env_from_credential\` mapping to the selected credential's actual value in \`run_bash.env\` (never the credential ID), and pass \`parse_with\`, \`parser_context\`, and \`parse_stream\` through unchanged.
+- **\`expand_aws_credential({ credential_id, ...binding })\`** — requires a bound \`aws_profile\`, an \`aws_session_credentials\` JSON value in \`run_bash.env.OVERWATCH_AWS_SESSION_CREDENTIALS\`, or explicit \`use_ambient_credentials: true\`. Run and ingest STS caller identity, then re-expand with the same binding to resolve account/caller/principal context, user-versus-role policies, CloudFox JSON, S3, and Lambda.
+- **\`expand_github_credential({ credential_id })\`** — binds \`run_bash.env.OVERWATCH_GITHUB_TOKEN\` and paginates list endpoints with \`--paginate --slurp\`. \`candidate_repos\` accepts \`"owner/repo"\` or \`{ repo_full_name, default_branch }\`; a string with no known default branch emits repo-details and leaves branch protection blocked until ingestion and re-expansion.
+- **\`expand_oidc_capture({ credential_id })\`** — emits direct \`validate_token_credential\` calls for inferred cloud roles. Successful AWS replays mint temporary session credentials to chain into \`expand_aws_credential\`.
+- **\`exchange_refresh_token({ credential_id, client_id })\`** — emits an approval-gated Entra exchange step using \`run_bash.env.OVERWATCH_ENTRA_REFRESH_TOKEN\` by default.
+- **\`expand_entra_credential({ credential_id })\`** — binds \`run_bash.env.OVERWATCH_ENTRA_TOKEN\`; when the tenant is unknown, run/ingest the ready \`/me\` step and re-expand before the other null-command steps. Collection requests are one page; follow every \`@odata.nextLink\` for complete coverage.
 
 > **Scripted runner note:** simple token-validation steps (\`credential_test\` frontier items) are automatically executed by the dashboard's scripted runner — you only need the playbook tools for the multi-step enumeration phases (inventory, resource discovery, org-wide enum) that require LLM interpretation or chained follow-ups.
 

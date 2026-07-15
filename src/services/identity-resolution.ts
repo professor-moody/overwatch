@@ -5,6 +5,7 @@ import {
   cloudIdentityId,
   cloudNetworkId,
   cloudPolicyId,
+  cloudPolicyStatementId,
   cloudResourceId,
   credentialId,
   domainId,
@@ -134,6 +135,12 @@ export function resolveNodeIdentity(
     }
     case 'cloud_policy': {
       const prov = normalizeString(node.provider);
+      const statementIdentity = node.policy_statement === true ? normalizeString(node.policy_identity) : undefined;
+      if (prov && statementIdentity) {
+        return { id: cloudPolicyStatementId(prov, statementIdentity), status: 'canonical', markers, family };
+      }
+      const policyArn = firstDefinedString(node.policy_arn, node.arn);
+      if (prov && policyArn) return { id: cloudPolicyId(prov, policyArn), status: 'canonical', markers, family };
       const pName = normalizeString(node.policy_name);
       if (prov && pName) return { id: cloudPolicyId(prov, pName), status: 'canonical', markers, family };
       return { id: node.id, status: 'unresolved', markers, family };

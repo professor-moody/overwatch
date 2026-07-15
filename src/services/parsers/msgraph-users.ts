@@ -34,7 +34,7 @@ export function parseMsGraphUsers(
   const now = new Date().toISOString();
   const ctx = (context ?? {}) as PlaybookContext;
 
-  let payload: { value?: MsGraphUser[] };
+  let payload: { value?: MsGraphUser[]; '@odata.nextLink'?: string };
   try {
     payload = JSON.parse(output);
   } catch {
@@ -45,8 +45,23 @@ export function parseMsGraphUsers(
   if (!Array.isArray(users)) {
     return { id: `msgraph-users-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
+  const validUsers = users.filter((user): user is MsGraphUser & { id: string; userPrincipalName: string } =>
+    typeof user.id === 'string' && user.id.length > 0
+    && typeof user.userPrincipalName === 'string' && user.userPrincipalName.length > 0);
+  if (validUsers.length === 0) {
+    const partial = typeof payload['@odata.nextLink'] === 'string' && payload['@odata.nextLink'].length > 0;
+    return {
+      id: `msgraph-users-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+      partial: partial || undefined,
+      partial_reason: partial ? 'msgraph_pagination_incomplete' : undefined,
+    };
+  }
 
-  const tenant = ctx.tenant_id ?? 'unknown';
+  const tenant = typeof ctx.tenant_id === 'string' && !/^(common|organizations|consumers|unknown)$/i.test(ctx.tenant_id)
+    ? ctx.tenant_id : undefined;
+  if (!tenant) {
+    return { id: `msgraph-users-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
   const tenantIdpId = idpId('entra', tenant);
   // Idempotent IdP stamp.
   nodes.push({
@@ -59,8 +74,7 @@ export function parseMsGraphUsers(
     confidence: 1.0,
   });
 
-  for (const u of users) {
-    if (!u.id || !u.userPrincipalName) continue;
+  for (const u of validUsers) {
     const principalId = idpPrincipalId('entra', tenant, u.id);
     nodes.push({
       id: principalId,
@@ -81,5 +95,10 @@ export function parseMsGraphUsers(
     });
   }
 
-  return { id: `msgraph-users-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  const partial = typeof payload['@odata.nextLink'] === 'string' && payload['@odata.nextLink'].length > 0;
+  return {
+    id: `msgraph-users-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+    partial: partial || undefined,
+    partial_reason: partial ? 'msgraph_pagination_incomplete' : undefined,
+  };
 }

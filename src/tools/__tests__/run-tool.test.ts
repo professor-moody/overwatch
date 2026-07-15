@@ -75,6 +75,27 @@ describe('run_tool', () => {
     expect((started?.details as any)?.args).toEqual(['hello-from-tool', 'arg-2']);
   });
 
+  it('preserves GitHub repository and branch context through inline run_tool parsing', async () => {
+    const output = JSON.stringify({ use_default: false, include_claim_keys: ['repo', 'context'] });
+    const result = await handlers.run_tool({
+      binary: process.execPath,
+      args: ['-e', `process.stdout.write(${JSON.stringify(output)})`],
+      validate: false,
+      parse_with: 'github-actions-oidc',
+      parser_context: {
+        repo_full_name: 'acme/widgets', branch_name: 'release',
+        provider_extension: { retained: true },
+      },
+    });
+    const payload = parseTextResult(result);
+    expect(result.isError).toBeFalsy();
+    expect(payload.parse_summary.parse_outcome).toBe('ok');
+    expect(engine.getNodesByType('idp_application')[0]).toMatchObject({
+      repo_full_name: 'acme/widgets', branch_name: 'release',
+      oidc_use_default: false, oidc_include_claim_keys: ['repo', 'context'],
+    });
+  });
+
   it('logs action_failed on non-zero exit', async () => {
     const result = await handlers.run_tool({
       binary: 'bash',

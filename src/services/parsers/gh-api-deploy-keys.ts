@@ -10,7 +10,7 @@
 // ============================================================
 
 import type { Finding, ParseContext } from '../../types.js';
-import { credentialId, idpApplicationId } from '../parser-utils.js';
+import { credentialId, idpApplicationId, idpId } from '../parser-utils.js';
 
 interface GhDeployKey {
   id?: number;
@@ -40,17 +40,41 @@ export function parseGhApiDeployKeys(
   let keys: GhDeployKey[];
   try {
     const parsed = JSON.parse(output);
-    keys = Array.isArray(parsed) ? parsed as GhDeployKey[] : [];
+    keys = Array.isArray(parsed)
+      ? parsed.flatMap((page: unknown) => Array.isArray(page) ? page : [page]) as GhDeployKey[]
+      : [];
   } catch {
+    return { id: `gh-deploy-keys-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
+  const validKeys = keys.filter((key): key is GhDeployKey & { key: string; title: string } =>
+    typeof key.key === 'string' && key.key.length > 0
+    && typeof key.title === 'string' && key.title.length > 0);
+  if (validKeys.length === 0) {
     return { id: `gh-deploy-keys-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
   const repo = ctx.repo_full_name;
   const owner = repo?.split('/')[0];
   const repoAppId = repo && owner ? idpApplicationId('github_org', owner, repo) : undefined;
+  if (!repo || !owner || !repoAppId) {
+    return { id: `gh-deploy-keys-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
+  if (repo && owner && repoAppId) {
+    const orgId = idpId('github_org', owner);
+    nodes.push({
+      id: orgId, type: 'idp', label: `github:${owner}`,
+      idp_kind: 'github_org', tenant_id: owner,
+      discovered_at: now, confidence: 1.0,
+    });
+    nodes.push({
+      id: repoAppId, type: 'idp_application', label: repo,
+      idp_id: orgId, idp_kind: 'github_org', tenant_id: owner,
+      app_kind: 'github_repo', repo_full_name: repo,
+      discovered_at: now, confidence: 1.0,
+    });
+  }
 
-  for (const k of keys) {
-    if (!k.key || !k.title) continue;
+  for (const k of validKeys) {
     // Fingerprint the public key so the credential id is stable across runs.
     const credId = credentialId('ssh_key', `gh-deploy-${repo ?? '?'}-${k.title}-${k.key.slice(0, 32)}`, k.title, undefined);
     const writeAccess = k.read_only !== true;
@@ -65,7 +89,9 @@ export function parseGhApiDeployKeys(
       cred_evidence_kind: 'capture',
       cred_value: k.key,
       credential_status: 'active',
-      cred_usable_for_auth: writeAccess,
+      // GitHub exposes only the public half. Write access describes what the
+      // corresponding private key could do; this record itself cannot auth.
+      cred_usable_for_auth: false,
       finding_severity: writeAccess ? 'high' : 'low',
       deploy_key_write_access: writeAccess,
       discovered_at: now,

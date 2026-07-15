@@ -12,6 +12,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { DashboardServer } from '../dashboard-server.js';
 import { GraphEngine } from '../graph-engine.js';
+import { parseAndMaybeIngest } from '../parse-ingest.js';
 import type { EngagementConfig } from '../../types.js';
 
 let dashboard: DashboardServer;
@@ -262,6 +263,7 @@ describe('POST /api/actions/:id/reparse', () => {
     expect(res.status).toBe(200);
     const b = await res.json();
     expect(b.parse_status).toBe('ok');
+    expect(b.parse_outcome).toBe('ok');
     expect(b.nodes_parsed).toBeGreaterThan(0);
     expect(b.ingested).toBeUndefined();
   });
@@ -284,7 +286,68 @@ describe('POST /api/actions/:id/reparse', () => {
     const res = await reparse('act_reparse1', { tool_name: 'totally-unknown', evidence_id: reEvId });
     const b = await res.json();
     expect(b.parse_status).toBe('no_parser');
+    expect(b.parse_outcome).toBe('validation_failed');
     expect(b.isError).toBe(true);
+  });
+
+  it('routes invalid context through the canonical parse service', async () => {
+    const res = await reparse('act_reparse1', {
+      tool_name: 'nmap', evidence_id: reEvId, context: { tenant_id: 42 },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      parse_status: 'validation_failed', parse_outcome: 'validation_failed',
+      failure_stage: 'context', isError: true,
+    });
+    expect(body.validation_errors.length).toBeGreaterThan(0);
+    expect(engine.getFullHistory().some(entry => entry.event_type === 'parse_output'
+      && entry.details?.failure_stage === 'context')).toBe(true);
+  });
+
+  it('preserves GitHub repository context through dashboard reparse', async () => {
+    const githubEvidence = engine.getEvidenceStore().store({
+      evidence_type: 'command_output',
+      raw_output: JSON.stringify({ use_default: false, include_claim_keys: ['repo', 'context'] }),
+      action_id: 'act_reparse_github',
+    });
+    const res = await reparse('act_reparse_github', {
+      tool_name: 'github-actions-oidc', evidence_id: githubEvidence, ingest: true,
+      context: {
+        repo_full_name: 'acme/dashboard', branch_name: 'main',
+        provider_extension: { nested: { retained: true } },
+      },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.parse_outcome).toBe('ok');
+    expect(engine.getNodesByType('idp_application').find(node => node.repo_full_name === 'acme/dashboard'))
+      .toMatchObject({ branch_name: 'main', oidc_use_default: false });
+  });
+
+  it('reuses the durable parser context when dashboard reparse omits context', async () => {
+    const actionId = 'act_reparse_stored_context';
+    const output = JSON.stringify({ use_default: false, include_claim_keys: ['repo', 'environment'] });
+    const preview = parseAndMaybeIngest(engine, {
+      tool_name: 'github-actions-oidc', outputText: output, action_id: actionId, ingest: false,
+      context: {
+        repo_full_name: 'acme/stored-context', branch_name: 'release',
+        provider_extension: { nested: { retained: true } },
+      },
+    });
+    expect(preview.parse_outcome).toBe('ok');
+    const evidenceId = engine.getEvidenceStore().store({
+      evidence_type: 'command_output', raw_output: output, action_id: actionId,
+    });
+
+    const res = await reparse(actionId, {
+      tool_name: 'github-actions-oidc', evidence_id: evidenceId, ingest: true,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ parse_outcome: 'ok' });
+    expect(engine.getNodesByType('idp_application')
+      .find(node => node.repo_full_name === 'acme/stored-context'))
+      .toMatchObject({ branch_name: 'release', oidc_use_default: false });
   });
 
   it('400s without a tool_name', async () => {

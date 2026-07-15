@@ -2758,13 +2758,16 @@ export class DashboardServer {
       }
 
       const ingest = body?.ingest === true; // preview by default — promote is explicit
-      const context = (body?.context && typeof body.context === 'object') ? body.context : undefined;
+      const storedParserContext = [...this.engine.getFullHistory()].reverse()
+        .filter(event => event.action_id === actionId && event.event_type === 'parse_output')
+        .map(event => (event.details as Record<string, unknown> | undefined)?.parser_context)
+        .find((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value));
       const result = parseAndMaybeIngest(this.engine, {
         tool_name: toolName,
         outputText: raw,
         action_id: actionId,
         ingest,
-        context,
+        context: body?.context ?? storedParserContext,
         agent_id: 'operator',
       });
       res.writeHead(200, JSON_HEADERS);

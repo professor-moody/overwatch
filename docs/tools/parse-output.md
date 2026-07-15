@@ -63,7 +63,7 @@ Deterministically parses tool output into structured findings and (optionally) i
 | `agent_id` | `string` | No | Agent ID to attribute findings to |
 | `action_id` | `string` | No | Stable action ID for linkage |
 | `frontier_item_id` | `string` | No | Frontier item this parse came from |
-| `context` | `object` | No | Parser context: `{ domain?: string, source_host?: string }` |
+| `context` | `object` | No | Shared parser context for credential, tenant, repository/branch, cloud, target, domain, host, and provider-extension attribution |
 | `ingest` | `boolean` | No | Auto-ingest into graph (default: `true`) |
 | `list_parsers` | `boolean` | No | List all supported parser names (default: `false`) |
 
@@ -73,6 +73,12 @@ The `context` parameter provides ambient information that parsers use as fallbac
 
 - **`domain`** — Used by `secretsdump` and `hashcat` to set `cred_domain` when the output doesn't include domain prefixes. Only used as a soft hint for `cred_domain`; not used to construct user IDs (prevents false merges).
 - **`source_host`** — Used by `secretsdump` to create `DUMPED_FROM` edges linking credentials back to the host they were extracted from.
+- **`source_credential_id` / `source_idp_application_id`** — Attribute token replay, cloud identity, and credential-derived findings to their source.
+- **`tenant_id`** — Keeps Microsoft Graph users, applications, service principals, and groups in the correct Entra tenant.
+- **`repo_full_name` / `branch_name`** — Anchors GitHub API and Actions OIDC responses to the requested repository and branch.
+- **`cloud_provider` / `cloud_account` / `cloud_region` / `target_cloud_identity_id`** — Attribute cloud inventory and policy output without inventing an account or principal.
+
+Known fields are type-checked. Unknown fields are deliberately passed through so provider plugins can use namespaced extensions.
 
 ## Returns
 
@@ -82,13 +88,14 @@ Successful responses share a stable schema when the parser extracts at least one
 |-------|------|-------------|
 | `parsed` | `boolean` | Whether parsing succeeded |
 | `parse_status` | `string` | `"ok"` for successful extraction |
+| `parse_outcome` | `string` | Canonical outcome: `ok`, `no_data`, `validation_failed`, `parser_exception`, or `partial` |
 | `tool` | `string` | Tool name |
 | `action_id` | `string` | Action ID |
 | `finding_id` | `string` | Finding identifier |
 | `parsed_from` | `string` | `"output"` or `"file_path"` |
 | `nodes_parsed` | `number` | Nodes extracted |
 | `edges_parsed` | `number` | Edges extracted |
-| `ingested` | `object?` | Ingestion results (present only when `ingest: true` and nodes > 0) |
+| `ingested` | `object?` | Ingestion results when `ingest: true`; failures explicitly return `false` |
 | `warnings` | `string[]?` | Instrumentation warnings (e.g. missing action context) |
 | `message` | `string` | Summary |
 
@@ -100,12 +107,15 @@ If a parser runs but extracts zero nodes and zero edges, `parse_output` now retu
 | `parsed` | `false` |
 | `ingested` | `false` |
 | `parse_status` | `"no_data"` |
+| `parse_outcome` | `"no_data"` |
 
 ## Usage Notes
 
 - Prefer this over `report_finding` when you have raw output from a supported tool
 - Treat `parse_status: "no_data"` as an operator-visible parser failure or empty-output condition; verify the command output before reporting "nothing found"
+- Use `parse_outcome` for canonical handling. `parse_status: "no_parser"` is retained for wire compatibility but maps to `parse_outcome: "validation_failed"`.
+- `partial` is a successful, explicitly incomplete parse: validated artifacts may be ingested, while completeness stays on the parse result/event so a later complete observation does not leave a stale node flag.
 - Set `ingest: false` to preview what would be parsed without modifying the graph
 - Set `list_parsers: true` to get the current, authoritative list of supported parser names (the count grows as parsers are added)
-- Pass `context` with `domain` and `source_host` when available — improves credential domain attribution and provenance
+- Pass the returned playbook `parser_context` unchanged when running a step; missing repository, tenant, or cloud bindings can turn otherwise valid JSON into unattributed/no-data output
 - See [parse_output vs report_finding](../playbook/parse-vs-report.md) for detailed guidance

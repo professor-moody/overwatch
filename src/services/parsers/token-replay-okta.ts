@@ -20,9 +20,22 @@ interface ReplayContext extends ParseContext {
 }
 
 function extractStatusAndBody(output: string): { status: number; body: string } {
-  const m = output.match(/^\[STATUS:(\d{3})\]\s*\n?([\s\S]*)$/);
-  if (m) return { status: parseInt(m[1]), body: m[2] };
-  return { status: 0, body: output };
+  let normalized = output.replace(/\r\n/g, '\n');
+  const trailing = normalized.match(/\n?\[STATUS:(\d{3})\]\s*$/);
+  const trailingStatus = trailing ? parseInt(trailing[1]) : undefined;
+  if (trailing) normalized = normalized.slice(0, trailing.index).trimEnd();
+  const prefixed = normalized.match(/^\[STATUS:(\d{3})\]\s*\n?([\s\S]*)$/);
+  if (prefixed) return { status: trailingStatus ?? parseInt(prefixed[1]), body: prefixed[2] };
+  const headerEnd = normalized.indexOf('\n\n');
+  if (headerEnd > 0 && /^HTTP\//i.test(normalized.slice(0, headerEnd))) {
+    const headers = normalized.slice(0, headerEnd);
+    const statusMatch = headers.match(/^HTTP\/[\d.]+\s+(\d{3})/i);
+    return {
+      status: trailingStatus ?? (statusMatch ? parseInt(statusMatch[1]) : 0),
+      body: normalized.slice(headerEnd + 2),
+    };
+  }
+  return { status: trailingStatus ?? 0, body: normalized };
 }
 
 interface OktaUser { id?: string; profile?: { login?: string; email?: string; firstName?: string; lastName?: string } }
@@ -61,13 +74,13 @@ export function parseTokenReplayOkta(output: string, agentId: string = 'token-re
         id: credId,
         type: 'credential',
         label: 'replay-result',
+        preserve_existing_label: true,
         discovered_at: now,
         confidence: 1.0,
         credential_status: status === 401 ? 'expired' : 'active',
         cred_mfa_required: status === 403 ? true : undefined,
         cred_mfa_satisfied: status === 403 ? false : undefined,
         notes: `okta replay returned ${status}`,
-        partial: true,
       });
     }
     return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
@@ -79,13 +92,14 @@ export function parseTokenReplayOkta(output: string, agentId: string = 'token-re
         id: credId,
         type: 'credential',
         label: 'replay-result',
+        preserve_existing_label: true,
         discovered_at: now,
         confidence: 0.5,
-        partial: true,
         notes: `okta replay returned ${status} — inconclusive`,
       });
     }
-    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges };
+    return { id: uuidv4(), agent_id: agentId, timestamp: now, nodes, edges,
+      partial: true, partial_reason: `okta_http_${status}_inconclusive` };
   }
 
   const parsed = parseOktaResponse(body);
@@ -98,6 +112,7 @@ export function parseTokenReplayOkta(output: string, agentId: string = 'token-re
       id: credId,
       type: 'credential',
       label: 'replay-result',
+      preserve_existing_label: true,
       discovered_at: now,
       confidence: 1.0,
       cred_usable_for_auth: true,
@@ -106,6 +121,7 @@ export function parseTokenReplayOkta(output: string, agentId: string = 'token-re
       // call succeeded — a non-MFA session that works is still working.
       cred_mfa_satisfied: parsed.session?.mfaActive === true ? true : true,
       credential_status: 'active',
+      partial: false,
       notes: parsed.user
         ? `okta /users/me replay succeeded for ${parsed.user.profile?.login ?? parsed.user.id ?? 'user'}`
         : `okta /sessions/me replay succeeded for userId ${parsed.session?.userId ?? '?'}`,

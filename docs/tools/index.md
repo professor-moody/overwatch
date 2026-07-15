@@ -59,11 +59,11 @@ Overwatch exposes its MCP tools organized by function (the live count comes from
 | [`validate_token_credential`](token-credential.md) | Replay a token credential against a provider API | No |
 | [`test_webapp_credential`](test-webapp-credential.md) | Test a credential against a web app (form/basic/bearer/cookie) | No |
 | [`ingest_screenshots`](ingest-screenshots.md) | Ingest gowitness/aquatone PNGs as viewable screenshot evidence | No |
-| [`expand_aws_credential`](cloud-playbooks.md) | Generate an AWS recon plan from a captured credential | No |
-| [`expand_github_credential`](cloud-playbooks.md) | Generate a GitHub recon plan from a captured token | No |
-| [`expand_entra_credential`](cloud-playbooks.md) | Generate an Entra ID / Microsoft Graph recon plan | No |
-| [`exchange_refresh_token`](cloud-playbooks.md) | Generate a refresh-token exchange step for Entra tokens | No |
-| [`expand_oidc_capture`](cloud-playbooks.md) | Generate replay steps for captured CI/CD OIDC tokens | No |
+| [`expand_aws_credential`](cloud-playbooks.md) | Generate a dependency-aware AWS recon plan from a captured credential | Yes |
+| [`expand_github_credential`](cloud-playbooks.md) | Generate a paginated GitHub recon plan from a captured token | Yes |
+| [`expand_entra_credential`](cloud-playbooks.md) | Generate a tenant-bound Entra ID / Microsoft Graph recon plan | Yes |
+| [`exchange_refresh_token`](cloud-playbooks.md) | Generate a refresh-token exchange step for Entra tokens | Yes |
+| [`expand_oidc_capture`](cloud-playbooks.md) | Generate replay steps for captured CI/CD OIDC tokens | Yes |
 | [`check_tools`](check-tools.md) | Inspect installed offensive tooling | Yes |
 | [`track_process`](track-process.md) | Register a long-running scan | No |
 | [`check_processes`](check-processes.md) | Inspect tracked process state | Yes |

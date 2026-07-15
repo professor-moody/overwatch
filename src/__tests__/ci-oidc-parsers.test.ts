@@ -196,6 +196,28 @@ describe('parseGitHubActionsOidc', () => {
     const finding = parseGitHubActionsOidc(JSON.stringify(trust));
     expect(finding.nodes.find(n => n.type === 'idp_application')).toBeUndefined();
   });
+
+  it('parses the official repository customization response using repository context', () => {
+    const finding = parseGitHubActionsOidc(JSON.stringify({
+      use_default: false,
+      include_claim_keys: ['repo', 'context', 'job_workflow_ref'],
+    }), 'test', { repo_full_name: 'acme/webapp', branch_name: 'main' });
+    const app = finding.nodes.find(node => node.type === 'idp_application');
+    expect(app).toMatchObject({
+      repo_full_name: 'acme/webapp', branch_name: 'main',
+      oidc_use_default: false,
+      oidc_include_claim_keys: ['repo', 'context', 'job_workflow_ref'],
+    });
+    expect(app?.sub_claim_pattern).toBeUndefined();
+  });
+
+  it('does not turn unrelated JSON into an OIDC customization merely because context exists', () => {
+    const finding = parseGitHubActionsOidc(JSON.stringify({ message: 'not a customization' }), 'test', {
+      repo_full_name: 'acme/webapp',
+    });
+    expect(finding.nodes).toEqual([]);
+    expect(finding.edges).toEqual([]);
+  });
 });
 
 // =============================================

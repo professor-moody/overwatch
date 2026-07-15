@@ -6,6 +6,7 @@ import { getSupportedParsers } from '../services/parsers/index.js';
 import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-ingest.js';
 import { withErrorBoundary } from './error-boundary.js';
 import { validateFilePath } from '../utils/path-validation.js';
+import { ParserContextSchema } from '../types.js';
 
 /** Render the shared parse result into the parse_output tool's JSON response shapes. */
 function formatParseResult(
@@ -15,14 +16,46 @@ function formatParseResult(
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const json = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 2) }] });
   const warnings = result.warnings && result.warnings.length > 0 ? result.warnings : undefined;
+  const common = {
+    parse_status: result.parse_status,
+    parse_outcome: result.parse_outcome,
+    tool: result.tool,
+    action_id: result.action_id,
+    finding_id: result.finding_id,
+    parsed_from,
+    nodes_parsed: result.nodes_parsed,
+    edges_parsed: result.edges_parsed,
+    warnings,
+    partial: result.partial,
+    partial_reason: result.partial_reason,
+    parse_stream: result.parse_stream,
+    parsed_from_evidence: result.parsed_from_evidence,
+    evidence_read_error: result.evidence_read_error,
+    exit_code: result.exit_code,
+    failure_stage: result.failure_stage,
+    parser_exception: result.parser_exception,
+  };
+  if (result.parse_outcome === 'partial') {
+    return json({
+      ...common,
+      parsed: true,
+      ingested: result.ingested,
+      isError: false,
+      message: ingest && result.ingested
+        ? `Partially parsed and ingested: ${result.ingested.new_nodes} nodes, ${result.ingested.new_edges} edges, ${result.ingested.inferred_edges} inferred`
+        : `Partially parsed: ${result.nodes_parsed} nodes, ${result.edges_parsed} edges (not ingested)`,
+    });
+  }
   switch (result.parse_status) {
     case 'no_parser':
-      return { ...json({ error: result.error, supported_parsers: result.supported_parsers }), isError: true };
+      return {
+        ...json({ ...common, parsed: false, ingested: false, isError: true, error: result.error, supported_parsers: result.supported_parsers }),
+        isError: true,
+      };
     case 'parser_exception':
       return {
         ...json({
-          parsed: false, parse_status: 'parser_exception', tool: result.tool, action_id: result.action_id,
-          finding_id: result.finding_id, error: result.error,
+          ...common, parsed: false, ingested: false, isError: true, error: result.error,
           message: `Parser '${result.tool}' threw — see error field for the exception and input prefix.`,
         }),
         isError: true,
@@ -30,8 +63,7 @@ function formatParseResult(
     case 'no_data':
       return {
         ...json({
-          parsed: false, ingested: false, parse_status: 'no_data', tool: result.tool, action_id: result.action_id,
-          finding_id: result.finding_id, parsed_from, nodes_parsed: 0, edges_parsed: 0, warnings,
+          ...common, parsed: false, ingested: false, isError: true,
           message: 'Output parsed but no data extracted. Check the output format.',
         }),
         isError: true,
@@ -39,19 +71,15 @@ function formatParseResult(
     case 'validation_failed':
       return {
         ...json({
-          parsed: true, parse_status: 'validation_failed', tool: result.tool, action_id: result.action_id,
-          finding_id: result.finding_id, parsed_from, ingested: false, validation_errors: result.validation_errors, warnings,
+          ...common, parsed: result.parsed, ingested: false, isError: true,
+          validation_errors: result.validation_errors,
         }),
         isError: true,
       };
     case 'ok':
     default:
       return json({
-        parsed: true, parse_status: 'ok', tool: result.tool, action_id: result.action_id, finding_id: result.finding_id,
-        parsed_from, nodes_parsed: result.nodes_parsed, edges_parsed: result.edges_parsed, warnings,
-        ingested: result.ingested
-          ? { new_nodes: result.ingested.new_nodes, new_edges: result.ingested.new_edges, inferred_edges: result.ingested.inferred_edges }
-          : undefined,
+        ...common, parsed: true, ingested: result.ingested, isError: false,
         message: ingest && result.ingested
           ? `Parsed and ingested: ${result.ingested.new_nodes} nodes, ${result.ingested.new_edges} edges, ${result.ingested.inferred_edges} inferred`
           : `Parsed: ${result.nodes_parsed} nodes, ${result.edges_parsed} edges (not ingested)`,
@@ -96,10 +124,7 @@ Pass either the raw output content or a local file path for large artifacts.`,
         agent_id: z.string().optional().describe('Agent ID to attribute the findings to'),
         action_id: z.string().optional().describe('Stable action ID linking this parse to a validated/executed action'),
         frontier_item_id: z.string().optional().describe('Frontier item this parse came from'),
-        context: z.object({
-          domain: z.string().optional().describe('Domain to associate with parsed credentials/users when not present in output (e.g. north.sevenkingdoms.local)'),
-          source_host: z.string().optional().describe('Host IP/hostname that the tool was run against (creates DUMPED_FROM provenance edges for credential dumps)'),
-        }).optional().describe('Optional context for parsers that benefit from domain/host information'),
+        context: ParserContextSchema.optional().describe('Optional credential, tenant, repository, branch, cloud, target, domain, host, or provider-specific parser context'),
         ingest: z.boolean().default(true).describe('Automatically ingest parsed findings into the graph'),
         list_parsers: z.boolean().default(false).describe('List all supported parser names'),
       },

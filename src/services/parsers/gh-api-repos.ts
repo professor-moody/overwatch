@@ -44,7 +44,9 @@ export function parseGhApiRepos(
   let repos: GhRepo[];
   try {
     const parsed = JSON.parse(output);
-    repos = Array.isArray(parsed) ? parsed as GhRepo[] : [parsed as GhRepo];
+    repos = Array.isArray(parsed)
+      ? parsed.flatMap((page: unknown) => Array.isArray(page) ? page : [page]) as GhRepo[]
+      : [parsed as GhRepo];
   } catch {
     return { id: `gh-repos-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }

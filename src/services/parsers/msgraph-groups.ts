@@ -37,7 +37,7 @@ export function parseMsGraphGroups(
   const now = new Date().toISOString();
   const ctx = (context ?? {}) as PlaybookContext;
 
-  let payload: { value?: MsGraphGroup[] };
+  let payload: { value?: MsGraphGroup[]; '@odata.nextLink'?: string };
   try {
     payload = JSON.parse(output);
   } catch {
@@ -49,7 +49,11 @@ export function parseMsGraphGroups(
     return { id: `msgraph-groups-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
-  const tenant = ctx.tenant_id ?? 'unknown';
+  const tenant = typeof ctx.tenant_id === 'string' && !/^(common|organizations|consumers|unknown)$/i.test(ctx.tenant_id)
+    ? ctx.tenant_id : undefined;
+  if (!tenant) {
+    return { id: `msgraph-groups-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
 
   for (const g of groups) {
     if (!g.id || !g.displayName) continue;
@@ -57,12 +61,15 @@ export function parseMsGraphGroups(
     // controls.
     if (g.mailEnabled === true && g.securityEnabled !== true) continue;
 
-    const id = groupId(g.displayName, `entra:${tenant}`);
+    // Entra display names are not unique. Key by the immutable Graph object id
+    // while retaining the operator-friendly display name as the label.
+    const id = groupId(g.id, `entra:${tenant}`);
     nodes.push({
       id,
       type: 'group',
       label: g.displayName,
       domain: tenant,
+      tenant_id: tenant,
       object_id: g.id,
       description: g.description ?? undefined,
       security_enabled: g.securityEnabled !== false,
@@ -73,5 +80,10 @@ export function parseMsGraphGroups(
     });
   }
 
-  return { id: `msgraph-groups-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  const partial = typeof payload['@odata.nextLink'] === 'string' && payload['@odata.nextLink'].length > 0;
+  return {
+    id: `msgraph-groups-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+    partial: partial || undefined,
+    partial_reason: partial ? 'msgraph_pagination_incomplete' : undefined,
+  };
 }

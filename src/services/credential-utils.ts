@@ -137,6 +137,7 @@ export function isCredentialUsableForAuth(node: NodeProperties): boolean {
     case 'pat':
     case 'app_password':
     case 'session_cookie':
+    case 'aws_session_credentials':
       return true;
     case 'oidc_refresh_token':
       // Refresh tokens grant the ability to mint access tokens, but

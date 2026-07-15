@@ -120,7 +120,8 @@ export interface NodeProperties {
     // scope-bound, sometimes refreshable). Treat them distinctly so coverage,
     // expiry, and MFA reasoning are honest.
     | 'oidc_id_token' | 'oidc_access_token' | 'oidc_refresh_token'
-    | 'saml_assertion' | 'oauth_client_secret' | 'pat' | 'app_password' | 'session_cookie';
+    | 'saml_assertion' | 'oauth_client_secret' | 'pat' | 'app_password' | 'session_cookie'
+    | 'aws_session_credentials';
   cred_usable_for_auth?: boolean;
   cred_evidence_kind?: 'capture' | 'crack' | 'dump' | 'spray_success' | 'manual';
   cred_is_default_guess?: boolean;
@@ -483,16 +484,106 @@ export interface EdgeProperties {
 // --- Parser Context ---
 
 export interface ParseContext {
+  // Directory / network attribution.
   domain?: string;
   source_host?: string;
   domain_aliases?: Record<string, string>;
+  host?: string;
+  target_host?: string;
+  target_ip?: string;
+  target_id?: string;
+  target_url?: string;
+  request_url?: string;
   // Cloud context (Sprint 11+)
+  cloud_provider?: string;
   cloud_account?: string;
+  aws_account?: string;
+  account_id?: string;
+  caller_arn?: string;
+  principal_kind?: string;
+  principal_name?: string;
+  credential_execution_binding?: string;
+  credential_execution_binding_identity?: string;
   cloud_region?: string;
+  target_cloud_identity_id?: string;
+  target_role_arn?: string;
+  // Credential / IdP attribution.
+  source_credential_id?: string;
+  source_idp_application_id?: string;
+  cred_user?: string;
+  tenant_id?: string;
+  // Repository / CI attribution.
+  repository?: string;
+  repo_full_name?: string;
+  branch?: string;
+  branch_name?: string;
+  owner?: string;
+  gitlab_project?: string;
+  circleci_org_id?: string;
+  circleci_project_id?: string;
   // Network context (Sprint 9+)
   network_zone?: string;
+  // Execution and parser-specific validation context.
+  command_line?: string;
+  username?: string;
+  method?: string;
+  status_nonce?: string;
+  success_status?: number[];
+  success_body_contains?: string;
+  success_body_excludes?: string;
+  success_redirect_contains?: string;
   [key: string]: unknown;
 }
+
+/**
+ * Canonical context accepted by every parser entry point. Passthrough is
+ * intentional: providers and plugins may add namespaced context without a
+ * core release, while the documented cross-provider fields stay validated.
+ */
+export const ParserContextSchema: z.ZodType<ParseContext> = z.object({
+  domain: z.string().optional(),
+  source_host: z.string().optional(),
+  domain_aliases: z.record(z.string()).optional(),
+  host: z.string().optional(),
+  target_host: z.string().optional(),
+  target_ip: z.string().optional(),
+  target_id: z.string().optional(),
+  target_url: z.string().optional(),
+  request_url: z.string().optional(),
+  cloud_provider: z.string().optional(),
+  cloud_account: z.string().optional(),
+  aws_account: z.string().optional(),
+  account_id: z.string().optional(),
+  caller_arn: z.string().optional(),
+  principal_kind: z.string().optional(),
+  principal_name: z.string().optional(),
+  credential_execution_binding: z.string().optional(),
+  credential_execution_binding_identity: z.string().optional(),
+  cloud_region: z.string().optional(),
+  target_cloud_identity_id: z.string().optional(),
+  target_role_arn: z.string().optional(),
+  source_credential_id: z.string().optional(),
+  source_idp_application_id: z.string().optional(),
+  cred_user: z.string().optional(),
+  tenant_id: z.string().optional(),
+  repository: z.string().optional(),
+  repo_full_name: z.string().optional(),
+  branch: z.string().optional(),
+  branch_name: z.string().optional(),
+  owner: z.string().optional(),
+  gitlab_project: z.string().optional(),
+  circleci_org_id: z.string().optional(),
+  circleci_project_id: z.string().optional(),
+  network_zone: z.string().optional(),
+  command_line: z.string().optional(),
+  username: z.string().optional(),
+  method: z.string().optional(),
+  status_nonce: z.string().optional(),
+  success_status: z.array(z.number().int()).optional(),
+  success_body_contains: z.string().optional(),
+  success_body_excludes: z.string().optional(),
+  success_redirect_contains: z.string().optional(),
+}).passthrough();
 
 // --- Engagement Config ---
 
@@ -1088,6 +1179,9 @@ export interface Finding {
     filename?: string;
   };
   raw_output?: string;
+  /** Parser recognized a truncated/paginated payload and emitted only a prefix. */
+  partial?: boolean;
+  partial_reason?: string;
 }
 
 // --- Engagement Phases ---

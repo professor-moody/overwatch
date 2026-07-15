@@ -36,7 +36,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // Credential relationships
   VALID_ON: { source: ['user', 'group', 'credential'], target: ['host', 'service'] },
   TESTED_CRED: { source: ['user', 'group', 'credential'], target: ['host', 'service'] },
-  OWNS_CRED: { source: ['user'], target: ['credential'] },
+  OWNS_CRED: { source: ['user', 'cloud_identity', 'idp_principal', 'idp_application'], target: ['credential'] },
   DERIVED_FROM: { source: ['credential'], target: ['credential'] },
   // AD attack paths
   CAN_DCSYNC: { source: ['user', 'group'], target: ['domain'] },
@@ -74,7 +74,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   // S3-A3: ESC15 (CVE-2024-49019) — enrollee-supplies-subject + schema v1.
   ESC15: { source: ['user', 'group'], target: ['cert_template'] },
   // Trust
-  TRUSTS: { source: ['domain'], target: ['domain'] },
+  TRUSTS: { source: ['domain', 'idp_application'], target: ['domain', 'idp'] },
   SAME_DOMAIN: { source: ['host', 'user', 'group'], target: ['host', 'user', 'group'] },
   // Roasting
   AS_REP_ROASTABLE: { source: ['user'], target: ['domain'] },
@@ -105,7 +105,7 @@ export const EDGE_CONSTRAINTS: Partial<Record<EdgeType, EdgeConstraint>> = {
   HAS_ENDPOINT: { source: ['webapp'], target: ['api_endpoint'] },
   AUTH_BYPASS: { source: ['vulnerability'], target: ['webapp', 'api_endpoint'] },
   // Cloud infrastructure
-  ASSUMES_ROLE: { source: ['cloud_identity', 'cloud_resource'], target: ['cloud_identity'] },
+  ASSUMES_ROLE: { source: ['credential', 'cloud_identity', 'cloud_resource'], target: ['cloud_identity'] },
   // Service principal → app registration directory binding (Azure AD).
   // Distinct from ASSUMES_ROLE which implies RBAC takeover semantics.
   SERVICE_PRINCIPAL_FOR: { source: ['cloud_identity'], target: ['cloud_identity'] },

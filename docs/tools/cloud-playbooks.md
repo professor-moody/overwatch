@@ -2,22 +2,58 @@
 
 Generate replay and enumeration plans for captured cloud, SaaS, and CI/CD credentials.
 
-**Read-only:** No
+**Read-only:** Yes
 
-These tools generally produce structured plans rather than running the whole chain themselves. Execute emitted commands through [`run_tool`](run-tool.md) or [`run_bash`](run-bash.md) so validation, approval, evidence, and parser ingestion stay intact.
+The playbook tools are stateless plan generators. Calling one does not execute its plan, stamp the credential as expanded, or create durable run state. Execution and parser ingestion can mutate engagement state; those actions still pass through their normal validation, approval, evidence, and parsing paths.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `expand_aws_credential` | Build an AWS recon plan from an access key, STS session, or assumed-role credential. |
-| `expand_github_credential` | Build a GitHub recon plan from a captured token. |
-| `expand_entra_credential` | Build a Microsoft Graph / Entra ID recon plan. |
-| `exchange_refresh_token` | Produce an approval-gated refresh-token exchange step; the operator supplies `REFRESH_TOKEN` at execution time. |
-| `expand_oidc_capture` | Build validation/replay steps for captured CI/CD OIDC tokens and candidate cloud roles. |
+| `expand_aws_credential` | Build a dependency-aware AWS plan from an access key, STS session, or assumed-role credential. |
+| `expand_github_credential` | Build a paginated GitHub plan from a captured token, optionally including repository-specific checks. |
+| `expand_entra_credential` | Build a tenant-bound Microsoft Graph / Entra ID plan. |
+| `exchange_refresh_token` | Build an approval-gated Entra refresh-token exchange step. |
+| `expand_oidc_capture` | Build direct `validate_token_credential` calls for captured CI/CD OIDC tokens and candidate cloud roles. |
 
-## Usage Notes
+## Executing a returned plan
 
-- Playbook output includes technique labels, commands, parser hints, and expected graph shapes.
-- `expand_entra_credential` emits single-page Graph requests; handle pagination during execution when a tenant has more results.
-- `exchange_refresh_token` does not persist the raw refresh token.
+- Treat `status: "blocked"`, `ready: false`, or `command: null` as non-executable. Run the prerequisite, ingest its output, and call the generator again so it can resolve the missing binding.
+- Honor the returned execution surface. A command descriptor names `runner: "run_bash"` or `runner: "run_tool"`; a direct-tool descriptor names `tool` and `args`. Do not assume every playbook step is a `run_tool` call.
+- `env_from_credential` maps an environment-variable name to a credential node ID. Resolve that node and put its actual selected credential value in `run_bash.env`; the credential ID itself is not the environment-variable value. Commands fail closed before network access when a required binding is absent.
+- Forward `parse_with`, `parser_context`, and `parse_stream` exactly as returned. These fields carry attribution such as the source credential, tenant, repository, account, caller ARN, and target identity.
+- Plan generation remains stateless in this release. Re-running a generator is how dependencies are resolved; durable playbook runs arrive separately.
+
+## AWS
+
+`expand_aws_credential` requires an explicit execution binding before it emits an executable caller-identity command. Use one of:
+
+- `aws_profile` for a profile known to represent the selected credential;
+- `session_credentials_env_var` (default `OVERWATCH_AWS_SESSION_CREDENTIALS`) for an `aws_session_credentials` JSON credential, resolved into `run_bash.env`; or
+- `use_ambient_credentials: true` only when the current AWS environment/default chain is known to contain the selected AWS-marked credential.
+
+Without one of those bindings, caller identity and every dependent descriptor are blocked with null commands. With a binding, run and ingest `aws sts get-caller-identity` first, then call `expand_aws_credential` again with the same binding options. The second plan binds `account_id`, `caller_arn`, `principal_kind`, and the target identity server-side; selects user-policy versus role-policy enumeration; and makes the applicable IAM summary, attached-policy, CloudFox, S3, and Lambda steps ready. Unsupported or ambiguous principal bindings remain blocked instead of being guessed.
+
+AWS steps use `runner: "run_bash"` because their commands include fail-closed guards and, where needed, shell setup. CloudFox is parsed from its generated JSON files, not its console output. The resource steps use the dedicated `aws-iam-attached-policies`, `aws-s3-list-buckets`, and `aws-lambda-list-functions` parsers.
+
+## GitHub
+
+GitHub steps bind the selected token through `run_bash.env.OVERWATCH_GITHUB_TOKEN` by default; override the name with `token_env_var`. Organization, repository, Actions-secret, and deploy-key list commands use `gh api --paginate --slurp`, so their parsers receive complete JSON arrays rather than concatenated page objects.
+
+`candidate_repos` accepts either legacy `"owner/repo"` strings or records shaped like:
+
+```json
+{ "repo_full_name": "owner/repo", "default_branch": "main" }
+```
+
+The record form makes branch-protection inspection ready immediately. For a legacy string with no `default_branch` already in the graph, the plan emits a ready repository-details step and a blocked branch-protection step with `command: null`. Ingest repository details, then re-expand the credential to resolve the default branch.
+
+## Entra ID
+
+`exchange_refresh_token` uses `run_bash.env.OVERWATCH_ENTRA_REFRESH_TOKEN` by default (override with `refresh_token_env_var`). `expand_entra_credential` uses `run_bash.env.OVERWATCH_ENTRA_TOKEN` by default (override with `token_env_var`). In both cases, resolve `env_from_credential` to the actual selected token and keep the returned parser context unchanged.
+
+When no concrete tenant is available, only `/me` is ready. The `/users`, `/applications`, `/servicePrincipals`, and `/groups` descriptors are blocked with null commands until `/me` is ingested and the credential is re-expanded. Each collection descriptor requests one page with `$top=999`; follow and ingest every `@odata.nextLink` for complete coverage. The service-principal parser records exposed scopes, app roles, and ownership metadata without asserting an inferred finding.
+
+## CI/CD OIDC
+
+`expand_oidc_capture` emits direct `validate_token_credential` invocations (`tool` plus `args`), not shell commands. A successful AWS STS replay creates temporary AWS session credentials; pass that resulting credential to `expand_aws_credential` and provide its returned execution binding before enumeration.

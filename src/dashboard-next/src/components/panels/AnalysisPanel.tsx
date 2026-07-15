@@ -523,7 +523,10 @@ function ReparseControls({ actionId, evidenceId, defaultTool }: { actionId: stri
     return <button onClick={() => setExpanded(true)} className="text-[11px] text-accent hover:underline">Re-parse output…</button>;
   }
 
-  const canPromote = !!result && result.parse_status === 'ok' && !result.ingested && (result.nodes_parsed + result.edges_parsed) > 0;
+  const canPromote = !!result
+    && (result.parse_outcome === 'ok' || result.parse_outcome === 'partial')
+    && !result.ingested
+    && (result.nodes_parsed + result.edges_parsed) > 0;
   return (
     <div className="rounded border border-border bg-elevated p-2 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -553,6 +556,10 @@ function ReparseControls({ actionId, evidenceId, defaultTool }: { actionId: stri
 }
 
 function ReparseResult({ result }: { result: api.ReparseResponse }) {
+  if (result.parse_outcome === 'partial') {
+    const action = result.ingested ? 'Partially parsed and promoted' : 'Partially parsed';
+    return <div className="text-[11px] text-warning">{action}: {result.nodes_parsed} nodes, {result.edges_parsed} edges{result.partial_reason ? ` (${result.partial_reason.replaceAll('_', ' ')})` : ''}.</div>;
+  }
   if (result.ingested) {
     return <div className="text-[11px] text-success">Promoted: {result.ingested.new_nodes} nodes, {result.ingested.new_edges} edges, {result.ingested.inferred_edges} inferred.</div>;
   }

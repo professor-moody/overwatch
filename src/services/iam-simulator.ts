@@ -330,8 +330,16 @@ function evaluateAWS(
 ): IAMEvalResult {
   const denyPolicies: string[] = [];
   const allowPolicies: string[] = [];
+  const conditionalDenyPolicies: string[] = [];
+  const conditionalAllowPolicies: string[] = [];
+  const enumeratedOnlyPolicies: string[] = [];
 
   for (const { id, node } of policies) {
+    const policyName = node.policy_name || node.label || id;
+    if (node.permission_expansion === 'unevaluable') {
+      enumeratedOnlyPolicies.push(policyName);
+      continue;
+    }
     const policyActions = (node.actions as string[]) || [];
     // `|| ['*']` only fills in when `resources` is UNDEFINED (a source that
     // omits it → match-all, preserving prior behavior). A present-but-empty `[]`
@@ -341,7 +349,6 @@ function evaluateAWS(
     const policyNotActions = (node.not_actions as string[]) || [];
     const policyNotResources = (node.not_resources as string[]) || [];
     const effect = node.effect || 'allow';
-    const policyName = node.policy_name || node.label || id;
 
     // AWS uses Action XOR NotAction (and Resource XOR NotResource). NotAction
     // means "every action EXCEPT these"; ignoring it turned a broad "Allow
@@ -355,7 +362,11 @@ function evaluateAWS(
     const resourceMatch = matchWithNot(policyResources, policyNotResources, resource, resourceIsAll, matchResource);
 
     if (actionMatch && resourceMatch) {
-      if (effect === 'deny') {
+      if (node.condition_present === true && effect === 'deny') {
+        conditionalDenyPolicies.push(policyName);
+      } else if (node.condition_present === true) {
+        conditionalAllowPolicies.push(policyName);
+      } else if (effect === 'deny') {
         denyPolicies.push(policyName);
       } else {
         allowPolicies.push(policyName);
@@ -375,13 +386,49 @@ function evaluateAWS(
     };
   }
 
+  if (enumeratedOnlyPolicies.length > 0) {
+    return {
+      allowed: false,
+      decision: 'indeterminate',
+      reason: `Attached AWS policies were enumerated but their statements were not expanded: ${enumeratedOnlyPolicies.join(', ')}`,
+      matching_policies: allowPolicies,
+      deny_policies: conditionalDenyPolicies.length > 0 ? conditionalDenyPolicies : undefined,
+      enumerated_only_policies: enumeratedOnlyPolicies,
+      provider: 'aws',
+      warnings: ['Fetch or parse the attached policy documents before treating this result as an allow or deny.'],
+    };
+  }
+
   if (allowPolicies.length > 0) {
+    if (conditionalDenyPolicies.length > 0) {
+      return {
+        allowed: false,
+        decision: 'indeterminate',
+        reason: `An unconditional allow matches, but conditional deny policy applicability is unknown: ${conditionalDenyPolicies.join(', ')}`,
+        matching_policies: allowPolicies,
+        deny_policies: conditionalDenyPolicies,
+        provider: 'aws',
+        warnings: ['AWS Condition blocks were not evaluated because no request context was provided.'],
+      };
+    }
     return {
       allowed: true,
       decision: 'allowed',
       reason: `Allowed by: ${allowPolicies.join(', ')}`,
       matching_policies: allowPolicies,
       provider: 'aws',
+    };
+  }
+
+  if (conditionalAllowPolicies.length > 0) {
+    return {
+      allowed: false,
+      decision: 'indeterminate',
+      reason: `Only conditional allow policies match, and their conditions could not be evaluated: ${conditionalAllowPolicies.join(', ')}`,
+      matching_policies: conditionalAllowPolicies,
+      deny_policies: conditionalDenyPolicies.length > 0 ? conditionalDenyPolicies : undefined,
+      provider: 'aws',
+      warnings: ['AWS Condition blocks were not evaluated because no request context was provided.'],
     };
   }
 

@@ -773,7 +773,8 @@ export interface EvidenceRawResponse {
 
 export interface ReparseResponse {
   parsed: boolean;
-  parse_status: 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'no_parser';
+  parse_status: 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'partial' | 'no_parser';
+  parse_outcome: 'ok' | 'no_data' | 'validation_failed' | 'parser_exception' | 'partial';
   isError: boolean;
   tool: string;
   action_id: string;
@@ -781,11 +782,19 @@ export interface ReparseResponse {
   finding_id?: string;
   nodes_parsed: number;
   edges_parsed: number;
-  ingested?: { new_nodes: number; new_edges: number; inferred_edges: number };
+  ingested?: false | { new_nodes: number; new_edges: number; inferred_edges: number };
   validation_errors?: unknown[];
   warnings?: string[];
   error?: string;
+  parser_exception?: string;
   supported_parsers?: string[];
+  failure_stage?: 'context' | 'parser_selection' | 'finding_validation';
+  partial?: true;
+  partial_reason?: string;
+  parse_stream?: 'stdout' | 'stderr' | 'combined';
+  parsed_from_evidence?: boolean;
+  evidence_read_error?: string;
+  exit_code?: number | null;
 }
 
 export async function getParsers(): Promise<{ parsers: string[] }> {

@@ -6,9 +6,8 @@
 //
 // Emits idp_application per registration. signInAudience tells us if
 // the app accepts external (multi-tenant) tokens — high-priv consent
-// abuse candidate. requiredResourceAccess.scopes is collected onto
-// app_scopes so the CONSENT_ABUSE inference rule (cross-tier-inference)
-// can flag overly permissive apps without re-querying.
+// abuse candidate. requiredResourceAccess contains permission GUIDs; retain
+// those explicitly without pretending they are granted scope names.
 // ============================================================
 
 import type { Finding, ParseContext } from '../../types.js';
@@ -43,7 +42,7 @@ export function parseMsGraphApplications(
   const now = new Date().toISOString();
   const ctx = (context ?? {}) as PlaybookContext;
 
-  let payload: { value?: MsGraphApp[] };
+  let payload: { value?: MsGraphApp[]; '@odata.nextLink'?: string };
   try {
     payload = JSON.parse(output);
   } catch {
@@ -54,8 +53,23 @@ export function parseMsGraphApplications(
   if (!Array.isArray(apps)) {
     return { id: `msgraph-apps-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
+  const validApps = apps.filter((app): app is MsGraphApp & { appId: string; displayName: string } =>
+    typeof app.appId === 'string' && app.appId.length > 0
+    && typeof app.displayName === 'string' && app.displayName.length > 0);
+  if (validApps.length === 0) {
+    const partial = typeof payload['@odata.nextLink'] === 'string' && payload['@odata.nextLink'].length > 0;
+    return {
+      id: `msgraph-apps-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+      partial: partial || undefined,
+      partial_reason: partial ? 'msgraph_pagination_incomplete' : undefined,
+    };
+  }
 
-  const tenant = ctx.tenant_id ?? 'unknown';
+  const tenant = typeof ctx.tenant_id === 'string' && !/^(common|organizations|consumers|unknown)$/i.test(ctx.tenant_id)
+    ? ctx.tenant_id : undefined;
+  if (!tenant) {
+    return { id: `msgraph-apps-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
   const tenantIdpId = idpId('entra', tenant);
   nodes.push({
     id: tenantIdpId,
@@ -67,13 +81,9 @@ export function parseMsGraphApplications(
     confidence: 1.0,
   });
 
-  for (const a of apps) {
-    if (!a.appId || !a.displayName) continue;
-    // Aggregate requested permission scope IDs into app_scopes. Real
-    // scope names require a follow-up serviceprincipal lookup; the IDs
-    // are still useful for the consent-abuse rule (which matches scope
-    // patterns) when the app already declares plain Mail.* / Files.*
-    // names in extensionAttributes. For now, we capture both.
+  for (const a of validApps) {
+    // These are permission GUIDs, not human-readable scope names. A later
+    // grants/assignments query is required before consent-abuse reasoning.
     const scopeIds: string[] = [];
     for (const r of a.requiredResourceAccess ?? []) {
       for (const acc of r.resourceAccess ?? []) {
@@ -95,12 +105,17 @@ export function parseMsGraphApplications(
       sign_in_audience: a.signInAudience,
       multi_tenant: a.signInAudience !== 'AzureADMyOrg' && a.signInAudience !== undefined,
       publisher_domain: a.publisherDomain,
-      app_scopes: scopeIds,
+      requested_permission_ids: scopeIds,
       redirect_uris: a.web?.redirectUris,
       discovered_at: now,
       confidence: 1.0,
     });
   }
 
-  return { id: `msgraph-apps-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  const partial = typeof payload['@odata.nextLink'] === 'string' && payload['@odata.nextLink'].length > 0;
+  return {
+    id: `msgraph-apps-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges,
+    partial: partial || undefined,
+    partial_reason: partial ? 'msgraph_pagination_incomplete' : undefined,
+  };
 }

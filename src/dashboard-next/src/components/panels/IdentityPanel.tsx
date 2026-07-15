@@ -72,6 +72,7 @@ export function tokenCredentials(nodes: ExportedNode[]): ExportedNode[] {
   const TOKEN_KINDS = new Set([
     'oidc_id_token', 'oidc_access_token', 'oidc_refresh_token',
     'saml_assertion', 'oauth_client_secret', 'pat', 'app_password', 'session_cookie',
+    'aws_session_credentials',
   ]);
   return nodes.filter(n => {
     if (n.type !== 'credential') return false;

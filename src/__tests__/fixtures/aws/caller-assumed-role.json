@@ -1,0 +1,5 @@
+{
+  "UserId": "AROAEXAMPLE:overwatch-session",
+  "Account": "111122223333",
+  "Arn": "arn:aws:sts::111122223333:assumed-role/PowerUser/overwatch-session"
+}

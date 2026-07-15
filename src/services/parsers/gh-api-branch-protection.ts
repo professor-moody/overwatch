@@ -13,7 +13,7 @@
 // ============================================================
 
 import type { Finding, ParseContext } from '../../types.js';
-import { idpApplicationId } from '../parser-utils.js';
+import { idpApplicationId, idpId } from '../parser-utils.js';
 
 interface BranchProtection {
   required_status_checks?: { strict?: boolean; contexts?: string[] };
@@ -55,16 +55,38 @@ export function parseGhApiBranchProtection(
     return { id: `gh-branch-protection-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
   }
 
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { id: `gh-branch-protection-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
+  const unprotected = typeof payload.message === 'string' && /branch not protected/i.test(payload.message);
+  const knownProtectionShape = [
+    'required_status_checks', 'enforce_admins', 'required_pull_request_reviews',
+    'restrictions', 'required_signatures', 'required_linear_history',
+  ].some(key => Object.prototype.hasOwnProperty.call(payload, key));
+  // 403/rate-limit/not-found bodies are API errors, not evidence of weak or
+  // absent protection. Only the canonical unprotected message is actionable.
+  if (!unprotected && (payload.message || !knownProtectionShape)) {
+    return { id: `gh-branch-protection-${Date.now()}`, agent_id: agentId, timestamp: now, nodes, edges };
+  }
+
   const owner = ctx.repo_full_name.split('/')[0];
   const appId = idpApplicationId('github_org', owner, ctx.repo_full_name);
+  const orgId = idpId('github_org', owner);
   const branch = ctx.branch_name ?? 'main';
+  nodes.push({
+    id: orgId, type: 'idp', label: `github:${owner}`,
+    idp_kind: 'github_org', tenant_id: owner,
+    discovered_at: now, confidence: 1.0,
+  });
 
   // 404-shaped response → fully unprotected.
-  if (payload.message && /not protected/i.test(payload.message)) {
+  if (unprotected) {
     nodes.push({
       id: appId,
       type: 'idp_application',
       label: ctx.repo_full_name,
+      idp_id: orgId,
       idp_kind: 'github_org',
       app_kind: 'github_repo',
       tenant_id: owner,
@@ -95,6 +117,7 @@ export function parseGhApiBranchProtection(
     id: appId,
     type: 'idp_application',
     label: ctx.repo_full_name,
+    idp_id: orgId,
     idp_kind: 'github_org',
     app_kind: 'github_repo',
     tenant_id: owner,

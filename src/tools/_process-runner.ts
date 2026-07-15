@@ -13,8 +13,8 @@
 
 import { spawn } from 'child_process';
 import type { GraphEngine } from '../services/graph-engine.js';
-import { parseOutput, getSupportedParsers, isAcceptableParserExit, isParserError } from '../services/parsers/index.js';
-import { prepareFindingForIngest } from '../services/finding-validation.js';
+import { isAcceptableParserExit } from '../services/parsers/index.js';
+import { parseAndMaybeIngest, type ParseIngestResult } from '../services/parse-ingest.js';
 import { actionIdOrUuid } from '../services/deterministic-id.js';
 import type { ParseContext } from '../types.js';
 
@@ -1682,8 +1682,9 @@ export async function runInstrumentedProcess(
   // ---- 5. Terminal lifecycle event ----
   // Phase I: a non-zero exit no longer suppresses parsing. Tools like
   // nuclei/sqlmap/gobuster routinely return 1 to signal "no match" — the
-  // captured output is still parseable. Parsing is gated only on having a
-  // captured stream and not having crashed before producing output.
+  // captured output is still parseable. A requested parser is invoked even
+  // for an empty selected stream so zero-yield execution cannot masquerade as
+  // successful ingestion.
   const parseable = !result.spawn_error && (result.stdout.total_bytes > 0 || result.stderr.total_bytes > 0);
   const parserExitOk = parse_with ? isAcceptableParserExit(parse_with, result.exit_code) : true;
   // F8: when an explicit parser is supplied, let parser-aware exit handling
@@ -1750,29 +1751,16 @@ export async function runInstrumentedProcess(
   liveOutput.markDone(normalizedActionId);
 
   // ---- 6. Optional inline parse + ingest ----
-  let parse_summary: Record<string, unknown> | undefined;
-  if (parse_with && parseable) {
-    const supported = getSupportedParsers();
-    if (!supported.includes(parse_with)) {
-      parse_summary = { error: `No parser found for: ${parse_with}`, supported_parsers: supported };
-    } else {
-      const ctx: ParseContext = { ...(parser_context as ParseContext | undefined) };
-      if (!ctx.domain_aliases) {
-        const aliases: Record<string, string> = {};
-        for (const node of engine.getNodesByType('domain')) {
-          const fqdn = (node.domain_name || node.label || '') as string;
-          if (fqdn && fqdn.includes('.')) {
-            aliases[fqdn.split('.')[0].toUpperCase()] = fqdn.toLowerCase();
-            if (typeof node.netbios_name === 'string' && node.netbios_name.length > 0) {
-              aliases[node.netbios_name.toUpperCase()] = fqdn.toLowerCase();
-            }
-          }
-        }
-        if (Object.keys(aliases).length > 0) ctx.domain_aliases = aliases;
-      }
-
+  let parse_summary: ParseIngestResult | undefined;
+  if (parse_with && !result.spawn_error) {
       const fullStdoutInline = result.stdout.toFullString();
       const fullStderrInline = result.stderr.toFullString();
+      const requestedStream = parse_stream ?? 'stdout';
+      const streamSelectedFromInline: 'stdout' | 'stderr' | 'combined' = requestedStream === 'auto'
+        ? (fullStdoutInline.trim().length > 0 ? 'stdout' : 'stderr')
+        : requestedStream;
+      const needsStdoutEvidence = streamSelectedFromInline === 'stdout' || streamSelectedFromInline === 'combined';
+      const needsStderrEvidence = streamSelectedFromInline === 'stderr' || streamSelectedFromInline === 'combined';
 
       // Phase D3: when stdout was truncated by the bounded buffer but the
       // streamed evidence captured the whole thing, parse from the evidence
@@ -1784,73 +1772,67 @@ export async function runInstrumentedProcess(
       // the MCP server during parser ingestion. When the evidence file is
       // larger than EVIDENCE_PARSE_MAX_BYTES, fall back to a head window
       // streamed via getRawOutputHead and mark the parse as partial.
-      let parseFromEvidence = false;
-      let parseFromEvidenceError: string | undefined;
-      let evidenceSizeExceeded = false;
+      let stdoutFromEvidence = false;
+      let stderrFromEvidence = false;
+      let stdoutEvidenceError: string | undefined;
+      let stderrEvidenceError: string | undefined;
+      let stdoutEvidenceSizeExceeded = false;
+      let stderrEvidenceSizeExceeded = false;
       let fullStdout = fullStdoutInline;
       let fullStderr = fullStderrInline;
-      if (stdoutInfo.truncated && stdout_evidence_id) {
+      if (needsStdoutEvidence && stdoutInfo.truncated && stdout_evidence_id) {
         try {
           const evstore = engine.getEvidenceStore();
           const onDisk = evstore.getRawOutput(stdout_evidence_id, { max_bytes: EVIDENCE_PARSE_MAX_BYTES });
           if (onDisk !== null) {
             fullStdout = onDisk;
-            parseFromEvidence = true;
+            stdoutFromEvidence = true;
           } else {
             // Either the file is missing OR it exceeds the size cap. Try a
             // head read to see which case we're in; null again means missing.
             const head = evstore.getRawOutputHead(stdout_evidence_id, EVIDENCE_PARSE_MAX_BYTES);
             if (head === null) {
-              parseFromEvidenceError = 'evidence_blob_missing';
+              stdoutEvidenceError = 'evidence_blob_missing';
             } else if (head.truncated) {
               fullStdout = head.text;
-              parseFromEvidence = true;
-              evidenceSizeExceeded = true;
-              parseFromEvidenceError = `evidence_too_large_for_full_parse: ${head.total_bytes} bytes (cap ${EVIDENCE_PARSE_MAX_BYTES})`;
+              stdoutFromEvidence = true;
+              stdoutEvidenceSizeExceeded = true;
+              stdoutEvidenceError = `evidence_too_large_for_full_parse: ${head.total_bytes} bytes (cap ${EVIDENCE_PARSE_MAX_BYTES})`;
             } else {
               fullStdout = head.text;
-              parseFromEvidence = true;
+              stdoutFromEvidence = true;
             }
           }
         } catch (err) {
-          parseFromEvidenceError = err instanceof Error ? err.message : String(err);
+          stdoutEvidenceError = err instanceof Error ? err.message : String(err);
         }
       }
-      if (stderrInfo.truncated && stderr_evidence_id) {
+      if (needsStderrEvidence && stderrInfo.truncated && stderr_evidence_id) {
         try {
           const evstore = engine.getEvidenceStore();
           const onDisk = evstore.getRawOutput(stderr_evidence_id, { max_bytes: EVIDENCE_PARSE_MAX_BYTES });
           if (onDisk !== null) {
             fullStderr = onDisk;
+            stderrFromEvidence = true;
           } else {
             const head = evstore.getRawOutputHead(stderr_evidence_id, EVIDENCE_PARSE_MAX_BYTES);
             if (head !== null) {
               fullStderr = head.text;
-              if (head.truncated) evidenceSizeExceeded = true;
+              stderrFromEvidence = true;
+              if (head.truncated) {
+                stderrEvidenceSizeExceeded = true;
+                stderrEvidenceError = `evidence_too_large_for_full_parse: ${head.total_bytes} bytes (cap ${EVIDENCE_PARSE_MAX_BYTES})`;
+              }
+            } else {
+              stderrEvidenceError = 'evidence_blob_missing';
             }
           }
-        } catch {
-          // best-effort — stderr fallback is not common
+        } catch (err) {
+          stderrEvidenceError = err instanceof Error ? err.message : String(err);
         }
       }
-      if (evidenceSizeExceeded) {
-        engine.logActionEvent({
-          description: 'Evidence too large for full parse — used head window',
-          agent_id,
-          action_id: normalizedActionId,
-          event_type: 'instrumentation_warning',
-          category: 'system',
-          details: {
-            stdout_evidence_id,
-            stderr_evidence_id,
-            max_bytes: EVIDENCE_PARSE_MAX_BYTES,
-            error: parseFromEvidenceError,
-          },
-        });
-      }
-
       // Phase D4: choose which stream feeds the parser.
-      const stream = parse_stream ?? 'stdout';
+      const stream = requestedStream;
       let parserInput: string;
       switch (stream) {
         case 'stderr':
@@ -1867,7 +1849,7 @@ export async function runInstrumentedProcess(
           parserInput = fullStdout;
           break;
       }
-      const usedStream: 'stdout' | 'stderr' | 'combined' | 'auto' =
+      const usedStream: 'stdout' | 'stderr' | 'combined' =
         stream === 'auto'
           ? (fullStdout.trim().length > 0 ? 'stdout' : 'stderr')
           : stream;
@@ -1878,124 +1860,72 @@ export async function runInstrumentedProcess(
       // would corrupt parsing. Parsers that carry a secret (test_webapp_credential)
       // must not emit it into their finding, and the response stdout/stderr the
       // operator sees is scrubbed above — so the plaintext still can't surface.
-      const finding = parseOutput(parse_with, parserInput, agent_id, ctx);
-      if (!finding) {
-        parse_summary = { error: `Parser '${parse_with}' returned no finding` };
+      // Phase I/E: incomplete execution or bounded evidence produces a
+      // canonical partial outcome. Completeness is recorded on the parse
+      // result/event (not stamped onto canonical nodes), and the shared
+      // service owns validation, ingestion, event logging, and persistence.
+      const parsedFromEvidence = usedStream === 'stdout'
+        ? stdoutFromEvidence
+        : usedStream === 'stderr'
+          ? stderrFromEvidence
+          : stdoutFromEvidence || stderrFromEvidence;
+      const boundedFallback = usedStream === 'stdout'
+        ? stdoutInfo.truncated && !stdoutFromEvidence
+        : usedStream === 'stderr'
+          ? stderrInfo.truncated && !stderrFromEvidence
+          : (stdoutInfo.truncated && !stdoutFromEvidence) || (stderrInfo.truncated && !stderrFromEvidence);
+      const evidenceReadError = usedStream === 'stdout'
+        ? stdoutEvidenceError
+        : usedStream === 'stderr'
+          ? stderrEvidenceError
+          : [stdoutEvidenceError, stderrEvidenceError].filter(Boolean).join('; ') || undefined;
+      const selectedEvidenceSizeExceeded = usedStream === 'stdout'
+        ? stdoutEvidenceSizeExceeded
+        : usedStream === 'stderr'
+          ? stderrEvidenceSizeExceeded
+          : stdoutEvidenceSizeExceeded || stderrEvidenceSizeExceeded;
+      if (selectedEvidenceSizeExceeded) {
         engine.logActionEvent({
-          description: `Parser '${parse_with}' produced no finding`,
+          description: 'Selected evidence stream too large for full parse — used head window',
           agent_id,
           action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name: parse_with,
-          frontier_item_id,
-          frontier_type: frontierType,
-          result_classification: 'failure',
-        });
-      } else if (isParserError(finding)) {
-        // F0-1: parser threw — surface the exception so the operator's LLM
-        // does not mistake it for a clean parse with no results.
-        parse_summary = { error: `Parser '${parse_with}' threw`, parser_exception: finding.raw_output };
-        engine.logActionEvent({
-          description: `Parser '${parse_with}' threw an exception`,
-          agent_id,
-          action_id: normalizedActionId,
-          event_type: 'parse_output',
-          category: 'finding',
-          tool_name: parse_with,
-          frontier_item_id,
-          frontier_type: frontierType,
-          result_classification: 'failure',
-          details: { parse_status: 'parser_exception' },
-        });
-      } else {
-        finding.action_id = normalizedActionId;
-        finding.tool_name = parse_with;
-        finding.frontier_item_id = frontier_item_id;
-        // Phase I: when the run finished with an unexpected non-zero exit,
-        // OR when we parsed from the bounded inline buffer because the
-        // streamed evidence was unavailable, mark every parsed node so
-        // downstream consumers (UI, retrospectives, inference) can
-        // recognize that the data may be incomplete.
-        const boundedFallback = stdoutInfo.truncated && !parseFromEvidence;
-        // Phase E: an evidence file larger than EVIDENCE_PARSE_MAX_BYTES is
-        // parsed against its head window only — every produced node carries
-        // partial=true so consumers can flag the gap.
-        const partialAny = partialParse || boundedFallback || evidenceSizeExceeded;
-        if (partialAny) {
-          for (const node of finding.nodes) {
-            (node as Record<string, unknown>).partial = true;
-          }
-        }
-
-        const prepared = prepareFindingForIngest(finding, nodeId => engine.getNode(nodeId));
-        if (prepared.errors.length > 0) {
-          parse_summary = { parsed: true, validation_errors: prepared.errors };
-          engine.logActionEvent({
-            description: `Parsed output rejected: invalid graph mutation`,
-            agent_id,
-            action_id: normalizedActionId,
-            event_type: 'parse_output',
-            category: 'finding',
-            tool_name: parse_with,
-            frontier_item_id,
-            frontier_type: frontierType,
-            linked_finding_ids: [finding.id],
-            result_classification: 'failure',
-            details: { validation_errors: prepared.errors },
-          });
-        } else {
-          const ingestResult = engine.ingestFinding(prepared.finding);
-          parse_summary = {
-            parsed: true,
-            tool: parse_with,
-            finding_id: finding.id,
-            nodes_parsed: finding.nodes.length,
-            edges_parsed: finding.edges.length,
-            partial: partialAny || undefined,
-            partial_reason: partialAny
-              ? (evidenceSizeExceeded
-                  ? 'evidence_too_large_for_full_parse'
-                  : partialParse && boundedFallback
-                    ? 'nonzero_exit_and_bounded_buffer_only'
-                    : partialParse
-                      ? 'nonzero_exit'
-                      : 'bounded_buffer_only')
-              : undefined,
+          event_type: 'instrumentation_warning',
+          category: 'system',
+          details: {
+            stdout_evidence_id,
+            stderr_evidence_id,
             parse_stream: usedStream,
-            parsed_from_evidence: parseFromEvidence || undefined,
-            evidence_read_error: parseFromEvidenceError,
-            exit_code: result.exit_code,
-            ingested: {
-              new_nodes: ingestResult.new_nodes.length,
-              new_edges: ingestResult.new_edges.length,
-              inferred_edges: ingestResult.inferred_edges.length,
-            },
-          };
-          engine.logActionEvent({
-            description: `Output parsed and ingested for ${parse_with}`,
-            agent_id,
-            action_id: normalizedActionId,
-            event_type: 'parse_output',
-            category: 'finding',
-            tool_name: parse_with,
-            frontier_item_id,
-            frontier_type: frontierType,
-            linked_finding_ids: [finding.id],
-            result_classification: 'success',
-            details: {
-              parsed_nodes: finding.nodes.length,
-              parsed_edges: finding.edges.length,
-              ingested: true,
-              new_nodes: ingestResult.new_nodes.length,
-              new_edges: ingestResult.new_edges.length,
-              inferred_edges: ingestResult.inferred_edges.length,
-            },
-          });
-        }
+            max_bytes: EVIDENCE_PARSE_MAX_BYTES,
+            error: evidenceReadError,
+          },
+        });
       }
-      engine.persist();
-    }
+      const partialAny = partialParse || boundedFallback || selectedEvidenceSizeExceeded;
+      const partialReason = partialAny
+        ? (selectedEvidenceSizeExceeded
+            ? 'evidence_too_large_for_full_parse'
+            : partialParse && boundedFallback
+              ? 'nonzero_exit_and_bounded_buffer_only'
+              : partialParse
+                ? 'nonzero_exit'
+                : 'bounded_buffer_only')
+        : undefined;
+
+      parse_summary = parseAndMaybeIngest(engine, {
+        tool_name: parse_with,
+        outputText: parserInput,
+        agent_id,
+        action_id: normalizedActionId,
+        frontier_item_id,
+        context: parser_context,
+        ingest: true,
+        partial: partialAny,
+        partial_reason: partialReason,
+        parse_stream: usedStream,
+        parsed_from_evidence: parsedFromEvidence,
+        evidence_read_error: evidenceReadError,
+        exit_code: result.exit_code,
+      });
   }
 
   return {
@@ -2022,6 +1952,6 @@ export async function runInstrumentedProcess(
         parse_summary,
       }, null, 2),
     }],
-    isError: !succeeded,
+    isError: !succeeded || !!parse_summary?.isError,
   };
 }

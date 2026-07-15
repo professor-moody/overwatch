@@ -7,6 +7,7 @@ import {
   credentialReachTargets,
   credentialExpiry,
   CREDENTIAL_EXPIRY_SOON_MS,
+  isCredentialExpansionCandidate,
 } from '../credential-display';
 import type { ExportedEdge, ExportedNode } from '../types';
 
@@ -79,6 +80,49 @@ describe('credential display helpers', () => {
       credential_status: 'active',
       cred_token_expires_at: '2026-05-14T23:59:59Z',
     }), now)).toBe('expired');
+  });
+
+  it('keeps plan-only and generic token credentials eligible for expansion', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    expect(isCredentialExpansionCandidate(cred({
+      cred_material_kind: 'token', cred_value: 'token-value', credential_status: 'active',
+      recon_playbook_invoked_at: '2026-05-14T00:00:00Z',
+    }), now)).toBe(true);
+  });
+
+  it('retires credentials only after confirmed provider or STS progress lands', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    const candidate = cred({
+      cred_material_kind: 'pat', cred_value: 'token-value', credential_status: 'active',
+      recon_playbook_invoked_at: '2026-05-14T00:00:00Z',
+    });
+    expect(isCredentialExpansionCandidate(candidate, now, [{
+      source: candidate.id, target: 'github-app', type: 'VALID_FOR_APP',
+    }])).toBe(false);
+    expect(isCredentialExpansionCandidate(candidate, now, [{
+      source: 'aws-caller', target: candidate.id, type: 'OWNS_CRED',
+      binding_source: 'aws_sts_get_caller_identity',
+    }])).toBe(false);
+    expect(isCredentialExpansionCandidate(candidate, now, [{
+      source: 'owner', target: candidate.id, type: 'OWNS_CRED', binding_source: 'import',
+    }])).toBe(true);
+  });
+
+  it('excludes expired, rotated, non-token, and valueless credentials from expansion', () => {
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    expect(isCredentialExpansionCandidate(cred({
+      cred_material_kind: 'pat', cred_value: 'token', credential_status: 'active',
+      cred_token_expires_at: '2026-05-14T23:00:00Z',
+    }), now)).toBe(false);
+    expect(isCredentialExpansionCandidate(cred({
+      cred_material_kind: 'pat', cred_value: 'token', credential_status: 'rotated',
+    }), now)).toBe(false);
+    expect(isCredentialExpansionCandidate(cred({
+      cred_material_kind: 'plaintext_password', cred_value: 'password', credential_status: 'active',
+    }), now)).toBe(false);
+    expect(isCredentialExpansionCandidate(cred({
+      cred_material_kind: 'pat', credential_status: 'active',
+    }), now)).toBe(false);
   });
 });
 

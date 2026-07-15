@@ -14,6 +14,7 @@ import {
   credentialReachTargets,
   credentialExpiry,
   formatExpiryLabel,
+  isCredentialExpansionCandidate,
 } from '../../lib/credential-display';
 import { ActionButton, DataRow, EmptyPanelState, FilterBar, PageHeader, SegmentedControl, StatusPill } from '../shared/primitives';
 
@@ -56,7 +57,7 @@ export function CredentialsPanel() {
     } else if (viewFilter === 'unverified') {
       list = list.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && !isCredentialReachable(c, graph.edges));
     } else if (viewFilter === 'expansion') {
-      list = list.filter(isExpansionCandidate);
+      list = list.filter(c => isCredentialExpansionCandidate(c, nowMs, graph.edges));
     } else if (viewFilter === 'expiring') {
       list = list.filter(c => credentialExpiry(c, nowMs)?.urgency === 'soon');
     }
@@ -109,7 +110,7 @@ export function CredentialsPanel() {
   const activeCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) === 'active').length;
   const reachableCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && isCredentialReachable(c, graph.edges)).length;
   const unverifiedCreds = creds.filter(c => getEffectiveCredentialStatus(c, nowMs) !== 'expired' && !isCredentialReachable(c, graph.edges)).length;
-  const expansionCandidates = creds.filter(isExpansionCandidate).length;
+  const expansionCandidates = creds.filter(c => isCredentialExpansionCandidate(c, nowMs, graph.edges)).length;
 
   const expiredTokenCreds = useMemo(
     () => creds.filter(c => !!c.cred_token_expires_at && getEffectiveCredentialStatus(c, nowMs) === 'expired'),
@@ -454,12 +455,4 @@ function CredentialQueueChip({
       {inner}
     </button>
   );
-}
-
-function isExpansionCandidate(cred: Record<string, unknown>): boolean {
-  if (cred.recon_playbook_invoked_at) return false;
-  if ((cred.credential_status as string | undefined) === 'expired') return false;
-  const material = String(cred.cred_material_kind || cred.cred_type || '').toLowerCase();
-  const tokenLike = ['oidc', 'oauth', 'saml', 'pat', 'session', 'aws', 'github', 'entra'].some(marker => material.includes(marker));
-  return tokenLike && !!cred.cred_value;
 }
